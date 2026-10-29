@@ -1,0 +1,16 @@
+{
+  "name": "ledung-relay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lets Ledungs be reached from anywhere: they dial out to it, phones reach them through it (issue #160).",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node relay.ts"
+  },
+  "dependencies": {
+    "ws": "^8.22.0"
+  }
+}

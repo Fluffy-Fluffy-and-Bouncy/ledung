@@ -1,0 +1,26 @@
+BEFORE — what a person finds today when they want to set up accounts by hand (issue #414)
+==========================================================================================
+
+1. The config file (ledung.config.json in the user data folder) has no accounts at all.
+   Its only word about them is the first-start comment:
+
+   {
+     "$comment": "Written by Ledung on its first start. Projects and Claude accounts are added in the page; the other settings are described in ledung.config.example.json, next to Ledung's package.json.",
+     "port": 4317
+   }
+
+   Accounts live in Ledung's database (ledung.db), which no person edits. A project names its
+   account in its settings in the page, as "account": "work".
+
+2. An account's sign-in folder (<user data>/accounts/<name>) holds, after /login, only Claude
+   Code's own sign-in file on Windows and Linux (on macOS nothing: the sign-in is in the Keychain).
+   It is one line with no explanation, and it is Claude Code's file, not Ledung's:
+
+   .credentials.json
+   {"claudeAiOauth":{"accessToken":"sk-ant-oat01-…","refreshToken":"sk-ant-ort01-…","expiresAt":1793300000000,"scopes":["user:inference","user:profile"],"subscriptionType":"max","rateLimitTier":"…"}}
+   (shape as in Ledung's own token move of #342, since removed; values shortened)
+
+   Ledung never reads or writes this file (decision of 2026-10-27, #342), and its shape is Claude
+   Code's: renaming or commenting its fields would stop Claude Code reading it.
+
+So today there is no file a person can open to see or enter their accounts.

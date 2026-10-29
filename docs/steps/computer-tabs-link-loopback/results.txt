@@ -1,0 +1,31 @@
+PASS before linking, nobody may frame the PC (the white tab) — frame-ancestors 'none'
+PASS linked: the Mac's pages may frame the PC, on the port the Mac told — frame-ancestors https://mac.l.test http://127.0.0.1:4397 http://localhost:4397
+PASS the Mac has the PC's tab, marked linked, with no "computers" in its config — [{"id":"mac.l.test","name":"MacBenack","colour":"green","url":"https://mac.l.test/","here":true,"config":{"name":"MacBenack","colour":"green"}},{"id":"pc.l.test","name":"pc","colour":"purple","url":"https://pc.l.test/","
+PASS the PC's tab shows the PC's own not-paired page, not white
+PASS the Mac's page offers Pair through the link above the frame
+PASS a confirm on the Mac's own page before anything is asked of the PC
+PASS nothing reached the PC before the confirm
+PASS the frame shows the PC's pairing form, named for a browser on the Mac — Browser on Mac
+PASS the bar is gone once the frame has its code
+PASS paired in the frame: the PC's own page, Settings — https://pc.l.test/#/settings
+PASS a computer device, paired through the link from Mac, no passkey yet — {"id":"832f7735-7a9d-4e6d-8457-d45e96fb9383","name":"Browser on Mac","createdAt":1792521995583,"lastUsedAt":1792521995583,"passkey":false,"passkeyAt":null,"kind":"computer","pairedVia":"Mac"}
+PASS read-only: a change from the frame is refused before the passkey
+PASS the PC's tab on the Mac shows its Waiting-for-you count, 1 — 1
+PASS this computer's own tab has no badge
+PASS the passkey window says before trying that this computer has no passkey, what to set up, and still offers the button — No passkey on this computer: set up Windows Hello (a PIN is enough) in Settings → Accounts → Sign-in options, or use a phone or a password manager such as Bitwarden.
+PASS a refused try shows the reason and the browser's error, not "error" — The passkey was not made: it was cancelled, it timed out, or this computer has no way to make one (on Windows: Windows Hello; or a phone or a password manager such as Bitwarden). Press the button to try again. (NotAllowe
+PASS the PC's Waiting for you shows "Mac paired Browser on Mac through the link" — Mac paired Browser on Mac through the link
+
+At 2026-10-20 20:46:33, from Mac's own screen. It can look at this computer's sessions, questions and chats; it can change nothing until it sets up its passkey and logs on here
+PASS the PC's Settings → Devices row says "paired through the link from Mac"
+PASS OK on the PC: the Mac's tab for it shows no badge (0 is hidden)
+PASS passkey set up but not logged on: still read-only
+PASS logged on in the frame with the passkey — 1793731604410
+PASS logged on: a change from the frame works
+PASS a second pairing within 10 minutes is refused by the PC — {"error":"pc.l.test answered 429: Mac asked for a pairing code less than 10 minutes ago; try again at 8:56:33 PM."}
+PASS through the Mac's public name, with no device: refused — 401
+PASS the PC's /link/device-pair without a link key: refused — 401
+PASS nothing of /link/ or a key crossed the front in clear — {"clear":false,"bytes":74568}
+PASS unlinked: the Mac's page has no PC tab any more
+PASS unlinked while the PC's tab showed: the Mac's own page is back, not blank
+PASS unlinked: nobody may frame the PC again — frame-ancestors 'none'

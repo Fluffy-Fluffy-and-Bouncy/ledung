@@ -1,0 +1,31 @@
+{
+  "$comment": "Copy to relay.config.json (not committed). One entry per Ledung: its name and secret hash, the public host phones use for it, and who owns it. Hash a secret with: echo <secret> | node relay.ts hash. \"tls\": \"passthrough\" reaches that Ledung end to end through passthroughPort (README, End to end); leave it out for a Ledung whose TLS the proxy ends. passthroughFrom: who may connect to passthroughPort (the default shown: loopback and private ranges); narrow it to the proxy's network. domain and relayUrl: what node relay.ts add names added computers under (<name>.l.<domain>) and the relay address it tells them to dial (README, Adding a computer). Computers added that way are kept in relay.added.json, not here.",
+  "port": 8080,
+  "bind": "0.0.0.0",
+  "passthroughPort": 8443,
+  "passthroughFrom": ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "::1/128", "fc00::/7"],
+  "trustProxy": true,
+  "domain": "example.org",
+  "relayUrl": "wss://relay.example.org",
+  "agents": [
+    {
+      "name": "my-pc",
+      "owner": "someone",
+      "host": "my-pc.example.org",
+      "secretSha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "my-mac",
+      "owner": "someone",
+      "host": "my-mac.l.example.org",
+      "secretSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "tls": "passthrough"
+    }
+  ],
+  "limits": {
+    "maxFrameBytes": 1048576,
+    "maxStreamsPerAgent": 64,
+    "failedAttemptsPerAddress": 10,
+    "attemptWindowSeconds": 600
+  }
+}

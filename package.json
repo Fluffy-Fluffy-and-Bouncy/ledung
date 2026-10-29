@@ -1,0 +1,62 @@
+{
+  "name": "ledung",
+  "version": "1.0.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "description": "Runs several Claude Code sessions locally and shows them in one place.",
+  "type": "module",
+  "bin": {
+    "ledung": "dist/cli.js"
+  },
+  "files": [
+    "dist/",
+    "web/dist/",
+    "ledung.config.example.json",
+    "CHANGELOG.md",
+    "COMMERCIAL.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Fluffy-Fluffy-and-Bouncy/ledung.git"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "build": "vite build web",
+    "typecheck": "tsc -p . && tsc -p web",
+    "test": "node scripts/test.ts",
+    "check": "npm run typecheck && npm test",
+    "prepare": "node -e \"import('./scripts/hooks.ts').then((m) => m.main(), () => {})\"",
+    "release": "node scripts/release.ts",
+    "pack": "node scripts/build-package.ts",
+    "export-public": "node scripts/export-public.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/ws": "^8.18.2",
+    "@vitejs/plugin-react": "^6.1.2",
+    "diff": "^9.0.0",
+    "esbuild": "^0.28.2",
+    "happy-dom": "^21.0.4",
+    "highlight.js": "^11.12.0",
+    "jsqr": "^1.4.0",
+    "qrcode-generator": "^2.0.4",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.295",
+    "@simplewebauthn/server": "^14.0.3",
+    "acme-client": "^5.4.0",
+    "ws": "^8.22.0",
+    "zod": "^4.6.5"
+  }
+}

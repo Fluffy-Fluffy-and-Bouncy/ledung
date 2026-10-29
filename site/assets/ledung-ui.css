@@ -1,0 +1,79 @@
+/* Ledung's page drawn in HTML/CSS for projectledung.com: the "pictures". Colours are the app's own (web/src/styles.css).
+   data-theme="dark" or "light" fixes the app's theme; "auto" follows the page's mode (theme.js). */
+.lui { position: relative; overflow: hidden; }
+.lui > .lui-stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.lui-stage {
+  --bg: #16181d; --panel: #1d2026; --text: #e3e6eb; --muted: #9aa1ad; --border: #333844; --accent: #7aa2f7;
+  --accent-text: #10131a; --user-bg: #23304a; --code-bg: #14161b; --warn-bg: #3a2f17; --warn-border: #a37a1f;
+  --danger: #f28b82; --ok: #81c995; --run: #7aa2f7; --wait: #f2b84b; --idle: #81c995; --ended: #5c6370;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70;
+  font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: var(--text); background: var(--bg);
+  width: 1200px; height: 760px; display: flex; flex-direction: column; border-radius: 12px; overflow: hidden;
+  border: 1px solid var(--border);
+}
+.lui[data-theme="light"] .lui-stage, html[data-mode="light"] .lui[data-theme="auto"] .lui-stage {
+  --bg: #f6f7f9; --panel: #ffffff; --text: #1c1f26; --muted: #646b78; --border: #d9dde4; --accent: #3b63c4;
+  --accent-text: #fff; --user-bg: #e6edfb; --code-bg: #f1f3f6; --warn-bg: #fff4dc; --warn-border: #e7b84a;
+  --danger: #b3261e; --ok: #2e7d32; --run: #3b63c4; --wait: #d08a00; --idle: #2e7d32; --ended: #9aa1ad;
+}
+.lui pre { margin: 0; font: 9px/1.05 ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: var(--accent); white-space: pre; }
+.lui .chrome { height: 30px; flex: none; display: flex; align-items: center; gap: 7px; padding: 0 12px; background: var(--panel); border-bottom: 1px solid var(--border); }
+.lui .chrome i { width: 11px; height: 11px; border-radius: 50%; background: var(--border); display: block; }
+.lui .chrome b { margin-left: 10px; font-weight: 500; color: var(--muted); font-size: 12px; }
+.lui .body { flex: 1; display: flex; min-height: 0; }
+.lui .side { width: 280px; flex: none; background: var(--panel); border-right: 1px solid var(--border); padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+.lui .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.lui .btn { border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px; background: var(--panel); color: var(--text); font-size: 12.5px; white-space: nowrap; }
+.lui .btn.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+.lui .btn.danger { color: var(--danger); border-color: var(--danger); }
+.lui .row { display: flex; gap: 6px; align-items: center; }
+.lui .muted { color: var(--muted); }
+.lui .small { font-size: 11px; }
+.lui .tag { font-size: 10.5px; border: 1px solid var(--border); border-radius: 5px; padding: 0 5px; color: var(--muted); }
+.lui .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; display: inline-block; }
+.lui .dot.run { background: var(--run); box-shadow: 0 0 0 0 var(--run); animation: lui-pulse 1.6s infinite; }
+.lui .dot.wait { background: var(--wait); }
+.lui .dot.idle { background: var(--idle); }
+.lui .dot.ended { background: var(--ended); }
+@keyframes lui-pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--run) 60%, transparent); } 100% { box-shadow: 0 0 0 7px transparent; } }
+.lui .meter { height: 5px; background: var(--border); border-radius: 3px; overflow: hidden; }
+.lui .meter > span { display: block; height: 100%; background: var(--ok); border-radius: 3px; animation: lui-breathe 5s ease-in-out infinite alternate; }
+.lui .meter.warn > span { background: var(--wait); }
+@keyframes lui-breathe { from { width: var(--a); } to { width: var(--b); } }
+.lui .waiting { border: 1px solid var(--wait); background: var(--warn-bg); border-radius: 7px; padding: 8px 10px; display: flex; justify-content: space-between; }
+.lui .proj { font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+.lui .sess { border-radius: 7px; padding: 7px 8px; display: flex; gap: 8px; align-items: center; border: 1px solid transparent; }
+.lui .sess.sel { border-color: var(--border); background: var(--bg); }
+.lui .sess .t { flex: 1; min-width: 0; }
+.lui .sess .t div:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lui .sess.child { margin-left: 18px; }
+.lui .head { padding: 12px 16px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.lui .head h3 { margin: 0; font-size: 17px; }
+.lui .chat { flex: 1; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
+.lui .msg .who { font-weight: 600; font-size: 12px; }
+.lui .msg .who span { font-weight: 400; color: var(--muted); font-size: 11px; margin-left: 6px; }
+.lui .msg .b { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin-top: 3px; background: var(--panel); max-width: 720px; }
+.lui .msg.you .b { background: var(--user-bg); }
+.lui .delivered { font-size: 11.5px; color: var(--muted); border-left: 3px solid var(--accent); padding: 3px 9px; }
+.lui code { font: 11.5px ui-monospace, "SF Mono", Menlo, Consolas, monospace; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+.lui .status { border-top: 1px solid var(--border); padding: 6px 16px; display: flex; gap: 14px; align-items: center; }
+.lui .status pre { font-size: 8px; }
+.lui .compose { padding: 10px 16px 14px; display: flex; gap: 10px; align-items: flex-end; }
+.lui .compose .box { flex: 1; border: 1px solid var(--border); border-radius: 8px; height: 56px; padding: 8px 12px; color: var(--muted); background: var(--panel); }
+.lui .typing::after { content: "▍"; animation: lui-blink 1s steps(2) infinite; color: var(--accent); }
+@keyframes lui-blink { 50% { opacity: 0; } }
+.lui .card { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); padding: 14px 16px; }
+.lui .card.sensitive { border-color: var(--danger); box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 18%, transparent); }
+.lui .card.warn { border-color: var(--warn-border); background: var(--warn-bg); }
+.lui .opt { border: 2px solid var(--border); border-radius: 8px; padding: 9px 12px; }
+.lui .opt.rec { border-color: var(--ok); }
+.lui .tier { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 6px 0 2px; }
+.lui .qrow { padding: 7px 9px; border-radius: 6px; display: flex; gap: 8px; align-items: center; }
+.lui .qrow.sel { background: var(--user-bg); }
+.lui .steps div { padding: 3px 0; }
+.lui .ok { color: var(--ok); }
+.lui .spin { display: inline-block; animation: lui-spin 1s linear infinite; }
+@keyframes lui-spin { to { transform: rotate(360deg); } }
+.lui .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.lui .shipbig pre { font-size: 15px; line-height: 1.05; }

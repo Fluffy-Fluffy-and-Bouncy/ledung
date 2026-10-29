@@ -1,0 +1,116 @@
+Issue #365. Output of: PLAYWRIGHT=<playwright-core> node test/loopback/settings-frame.ts   (2026-10-28, Chromium, dark mode)
+Part 1: one throwaway Ledung on 4398, two projects, remote off. Part 2: two linked Ledungs on 4397/4398 behind the local relay (linked-pair.ts).
+exit 0
+
+PASS  Update & restart: "Update Ledung" is drawn
+PASS  Update & restart: "Update Ledung" is tagged nothing  (found "")
+PASS  Update & restart: "Restart Ledung" is drawn
+PASS  Update & restart: "Restart Ledung" is tagged nothing  (found "")
+PASS  Update & restart: section "Update Ledung" holds a listed setting
+PASS  Update & restart: section "Restart Ledung" holds a listed setting
+PASS  Claude & usage: "Accounts" is drawn
+PASS  Claude & usage: "Accounts" is tagged nothing  (found "")
+PASS  Claude & usage: "Usage stops" is drawn
+PASS  Claude & usage: "Usage stops" is tagged nothing  (found "")
+PASS  Claude & usage: "Claude Code" is drawn
+PASS  Claude & usage: "Claude Code" is tagged nothing  (found "")
+PASS  Claude & usage: section "Accounts" holds a listed setting
+PASS  Claude & usage: section "Usage stops" holds a listed setting
+PASS  Claude & usage: section "Claude Code" holds a listed setting
+PASS  Sessions: "Skills" is drawn
+PASS  Sessions: "Skills" is tagged nothing  (found "")
+PASS  Sessions: "Session profiles" is drawn
+PASS  Sessions: "Session profiles" is tagged "config"  (found "config")
+PASS  Sessions: section "Skills" holds a listed setting
+PASS  Sessions: section "Session profiles" holds a listed setting
+PASS  Remote & devices: "Computers" is drawn
+PASS  Remote & devices: "Computers" is tagged nothing  (found "")
+PASS  Remote & devices: "Remote access" is drawn
+PASS  Remote & devices: "Remote access" is tagged nothing  (found "")
+PASS  Remote & devices: "Phones" is drawn
+PASS  Remote & devices: "Phones" is tagged nothing  (found "")
+PASS  Remote & devices: "Linked computers" is drawn
+PASS  Remote & devices: "Linked computers" is tagged nothing  (found "")
+PASS  Remote & devices: "Relay" is drawn
+PASS  Remote & devices: "Relay" is tagged nothing  (found "")
+PASS  Remote & devices: "Message board" is drawn
+PASS  Remote & devices: "Message board" is tagged nothing  (found "")
+PASS  Remote & devices: section "Computers" holds a listed setting
+PASS  Look & feel: "Appearance" is drawn
+PASS  Look & feel: "Appearance" is tagged "browser"  (found "browser")
+PASS  Look & feel: "Autocorrect" is drawn
+PASS  Look & feel: "Autocorrect" is tagged "browser"  (found "browser")
+PASS  Look & feel: "Status dot" is drawn
+PASS  Look & feel: "Status dot" is tagged "browser"  (found "browser")
+PASS  Look & feel: "Show "Archived" in the sidebar" is drawn
+PASS  Look & feel: "Show "Archived" in the sidebar" is tagged "browser"  (found "browser")
+PASS  Look & feel: "Compact sidebar" is drawn
+PASS  Look & feel: "Compact sidebar" is tagged "browser"  (found "browser")
+PASS  Look & feel: "App" is drawn
+PASS  Look & feel: "App" is tagged "browser"  (found "browser")
+PASS  Look & feel: section "Appearance" holds a listed setting
+PASS  Look & feel: section "Typing" holds a listed setting
+PASS  Look & feel: section "Sidebar" holds a listed setting
+PASS  Look & feel: section "App" holds a listed setting
+PASS  Notifications: "Notifications" is drawn
+PASS  Notifications: "Notifications" is tagged "browser"  (found "browser")
+PASS  Notifications: section "Notifications" holds a listed setting
+PASS  Config file: "Config file" is drawn
+PASS  Config file: "Config file" is tagged "config"  (found "config")
+PASS  Config file: section "Config file" holds a listed setting
+PASS  About: "About" is drawn
+PASS  About: "About" is tagged nothing  (found "")
+PASS  About: section "About" holds a listed setting
+PASS  remote off: Computers is a full section
+PASS  remote off: Remote access is one line
+PASS  remote off: Phones is one line
+PASS  remote off: Linked computers is one line
+PASS  remote off: Run a relay is one line
+PASS  remote off: Message board is one line
+PASS  remote off: Remote access is not a full section
+PASS  remote off: Phones is not a full section
+PASS  remote off: Linked computers is not a full section
+PASS  remote off: Relay is not a full section
+PASS  remote off: Phones is greyed, "Needs remote access first."  ({"name":"Phones","why":"Needs remote access first.","needs":true,"buttons":[]})
+PASS  remote off: Phones has no button
+PASS  remote off: Linked computers is greyed, "Needs remote access first."  ({"name":"Linked computers","why":"Needs remote access first.","needs":true,"buttons":[]})
+PASS  remote off: Linked computers has no button
+PASS  remote off: Remote access has Set up ›
+PASS  Message board has Projects ›
+PASS  Set up on Remote access opens in place
+PASS  it is today's join-with-a-code form
+PASS  ✕ makes it one line again
+PASS  Set up on Run a relay opens its form in place
+PASS  once set up, Relay is a full section and no longer a line
+PASS  a relay admin who has set up sees Relay in full after a reload
+PASS  the ⚙ opens Settings
+PASS  on the Ledung tab
+PASS  on Update & restart
+PASS  a group has its own address
+PASS  Back goes to the group before
+PASS  Escape goes back past every group to where Settings was opened
+PASS  a second ⚙ press goes back to where Settings was opened
+PASS  the old Accounts address opens Claude & usage
+PASS  the Chats tab, with the header
+PASS  the Website tab, with the header
+PASS  the + Add project tab, with the header
+PASS  phone: Settings is the list of groups
+PASS  phone: a group opens on its own
+PASS  1280px, remote connected: Remote access is a full section
+PASS  1280px, remote connected: Remote access is not a line
+PASS  1280px, remote connected: Phones is a full section
+PASS  1280px, remote connected: Phones is not a line
+PASS  1280px, remote connected: Linked computers is a full section
+PASS  1280px, remote connected: Linked computers is not a line
+PASS  390px, remote connected: Remote access is a full section
+PASS  390px, remote connected: Remote access is not a line
+PASS  390px, remote connected: Phones is a full section
+PASS  390px, remote connected: Phones is not a line
+PASS  390px, remote connected: Linked computers is a full section
+PASS  390px, remote connected: Linked computers is not a line
+all passed
+
+Revert check: with Usage stops taken out of Claude & usage and the tag taken off Typing (page rebuilt), the same run gave exit 1:
+FAIL  Claude & usage: "Usage stops" is drawn  (headings ["Accounts","Claude Code"])
+FAIL  Look & feel: "Autocorrect" is tagged "browser"  (found "")
+2 FAILED

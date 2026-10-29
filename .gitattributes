@@ -1,0 +1,18 @@
+# Use LF line endings in the repository and in working copies on every platform.
+* text=auto eol=lf
+
+# Windows command scripts need CRLF to run correctly.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Binary files: never convert.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.sqlite binary
+*.db binary

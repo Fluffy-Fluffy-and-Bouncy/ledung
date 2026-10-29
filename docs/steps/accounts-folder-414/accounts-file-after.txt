@@ -1,0 +1,68 @@
+AFTER — proposal for issue #414 (not built; Martin chooses first)
+=================================================================
+
+What it is NOT: a place to type a password or a sign-in token. Ledung takes none and keeps none
+(decision of 2026-10-27, #342). A file lists which accounts exist and where each one's sign-in
+folder is; signing in stays Claude Code's own /login, as the page shows. The file below is what
+"enter the accounts you want" becomes under that rule.
+
+------------------------------------------------------------------------------------------
+1. A "claudeAccounts" block in the config file (ledung.config.json), the file people already
+   edit by hand and Ledung already reads again whenever it changes (Settings → Config file).
+   JSON has no comments, so each field is explained by a "$…" line beside it, the way
+   ledung.config.example.json explains its settings today.
+------------------------------------------------------------------------------------------
+
+{
+  "port": 4317,
+
+  "$claudeAccounts": "Your Claude accounts, by a short name you choose (letters, digits, - and _). Each account is only a sign-in: a project on it uses that account's plan and limits, and everything else (conversations, memory, skills, settings) is the same whichever account a project uses. Ledung never sees or keeps a sign-in: after adding an account, sign in to it once with Claude Code's own /login (Settings → Claude & accounts shows the command; Open folder shows the folder). Accounts added in the page appear in the page only, not here. Removing an account is done in the page, because it also signs the account out.",
+  "claudeAccounts": {
+    "work": {
+      "$whatItIsFor": "Free text, shown next to the name in the page so you know which plan this is. Optional.",
+      "whatItIsFor": "Company Max plan",
+
+      "$signInFolderOnThisComputer": "Where Claude Code keeps this account's sign-in on this computer. Leave it out for Ledung's own folder (<user data>/accounts/<name>). Each account needs a folder of its own: not ~/.claude, and not another account's.",
+      "signInFolderOnThisComputer": "D:\\Claude sign-ins\\work",
+
+      "$signInFolderInContainers": "Where the sign-in is kept inside a container, for projects that run in one. Starts with ~/ (the container user's home) or /. Leave it out for ~/.ledung-accounts/<name>; use a mounted folder so the sign-in survives a rebuild of the container.",
+      "signInFolderInContainers": "/mnt/claude-signins/work"
+    },
+    "personal": {}
+  },
+
+  "$claudeAccountsExample": "The smallest account is a name and nothing else, like \"personal\" above: Ledung makes its folder, and you sign in to it with /login.",
+
+  "projects": "… unchanged; a project names its account as before: \"account\": \"work\""
+}
+
+How Ledung reads it:
+- An account named here that Ledung doesn't have is added, as "Add account" in the page does.
+- A changed folder or description here changes the account's own, after the same checks as the
+  page (its own folder, not ~/.claude). A new folder is a new sign-in: the banner asks for /login.
+- An account left out of the file stays, and is removed only in the page (removing signs out).
+- The page marks the accounts that come from the file: "set in the config file".
+
+Existing users' files keep working: a config without "claudeAccounts" is read exactly as today,
+and accounts already added in the page stay as they are.
+
+------------------------------------------------------------------------------------------
+2. A short text file in every account's sign-in folder, so whoever opens it (with the new
+   Open folder button) knows what they are looking at. Written by Ledung when it makes the
+   folder, and again if it is missing; never anything secret in it.
+------------------------------------------------------------------------------------------
+
+<user data>/accounts/work/ABOUT THIS FOLDER.txt
+
+   This is the sign-in folder of the Claude account "work" in Ledung.
+
+   Claude Code keeps this account's sign-in here (.credentials.json on Windows and Linux; on
+   macOS in the Keychain, under "Claude Code-credentials-…"). Ledung never reads it.
+
+   To sign in, or to sign in as someone else, run in a terminal:
+     Windows (PowerShell): $env:CLAUDE_SECURESTORAGE_CONFIG_DIR="C:\Users\you\AppData\Roaming\Ledung\accounts\work"; claude
+     macOS / Linux:        CLAUDE_SECURESTORAGE_CONFIG_DIR="/path/to/accounts/work" claude
+   then type /login. Then press Check again in Ledung.
+
+   Don't edit .credentials.json by hand: it is Claude Code's, and a broken one signs the account out.
+   To stop using the account, remove it in Ledung's Settings → Claude & accounts.

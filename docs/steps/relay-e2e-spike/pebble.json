@@ -1,0 +1,12 @@
+{
+  "pebble": {
+    "listenAddress": "127.0.0.1:51400",
+    "managementListenAddress": "127.0.0.1:51401",
+    "certificate": "dl-pebble/cert.pem",
+    "privateKey": "dl-pebble/key.pem",
+    "httpPort": 51480,
+    "tlsPort": 51443,
+    "ocspResponderURL": "",
+    "externalAccountBindingRequired": false
+  }
+}

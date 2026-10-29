@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width">
+<title>Ledung · set up the passkey</title>
+<!-- Issue #241: a device paired inside a frame on another computer's page sets up its passkey here, at the top level,
+     because Safari can't create a passkey inside a frame on another site. The one-time code is the link's fragment. -->
+<script src="/enrol.js" type="module"></script>
+</head>
+<body style="font-family: system-ui, sans-serif; max-width: 30em; margin: 2em auto; padding: 0 1em; line-height: 1.4">
+<h2>Set up the passkey</h2>
+<p id="what">Checking the link…</p>
+<p><button id="go" hidden style="font-size: 1.1em">Set up passkey</button></p>
+<p id="done" hidden>Done. Close this window and go back to Ledung: the tab there shows the passkey within a few seconds, then <b>Log on</b>.</p>
+</body>
+</html>

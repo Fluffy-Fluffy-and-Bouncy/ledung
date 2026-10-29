@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Project Ledung — run a fleet of Claude Code sessions</title>
+<link rel="icon" href="assets/icon.svg">
+<link rel="stylesheet" href="assets/ledung-ui.css">
+<script src="assets/theme.js"></script>
+<style>
+  :root {
+    --harbour: #0e1c2b; --deep: #08131f; --mist: #9fb0c4; --text: #e6edf5; --lantern: #f2b84b; --sea: #7aa2f7;
+    --lantern-fill: #f2b84b; --on-lantern: #1a1405; --soft: #c6d2e0; --line: #22344a; --faint: #6f8197; --term-bg: rgba(4, 10, 18, .75); --term-shadow: #000; --footer-ship: #4d6aa6;
+    --sans: "Avenir Next", "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
+    --cond: "Avenir Next Condensed", "Avenir Next", "Segoe UI Semibold", "Arial Narrow", sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  /* Light mode: the same harbour at dawn. Mist instead of night water, the lantern darkened so it still reads as an accent. */
+  html[data-mode="light"] {
+    --harbour: #e9eff5; --deep: #d9e3ed; --mist: #4c6075; --text: #0f2236; --lantern: #94580a; --sea: #2f5fb3;
+    --lantern-fill: #f0b24e; --on-lantern: #1a1405; --soft: #2f4458; --line: #bfccd9; --faint: #5d6f82; --term-bg: rgba(250, 252, 254, .82); --term-shadow: #8da2b8; --footer-ship: #6d87b8;
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--deep); overflow-x: clip; }
+  body { margin: 0; overflow-x: clip; color: var(--text); font: 17px/1.6 var(--sans); background: linear-gradient(180deg, var(--harbour) 0%, var(--deep) 60%, var(--harbour) 100%); overflow-x: hidden; }
+  a { color: inherit; }
+  a:focus-visible, .btn:focus-visible { outline: 2px solid var(--lantern); outline-offset: 3px; }
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 0 32px; }
+  nav { display: flex; justify-content: space-between; align-items: center; padding: 22px 0; position: relative; z-index: 3; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; letter-spacing: .01em; text-decoration: none; }
+  .brand img { width: 30px; height: 30px; }
+  nav .links { display: flex; gap: 22px; align-items: center; font-size: 15px; }
+  nav .links a { text-decoration: none; color: var(--mist); }
+  .btn { display: inline-block; text-decoration: none; border-radius: 999px; padding: 11px 22px; font-weight: 600; font-size: 15px; border: 1.5px solid var(--lantern); color: var(--lantern); }
+  .btn.solid { background: var(--lantern-fill); border-color: var(--lantern-fill); color: var(--on-lantern); }
+
+  /* Hero: the window sits behind the words and dissolves into the harbour. */
+  .hero { position: relative; min-height: 760px; }
+  .hero .pic { position: absolute; right: -120px; top: 30px; width: 940px; opacity: .8;
+    -webkit-mask-image: radial-gradient(ellipse 58% 60% at 55% 45%, #000 45%, transparent 80%); mask-image: radial-gradient(ellipse 58% 60% at 55% 45%, #000 45%, transparent 80%);
+    transform: perspective(1600px) rotateY(-14deg) rotateX(4deg); filter: saturate(.85); }
+  .hero .copy { position: relative; z-index: 2; max-width: 560px; padding-top: 110px; }
+  h1 { font: 600 clamp(46px, 6.4vw, 86px)/0.98 var(--cond); letter-spacing: -.01em; margin: 0 0 26px; text-wrap: balance; }
+  .lede { font-size: 20px; color: var(--soft); max-width: 34em; margin: 0 0 34px; text-shadow: 0 1px 16px var(--deep); }
+  .hero .ctas { display: flex; gap: 14px; flex-wrap: wrap; }
+
+  /* The horizon: one wide strip of the status line's sea, the fleet crossing it. */
+  .horizon { margin: 0; overflow: hidden; color: var(--sea); }
+  .horizon pre { margin: 0 auto; font: calc(100vw / 120 / 0.6) / 1.05 var(--mono); width: max-content; color: var(--sea); opacity: .85; }
+
+  section { position: relative; padding: 110px 0; }
+  .split { display: grid; grid-template-columns: 1.25fr 1fr; gap: 40px; align-items: center; }
+  .split.flip { grid-template-columns: 1fr 1.25fr; }
+  .split.flip .pic { order: 2; }
+  .split .pic { position: relative; }
+  .split .pic .lui { opacity: .85; -webkit-mask-image: linear-gradient(90deg, transparent, #000 12%, #000 78%, transparent), linear-gradient(180deg, transparent, #000 18%, #000 78%, transparent); -webkit-mask-composite: source-in; mask-image: linear-gradient(90deg, transparent, #000 12%, #000 78%, transparent), linear-gradient(180deg, transparent, #000 18%, #000 78%, transparent); mask-composite: intersect; }
+  .split:not(.flip) .pic { margin-left: -90px; }
+  .split.flip .pic { margin-right: -90px; }
+  h2 { font: 600 clamp(34px, 4vw, 52px)/1.05 var(--cond); margin: 0 0 18px; text-wrap: balance; }
+  .split p { color: var(--soft); max-width: 31em; }
+  .split p strong { color: var(--text); font-weight: 600; }
+
+  .facts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 36px; border-top: 1px solid var(--line); padding-top: 44px; }
+  .facts h3 { font: 600 21px/1.2 var(--cond); margin: 0 0 8px; color: var(--lantern); }
+  .facts p { margin: 0; color: var(--mist); font-size: 15.5px; }
+
+  .install { display: grid; grid-template-columns: 1fr 1.2fr; gap: 56px; align-items: center; }
+  .soon { display: inline-block; font-size: 14px; color: var(--lantern); border: 1px dashed var(--lantern); border-radius: 6px; padding: 3px 10px; margin-bottom: 18px; }
+  .term { background: var(--term-bg); border: 1px solid var(--line); border-radius: 14px; padding: 22px 24px; font: 15px/1.7 var(--mono); min-height: 330px; box-shadow: 0 30px 80px -30px var(--term-shadow); }
+  .term-prompt { color: var(--lantern); }
+  .term-dim { color: var(--faint); }
+  .term-ship { font: 13px/1.05 var(--mono); color: var(--sea); margin: 10px 0; }
+  .term-caret { animation: blink 1s steps(2) infinite; color: var(--lantern); }
+  @keyframes blink { 50% { opacity: 0; } }
+  .req { color: var(--mist); font-size: 15px; }
+
+  .contact { text-align: center; padding: 130px 0 90px; position: relative; overflow: hidden; }
+  .contact .pic { position: absolute; inset: 0; width: 1100px; left: 50%; transform: translateX(-50%); opacity: .18; -webkit-mask-image: radial-gradient(closest-side, #000, transparent); mask-image: radial-gradient(closest-side, #000, transparent); }
+  .contact > * { position: relative; }
+  .contact p { color: var(--mist); }
+  .placeholder { font-size: 13px; color: var(--faint); margin-top: 14px; }
+  footer { border-top: 1px solid var(--line); padding: 26px 0 40px; color: var(--faint); font-size: 14px; display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+  footer pre { margin: 0; font: 9px/1.05 var(--mono); color: var(--footer-ship); }
+  nav .mode-toggle { color: var(--mist); }
+
+  @media (max-width: 900px) {
+    .wrap { padding: 0 20px; }
+    nav .links a:not(.btn) { display: none; }
+    .hero { min-height: 0; padding-bottom: 40px; }
+    .hero .pic { position: relative; right: auto; top: auto; width: 150%; margin: -30px -25% -80px; transform: none; opacity: .5; }
+    .hero .copy { padding-top: 0; margin-top: -120px; }
+    .split, .split.flip, .install { grid-template-columns: 1fr; }
+    .split .pic, .split.flip .pic { margin: 0 -20px; order: 0; overflow: hidden; }
+    .split .pic .lui { width: 190%; margin-left: -8%; }
+    section { padding: 60px 0; }
+    .facts { grid-template-columns: 1fr 1fr; }
+    .term { font-size: 12.5px; padding: 16px; }
+    .term-ship { font-size: 10px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a class="brand" href="#"><img src="assets/icon.svg" alt="">Project Ledung</a>
+    <div class="links"><a href="#how">How it works</a><a href="#install">Install</a><span data-mode-slot></span><a class="btn" href="#contact">Contact us</a></div>
+  </nav>
+  <header class="hero">
+    <div class="pic"><div class="lui" data-scene="main" data-theme="auto"></div></div>
+    <div class="copy">
+      <h1>Your Claude Code sessions, sailing as one fleet.</h1>
+      <p class="lede">Ledung runs several Claude Code sessions on your own computer and shows them on one page: who started what, which questions are waiting for you, every permission prompt, tokens and machine load.</p>
+      <div class="ctas"><a class="btn solid" href="#install">Install Ledung</a><a class="btn" href="#contact">Contact us</a></div>
+    </div>
+  </header>
+</div>
+
+<div class="horizon" aria-hidden="true"><pre data-ship="voyage" data-width="120"></pre></div>
+
+<section id="how">
+  <div class="wrap split">
+    <div class="pic"><div class="lui" data-scene="main" data-theme="auto"></div></div>
+    <div>
+      <h2>A manager runs the sessions. You run the manager.</h2>
+      <p>Give each project a <strong>manager</strong>: a Claude session that starts the work, hands out tasks and answers the ordinary prompts of the sessions under it. Ledung records who started whom, so the whole tree is in the sidebar, each with a ship that sails while it works and stops when it waits.</p>
+      <p>You can open any session and talk to it directly, whenever you want.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap split flip">
+    <div class="pic"><div class="lui" data-scene="desk" data-theme="auto"></div></div>
+    <div>
+      <h2>Questions land in one list, not buried in chats.</h2>
+      <p>When a session needs you it asks through Ledung. Every question is stored in <strong>Waiting for you</strong>, grouped by what it blocks, with the issue, the evidence and a recommended answer. Your answer goes straight back to the session that asked.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap split">
+    <div class="pic"><div class="lui" data-scene="permission" data-theme="auto"></div></div>
+    <div>
+      <h2>Sensitive calls always reach you.</h2>
+      <p>Managers may allow routine commands for their sessions, and every decision is labelled with who made it. Anything your project marks sensitive, like production, deploys or customer data, is <strong>never</strong> decided by a manager. It waits for you, even while you are away.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="facts">
+      <div><h3>Away mode</h3><p>Leave for the evening. The manager keeps work moving within what you allowed and holds the rest for you.</p></div>
+      <div><h3>Usage you can see</h3><p>Tokens per session, rolled up per manager, with your plan's limits and the machine's CPU and memory.</p></div>
+      <div><h3>One-button updates</h3><p>Update Ledung pulls, builds and restarts. Sessions keep running through the restart.</p></div>
+      <div><h3>Windows, macOS, Linux</h3><p>Projects in plain folders or in dev containers. Everything stays on your machine.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap install">
+    <div>
+      <span class="soon">Coming soon: not on npm yet</span>
+      <h2>Two commands to set sail.</h2>
+      <p class="req">You need Node.js 24 or later, Git, and Claude Code installed and signed in. Ledung opens in your browser; install it as an app window from Edge or Chrome.</p>
+    </div>
+    <div class="term" data-term></div>
+  </div>
+</section>
+
+<section class="contact" id="contact">
+  <div class="pic"><div class="lui" data-scene="usage" data-theme="auto"></div></div>
+  <h2>Want to run your own fleet?</h2>
+  <p>Tell us what you're building and we'll get back to you.</p>
+  <a class="btn solid" href="mailto:hello@projectledung.com?subject=Project%20Ledung">Contact us</a>
+</section>
+
+<div class="wrap"><footer><span>Project Ledung · projectledung.com</span><pre data-ship="solo" data-width="24"></pre></footer></div>
+
+<script src="assets/shipFrames.js"></script>
+<script src="assets/ship.js"></script>
+<script src="assets/ledung-ui.js"></script>
+<script src="assets/terminal.js"></script>
+</body>
+</html>

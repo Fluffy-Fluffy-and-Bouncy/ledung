@@ -1,0 +1,83 @@
+== versions ==
+v2.11.7 h1:yj0Y4fYZGPkSvibBJ1sTWE33xC0fxztVyXEW5iIdUT4=
+layer4.handlers.proxy v0.1.2
+layer4.matchers.tls v0.1.2
+Pebble version: v2.10.1 (b1e1ca4f3c30abb64111adaca4544bc5374cc306)
+acme-client 5.4.0 · node v24.14.1
+
+
+== 1. Caddy (caddy-l4) routes *.l.test by SNI, other sites keep working ==
+PASS  an ordinary HTTPS site on the same port is served by Caddy  (issuer Caddy Local Authority - ECC Intermediate)
+      relay: from 127.0.0.1:65000 sni=nobody.l.test alpn=[] -> closed (no such Ledung online)
+PASS  an unknown *.l.test name is closed, not served by Caddy  (Client network socket disconnected before secure TLS connection was established)
+
+== 2. TLS over the tunnel, self-signed: the relay sees only TLS records ==
+      relay: from 127.0.0.1:65002 sni=copper7meadow4.l.test alpn=[] -> agent
+PASS  the phone completes TLS end to end with the Ledung  (subject copper7meadow4.l.test, body "SECRET-PAGE-BODY-3e0b6f5271a99d2c host=c...")
+PASS  the relay gets the phone address from PROXY v2  (127.0.0.1:65002)
+PASS  every byte the relay carried is a TLS record  (phone->Ledung 1766 B in 4 records, Ledung->phone 2623 B in 10 records, types 22,20,23)
+PASS  the page text is not in what the relay carried
+PASS  the request socket is the marked TLSSocket (mark on secureConnection)
+PASS  review finding 4a holds: req.socket is not the duplexPair end, so today's mark alone would miss it
+      relay: from 127.0.0.1:65004 sni=copper7meadow4.l.test alpn=[] -> agent
+PASS  a WebSocket works over TLS through the tunnel, and is marked  (echo hi marked=true)
+
+== 3. ACME TLS-ALPN-01 against Pebble, answered by Ledung through Caddy, relay and tunnel ==
+      ledung: ACME account https://127.0.0.1:51400/my-account/4729f430ecaea4b7 (exists before any CAA record or order)
+      relay: from 127.0.0.1:65020 sni=copper7meadow4.l.test alpn=[acme-tls/1] -> agent
+      relay: from 127.0.0.1:65019 sni=copper7meadow4.l.test alpn=[acme-tls/1] -> agent
+      relay: from 127.0.0.1:65018 sni=copper7meadow4.l.test alpn=[acme-tls/1] -> agent
+      ledung: answered a TLS-ALPN-01 check for copper7meadow4.l.test (alpn acme-tls/1)
+      ledung: answered a TLS-ALPN-01 check for copper7meadow4.l.test (alpn acme-tls/1)
+      ledung: answered a TLS-ALPN-01 check for copper7meadow4.l.test (alpn acme-tls/1)
+PASS  Pebble issues a certificate for the name, validated through Caddy, relay and tunnel  (the relay saw ALPN acme-tls/1 for the name)
+      relay: from 127.0.0.1:65034 sni=copper7meadow4.l.test alpn=[] -> agent
+PASS  after setSecureContext the phone sees the Pebble certificate, no restart  (issuer Pebble Intermediate CA 221bc1)
+
+== 3b. What Pebble does with CAA (informational: Pebble never checks CAA) ==
+      relay: from 127.0.0.1:65048 sni=sibling.l.test alpn=[acme-tls/1] -> agent
+      relay: from 127.0.0.1:65049 sni=sibling.l.test alpn=[acme-tls/1] -> agent
+      relay: from 127.0.0.1:65050 sni=sibling.l.test alpn=[acme-tls/1] -> agent
+      ledung: answered a TLS-ALPN-01 check for sibling.l.test (alpn acme-tls/1)
+      ledung: answered a TLS-ALPN-01 check for sibling.l.test (alpn acme-tls/1)
+      ledung: answered a TLS-ALPN-01 check for sibling.l.test (alpn acme-tls/1)
+INFO  sibling.l.test by our account: Pebble ISSUED; Let's Encrypt refuses: parent l.test says issue ";"; CAA served: [";"]
+      relay: from 127.0.0.1:65074 sni=mine.l.test alpn=[acme-tls/1] -> agent
+      relay: from 127.0.0.1:65075 sni=mine.l.test alpn=[acme-tls/1] -> agent
+      relay: from 127.0.0.1:65076 sni=mine.l.test alpn=[acme-tls/1] -> agent
+      ledung: answered a TLS-ALPN-01 check for mine.l.test (alpn acme-tls/1)
+      ledung: answered a TLS-ALPN-01 check for mine.l.test (alpn acme-tls/1)
+      ledung: answered a TLS-ALPN-01 check for mine.l.test (alpn acme-tls/1)
+INFO  mine.l.test by our account: Pebble ISSUED; Let's Encrypt issues: own record names our account and tls-alpn-01; CAA served: ["pebble.letsencrypt.org; accounturi=https://127.0.0.1:51400/my-account/4729f430ecaea4b7; validationmethods=tls-alpn-01"]
+      relay: from 127.0.0.1:65103 sni=mine.l.test alpn=[acme-tls/1] -> agent
+      relay: from 127.0.0.1:65104 sni=mine.l.test alpn=[acme-tls/1] -> agent
+      relay: from 127.0.0.1:65105 sni=mine.l.test alpn=[acme-tls/1] -> agent
+      ledung: answered a TLS-ALPN-01 check for mine.l.test (alpn acme-tls/1)
+      ledung: answered a TLS-ALPN-01 check for mine.l.test (alpn acme-tls/1)
+      ledung: answered a TLS-ALPN-01 check for mine.l.test (alpn acme-tls/1)
+INFO  mine.l.test by another account (a server operator): Pebble ISSUED; Let's Encrypt refuses: accounturi names a different account; CAA served: ["pebble.letsencrypt.org; accounturi=https://127.0.0.1:51400/my-account/4729f430ecaea4b7; validationmethods=tls-alpn-01"]
+      relay: from 127.0.0.1:65129 sni=dnsonly.l.test alpn=[acme-tls/1] -> agent
+      relay: from 127.0.0.1:65130 sni=dnsonly.l.test alpn=[acme-tls/1] -> agent
+      ledung: answered a TLS-ALPN-01 check for dnsonly.l.test (alpn acme-tls/1)
+      ledung: answered a TLS-ALPN-01 check for dnsonly.l.test (alpn acme-tls/1)
+      relay: from 127.0.0.1:65133 sni=dnsonly.l.test alpn=[acme-tls/1] -> agent
+      ledung: answered a TLS-ALPN-01 check for dnsonly.l.test (alpn acme-tls/1)
+INFO  dnsonly.l.test by our account: Pebble ISSUED; Let's Encrypt refuses: validationmethods allows only dns-01; CAA served: ["pebble.letsencrypt.org; accounturi=https://127.0.0.1:51400/my-account/4729f430ecaea4b7; validationmethods=dns-01"]
+      relay: from 127.0.0.1:65154 sni=late.l.test alpn=[acme-tls/1] -> agent
+      relay: from 127.0.0.1:65155 sni=late.l.test alpn=[acme-tls/1] -> agent
+      relay: from 127.0.0.1:65156 sni=late.l.test alpn=[acme-tls/1] -> agent
+      ledung: answered a TLS-ALPN-01 check for late.l.test (alpn acme-tls/1)
+      ledung: answered a TLS-ALPN-01 check for late.l.test (alpn acme-tls/1)
+      ledung: answered a TLS-ALPN-01 check for late.l.test (alpn acme-tls/1)
+INFO  late.l.test by our account: Pebble ISSUED; Let's Encrypt refuses: the record names another CA; CAA served: ["otherca.example"]
+
+all checks passed
+
+== curl, as a phone ==
+ordinary site, TLS ended by Caddy
+curl: (35) schannel: failed to receive handshake, SSL/TLS connection failed
+port 80: 302 -> https://copper7meadow4.l.test/x
+spike.ts exit 0
+stopped pid 42900 on port 51053
+stopped pid 52156 on port 51400
+stopped pid 38384 on port 51443

@@ -1,0 +1,64 @@
+{
+  "$comment": "Example only. Copy to ledung.config.local.json (ignored by Git) and fill in. Projects and Claude accounts are added in the page; accounts can also be listed under \"claudeAccounts\" (below), and any projects listed under \"projects\" here are copied into Ledung once, on its next start. Ledung reads this file again whenever it changes: every setting applies at once, to new and resumed sessions, except port, lan, lanSignIn, remote, relayJoin, computers, board and userName, which need Restart Ledung (Settings → Config file says so).",
+  "port": 4317,
+  "userName": "the user",
+  "lan": false,
+  "lanSignIn": true,
+  "maxWorkingSessions": 10,
+  "$usageStops": "Hold new turns on an account at a share of a plan window, e.g. \"usageStops\": { \"default\": { \"seven_day\": 98, \"five_hour\": 95 } } (\"default\": this computer's own login; windows five_hour and seven_day). Settings → Usage stops changes them for this Ledung, and lifts a reached one until the window resets.",
+  "keepToolResultsDays": 3,
+  "$keepToolResultsDays": "Ledung keeps its own copy of each conversation for the page. Tool output is stored up to 64 KB per result and screenshots without their image; this many days after a session ends, its tool output is cut to the first lines. The full output stays in Claude Code's own transcript of the session.",
+  "remoteControl": true,
+  "claudeExecutable": "installed",
+  "$claudeExecutable": "The Claude Code sessions on this computer run: \"installed\", your own claude (on the PATH, or the native installer's, npm's or Homebrew's), or a full path. One that is missing or older than the Agent SDK needs is never run: the page says how to install or update it, and sessions don't start. \"bundled\" runs the copy that comes with Ledung's Agent SDK instead, for testing or where Claude Code can't be installed (not in a Ledung installed from npm, which leaves that copy out). Containers run their own.",
+  "$remoteControl": "Managers turn on Remote Control, so you can reach them from the Claude app as \"<project> lead\". false: no manager does.",
+  "$remote": "To reach this Ledung through a relay (relay/README.md), add \"remote\": { \"relay\": \"wss://<relay name>\", \"name\": \"<its name at the relay>\", \"publicName\": \"<the host phones use>\", \"secret\": \"<its secret>\" }. Left out: no tunnel. Settings shows whether it is connected. Encrypted connections through the relay end in Ledung itself, with tls.key and tls.crt from the remote folder in Ledung's data folder; add \"tls\": \"required\" to close plain ones from a relay that still ends TLS itself. \"acme\": \"staging\" or \"production\" gets that certificate from Let's Encrypt by itself, once the CAA record Settings shows is in the DNS (docs/steps/relay-e2e.md 3b).",
+  "$computers": "Your other computers' Ledungs, as tabs at the top of the page: \"computers\": [{ \"name\": \"PC\", \"colour\": \"purple\", \"publicName\": \"<its remote.publicName>\" }, …]. The entry with this Ledung's own publicName is this computer, so the same list can go in every computer's config; without one, it is named after its host. This computer's tab is always first, the others in the list's order. Colours: green, purple, teal, amber, pink, orange; left out, each gets one nobody has. Names and colours are where the tabs start: Settings → Computers changes them for this Ledung. A tab shows that computer's own page here, in a frame, with its own sign-in (pair this browser with it once, with a code from its Settings → Devices); a middle click opens it in a new browser tab. Only the pages of the computers listed here may frame this Ledung. Add \"port\" to an entry whose Ledung doesn't run on 4317. With one computer there are no tabs. Opened through its public name, the page has a frame in this computer's colour.",
+  "browseRoots": [],
+  "$browseRoots": "Folders the page's folder browser may show; empty or left out: your home folder.",
+  "$chats": "Chats are sessions with no project (New chat in the sidebar). Optional: \"chats\": { \"folder\": where a new chat starts (left out: your home folder; it must be inside browseRoots), \"permissionMode\": \"auto\" (default), \"default\" (Ask), \"acceptEdits\" or \"plan\", \"sensitive\": { \"commandPatterns\", \"pathPatterns\", \"mcpTools\" } always asked in every chat, on top of the chats list edited in Settings → Chats }.",
+  "$projectsFolder": "Where new projects are created; left out: a Projects folder in your home folder.",
+  "$workflow": "A written process every project's sessions follow, if you use one: add \"workflow\": { \"folder\": the process folder, \"managerFile\" and \"sessionFile\": what a manager and every other session read first, inside that folder, \"projectConfig\": where each project keeps its own settings for it, inside the project folder, optionally \"profilesFile\": the workflow's session profiles, inside that folder (see the README's Session profiles), and optionally \"nudgesFile\": texts a session's prompt gets while its context is over a threshold, inside that folder (see the README's Workflow nudges) }. A project can switch it off or name its own config in its settings. Left out: sessions get no such instructions.",
+  "$workflows": "More than one process: add \"workflows\": [ { \"name\": \"…\", and the same four settings }, … ]. The \"workflow\" block, if any, is the first, named \"default\" unless it gives a \"name\". Each project picks one, or None, in its settings.",
+  "projects": [],
+  "$claudeAccounts": "Your Claude accounts, by a short name you choose (letters, digits, - and _; not \"default\", which is this computer's own login). An account is only a sign-in: a project on it uses that account's plan and limits, and everything else (conversations, memory, skills, settings) is the same whichever account a project uses. Nothing secret goes here: Ledung never sees or keeps a sign-in. After an account is added, sign in to it once with Claude Code's own /login; Settings → Claude & usage → Accounts shows the command, and its Open folder shows the ABOUT THIS FOLDER.txt Ledung puts in its sign-in folder. Ledung adds the accounts named here that it doesn't have, at its start and whenever this file changes; the page can add more, which appear in the page only. Removing an account is done in the page, because that also signs it out; take it out here too, or it comes back at the next start. A project names its account in its settings in the page. The block under \"$claudeAccountsExample\" below is a worked example: copy its accounts into this one, and leave out or change what you need.",
+  "claudeAccounts": {},
+  "$claudeAccountsExample": {
+    "work": {
+      "$whatItIsFor": "Free text, shown under the account's name in the page so you know which plan it is. Optional.",
+      "whatItIsFor": "Company Max plan",
+      "$signInFolderOnThisComputer": "Where Claude Code keeps this account's sign-in on this computer, as a whole path (on Windows e.g. D:\\Claude sign-ins\\work). Optional: left out, a new account gets Ledung's own folder, accounts\\<name> in Ledung's data folder, and an account Ledung already has keeps the folder it has. Each account needs a folder of its own: not this computer's ~/.claude, and not another account's. A new folder is a new sign-in: the page asks you to /login again.",
+      "signInFolderOnThisComputer": "/Users/you/claude-signins/work",
+      "$signInFolderInContainers": "Where the sign-in is kept inside a container, for projects that run in one. Starts with ~/ (the home of the user the project runs as) or /. Optional: left out, ~/.ledung-accounts/<name>. Use a mounted folder so the sign-in survives a rebuild of the container.",
+      "signInFolderInContainers": "/mnt/claude-signins/work"
+    },
+    "$personal": "The smallest account is a name and nothing else: Ledung makes its folder, and you sign in to it with /login.",
+    "personal": {}
+  },
+  "profiles": {
+    "$comment": "Session profiles: how much of your own Claude Code setup a session gets. \"full\" (everything) is built in. mcpServers: \"all\", \"none\" (only Ledung's) or servers of its own; plugins: \"all\", \"none\" or the plugin ids to keep; disallowedTools: tools it doesn't get; userSettings: false also skips your user settings file (and its allow rules); settingsFile: a Claude Code settings file inside the project folder (e.g. \".claude/lean-settings.json\") the session gets on top, for a model, claudeMdExcludes or skillOverrides; settings: such settings written here instead (the file wins where both set one). Ledung's own tools always stay. A profile named as one in a workflow's profilesFile changes that one field by field.",
+    "slim": {
+      "about": "Ledung's tools and Claude Code's built-ins only",
+      "mcpServers": "none",
+      "plugins": "none",
+      "disallowedTools": ["Workflow", "ReportFindings", "SendFeedback"]
+    }
+  },
+  "defaultProfiles": {},
+  "pluginsOff": [],
+  "$pluginsOff": "Plugin ids (as in Claude Code's enabledPlugins, e.g. \"name@marketplace\") turned off in every Ledung session, whatever its profile, on top of a workflow's; an id this computer doesn't have is skipped. Your own Claude Code outside Ledung keeps them. For a plugin that repeats what Ledung already gives sessions.",
+  "$defaultProfiles": "The profile for \"manager\" and for \"session\" where the project names none (its settings in the page), over a workflow's own; left out: the workflow's, else full. A manager's start_session can name another.",
+  "board": {
+    "$comment": "The message board between managers: only its limits, the same for every board, all optional. Each project chooses its board (a GitHub repository), who may post to its manager, its channels and the front desk in its settings in the page. Every board posts as this computer's gh login. A block from before with repo, allow and frontDesk is moved into the projects that use the board once, on the next start.",
+    "pollSeconds": 5,
+    "postsPerHour": 20,
+    "wakesPerThreadPerHour": 6,
+    "burstSeconds": 5
+  },
+  "sensitive": {
+    "$comment": "Requests matching these always go to Simon. A manager can never approve them. Used from step 4.",
+    "commandPatterns": [],
+    "pathPatterns": [],
+    "mcpTools": []
+  }
+}

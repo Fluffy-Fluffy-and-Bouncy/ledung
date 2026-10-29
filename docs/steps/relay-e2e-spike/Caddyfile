@@ -1,0 +1,45 @@
+# The spike's Caddy (caddy-l4 as a listener wrapper), on high local ports instead of 80/443.
+# Production would use :443 and :80 and the real names; the shape is the same.
+#   51443  "443": the layer-4 route peeks at the ClientHello; *.l.test goes raw to the relay with
+#          PROXY v2, everything else falls through to Caddy's own TLS and HTTP as today.
+#   51480  "80"
+#   51444  the relay's passthrough listener (Node, spike.ts)
+{
+	http_port 51480
+	https_port 51443
+	admin off
+	# Spike only: this computer, not the network (no firewall prompt).
+	default_bind 127.0.0.1
+	skip_install_trust
+	storage file_system {$SPIKE_DIR}/caddy-data
+	# Don't let Caddy try a real certificate authority for anything.
+	local_certs
+
+	# Must equal the listener address exactly: with default_bind it is 127.0.0.1:51443, and
+	# "servers :51443" would silently match nothing (the layer-4 route just would not exist).
+	servers 127.0.0.1:51443 {
+		listener_wrappers {
+			layer4 {
+				@ledung tls sni *.l.test
+				route @ledung {
+					proxy {
+						proxy_protocol v2
+						upstream tcp/127.0.0.1:51444
+					}
+				}
+			}
+			tls
+		}
+	}
+}
+
+# An ordinary HTTPS site on the same port, standing in for the server's other sites.
+site.test:51443 {
+	tls internal
+	respond "ordinary site, TLS ended by Caddy" 200
+}
+
+# Port 80 only redirects for the Ledung names; Caddy gets no certificate for them.
+http://*.l.test:51480 {
+	redir https://{host}{uri}
+}

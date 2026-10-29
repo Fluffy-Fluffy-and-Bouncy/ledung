@@ -1,0 +1,11 @@
+PASS the PC's tab shows the PC's own page in the frame
+PASS the frame shows the PC's own Ledung page, paired through the link
+PASS the PC's page shows, nothing waits on the Mac: the Mac's tab has no badge
+PASS the Mac's manager asked a question — 1
+PASS without switching tabs, the Mac's own tab shows 1 waiting for you — 1
+PASS the PC's page still shows in the frame
+PASS the badge says where it waits — 1 waiting for you on MacBenack
+PASS on the Mac's own page its tab shows no count; the sidebar's Waiting for you does — Waiting for you
+1
+PASS the PC's page again: the count is back on the Mac's tab
+PASS answered: the Mac's tab loses its badge without a switch

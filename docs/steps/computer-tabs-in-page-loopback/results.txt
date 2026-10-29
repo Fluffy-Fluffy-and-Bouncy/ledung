@@ -1,0 +1,12 @@
+PASS clicking Beta keeps alpha's page (no navigation) — http://127.0.0.1:4397/
+PASS the frame shows beta's own not-paired page
+PASS paired in the frame: beta's own page, Settings — https://beta.l.spike.test/#/settings
+PASS beta in the frame draws no tabs (alpha draws them)
+PASS beta in the frame draws no remote frame
+PASS beta's passkey set up in the frame (beta's own button, Chrome's authenticator) — {"id":"894ac284-cb77-4fb6-abc7-33530a308492","name":"Mac Chrome","createdAt":1792452871442,"lastUsedAt":1792452871442,"passkey":true,"passkeyAt":1792452874161}
+PASS beta unlocked in the frame with its passkey — 1792454676728
+PASS an ordinary change on beta from the frame goes through — {"chat":200,"renamed":200}
+PASS clicking Alpha shows alpha's own page again
+PASS clicking Beta again shows the same frame, not reloaded — 41
+PASS alpha's page itself cannot read beta's API — TypeError: Failed to fetch
+PASS on the phone through alpha's public name, beta pairs and works in the frame — 200

@@ -1,0 +1,64 @@
+name: CI
+
+# CI runs by hand only since 2026-10-29: GitHub Actions would not start any job (failed payments or
+# spending limit), so every run was red. Putting the PR, push (main) and weekly schedule triggers back turns
+# CI on again. Those triggers were limited (Actions minutes ran out on 2026-10-13; Windows counts 2x and
+# macOS 10x): Windows per PR update and push to main, macOS weekly and by hand, nothing for docs-only or
+# site-only changes. Sessions run `npm run check` locally before every push, so CI is the last net, not the first.
+on:
+  workflow_dispatch:
+    inputs:
+      macos:
+        description: 'Also run on macOS'
+        type: boolean
+        default: false
+
+# A newer push to the same PR or branch cancels the run it supersedes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    if: github.event_name != 'schedule'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      # The npm package (#105): builds the page too, then installs the tarball into a throwaway
+      # prefix and runs the ledung command it gives (ledung.cmd on Windows).
+      - run: npm run pack
+      - name: Install the package and run ledung
+        shell: bash
+        run: |
+          npm install -g --prefix "$RUNNER_TEMP/ledung" ./dist/ledung-*.tgz --no-audit --no-fund
+          if [ "$RUNNER_OS" = Windows ]; then bin="$RUNNER_TEMP/ledung/ledung.cmd"; else bin="$RUNNER_TEMP/ledung/bin/ledung"; fi
+          test "$("$bin" --version)" = "$(node -p "require('./package.json').version")"
+
+  macos:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.macos)
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      # The npm package (#105): builds the page too, then installs the tarball into a throwaway
+      # prefix and runs the ledung command it gives (ledung.cmd on Windows).
+      - run: npm run pack
+      - name: Install the package and run ledung
+        shell: bash
+        run: |
+          npm install -g --prefix "$RUNNER_TEMP/ledung" ./dist/ledung-*.tgz --no-audit --no-fund
+          if [ "$RUNNER_OS" = Windows ]; then bin="$RUNNER_TEMP/ledung/ledung.cmd"; else bin="$RUNNER_TEMP/ledung/bin/ledung"; fi
+          test "$("$bin" --version)" = "$(node -p "require('./package.json').version")"

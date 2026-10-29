@@ -1,0 +1,28 @@
+# Dependencies and build output
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Local config: project paths, containers and project-specific rules. Never commit.
+ledung.config.local.json
+
+# Personal Claude Code instructions for this project. Never commit.
+CLAUDE.local.md
+
+# Local data, if any ends up in the repository folder
+*.sqlite
+*.sqlite-journal
+*.db
+*.log
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# The relay's own config: names, hosts and secret hashes. Never commit.
+relay/relay.config.json
+
+# Throwaway test folders: test Ledungs' config and data, the relay spike's downloads (docs/steps/relay-e2e-spike).
+.test/

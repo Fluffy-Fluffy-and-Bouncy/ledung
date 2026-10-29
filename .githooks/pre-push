@@ -1,0 +1,53 @@
+#!/bin/sh
+# Runs `npm run check` before a push and stops the push when it fails (issue #48): Actions minutes
+# are limited, so CI is the last net, not the first. Switched on by `npm install` (scripts/hooks.ts).
+# `git push --no-verify` skips it; that is the owner's call in an emergency, not a session's.
+# It also refuses a push that changes src/, web/ (not web/dist/) or scripts/ without adding a bullet to
+# CHANGELOG.md (issue #86); a commit with a `Changelog: none` trailer says there is nothing
+# user-facing in it (tests, refactors, internals).
+
+remote="$1"
+needed=no
+unlogged=no
+
+# One line per ref: <local ref> <local sha> <remote ref> <remote sha>. All of it is read before
+# the check runs, so the check can't swallow it.
+while read -r local_ref local_sha remote_ref remote_sha; do
+  # A delete pushes no commits: its local sha is all zeros.
+  case "$local_sha" in *[!0]*) ;; *) continue ;; esac
+  [ "$local_sha" = "$remote_sha" ] && continue
+  # Nor does a push of commits the remote already has (a pushed commit under a new branch name).
+  # A push to a URL instead of a named remote matches nothing here, so the check runs.
+  if [ -n "$(git rev-list -n 1 "$local_sha" --not --remotes="$remote" 2>/dev/null)" ]; then
+    needed=yes
+    # Against the remote's main: the changelog must gain a bullet, or a commit must say none.
+    # With no such ref (a first push, a URL) there is nothing to compare with.
+    main_ref="refs/remotes/$remote/main"
+    if git rev-parse -q --verify "$main_ref" >/dev/null 2>&1; then
+      if [ -n "$(git diff --name-only "$main_ref...$local_sha" -- src/ web/ ':(exclude)web/dist' scripts/ 2>/dev/null)" ] \
+        && ! git diff "$main_ref...$local_sha" -- CHANGELOG.md 2>/dev/null | grep -q '^+- ' \
+        && ! git log --format=%B "$main_ref..$local_sha" 2>/dev/null | grep -qi '^Changelog: none[[:space:]]*$'; then
+        unlogged=yes
+      fi
+    fi
+  fi
+done
+
+[ "$needed" = yes ] || exit 0
+
+if [ "$unlogged" = yes ]; then
+  echo "pre-push: this push changes src/, web/ (not web/dist/) or scripts/ but adds no '- ' bullet to CHANGELOG.md; add one under today's date, or put 'Changelog: none' as a trailer in a commit message if nothing is user-facing." >&2
+  exit 1
+fi
+
+# Git exports GIT_DIR and friends to hooks; tests that make git repositories of their own must not
+# inherit them, or their git commands act on this one.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_COMMON_DIR
+
+echo "pre-push: running npm run check before pushing to $remote" >&2
+if npm run check </dev/null; then
+  exit 0
+fi
+echo "" >&2
+echo "pre-push: npm run check failed, so the push was stopped. Fix it, commit, and push again." >&2
+exit 1

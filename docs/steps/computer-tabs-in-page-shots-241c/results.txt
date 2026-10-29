@@ -1,0 +1,18 @@
+PASS clicking Beta keeps alpha's page (no navigation) — http://127.0.0.1:4397/
+PASS the frame shows beta's own not-paired page
+PASS beta's Settings shows a computer pairing code to type in — FIXLUNWYOIG80XRC2J4G
+PASS paired in the frame: beta's own page, Settings — https://beta.l.spike.test/#/settings
+PASS beta in the frame draws no tabs (alpha draws them)
+PASS beta in the frame draws no remote frame
+PASS the passkey window is beta's own enrol page at the top level, the code gone from the address — https://beta.l.spike.test/enrol.html
+PASS beta's passkey set up in its own window; the frame saw it by itself — {"id":"15806dc7-d586-494b-8706-6ba1050fbcd2","name":"Mac Chrome","createdAt":1792508514830,"lastUsedAt":1792508514830,"passkey":true,"passkeyAt":1792508517811,"kind":"computer"}
+PASS paired as a computer, logged on in the frame with its passkey: until 14 days unused, not 30 minutes — {"kind":"computer","until":"2026-11-03T15:02:01.693Z"}
+PASS Log out logs it off at once — null
+PASS and Log on logs it on again with the passkey
+PASS an ordinary change on beta from the frame goes through — {"chat":200,"renamed":200}
+PASS clicking Alpha shows alpha's own page again
+PASS clicking Beta again shows the same frame, not reloaded — 41
+PASS alpha's page itself cannot read beta's API — TypeError: Failed to fetch
+PASS on the phone through alpha's public name, beta pairs and works in the frame — 200
+PASS WebKit: paired as a computer inside the frame on alpha's local page; the Partitioned cookie is kept and sent — {"id":"1861fa59-b159-44db-bfdb-c27d2ba63c45","name":"Phone","createdAt":1792508544996,"lastUsedAt":1792508544996,"passkey":false,"passkeyAt":null,"kind":"computer"}
+PASS WebKit: the passkey window opens on beta's own enrol page, ready for Touch ID — https://beta.l.spike.test/enrol.html
