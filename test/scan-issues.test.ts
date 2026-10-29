@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { test } from 'node:test';
-import { fetchIssues, report, scanIssue, type Gh, type Issue } from '../scripts/scan-issues.ts';
+import { fetchIssues, report, run, scanIssue, type Gh, type Issue } from '../scripts/scan-issues.ts';
 import type { Terms } from '../scripts/scan-rules.ts';
 
 const NONE: Terms = { terms: [], allow: [] };
@@ -107,4 +110,31 @@ test('the issue fetch pages through issues and long comment threads with read-on
   calls.length = 0;
   fetchIssues('o/r', 'all', gh);
   assert.ok(!calls[0]!.join(' ').includes('states:'), 'all states: no filter');
+});
+
+test('the issue scan command reads its terms file and exits 1 only on an unexplained hit', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-issues-test-'));
+  try {
+    // One open issue whose body names the term; GitHub stood in for by a fake gh, as above.
+    const gh: Gh = () => JSON.stringify({ data: { repository: { issues: {
+      pageInfo: { hasNextPage: false, endCursor: null },
+      nodes: [{ number: 5, title: 't', body: 'about SecretProject', author: { login: 'alice' }, comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } }],
+    } } } });
+    const termsFile = path.join(dir, 'terms.json');
+    const out = path.join(dir, 'scan.md');
+    const scan = (terms: object) => {
+      fs.writeFileSync(termsFile, JSON.stringify(terms));
+      return run(['--repo', 'o/r', '--terms', termsFile, '--out', out], gh);
+    };
+    // The term comes only from the file: without it the body is clean.
+    assert.equal(scan({ terms: [] }), 0);
+    assert.match(fs.readFileSync(out, 'utf8'), /^1 issues: 1 clean, 0 with hits$/m);
+    assert.equal(scan({ terms: ['secretproject'] }), 1);
+    assert.match(fs.readFileSync(out, 'utf8'), /^1 issues: 0 clean, 1 with hits$/m);
+    // The file's allow entry explains it.
+    assert.equal(scan({ terms: ['secretproject'], allow: [{ file: 'issues/5/body', match: '^SecretProject$', why: 'fine' }] }), 0);
+    assert.match(fs.readFileSync(out, 'utf8'), /^1 issues: 1 clean, 0 with hits$/m);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

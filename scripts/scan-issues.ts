@@ -129,15 +129,17 @@ export function report(repo: string, results: IssueResult[]): { text: string; su
   return { text: lines.join('\n') + '\n', summary, open };
 }
 
-function main(): void {
+/** The command, from its arguments to its exit code: 1 when any hit is unexplained. Tests pass a fake gh. */
+export function run(args: string[], gh: Gh = realGh): number {
   const { values } = parseArgs({
+    args,
     options: { repo: { type: 'string' }, terms: { type: 'string' }, state: { type: 'string', default: 'open' }, out: { type: 'string' } },
   });
   if (!values.repo) throw new Error('--repo owner/name is required.');
   if (values.state !== 'open' && values.state !== 'all') throw new Error('--state is open or all.');
   if (!values.terms) console.error('No --terms file: only the built-in patterns are scanned.');
   const terms = loadTerms(values.terms);
-  const results = fetchIssues(values.repo, values.state).map((i) => scanIssue(i, terms));
+  const results = fetchIssues(values.repo, values.state, gh).map((i) => scanIssue(i, terms));
   const { text, summary, open } = report(values.repo, results);
   if (values.out) {
     fs.writeFileSync(values.out, text);
@@ -145,7 +147,7 @@ function main(): void {
   } else {
     process.stdout.write(text);
   }
-  process.exitCode = open ? 1 : 0;
+  return open ? 1 : 0;
 }
 
-if (import.meta.main) main();
+if (import.meta.main) process.exitCode = run(process.argv.slice(2));
