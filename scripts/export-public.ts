@@ -7,7 +7,8 @@
 // commit metadata included. It creates no remote repository and pushes nothing: the export folder
 // stays on this computer for a look, and publishing it is a separate decision.
 //
-// The scan has generic patterns built in (tokens, private keys, e-mail addresses, home folders,
+// The scan's rules are in scripts/scan-rules.ts, shared with the issue scan (scripts/scan-issues.ts).
+// They have generic patterns built in (tokens, private keys, e-mail addresses, home folders,
 // public IP addresses, local files). Words that must not appear (people, other projects) are not
 // written here, since this file is exported too: they come from --terms, a local JSON file
 // { "terms": ["regex", ...], "allow": [{ "file": "path or prefix/", "match": "regex", "why": "...", "kind": "optional" }] }.
@@ -24,74 +25,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
+import { allowedBy, BINARY, loadTerms, scanText, type Hit, type Terms } from './scan-rules.ts';
+
+export { scanText, type Allow, type Hit, type Terms } from './scan-rules.ts';
 
 /** Never exported, even if a commit tracks them: local data, test folders and per-person configs. */
 const EXCLUDED_DIRS = ['.ledung', '.test', '.claude'];
 const EXCLUDED_FILES = [/\.local\.(json|md)$/i, /^relay\.config\.json$/i, /\.bak$/i];
 /** Review evidence: screenshots of real sessions, which no scan can read (#411). Nothing links to them. */
-const BINARY = 'unscanned binary';
 export const EVIDENCE_IMAGES = /^docs\/steps\/.+\.(png|jpe?g|gif|webp)$/i;
-
-export interface Allow { file: string; match: string; why: string; kind?: string }
-export interface Terms { terms: string[]; allow: Allow[] }
-export interface Hit { file: string; line: number; kind: string; text: string; allowed?: string }
-
-const SECRETS: [string, RegExp][] = [
-  ['github token', /\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}/g],
-  ['api key', /\bsk-[A-Za-z0-9_-]{20,}/g],
-  ['slack token', /\bxox[abprs]-[A-Za-z0-9-]{10,}/g],
-  ['aws key', /\bAKIA[0-9A-Z]{16}\b/g],
-  ['private key', /-----BEGIN [A-Z ]*PRIVATE KEY-----/g],
-  ['e-mail', /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g],
-  ['home folder', /\b[A-Za-z]:[\\/]+Users[\\/]+[^\\/\s"'`<>|*?]+/gi],
-  // Not after a host name: github.com/users/<login> is a web address.
-  ['home folder', /(?<![\w.%-])\/(Users|home)\/[^/\s"'`]+/g],
-  ['ip address', /\b(?:\d{1,3}\.){3}\d{1,3}\b/g],
-];
-
-/** Addresses and names that are placeholders by definition, whoever's repository it is. */
-const ALWAYS_FINE: [string, RegExp][] = [
-  ['e-mail', /@(example\.(com|org|net)|[a-z0-9.-]+\.(test|invalid|example|localhost))$|^(noreply|no-reply)@|@users\.noreply\.github\.com$/i],
-  ['home folder', /[\\/](Users|home)[\\/]+(\$\{|%|<|\{|(you|user|username|me|name|runner)\b)|[\\/]Users[\\/]+(Shared|Public|Default)$/i],
-];
-
-function privateOrReserved(ip: string): boolean {
-  const n = ip.split('.').map(Number);
-  if (n.some((x) => x > 255)) return true; // not an address: a version or a number
-  const [a, b] = n as [number, number, number, number];
-  return a === 0 || a === 10 || a === 127 || a >= 224 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31)
-    || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127)
-    // documentation ranges (RFC 5737)
-    || ip.startsWith('192.0.2.') || ip.startsWith('198.51.100.') || ip.startsWith('203.0.113.');
-}
-
-function allowedBy(hit: Hit, allow: Allow[]): string | undefined {
-  for (const [kind, re] of ALWAYS_FINE) if (hit.kind === kind && re.test(hit.text)) return 'placeholder';
-  for (const a of allow) {
-    const fileOk = a.file.endsWith('/') ? hit.file.startsWith(a.file) : hit.file === a.file;
-    const kindOk = hit.kind === BINARY ? a.kind === 'binary' : a.kind === undefined || a.kind === hit.kind;
-    if (fileOk && kindOk && new RegExp(a.match, 'i').test(hit.text)) return a.why;
-  }
-  return undefined;
-}
-
-/** Every hit in one file's text; `file` is the path relative to the export, with forward slashes. */
-export function scanText(file: string, text: string, terms: Terms): Hit[] {
-  const patterns: [string, RegExp][] = [...SECRETS, ...terms.terms.map((t): [string, RegExp] => ['term', new RegExp(t, 'gi')])];
-  const hits: Hit[] = [];
-  text.split('\n').forEach((line, i) => {
-    for (const [kind, re] of patterns) {
-      for (const m of line.matchAll(re)) {
-        if (kind === 'ip address' && privateOrReserved(m[0])) continue;
-        const hit: Hit = { file, line: i + 1, kind, text: m[0] };
-        const why = allowedBy(hit, terms.allow);
-        if (why) hit.allowed = why;
-        hits.push(hit);
-      }
-    }
-  });
-  return hits;
-}
 
 /** A file name that should never be public, whatever is in it. */
 export function badFileName(name: string): boolean {
@@ -160,7 +102,7 @@ function main(): void {
   });
   const author = /^(.+?)\s*<([^<>\s]+@[^<>\s]+)>$/.exec(values.author ?? '');
   if (!author) throw new Error('--author "Name <email>" is required: the one commit is made with it.');
-  const terms: Terms = values.terms ? { terms: [], allow: [], ...JSON.parse(fs.readFileSync(values.terms, 'utf8')) } : { terms: [], allow: [] };
+  const terms = loadTerms(values.terms);
   if (!values.terms) console.log('No --terms file: only the built-in patterns are scanned.');
 
   const clone = path.join(import.meta.dirname, '..');

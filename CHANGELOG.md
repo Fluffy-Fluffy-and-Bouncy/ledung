@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-10-29
+- `npm run scan-issues -- --repo <owner/name> --terms <file.json>` checks a repository's issues and comments with the same rules and terms file as the public export, read-only, and reports per issue clean or each hit with where it is; allow entries name an issue as `issues/<number>/` (#340)
 - Settings → About's Source link now points at Ledung's public repository, github.com/Fluffy-Fluffy-and-Bouncy/ledung (#340)
 - Ledung has a version, starting at v1: a public release is a plain number (v1, v2) and a dev build after it adds one (v1.1); Settings → About and the npm update panel show it that way (#340)
 - Installed from npm, Ledung gets exactly the dependency versions it was tested with (the Agent SDK above all), so it no longer asks for a newer Claude Code than the tested one; the install is about 70 MB instead of 300 MB, and `"claudeExecutable": "bundled"` is not available in it: its banner says to install Claude Code and set "installed". On every install, a running session that can't be reconnected after Restart Ledung now ends on its own with the reason, instead of stopping Ledung from starting (#421)
