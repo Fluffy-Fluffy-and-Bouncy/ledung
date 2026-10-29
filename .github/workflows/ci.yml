@@ -1,11 +1,18 @@
 name: CI
 
-# CI runs by hand only since 2026-10-29: GitHub Actions would not start any job (failed payments or
-# spending limit), so every run was red. Putting the PR, push (main) and weekly schedule triggers back turns
-# CI on again. Those triggers were limited (Actions minutes ran out on 2026-10-13; Windows counts 2x and
-# macOS 10x): Windows per PR update and push to main, macOS weekly and by hand, nothing for docs-only or
-# site-only changes. Sessions run `npm run check` locally before every push, so CI is the last net, not the first.
+# CI runs on the public repository since 2026-10-29 (question #487), where Actions minutes are free; on
+# the private one it had run by hand only, because Actions would not start any job (question #433).
+# The triggers keep the earlier limits: Windows per PR update and push to main, macOS weekly and by
+# hand, nothing for docs-only or site-only changes.
+# Sessions run `npm run check` locally before every push, so CI is the last net, not the first.
 on:
+  pull_request:
+    paths-ignore: ['**.md', 'docs/**', 'site/**']
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'docs/**', 'site/**']
+  schedule:
+    - cron: '0 5 * * 1'
   workflow_dispatch:
     inputs:
       macos:
