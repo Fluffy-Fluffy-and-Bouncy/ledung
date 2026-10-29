@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-10-30
+- The npm package is ready for its first publish: no longer marked private, and npm's page for it links to the public repository and its issues (#340)
+
 ## 2026-10-29
 - Settings → About's Source link now points at Ledung's public repository, github.com/Fluffy-Fluffy-and-Bouncy/ledung (#340)
 - Ledung has a version, starting at v1: a public release is a plain number (v1, v2) and a dev build after it adds one (v1.1); Settings → About and the npm update panel show it that way (#340)

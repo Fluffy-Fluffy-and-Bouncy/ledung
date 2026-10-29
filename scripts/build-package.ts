@@ -29,7 +29,7 @@ export const ENTRIES = { main: 'src/main.ts', host: 'src/host/host.ts', cli: 'sr
 const EXTRA_FILES = ['README.md', 'CHANGELOG.md', 'ledung.config.example.json', 'LICENSE', 'COMMERCIAL.md'];
 
 /** The fields of the clone's package.json the package keeps; everything else is for development. */
-const MANIFEST_FIELDS = ['name', 'version', 'private', 'license', 'description', 'type', 'bin', 'files', 'repository', 'engines', 'dependencies'];
+const MANIFEST_FIELDS = ['name', 'version', 'private', 'license', 'description', 'type', 'bin', 'files', 'repository', 'homepage', 'bugs', 'engines', 'dependencies'];
 
 export function packageManifest(clone: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(MANIFEST_FIELDS.filter((k) => clone[k] !== undefined).map((k) => [k, clone[k]]));
