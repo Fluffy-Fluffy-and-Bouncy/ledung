@@ -21,7 +21,7 @@ Ledung sessions where the process is and that this file is the project's LEAD-CO
 
 | Key | Value |
 |---|---|
-| `REPO` | `Fluffy-Fluffy-and-Bouncy/Project-Ledung` (moved from `FFBuddha/fleet` 2026-10-12, `docs/decisions.md`) |
+| `REPO` | `Fluffy-Fluffy-and-Bouncy/Project-Ledung` for issues and the board (moved from `FFBuddha/fleet` 2026-10-12, `docs/decisions.md`). Code and PRs are on the public `Fluffy-Fluffy-and-Bouncy/ledung` since 2026-10-29 (Ledung question #487): open and merge PRs with `gh pr … -R Fluffy-Fluffy-and-Bouncy/ledung`, and refer to issues from there as `Fluffy-Fluffy-and-Bouncy/Project-Ledung#N` |
 | `DEFAULT_BRANCH` | `main` |
 | `WIN_CLONE` | per machine: the clone releases are built from; sessions work in worktrees only — Martin's Windows PC `%USERPROFILE%\claude-project\ledung` · Martin's Mac `~/claude-project/fleet` |
 
@@ -101,7 +101,7 @@ steward, miner and metrics runs are off, and that is not a stop.
 | `SCAN_RULES_CMD` | none |
 | `METRICS_CMD` | none |
 | `LOGCHECK_TAGS_CMD` | none |
-| `DOC_RULES_CHECK` | the CI workflow (`check` and `build` on Windows and macOS) |
+| `DOC_RULES_CHECK` | the CI workflow on `Fluffy-Fluffy-and-Bouncy/ledung` (`npm run check` and the package build): Windows on every PR update and push to `main`, macOS weekly and by hand, nothing for docs-only or site-only changes; read it with `gh pr checks <n> -R Fluffy-Fluffy-and-Bouncy/ledung` |
 | `SHIP_CMD` | none — nothing is published; `npm run release` builds a release on the machine it runs on and is Martin's call, as is the restart that loads it |
 | `DEV_SHIP_CMD` | none |
 | `PROMOTE_CMD` | none |

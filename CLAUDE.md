@@ -30,7 +30,7 @@ Personal preferences and machine details, if any, are in `CLAUDE.local.md` next 
 | `npm run pack` | Builds the npm package into `dist/ledung-<version>.tgz` (plain JavaScript). Never `npm publish`: that is the owner's. |
 | `npm start` | Runs Ledung from this folder (development only; use a throwaway config and data folder). |
 
-CI is off for now (Martin, 2026-10-29, question #433): GitHub Actions won't start jobs while the org's payments or spending limit are the problem, so the workflow runs only by hand (`workflow_dispatch`); putting the PR, push and schedule triggers back in `.github/workflows/ci.yml` turns it on again. `npm run check` before every push is the gate. The pre-push hook (`.githooks/pre-push`, switched on by `npm install`) runs it and stops a failing push; `git push --no-verify` is the owner's call, never a session's.
+CI runs on the public repository `Fluffy-Fluffy-and-Bouncy/ledung` (Martin, 2026-10-29, question #487; it had run by hand only on the private one, question #433): Windows on every PR update and push to `main`, macOS weekly and by hand, nothing for docs-only or site-only changes. CI is the last net, not the first: `npm run check` before every push stays the local gate. The pre-push hook (`.githooks/pre-push`, switched on by `npm install`) runs it and stops a failing push; `git push --no-verify` is the owner's call, never a session's.
 
 ## Code
 
