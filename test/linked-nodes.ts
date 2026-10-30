@@ -10,7 +10,7 @@ import { Duplex } from 'node:stream';
 import tls from 'node:tls';
 import WebSocket from 'ws';
 import { parseConfig } from '../src/config.ts';
-import { LedungServer } from '../src/server/server.ts';
+import { LedungServer, type ServerOptions } from '../src/server/server.ts';
 import { SessionManager } from '../src/sessions/manager.ts';
 import { openDatabase } from '../src/store/database.ts';
 import { Store } from '../src/store/store.ts';
@@ -60,7 +60,7 @@ export class LinkedNodes {
     this.nodes.delete(name);
   }
 
-  async ledung(name: string, computerSettings?: ComputerSetting[], waitingPollMs?: number): Promise<Node> {
+  async ledung(name: string, computerSettings?: ComputerSetting[], waitingPollMs?: number, push?: ServerOptions['push']): Promise<Node> {
     const port = await freePort();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-linked-'));
     const pair = selfSigned(name);
@@ -76,7 +76,7 @@ export class LinkedNodes {
         port, token: TOKEN, store, manager, webRoot, publicName: name, tunnelTls: { dir, required: true }, now: this.now, linkConnect: this.connect,
         // As main.ts gives them: the config's tabs, and its list for the frames.
         computers: computerList(computerSettings ?? [], name, 'host'), ...(computerSettings ? { computerSettings } : {}),
-        ...(waitingPollMs ? { waitingPollMs } : {}),
+        ...(waitingPollMs ? { waitingPollMs } : {}), ...(push ? { push } : {}),
       });
       await server.listen();
       return server;

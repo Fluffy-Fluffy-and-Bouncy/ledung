@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-10-30
+- Push notifications with several computers: switch push on once, in the first tab's Settings → Phones, and the phone also gets every linked computer's new Waiting-for-you items, each titled with that computer's name; tapping one opens that computer's tab. Another computer's tab now says pushes for it come through the first tab, instead of a switch the browser blocks there (#451)
+
 ## 2026-10-29
 - Settings → About's Source link now points at Ledung's public repository, github.com/Fluffy-Fluffy-and-Bouncy/ledung (#340)
 - Ledung has a version, starting at v1: a public release is a plain number (v1, v2) and a dev build after it adds one (v1.1); Settings → About and the npm update panel show it that way (#340)
