@@ -36,10 +36,15 @@ test('package.json has what a publish needs, and the command is the bundled cli'
   const pkg = clonePackage();
   assert.deepEqual(pkg.bin, { ledung: 'dist/cli.js' });
   assert.ok('cli' in ENTRIES);
-  for (const field of ['files', 'engines', 'version', 'repository']) assert.ok(pkg[field], `${field} is set`);
+  for (const field of ['files', 'engines', 'version', 'repository', 'homepage', 'bugs']) assert.ok(pkg[field], `${field} is set`);
   assert.match(pkg.engines.node, /24/);
-  // Publishing decisions stay Martin's (#105): private is left on.
-  assert.equal(pkg.private, true);
+  // Ready for the first publish (#340): npm refuses to publish a private package. Publishing itself stays Martin's.
+  assert.equal(pkg.private, undefined);
+  // The public repository, not the private one the issues live in.
+  for (const url of [pkg.repository.url, pkg.homepage, pkg.bugs.url]) assert.match(url, /github\.com\/Fluffy-Fluffy-and-Bouncy\/ledung[.#/]/);
+  // The public contact on npm, the address of the account that publishes (Martin, 2026-10-30 21:53, Ledung question #499); maintainers comes from that account.
+  assert.equal(pkg.author, 'Project Ledung <martin@projectledung.com>');
+  assert.equal(pkg.maintainers, undefined);
 });
 
 test("the package's own package.json has no scripts or devDependencies (npm warns about a prepare script on install)", () => {
@@ -49,6 +54,8 @@ test("the package's own package.json has no scripts or devDependencies (npm warn
   // acme-client: Ledung's own certificate by ACME (issue #202, "a new dependency, bundled by pack").
   assert.deepEqual(Object.keys(manifest.dependencies as object).sort(), ['@anthropic-ai/claude-agent-sdk', '@simplewebauthn/server', 'acme-client', 'ws', 'zod']);
   assert.equal(manifest.bin && (manifest.bin as Record<string, string>).ledung, 'dist/cli.js');
+  // npm's page for the package links to these (#340).
+  for (const field of ['author', 'repository', 'homepage', 'bugs']) assert.deepEqual(manifest[field], clonePackage()[field], `${field} is kept`);
 });
 
 // #421: a fresh `npm install -g` of the tgz got Agent SDK 0.3.312 while the lockfile, and so every

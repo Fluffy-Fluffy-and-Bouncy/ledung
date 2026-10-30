@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-10-30
+- The npm package is ready for its first publish: no longer marked private, and npm's page for it links to the public repository and its issues, with Project Ledung <martin@projectledung.com> as its author (#340)
 - Push notifications with several computers: switch push on once, in the first tab's Settings → Phones, and the phone also gets every linked computer's new Waiting-for-you items, each titled with that computer's name; tapping one opens that computer's tab. Another computer's tab now says pushes for it come through the first tab, instead of a switch the browser blocks there (#451)
 
 ## 2026-10-29

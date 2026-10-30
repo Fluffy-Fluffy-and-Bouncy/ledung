@@ -1,8 +1,8 @@
 {
   "name": "ledung",
   "version": "1.0.0",
-  "private": true,
   "license": "AGPL-3.0-only",
+  "author": "Project Ledung <martin@projectledung.com>",
   "description": "Runs several Claude Code sessions locally and shows them in one place.",
   "type": "module",
   "bin": {
@@ -18,6 +18,10 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Fluffy-Fluffy-and-Bouncy/ledung.git"
+  },
+  "homepage": "https://github.com/Fluffy-Fluffy-and-Bouncy/ledung#readme",
+  "bugs": {
+    "url": "https://github.com/Fluffy-Fluffy-and-Bouncy/ledung/issues"
   },
   "engines": {
     "node": ">=24"
