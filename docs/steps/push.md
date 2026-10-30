@@ -1,6 +1,6 @@
 # Push notifications to the phone — design
 
-Oct 20, 2026 · issue #246 · one computer at a time; one phone for several linked computers waits on #245's design.
+Oct 20, 2026 · issue #246 · several linked computers through one switch since Oct 30, 2026 (issue #451, below).
 
 **Done when:** a phone paired with this Ledung switches on push in Settings → Devices; a new Waiting-for-you item
 sends one notification naming the computer and the kind of item, never its text; tapping it opens the item; the
@@ -39,3 +39,25 @@ phone can switch it off, and revoking the device stops it.
   (`standalone`); Settings says so when the browser has no push (Safari in a tab).
 - **Tapping** focuses an open Ledung window on the item, or opens one at `/#/waiting/q/<id>` (a question) or
   `/#/s/<session>` (a permission).
+
+## Several linked computers, one switch (issue #451)
+
+Martin, 2026-10-30, question #496: "a — One switch, through the first computer". A phone that shows several
+computers as tabs switches push on once, on the computer serving the page (the first tab), and gets that computer's
+items and every linked computer's.
+
+- **Over the link, not a new connection.** When a computer has a new item (the same rules as above, each once), it
+  sends its kind and tag, never its text, to every linked computer: `/link/push`, through the relay end to end with
+  the link's key, the same channel and rate limit as the Waiting-for-you counts (issue #273). The receiving computer
+  checks it (only `question` with `q<n>`, or `permission` with `p<id>`) and pushes it to its own phones. It never sends it on, so an item goes one hop and two linked computers can't pass it back and
+  forth; a computer linked only through another one is not reached. A computer that is offline then misses it.
+- **What the phone sees:** the notification is titled with that computer's name as its tab on the receiving
+  computer shows it. Its tag is `<public name>:<item>`, so it never replaces the receiving computer's own item of the
+  same number. Tapping opens `/#/c/<public name>` on the receiving computer: its page shows that computer's tab and
+  puts its own address back to its start. Not the item inside it: that would put an address of this page into the
+  computer's frame, which loads only that computer's own page (issue #241); its badge shows what waits there.
+- **In another computer's tab** the browser gives the frame no notifications and no push, so Settings → Phones and
+  Settings → Notifications there say "Pushes for this computer come through the first tab" (or, when it is linked
+  with no computer, that it needs linking first) instead of a switch.
+- **A phone subscribed on both computers** (each opened as its own page) gets a linked computer's item twice, once
+  from each; with the switch only on the first tab's page this does not happen.

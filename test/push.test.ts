@@ -18,6 +18,7 @@ import { Store } from '../src/store/store.ts';
 import { FakePasskey } from './fake-passkey.ts';
 import { keyBytes, pushSupport, sameKey } from '../web/src/push.ts';
 import { removeTemp } from './temp.ts';
+import { decrypt, phone } from './push-phone.ts';
 import { refuseRealSignInStores } from './signin-stores.ts';
 import { freePort } from './free-port.ts';
 
@@ -35,31 +36,6 @@ const RFC = {
     mlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A_yl95bQpu6cVPT
     pK4Mqgkf1CXztLVBSt2Ks3oZwbuwXPXLWyouBWLVWGNWQexSgSxsj_Qulcy4a-fN`),
 };
-
-const hmac = (key: Buffer, data: Buffer) => crypto.createHmac('sha256', key).update(data).digest();
-
-/** The phone's side, written from RFC 8291 section 3 and RFC 8188 with plain HMAC, apart from Ledung's code. */
-function decrypt(message: Buffer, uaPrivate: Buffer, auth: Buffer): Buffer {
-  const ua = crypto.createECDH('prime256v1');
-  ua.setPrivateKey(uaPrivate);
-  const salt = message.subarray(0, 16);
-  const idlen = message[20]!;
-  const asPublic = message.subarray(21, 21 + idlen);
-  const sealed = message.subarray(21 + idlen);
-  const prkKey = hmac(auth, ua.computeSecret(asPublic));
-  const ikm = hmac(prkKey, Buffer.concat([Buffer.from('WebPush: info\0'), ua.getPublicKey(), asPublic, Buffer.from([1])]));
-  const prk = hmac(salt, ikm);
-  const cek = hmac(prk, Buffer.from('Content-Encoding: aes128gcm\0\x01')).subarray(0, 16);
-  const nonce = hmac(prk, Buffer.from('Content-Encoding: nonce\0\x01')).subarray(0, 12);
-  const decipher = crypto.createDecipheriv('aes-128-gcm', cek, nonce);
-  decipher.setAuthTag(sealed.subarray(sealed.length - 16));
-  const padded = Buffer.concat([decipher.update(sealed.subarray(0, sealed.length - 16)), decipher.final()]);
-  // The last record ends with 0x02, then any zero padding.
-  let end = padded.length - 1;
-  while (padded[end] === 0) end--;
-  assert.equal(padded[end], 2, 'last-record delimiter');
-  return padded.subarray(0, end);
-}
 
 test('the encryption gives RFC 8291\'s example message exactly (section 5, Appendix A)', () => {
   const message = encrypt(RFC.plaintext, RFC.uaPublic, RFC.auth, { asPrivate: RFC.asPrivate, salt: RFC.salt });
@@ -106,17 +82,6 @@ test('the VAPID token (RFC 8292) is signed with the kept key, for the push servi
     removeTemp(dir);
   }
 });
-
-/** A browser's subscription: real P-256 keys, and the phone's private key to read what arrives. */
-function phone(endpoint = `https://fcm.googleapis.com/fcm/send/${crypto.randomUUID()}`) {
-  const ecdh = crypto.createECDH('prime256v1');
-  ecdh.generateKeys();
-  const auth = crypto.randomBytes(16);
-  return {
-    subscription: { endpoint, keys: { p256dh: ecdh.getPublicKey().toString('base64url'), auth: auth.toString('base64url') } },
-    read: (body: Buffer) => JSON.parse(decrypt(body, ecdh.getPrivateKey(), auth).toString()),
-  };
-}
 
 test('only an endpoint of a known push service, over HTTPS, with keys that work, is taken', () => {
   const keys = phone().subscription.keys;

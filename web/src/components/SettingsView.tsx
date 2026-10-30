@@ -21,7 +21,8 @@ import { certificateLine, remoteLine } from '../remoteStatus.ts';
 import { api } from '../api.ts';
 import { BoardSettings } from './BoardViews.tsx';
 import { UsagePublishSettings } from './UsagePublishSettings.tsx';
-import { DevicesSettings } from './DevicesSettings.tsx';
+import { DevicesSettings, FramedPush } from './DevicesSettings.tsx';
+import { inFrame } from '../computerFrame.ts';
 import { LinkedSettings } from './LinkedSettings.tsx';
 import { JoinRelay, RelayAdminSettings, relaySetUp } from './RelaySettings.tsx';
 import { ComputersSettings } from './ComputersSettings.tsx';
@@ -75,7 +76,7 @@ export function SettingsView(props: {
   const words: Record<string, string> = {
     update: updateWord(props.update.view),
     remote: remoteWord(props.remote),
-    notifications: props.notify.possible && !props.notify.on ? 'off' : '',
+    notifications: props.notify.possible && !props.notify.on && !inFrame() ? 'off' : '',
   };
   return (
     <SettingsSplit groups={LEDUNG_GROUPS} current={group} words={words} narrow={narrow} onOpen={(g) => props.onOpen(g === null ? 'settings' : groupView(g))}>
@@ -155,7 +156,7 @@ function GroupContent(props: GroupProps) {
       return (
         <section>
           <div className="settings-h"><h3>Notifications</h3><Where kind="browser" /></div>
-          <NotifySwitch notify={props.notify} />
+          <NotifySwitch notify={props.notify} linked={props.computers.some((c) => c.linked)} />
         </section>
       );
     case 'config':
@@ -199,7 +200,7 @@ function RemoteGroup(props: GroupProps) {
     <>
       <ComputersSettings computers={props.computers} run={props.run} />
       {f.remote === 'on' && <section><h3>Remote access</h3><RemoteBody remote={props.remote} /></section>}
-      {f.phones === 'on' && <DevicesSettings key={props.remote?.publicName ?? 'none'} run={props.run} />}
+      {f.phones === 'on' && <DevicesSettings key={props.remote?.publicName ?? 'none'} run={props.run} linked={props.computers.some((c) => c.linked)} />}
       {f.linked === 'on' && <LinkedSettings key={`linked-${props.remote?.publicName ?? 'none'}-${props.remote?.tls ?? ''}`} run={props.run} />}
       {f.relay === 'on' && <section><h3>Relay</h3>{relayForm}</section>}
       {f.board === 'on' && <BoardSettings board={props.board} />}
@@ -252,7 +253,9 @@ function ConfigFileSettings(props: { config: ConfigStatus }) {
  * Opt-in browser notifications for what waits for you; only where the browser allows them. Browser
  * notifications, not phone push, so the label doesn't promise push (#80).
  */
-function NotifySwitch({ notify }: { notify: ReturnType<typeof useNotifications> }) {
+export function NotifySwitch({ notify, linked }: { notify: ReturnType<typeof useNotifications>; linked: boolean }) {
+  // In another computer's tab (issue #451) the browser allows a frame no notifications: the switch could never work.
+  if (inFrame()) return <FramedPush linked={linked} />;
   if (!notify.possible) {
     return <p className="muted">Notifications work when this page is opened on this computer at 127.0.0.1.</p>;
   }

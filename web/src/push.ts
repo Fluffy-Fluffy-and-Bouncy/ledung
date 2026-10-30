@@ -68,3 +68,14 @@ export async function pushIsOn(): Promise<boolean> {
   const reg = await navigator.serviceWorker.getRegistration('/');
   return !!(await reg?.pushManager.getSubscription());
 }
+
+/**
+ * Settings in another computer's tab (issue #451, Martin's pick on question #496: one switch, through the first
+ * computer): the browser gives a frame no notifications, and that computer's items reach the phone through the
+ * computer whose page holds the tabs, once the two are linked. `linked`: this computer has a linked computer.
+ */
+export function framedPushNote(linked: boolean): string {
+  return linked
+    ? 'Pushes for this computer come through the first tab: on the phone, switch on push notifications in Settings there, under Phones. They say this computer\'s name, and tapping one opens this tab.'
+    : 'Pushes for this computer come through the first tab once the two computers are linked (Settings → Linked computers); then, on the phone, switch them on in Settings there, under Phones.';
+}

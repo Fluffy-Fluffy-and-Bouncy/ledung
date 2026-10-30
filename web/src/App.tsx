@@ -76,6 +76,7 @@ import { useArchivedLink } from './useArchivedLink.ts';
 import { showsArchivedLink } from './archivedLink.ts';
 import { computerFrame, computerStyle, frameAnswer, inFrame, shownComputerOf } from './computerFrame.ts';
 import { ComputerFrames, ComputerTabs } from './components/ComputerTabs.tsx';
+import { useComputerLink } from './useComputerLink.ts';
 import { useInstallApp } from './useInstallApp.ts';
 import { InstallNotice } from './components/InstallApp.tsx';
 import { ShortcutNotice } from './components/Shortcuts.tsx';
@@ -187,6 +188,11 @@ export function App() {
   // The other computer (by id) whose page shows here (issue #241), null for this one's; and those opened so far, kept loaded.
   const [shownComputer, setShownComputer] = useState<string | null>(null);
   const [openedComputers, setOpenedComputers] = useState<string[]>([]);
+  // A tapped push for a linked computer's item (issue #451): its tab. Before the address handling below.
+  useComputerLink((id) => {
+    setShownComputer(id);
+    setOpenedComputers((list) => (list.includes(id) ? list : [...list, id]));
+  }, IN_FRAME);
 
   useEffect(() => {
     markDeskRoot(viewFromHash());
