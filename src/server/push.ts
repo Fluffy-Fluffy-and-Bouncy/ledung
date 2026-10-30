@@ -10,6 +10,7 @@ import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { PermissionInfo, QuestionInfo, ServerEvent } from '../shared/protocol.ts';
 import { permissionWaits, questionWaits } from '../shared/waiting.ts';
+import { exercisedLine } from '../platform/exercised.ts';
 
 /** The browser's subscription as PushSubscription.toJSON() gives it. */
 export interface SubscriptionInput {
@@ -28,6 +29,28 @@ export interface PushPayload {
 }
 
 export class PushError extends Error {}
+
+/** What a computer tells its linked computers of a new item (issue #451): its kind and its tag, nothing else. */
+export type LinkedPushItem = Pick<PushPayload, 'kind' | 'item'>;
+
+/** A linked computer's item as it came over the link, checked: only the kinds and tags payloadFor makes; null: not one. */
+export function linkedPushItem(raw: Record<string, unknown>): LinkedPushItem | null {
+  const { kind, item } = raw;
+  if (typeof item !== 'string') return null;
+  if (kind === 'question' && /^q\d{1,12}$/.test(item)) return { kind, item };
+  if (kind === 'permission' && /^p[A-Za-z0-9-]{1,80}$/.test(item)) return { kind, item };
+  return null;
+}
+
+/**
+ * The payload for a linked computer's item, on this computer's phones (issue #451): titled with that computer's name
+ * as its tab here shows it, and its tag kept apart from this computer's own item of the same number. Tapping opens
+ * that computer's tab (`#/c/<public name>`, App), not the item in it: nothing of this page goes into a computer's
+ * frame (issue #241), so its page opens where it was.
+ */
+export function linkedPayload(item: LinkedPushItem, computer: { id: string; name: string }): PushPayload {
+  return { computer: computer.name, kind: item.kind, item: `${computer.id}:${item.item}`, open: `/#/c/${encodeURIComponent(computer.id)}` };
+}
 
 /**
  * The push services' hosts: a subscription's endpoint must be one, so a paired device can't make Ledung post to any
@@ -137,6 +160,9 @@ export function payloadFor(event: ServerEvent, computer: string): PushPayload | 
   return null;
 }
 
+/** The EXERCISED line once per run (worker.md, "EXERCISED line"). */
+let exercised451 = false;
+
 type Row = { device_id: string; endpoint: string; p256dh: string; auth: string };
 
 export interface PushOptions {
@@ -147,6 +173,11 @@ export interface PushOptions {
   computer: () => string;
   /** The public name, for the token's contact; null: no relay, so nothing is sent. */
   publicName: () => string | null;
+  /**
+   * A new item here, for the linked computers (issue #451, Martin's pick on question #496: one switch, through the
+   * first computer): each pushes it to the phones subscribed there, so a phone needs push on one computer only.
+   */
+  forward?: (item: LinkedPushItem) => void;
   fetch?: typeof fetch;
   hosts?: readonly string[];
   now?: () => number;
@@ -209,6 +240,24 @@ export class Push {
     this.seen.add(key);
     const payload = payloadFor(event, this.opts.computer());
     if (!payload || !this.opts.publicName()) return;
+    this.opts.forward?.({ kind: payload.kind, item: payload.item });
+    this.send(payload);
+  }
+
+  /**
+   * A linked computer's new item (issue #451), to this computer's phones only: never forwarded again, so an item goes
+   * one hop and two linked computers can't send it back and forth.
+   */
+  fromLinked(item: LinkedPushItem, computer: { id: string; name: string }): void {
+    if (!this.opts.publicName()) return;
+    if (!exercised451) {
+      exercised451 = true;
+      exercisedLine('EXERCISED #451 a linked computer\'s item pushed to this computer\'s phones');
+    }
+    this.send(linkedPayload(item, computer));
+  }
+
+  private send(payload: PushPayload): void {
     const sent = this.sendAll(payload).catch((e) => this.log(`Push: ${(e as Error).message}`)).finally(() => this.sending.delete(sent));
     this.sending.add(sent);
   }

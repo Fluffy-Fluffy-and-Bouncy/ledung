@@ -4,7 +4,7 @@
 import { useEffect, useState } from 'react';
 import { api, type DeviceInfo } from '../api.ts';
 import { pairQrText, qrModules } from './qr.ts';
-import { browserPushSupport, pushIsOn, pushOff, pushOn } from '../push.ts';
+import { browserPushSupport, framedPushNote, pushIsOn, pushOff, pushOn } from '../push.ts';
 import { inFrame } from '../computerFrame.ts';
 
 const when = (at: number | null) => (at ? new Date(at).toLocaleString() : 'never');
@@ -28,7 +28,8 @@ export function QrCode({ text }: { text: string }) {
   );
 }
 
-export function DevicesSettings({ run }: { run: (action: () => Promise<unknown>) => Promise<void> }) {
+/** `linked`: this computer has a linked computer, whose tabs may show this one's page (issue #451). */
+export function DevicesSettings({ run, linked = false }: { run: (action: () => Promise<unknown>) => Promise<void>; linked?: boolean }) {
   const [here, setHere] = useState<Awaited<ReturnType<typeof api.thisDevice>> | null>(null);
   useEffect(() => {
     api.thisDevice().then(setHere, () => setHere({ remote: false }));
@@ -38,14 +39,14 @@ export function DevicesSettings({ run }: { run: (action: () => Promise<unknown>)
     <section>
       <h3>Phones</h3>
       {here.remote ? (
-        <ThisDevice device={here.device} mayAddPasskey={here.mayAddPasskey} unlockedUntil={here.unlockedUntil} run={run} onChange={() => api.thisDevice().then(setHere)} />
+        <ThisDevice device={here.device} mayAddPasskey={here.mayAddPasskey} unlockedUntil={here.unlockedUntil} linked={linked} run={run} onChange={() => api.thisDevice().then(setHere)} />
       ) : <PairedDevices run={run} />}
     </section>
   );
 }
 
-function ThisDevice(props: {
-  device: DeviceInfo; mayAddPasskey: boolean; unlockedUntil: number | null;
+export function ThisDevice(props: {
+  device: DeviceInfo; mayAddPasskey: boolean; unlockedUntil: number | null; linked: boolean;
   run: (action: () => Promise<unknown>) => Promise<void>; onChange: () => void;
 }) {
   const { device, unlockedUntil } = props;
@@ -71,6 +72,7 @@ function ThisDevice(props: {
           {unlocked
             ? <button onClick={() => void props.run(async () => { await api.logOutDevice(); props.onChange(); })}>Log out</button>
             : <button onClick={() => void props.run(async () => { await api.unlockDevice(); props.onChange(); })}>Log on</button>}
+          {inFrame() && <FramedPush linked={props.linked} />}
         </>
       ) : device.passkey ? (
         <>
@@ -81,7 +83,7 @@ function ThisDevice(props: {
               : <>🔒 Locked: from here you can look, not change anything. Unlocking takes the passkey once and lasts 30 minutes.</>}
           </p>
           {!unlocked && <button onClick={() => void props.run(async () => { await api.unlockDevice(); props.onChange(); })}>Unlock</button>}
-          <PushSwitch run={props.run} onChange={props.onChange} />
+          {inFrame() ? <FramedPush linked={props.linked} /> : <PushSwitch run={props.run} onChange={props.onChange} />}
         </>
       ) : props.mayAddPasskey && inFrame() ? (
         <EnrolInWindow run={props.run} onChange={props.onChange} />
@@ -124,6 +126,14 @@ function EnrolInWindow({ run, onChange }: { run: (action: () => Promise<unknown>
         : <button onClick={() => void run(async () => setLink(await api.passkeyEnrolLink()))}>Set up passkey</button>}
     </>
   );
+}
+
+/**
+ * In another computer's tab (issue #451): no switch, as the browser gives a frame no push; that computer's items
+ * reach the phone through the first tab's.
+ */
+export function FramedPush({ linked }: { linked: boolean }) {
+  return <p className="muted push-switch framed-push">{framedPushNote(linked)}</p>;
 }
 
 /**

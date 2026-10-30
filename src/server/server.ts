@@ -17,7 +17,7 @@ import { AWAY_DEFAULT, AWAY_KINDS, type AwayKind, type PermissionDecision, type 
 import { deviceCookieHeader, Guard, readCookies, securityHeaders } from './security.ts';
 import { DEVICE_COOKIE, type Device, type DeviceKind, deviceName, Devices, deviceView } from './devices.ts';
 import { actionOf, DEVICE_LOCKED, PASSKEY_HEADER, PasskeyError, Passkeys } from './passkeys.ts';
-import { Push, PushError } from './push.ts';
+import { linkedPushItem, Push, PushError, type LinkedPushItem } from './push.ts';
 import type { UsageQueries } from '../usage/queries.ts';
 import { readRunningRelease, type Updater } from '../update/updater.ts';
 import { typicalCosts } from '../resources/typical.ts';
@@ -244,6 +244,7 @@ export class LedungServer {
       db: opts.store.database, keyFile: opts.push.keyFile, fetch: opts.push.fetch, hosts: opts.push.hosts, log: opts.push.log, now: opts.now,
       computer: () => this.computers().find((c) => c.here)?.name ?? this.publicName?.split('.')[0] ?? 'Ledung',
       publicName: () => this.publicName,
+      forward: (item) => this.forwardPush(item),
     }) : null;
     this.push?.seed(opts.manager.questions(), opts.store.pendingPermissions());
     this.guard = new Guard<Device>(opts.token, opts.port, opts.lanNames ?? [], opts.lanOpen ?? false);
@@ -836,6 +837,17 @@ export class LedungServer {
           answer = { count: this.waitingNow() };
           break;
         }
+        // A new item there, for the phones subscribed here (issue #451, question #496 a): its kind and tag, checked,
+        // never its text. Pushed with that computer's name and a link to its tab; never sent on.
+        case '/link/push': {
+          const computer = from();
+          this.linkRate(computer.id);
+          const item = linkedPushItem(body);
+          if (!item) throw new HttpError(400, 'Send the kind and the item.');
+          this.push?.fromLinked(item, { id: computer.publicName, name: this.computers().find((c) => c.id === computer.publicName)?.name ?? computer.name });
+          answer = { ok: true, push: !!this.push };
+          break;
+        }
         // Pair through the link (issue #273): a pairing code for a browser on the linked computer's own screen.
         case '/link/device-pair':
           answer = this.linkDevicePair(from());
@@ -930,6 +942,18 @@ export class LedungServer {
     console.log(`Linked computers: ${computer.name} asked for a pairing code for a browser through the link.`);
     this.setLinkPairings([{ id: crypto.randomUUID(), computer: computer.name, at: now, device: null }, ...this.linkPairings()].slice(0, LINK_PAIRINGS_KEPT));
     return { code, expiresAt };
+  }
+
+  /**
+   * A new item here, to every linked computer for the phones subscribed there (issue #451): one call each, the same
+   * keyed link the counts go over; one that is offline misses it, as its phones can't open this computer's tab then.
+   */
+  private forwardPush(item: LinkedPushItem): void {
+    const linked = this.linked;
+    if (!linked) return;
+    for (const link of linked.list()) {
+      linked.callLinked(link.id, '/link/push', { ...item }).catch((e: Error) => console.log(`Push: could not pass a new item to ${link.name} for its phones (${e.message}).`));
+    }
   }
 
   /** The linked computers' Waiting-for-you counts, by link id (issue #273); none: not known yet, or offline. */

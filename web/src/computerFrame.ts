@@ -73,6 +73,17 @@ export function shownComputerOf(computers: ComputerInfo[], shown: string | null)
   return shown !== null && computers.some((c) => c.id === shown && !c.here) ? shown : null;
 }
 
+/** A push's link to another computer's tab (issue #451, server push.ts linkedPayload), `#/c/<public name>`: its id; null: not one. */
+export function computerFromHash(hash: string): string | null {
+  const m = /^#\/c\/([^/]+)$/.exec(hash);
+  if (!m) return null;
+  try {
+    return decodeURIComponent(m[1]!).toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
 /** A computer's colour as the stylesheet's --cc-light and --cc-dark (.ctab, .page.remote, .remote-tag). */
 export function computerStyle(c: ComputerInfo | null): CSSProperties | undefined {
   if (!c) return undefined;
