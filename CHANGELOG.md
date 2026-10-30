@@ -10,7 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-10-30
-- The npm package is ready for its first publish: no longer marked private, and npm's page for it links to the public repository and its issues (#340)
+- The npm package is ready for its first publish: no longer marked private, and npm's page for it links to the public repository and its issues, with Project Ledung <npm@projectledung.com> as its author (#340)
 
 ## 2026-10-29
 - Settings → About's Source link now points at Ledung's public repository, github.com/Fluffy-Fluffy-and-Bouncy/ledung (#340)
