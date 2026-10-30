@@ -119,49 +119,159 @@ test('the push link names only a computer\'s tab', () => {
   for (const hash of ['#/waiting/q/1', '#/c/', '#/c/pc.example.test/waiting', '#/c/%E0%A4%A']) assert.equal(computerFromHash(hash), null, hash);
 });
 
-test('Settings in another computer\'s tab says pushes come through the first tab, with no switch that can\'t work there', async () => {
+// The page's parts, built once and run in a small browser stand-in (happy-dom), as typing-renders.test.ts does.
+const A_ID = 'mac.example.test', B_ID = 'pc.example.test';
+const tabsOf = () => [
+  { id: A_ID, name: 'Desk Mac', colour: 'green', url: `https://${A_ID}/`, here: true, config: { name: 'Desk Mac', colour: 'green' } },
+  { id: B_ID, name: 'Studio PC', colour: 'teal', url: `https://${B_ID}/`, here: false, linked: true, config: { name: 'Studio PC', colour: 'teal' } },
+];
+
+async function pageParts(url: string) {
   const { build, stop } = await import('esbuild');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-framed-push-'));
   const { Window } = await import('happy-dom');
-  const win = new Window({ url: 'https://pc.example.test/' });
+  // The frames are never loaded: only which one shows is looked at.
+  const win = new Window({ url, settings: { disableIframePageLoading: true, disableJavaScriptFileLoading: true } });
   const g = globalThis as any;
   const kept = { self: g.self, top: g.top };
+  const out = path.join(dir, 'page.mjs');
+  await build({
+    stdin: {
+      contents: [
+        "export { NotifySwitch } from './web/src/components/SettingsView.tsx';",
+        "export { ThisDevice } from './web/src/components/DevicesSettings.tsx';",
+        "export { ComputerFrames, ComputerTabs } from './web/src/components/ComputerTabs.tsx';",
+        "export { useComputerLink } from './web/src/useComputerLink.ts';",
+        "export { computerFrame, shownComputerOf } from './web/src/computerFrame.ts';",
+        "export { createElement, useState, act } from 'react';",
+        "export { createRoot } from 'react-dom/client';",
+        "export { renderToStaticMarkup } from 'react-dom/server.browser';",
+      ].join('\n'),
+      resolveDir: path.join(import.meta.dirname, '..'), loader: 'ts',
+    },
+    bundle: true, format: 'esm', platform: 'browser', outfile: out, logLevel: 'silent',
+    loader: { '.css': 'empty', '.png': 'empty', '.svg': 'empty' }, define: { 'process.env.NODE_ENV': '"development"' },
+  });
+  for (const key of ['window', 'document', 'localStorage', 'location', 'history', 'matchMedia', 'navigator', 'HTMLElement', 'HTMLIFrameElement', 'Element', 'Node', 'Event']) {
+    Object.defineProperty(globalThis, key, { value: (win as any)[key], configurable: true, writable: true });
+  }
+  g.IS_REACT_ACT_ENVIRONMENT = true;
+  g.MessageChannel = class {
+    port1: { onmessage: ((e: unknown) => void) | null } = { onmessage: null };
+    port2 = { postMessage: () => setImmediate(() => this.port1.onmessage?.({})) };
+  };
+  const page = await import(`${pathToFileURL(out).href}?${Date.now()}`);
+  return {
+    page, win,
+    async close() {
+      g.self = kept.self;
+      g.top = kept.top;
+      await win.happyDOM.close();
+      await stop();
+      removeTemp(dir);
+    },
+  };
+}
+
+/**
+ * The computer tabs and frames wired to the link as App wires them (issue #451): App's showComputer, the same
+ * components, and useComputerLink called before anything else reads the address.
+ */
+async function mountTabs(page: any) {
+  const computers = tabsOf();
+  function Tabs() {
+    const [shown, setShown] = page.useState(null);
+    const [opened, setOpened] = page.useState([]);
+    page.useComputerLink((id: string) => {
+      setShown(id);
+      setOpened((list: string[]) => (list.includes(id) ? list : [...list, id]));
+    }, false);
+    const s = page.shownComputerOf(computers, shown);
+    return page.createElement('div', null,
+      page.createElement(page.ComputerTabs, { frame: page.computerFrame(computers, false, false), shown: s, onShow: setShown }),
+      page.createElement(page.ComputerFrames, { computers, opened, shown: s }));
+  }
+  const host = document.createElement('div');
+  document.body.appendChild(host);
+  const root = page.createRoot(host);
+  await page.act(async () => root.render(page.createElement(Tabs)));
+  return {
+    shownTab: () => host.querySelector('.ctab.on .nm')?.textContent,
+    /** The frames that show, by their computer's name. */
+    shownFrames: () => [...host.querySelectorAll('.cframe-box')].filter((b: any) => !b.hidden).map((b: any) => b.querySelector('iframe')?.getAttribute('title')),
+    frames: () => host.querySelectorAll('iframe').length,
+    unmount: () => page.act(async () => root.unmount()),
+  };
+}
+
+test('a tapped push for a linked computer opens the page with that computer\'s tab showing, and the address back at the start', { timeout: 30_000 }, async () => {
+  const opened = await pageParts(`https://${A_ID}/#/c/${B_ID}`);
   try {
-    const out = path.join(dir, 'page.mjs');
-    await build({
-      stdin: {
-        contents: "export { NotifySwitch } from './web/src/components/SettingsView.tsx'; export { createElement } from 'react'; export { renderToStaticMarkup } from 'react-dom/server.browser';",
-        resolveDir: path.join(import.meta.dirname, '..'), loader: 'ts',
-      },
-      bundle: true, format: 'esm', platform: 'browser', outfile: out, logLevel: 'silent',
-      loader: { '.css': 'empty', '.png': 'empty', '.svg': 'empty' }, define: { 'process.env.NODE_ENV': '"production"' },
+    const { page } = opened;
+    // Opened at the link (the service worker's openWindow: no page was open).
+    const view = await mountTabs(page);
+    assert.equal(view.shownTab(), 'Studio PC');
+    assert.deepEqual(view.shownFrames(), ['Studio PC\'s Ledung']);
+    assert.equal(location.hash, '', 'a reload lands on this computer');
+    // Back on this computer's tab, then a second tap reaches the open page as a hash change (the worker's navigate).
+    await page.act(async () => (document.querySelector('button.ctab') as any).click());
+    assert.equal(view.shownTab(), 'Desk Mac');
+    await page.act(async () => {
+      history.replaceState(null, '', `/#/c/${B_ID}`);
+      window.dispatchEvent(new (opened.win as any).HashChangeEvent('hashchange'));
     });
-    for (const key of ['window', 'document', 'localStorage', 'location', 'matchMedia', 'navigator']) {
-      Object.defineProperty(globalThis, key, { value: (win as any)[key], configurable: true, writable: true });
-    }
-    g.MessageChannel = class {
-      port1: { onmessage: ((e: unknown) => void) | null } = { onmessage: null };
-      port2 = { postMessage: () => setImmediate(() => this.port1.onmessage?.({})) };
-    };
-    const page = await import(pathToFileURL(out).href);
+    assert.equal(view.shownTab(), 'Studio PC');
+    assert.equal(location.hash, '');
+    // A computer this page has no tab for shows no frame: this computer's page stays.
+    await page.act(async () => (document.querySelector('button.ctab') as any).click());
+    await page.act(async () => {
+      history.replaceState(null, '', '/#/c/nas.example.test');
+      window.dispatchEvent(new (opened.win as any).HashChangeEvent('hashchange'));
+    });
+    assert.equal(view.shownTab(), 'Desk Mac');
+    assert.deepEqual(view.shownFrames(), []);
+    await view.unmount();
+    const fresh = await mountTabs(page);
+    assert.equal(fresh.frames(), 0, 'opened at no link, no frame is made');
+    await fresh.unmount();
+  } finally {
+    await opened.close();
+  }
+  // App calls it before its own address handling, so that never sees `#/c/…`.
+  const app = fs.readFileSync(path.join(import.meta.dirname, '..', 'web', 'src', 'App.tsx'), 'utf8');
+  const link = app.indexOf('useComputerLink((id)'), own = app.indexOf("window.addEventListener('hashchange', onHash)");
+  assert.ok(link > 0 && link < own, 'App takes the link first');
+  assert.match(app.slice(link, own), /setShownComputer\(id\);\s+setOpenedComputers\(/);
+});
+
+test('Settings in another computer\'s tab says pushes come through the first tab, with no switch that can\'t work there', { timeout: 30_000 }, async () => {
+  const opened = await pageParts(`https://${B_ID}/`);
+  try {
+    const { page } = opened;
+    const g = globalThis as any;
     // What the browser in a frame on the phone reports: notifications possible, and blocked (the issue's evidence).
     const notify = { possible: true, on: false, denied: true, set: async () => {} };
-    const render = (linked: boolean) => page.renderToStaticMarkup(page.createElement(page.NotifySwitch, { notify, linked })) as string;
+    const notifications = (linked: boolean) => page.renderToStaticMarkup(page.createElement(page.NotifySwitch, { notify, linked })) as string;
+    // A paired phone with its passkey, unlocked: the case that offers the push switch on its own page.
+    const phoneDevice = { id: 'd1', name: 'Phone', createdAt: 1, lastUsedAt: 1, passkey: true, passkeyAt: 1, kind: 'phone', pairedVia: null };
+    const phones = (linked: boolean) => page.renderToStaticMarkup(page.createElement(page.ThisDevice, {
+      device: phoneDevice, mayAddPasskey: false, unlockedUntil: Date.now() + 600_000, linked, run: async () => {}, onChange: () => {},
+    })) as string;
     g.self = {};
     g.top = {};
-    const framed = render(true);
-    assert.match(framed, /Pushes for this computer come through the first tab/);
-    assert.doesNotMatch(framed, /type="checkbox"|browser blocks notifications/);
-    assert.match(render(false), /once the two computers are linked/);
-    // On its own page the switch is there, as before.
+    for (const html of [notifications(true), phones(true)]) {
+      assert.match(html, /Pushes for this computer come through the first tab/);
+      assert.doesNotMatch(html, /type="checkbox"|browser blocks notifications|Push notifications to this phone|can.t get push notifications|Home Screen/);
+    }
+    assert.match(notifications(false), /once the two computers are linked/);
+    assert.match(phones(false), /once the two computers are linked/);
+    // On its own page both are as before: the switch, or what the browser lacks for push.
     g.top = g.self;
-    assert.match(render(true), /type="checkbox"/);
+    assert.match(notifications(true), /type="checkbox"/);
+    assert.doesNotMatch(phones(true), /come through the first tab/);
+    assert.match(phones(true), /push-switch/);
     assert.equal(framedPushNote(true).startsWith('Pushes for this computer come through the first tab'), true);
   } finally {
-    g.self = kept.self;
-    g.top = kept.top;
-    await win.happyDOM.close();
-    await stop();
-    removeTemp(dir);
+    await opened.close();
   }
 });

@@ -76,6 +76,6 @@ export async function pushIsOn(): Promise<boolean> {
  */
 export function framedPushNote(linked: boolean): string {
   return linked
-    ? 'Pushes for this computer come through the first tab: switch on push notifications in Settings there, under Phones. They say this computer\'s name, and tapping one opens this tab.'
-    : 'Pushes for this computer come through the first tab once the two computers are linked (Settings → Linked computers); then switch them on in Settings there, under Phones.';
+    ? 'Pushes for this computer come through the first tab: on the phone, switch on push notifications in Settings there, under Phones. They say this computer\'s name, and tapping one opens this tab.'
+    : 'Pushes for this computer come through the first tab once the two computers are linked (Settings → Linked computers); then, on the phone, switch them on in Settings there, under Phones.';
 }

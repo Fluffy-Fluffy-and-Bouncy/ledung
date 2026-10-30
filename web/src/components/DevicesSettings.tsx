@@ -45,7 +45,7 @@ export function DevicesSettings({ run, linked = false }: { run: (action: () => P
   );
 }
 
-function ThisDevice(props: {
+export function ThisDevice(props: {
   device: DeviceInfo; mayAddPasskey: boolean; unlockedUntil: number | null; linked: boolean;
   run: (action: () => Promise<unknown>) => Promise<void>; onChange: () => void;
 }) {

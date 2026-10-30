@@ -74,8 +74,9 @@ import { useCompactSidebar } from './useCompactSidebar.ts';
 import { compactRows, rowTooltip } from './compactSidebar.ts';
 import { useArchivedLink } from './useArchivedLink.ts';
 import { showsArchivedLink } from './archivedLink.ts';
-import { computerFrame, computerFromHash, computerStyle, frameAnswer, inFrame, shownComputerOf } from './computerFrame.ts';
+import { computerFrame, computerStyle, frameAnswer, inFrame, shownComputerOf } from './computerFrame.ts';
 import { ComputerFrames, ComputerTabs } from './components/ComputerTabs.tsx';
+import { useComputerLink } from './useComputerLink.ts';
 import { useInstallApp } from './useInstallApp.ts';
 import { InstallNotice } from './components/InstallApp.tsx';
 import { ShortcutNotice } from './components/Shortcuts.tsx';
@@ -187,24 +188,16 @@ export function App() {
   // The other computer (by id) whose page shows here (issue #241), null for this one's; and those opened so far, kept loaded.
   const [shownComputer, setShownComputer] = useState<string | null>(null);
   const [openedComputers, setOpenedComputers] = useState<string[]>([]);
+  // A tapped push for a linked computer's item (issue #451): its tab. Before the address handling below.
+  useComputerLink((id) => {
+    setShownComputer(id);
+    setOpenedComputers((list) => (list.includes(id) ? list : [...list, id]));
+  }, IN_FRAME);
 
   useEffect(() => {
-    // A tapped push for a linked computer's item (issue #451): its tab. The address is put back to this computer's
-    // start, so a reload or this computer's own tab doesn't land on that computer again.
-    const toComputer = () => {
-      const id = IN_FRAME ? null : computerFromHash(location.hash);
-      if (!id) return false;
-      setShownComputer(id);
-      setOpenedComputers((list) => (list.includes(id) ? list : [...list, id]));
-      history.replaceState(history.state, '', location.pathname + location.search);
-      setOpenId(null);
-      setHash('');
-      return true;
-    };
-    toComputer();
     markDeskRoot(viewFromHash());
     markSettingsRoot(viewFromHash());
-    const onHash = () => { if (toComputer()) return; markDeskRoot(viewFromHash()); markSettingsRoot(viewFromHash()); setOpenId(viewFromHash()); setHash(location.hash); };
+    const onHash = () => { markDeskRoot(viewFromHash()); markSettingsRoot(viewFromHash()); setOpenId(viewFromHash()); setHash(location.hash); };
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
