@@ -42,8 +42,8 @@ test('package.json has what a publish needs, and the command is the bundled cli'
   assert.equal(pkg.private, undefined);
   // The public repository, not the private one the issues live in.
   for (const url of [pkg.repository.url, pkg.homepage, pkg.bugs.url]) assert.match(url, /github\.com\/Fluffy-Fluffy-and-Bouncy\/ledung[.#/]/);
-  // The public contact on npm is the project's address, not a person's (Martin, 2026-10-30 21:44); maintainers comes from the publishing account.
-  assert.equal(pkg.author, 'Project Ledung <npm@projectledung.com>');
+  // The public contact on npm, the address of the account that publishes (Martin, 2026-10-30 21:53, Ledung question #499); maintainers comes from that account.
+  assert.equal(pkg.author, 'Project Ledung <martin@projectledung.com>');
   assert.equal(pkg.maintainers, undefined);
 });
 

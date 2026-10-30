@@ -2,7 +2,7 @@
   "name": "ledung",
   "version": "1.0.0",
   "license": "AGPL-3.0-only",
-  "author": "Project Ledung <npm@projectledung.com>",
+  "author": "Project Ledung <martin@projectledung.com>",
   "description": "Runs several Claude Code sessions locally and shows them in one place.",
   "type": "module",
   "bin": {
