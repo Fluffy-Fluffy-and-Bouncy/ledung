@@ -9,6 +9,7 @@ import { AUTOCORRECT_KEY } from './plainTyping.ts';
 import { STATUS_DOT_KEY } from './statusDot.ts';
 import { ARCHIVED_LINK_KEY } from './archivedLink.ts';
 import { COMPACT_KEY } from './compactSidebar.ts';
+import { framePaired } from './computerFrame.ts';
 
 /** Settings → Look's choices kept per browser (Appearance, Typing, Sidebar). */
 export const FRAME_SETTING_KEYS: readonly string[] = [THEME_KEY, AUTOCORRECT_KEY, STATUS_DOT_KEY, ARCHIVED_LINK_KEY, COMPACT_KEY];
@@ -76,6 +77,19 @@ export function frameSettingsReply(
     try { store.setItem(frameSettingsKey(computerId), JSON.stringify(kept)); } catch { /* private mode: kept for this visit only */ }
   }
   return null;
+}
+
+/**
+ * One message on the framing page, for one computer's frame (ComputerFrames): its settings answered through `reply`
+ * (to that frame's window at its origin), then whether it is that frame saying it is paired (#286).
+ */
+export function frameMessage(
+  msg: { data: unknown; origin: string; fromFrame: boolean }, computer: { id: string; url: string }, store: SettingsStore,
+  reply: (answer: FrameSettingsMessage) => void,
+): boolean {
+  const answer = frameSettingsReply(msg, computer.url, computer.id, store);
+  if (answer) reply(answer);
+  return framePaired(msg, computer.url);
 }
 
 // The framed page's side.

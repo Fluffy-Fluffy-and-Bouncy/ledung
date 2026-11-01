@@ -129,7 +129,8 @@ test('Settings → Look saves through the store the framing page follows, and bo
   assert.match(read('main.tsx'), /^followFramingPage\(\);$/m, 'the frame asks as the page starts');
   assert.match(read('main.tsx'), /e\.key === null\) applyTheme\(document\.documentElement, readTheme\(localStorage\)\)/, 'and the theme follows the answer');
   const tabs = read('components/ComputerTabs.tsx');
-  assert.match(tabs, /frameSettingsReply\(msg, c\.url!, c\.id, localStorage\)/, 'the framing page answers each computer\'s frame');
+  // The framing page's handler hands each message to frameMessage (frame-settings-wiring.test.ts runs it).
+  assert.match(tabs, /if \(!frameMessage\(msg, \{ id: c\.id, url: c\.url! \}, localStorage, reply\)\) continue;/, 'the framing page answers each computer\'s frame');
   assert.match(tabs, /fromFrame: e\.source === frames\.current\[c\.id\]\?\.contentWindow/);
-  assert.match(tabs, /\(e\.source as Window\)\.postMessage\(reply, e\.origin\)/, 'only to that frame, at the origin it came from');
+  assert.match(tabs, /\(e\.source as Window\)\.postMessage\(answer, e\.origin\)/, 'only to that frame, at the origin it came from');
 });
