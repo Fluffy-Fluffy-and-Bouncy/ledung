@@ -1074,7 +1074,7 @@ export class SessionManager {
     const accounts = this.accounts.list().map((a) => inFile[a.name] ? { ...a, inConfigFile: true, whatItIsFor: inFile[a.name]!.whatItIsFor ?? null } : a);
     return {
       type: 'accounts', accounts, defaultIdentity: raw ? JSON.parse(raw) : null, choices: this.accountChoices(), signedOut: this.signedOut(),
-      claudeProblem: this.claudeProblem, configFileProblems: this.accountFileProblems,
+      claudeProblem: this.claudeProblem, claudeLooked: this.claudeProblem ? this.claudeLooked : [], configFileProblems: this.accountFileProblems,
     };
   }
 
@@ -1110,10 +1110,13 @@ export class SessionManager {
 
   /** Claude Code missing or too old on this computer (issue #341), for the page's banner; null: none. */
   private claudeProblem: string | null = null;
+  /** Where that last look went (#455), shown under the banner so a "not found" can be acted on. */
+  private claudeLooked: string[] = [];
 
   /** Looks for the Claude Code sessions run, and tells the page when its problem changed. Never throws. */
   async checkClaude(): Promise<ClaudeCodeView> {
     const view = await this.claudeCodeView();
+    this.claudeLooked = view.looked ?? [];
     if (view.problem !== this.claudeProblem) {
       this.claudeProblem = view.problem;
       this.publishAccounts();
@@ -1135,6 +1138,7 @@ export class SessionManager {
     // Check again also looks for Claude Code again (issue #341): its banner has the same button.
     const [claude] = await Promise.all([this.claudeCodeView(), ...all.map((n) => this.checkSignInOf(n))]);
     this.claudeProblem = claude.problem;
+    this.claudeLooked = claude.looked ?? [];
     this.publishAccounts();
   }
 

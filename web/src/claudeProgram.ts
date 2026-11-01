@@ -8,6 +8,9 @@ export const PROGRAM_KIND: Record<ClaudeProgramInfo['kind'], string> = {
   bundled: "the copy that came with Ledung",
 };
 
+/** The installed one when it is the Claude desktop app's own copy (#455). */
+export const APP_COPY = "the Claude desktop app's own Claude Code";
+
 export interface RunningProgram {
   id: string;
   title: string;
@@ -28,6 +31,16 @@ export function runningPrograms(sessions: Pick<SessionInfo, 'id' | 'title' | 'pr
     path: s.runner === 'docker' ? null : s.claudeProgram?.path ?? null,
     version: s.claudeVersion,
   }));
+}
+
+/**
+ * What Check again says once it has answered (#455): nothing when the problem went (its banner goes with it),
+ * otherwise that it did look, when, and that the answer is the same, so a press never passes without a reaction.
+ */
+export function checkAgainNote(still: boolean, at: Date): string | null {
+  if (!still) return null;
+  const time = [at.getHours(), at.getMinutes(), at.getSeconds()].map((n) => String(n).padStart(2, '0')).join(':');
+  return `Checked again at ${time}: still the same.`;
 }
 
 /** One piece of a Claude Code problem's text. */

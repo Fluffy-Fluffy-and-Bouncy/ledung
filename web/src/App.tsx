@@ -16,7 +16,8 @@ import { awayBannerShown } from './awayBanner.ts';
 import { SettingsView } from './components/SettingsView.tsx';
 import { SettingsFrame, type UpdateState } from './components/SettingsFrame.tsx';
 import { bannerView, tabOf, tabView } from './settingsGroups.ts';
-import { ProblemText } from './components/ClaudeCodeSettings.tsx';
+import { LookedList, ProblemText } from './components/ClaudeCodeSettings.tsx';
+import { CheckAgain } from './components/CheckAgain.tsx';
 import { usageStopLine } from './components/UsageStopsSettings.tsx';
 import { BoardChip } from './components/BoardViews.tsx';
 import { MacroChips } from './components/MacroChips.tsx';
@@ -386,8 +387,10 @@ export function App() {
       {ledung.claudeProblem && (
         <div className="banner updated signin" role="alert">
           <span><ProblemText text={ledung.claudeProblem} /></span>
-          <button className="small primary" onClick={() => void run(() => api.checkSignIn())}>Check again</button>
+          <CheckAgain check={async () => !!(await api.checkSignIn()).claudeProblem} />
           <button className="small" onClick={() => open(bannerView('claudeProblem'))}>Settings</button>
+          {/* Every place it tried (#455), so a "not found" can be acted on. */}
+          {ledung.claudeLooked.length > 0 && <LookedList looked={ledung.claudeLooked} />}
         </div>
       )}
       {/* A changed config file that was refused (issue #353): the settings in use stay. */}
@@ -402,7 +405,7 @@ export function App() {
         <div key={`signin:${s.account}`} className="banner updated signin">
           {/* What to type is between backticks in the help: shown as code. */}
           <span>{s.help.split('`').map((part, i) => (i % 2 ? <code key={i}>{part}</code> : part))}</span>
-          <button className="small primary" onClick={() => void run(() => api.checkSignIn())}>Check again</button>
+          <CheckAgain check={async () => !!(await api.checkSignIn()).signedOut?.some((o) => o.account === s.account)} />
           {s.account !== 'default' && <button className="small" onClick={() => open('settings:claude')}>Accounts</button>}
         </div>
       ))}

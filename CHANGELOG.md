@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-01
+- Claude Code is now also found where WinGet puts it, through a PATH an installer changed while Ledung ran (Windows), and, when nothing else is installed, as the Claude desktop app's own copy, which runs when it is new enough; when that copy is too old, the banner says so and gives the command to install Claude Code. The banner and Settings → Claude Code list every place Ledung looked. Check again shows "Checking…" and then "Checked again at …: still the same" when nothing changed, and a Claude Code installed while Ledung runs clears the banner without a restart (#455)
+
 ## 2026-10-30
 - The npm package is ready for its first publish: no longer marked private, and npm's page for it links to the public repository and its issues, with Project Ledung <martin@projectledung.com> as its author (#340)
 - Push notifications with several computers: switch push on once, in the first tab's Settings → Phones, and the phone also gets every linked computer's new Waiting-for-you items, each titled with that computer's name; tapping one opens that computer's tab. Another computer's tab now says pushes for it come through the first tab, instead of a switch the browser blocks there (#451)
