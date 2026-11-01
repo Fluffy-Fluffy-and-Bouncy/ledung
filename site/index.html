@@ -65,7 +65,9 @@
   .facts p { margin: 0; color: var(--mist); font-size: 15.5px; }
 
   .install { display: grid; grid-template-columns: 1fr 1.2fr; gap: 56px; align-items: center; }
-  .soon { display: inline-block; font-size: 14px; color: var(--lantern); border: 1px dashed var(--lantern); border-radius: 6px; padding: 3px 10px; margin-bottom: 18px; }
+  .version { display: inline-block; font-size: 14px; color: var(--lantern); border: 1px solid var(--lantern); border-radius: 6px; padding: 3px 10px; margin-bottom: 18px; text-decoration: none; }
+  /* The commands as plain text to select and copy; the terminal beside them only plays them. */
+  .cmds { margin: 0 0 22px; padding: 14px 18px; background: var(--term-bg); border: 1px solid var(--line); border-radius: 10px; font: 15px/1.7 var(--mono); color: var(--text); user-select: all; overflow-x: auto; }
   .term { background: var(--term-bg); border: 1px solid var(--line); border-radius: 14px; padding: 22px 24px; font: 15px/1.7 var(--mono); min-height: 330px; box-shadow: 0 30px 80px -30px var(--term-shadow); }
   .term-prompt { color: var(--lantern); }
   .term-dim { color: var(--faint); }
@@ -81,11 +83,20 @@
   .placeholder { font-size: 13px; color: var(--faint); margin-top: 14px; }
   footer { border-top: 1px solid var(--line); padding: 26px 0 40px; color: var(--faint); font-size: 14px; display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
   footer pre { margin: 0; font: 9px/1.05 var(--mono); color: var(--footer-ship); }
+  footer .about { display: flex; flex-direction: column; gap: 6px; max-width: 46em; }
+  footer .about a { color: var(--mist); }
   nav .mode-toggle { color: var(--mist); }
+  nav .links .gh { display: inline-flex; align-items: center; gap: 7px; }
 
   @media (max-width: 900px) {
     .wrap { padding: 0 20px; }
-    nav .links a:not(.btn) { display: none; }
+    nav .links a:not(.btn):not(.gh) { display: none; }
+    nav .links .gh span { display: none; }
+    /* Room for the GitHub mark beside the brand, the mode switch and Contact us at 390 px. */
+    nav .links { gap: 10px; }
+    nav { gap: 12px; }
+    .brand { white-space: nowrap; }
+    nav .btn { white-space: nowrap; padding: 8px 14px; font-size: 14px; }
     .hero { min-height: 0; padding-bottom: 40px; }
     .hero .pic { position: relative; right: auto; top: auto; width: 150%; margin: -30px -25% -80px; transform: none; opacity: .5; }
     .hero .copy { padding-top: 0; margin-top: -120px; }
@@ -103,7 +114,7 @@
 <div class="wrap">
   <nav>
     <a class="brand" href="#"><img src="assets/icon.svg" alt="">Project Ledung</a>
-    <div class="links"><a href="#how">How it works</a><a href="#install">Install</a><span data-mode-slot></span><a class="btn" href="#contact">Contact us</a></div>
+    <div class="links"><a href="#how">How it works</a><a href="#install">Install</a><a class="gh" href="https://github.com/Fluffy-Fluffy-and-Bouncy/ledung" aria-label="Ledung on GitHub"><svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg><span>GitHub</span></a><span data-mode-slot></span><a class="btn" href="#contact">Contact us</a></div>
   </nav>
   <header class="hero">
     <div class="pic"><div class="lui" data-scene="main" data-theme="auto"></div></div>
@@ -162,9 +173,12 @@
 <section id="install">
   <div class="wrap install">
     <div>
-      <span class="soon">Coming soon: not on npm yet</span>
+      <a class="version" href="https://www.npmjs.com/package/ledung">Ledung 1.0.0 on npm</a>
       <h2>Two commands to set sail.</h2>
+      <pre class="cmds">npm install -g ledung
+ledung</pre>
       <p class="req">You need Node.js 24 or later, Git, and Claude Code installed and signed in. Ledung opens in your browser; install it as an app window from Edge or Chrome.</p>
+      <p class="req">The code is on <a href="https://github.com/Fluffy-Fluffy-and-Bouncy/ledung">GitHub</a>, the package on <a href="https://www.npmjs.com/package/ledung">npm</a>.</p>
     </div>
     <div class="term" data-term></div>
   </div>
@@ -177,7 +191,7 @@
   <a class="btn solid" href="mailto:hello@projectledung.com?subject=Project%20Ledung">Contact us</a>
 </section>
 
-<div class="wrap"><footer><span>Project Ledung · projectledung.com</span><pre data-ship="solo" data-width="24"></pre></footer></div>
+<div class="wrap"><footer><div class="about"><span>Project Ledung · projectledung.com · <a href="https://github.com/Fluffy-Fluffy-and-Bouncy/ledung">GitHub</a> · <a href="https://www.npmjs.com/package/ledung">npm</a></span><span>Open source under the <a href="https://github.com/Fluffy-Fluffy-and-Bouncy/ledung/blob/main/LICENSE">AGPL-3.0-only</a> licence. Ledung runs Anthropic's Claude Agent SDK and Claude Code, which come under <a href="https://code.claude.com/docs/en/legal-and-compliance">Anthropic's own terms</a> and are not covered by Ledung's licence.</span></div><pre data-ship="solo" data-width="24"></pre></footer></div>
 
 <script src="assets/shipFrames.js"></script>
 <script src="assets/ship.js"></script>
