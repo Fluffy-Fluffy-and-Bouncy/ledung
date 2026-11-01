@@ -39,7 +39,7 @@ A running Ledung keeps its release until it is restarted. **Restart Ledung** (Se
 
 **Update Ledung**, also in Settings → Update & restart, does the same from the page: **Check for updates** fetches `origin/main` in the folder the running release was built from and lists the changelog lines since; **Update Ledung** then runs `git pull --ff-only`, `npm install` and `npm run release` there and restarts. It refuses, and leaves the running Ledung alone, when that folder has uncommitted changes, is not on `main`, can't fast-forward, or a step fails.
 
-For development, `npm start` runs Ledung straight from this folder (use another `port` in a separate config via `LEDUNG_CONFIG`, and `LEDUNG_DATA_DIR` for separate data, if a released Ledung is running too). `npm run build` rebuilds the page.
+For development, `npm start` runs Ledung straight from this folder (use another `port` in a separate config via `LEDUNG_CONFIG`, and `LEDUNG_DATA_DIR` for separate data, if a released Ledung is running too). `npm run build` rebuilds the page. `npm start` runs Ledung in the foreground; `node src/cli.ts` is the `ledung` command, which starts it in the background (log in the data folder's `ledung.log`, stopped with `node src/cli.ts stop`), and `node src/cli.ts --foreground` keeps it in the terminal with Restart Ledung working.
 
 ## The npm package
 

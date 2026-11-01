@@ -108,6 +108,8 @@ export interface ServerOptions {
   webRoot?: string;
   /** Called when Simon asks Ledung to restart. */
   onRestart?: () => void;
+  /** Stop Ledung and its sessions: Settings' Stop Ledung and `ledung stop` (issue #456). */
+  onStop?: () => void;
   /** Open Ledung to the local network: the names it answers to there (this computer's name or addresses). */
   lanNames?: string[];
   /** Where to listen for the local network: one of this computer's addresses, or 0.0.0.0 for all. */
@@ -1734,6 +1736,15 @@ export class LedungServer {
         // Answer first; the restart closes this server.
         setTimeout(() => this.opts.onRestart?.(), 100);
         return;
+      // Stop Ledung (issue #456): only from this computer, whose icon or `ledung` starts it again; a phone or another
+      // computer could stop it but never start it. The cookie and Origin as for every change; `ledung stop` sends both.
+      case 'POST stop':
+        this.requireLocal(req, 'Ledung is stopped');
+        if (!fromThisComputer(req)) throw new HttpError(403, 'Ledung is stopped on the computer it runs on.');
+        if (!this.opts.onStop) throw new HttpError(404, 'Stopping is not available.');
+        // Answer first; stopping closes this server.
+        setTimeout(() => this.opts.onStop?.(), 100);
+        return;
       // Shortcuts on this computer's Desktop, Start menu or Applications (issue #415): only from a page on this computer
       // itself, not a phone or another computer on the network, and changes only from the open page.
       case 'GET shortcuts':
@@ -1743,7 +1754,9 @@ export class LedungServer {
         this.requireThisComputer(req);
         await this.requirePage(req, url);
         const action = (await readJson(req)).action;
-        if (action !== 'add' && action !== 'remove' && action !== 'decline') throw new HttpError(400, 'The action is add, remove or decline.');
+        if (action !== 'add' && action !== 'remove' && action !== 'decline' && action !== 'sign-in-on' && action !== 'sign-in-off') {
+          throw new HttpError(400, 'The action is add, remove or decline, or sign-in-on or sign-in-off for the start at sign-in.');
+        }
         try {
           return await this.shortcuts().act(action);
         } catch (e) {

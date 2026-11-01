@@ -247,7 +247,7 @@ export function RestartButton({ hellos }: { hellos: number }) {
     return (
       <span className="restart-confirm">
         {state === 'failed' && <span className="restart-problem">The restart was refused.</span>}
-        {state === 'timeout' && <span className="restart-problem">Ledung hasn't come back yet. Check its console window.</span>}
+        {state === 'timeout' && <span className="restart-problem">Ledung hasn't come back yet. Check its window, or its log when it runs in the background.</span>}
         <button className="small" title="Restart Ledung on its newest version" onClick={() => { setState('idle'); setConfirming(true); }}>
           Restart Ledung
         </button>

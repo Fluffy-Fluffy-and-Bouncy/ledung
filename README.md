@@ -15,10 +15,10 @@ It runs on Windows, macOS and Linux.
 
 ```sh
 npm install -g ledung
-ledung              # starts Ledung and opens the page, signed in
+ledung              # starts Ledung in the background and opens the page, signed in
 ```
 
-`ledung --no-open` starts it without opening the page, and `ledung --version` prints the version. Running `ledung` while Ledung already runs opens its page.
+Ledung runs in the background with no window: `ledung` prints the page's address and returns, and the terminal can be closed. Its output goes to `ledung.log` in the user data folder (Settings → Update & restart → Log shows where). `ledung --no-open` starts it without opening the page, `ledung --foreground` runs it in the terminal instead (for development and debugging), and `ledung --version` prints the version. Running `ledung` while Ledung already runs opens its page.
 
 The first start creates the user data folder (`%APPDATA%\Ledung` on Windows, `~/Library/Application Support/Ledung` on macOS, `~/.local/share/ledung` on Linux) and a default config in it, `ledung.config.json` (the `LEDUNG_CONFIG` environment variable points elsewhere). Then, in the page:
 
@@ -28,13 +28,15 @@ The first start creates the user data folder (`%APPDATA%\Ledung` on Windows, `~/
 
 **Updating.** Run `npm install -g ledung` again, then press **Restart Ledung** (Settings → Update & restart). Sessions keep running through the restart, and since they run your installed Claude Code, not a program inside the package, they don't stand in the update's way. The package installs exactly the dependency versions Ledung was tested with, and has no Claude Code of its own: it runs the one you installed.
 
-**Stopping.** Ctrl+C in Ledung's window, or closing that window, stops Ledung and its sessions. Open a session and press **Resume** to continue it.
+**Stopping.** **Stop Ledung** (Settings → Update & restart, on the computer Ledung runs on) or `ledung stop` in a terminal stops Ledung and its sessions; started with `ledung --foreground`, Ctrl+C or closing its window does the same. Open a session and press **Resume** to continue it.
+
+**Starting with your computer.** **Start Ledung when I sign in to Windows** (Settings → Update & restart → Start at sign-in, also offered next to the icon question) starts Ledung in the background when you sign in, without opening the page. It is off until you switch it on, is only for you and needs no administrator rights: a shortcut in your Startup folder on Windows, a LaunchAgent on macOS, an autostart entry on Linux desktops.
 
 ## The page
 
 **An app window.** In Edge or Chrome, a notice at the top of the page offers **Install as app**, which opens the browser's own install dialog (**Not now** hides the notice in that browser for good); in Safari on macOS it says to use **File → Add to Dock**. **Settings → Look & feel → App** always has the same, or says why this browser can't install the page (plain http on the local network, or a browser that can't install pages). Neither shows once the page runs as an app.
 
-**A Ledung icon.** The first time the page opens on a computer it asks once whether to add a Ledung icon to your Desktop and Start menu (on macOS, to Applications); **Settings → Update & restart → Shortcuts** adds or removes it later. The icon opens the page, and starts Ledung first if it isn't running.
+**A Ledung icon.** The first time the page opens on a computer it asks once whether to add a Ledung icon to your Desktop and Start menu (on macOS, to Applications); **Settings → Update & restart → Shortcuts** adds or removes it later. The icon opens the page, and starts Ledung first if it isn't running, in the background with no window.
 
 **Sessions survive a restart.** Each session runs in a small **session host**, a separate process that owns Claude Code and keeps it running while Ledung restarts. If Ledung crashes and doesn't come back within 3 minutes, the hosts stop their sessions themselves. Host logs are in `<user data>/hosts/`.
 

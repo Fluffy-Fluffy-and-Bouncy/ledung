@@ -5,14 +5,17 @@ import assert from 'node:assert/strict';
 import type { ShortcutsView } from '../src/shared/protocol.ts';
 import { asksFirstRun, placesText, questionText, settingsText } from '../web/src/shortcuts.ts';
 
+// Start at sign-in and the log (issue #456) don't change when the question is asked.
+const extra = { signIn: { available: true, reason: null, label: 'Start Ledung when I sign in to Windows', on: false, file: null }, log: { file: 'ledung.log', active: false } };
+
 const windows: ShortcutsView = {
-  kind: 'windows', available: true, reason: null, asked: false,
+  kind: 'windows', available: true, reason: null, asked: false, ...extra,
   places: [
     { id: 'desktop', label: 'Desktop', file: 'C:\\Users\\u\\Desktop\\Ledung.lnk', present: false },
     { id: 'start-menu', label: 'Start menu', file: 'C:\\Users\\u\\Programs\\Ledung.lnk', present: false },
   ],
 };
-const mac: ShortcutsView = { kind: 'mac', available: true, reason: null, asked: false, places: [{ id: 'applications', label: 'Applications', file: '/Applications/Ledung.app', present: false }] };
+const mac: ShortcutsView = { kind: 'mac', available: true, reason: null, asked: false, ...extra, places: [{ id: 'applications', label: 'Applications', file: '/Applications/Ledung.app', present: false }] };
 
 test('the question names the places: Desktop and Start menu on Windows, Applications on macOS', () => {
   assert.equal(questionText(windows), 'Add a Ledung icon to your Desktop and Start menu?');
@@ -35,5 +38,5 @@ test('never again once answered, Yes or No, or once an icon is there', () => {
 });
 
 test('not asked where Ledung makes no shortcuts', () => {
-  assert.equal(asksFirstRun({ kind: 'other', available: false, reason: 'Shortcuts are made on Windows and macOS.', asked: false, places: [] }, false), false);
+  assert.equal(asksFirstRun({ kind: 'other', available: false, reason: 'Shortcuts are made on Windows and macOS.', asked: false, places: [], ...extra }, false), false);
 });

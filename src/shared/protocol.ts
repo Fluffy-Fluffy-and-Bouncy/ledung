@@ -983,10 +983,29 @@ export interface ShortcutsView {
   /** The first-run question has been answered, Yes or No; it is not asked again. */
   asked: boolean;
   places: ShortcutPlace[];
+  /** Start Ledung when I sign in (issue #456): off until switched on. */
+  signIn: SignInStartView;
+  /** The log a background Ledung writes (#456); `active` when this Ledung's output goes there. */
+  log: { file: string; active: boolean };
 }
 
-/** Add the shortcuts, take them away, or No to the first-run question (POST /api/shortcuts). */
-export type ShortcutAction = 'add' | 'remove' | 'decline';
+/** Settings' "Start Ledung when I sign in to Windows" (issue #456). */
+export interface SignInStartView {
+  /** False where Ledung has no way to start at login; `reason` says so. */
+  available: boolean;
+  reason: string | null;
+  /** "Start Ledung when I sign in to Windows", "… log in to this Mac". */
+  label: string;
+  on: boolean;
+  /** The shortcut in the Startup folder, the LaunchAgent or the autostart entry. */
+  file: string | null;
+}
+
+/**
+ * Add the shortcuts, take them away, or No to the first-run question; switch the start at sign-in on or off (#456)
+ * (POST /api/shortcuts).
+ */
+export type ShortcutAction = 'add' | 'remove' | 'decline' | 'sign-in-on' | 'sign-in-off';
 
 /** Settings' "Update Ledung" (GET /api/update, #100). */
 export interface UpdateView {

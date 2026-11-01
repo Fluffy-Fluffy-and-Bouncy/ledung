@@ -124,6 +124,8 @@ async function main(): Promise<void> {
   server = new LedungServer({
     port: config.port, token: loadOrCreateToken(), store, manager,
     onRestart,
+    // Stop Ledung in Settings and `ledung stop` (issue #456): the same stop as Ctrl+C in its window.
+    onStop: () => void shutdown(false),
     // Made only when asked, in the first-run question or Settings (issue #415).
     shortcuts: new Shortcuts({ launch: launchTarget(), iconDir: userDataDir(), icons: iconFiles(), meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) } }),
     updater: new Updater({ appDir: appDir(), dataDir: userDataDir(), configPath: configPath(), onRestart, npmVersion: PACKAGED ? appVersion() : undefined }),
