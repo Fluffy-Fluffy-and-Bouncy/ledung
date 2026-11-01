@@ -36,7 +36,7 @@ import { useCompactSidebar } from '../useCompactSidebar.ts';
 import { useArchivedLink } from '../useArchivedLink.ts';
 import { COMPACT_STEPS, type CompactStep } from '../compactSidebar.ts';
 import { InstallSettings } from './InstallApp.tsx';
-import { ShortcutSettings } from './Shortcuts.tsx';
+import { ShortcutSettings, StopSettings } from './Shortcuts.tsx';
 import { AccountsSettings, type DefaultIdentity } from '../projects/AccountsView.tsx';
 import { RestartButton, SettingsSplit, Where, useNarrow, type UpdateState } from './SettingsFrame.tsx';
 import { LEDUNG_GROUPS, groupOf, groupView, remoteFeatures, remoteWord, tabGroupView, updateTexts, updateWord, type FeatureState } from '../settingsGroups.ts';
@@ -109,6 +109,7 @@ function GroupContent(props: GroupProps) {
               <span className="muted" title="This Ledung was started by an older launcher. Restart it once from its console window (Ctrl+C, then Ledung.cmd).">Restart: from console</span>
             )}
           </section>
+          <StopSettings />
           <ShortcutSettings run={props.run} />
         </>
       );

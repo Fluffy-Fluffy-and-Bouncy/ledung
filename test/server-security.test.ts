@@ -27,6 +27,7 @@ import { appDir } from '../src/platform/paths.ts';
 import { removeTemp } from './temp.ts';
 import { refuseRealSignInStores } from './signin-stores.ts';
 import { freePort } from './free-port.ts';
+import { stopRunning } from '../src/platform/background.ts';
 
 // A port the system says is free right now; a random pick could hit a running Ledung's port.
 const PORT = await freePort();
@@ -1778,6 +1779,77 @@ test('shortcuts are made only on this computer: a paired device, unlocked and si
     assert.equal(fs.existsSync(path.join(shortcutDir, 'Applications', 'Ledung.app')), false);
   } finally {
     d.page.close();
+  }
+});
+
+// Stop Ledung (issue #456): Settings' button and `ledung stop`. Only from this computer, which can start it again; the
+// sign-in cookie and Ledung's own Origin as for every change.
+test('Stop Ledung is refused through the public name, even to a paired device, unlocked and signing (issue #456)', async () => {
+  const d = await deviceWithPasskey('Stopping phone');
+  try {
+    assert.equal((await pubChange('/api/device-unlock', '{}', d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign('/api/device-unlock', '{}') })).status, 200);
+    const res = await pubChange('/api/stop', '{}', d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign('/api/stop', '{}') });
+    assert.equal(res.status, 403, res.body);
+    assert.match(errorOf(res), /Ledung is stopped in Settings on the computer Ledung runs on/);
+  } finally {
+    d.page.close();
+  }
+});
+
+test('Stop Ledung needs the sign-in and the origin, and stops only from this computer (issue #456)', async (t) => {
+  const stopPort = await freePort();
+  let stops = 0;
+  const ip = networkAddress();
+  const stopping = new LedungServer({ port: stopPort, token: TOKEN, store: paneStore, manager: sessions, webRoot, onStop: () => { stops++; }, lanBind: ip ?? undefined, lanNames: ip ? [ip] : [] });
+  await stopping.listen();
+  try {
+    const at = (address: string, headers: Record<string, string>) => requestAt(address, stopPort, { method: 'POST', path: '/api/stop', headers: { 'content-type': 'application/json', ...headers }, body: '{}' });
+    const origin = `http://127.0.0.1:${stopPort}`;
+    assert.equal((await at('127.0.0.1', { origin })).status, 401, 'no sign-in');
+    assert.equal((await at('127.0.0.1', { cookie: COOKIE })).status, 403, 'no origin');
+    assert.equal((await at('127.0.0.1', { cookie: COOKIE, origin: 'https://evil.example' })).status, 403, 'another origin');
+    if (ip) {
+      // Signed in from another computer on the network: it could stop Ledung but never start it again.
+      const lan = await at(ip, { cookie: COOKIE, origin: `http://${ip}:${stopPort}` });
+      assert.equal(lan.status, 403, lan.body);
+      assert.match(errorOf(lan), /Ledung is stopped on the computer it runs on/);
+    } else t.diagnostic('no network address: the local network case was not run');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(stops, 0);
+    const ok = await at('127.0.0.1', { cookie: COOKIE, origin });
+    assert.equal(ok.status, 200, ok.body);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(stops, 1, 'stopped once, after the answer');
+  } finally {
+    await stopping.close();
+  }
+  // Without a stop handler, as the main test server: there is nothing to stop.
+  const none = await change('/api/stop', {});
+  assert.equal(none.status, 404, none.body);
+});
+
+test('`ledung stop` proves it is Ledung, sends the sign-in, and waits until Ledung is gone (issue #456)', async () => {
+  const stopPort = await freePort();
+  const dir = fs.mkdtempSync(path.join(appDir(), '.test', 'stop-'));
+  let stopping: LedungServer | null = null;
+  try {
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ port: stopPort }));
+    const data = path.join(dir, 'data');
+    fs.mkdirSync(data);
+    const lines: string[] = [];
+    const opts = { configFile: path.join(dir, 'config.json'), dataDir: data, print: (l: string) => lines.push(l), stoppedMs: 10_000 };
+    // No token, and nothing on the port: not running, exit 3, and nothing sent.
+    assert.equal(await stopRunning(opts), 3);
+    fs.writeFileSync(path.join(data, 'auth-token'), TOKEN);
+    stopping = new LedungServer({ port: stopPort, token: TOKEN, store: paneStore, manager: sessions, webRoot, onStop: () => void stopping?.close() });
+    await stopping.listen();
+    assert.equal(await stopRunning(opts), 0);
+    assert.deepEqual(lines, ['Ledung is not running.', 'Stopping Ledung and its sessions...', 'Ledung stopped.']);
+    assert.equal(await stopRunning(opts), 3, 'gone');
+  } finally {
+    // Closed already when the stop worked; a failed one must not keep the test run open.
+    await stopping?.close().catch(() => {});
+    removeTemp(dir);
   }
 });
 
