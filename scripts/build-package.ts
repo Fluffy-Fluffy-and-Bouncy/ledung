@@ -104,13 +104,17 @@ export async function bundleCore(source: string, outDir: string): Promise<void> 
   });
 }
 
-/** Puts the whole package together in stage; the page must have been built into web/dist. */
-export async function stagePackage(source: string, stage: string): Promise<void> {
+/**
+ * Puts the whole package together in stage; the page must have been built into web/dist. `version` stamps the
+ * package with a version of its own instead of the clone's: a dev build's X.Y is given by `npm run publish:dev` and
+ * never committed (#461).
+ */
+export async function stagePackage(source: string, stage: string, version?: string): Promise<void> {
   fs.rmSync(stage, { recursive: true, force: true });
   fs.mkdirSync(stage, { recursive: true });
   const clone = JSON.parse(fs.readFileSync(path.join(source, 'package.json'), 'utf8'));
   const lock = JSON.parse(fs.readFileSync(path.join(source, 'package-lock.json'), 'utf8')) as Lock;
-  const trimmed = packageManifest(clone);
+  const trimmed: Record<string, unknown> = { ...packageManifest(clone), ...(version ? { version } : {}) };
   // npm pack leaves the shrinkwrap out when files is set and doesn't name it (npm 11).
   const files = trimmed.files ? { files: [...(trimmed.files as string[]), 'npm-shrinkwrap.json'] } : {};
   const manifest = { ...trimmed, ...files, dependencies: pinnedDependencies(clone, lock) };
@@ -122,22 +126,24 @@ export async function stagePackage(source: string, stage: string): Promise<void>
 }
 
 // npm through node and npm's own script when run by npm, so no shell is involved (as in release.ts).
-function npm(args: string[], cwd: string): void {
+export function npm(args: string[], cwd: string): void {
   const stdio: ['ignore', 'inherit', 'inherit'] = ['ignore', 'inherit', 'inherit'];
   if (process.env.npm_execpath) execFileSync(process.execPath, [process.env.npm_execpath, ...args], { cwd, stdio });
   else execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', args, { cwd, stdio, shell: process.platform === 'win32' });
 }
 
-async function main(): Promise<void> {
-  const source = appDir();
+/** Builds the page, stages the package (with `version` stamped in, if given) and packs it; returns the tgz. */
+export async function buildPackage(source: string, version?: string): Promise<string> {
   const out = path.join(source, 'dist');
   const stage = path.join(out, 'package');
   console.log('Building the page...');
   npm(['run', 'build', '--silent'], source);
   console.log('Bundling the core, the session host and the ledung command...');
-  await stagePackage(source, stage);
+  await stagePackage(source, stage, version);
   console.log('Packing...');
   npm(['pack', '--pack-destination', out], stage);
+  const manifest = JSON.parse(fs.readFileSync(path.join(stage, 'package.json'), 'utf8'));
+  return path.join(out, `${manifest.name}-${manifest.version}.tgz`);
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) await main();
+if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) await buildPackage(appDir());

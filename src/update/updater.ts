@@ -9,8 +9,10 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { exercisedLine } from '../platform/exercised.ts';
 import { killRecorded, listAll, treeFrom } from '../platform/process-tree.ts';
 import type { UpdateStepView, UpdateView } from '../shared/protocol.ts';
+import { CHANNEL_TAG, CHANNELS, compareVersions, displayVersion, offeredVersion, type Channel } from '../shared/version.ts';
 
 /** The branch updates come from; any other is out of scope (#100). */
 const BRANCH = 'main';
@@ -53,10 +55,23 @@ export interface UpdaterOptions {
   env?: NodeJS.ProcessEnv;
   /** The installed version when Ledung runs from the npm package: there is no git source to pull (#105). */
   npmVersion?: string;
+  /** Where the update channel is kept (the database's meta table); without it the channel is Public. */
+  meta?: { get(key: string): string | null; set(key: string, value: string): void };
+  /** npm view ledung dist-tags --json and npm install -g ledung@<version>; tests replace them so npm is not asked. */
+  distTags?: Command;
+  npmInstall?: (spec: string) => Command;
 }
 
-/** What the page says about updating an npm-installed Ledung; checking the registry is a follow-up (#105). */
+/** What the page says about updating an npm-installed Ledung on the Public channel (#105). */
 export const NPM_REASON = 'Ledung was installed from npm, so updates come from npm: run npm install -g ledung, then press Restart Ledung.';
+/** The same on the Dev channel (#461). */
+export const NPM_DEV_REASON = 'Ledung was installed from npm, so updates come from npm: run npm install -g ledung@dev, then press Restart Ledung.';
+
+/** The package an npm install updates. */
+const PACKAGE = 'ledung';
+const CHANNEL_KEY = 'update-channel';
+/** The EXERCISED line of issue #461, once per run. */
+let devCheckTraced = false;
 
 /** The release the running Ledung came from, or null when it runs straight from a source folder. */
 export function readRunningRelease(appDir: string): ReleaseInfo | null {
@@ -71,10 +86,15 @@ const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 // npm.cmd only starts through a shell on Windows; the arguments are fixed, nothing the page sends.
 const NPM_INSTALL: Command = { cmd: npm, args: ['install', '--no-audit', '--no-fund'], shell: process.platform === 'win32', limitMs: INSTALL_LIMIT_MS };
 const NPM_RELEASE: Command = { cmd: npm, args: ['run', 'release'], shell: process.platform === 'win32', limitMs: RELEASE_LIMIT_MS };
+// npm itself, so the person's own registry and proxy settings apply, as they do to the install after it. The spec is
+// ledung@<a version npm reported>, checked to be one before it is used.
+const NPM_DIST_TAGS: Command = { cmd: npm, args: ['view', PACKAGE, 'dist-tags', '--json'], shell: process.platform === 'win32' };
+const npmGlobalInstall = (spec: string): Command => ({ cmd: npm, args: ['install', '-g', spec, '--no-audit', '--no-fund'], shell: process.platform === 'win32', limitMs: INSTALL_LIMIT_MS });
 
 export class Updater {
   private readonly opts: UpdaterOptions;
   private check: UpdateView['check'] = null;
+  private npmCheck: UpdateView['npmCheck'] = null;
   private checkError: string | null = null;
   private checking = false;
   private steps: UpdateStepView[] = [];
@@ -91,16 +111,33 @@ export class Updater {
     return this.opts.npmVersion ? null : readRunningRelease(this.opts.appDir);
   }
 
+  /** Public or Dev (#461); Public until chosen otherwise. A clone install keeps updating from main either way. */
+  channel(): Channel {
+    return this.opts.meta?.get(CHANNEL_KEY) === 'dev' ? 'dev' : 'public';
+  }
+
+  setChannel(channel: Channel): UpdateView {
+    if (!CHANNELS.includes(channel)) throw new Error(`The channel is ${CHANNELS.join(' or ')}.`);
+    if (!this.opts.meta) throw new Error('The update channel cannot be kept here.');
+    this.opts.meta.set(CHANNEL_KEY, channel);
+    // The last check was of the other channel's version.
+    this.npmCheck = null;
+    return this.view();
+  }
+
   view(): UpdateView {
     const running = this.running();
     const npm = this.opts.npmVersion;
+    const channel = this.channel();
     return {
       available: !!running,
-      reason: running ? undefined : npm ? NPM_REASON : 'This Ledung runs straight from a source folder, not from a release, so it has nothing to update. Start it from a release (npm run release).',
+      reason: running ? undefined : npm ? (channel === 'dev' ? NPM_DEV_REASON : NPM_REASON) : 'This Ledung runs straight from a source folder, not from a release, so it has nothing to update. Start it from a release (npm run release).',
       npm: npm ? { version: npm } : undefined,
+      channel,
       canRestart: !!this.opts.onRestart,
       running: running ? { commit: running.commit, source: running.source, releasedAt: running.releasedAt } : null,
       check: this.check,
+      npmCheck: this.npmCheck,
       checkError: this.checkError,
       checking: this.checking,
       steps: this.steps,
@@ -108,6 +145,112 @@ export class Updater {
       refused: this.refused,
       restarting: this.restarting,
     };
+  }
+
+  /** Check for updates: on npm the channel's version (#461), otherwise origin/main in the source folder. */
+  checkForUpdates(): Promise<UpdateView> {
+    return this.opts.npmVersion ? this.runNpmCheck() : this.runCheck();
+  }
+
+  /** Update Ledung: on npm installs the channel's version and restarts (#461), otherwise pulls main and releases. */
+  runUpdate(): UpdateView {
+    return this.opts.npmVersion ? this.startNpmUpdate() : this.startUpdate();
+  }
+
+  /** Asks npm for the channel's version and says whether it is newer than the installed one. */
+  async runNpmCheck(): Promise<UpdateView> {
+    const installed = this.opts.npmVersion;
+    if (!installed || this.checking || this.updating) return this.view();
+    this.checking = true;
+    this.checkError = null;
+    try {
+      const channel = this.channel();
+      const offered = offeredVersion(channel, await this.distTags());
+      this.npmCheck = { checkedAt: new Date().toISOString(), channel, offered, upToDate: !offered || compareVersions(offered, installed) <= 0 };
+      if (channel === 'dev' && !devCheckTraced) {
+        devCheckTraced = true;
+        exercisedLine(`EXERCISED #461 npm update check followed the dev tag (${offered ?? 'none'})`);
+      }
+    } catch (e) {
+      this.checkError = (e as Error).message;
+    } finally {
+      this.checking = false;
+    }
+    return this.view();
+  }
+
+  private async distTags(): Promise<Record<string, string>> {
+    const r = await this.run(this.opts.distTags ?? NPM_DIST_TAGS, this.opts.dataDir);
+    if (r.timedOut || r.code !== 0) throw new Error(`npm view ${PACKAGE} dist-tags failed:\n${r.tail}`);
+    try {
+      const tags = JSON.parse(r.out) as unknown;
+      if (tags && typeof tags === 'object') {
+        return Object.fromEntries(Object.entries(tags).filter((e): e is [string, string] => typeof e[1] === 'string'));
+      }
+    } catch {
+      // Falls through to the error below.
+    }
+    throw new Error(`npm view ${PACKAGE} dist-tags did not answer with its tags:\n${r.tail}`);
+  }
+
+  /** Installs the channel's version globally with npm, then restarts into it; refusals as for a git update. */
+  startNpmUpdate(): UpdateView {
+    const installed = this.opts.npmVersion;
+    if (!installed || this.updating) return this.view();
+    if (this.checking) {
+      this.refused = 'A check for updates is still running. Update again when it has finished.';
+      this.steps = [];
+      return this.view();
+    }
+    this.refused = null;
+    this.steps = [];
+    if (!this.opts.onRestart) {
+      this.refused = 'This Ledung was not started by the ledung command, so it cannot restart itself into the new version. Start it with ledung first.';
+      return this.view();
+    }
+    this.updating = true;
+    void this.npmUpdate(installed).finally(() => {
+      this.updating = false;
+    });
+    return this.view();
+  }
+
+  private async npmUpdate(installed: string): Promise<void> {
+    const channel = this.channel();
+    this.steps = [`Ask npm for the ${channel === 'dev' ? 'Dev' : 'Public'} version`, `npm install -g ${PACKAGE}@${CHANNEL_TAG[channel]}`, 'Restart Ledung'].map((label) => ({ label, state: 'waiting' }));
+    const step = (i: number, state: UpdateStepView['state'], output?: string, label?: string) => {
+      this.steps = this.steps.map((s, j) => (j === i ? { ...s, state, output, label: label ?? s.label } : s));
+    };
+    const refuse = (i: number, reason: string, output?: string) => {
+      step(i, 'failed', output);
+      this.refused = `${reason} The running Ledung was not changed.`;
+    };
+
+    step(0, 'running');
+    let offered: string | null;
+    try {
+      offered = offeredVersion(channel, await this.distTags());
+    } catch (e) {
+      return refuse(0, 'npm could not be asked for the version.', (e as Error).message);
+    }
+    if (!offered) return refuse(0, `npm has no ${channel === 'dev' ? 'Dev' : 'Public'} version of ${PACKAGE}.`);
+    this.npmCheck = { checkedAt: new Date().toISOString(), channel, offered, upToDate: compareVersions(offered, installed) <= 0 };
+    // Never down: a Dev install switched to Public keeps its newer build until a public release passes it.
+    if (this.npmCheck.upToDate) return refuse(0, `${displayVersion(installed)} is already the newest on this channel.`);
+    step(0, 'done');
+
+    const spec = `${PACKAGE}@${offered}`;
+    step(1, 'running', undefined, `npm install -g ${spec}`);
+    const command = this.opts.npmInstall?.(spec) ?? npmGlobalInstall(spec);
+    const result = await this.run(command, this.opts.dataDir);
+    if (result.timedOut) return refuse(1, `npm install -g ${spec} did not finish within ${Math.round((command.limitMs ?? GIT_LIMIT_MS) / 60_000)} minutes and was stopped.`, result.tail);
+    if (result.code !== 0) return refuse(1, `npm install -g ${spec} failed (exit code ${result.code}).`, result.tail);
+    step(1, 'done', result.tail);
+
+    step(2, 'running');
+    this.restarting = true;
+    // As for a git update: answer the page's next poll first, then restart into the installed files.
+    setTimeout(() => this.opts.onRestart?.(), 1500);
   }
 
   /** Fetches origin/main in the source folder and says what is new since the running release. */

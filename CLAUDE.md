@@ -27,7 +27,9 @@ Personal preferences and machine details, if any, are in `CLAUDE.local.md` next 
 | `npm run check` | Type check (core and page) and all tests. Run before every commit. |
 | `npm run build` | Builds the page into `web/dist`. |
 | `npm run release` | Check, build, copy to a new release folder and point the launcher at it. |
-| `npm run pack` | Builds the npm package into `dist/ledung-<version>.tgz` (plain JavaScript). Never `npm publish`: that is the owner's. |
+| `npm run pack` | Builds the npm package into `dist/ledung-<version>.tgz` (plain JavaScript). Never `npm publish` or `npm dist-tag` by hand: publishing goes through the two commands below. |
+| `npm run publish:dev` | Publishes the next dev build (X.Y) to npm's `dev` tag, never `latest`, from a clean `main` that is `origin/main`. The manager may run it after merges (issue #461); `-- --dry-run` checks, builds and packs without publishing. |
+| `npm run publish:public -- --confirm <version>` | Publishes the next public release (X) to `latest`. **The owner's word only**, version included; no session runs it otherwise. |
 | `npm start` | Runs Ledung from this folder (development only; use a throwaway config and data folder). |
 
 CI runs on the public repository `Fluffy-Fluffy-and-Bouncy/ledung` (Martin, 2026-10-29, question #487; it had run by hand only on the private one, question #433): Windows on every PR update and push to `main`, macOS weekly and by hand, nothing for docs-only or site-only changes. CI is the last net, not the first: `npm run check` before every push stays the local gate. The pre-push hook (`.githooks/pre-push`, switched on by `npm install`) runs it and stops a failing push; `git push --no-verify` is the owner's call, never a session's.

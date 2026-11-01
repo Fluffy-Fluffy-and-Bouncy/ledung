@@ -35,6 +35,8 @@
     "prepare": "node -e \"import('./scripts/hooks.ts').then((m) => m.main(), () => {})\"",
     "release": "node scripts/release.ts",
     "pack": "node scripts/build-package.ts",
+    "publish:dev": "node scripts/publish.ts dev",
+    "publish:public": "node scripts/publish.ts public",
     "export-public": "node scripts/export-public.ts"
   },
   "devDependencies": {
