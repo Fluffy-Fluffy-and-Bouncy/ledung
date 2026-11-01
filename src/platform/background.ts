@@ -62,7 +62,10 @@ export async function startInBackground(opts: BackgroundStart): Promise<number> 
   const dataDir = opts.dataDir ?? userDataDir();
   const file = logFile(dataDir);
   rotateLog(file);
-  const out = fs.openSync(file, 'a');
+  // Only this user may read it, as the sign-in token's own file (src/server/security.ts): Ledung prints its sign-in
+  // link there (Mac check of PR #11, note 3). A log another start made is narrowed too.
+  const out = fs.openSync(file, 'a', 0o600);
+  if (process.platform !== 'win32') fs.fchmodSync(out, 0o600);
   fs.writeSync(out, `\n--- ${new Date().toISOString()} Ledung starting in the background\n`);
   const child = spawn(process.execPath, opts.args, {
     // Its own process group and session, and no console on Windows: closing the terminal or Ctrl+C there leaves it be.

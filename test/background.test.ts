@@ -3,8 +3,10 @@
 // fails says why from the log. The started program here is a stand-in that answers /running as Ledung does.
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { logFile, logTail, rotateLog, startInBackground } from '../src/platform/background.ts';
 import { appDir } from '../src/platform/paths.ts';
 import { freePort } from './free-port.ts';
@@ -53,16 +55,19 @@ test('a start that fails returns its exit code and shows the end of the log', as
   const { dir, data, config } = folder('fails');
   const script = path.join(dir, 'fails.mjs');
   fs.writeFileSync(script, "console.error('Port 4317 is in use.'); process.exit(2);");
+  // A log another start made, readable by everyone: it holds the sign-in link, so the start narrows it.
+  fs.writeFileSync(logFile(data), '', { mode: 0o644 });
   const lines: string[] = [];
   const code = await startInBackground({ args: [script], configFile: config, dataDir: data, print: (l) => lines.push(l), readyMs: 20_000 });
   assert.equal(code, 2);
   assert.match(lines[0]!, /Ledung stopped while starting \(exit code 2\)/);
   assert.match(lines[1]!, /Port 4317 is in use\.$/);
   assert.match(logTail(logFile(data)), /Port 4317 is in use\./);
+  if (process.platform !== 'win32') assert.equal(fs.statSync(logFile(data)).mode & 0o777, 0o600, 'only this user reads the log');
 });
 
-test('a start returns once Ledung answers, which then runs on with its output in the log', async () => {
-  const { dir, data, config } = folder('runs');
+/** A stand-in for Ledung in the folder: it writes its pid and answers /running as Ledung does. Returns its script. */
+async function standIn(dir: string, data: string, config: string): Promise<{ script: string; port: number }> {
   const port = await freePort();
   fs.writeFileSync(config, JSON.stringify({ port }));
   const token = 'b'.repeat(64);
@@ -81,6 +86,12 @@ test('a start returns once Ledung answers, which then runs on with its output in
     `}).listen(${port}, '127.0.0.1');`,
     'setTimeout(() => process.exit(0), 60_000);',
   ].join('\n'));
+  return { script, port };
+}
+
+test('a start returns once Ledung answers, which then runs on with its output in the log', async () => {
+  const { dir, data, config } = folder('runs');
+  const { script, port } = await standIn(dir, data, config);
   const lines: string[] = [];
   const code = await startInBackground({ args: [script, '--foreground', '--no-open'], configFile: config, dataDir: data, print: (l) => lines.push(l), readyMs: 20_000 });
   const pid = Number(fs.readFileSync(path.join(dir, 'pid'), 'utf8'));
@@ -90,4 +101,30 @@ test('a start returns once Ledung answers, which then runs on with its output in
   assert.equal(lines[1], `Log:  ${logFile(data)}`);
   assert.doesNotThrow(() => process.kill(pid, 0), 'still running after the start returned');
   assert.match(fs.readFileSync(logFile(data), 'utf8'), new RegExp(`log file ${logFile(data).replace(/[\\.]/g, '\\$&')} args --foreground --no-open`));
+});
+
+// What closing the terminal or Ctrl+C there does: every process in its process group is ended. The started Ledung is
+// in a group of its own and lives on (test review of PR #11: with detached false the other tests stayed green).
+test('ending the process group of the terminal that started Ledung leaves Ledung running', { skip: process.platform === 'win32' && 'process groups are POSIX' }, async () => {
+  const { dir, data, config } = folder('terminal');
+  const { script } = await standIn(dir, data, config);
+  const terminal = path.join(dir, 'terminal.ts');
+  const background = pathToFileURL(path.join(appDir(), 'src', 'platform', 'background.ts')).href;
+  fs.writeFileSync(terminal, [
+    `import { startInBackground } from ${JSON.stringify(background)};`,
+    `const code = await startInBackground({ args: [${JSON.stringify(script)}], configFile: ${JSON.stringify(config)}, dataDir: ${JSON.stringify(data)}, print: () => {}, readyMs: 20_000 });`,
+    `console.log('started ' + code);`,
+    'setInterval(() => {}, 1000);',
+  ].join('\n'));
+  // The terminal: a process group of its own, which stays open after the start returned.
+  const shell = spawn(process.execPath, [terminal], { detached: true, stdio: ['ignore', 'pipe', 'inherit'] });
+  const said = await new Promise<string>((resolve) => shell.stdout.on('data', (b: Buffer) => resolve(b.toString())));
+  assert.equal(said.trim(), 'started 0');
+  const pid = Number(fs.readFileSync(path.join(dir, 'pid'), 'utf8'));
+  pids.push(pid);
+  const gone = new Promise((resolve) => shell.once('exit', resolve));
+  process.kill(-shell.pid!, 'SIGKILL');
+  await gone;
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.doesNotThrow(() => process.kill(pid, 0), 'Ledung still runs');
 });

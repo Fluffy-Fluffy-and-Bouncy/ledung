@@ -48,6 +48,8 @@ export interface LaunchTarget {
 
 /** The env file a shortcut passes to Node with --env-file, when the launch carries settings; in the data folder. */
 export const ENV_FILE = 'shortcut.env';
+/** Set for a Ledung whose output goes to the log, so Settings → Log says so (#456). */
+const LOG_FILE_SETTING = 'LEDUNG_LOG_FILE';
 
 export interface ShortcutsOptions {
   /** What the shortcuts run; launchTarget() for this Ledung. */
@@ -205,7 +207,8 @@ const PLIST = (version: string) => `<?xml version="1.0" encoding="UTF-8"?>
 /**
  * The LaunchAgent that starts Ledung at login (#456): in the foreground under launchd, which keeps it running and
  * sends its output to the log. Not KeepAlive: Stop Ledung stops it until the next login. AbandonProcessGroup, so
- * the session hosts Ledung leaves running across a restart are not taken down with it.
+ * the session hosts Ledung leaves running across a restart are not taken down with it. LEDUNG_LOG_FILE tells Settings
+ * its output is in the log (review of PR #11, Minor 1).
  */
 const AGENT_PLIST = (args: string[], log: string) => `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -220,6 +223,10 @@ ${args.map((a) => `    <string>${xmlEscape(a)}</string>`).join('\n')}
   <key>AbandonProcessGroup</key><true/>
   <key>StandardOutPath</key><string>${xmlEscape(log)}</string>
   <key>StandardErrorPath</key><string>${xmlEscape(log)}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>${LOG_FILE_SETTING}</key><string>${xmlEscape(log)}</string>
+  </dict>
 </dict>
 </plist>
 `;
@@ -376,14 +383,15 @@ export class Shortcuts {
 
   /**
    * The start script for Windows Script Host (#456). The `ledung` command goes to the background by itself; the
-   * release launcher runs through cmd.exe, hidden too, so its output goes to the log.
+   * release launcher runs through cmd.exe, hidden too, so its output goes to the log, and LEDUNG_LOG_FILE says so to
+   * Settings.
    */
   private writeStarter(): void {
     const { node, script } = this.opts.launch;
     const run = [node, ...this.nodeOptions(), script].map(winQuote).join(' ');
     const text = startsInBackground(this.opts.launch)
       ? starterText(run, '')
-      : starterText(`cmd.exe /d /s /c "${run}`, ` >> ${winQuote(this.logFile())} 2>&1"`);
+      : starterText(`cmd.exe /d /s /c "set ${winQuote(`${LOG_FILE_SETTING}=${this.logFile()}`)}&& ${run}`, ` >> ${winQuote(this.logFile())} 2>&1"`);
     fs.mkdirSync(this.opts.iconDir, { recursive: true });
     fs.writeFileSync(this.starterFile(), text);
   }
@@ -435,9 +443,11 @@ export class Shortcuts {
       this.writeStarter();
       await this.writeLinks([file], ['--no-open'], null, 'Start Ledung in the background');
     } else if (kind === 'mac') {
-      // Under launchd in the foreground: the `ledung` command with --foreground, the release launcher as it is.
-      const args = [node, ...this.nodeOptions(), script, ...(startsInBackground(this.opts.launch) ? ['--foreground'] : []), '--no-open'];
-      fs.writeFileSync(file, AGENT_PLIST(args, this.logFile()));
+      // Under launchd in the foreground: the `ledung` command with --foreground, the release launcher as it is. Through
+      // sh with the same Node lookup as Ledung.app, so a Node upgrade doesn't stop it silently (Mac check of PR #11).
+      const run = [...this.nodeOptions(), script, ...(startsInBackground(this.opts.launch) ? ['--foreground'] : []), '--no-open'].map(shQuote).join(' ');
+      const missing = 'echo "Ledung cannot find Node.js. Install Node.js 24, or switch Start at sign-in off and on in Settings in Ledung." >&2; exit 1';
+      fs.writeFileSync(file, AGENT_PLIST(['/bin/sh', '-c', [...findNode(node), `[ -x "$NODE" ] || { ${missing}; }`, `exec "$NODE" ${run}`].join('\n')], this.logFile()));
     } else {
       fs.writeFileSync(file, [
         '[Desktop Entry]',
@@ -471,16 +481,13 @@ export class Shortcuts {
     fs.writeFileSync(path.join(contents, 'Info.plist'), PLIST(version));
     fs.writeFileSync(path.join(contents, 'Resources', 'Ledung.icns'), icnsFromPngs([fs.readFileSync(this.opts.icons.png256), fs.readFileSync(this.opts.icons.png512)]));
     const run = [...this.nodeOptions(), script].map(shQuote).join(' ');
-    // Node's path moves when a version manager or Homebrew upgrades it (Mac check of PR #432, note 2): then the node
-    // the person's login shell finds. An app opened from Finder does not have that PATH.
     fs.writeFileSync(path.join(contents, 'MacOS', 'Ledung'), [
       '#!/bin/sh',
       "# Opens a running Ledung's page, or starts Ledung in the background. Made by Ledung's Settings (issues #415, #456).",
-      `NODE=${shQuote(node)}`,
-      `[ -x "$NODE" ] || NODE=$("\${SHELL:-/bin/zsh}" -lic 'command -v node' 2>/dev/null | tail -n 1)`,
+      ...findNode(node),
       `[ -x "$NODE" ] || { osascript -e 'display alert "Ledung cannot find Node.js" message "Install Node.js 24, or add the shortcut again in Settings in Ledung."'; exit 1; }`,
       `"$NODE" ${run} --open-only && exit 0`,
-      startsInBackground(this.opts.launch) ? `exec "$NODE" ${run}` : `nohup "$NODE" ${run} >> ${shQuote(this.logFile())} 2>&1 &`,
+      startsInBackground(this.opts.launch) ? `exec "$NODE" ${run}` : `${LOG_FILE_SETTING}=${shQuote(this.logFile())} nohup "$NODE" ${run} >> ${shQuote(this.logFile())} 2>&1 &`,
       '',
     ].join('\n'), { mode: 0o755 });
   }
@@ -494,6 +501,15 @@ export class Shortcuts {
     if (!isOurApp(file)) throw new Error(`${file} is not the Ledung.app that Ledung made; remove it yourself if you want it gone.`);
     fs.rmSync(file, { recursive: true, force: true });
   }
+}
+
+/**
+ * Shell lines that set NODE: Node where it was when the file was made, else the one the person's login shell finds.
+ * Its path moves when a version manager or Homebrew upgrades it (Mac check of PR #432, note 2), and an app opened
+ * from Finder or a LaunchAgent does not have that PATH.
+ */
+function findNode(node: string): string[] {
+  return [`NODE=${shQuote(node)}`, `[ -x "$NODE" ] || NODE=$("\${SHELL:-/bin/zsh}" -lic 'command -v node' 2>/dev/null | tail -n 1)`];
 }
 
 /** Whether a Ledung.app is the one Ledung made: its Info.plist carries Ledung's bundle id. */

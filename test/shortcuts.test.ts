@@ -143,7 +143,7 @@ test('macOS: Add makes Ledung.app with the icon, opening a running Ledung or sta
   assert.ok(run.includes(`"$NODE" '${path.join(path.dirname(folders.applications), 'data', 'launcher.mjs')}' --open-only && exit 0`), run);
   // No Terminal window since #456: the release launcher starts in the background, its output in the data folder's log.
   const log = path.join(path.dirname(folders.applications), 'data', 'ledung.log');
-  assert.ok(run.includes(`\nnohup "$NODE" '${path.join(path.dirname(folders.applications), 'data', 'launcher.mjs')}' >> '${log}' 2>&1 &\n`), run);
+  assert.ok(run.includes(`\nLEDUNG_LOG_FILE='${log}' nohup "$NODE" '${path.join(path.dirname(folders.applications), 'data', 'launcher.mjs')}' >> '${log}' 2>&1 &\n`), run);
   assert.ok(!run.includes('Terminal'), run);
   assert.equal(fs.existsSync(path.join(app, 'Contents', 'Resources', 'start.command')), false);
   assert.ok(!run.includes('--env-file'), 'a Ledung on the usual folders carries no settings');
@@ -250,7 +250,7 @@ test('Windows: Add makes Ledung.lnk on the Desktop and in the Start menu, starti
   }
   // The release launcher runs where it is started, so the script sends its output to the log through cmd.exe.
   const text = fs.readFileSync(starter, 'utf8');
-  assert.ok(text.includes(JSON.stringify(`cmd.exe /d /s /c ""${process.execPath}" "${path.join(root, 'data', 'launcher.mjs')}"`)), text);
+  assert.ok(text.includes(JSON.stringify(`cmd.exe /d /s /c "set "LEDUNG_LOG_FILE=${path.join(root, 'data', 'ledung.log')}"&& "${process.execPath}" "${path.join(root, 'data', 'launcher.mjs')}"`)), text);
   assert.ok(text.includes(JSON.stringify(` >> "${path.join(root, 'data', 'ledung.log')}" 2>&1"`)), text);
   assert.ok(text.includes(', 0, false);'), 'window style 0: hidden');
   const removed = await s.act('remove');
@@ -284,13 +284,13 @@ test('Windows: the start script runs the command it names, with its own argument
   await direct.act('sign-in-on');
   assert.deepEqual(JSON.parse(await runStarter(path.join(data, STARTER_FILE), ['--no-open'], seen)), ['--no-open']);
 
-  // The release launcher: what it prints lands in ledung.log in the data folder.
+  // The release launcher: what it prints lands in ledung.log in the data folder, and it is told so, for Settings → Log.
   const launcher = path.join(data, 'launcher.mjs');
-  fs.writeFileSync(launcher, "console.log('launcher says ' + process.argv.slice(2).join(' '));");
+  fs.writeFileSync(launcher, "console.log('launcher says ' + process.argv.slice(2).join(' ') + ' log ' + process.env.LEDUNG_LOG_FILE);");
   const release = new Shortcuts({ launch: { node: process.execPath, script: launcher }, iconDir: data, icons, meta: memoryMeta(), platform: 'win32', folders: async () => ({ startup: path.join(root, 'Startup') }) });
   await release.act('sign-in-on');
   const log = await runStarter(path.join(data, STARTER_FILE), ['--no-open'], path.join(data, 'ledung.log'));
-  assert.equal(log.trim(), 'launcher says --no-open');
+  assert.equal(log.trim(), `launcher says --no-open log ${path.join(data, 'ledung.log')}`);
   await release.act('sign-in-off');
 });
 
@@ -341,15 +341,46 @@ test('macOS: the LaunchAgent runs Ledung at login in the foreground under launch
   await new Shortcuts({ launch: { node: '/usr/local/bin/node', script: cli }, iconDir: data, icons, meta: memoryMeta(), platform: 'darwin', folders }).act('sign-in-on');
   let text = fs.readFileSync(plist, 'utf8');
   assert.ok(text.includes(`<key>Label</key><string>${AGENT_LABEL}</string>`), text);
-  assert.ok(text.includes(`    <string>/usr/local/bin/node</string>\n    <string>${cli}</string>\n    <string>--foreground</string>\n    <string>--no-open</string>\n`), text);
+  // Through sh, with Ledung.app's Node lookup: a Node upgrade must not stop it silently (Mac check of PR #11, note 2).
+  let [shell, flag, script] = agentArgs(text);
+  assert.deepEqual([shell, flag], ['/bin/sh', '-c']);
+  assert.ok(script!.startsWith(`NODE='/usr/local/bin/node'\n[ -x "$NODE" ] || NODE=$("\${SHELL:-/bin/zsh}" -lic 'command -v node'`), script);
+  assert.ok(script!.endsWith(`\nexec "$NODE" '${cli}' '--foreground' '--no-open'`), script);
   assert.ok(text.includes('<key>RunAtLoad</key><true/>'), text);
   assert.ok(!text.includes('KeepAlive'), 'Stop Ledung stops it until the next login');
   assert.ok(text.includes(`<key>StandardOutPath</key><string>${path.join(data, 'ledung.log')}</string>`), text);
+  // Settings → Log then says its output is in the log (review of PR #11, Minor 1).
+  assert.ok(text.includes(`<key>EnvironmentVariables</key>\n  <dict>\n    <key>LEDUNG_LOG_FILE</key><string>${path.join(data, 'ledung.log')}</string>\n  </dict>`), text);
   // The release launcher runs where it is started already.
   const launcher = path.join(data, 'launcher.mjs');
   await new Shortcuts({ launch: { node: '/usr/local/bin/node', script: launcher }, iconDir: data, icons, meta: memoryMeta(), platform: 'darwin', folders }).act('sign-in-on');
   text = fs.readFileSync(plist, 'utf8');
-  assert.ok(text.includes(`    <string>${launcher}</string>\n    <string>--no-open</string>\n`), text);
+  [, , script] = agentArgs(text);
+  assert.ok(script!.endsWith(`\nexec "$NODE" '${launcher}' '--no-open'`), script);
+});
+
+/** The LaunchAgent's ProgramArguments, as launchd reads them. */
+function agentArgs(plist: string): string[] {
+  const array = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(plist)![1]!;
+  return [...array.matchAll(/<string>([\s\S]*?)<\/string>/g)].map((m) => m[1]!.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'));
+}
+
+test('macOS: the LaunchAgent finds Node through the login shell when Node has moved, and says so in the log when it cannot', { skip: process.platform === 'win32' && 'runs /bin/sh' }, async () => {
+  const root = path.join(base, 'agent-node');
+  const data = path.join(root, 'data');
+  const cli = path.join(root, 'cli.mjs');
+  fs.mkdirSync(data, { recursive: true });
+  fs.writeFileSync(cli, "console.log('started ' + process.argv.slice(2).join(' '));");
+  // Node where it was is gone; the login shell (a stand-in that answers `command -v node`) knows where it is now.
+  await new Shortcuts({ launch: { node: path.join(root, 'old', 'node'), script: cli }, iconDir: data, icons, meta: memoryMeta(), platform: 'darwin', folders: async () => ({ startup: path.join(root, 'LaunchAgents') }) }).act('sign-in-on');
+  const [shell, flag, script] = agentArgs(fs.readFileSync(path.join(root, 'LaunchAgents', `${AGENT_LABEL}.plist`), 'utf8'));
+  const login = path.join(root, 'login-shell');
+  fs.writeFileSync(login, `#!/bin/sh\necho '${process.execPath}'\n`, { mode: 0o755 });
+  const env = { PATH: '/usr/bin:/bin', SHELL: login };
+  assert.equal(execFileSync(shell!, [flag!, script!], { env }).toString().trim(), 'started --foreground --no-open');
+  // No Node at all: a line in the log (launchd's StandardErrorPath), not a silent failure.
+  fs.writeFileSync(login, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  assert.throws(() => execFileSync(shell!, [flag!, script!], { env, stdio: 'pipe' }), (e: { stderr: Buffer }) => /Ledung cannot find Node\.js/.test(e.stderr.toString()));
 });
 
 test('Linux: the start at sign-in is an autostart entry; shortcuts stay unavailable', async () => {
