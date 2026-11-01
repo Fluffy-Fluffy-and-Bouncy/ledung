@@ -63,6 +63,24 @@
   .facts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 36px; border-top: 1px solid var(--line); padding-top: 44px; }
   .facts h3 { font: 600 21px/1.2 var(--cond); margin: 0 0 8px; color: var(--lantern); }
   .facts p { margin: 0; color: var(--mist); font-size: 15.5px; }
+  .facts code { font: 14px var(--mono); color: var(--text); }
+
+  /* From your phone: two drawn phones beside the points, the second set lower. */
+  .kicker { font: 600 14px/1 var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--lantern); margin: 0 0 14px; }
+  .pocket { display: grid; grid-template-columns: 1fr 1.1fr; gap: 56px; align-items: center; }
+  .phones { display: flex; gap: 28px; justify-content: center; align-items: flex-start; }
+  .phones .lui { width: 260px; filter: drop-shadow(0 30px 50px rgba(0, 0, 0, .45)); }
+  .phones .lui + .lui { margin-top: 70px; }
+  .pocket ul { padding-left: 0; list-style: none; color: var(--soft); }
+  .pocket li { margin: 0 0 14px; padding-left: 26px; position: relative; }
+  .pocket li::before { content: ""; position: absolute; left: 4px; top: .6em; width: 9px; height: 9px; border-radius: 50%; background: var(--lantern); box-shadow: 0 0 10px var(--lantern); }
+  .pocket li strong { color: var(--text); }
+  /* Three smaller features; each picture at a larger scale, its top-left corner only. */
+  .trio { display: grid; grid-template-columns: repeat(3, 1fr); gap: 36px; }
+  .trio .crop { height: 250px; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; }
+  .trio .crop .lui { width: 175%; opacity: .92; }
+  .trio h3 { font: 600 24px/1.2 var(--cond); margin: 18px 0 6px; }
+  .trio p { margin: 0; color: var(--soft); font-size: 15.5px; }
 
   .install { display: grid; grid-template-columns: 1fr 1.2fr; gap: 56px; align-items: center; }
   .version { display: inline-block; font-size: 14px; color: var(--lantern); border: 1px solid var(--lantern); border-radius: 6px; padding: 3px 10px; margin-bottom: 18px; text-decoration: none; }
@@ -100,7 +118,10 @@
     .hero { min-height: 0; padding-bottom: 40px; }
     .hero .pic { position: relative; right: auto; top: auto; width: 150%; margin: -30px -25% -80px; transform: none; opacity: .5; }
     .hero .copy { padding-top: 0; margin-top: -120px; }
-    .split, .split.flip, .install { grid-template-columns: 1fr; }
+    .split, .split.flip, .install, .pocket, .trio { grid-template-columns: 1fr; }
+    .phones { gap: 14px; }
+    .phones .lui { width: 46%; }
+    .phones .lui + .lui { margin-top: 40px; }
     .split .pic, .split.flip .pic { margin: 0 -20px; order: 0; overflow: hidden; }
     .split .pic .lui { width: 190%; margin-left: -8%; }
     section { padding: 60px 0; }
@@ -114,7 +135,7 @@
 <div class="wrap">
   <nav>
     <a class="brand" href="#"><img src="assets/icon.svg" alt="">Project Ledung</a>
-    <div class="links"><a href="#how">How it works</a><a href="#install">Install</a><a class="gh" href="https://github.com/Fluffy-Fluffy-and-Bouncy/ledung" aria-label="Ledung on GitHub"><svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg><span>GitHub</span></a><span data-mode-slot></span><a class="btn" href="#contact">Contact us</a></div>
+    <div class="links"><a href="#how">How it works</a><a href="#phone">From your phone</a><a href="#install">Install</a><a class="gh" href="https://github.com/Fluffy-Fluffy-and-Bouncy/ledung" aria-label="Ledung on GitHub"><svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg><span>GitHub</span></a><span data-mode-slot></span><a class="btn" href="#contact">Contact us</a></div>
   </nav>
   <header class="hero">
     <div class="pic"><div class="lui" data-scene="main" data-theme="auto"></div></div>
@@ -159,12 +180,36 @@
   </div>
 </section>
 
+<section id="phone">
+  <div class="wrap pocket">
+    <div class="phones"><div class="lui" data-scene="phone" data-theme="auto"></div><div class="lui" data-scene="push" data-theme="auto"></div></div>
+    <div>
+      <p class="kicker">From your phone</p>
+      <h2>Away from the desk, still at the helm.</h2>
+      <ul>
+        <li><strong>Anywhere, end to end encrypted.</strong> Ledung dials out to a relay, one you run yourself or one you join with a code from whoever runs it, so your computer needs no open port. Pair your phone once with a QR code.</li>
+        <li><strong>A passkey for changes.</strong> The phone can look at once; Face ID or a fingerprint unlocks it to answer and decide. Sensitive prompts are signed one by one.</li>
+        <li><strong>A nudge when you're needed.</strong> A push notification for each new question or permission prompt, even with Ledung closed. It names the computer, never what was asked.</li>
+        <li><strong>Or the Claude app.</strong> Each manager turns on Claude Code's Remote Control, so you can talk to it from there too.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap trio">
+    <div><div class="crop"><div class="lui" data-scene="linked" data-theme="auto"></div></div><h3>All your computers, one page</h3><p>Link your computers' Ledungs once. Each shows as a tab with what waits there, and their managers message each other across them.</p></div>
+    <div><div class="crop"><div class="lui" data-scene="board" data-theme="auto"></div></div><h3>Managers that talk to your team's</h3><p>Managers post to managers in other people's Ledungs through a GitHub repository you pick. You see each file before it leaves.</p></div>
+    <div><div class="crop"><div class="lui" data-scene="review" data-theme="auto"></div></div><h3>Sign off on one page</h3><p>A finished change comes as a review: what was solved, what was done, the evidence. Screenshots get Pass, Fail or Unsure.</p></div>
+  </div>
+</section>
+
 <section>
   <div class="wrap">
     <div class="facts">
       <div><h3>Away mode</h3><p>Leave for the evening. The manager keeps work moving within what you allowed and holds the rest for you.</p></div>
       <div><h3>Usage you can see</h3><p>Tokens per session, rolled up per manager, with your plan's limits and the machine's CPU and memory.</p></div>
-      <div><h3>One-button updates</h3><p>Update Ledung pulls, builds and restarts. Sessions keep running through the restart.</p></div>
+      <div><h3>Updates without stopping</h3><p>Run <code>npm install -g ledung</code> again and press Restart Ledung. Sessions keep running through the restart.</p></div>
       <div><h3>Windows, macOS, Linux</h3><p>Projects in plain folders or in dev containers. Everything stays on your machine.</p></div>
     </div>
   </div>
