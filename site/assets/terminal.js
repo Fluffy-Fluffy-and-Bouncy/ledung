@@ -1,5 +1,5 @@
 // The simulated install: types the npm commands into any <div data-term>, shows the output and a live ship,
-// waits, then starts over. Nothing is published yet; the pages say so beside it.
+// waits, then starts over. The same commands stand beside it as plain text to copy.
 (function () {
   const SCRIPT = [
     { cmd: 'npm install -g ledung' },
