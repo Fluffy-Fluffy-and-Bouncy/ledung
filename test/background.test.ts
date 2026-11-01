@@ -14,6 +14,8 @@ import { removeTemp } from './temp.ts';
 
 let base: string;
 const pids: number[] = [];
+/** Process groups a test started, ended after the file whatever happened, so a failed test can't keep it running. */
+const groups: number[] = [];
 
 before(() => {
   fs.mkdirSync(path.join(appDir(), '.test'), { recursive: true });
@@ -21,6 +23,13 @@ before(() => {
 });
 
 after(() => {
+  for (const group of groups) {
+    try {
+      process.kill(-group, 'SIGKILL');
+    } catch {
+      // Gone already.
+    }
+  }
   for (const pid of pids) {
     try {
       process.kill(pid);
@@ -105,7 +114,7 @@ test('a start returns once Ledung answers, which then runs on with its output in
 
 // What closing the terminal or Ctrl+C there does: every process in its process group is ended. The started Ledung is
 // in a group of its own and lives on (test review of PR #11: with detached false the other tests stayed green).
-test('ending the process group of the terminal that started Ledung leaves Ledung running', { skip: process.platform === 'win32' && 'process groups are POSIX' }, async () => {
+test('ending the process group of the terminal that started Ledung leaves Ledung running', { skip: process.platform === 'win32' && 'process groups are POSIX', timeout: 60_000 }, async () => {
   const { dir, data, config } = folder('terminal');
   const { script } = await standIn(dir, data, config);
   const terminal = path.join(dir, 'terminal.ts');
@@ -118,13 +127,42 @@ test('ending the process group of the terminal that started Ledung leaves Ledung
   ].join('\n'));
   // The terminal: a process group of its own, which stays open after the start returned.
   const shell = spawn(process.execPath, [terminal], { detached: true, stdio: ['ignore', 'pipe', 'inherit'] });
-  const said = await new Promise<string>((resolve) => shell.stdout.on('data', (b: Buffer) => resolve(b.toString())));
-  assert.equal(said.trim(), 'started 0');
-  const pid = Number(fs.readFileSync(path.join(dir, 'pid'), 'utf8'));
-  pids.push(pid);
+  groups.push(shell.pid!);
   const gone = new Promise((resolve) => shell.once('exit', resolve));
-  process.kill(-shell.pid!, 'SIGKILL');
-  await gone;
-  await new Promise((resolve) => setTimeout(resolve, 500));
-  assert.doesNotThrow(() => process.kill(pid, 0), 'Ledung still runs');
+  try {
+    // Its own line, not the first: a run from source prints the EXERCISED line before it (Mac check of PR #11, round 2).
+    let out = '';
+    const said = await new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`the start never returned; the terminal said: ${out}`)), 30_000);
+      shell.stdout.on('data', (b: Buffer) => {
+        out += b.toString();
+        const line = /^started .*$/m.exec(out)?.[0];
+        if (line) {
+          clearTimeout(timer);
+          resolve(line);
+        }
+      });
+      shell.once('exit', (code) => {
+        clearTimeout(timer);
+        reject(new Error(`the terminal exited (${code}); it said: ${out}`));
+      });
+    });
+    assert.equal(said, 'started 0');
+    const pid = Number(fs.readFileSync(path.join(dir, 'pid'), 'utf8'));
+    process.kill(-shell.pid!, 'SIGKILL');
+    await gone;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.doesNotThrow(() => process.kill(pid, 0), 'Ledung still runs');
+  } finally {
+    // Never left running, whatever failed: its open pipe would keep this file from ending.
+    try {
+      process.kill(-shell.pid!, 'SIGKILL');
+    } catch {
+      // Gone already.
+    }
+    shell.stdout.destroy();
+    // The stand-in Ledung too, if it started (it ends by itself after a minute anyway).
+    const pidFile = path.join(dir, 'pid');
+    if (fs.existsSync(pidFile)) pids.push(Number(fs.readFileSync(pidFile, 'utf8')));
+  }
 });
