@@ -257,9 +257,9 @@ export const api = {
   /** The sidebar order (issue #88): all projects, or one row's siblings, in their new order. */
   orderProjects: (names: string[]) => call<ProjectInfo[]>('POST', '/api/projects-order', { names }),
   orderSessions: (ids: string[]) => call('POST', '/api/sessions-order', { ids }),
-  accounts: () => call<{ accounts: AccountInfoView[]; defaultIdentity: unknown; choices: AccountChoices; signedOut?: SignInProblem[]; claudeProblem?: string | null; configFileProblems?: string[] }>('GET', '/api/accounts'),
-  /** Check again on the sign-in banner (issue #333). */
-  checkSignIn: () => call('POST', '/api/signin-check'),
+  accounts: () => call<{ accounts: AccountInfoView[]; defaultIdentity: unknown; choices: AccountChoices; signedOut?: SignInProblem[]; claudeProblem?: string | null; claudeLooked?: string[]; configFileProblems?: string[] }>('GET', '/api/accounts'),
+  /** Check again on the sign-in banner (issue #333); answers with the problems as they are now (#455). */
+  checkSignIn: () => call<{ signedOut?: SignInProblem[]; claudeProblem?: string | null }>('POST', '/api/signin-check'),
   addAccount: (a: { name: string; containerDir?: string }) => call<AccountInfoView>('POST', '/api/accounts', a),
   setAccountChoices: (c: Partial<AccountChoices>) => call<AccountChoices>('POST', '/api/account-choices', c),
   openAccountFolder: (name: string) => call('POST', `/api/accounts/${encodeURIComponent(name)}/open-folder`, {}),

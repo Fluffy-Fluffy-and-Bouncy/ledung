@@ -11,6 +11,7 @@ is nothing user-facing in it).
 
 ## 2026-11-01
 - `ledung` and the Ledung icon start Ledung in the background with no window, so no terminal has to stay open; Stop Ledung in Settings → Update & restart or `ledung stop` stops it, Start Ledung when I sign in (off unless switched on) starts it with Windows, macOS or Linux, its output goes to ledung.log in the data folder, and `ledung --foreground` runs it in the terminal as before (#456)
+- Claude Code is now also found where WinGet puts it, through a PATH an installer changed while Ledung ran (Windows), and, when nothing else is installed, as the Claude desktop app's own copy, which runs when it is new enough; when that copy is too old, the banner says so and gives the command to install Claude Code. The banner and Settings → Claude Code list every place Ledung looked. Check again shows "Checking…" and then "Checked again at …: still the same" when nothing changed, and a Claude Code installed while Ledung runs clears the banner without a restart (#455)
 
 ## 2026-10-30
 - The npm package is ready for its first publish: no longer marked private, and npm's page for it links to the public repository and its issues, with Project Ledung <martin@projectledung.com> as its author (#340)
