@@ -31,8 +31,12 @@ export const LEDUNG_GROUPS: SettingsGroup[] = [
     settings: [
       { label: 'Update Ledung', about: 'Gets what is new and restarts into it', keywords: ['upgrade', 'version', 'release', 'new'] },
       { label: 'Restart Ledung', about: 'Starts Ledung again on its newest version; sessions keep running', keywords: ['reload', 'reboot'] },
+      // Stopping Ledung from the page, start at sign-in and the background log (issue #456).
+      { label: 'Stop Ledung', about: 'Stops Ledung and its sessions', keywords: ['quit', 'exit', 'shut down', 'close', 'background'] },
       // A Ledung icon that starts Ledung (issue #415).
       { label: 'Shortcuts', about: 'A Ledung icon on the Desktop and in the Start menu, or in Applications', keywords: ['desktop', 'icon', 'start menu', 'applications', 'launcher', 'dock', 'shortcut'] },
+      { label: 'Start at sign-in', about: 'Start Ledung in the background when you sign in', keywords: ['startup', 'autostart', 'login', 'log in', 'boot', 'windows', 'launch agent'] },
+      { label: 'Log', about: "Where a background Ledung writes what it says", keywords: ['log', 'output', 'console', 'debug', 'ledung.log'] },
     ],
   },
   {

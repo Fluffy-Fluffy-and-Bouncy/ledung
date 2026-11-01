@@ -11,7 +11,7 @@ import { DEFAULT_PORT } from '../config.ts';
 import { openBrowser } from './open-browser.ts';
 import { userDataDir } from './paths.ts';
 
-/** Exit code of `--open-only` when no Ledung runs: the caller starts one (the macOS app's Terminal window). */
+/** Exit code of `--open-only` when no Ledung runs: the caller starts one (the macOS app, in the background since #456). */
 export const NOT_RUNNING_CODE = 3;
 
 /** The port the config names, or the default; null when the config can't be read (the start then says why). */

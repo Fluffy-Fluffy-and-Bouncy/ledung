@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-01
+- `ledung` and the Ledung icon start Ledung in the background with no window, so no terminal has to stay open; Stop Ledung in Settings → Update & restart or `ledung stop` stops it, Start Ledung when I sign in (off unless switched on) starts it with Windows, macOS or Linux, its output goes to ledung.log in the data folder, and `ledung --foreground` runs it in the terminal as before (#456)
+
 ## 2026-10-30
 - The npm package is ready for its first publish: no longer marked private, and npm's page for it links to the public repository and its issues, with Project Ledung <martin@projectledung.com> as its author (#340)
 - Push notifications with several computers: switch push on once, in the first tab's Settings → Phones, and the phone also gets every linked computer's new Waiting-for-you items, each titled with that computer's name; tapping one opens that computer's tab. Another computer's tab now says pushes for it come through the first tab, instead of a switch the browser blocks there (#451)

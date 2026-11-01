@@ -209,6 +209,7 @@ export const api = {
   /** A name of the user's own for a session, chat or manager (issue #223). */
   rename: (sessionId: string, title: string) => call<SessionInfo>('POST', `/api/sessions/${sessionId}/rename`, { title }),
   restart: () => call('POST', '/api/restart', {}),
+  stopLedung: () => call('POST', '/api/stop', {}),
   /** The first-run question and Settings → Shortcuts (issue #415). */
   shortcuts: () => call<ShortcutsView>('GET', '/api/shortcuts'),
   shortcutsAct: (action: ShortcutAction) => call<ShortcutsView>('POST', '/api/shortcuts', { action }),

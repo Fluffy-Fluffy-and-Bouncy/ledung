@@ -3,11 +3,11 @@
 // question's answer is kept; a Ledung with its own data folder keeps its shortcuts in it.
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { icnsFromPngs, icoFromPng, pngSize } from '../src/platform/icons.ts';
-import { ASKED_KEY, BUNDLE_ID, ENV_FILE, envFileText, iconFiles, launchTarget, powershell, Shortcuts, type ShortcutsOptions } from '../src/platform/shortcuts.ts';
+import { AGENT_LABEL, ASKED_KEY, BUNDLE_ID, desktopArg, ENV_FILE, envFileText, iconFiles, launchTarget, powershell, Shortcuts, STARTER_FILE, starterText, type ShortcutsOptions } from '../src/platform/shortcuts.ts';
 import { appDir } from '../src/platform/paths.ts';
 import { removeTemp } from './temp.ts';
 
@@ -126,7 +126,7 @@ test('No to the first-run question is kept and makes nothing', async () => {
   assert.equal(fs.existsSync(root), false, 'no folder was made');
 });
 
-test('macOS: Add makes Ledung.app with the icon, opening a running Ledung or starting one in Terminal; Remove takes it away', async () => {
+test('macOS: Add makes Ledung.app with the icon, opening a running Ledung or starting one in the background; Remove takes it away', async () => {
   const { s, meta, folders } = shortcuts('mac', 'darwin');
   const view = await s.act('add');
   const app = path.join(folders.applications, 'Ledung.app');
@@ -141,13 +141,14 @@ test('macOS: Add makes Ledung.app with the icon, opening a running Ledung or sta
   // Node where it was when the app was made, else the one the login shell finds (Mac check of PR #432, note 2).
   assert.ok(run.includes(`NODE='${process.execPath}'\n[ -x "$NODE" ] || NODE=$("\${SHELL:-/bin/zsh}" -lic 'command -v node'`), run);
   assert.ok(run.includes(`"$NODE" '${path.join(path.dirname(folders.applications), 'data', 'launcher.mjs')}' --open-only && exit 0`), run);
-  assert.match(run, /exec open -a Terminal "\$\(dirname "\$0"\)\/\.\.\/Resources\/start\.command"/);
+  // No Terminal window since #456: the release launcher starts in the background, its output in the data folder's log.
+  const log = path.join(path.dirname(folders.applications), 'data', 'ledung.log');
+  assert.ok(run.includes(`\nnohup "$NODE" '${path.join(path.dirname(folders.applications), 'data', 'launcher.mjs')}' >> '${log}' 2>&1 &\n`), run);
+  assert.ok(!run.includes('Terminal'), run);
+  assert.equal(fs.existsSync(path.join(app, 'Contents', 'Resources', 'start.command')), false);
   assert.ok(!run.includes('--env-file'), 'a Ledung on the usual folders carries no settings');
-  const start = fs.readFileSync(path.join(app, 'Contents', 'Resources', 'start.command'), 'utf8');
-  assert.ok(start.includes(`NODE='${process.execPath}'\n[ -x "$NODE" ] || NODE=node\nexec "$NODE" '`), start);
   if (process.platform !== 'win32') {
     assert.ok(fs.statSync(path.join(app, 'Contents', 'MacOS', 'Ledung')).mode & 0o100, 'the app script is executable');
-    assert.ok(fs.statSync(path.join(app, 'Contents', 'Resources', 'start.command')).mode & 0o100, 'start.command is executable');
   }
   const removed = await s.act('remove');
   assert.equal(fs.existsSync(app), false);
@@ -185,8 +186,8 @@ test('a Ledung started with its own data folder and config passes them on to its
   const envFile = path.join(path.dirname(folders.applications), 'data', ENV_FILE);
   const run = fs.readFileSync(path.join(folders.applications, 'Ledung.app', 'Contents', 'MacOS', 'Ledung'), 'utf8');
   assert.ok(run.includes(`"$NODE" '--env-file=${envFile}' '`), run);
-  const start = fs.readFileSync(path.join(folders.applications, 'Ledung.app', 'Contents', 'Resources', 'start.command'), 'utf8');
-  assert.ok(start.includes(`exec "$NODE" '--env-file=${envFile}' '`), start);
+  // The background start carries them too (#456).
+  assert.ok(run.includes(`nohup "$NODE" '--env-file=${envFile}' '`), run);
   assert.deepEqual(nodeSees(envFile), env);
   await s.act('remove');
   assert.equal(fs.existsSync(envFile), false, 'Remove takes the env file away');
@@ -227,7 +228,10 @@ function readLink(file: string): Record<string, string | number> {
   return JSON.parse(out);
 }
 
-test('Windows: Add makes Ledung.lnk on the Desktop and in the Start menu, minimised, with the icon; Remove takes them away', { skip: process.platform !== 'win32' && 'makes real Windows shortcuts' }, async () => {
+/** Windows Script Host, which the .lnk files run so that no console window opens (#456). */
+const wscript = () => path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'wscript.exe');
+
+test('Windows: Add makes Ledung.lnk on the Desktop and in the Start menu, starting with no window, with the icon; Remove takes them away', { skip: process.platform !== 'win32' && 'makes real Windows shortcuts' }, async () => {
   const { s, meta, folders, root } = shortcuts('windows', 'win32');
   const view = await s.act('add');
   const desktop = path.join(folders.desktop, 'Ledung.lnk');
@@ -236,17 +240,58 @@ test('Windows: Add makes Ledung.lnk on the Desktop and in the Start menu, minimi
   assert.equal(meta.values.get(ASKED_KEY), 'added');
   const ico = path.join(root, 'data', 'Ledung.ico');
   assert.ok(fs.readFileSync(ico).equals(icoFromPng(png256())));
+  const starter = path.join(root, 'data', STARTER_FILE);
   for (const file of [desktop, programs]) {
     const link = readLink(file);
-    assert.equal(String(link.target).toLowerCase(), process.execPath.toLowerCase());
-    assert.equal(link.arguments, `"${path.join(root, 'data', 'launcher.mjs')}"`);
-    // 7: minimised (SW_SHOWMINNOACTIVE), so Ledung's console sits in the taskbar.
-    assert.equal(link.window, 7);
+    // Not Node itself, which always gets a console window: the start script, run by Windows Script Host (#456).
+    assert.equal(String(link.target).toLowerCase(), wscript().toLowerCase());
+    assert.equal(link.arguments, `"//Nologo" "${starter}"`);
     assert.equal(String(link.icon).toLowerCase(), `${ico},0`.toLowerCase());
   }
+  // The release launcher runs where it is started, so the script sends its output to the log through cmd.exe.
+  const text = fs.readFileSync(starter, 'utf8');
+  assert.ok(text.includes(JSON.stringify(`cmd.exe /d /s /c ""${process.execPath}" "${path.join(root, 'data', 'launcher.mjs')}"`)), text);
+  assert.ok(text.includes(JSON.stringify(` >> "${path.join(root, 'data', 'ledung.log')}" 2>&1"`)), text);
+  assert.ok(text.includes(', 0, false);'), 'window style 0: hidden');
   const removed = await s.act('remove');
   assert.ok(removed.places.every((p) => !p.present));
-  assert.equal(fs.existsSync(desktop) || fs.existsSync(programs) || fs.existsSync(ico), false);
+  assert.equal(fs.existsSync(desktop) || fs.existsSync(programs) || fs.existsSync(ico) || fs.existsSync(starter), false);
+});
+
+/** Runs a start script as the .lnk does and waits for the file the started program writes. */
+async function runStarter(starter: string, args: string[], waitFor: string): Promise<string> {
+  const child = spawn(wscript(), ['//Nologo', starter, ...args], { windowsHide: true, stdio: 'ignore' });
+  try {
+    for (let i = 0; i < 100; i++) {
+      if (fs.existsSync(waitFor) && fs.statSync(waitFor).size > 0) return fs.readFileSync(waitFor, 'utf8');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error(`${waitFor} never came`);
+  } finally {
+    child.kill();
+  }
+}
+
+test('Windows: the start script runs the command it names, with its own arguments; the release launcher\'s output goes to the log', { skip: process.platform !== 'win32' && 'Windows Script Host' }, async () => {
+  // The `ledung` command (anything but launcher.mjs) goes to the background itself: the script runs it as it is.
+  const root = path.join(base, 'starter-Åsa');
+  const data = path.join(root, 'data');
+  fs.mkdirSync(data, { recursive: true });
+  const seen = path.join(root, 'seen.json');
+  const command = path.join(root, 'cli.mjs');
+  fs.writeFileSync(command, `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(seen)}, JSON.stringify(process.argv.slice(2)));`);
+  const direct = new Shortcuts({ launch: { node: process.execPath, script: command }, iconDir: data, icons, meta: memoryMeta(), platform: 'win32', folders: async () => ({ startup: path.join(root, 'Startup') }) });
+  await direct.act('sign-in-on');
+  assert.deepEqual(JSON.parse(await runStarter(path.join(data, STARTER_FILE), ['--no-open'], seen)), ['--no-open']);
+
+  // The release launcher: what it prints lands in ledung.log in the data folder.
+  const launcher = path.join(data, 'launcher.mjs');
+  fs.writeFileSync(launcher, "console.log('launcher says ' + process.argv.slice(2).join(' '));");
+  const release = new Shortcuts({ launch: { node: process.execPath, script: launcher }, iconDir: data, icons, meta: memoryMeta(), platform: 'win32', folders: async () => ({ startup: path.join(root, 'Startup') }) });
+  await release.act('sign-in-on');
+  const log = await runStarter(path.join(data, STARTER_FILE), ['--no-open'], path.join(data, 'ledung.log'));
+  assert.equal(log.trim(), 'launcher says --no-open');
+  await release.act('sign-in-off');
 });
 
 test('Windows: a Ledung with its own data folder and config passes them to Node through the .lnk', { skip: process.platform !== 'win32' && 'makes real Windows shortcuts' }, async () => {
@@ -256,7 +301,9 @@ test('Windows: a Ledung with its own data folder and config passes them to Node 
   const { s, folders } = shortcuts('windows-carry', 'win32', { launch: { node: process.execPath, script, env } });
   await s.act('add');
   const envFile = path.join(root, 'data', ENV_FILE);
-  assert.equal(readLink(path.join(folders.desktop, 'Ledung.lnk')).arguments, `"--env-file=${envFile}" "${script}"`);
+  // The .lnk runs the start script (#456), which passes the env file to Node.
+  assert.equal(readLink(path.join(folders.desktop, 'Ledung.lnk')).arguments, `"//Nologo" "${path.join(root, 'data', STARTER_FILE)}"`);
+  assert.ok(fs.readFileSync(path.join(root, 'data', STARTER_FILE), 'utf8').includes(JSON.stringify(`"${process.execPath}" "--env-file=${envFile}" "${script}"`).slice(1, -1)));
   assert.deepEqual(nodeSees(envFile), env);
   await s.act('remove');
   assert.equal(fs.existsSync(envFile), false);
@@ -268,4 +315,117 @@ test('Windows: a path with Å, ö or 中 comes back from PowerShell as it is', {
   const value = 'C:\\Users\\Åsa Ström\\OneDrive - 中文\\Skrivbord';
   const out = await powershell('$env:SHORTCUT_TEST | ConvertTo-Json -Compress', { SHORTCUT_TEST: value });
   assert.equal(JSON.parse(out), value);
+});
+
+// Start Ledung when I sign in (issue #456; Martin, 2026-11-01 21:41, Ledung question #1149): off until switched on,
+// per user, and only in this test's own folders, never the real Startup folder, LaunchAgents or autostart.
+
+test('the start at sign-in is off until switched on, and Off takes its file away', async () => {
+  const root = path.join(base, 'sign-in-mac');
+  const s = new Shortcuts({ launch: { node: process.execPath, script: path.join(root, 'data', 'launcher.mjs') }, iconDir: path.join(root, 'data'), icons, meta: memoryMeta(), platform: 'darwin', folders: async () => ({ applications: path.join(root, 'Applications'), startup: path.join(root, 'LaunchAgents') }) });
+  const before = await s.view();
+  assert.deepEqual(before.signIn, { available: true, reason: null, label: 'Start Ledung when I log in to this Mac', on: false, file: path.join(root, 'LaunchAgents', `${AGENT_LABEL}.plist`) });
+  assert.equal(fs.existsSync(path.join(root, 'LaunchAgents')), false, 'nothing is written until asked');
+  assert.equal((await s.act('sign-in-on')).signIn.on, true);
+  assert.equal((await s.act('sign-in-off')).signIn.on, false);
+  assert.equal(fs.existsSync(path.join(root, 'LaunchAgents', `${AGENT_LABEL}.plist`)), false);
+});
+
+test('macOS: the LaunchAgent runs Ledung at login in the foreground under launchd, without its page, output to the log', async () => {
+  const root = path.join(base, 'agent');
+  const folders = async () => ({ startup: path.join(root, 'LaunchAgents') });
+  const data = path.join(root, 'data');
+  const plist = path.join(root, 'LaunchAgents', `${AGENT_LABEL}.plist`);
+  // The `ledung` command gets --foreground: launchd keeps it, so it must not go to the background and exit.
+  const cli = path.join(root, 'pkg', 'dist', 'cli.js');
+  await new Shortcuts({ launch: { node: '/usr/local/bin/node', script: cli }, iconDir: data, icons, meta: memoryMeta(), platform: 'darwin', folders }).act('sign-in-on');
+  let text = fs.readFileSync(plist, 'utf8');
+  assert.ok(text.includes(`<key>Label</key><string>${AGENT_LABEL}</string>`), text);
+  assert.ok(text.includes(`    <string>/usr/local/bin/node</string>\n    <string>${cli}</string>\n    <string>--foreground</string>\n    <string>--no-open</string>\n`), text);
+  assert.ok(text.includes('<key>RunAtLoad</key><true/>'), text);
+  assert.ok(!text.includes('KeepAlive'), 'Stop Ledung stops it until the next login');
+  assert.ok(text.includes(`<key>StandardOutPath</key><string>${path.join(data, 'ledung.log')}</string>`), text);
+  // The release launcher runs where it is started already.
+  const launcher = path.join(data, 'launcher.mjs');
+  await new Shortcuts({ launch: { node: '/usr/local/bin/node', script: launcher }, iconDir: data, icons, meta: memoryMeta(), platform: 'darwin', folders }).act('sign-in-on');
+  text = fs.readFileSync(plist, 'utf8');
+  assert.ok(text.includes(`    <string>${launcher}</string>\n    <string>--no-open</string>\n`), text);
+});
+
+test('Linux: the start at sign-in is an autostart entry; shortcuts stay unavailable', async () => {
+  const root = path.join(base, 'autostart');
+  const s = new Shortcuts({ launch: { node: '/usr/bin/node', script: '/opt/ledung 1/dist/cli.js' }, iconDir: path.join(root, 'data'), icons, meta: memoryMeta(), platform: 'linux', folders: async () => ({ startup: path.join(root, 'autostart') }) });
+  const view = await s.act('sign-in-on');
+  assert.equal(view.available, false);
+  assert.equal(view.signIn.label, 'Start Ledung when I log in');
+  const entry = fs.readFileSync(path.join(root, 'autostart', `${AGENT_LABEL}.desktop`), 'utf8');
+  assert.ok(entry.startsWith('[Desktop Entry]\nType=Application\nName=Ledung\n'), entry);
+  assert.ok(entry.includes('\nExec="/usr/bin/node" "/opt/ledung 1/dist/cli.js" "--no-open"\n'), entry);
+  assert.ok(entry.includes('\nTerminal=false\n'), entry);
+});
+
+test('an Exec argument escapes quotes, $, backquotes and backslashes, and doubles %', () => {
+  // Quoting first (a\"b, \$HOME, a\\b), then the file's string escape doubles every backslash once more.
+  assert.equal(desktopArg('a"b'), '"a\\\\"b"');
+  assert.equal(desktopArg('$HOME'), '"\\\\$HOME"');
+  assert.equal(desktopArg('a\\b'), '"a\\\\\\\\b"');
+  assert.equal(desktopArg('100%'), '"100%%"');
+  assert.equal(desktopArg('/plain/path'), '"/plain/path"');
+});
+
+test('the icons and the start at sign-in share the env file: each keeps it while the other is on', async () => {
+  const root = path.join(base, 'shared');
+  const data = path.join(root, 'data');
+  const folders = async () => ({ applications: path.join(root, 'Applications'), startup: path.join(root, 'LaunchAgents') });
+  const s = new Shortcuts({ launch: { node: process.execPath, script: path.join(data, 'launcher.mjs'), env: { LEDUNG_DATA_DIR: data } }, iconDir: data, icons, meta: memoryMeta(), platform: 'darwin', folders });
+  await s.act('add');
+  await s.act('sign-in-on');
+  await s.act('remove');
+  assert.ok(fs.existsSync(path.join(data, ENV_FILE)), 'the start at sign-in still needs the env file');
+  await s.act('sign-in-off');
+  assert.equal(fs.existsSync(path.join(data, ENV_FILE)), false);
+});
+
+test('a Ledung with its own data folder keeps its start at sign-in in it too', async () => {
+  const data = path.join(base, 'own-startup');
+  await withLedungEnv({ LEDUNG_DATA_DIR: data }, async () => {
+    for (const platform of ['win32', 'darwin', 'linux'] as const) {
+      const view = await new Shortcuts({ launch: { node: process.execPath, script: 'x' }, iconDir: data, icons, meta: memoryMeta(), platform }).view();
+      assert.ok(view.signIn.file?.startsWith(path.join(data, 'shortcuts') + path.sep), `${platform}: ${view.signIn.file}`);
+    }
+  });
+});
+
+test('the start script escapes everything outside ASCII, which Windows Script Host would read in the code page', () => {
+  const text = starterText('"C:\\Users\\Åsa\\node.exe" "x"', '');
+  assert.ok(text.includes('"\\"C:\\\\Users\\\\\\u00c5sa\\\\node.exe\\" \\"x\\""'), text);
+  assert.ok(!/[^\x00-\x7e]/.test(text), 'ASCII only');
+});
+
+test('Windows: On puts a shortcut in the Startup folder, starting with no window and without the page', { skip: process.platform !== 'win32' && 'makes real Windows shortcuts' }, async () => {
+  const root = path.join(base, 'startup-windows');
+  const data = path.join(root, 'data');
+  const s = new Shortcuts({ launch: { node: process.execPath, script: path.join(root, 'pkg', 'dist', 'cli.js') }, iconDir: data, icons, meta: memoryMeta(), platform: 'win32', folders: async () => ({ desktop: path.join(root, 'Desktop'), 'start-menu': path.join(root, 'Programs'), startup: path.join(root, 'Startup') }) });
+  const file = path.join(root, 'Startup', 'Ledung at sign-in.lnk');
+  const view = await s.act('sign-in-on');
+  assert.deepEqual(view.signIn, { available: true, reason: null, label: 'Start Ledung when I sign in to Windows', on: true, file });
+  const link = readLink(file);
+  assert.equal(String(link.target).toLowerCase(), wscript().toLowerCase());
+  assert.equal(link.arguments, `"//Nologo" "${path.join(data, STARTER_FILE)}" "--no-open"`);
+  assert.ok(view.places.every((p) => !p.present), 'no icon is added with it');
+  const off = await s.act('sign-in-off');
+  assert.equal(off.signIn.on, false);
+  assert.equal(fs.existsSync(file) || fs.existsSync(path.join(data, STARTER_FILE)), false);
+});
+
+// Found in the loopback run: a Startup folder can hold a Ledung.lnk the person made to start Ledung their own way.
+test("a Ledung.lnk of the person's own in the Startup folder is not counted as on, and Off leaves it", async () => {
+  const root = path.join(base, 'startup-own');
+  const own = path.join(root, 'Startup', 'Ledung.lnk');
+  fs.mkdirSync(path.dirname(own), { recursive: true });
+  fs.writeFileSync(own, 'their own');
+  const s = new Shortcuts({ launch: { node: process.execPath, script: 'x' }, iconDir: path.join(root, 'data'), icons, meta: memoryMeta(), platform: 'win32', folders: async () => ({ startup: path.join(root, 'Startup') }) });
+  assert.equal((await s.view()).signIn.on, false);
+  await s.act('sign-in-off');
+  assert.equal(fs.readFileSync(own, 'utf8'), 'their own');
 });
