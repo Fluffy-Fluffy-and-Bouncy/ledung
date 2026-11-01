@@ -1,4 +1,4 @@
-// Ledung's local config: the port, the network, limits and browsing. Never committed (see README).
+// Ledung's local config: the port, the network, limits and browsing. Never committed (see docs/development.md, Setup).
 // Projects used to be listed here; they now live in Ledung's database and are managed in the page,
 // and any listed here are copied in once (projects and accounts, P1).
 import fs from 'node:fs';
