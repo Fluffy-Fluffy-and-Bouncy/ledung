@@ -6,7 +6,6 @@
 
   const sidebar = (sel = 'mgr') => `
   <div class="side">
-    <div class="row"><span class="btn">Overview</span><span class="btn">Usage · 412k today</span><span class="btn">Board</span></div>
     <div><div class="row small" style="justify-content:space-between"><span>5-hour</span><span class="muted">≈ 61% by reset</span></div>${ship('bar', 30, 'data-offset="20"')}<div class="small muted">resets in 2 h 10 min</div></div>
     <div class="grid2" style="gap:8px">
       <div><div class="row small" style="justify-content:space-between"><span>CPU</span><b class="ok">38%</b></div><div class="meter"><span style="--a:30%;--b:52%"></span></div><div class="small muted">3.0 cores of 8</div></div>
@@ -21,7 +20,7 @@
     <div class="row" style="justify-content:space-between;margin-top:4px"><span class="proj" style="color:var(--s3)">recipe-site</span><span class="btn small">+ Session</span></div>
     <div class="sess"><span class="dot idle"></span><div class="t"><div><span class="tag">Manager</span> Manager: recipe-site</div><div class="small muted">idle · 24k today</div></div>${ship('watch', 14, 'style="font-size:6px"')}</div>
     <div style="flex:1"></div>
-    <div class="row small muted" style="justify-content:space-between"><span class="btn">⚙</span><span>Connected</span></div>
+    <div class="row small" style="justify-content:space-between"><span class="btn">⚙</span><span class="chip">Usage · 412k today</span></div>
   </div>`;
 
   const scenes = {
