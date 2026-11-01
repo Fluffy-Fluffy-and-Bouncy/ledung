@@ -2,6 +2,7 @@
 // tab of this browser, re-renders the sidebar with it.
 import { useSyncExternalStore } from 'react';
 import { STATUS_DOT_KEY, readStatusDot, saveStatusDot } from './statusDot.ts';
+import { settingsStore } from './settingsStore.ts';
 
 const listeners = new Set<() => void>();
 let current = readStatusDot(localStorage);
@@ -24,5 +25,5 @@ const get = () => current;
 /** Whether the sidebar shows the status dot in this browser, and the Settings switch's setter. */
 export function useStatusDot(): [boolean, (on: boolean) => void] {
   const on = useSyncExternalStore(subscribe, get);
-  return [on, (next) => { saveStatusDot(localStorage, next); changed(next); }];
+  return [on, (next) => { saveStatusDot(settingsStore, next); changed(next); }];
 }

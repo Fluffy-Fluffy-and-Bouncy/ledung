@@ -2,6 +2,7 @@
 // another tab of this browser, re-renders the sidebar at once.
 import { useSyncExternalStore } from 'react';
 import { COMPACT_KEY, readCompact, saveCompact, type CompactStep } from './compactSidebar.ts';
+import { settingsStore } from './settingsStore.ts';
 
 const listeners = new Set<() => void>();
 let current = readCompact(localStorage);
@@ -24,5 +25,5 @@ const get = () => current;
 /** The sidebar's compact step in this browser, and the Settings slider's setter. */
 export function useCompactSidebar(): [CompactStep, (step: CompactStep) => void] {
   const step = useSyncExternalStore(subscribe, get);
-  return [step, (next) => { saveCompact(localStorage, next); changed(next); }];
+  return [step, (next) => { saveCompact(settingsStore, next); changed(next); }];
 }

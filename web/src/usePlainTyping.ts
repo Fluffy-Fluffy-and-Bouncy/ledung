@@ -2,6 +2,7 @@
 // another tab of this browser, re-renders every text field with it.
 import { useSyncExternalStore } from 'react';
 import { AUTOCORRECT_KEY, readAutocorrect, saveAutocorrect, typingProps } from './plainTyping.ts';
+import { settingsStore } from './settingsStore.ts';
 
 const listeners = new Set<() => void>();
 let current = readAutocorrect(localStorage);
@@ -24,7 +25,7 @@ const get = () => current;
 /** Whether autocorrect is on in this browser, for the Settings switch. */
 export function useAutocorrect(): [boolean, (on: boolean) => void] {
   const on = useSyncExternalStore(subscribe, get);
-  return [on, (next) => { saveAutocorrect(localStorage, next); changed(next); }];
+  return [on, (next) => { saveAutocorrect(settingsStore, next); changed(next); }];
 }
 
 /** The props every free-text field spreads: `<textarea {...typing}`. */

@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-01
+- On the phone, a linked computer's tab keeps its Settings → Look choices (theme, typing, sidebar) instead of losing them (#459)
 - Claude Code is now also found where WinGet puts it, through a PATH an installer changed while Ledung ran (Windows), and, when nothing else is installed, as the Claude desktop app's own copy, which runs when it is new enough; when that copy is too old, the banner says so and gives the command to install Claude Code. The banner and Settings → Claude Code list every place Ledung looked. Check again shows "Checking…" and then "Checked again at …: still the same" when nothing changed, and a Claude Code installed while Ledung runs clears the banner without a restart (#455)
 
 ## 2026-10-30

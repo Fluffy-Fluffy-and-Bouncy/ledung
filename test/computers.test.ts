@@ -131,10 +131,18 @@ test('another computer\'s tab shows its own page here in a frame, and stays a li
   const app = readFileSync(new URL('../web/src/App.tsx', import.meta.url), 'utf8');
   assert.match(app, /frameAnswer\(e\.data, e\.source === window\.parent\)/, 'answers only the page that frames it');
   assert.match(app, /window\.parent\.postMessage\(answer, e\.origin\)/, 'and only to the origin that asked');
-  // Every message anywhere in the page: these two.
+  // Every message anywhere in the page: these two, and Settings → Look's choices between a frame and the page that
+  // frames it (#459, Martin on Ledung question #1165, 2026-11-01: "a — Allow the settings exchange"): the frame's ask
+  // and saves, and the framing page's answer to that frame's window at its origin. frame-settings.test.ts pins what
+  // they may carry.
   const sources = (dir: URL): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((f) =>
     f.isDirectory() ? sources(new URL(`${f.name}/`, dir)) : /\.tsx?$/.test(f.name) ? [readFileSync(new URL(f.name, dir), 'utf8')] : []);
-  assert.equal(sources(new URL('../web/src/', import.meta.url)).join('\n').match(/postMessage/g)?.length, 2, 'the question and the answer only');
+  assert.equal(sources(new URL('../web/src/', import.meta.url)).join('\n').match(/postMessage/g)?.length, 5, 'the question and the answer, and the Look settings');
+  const settings = readFileSync(new URL('../web/src/settingsStore.ts', import.meta.url), 'utf8');
+  assert.equal(settings.match(/postMessage/g)?.length, 2, 'the frame: its ask and its saves');
+  assert.match(settings, /window\.parent\.postMessage\(frameSettingsAsk\(\), '\*'\)/, 'the ask carries nothing');
+  assert.match(settings, /window\.parent\.postMessage\(msg, framingOrigin\)/, 'saves go only to the page that answered, at its origin');
+  assert.match(view, /\(e\.source as Window\)\.postMessage\(reply, e\.origin\)/, 'the framing page answers only that frame');
   assert.match(view, /<iframe [^>]*src=\{c\.url!\}/);
   assert.match(view, /allow="publickey-credentials-get; publickey-credentials-create"/);
   assert.match(view, /className="ctab on"[^>]*aria-current="page"/);
