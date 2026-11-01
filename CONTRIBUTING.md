@@ -8,4 +8,4 @@ Thank you for wanting to help. Ledung is dual-licensed: under the GNU AGPL versi
 
 ## How the project works
 
-Read [CLAUDE.md](CLAUDE.md) for how the repository is worked on: decisions go in [docs/decisions.md](docs/decisions.md), every change to what Ledung does adds a line to [CHANGELOG.md](CHANGELOG.md), and `npm run check` must pass before a push.
+[docs/development.md](docs/development.md) says how to set up a clone, run and test Ledung from it, and the cross-platform rules every change follows. Read [CLAUDE.md](CLAUDE.md) for how the repository is worked on: decisions go in [docs/decisions.md](docs/decisions.md), every change to what Ledung does adds a line to [CHANGELOG.md](CHANGELOG.md), and `npm run check` must pass before a push.

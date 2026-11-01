@@ -14,7 +14,7 @@ Personal preferences and machine details, if any, are in `CLAUDE.local.md` next 
 
 ## Running Ledung without breaking the one you are in
 
-- Ledung runs from a release copy in the user data folder (`%APPDATA%\Ledung\app\<timestamp>` on Windows; see the README), never from this folder. **Never edit files in the user data folder**; change the source here and run `npm run release`.
+- Ledung runs from a release copy in the user data folder (`%APPDATA%\Ledung\app\<timestamp>` on Windows; see [docs/development.md](docs/development.md#running-ledung-from-a-clone)), never from this folder. **Never edit files in the user data folder**; change the source here and run `npm run release`.
 - A release is picked up when the person using Ledung presses **Restart Ledung**. Sessions survive the restart (each runs in a session host, `src/host/`), so a release never cuts you off. Don't restart or stop Ledung yourself.
 - **Never stop processes broadly.** Ledung, its launcher and every session host are `node` processes; `claude` processes include your own. When cleaning up after a test, stop the test Ledung by the process listening on its port, and its hosts by their command line, which contains the test's data folder. A test Ledung's own command line does not contain that folder (it is in the environment), so a filter on the folder name misses it.
 - To try Ledung for real, start a throwaway copy with its own config, data and port, so it doesn't touch the real one:
@@ -35,7 +35,7 @@ CI runs on the public repository `Fluffy-Fluffy-and-Bouncy/ledung` (Martin, 2026
 ## Code
 
 - **TypeScript run directly by Node 24** (type stripping), no build step for the core: only erasable syntax (no enums, no parameter properties), and relative imports end in `.ts`.
-- Follow the cross-platform rules in the [README](README.md): paths through `path`, user data through `src/platform/paths.ts`, everything about processes inside the runners and the host.
+- Follow the cross-platform rules in [docs/development.md](docs/development.md#cross-platform-rules): paths through `path`, user data through `src/platform/paths.ts`, everything about processes inside the runners and the host.
 - Tests use `node:test` (`test/*.test.ts`). Security rules (`test/server-security.test.ts`), file access (`test/files.test.ts`) and the host (`test/host.test.ts`) are covered; keep them that way when changing those parts.
 - Comments explain why, briefly, and point to the finding or decision behind a rule (for example "spike finding 2").
 - Database changes are new entries in `MIGRATIONS` (`src/store/database.ts`); never edit an existing one.
