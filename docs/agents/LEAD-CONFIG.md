@@ -23,7 +23,7 @@ Ledung sessions where the process is and that this file is the project's LEAD-CO
 |---|---|
 | `REPO` | `Fluffy-Fluffy-and-Bouncy/Project-Ledung` for issues and the board (moved from `FFBuddha/fleet` 2026-10-12, `docs/decisions.md`). Code and PRs are on the public `Fluffy-Fluffy-and-Bouncy/ledung` since 2026-10-29 (Ledung question #487): open and merge PRs with `gh pr … -R Fluffy-Fluffy-and-Bouncy/ledung`, and refer to issues from there as `Fluffy-Fluffy-and-Bouncy/Project-Ledung#N` |
 | `DEFAULT_BRANCH` | `main` |
-| `WIN_CLONE` | per machine: the clone releases are built from; sessions work in worktrees only — Martin's Windows PC `%USERPROFILE%\claude-project\ledung` · Martin's Mac `~/claude-project/fleet` |
+| `WIN_CLONE` | per machine: the clone releases are built from; sessions work in worktrees only — Martin's Windows PC `%USERPROFILE%\claude-project\ledung` · Martin's Mac `~/claude-project/project-ledung` |
 
 ## Board
 
