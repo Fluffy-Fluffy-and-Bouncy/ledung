@@ -70,9 +70,18 @@ test('the desktop app copy is looked for in the Microsoft Store package and in t
   const win = computer({ platform: 'win32', files: [store], versions: { [store]: '2.1.300 (Claude Code)' } });
   assert.deepEqual(desktopAppFolders(win), [APP_DIR, `${LOCAL}\\Packages\\Claude_pzs8sxrjxfjjc\\LocalCache\\Roaming\\Claude\\claude-code`]);
   assert.equal((await chooseClaude('installed', win)).program?.path, store);
-  const mac = '/Users/sam/Library/Application Support/Claude/claude-code/2.1.300/claude';
-  const c = await chooseClaude('installed', computer({ platform: 'darwin', files: [mac], versions: { [mac]: '2.1.300 (Claude Code)' } }));
-  assert.deepEqual(c.program, { kind: 'installed', path: mac, version: '2.1.300', app: true });
+  // The Mac layout as the Mac check run on PR #10 listed it (2026-11-01): a signed bundle in a hash folder per
+  // version, and beside claude-code a claude-code-vm holding a Linux program for the app's VM, never taken.
+  const support = '/Users/sam/Library/Application Support/Claude';
+  const older = `${support}/claude-code/2.1.293/8433d0d9cd0d/claude.app/Contents/MacOS/claude`;
+  const mac = `${support}/claude-code/2.1.295/9d6405864fdc/claude.app/Contents/MacOS/claude`;
+  const vm = `${support}/claude-code-vm/2.1.300/claude`;
+  const versions = { [older]: '2.1.293 (Claude Code)', [mac]: '2.1.295 (Claude Code)', [vm]: '2.1.300 (Claude Code)' };
+  const files = [`${support}/claude-code/2.1.295/9d6405864fdc/.verified`, older, mac, vm];
+  const look = computer({ platform: 'darwin', files, versions });
+  const c = await chooseClaude('installed', look);
+  assert.deepEqual(c.program, { kind: 'installed', path: mac, version: '2.1.295', app: true });
+  assert.ok(!look.asked.includes(vm), "the VM's Linux program is not run");
 });
 
 test("a Claude Code of the user's own comes before the desktop app's copy", async () => {
@@ -97,6 +106,18 @@ test("the desktop app's own program, also named claude.exe, is never run, even o
   assert.deepEqual(launcher.asked, [BUNDLED_WIN]);
 });
 
+test("on macOS the app (Claude.app) is never run, but a claude that leads to the app's Claude Code (claude.app) is", async () => {
+  forgetVersions();
+  const app = '/Applications/Claude.app/Contents/MacOS/Claude';
+  const onPath = computer({ platform: 'darwin', files: ['/Applications/Claude.app/Contents/MacOS/claude'], env: { PATH: '/Applications/Claude.app/Contents/MacOS' } });
+  assert.equal(searchInstalled({ ...onPath, realpath: () => app }).program, null);
+  // A link of the user's own to the app's copy, as the Mac check run on PR #10 made one (2026-11-01).
+  const link = '/Users/sam/.local/bin/claude';
+  const copy = '/Users/sam/Library/Application Support/Claude/claude-code/2.1.295/9d6405864fdc/claude.app/Contents/MacOS/claude';
+  const linked = computer({ platform: 'darwin', files: [link, copy] });
+  assert.equal(searchInstalled({ ...linked, realpath: (f) => (f === link ? copy : f) }).program, link);
+});
+
 test('a WinGet install is found by its link, off the PATH', async () => {
   forgetVersions();
   const link = `${LOCAL}\\Microsoft\\WinGet\\Links\\claude.exe`;
@@ -115,7 +136,7 @@ test('every place looked is listed, in order: the PATH, the installers\' places,
     `${APP_DIR}\\<version>\\claude.exe`,
   ]);
   const mac = await chooseClaude('installed', computer({ platform: 'darwin', files: [] }));
-  assert.equal(mac.looked?.at(-1), '/Users/sam/Library/Application Support/Claude/claude-code/<version>/claude');
+  assert.equal(mac.looked?.at(-1), '/Users/sam/Library/Application Support/Claude/claude-code/<version>/<hash>/claude.app/Contents/MacOS/claude');
   assert.equal(mac.looked?.[0], '/usr/bin/claude');
 });
 

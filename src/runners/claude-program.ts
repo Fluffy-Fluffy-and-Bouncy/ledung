@@ -237,8 +237,11 @@ function programOf(file: string, look: Lookup): string | null {
 /**
  * The desktop app's own program, which is named claude too: `--version` would open its window, so never run (#455).
  * On Windows both its launcher (`AnthropicClaude\claude.exe`) and the app in each version folder (`app-*\claude.exe`).
+ * On macOS `Claude.app` only, by case: the app's Claude Code is a `claude.app` bundle (Mac check run on PR #10).
  */
-const DESKTOP_APP = /[\\/]AnthropicClaude[\\/](app-[^\\/]+[\\/])?claude\.exe$|[\\/]Claude\.app[\\/]Contents[\\/]MacOS[\\/]/i;
+function isDesktopApp(file: string): boolean {
+  return /[\\/]AnthropicClaude[\\/](app-[^\\/]+[\\/])?claude\.exe$/i.test(file) || /[\\/]Claude\.app[\\/]Contents[\\/]MacOS[\\/]/.test(file);
+}
 
 /** What a search found, and every file it tried, in order and each once. */
 export interface Search {
@@ -268,7 +271,7 @@ export function searchInstalled(look: Lookup, pathVar: string = look.env.PATH ??
     const real = look.realpath(program);
     if (bundled && same(real, bundled)) continue;
     if (/[\\/]node_modules[\\/]@anthropic-ai[\\/]claude-agent-sdk/i.test(real)) continue;
-    if (DESKTOP_APP.test(real)) continue;
+    if (isDesktopApp(real)) continue;
     return { program, looked };
   }
   return { program: null, looked };
@@ -281,10 +284,10 @@ export function findInstalled(look: Lookup): string | null {
 
 /**
  * The folders where the Claude desktop app keeps the Claude Code its Code tab runs, one folder per version
- * (`claude-code/<version>/claude`). It isn't on the PATH, and the app updates it itself (#455). On Windows it is
- * in the app's Roaming folder (seen 2026-11-01: `%APPDATA%\Claude\claude-code\2.1.49\claude.exe`), or under the
- * package's LocalCache when the app came from the Microsoft Store; on macOS and Linux in the app's data folder
- * (the same layout in Electron's data folder for the app, not yet seen on a Mac).
+ * (`claude-code/<version>/…`, see appProgramIn). It isn't on the PATH, and the app updates it itself (#455). On
+ * Windows it is in the app's Roaming folder (seen 2026-11-01: `%APPDATA%\Claude\claude-code\2.1.49\claude.exe`), or
+ * under the package's LocalCache when the app came from the Microsoft Store; on macOS and Linux in the app's data
+ * folder (seen on a Mac 2026-11-01; on Linux assumed, not yet seen).
  */
 export function desktopAppFolders(look: Pick<Lookup, 'platform' | 'env' | 'home' | 'listDir'>): string[] {
   const { home, env } = look;
@@ -300,18 +303,33 @@ export function desktopAppFolders(look: Pick<Lookup, 'platform' | 'env' | 'home'
   return [p.join(env.XDG_CONFIG_HOME ?? p.join(home, '.config'), 'Claude', 'claude-code')];
 }
 
-/** The newest Claude Code the desktop app keeps, and where it looked (each folder with `<version>` for the version). */
+/**
+ * The program in one version folder of the desktop app's Claude Code, or null. On macOS it is a signed bundle in
+ * a hash folder, `<version>/<hash>/claude.app/Contents/MacOS/claude` (Mac check run on PR #10, 2026-11-01, one hash
+ * folder per version); elsewhere `<version>/claude(.exe)`. With `hash` given, the path for the list of places.
+ */
+function appProgramIn(look: Lookup, versionDir: string, hash?: string): string | null {
+  if (look.platform === 'win32') return path.win32.join(versionDir, 'claude.exe');
+  if (look.platform !== 'darwin') return path.posix.join(versionDir, 'claude');
+  const inBundle = (h: string) => path.posix.join(versionDir, h, 'claude.app', 'Contents', 'MacOS', 'claude');
+  if (hash) return inBundle(hash);
+  return (look.listDir?.(versionDir) ?? []).sort().map(inBundle).find((f) => look.stat(f)) ?? null;
+}
+
+/**
+ * The newest Claude Code the desktop app keeps, and where it looked (each folder with `<version>` for the version).
+ * Only its `claude-code` folders: the `claude-code-vm` beside it on macOS holds a Linux program for the app's VM.
+ */
 export function desktopAppCopy(look: Lookup): Search {
   const p = look.platform === 'win32' ? path.win32 : path.posix;
-  const exe = look.platform === 'win32' ? 'claude.exe' : 'claude';
   const looked: string[] = [];
   let best: { program: string; version: string } | null = null;
   for (const folder of desktopAppFolders(look)) {
-    looked.push(p.join(folder, '<version>', exe));
+    looked.push(appProgramIn(look, p.join(folder, '<version>'), '<hash>')!);
     for (const name of look.listDir?.(folder) ?? []) {
       const version = parseVersion(name);
-      const program = p.join(folder, name, exe);
-      if (!version || !look.stat(program)) continue;
+      const program = version ? appProgramIn(look, p.join(folder, name)) : null;
+      if (!version || !program || !look.stat(program)) continue;
       if (!best || !atLeast(best.version, version)) best = { program, version };
     }
   }
