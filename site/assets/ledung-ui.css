@@ -77,3 +77,27 @@
 @keyframes lui-spin { to { transform: rotate(360deg); } }
 .lui .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .lui .shipbig pre { font-size: 15px; line-height: 1.05; }
+/* Phone stage (draft, issue #452): a 390 px wide phone, its list as the start screen. */
+.lui-stage.phone { width: 390px; height: 800px; border-radius: 46px; border: 10px solid #05080d; font-size: 14px; }
+.lui .statusbar { height: 34px; flex: none; display: flex; justify-content: space-between; align-items: center; padding: 0 26px; font-size: 13px; }
+.lui .remote-band { flex: none; text-align: center; font-size: 11.5px; padding: 2px 0; background: #7aa2f7; color: #10131a; font-weight: 600; }
+.lui .pbody { flex: 1; display: flex; flex-direction: column; gap: 10px; padding: 12px 14px 16px; background: var(--panel); }
+.lui .chip { border: 1px solid var(--ok); color: var(--ok); border-radius: 999px; padding: 1px 9px; font-size: 11px; }
+.lui .lock { text-align: center; padding: 40px 0 30px; }
+.lui .lock .clock { font-size: 76px; font-weight: 300; line-height: 1; letter-spacing: -.02em; }
+.lui .notes { display: flex; flex-direction: column; gap: 10px; padding: 0 14px; }
+.lui .note { background: color-mix(in srgb, var(--panel) 85%, transparent); border: 1px solid var(--border); border-radius: 18px; padding: 11px 14px; display: flex; flex-direction: column; gap: 3px; }
+.lui .note .row { gap: 8px; }
+.lui .app-ic { width: 20px; height: 20px; border-radius: 5px; background: url(icon.svg) center / cover, #0e1c2b; }
+/* Computer tabs (#273, #299): this computer's raised, each in its colour, a frame round another computer's page. */
+.lui .ctabs { flex: none; display: flex; gap: 4px; padding: 5px 10px 0; background: var(--bg); border-bottom: 1px solid var(--border); }
+.lui .ctab { border: 1px solid var(--border); border-bottom: none; border-top: 3px solid var(--c); border-radius: 6px 6px 0 0; padding: 3px 14px; color: var(--muted); font-size: 12px; display: flex; gap: 6px; align-items: center; }
+.lui .ctab.on { color: var(--text); background: var(--panel); }
+.lui .badge { background: var(--wait); color: #1a1405; border-radius: 999px; padding: 0 6px; font-size: 10.5px; }
+.lui .cframe { border: 3px solid var(--c); }
+.lui .shot { width: 300px; }
+.lui .shot-img { height: 150px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 14px; display: flex; flex-direction: column; gap: 8px; }
+.lui .shot-img .bar1 { height: 10px; width: 70%; background: var(--border); border-radius: 3px; }
+.lui .shot-img .bar2 { height: 54px; background: var(--code-bg); border: 1px dashed var(--border); border-radius: 6px; }
+.lui .shot-img .spin-txt { color: var(--wait); font-size: 12px; }
+.lui .lockbtn { width: 44px; height: 44px; border-radius: 50%; background: color-mix(in srgb, var(--panel) 85%, transparent); border: 1px solid var(--border); }
