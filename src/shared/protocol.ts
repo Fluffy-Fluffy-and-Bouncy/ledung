@@ -406,6 +406,8 @@ export interface ClaudeProgramInfo {
   path: string;
   /** What `--version` said; null when it couldn't be read. */
   version: string | null;
+  /** The Claude desktop app's own copy, found when nothing else was (#455). */
+  app?: true;
 }
 
 /** Settings' Claude Code (issue #341): which program new sessions start, or why none can. */
@@ -421,6 +423,8 @@ export interface ClaudeCodeView {
   bundled: ClaudeProgramInfo | null;
   /** Why no session can start: Claude Code missing, too old, or its version unreadable, with how to fix it; null: none. */
   problem: string | null;
+  /** Every file Ledung tried, in order (#455): the PATH's folders, the installers' places, the desktop app's. */
+  looked?: string[];
 }
 
 export interface SignInInfo {
@@ -1202,6 +1206,8 @@ export type ServerEvent =
       signedOut?: SignInProblem[];
       /** Claude Code missing or too old on this computer (issue #341), with how to fix it; null or left out: none. */
       claudeProblem?: string | null;
+      /** Where Ledung looked for Claude Code, shown with that problem (#455); left out: nowhere to show. */
+      claudeLooked?: string[];
       /** Accounts in the config file's "claudeAccounts" that couldn't be added or changed (issue #425), in words; empty or left out: none. */
       configFileProblems?: string[];
     };

@@ -32,6 +32,7 @@ export function useLedung(openSessionId: string | null) {
   const [macros, setMacros] = useState<Macro[]>([]);
   const [signedOut, setSignedOut] = useState<SignInProblem[]>([]);
   const [claudeProblem, setClaudeProblem] = useState<string | null>(null);
+  const [claudeLooked, setClaudeLooked] = useState<string[]>([]);
   const [accountProblems, setAccountProblems] = useState<string[]>([]);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [machine, setMachine] = useState<MachineInfo | null>(null);
@@ -156,6 +157,7 @@ export function useLedung(openSessionId: string | null) {
               setAccountChoices(a.choices);
               setSignedOut(a.signedOut ?? []);
               setClaudeProblem(a.claudeProblem ?? null);
+              setClaudeLooked(a.claudeLooked ?? []);
               setAccountProblems(a.configFileProblems ?? []);
             }, () => {});
             break;
@@ -186,6 +188,7 @@ export function useLedung(openSessionId: string | null) {
             setAccountChoices(event.choices);
             setSignedOut(event.signedOut ?? []);
             setClaudeProblem(event.claudeProblem ?? null);
+            setClaudeLooked(event.claudeLooked ?? []);
             setAccountProblems(event.configFileProblems ?? []);
             break;
           case 'board':
@@ -262,5 +265,5 @@ export function useLedung(openSessionId: string | null) {
     };
   }, []);
 
-  return { connection, loaded, canRestart, hellos, updated, userName, source, questions, limits, usageStops, macros, signedOut, claudeProblem, accountProblems, overview, machine, away, accounts, accountChoices, defaultIdentity, board, github, remote, computers, newComputers, linkPairings, throughPublicName, configStatus, chats, profiles, lockdownB, bangShell, sessions, projects, permissions, messages, hasEarlier, loadEarlier };
+  return { connection, loaded, canRestart, hellos, updated, userName, source, questions, limits, usageStops, macros, signedOut, claudeProblem, claudeLooked, accountProblems, overview, machine, away, accounts, accountChoices, defaultIdentity, board, github, remote, computers, newComputers, linkPairings, throughPublicName, configStatus, chats, profiles, lockdownB, bangShell, sessions, projects, permissions, messages, hasEarlier, loadEarlier };
 }

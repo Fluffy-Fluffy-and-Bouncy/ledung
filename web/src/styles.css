@@ -822,6 +822,10 @@ table.calls td { white-space: nowrap; }
 .shortcut-places { list-style: none; padding: 0; margin: 0.5rem 0; display: flex; flex-direction: column; gap: 0.25rem; }
 .banner.install { background: var(--panel-2); border-bottom: 1px solid var(--border); cursor: default; display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
 .banner pre { margin: 0.4rem 0; white-space: pre-wrap; }
+/* Where Ledung looked for Claude Code (#455): folded, a row of its own under the banner's line. */
+.looked { flex-basis: 100%; font-size: 0.85em; }
+.looked summary { cursor: pointer; }
+.looked ul { margin: 0.3rem 0 0; padding-left: 1.2rem; max-height: 12rem; overflow: auto; word-break: break-all; }
 
 /* Archived sessions (idle stop and archive): a quiet link under the project's sessions, and the list. */
 .archived-link { display: block; width: 100%; text-align: left; background: none; border: none; padding: 0.2rem 0.75rem 0.4rem 1.6rem; font-size: 0.8rem; color: var(--muted, #888); cursor: pointer; }

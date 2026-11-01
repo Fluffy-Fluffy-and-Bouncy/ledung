@@ -4,11 +4,22 @@
 import { useEffect, useState } from 'react';
 import type { ClaudeCodeView, SessionInfo } from '../../../src/shared/protocol.ts';
 import { api } from '../api.ts';
-import { PROGRAM_KIND, problemParts, runningPrograms } from '../claudeProgram.ts';
+import { APP_COPY, PROGRAM_KIND, problemParts, runningPrograms } from '../claudeProgram.ts';
+import { CheckAgain } from './CheckAgain.tsx';
 
 /** A problem's text with its commands as code and its address as a link (the page's banner too). */
 export function ProblemText({ text }: { text: string }) {
   return <>{problemParts(text).map((p, i) => (p.kind === 'code' ? <code key={i}>{p.text}</code> : p.kind === 'link' ? <a key={i} href={p.text} target="_blank" rel="noreferrer">{p.text}</a> : p.text))}</>;
+}
+
+/** Every file Ledung tried for Claude Code, folded (#455): `<version>` stands for the desktop app's version folders. */
+export function LookedList({ looked }: { looked: string[] }) {
+  return (
+    <details className="looked">
+      <summary>Where Ledung looked ({looked.length})</summary>
+      <ul className="mono">{looked.map((l) => <li key={l}>{l}</li>)}</ul>
+    </details>
+  );
 }
 
 /** A table cell starts with a capital. */
@@ -17,15 +28,15 @@ const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 export function ClaudeCodeSettings({ sessions }: { sessions: SessionInfo[] }) {
   const [view, setView] = useState<ClaudeCodeView | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const load = () => api.claudeCode().then((v) => { setView(v); setError(null); }, (e: Error) => setError(e.message));
-  useEffect(() => { void load(); }, []);
+  const load = () => api.claudeCode().then((v) => { setView(v); setError(null); return v; }, (e: Error) => { setError(e.message); throw e; });
+  useEffect(() => { load().catch(() => {}); }, []);
   const running = runningPrograms(sessions);
   const program = view?.program;
   return (
     <section>
       <h3>Claude Code</h3>
       <p className="muted">
-        Ledung runs your Claude Code: the <code>claude</code> on the PATH or where its installer puts it
+        Ledung runs your Claude Code: the <code>claude</code> on the PATH or where its installer puts it, else the Claude desktop app's own copy
         {view?.required && <>, version {view.required} or newer (the one Ledung's Agent SDK was built for)</>}. Without it, sessions don't start.
         A running session keeps the program it started with.
       </p>
@@ -34,14 +45,15 @@ export function ClaudeCodeSettings({ sessions }: { sessions: SessionInfo[] }) {
       {view && (
         <table className="plain">
           <tbody>
-            <tr><th>New sessions run</th><td>{program ? <>{cap(PROGRAM_KIND[program.kind])} {program.version && <>· {program.version}</>}<div className="muted mono">{program.path}</div></> : "Nothing: sessions don't start"}</td></tr>
+            <tr><th>New sessions run</th><td>{program ? <>{cap(program.app ? APP_COPY : PROGRAM_KIND[program.kind])} {program.version && <>· {program.version}</>}<div className="muted mono">{program.path}</div></> : "Nothing: sessions don't start"}</td></tr>
             {view.installed && view.installed.path !== program?.path && (
-              <tr><th>Found</th><td>{cap(PROGRAM_KIND[view.installed.kind])} · {view.installed.version ?? 'version unknown'}<div className="muted mono">{view.installed.path}</div></td></tr>
+              <tr><th>Found</th><td>{cap(view.installed.app ? APP_COPY : PROGRAM_KIND[view.installed.kind])} · {view.installed.version ?? 'version unknown'}<div className="muted mono">{view.installed.path}</div></td></tr>
             )}
           </tbody>
         </table>
       )}
-      <button onClick={() => void load()}>Check again</button>
+      {view?.looked && view.looked.length > 0 && <LookedList looked={view.looked} />}
+      <p><CheckAgain primary={false} check={async () => !!(await load()).problem} /></p>
       {running.length > 0 && (
         <>
           <h4>Running sessions</h4>
