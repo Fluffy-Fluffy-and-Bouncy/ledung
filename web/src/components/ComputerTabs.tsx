@@ -6,7 +6,8 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api } from '../api.ts';
 import type { ComputerInfo } from '../../../src/shared/computers.ts';
-import { computerStyle, FRAME_ANSWER_MS, frameAsk, framePaired, pairsThroughLink, showsHere, tabWaiting, type ComputerFrame, type FramePairing } from '../computerFrame.ts';
+import { computerStyle, FRAME_ANSWER_MS, frameAsk, pairsThroughLink, showsHere, tabWaiting, type ComputerFrame, type FramePairing } from '../computerFrame.ts';
+import { frameMessage, type FrameSettingsMessage } from '../frameSettings.ts';
 
 const globe = (
   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
@@ -85,7 +86,10 @@ export function ComputerFrames({ computers, opened, shown, throughPublicName = f
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {
       for (const c of framed) {
-        if (!framePaired({ data: e.data, origin: e.origin, fromFrame: e.source === frames.current[c.id]?.contentWindow }, c.url!)) continue;
+        const msg = { data: e.data, origin: e.origin, fromFrame: e.source === frames.current[c.id]?.contentWindow };
+        // That computer's Settings → Look, kept here where an iPhone keeps them (#459), and its "paired" (#286).
+        const reply = (answer: FrameSettingsMessage) => (e.source as Window).postMessage(answer, e.origin);
+        if (!frameMessage(msg, { id: c.id, url: c.url! }, localStorage, reply)) continue;
         clearTimeout(timers.current[c.id]);
         setPaired((p) => ({ ...p, [c.id]: 'paired' }));
       }

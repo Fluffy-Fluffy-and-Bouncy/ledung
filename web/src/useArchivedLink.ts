@@ -2,6 +2,7 @@
 // in Settings, or in another tab of this browser, re-renders the sidebar with it.
 import { useSyncExternalStore } from 'react';
 import { ARCHIVED_LINK_KEY, readArchivedLink, saveArchivedLink } from './archivedLink.ts';
+import { settingsStore } from './settingsStore.ts';
 
 const listeners = new Set<() => void>();
 let current = readArchivedLink(localStorage);
@@ -24,5 +25,5 @@ const get = () => current;
 /** Whether the sidebar shows "Archived (N)" in this browser, and the Settings switch's setter. */
 export function useArchivedLink(): [boolean, (on: boolean) => void] {
   const on = useSyncExternalStore(subscribe, get);
-  return [on, (next) => { saveArchivedLink(localStorage, next); changed(next); }];
+  return [on, (next) => { saveArchivedLink(settingsStore, next); changed(next); }];
 }

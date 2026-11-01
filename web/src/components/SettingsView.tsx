@@ -43,6 +43,7 @@ import { LEDUNG_GROUPS, groupOf, groupView, remoteFeatures, remoteWord, tabGroup
 import { NARROW_QUERY } from '../sidebarSize.ts';
 import { MacrosSettings } from './MacrosSettings.tsx';
 import type { Macro } from '../../../src/shared/macros.ts';
+import { settingsStore } from '../settingsStore.ts';
 
 export function SettingsView(props: {
   /** The view: "settings", "settings:<group>", or the old "accounts". */
@@ -339,7 +340,7 @@ function ThemeChoice() {
   const [theme, setTheme] = useState<Theme>(() => readTheme(localStorage));
   const choose = (t: Theme) => {
     setTheme(t);
-    saveTheme(localStorage, t);
+    saveTheme(settingsStore, t);
     applyTheme(document.documentElement, t);
   };
   return (
