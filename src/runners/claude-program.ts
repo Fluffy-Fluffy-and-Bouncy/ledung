@@ -234,8 +234,11 @@ function programOf(file: string, look: Lookup): string | null {
   return /\.(c|m)?js$/i.test(real) ? real : file;
 }
 
-/** The desktop app's own program, which is named claude too: `--version` would open its window, so never run (#455). */
-const DESKTOP_APP = /[\\/]AnthropicClaude[\\/]app-[^\\/]+[\\/]claude\.exe$|[\\/]Claude\.app[\\/]Contents[\\/]MacOS[\\/]/i;
+/**
+ * The desktop app's own program, which is named claude too: `--version` would open its window, so never run (#455).
+ * On Windows both its launcher (`AnthropicClaude\claude.exe`) and the app in each version folder (`app-*\claude.exe`).
+ */
+const DESKTOP_APP = /[\\/]AnthropicClaude[\\/](app-[^\\/]+[\\/])?claude\.exe$|[\\/]Claude\.app[\\/]Contents[\\/]MacOS[\\/]/i;
 
 /** What a search found, and every file it tried, in order and each once. */
 export interface Search {

@@ -90,6 +90,11 @@ test("the desktop app's own program, also named claude.exe, is never run, even o
   const c = await chooseClaude('installed', look);
   assert.equal(c.installed, null);
   assert.deepEqual(look.asked, [BUNDLED_WIN], '--version would open its window: only the SDK copy was asked');
+  // Nor its launcher one folder up (review of PR #10), seen next to the app-* folders on 2026-11-01.
+  forgetVersions();
+  const launcher = computer({ platform: 'win32', files: [`${LOCAL}\\AnthropicClaude\\claude.exe`], env: { Path: `${LOCAL}\\AnthropicClaude`, APPDATA: ROAMING, LOCALAPPDATA: LOCAL } });
+  assert.equal((await chooseClaude('installed', launcher)).installed, null);
+  assert.deepEqual(launcher.asked, [BUNDLED_WIN]);
 });
 
 test('a WinGet install is found by its link, off the PATH', async () => {
@@ -139,10 +144,11 @@ test("the registry's Path is read as reg query prints it, with %NAME% filled in"
   assert.equal(regValue('    Path    REG_SZ    %NOPE%\\x', 'Path', {}), '%NOPE%\\x', 'an unknown name stays as written');
 });
 
-test('Check again always answers: the time and "still the same" when nothing changed, nothing once the problem went', () => {
+test('Check again always answers: the time and "still the same" when nothing changed, "no problem found" when all is well', () => {
   assert.equal(checkAgainNote(true, new Date(2026, 10, 1, 21, 40, 5)), 'Checked again at 21:40:05: still the same.');
   assert.equal(checkAgainNote(true, new Date(2026, 10, 1, 9, 3, 0)), 'Checked again at 09:03:00: still the same.');
-  assert.equal(checkAgainNote(false, new Date()), null);
+  // Settings → Claude Code with a working one: before and after are alike, and the press still answers.
+  assert.equal(checkAgainNote(false, new Date(2026, 10, 1, 22, 5, 9)), 'Checked again at 22:05:09: no problem found.');
 });
 
 test("the page gets where Ledung looked with the Claude Code problem, and nothing once it is fine", async () => {

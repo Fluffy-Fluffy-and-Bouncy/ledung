@@ -34,13 +34,13 @@ export function runningPrograms(sessions: Pick<SessionInfo, 'id' | 'title' | 'pr
 }
 
 /**
- * What Check again says once it has answered (#455): nothing when the problem went (its banner goes with it),
- * otherwise that it did look, when, and that the answer is the same, so a press never passes without a reaction.
+ * What Check again says once it has answered (#455): that it did look, when, and what came of it, so a press
+ * never passes without a reaction. A banner goes once its problem does; Settings, where all can be well before
+ * and after, says so (test review of PR #10).
  */
-export function checkAgainNote(still: boolean, at: Date): string | null {
-  if (!still) return null;
+export function checkAgainNote(still: boolean, at: Date): string {
   const time = [at.getHours(), at.getMinutes(), at.getSeconds()].map((n) => String(n).padStart(2, '0')).join(':');
-  return `Checked again at ${time}: still the same.`;
+  return still ? `Checked again at ${time}: still the same.` : `Checked again at ${time}: no problem found.`;
 }
 
 /** One piece of a Claude Code problem's text. */
