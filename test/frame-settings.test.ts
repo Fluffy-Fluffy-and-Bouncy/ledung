@@ -21,18 +21,18 @@ function memoryStore(): SettingsStore & { data: Map<string, string> } {
   };
 }
 
-// Martin's phone (the issue's evidence): Tubal Cain's page frames Mac Benack's.
-const MAC_URL = 'https://magto-macbenack.l.projectledung.com';
-const MAC_ID = 'magto-macbenack.l.projectledung.com';
-const MAC_ORIGIN = new URL(MAC_URL).origin;
+// The phone with two computers (the issue's evidence): the first computer's page frames the second's.
+const SECOND_URL = 'https://second.l.example.test';
+const SECOND_ID = 'second.l.example.test';
+const SECOND_ORIGIN = new URL(SECOND_URL).origin;
 
-/** The framing page (Tubal Cain's, on the phone): its storage is kept. */
+/** The framing page (the first computer's, on the phone): its storage is kept. */
 const framing = memoryStore();
 
-/** Mac Benack's page in the frame: a fresh storage on each load, as WebKit's ephemeral third-party storage is. */
+/** The second computer's page in the frame: a fresh storage on each load, as WebKit's ephemeral third-party storage is. */
 function loadFrame() {
   const own = memoryStore();
-  const fromFrame = (msg: FrameSettingsMessage) => frameSettingsReply({ data: msg, origin: MAC_ORIGIN, fromFrame: true }, MAC_URL, MAC_ID, framing);
+  const fromFrame = (msg: FrameSettingsMessage) => frameSettingsReply({ data: msg, origin: SECOND_ORIGIN, fromFrame: true }, SECOND_URL, SECOND_ID, framing);
   const store = mirroredStore(() => own, (msg) => { fromFrame(msg); });
   // The frame asks as it starts and takes the answer (settingsStore.ts, followFramingPage).
   const settings = answeredSettings(fromFrame(frameSettingsAsk()), true);
@@ -75,12 +75,12 @@ test('only that computer\'s frame, at its address, is answered or kept', () => {
   const save = { type: 'ledung:setting', key: THEME_KEY, value: 'dark' };
   // Another window (not that frame), or that frame's window at another address (it navigated away).
   for (const msg of [
-    { data: save, origin: MAC_ORIGIN, fromFrame: false },
+    { data: save, origin: SECOND_ORIGIN, fromFrame: false },
     { data: save, origin: 'https://evil.example.test', fromFrame: true },
-    { data: save, origin: 'http://magto-macbenack.l.projectledung.com', fromFrame: true },
+    { data: save, origin: 'http://second.l.example.test', fromFrame: true },
   ]) {
-    assert.equal(frameSettingsReply(msg, MAC_URL, MAC_ID, page), null);
-    assert.equal(frameSettingsReply({ ...msg, data: frameSettingsAsk() }, MAC_URL, MAC_ID, page), null, 'nothing answered');
+    assert.equal(frameSettingsReply(msg, SECOND_URL, SECOND_ID, page), null);
+    assert.equal(frameSettingsReply({ ...msg, data: frameSettingsAsk() }, SECOND_URL, SECOND_ID, page), null, 'nothing answered');
   }
   assert.equal(page.data.size, 0, 'nothing kept');
   // The frame takes an answer only from the page that frames it.
@@ -90,16 +90,16 @@ test('only that computer\'s frame, at its address, is answered or kept', () => {
 
 test('only Settings → Look\'s choices pass, with short values', () => {
   const page = memoryStore();
-  const reply = (data: unknown) => frameSettingsReply({ data, origin: MAC_ORIGIN, fromFrame: true }, MAC_URL, MAC_ID, page);
+  const reply = (data: unknown) => frameSettingsReply({ data, origin: SECOND_ORIGIN, fromFrame: true }, SECOND_URL, SECOND_ID, page);
   reply({ type: 'ledung:setting', key: 'ledung.draft.s1', value: 'a draft' });
   reply({ type: 'ledung:setting', key: 'ledung.theme', value: 'x'.repeat(100) });
   reply({ type: 'ledung:setting', key: 'ledung.theme', value: 42 });
   assert.equal(page.data.size, 0);
   // A tampered entry in the page's own storage passes only its known settings back.
-  page.setItem(frameSettingsKey(MAC_ID), JSON.stringify({ [COMPACT_KEY]: '2', other: 'x', [THEME_KEY]: 7 }));
+  page.setItem(frameSettingsKey(SECOND_ID), JSON.stringify({ [COMPACT_KEY]: '2', other: 'x', [THEME_KEY]: 7 }));
   assert.deepEqual(answeredSettings(reply(frameSettingsAsk()), true), { [COMPACT_KEY]: '2' });
-  page.setItem(frameSettingsKey(MAC_ID), 'not json');
-  assert.equal(keptSettings(page, MAC_ID), null);
+  page.setItem(frameSettingsKey(SECOND_ID), 'not json');
+  assert.equal(keptSettings(page, SECOND_ID), null);
   // In the frame, saving anything else sends nothing.
   const sent: FrameSettingsMessage[] = [];
   const store = mirroredStore(() => memoryStore(), (m) => { sent.push(m); });

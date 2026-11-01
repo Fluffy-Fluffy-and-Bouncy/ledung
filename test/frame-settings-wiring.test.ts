@@ -14,9 +14,9 @@ import { frameAsk } from '../web/src/computerFrame.ts';
 type Module = typeof import('../web/src/settingsStore.ts');
 let loads = 0;
 
-// Martin's phone (the issue's evidence): Tubal Cain's page frames Mac Benack's.
-const TUBAL = 'https://magto-tubalcain.l.projectledung.com';
-const MAC = { id: 'magto-macbenack.l.projectledung.com', url: 'https://magto-macbenack.l.projectledung.com' };
+// The phone with two computers (the issue's evidence): the first computer's page frames the second's.
+const FIRST = 'https://first.l.example.test';
+const SECOND = { id: 'second.l.example.test', url: 'https://second.l.example.test' };
 
 function memoryStore(data = new Map<string, string>()): SettingsStore & { data: Map<string, string> } {
   return {
@@ -51,8 +51,8 @@ async function loadFrame(toParent: (msg: unknown, targetOrigin: string) => void,
   Object.defineProperty(globalThis, 'top', { configurable: true, value: parent });
   const storageEvents: (string | null)[] = [];
   win.addEventListener('storage', (e) => storageEvents.push((e as FakeStorageEvent).key));
-  /** A message to the framed page, by default from its parent at Tubal Cain's origin. */
-  const message = (data: unknown, origin = TUBAL, source: unknown = parent) =>
+  /** A message to the framed page, by default from its parent at the first computer's origin. */
+  const message = (data: unknown, origin = FIRST, source: unknown = parent) =>
     win.dispatchEvent(Object.assign(new Event('message'), { data, origin, source }));
   const mod = (await import(`../web/src/settingsStore.ts?load=${++loads}`)) as Module;
   return { ...mod, own, parent, message, storageEvents };
@@ -82,7 +82,7 @@ test('the framed page asks as it starts, takes the answer and re-reads it, then 
   assert.deepEqual(frame.storageEvents, [null], 'and the theme and sidebar re-read them at once');
 
   saveTheme(frame.settingsStore, 'light');
-  assert.deepEqual(posted.slice(1), [{ msg: { type: 'ledung:setting', key: THEME_KEY, value: 'light' }, origin: TUBAL }], 'sent up to the origin that answered');
+  assert.deepEqual(posted.slice(1), [{ msg: { type: 'ledung:setting', key: THEME_KEY, value: 'light' }, origin: FIRST }], 'sent up to the origin that answered');
   assert.equal(readTheme(own), 'light', 'and saved here as before');
 });
 
@@ -93,7 +93,7 @@ test('a framing page that keeps none yet gets this page\'s own choices', async (
   const frame = await loadFrame((msg, origin) => posted.push({ msg, origin }), own);
   frame.followFramingPage();
   frame.message({ type: 'ledung:settings', settings: null });
-  assert.deepEqual(posted.slice(1), [{ msg: { type: 'ledung:setting', key: THEME_KEY, value: 'dark' }, origin: TUBAL }]);
+  assert.deepEqual(posted.slice(1), [{ msg: { type: 'ledung:setting', key: THEME_KEY, value: 'dark' }, origin: FIRST }]);
   assert.equal(readTheme(own), 'dark', 'nothing lost here');
 });
 
@@ -111,26 +111,26 @@ test('the framing page answers only its frame and still hears "paired"', () => {
   const page = memoryStore();
   const answers: FrameSettingsMessage[] = [];
   const reply = (a: FrameSettingsMessage) => { answers.push(a); };
-  const fromMac = (data: unknown, fromFrame = true, origin = MAC.url) => frameMessage({ data, origin, fromFrame }, MAC, page, reply);
-  assert.equal(fromMac(frameSettingsAsk()), false);
+  const fromSecond = (data: unknown, fromFrame = true, origin = SECOND.url) => frameMessage({ data, origin, fromFrame }, SECOND, page, reply);
+  assert.equal(fromSecond(frameSettingsAsk()), false);
   assert.deepEqual(answers, [{ type: 'ledung:settings', settings: null }]);
-  assert.equal(fromMac({ type: 'ledung:setting', key: THEME_KEY, value: 'dark' }), false);
-  assert.equal(page.getItem(frameSettingsKey(MAC.id)), JSON.stringify({ [THEME_KEY]: 'dark' }));
-  assert.equal(fromMac('ledung:paired'), true, 'the frame saying it is paired (#286)');
-  assert.equal(fromMac('ledung:paired', false), false, 'not from that frame\'s window');
-  assert.equal(fromMac(frameSettingsAsk(), false), false);
-  assert.equal(fromMac(frameSettingsAsk(), true, 'https://evil.example.test'), false);
+  assert.equal(fromSecond({ type: 'ledung:setting', key: THEME_KEY, value: 'dark' }), false);
+  assert.equal(page.getItem(frameSettingsKey(SECOND.id)), JSON.stringify({ [THEME_KEY]: 'dark' }));
+  assert.equal(fromSecond('ledung:paired'), true, 'the frame saying it is paired (#286)');
+  assert.equal(fromSecond('ledung:paired', false), false, 'not from that frame\'s window');
+  assert.equal(fromSecond(frameSettingsAsk(), false), false);
+  assert.equal(fromSecond(frameSettingsAsk(), true, 'https://evil.example.test'), false);
   assert.equal(answers.length, 1, 'answered once, to that frame only');
-  assert.equal(fromMac(frameAsk()), false, 'the framing page\'s own question is not an answer');
+  assert.equal(fromSecond(frameAsk()), false, 'the framing page\'s own question is not an answer');
 });
 
 test('end to end: a choice made in the tab comes back after the frame\'s storage is dropped and it loads again', async () => {
-  const page = memoryStore(); // Tubal Cain's page on the phone: kept
+  const page = memoryStore(); // the first computer's page on the phone: kept
   let frame!: Awaited<ReturnType<typeof loadFrame>>;
-  // What the frame posts reaches the framing page from that frame's window at Mac Benack's origin; its answer comes back.
+  // What the frame posts reaches the framing page from that frame's window at the second computer's origin; its answer comes back.
   const toParent = (msg: unknown, targetOrigin: string) => {
-    if (targetOrigin !== '*' && targetOrigin !== TUBAL) return; // the browser drops a message for another origin
-    frameMessage({ data: msg, origin: MAC.url, fromFrame: true }, MAC, page, (answer) => frame.message(answer));
+    if (targetOrigin !== '*' && targetOrigin !== FIRST) return; // the browser drops a message for another origin
+    frameMessage({ data: msg, origin: SECOND.url, fromFrame: true }, SECOND, page, (answer) => frame.message(answer));
   };
   frame = await loadFrame(toParent);
   frame.followFramingPage();
