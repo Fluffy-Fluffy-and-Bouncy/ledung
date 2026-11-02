@@ -10,6 +10,7 @@ import path from 'node:path';
 import { boardConfig, configPath, createDefaultConfig, loadConfig } from './config.ts';
 import { ConfigWatcher } from './config-watch.ts';
 import { openBrowser } from './platform/open-browser.ts';
+import { exercisedLine } from './platform/exercised.ts';
 import { lanNames } from './platform/network.ts';
 import { iconFiles, launchTarget, Shortcuts } from './platform/shortcuts.ts';
 import { appDir, appVersion, envSetting, PACKAGED, remoteDir, userDataDir } from './platform/paths.ts';
@@ -47,6 +48,9 @@ async function main(): Promise<void> {
   // The npm package has no clone to copy the example in: its first start writes the defaults (#105).
   if (PACKAGED && createDefaultConfig()) console.log(`Wrote a default config to ${configPath()}.`);
   const config = loadConfig();
+  // Started at sign-in or from Ledung.app, with the login shell's PATH or, when it didn't answer, launchd's (#464).
+  const startPath = envSetting('START_PATH');
+  if (startPath) exercisedLine(`EXERCISED #464 started with the ${startPath === 'login' ? "login shell's" : 'fallback'} PATH`);
   // The relay this Ledung is on: the config's "remote" block, else what Join with a code saved (issue #237).
   const remote = config.remote ?? savedRemote(remoteDir());
   // No database yet: the first start, for a release and the npm package alike (issue #332).
