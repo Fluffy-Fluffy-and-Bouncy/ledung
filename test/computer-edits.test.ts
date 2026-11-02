@@ -17,6 +17,7 @@ import type { ServerEvent } from '../src/shared/protocol.ts';
 import { removeTemp } from './temp.ts';
 import { refuseRealSignInStores } from './signin-stores.ts';
 import { freePort } from './free-port.ts';
+import { WAIT_MS } from './limits.ts';
 
 const TOKEN = 'e'.repeat(64);
 const COOKIE = `ledung_auth=${TOKEN}`;
@@ -53,7 +54,7 @@ async function start(file: string) {
 
 after(() => removeTemp(dir));
 
-async function until(what: () => boolean, ms = 3000): Promise<void> {
+async function until(what: () => boolean, ms = WAIT_MS): Promise<void> {
   const end = Date.now() + ms;
   while (!what()) {
     if (Date.now() > end) throw new Error('timed out');

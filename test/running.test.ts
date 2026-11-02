@@ -16,6 +16,7 @@ import { answersSignIn, configuredPort, NOT_RUNNING_CODE, openIfRunning, savedTo
 import { LAUNCHER } from '../src/update/launcher.ts';
 import { removeTemp } from './temp.ts';
 import { freePort } from './free-port.ts';
+import { HANG_MS } from './limits.ts';
 
 const TOKEN = 'c'.repeat(64);
 let base: string;
@@ -135,7 +136,7 @@ function runLauncher(args: string[], env: Record<string, string>): Promise<{ cod
     let out = '';
     child.stdout.on('data', (c) => (out += c));
     child.stderr.on('data', (c) => (out += c));
-    const timer = setTimeout(() => child.kill(), 60_000);
+    const timer = setTimeout(() => child.kill(), HANG_MS);
     child.on('error', reject);
     child.on('exit', (code) => {
       clearTimeout(timer);

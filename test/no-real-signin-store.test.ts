@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { removeTemp } from './temp.ts';
+import { HANG_MS } from './limits.ts';
 
 const dir = import.meta.dirname;
 const files = fs.readdirSync(dir).filter((f) => f.endsWith('.ts') && f !== path.basename(import.meta.filename));
@@ -106,7 +107,7 @@ test('a test that reaches a refused store or check fails its file, though the ma
         // Caught, as the manager's own check does: only the helper's count can tell.
         `test('a check', async () => { if (${reach}) await manager.checkSignInWith().catch(() => null); });`,
       ].join('\n'));
-      const r = spawnSync(process.execPath, ['--test', file], { env, encoding: 'utf8', timeout: 60_000 });
+      const r = spawnSync(process.execPath, ['--test', file], { env, encoding: 'utf8', timeout: HANG_MS });
       return { status: r.status, out: `${r.stdout}${r.stderr}` };
     };
     const reached = run(true);

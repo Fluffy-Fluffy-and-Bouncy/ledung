@@ -8,6 +8,7 @@ import {
   resetPasskeyExplained, setPasskeyCalls, setPasskeyPrompter, type PasskeyStep,
 } from '../web/src/api.ts';
 import { asCancelled, passkeyWords } from '../web/src/passkeyWords.ts';
+import { HANG_MS } from './limits.ts';
 
 const realFetch = globalThis.fetch;
 const realWebSocket = globalThis.WebSocket;
@@ -100,7 +101,7 @@ test('an unlocked phone is told before its first signature on the page, not befo
 
 // A wrongly reached retry is turned down too (the second false), so a Cancel that is ignored fails here instead of
 // retrying forever; the timeout is the backstop (#184 test review).
-test('Cancel on the notice asks for no passkey and sends nothing more, and the next signature is explained again', { timeout: 5000 }, async () => {
+test('Cancel on the notice asks for no passkey and sends nothing more, and the next signature is explained again', { timeout: HANG_MS }, async () => {
   publicPage();
   setPasskeyCalls({ sign: async () => assert.fail('no prompt after Cancel'), create: async () => ({}) });
   const sent = ledung({ locked: false });

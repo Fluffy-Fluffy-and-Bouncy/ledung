@@ -10,6 +10,7 @@ import path from 'node:path';
 import { changelogAdded, readRunningRelease, Updater, type Command, type UpdaterOptions } from '../src/update/updater.ts';
 import type { UpdateView } from '../src/shared/protocol.ts';
 import { removeTemp } from './temp.ts';
+import { HANG_MS, WAIT_MS } from './limits.ts';
 
 let base: string;
 let origin: string;
@@ -42,7 +43,7 @@ function updater(extra: Partial<UpdaterOptions> = {}): Updater {
 
 /** Waits until the update has stopped running: up to a minute, as under a full check's load git and the process list are slow (#270). */
 async function settled(u: Updater): Promise<UpdateView> {
-  for (const end = Date.now() + 60_000; Date.now() < end;) {
+  for (const end = Date.now() + 2 * WAIT_MS; Date.now() < end;) {
     const v = u.view();
     if (!v.updating) return v;
     await new Promise((r) => setTimeout(r, 50));
@@ -169,8 +170,8 @@ test('an update is refused while a check runs, and a check waits out a running u
 // Its own timeout: without the time limit the stub would hang, and the test must fail fast instead (review of PR #101).
 // Fast, not tight: two git steps, the 1.5 s limit, a PowerShell process list and the 1.7 s restart wait take 6 s
 // on an idle Windows machine, and under the load of a full `npm run check` they went past 10 s (#270).
-// A minute still fails well before the real 10-minute install limit.
-test('a step that hangs is stopped at its time limit, with everything it started', { timeout: 60_000 }, async () => {
+// HANG_MS (#463) still fails well before the real 10-minute install limit.
+test('a step that hangs is stopped at its time limit, with everything it started', { timeout: HANG_MS }, async () => {
   const pidFile = path.join(base, 'grandchild.pid');
   // npm runs node, which runs more: the stub starts a child of its own and both hang.
   const hang: Command = {
@@ -181,7 +182,9 @@ test('a step that hangs is stopped at its time limit, with everything it started
   const v = await refused(updater({ install: hang }), 2, /npm install did not finish within 2 seconds and was stopped/);
   assert.equal(v.steps[3]!.state, 'waiting', 'the release never started');
   const grandchild = Number(fs.readFileSync(pidFile, 'utf8'));
-  await new Promise((r) => setTimeout(r, 300));
+  // Gone when the system has ended it (#463: a fixed 300 ms was a speed check).
+  const alive = () => { try { process.kill(grandchild, 0); return true; } catch { return false; } };
+  for (const end = Date.now() + WAIT_MS; alive() && Date.now() < end;) await new Promise((r) => setTimeout(r, 50));
   assert.throws(() => process.kill(grandchild, 0), 'the step\'s own child was stopped too');
 });
 

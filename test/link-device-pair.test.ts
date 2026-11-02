@@ -6,6 +6,7 @@ import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { COOKIE, keyFor, LinkedNodes, until, type Node } from './linked-nodes.ts';
 import { FakePasskey } from './fake-passkey.ts';
+import { HANG_MS } from './limits.ts';
 
 const nodes = new LinkedNodes();
 after(() => nodes.close());
@@ -32,7 +33,7 @@ async function pairInFrame(pc: Node, url: string, name = 'Mac browser') {
   });
 }
 
-test('the Mac\'s own page pairs its frame of the PC through the link: a read-only computer device, shown on the PC', { timeout: 20_000 }, async () => {
+test('the Mac\'s own page pairs its frame of the PC through the link: a read-only computer device, shown on the PC', { timeout: HANG_MS }, async () => {
   const { mac, pc, macPage, pcPage, macName } = await pair();
   // The Mac's page knows the PC's tab is a linked computer's, so it offers Pair through the link there.
   assert.equal(((await macPage('GET', 'state')).json.computers as { id: string; linked?: boolean }[]).find((c) => c.id === pc.name)?.linked, true);
@@ -82,7 +83,7 @@ test('the Mac\'s own page pairs its frame of the PC through the link: a read-onl
   void mac;
 });
 
-test('starting needs this computer\'s own open page: never through its public name, never without the page key', { timeout: 20_000 }, async () => {
+test('starting needs this computer\'s own open page: never through its public name, never without the page key', { timeout: HANG_MS }, async () => {
   const { mac, pc, macPage } = await pair();
   // Without the open page's key (the install token alone).
   const noKey = await fetch(`http://127.0.0.1:${mac.port}/api/link-device-pair`, {
@@ -119,7 +120,7 @@ test('starting needs this computer\'s own open page: never through its public na
   assert.deepEqual((await (await nodes.page(pc))('GET', 'state')).json.linkPairings, []);
 });
 
-test('the PC makes a code only for a link key: not locally, not with a cookie, not with another key', { timeout: 20_000 }, async () => {
+test('the PC makes a code only for a link key: not locally, not with a cookie, not with another key', { timeout: HANG_MS }, async () => {
   const { mac, pc, pcPage } = await pair();
   // Locally, even with the key and the sign-in cookie.
   const local = await nodes.local(pc, { method: 'POST', path: '/link/device-pair', body: '{}', headers: { 'content-type': 'application/json', authorization: `Bearer ${keyFor(mac, pc)}`, cookie: COOKIE } });
@@ -139,7 +140,7 @@ test('the PC makes a code only for a link key: not locally, not with a cookie, n
   assert.equal(pc.server.devices.byCookie(cookie)!.kind, 'computer');
 });
 
-test('at most one pairing code per linked computer every 10 minutes', { timeout: 20_000 }, async () => {
+test('at most one pairing code per linked computer every 10 minutes', { timeout: HANG_MS }, async () => {
   const { pc, macPage, pcPage } = await pair();
   assert.equal((await macPage('POST', 'link-device-pair', { id: pc.name })).status, 200);
   nodes.clock += 9 * 60 * 1000;
@@ -152,7 +153,7 @@ test('at most one pairing code per linked computer every 10 minutes', { timeout:
   assert.equal((await pcPage('GET', 'state')).json.linkPairings.length, 2);
 });
 
-test('a pairing code from this computer\'s own Settings is not marked as through the link', { timeout: 20_000 }, async () => {
+test('a pairing code from this computer\'s own Settings is not marked as through the link', { timeout: HANG_MS }, async () => {
   const { pc, pcPage } = await pair();
   const made = await pcPage('POST', 'devices-pair', { kind: 'computer' });
   const form = await nodes.viaTunnel(pc.name, new URL(made.json.url).pathname, { method: 'GET' });
@@ -163,7 +164,7 @@ test('a pairing code from this computer\'s own Settings is not marked as through
   assert.deepEqual((await pcPage('GET', 'state')).json.linkPairings, []);
 });
 
-test('a pairing card is dismissed only on the PC itself: through its public name, even unlocked and signed, it stays', { timeout: 20_000 }, async () => {
+test('a pairing card is dismissed only on the PC itself: through its public name, even unlocked and signed, it stays', { timeout: HANG_MS }, async () => {
   const { pc, macPage, pcPage } = await pair();
   assert.equal((await macPage('POST', 'link-device-pair', { id: pc.name })).status, 200);
   const [notice] = (await pcPage('GET', 'state')).json.linkPairings;
@@ -189,7 +190,7 @@ test('a pairing card is dismissed only on the PC itself: through its public name
   assert.deepEqual((await pcPage('GET', 'state')).json.linkPairings, []);
 });
 
-test('unlinking closes an open pairing code the other computer asked for, on either side (review 275, Important 1)', { timeout: 20_000 }, async () => {
+test('unlinking closes an open pairing code the other computer asked for, on either side (review 275, Important 1)', { timeout: HANG_MS }, async () => {
   // The PC unlinks the Mac.
   const one = await pair();
   const first = await one.macPage('POST', 'link-device-pair', { id: one.pc.name });
@@ -216,7 +217,7 @@ test('unlinking closes an open pairing code the other computer asked for, on eit
   assert.equal((await pairInFrame(two.pc, own.json.url)).status, 303);
 });
 
-test('the 10-minute limit holds across a restart of the PC\'s Ledung (review 275, Minor 1)', { timeout: 20_000 }, async () => {
+test('the 10-minute limit holds across a restart of the PC\'s Ledung (review 275, Minor 1)', { timeout: HANG_MS }, async () => {
   const { pc, macPage } = await pair();
   assert.equal((await macPage('POST', 'link-device-pair', { id: pc.name })).status, 200);
   await nodes.restart(pc);

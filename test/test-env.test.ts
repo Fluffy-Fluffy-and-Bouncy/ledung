@@ -10,6 +10,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { appDir } from '../src/platform/paths.ts';
 import { removeTemp } from './temp.ts';
+import { HANG_MS } from './limits.ts';
 
 /** Runs scripts/test.ts on one probe test file with the caller's LEDUNG_* set to stand-ins for the real ones. */
 function runProbe(base: string, body: string) {
@@ -21,7 +22,7 @@ function runProbe(base: string, body: string) {
   };
   // A test file as the suite runs one, not as a child of this run.
   delete env.NODE_TEST_CONTEXT;
-  return spawnSync(process.execPath, [path.join(appDir(), 'scripts', 'test.ts'), file], { cwd: appDir(), env, encoding: 'utf8', timeout: 60_000 });
+  return spawnSync(process.execPath, [path.join(appDir(), 'scripts', 'test.ts'), file], { cwd: appDir(), env, encoding: 'utf8', timeout: HANG_MS });
 }
 
 test('the tests see a temp data folder and config of their own, never the caller\'s LEDUNG_* (#435)', () => {
