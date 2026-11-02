@@ -1,6 +1,6 @@
 # Project Ledung — notes for Claude sessions
 
-Ledung runs several Claude Code sessions and shows them in one web page. You may well be running inside it: Ledung can be developed from a Ledung session. Read [docs/brief.md](docs/brief.md) for the goal and the plan, [docs/decisions.md](docs/decisions.md) for decisions made since, and [docs/steps/](docs/steps/) for the current step. Open work is on the GitHub board (https://github.com/orgs/Fluffy-Fluffy-and-Bouncy/projects/1), as issues with one milestone per step.
+Ledung runs several Claude Code sessions and shows them in one web page. You may well be running inside it: Ledung can be developed from a Ledung session. Read [docs/brief.md](docs/brief.md) for the goal and the plan, [docs/decisions.md](docs/decisions.md) for decisions made since, and [docs/steps/](docs/steps/) for the current step. Open work is on the GitHub board (https://github.com/orgs/Fluffy-Fluffy-and-Bouncy/projects/1), as issues with one milestone per step. **New issues are filed on the public `Fluffy-Fluffy-and-Bouncy/ledung`** (since 2026-11-02); older issues are on the private `Fluffy-Fluffy-and-Bouncy/Project-Ledung`, referred to as `Fluffy-Fluffy-and-Bouncy/Project-Ledung#N`.
 
 Personal preferences and machine details, if any, are in `CLAUDE.local.md` next to this file (not committed).
 
