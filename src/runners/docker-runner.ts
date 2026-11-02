@@ -334,7 +334,8 @@ export const LIST_FLOW_SCRIPT = [
 export const WRITE_FLOW_SCRIPT = [
   'mode=$1; root=$(readlink -f -- "$2") || { echo "the project folder is not in the container"; exit 3; }; shift 2',
   'for f in "$@"; do',
-  '  d=$root; rest=".ledung/workflow/$f"',
+  // Without a trailing slash, so a project at / makes no "//" that readlink -f would not give back below.
+  '  d=${root%/}; rest=".ledung/workflow/$f"',
   '  while [ "${rest#*/}" != "$rest" ]; do',
   '    d="$d/${rest%%/*}"; rest=${rest#*/}',
   `    if [ -L "$d" ]; then echo "\${d#"$root"/} is a link; the builder writes only into the project's own .ledung/workflow folder"; exit 3`,
@@ -350,7 +351,11 @@ export const WRITE_FLOW_SCRIPT = [
   '  if [ "$mode" = write ]; then',
   '    t="$p.ledung-$$.tmp"',
   '    if [ -e "$t" ] || [ -L "$t" ]; then echo "$f could not be written: $t is in the way"; exit 3; fi',
-  '    if (set -C; cat > "$t") && mv -f -- "$t" "$p"; then :; else rm -f -- "$t"; echo "$f could not be written"; exit 3; fi',
+  '    if (set -C; cat > "$t"); then :; else rm -f -- "$t"; echo "$f could not be written"; exit 3; fi',
+  // Checked again just before the rename: a folder on the way swapped for a link meanwhile (security review of PR #89, finding 4).
+  `    if [ "$(readlink -f -- "$d")" != "$d" ]; then rm -f -- "$t"; echo "$f: a folder on the way became a link, or could not be checked; the builder writes only into the project's own .ledung/workflow folder"; exit 3; fi`,
+  `    if [ -L "$p" ] || [ -d "$p" ]; then rm -f -- "$t"; echo "$f became a link or a folder; the builder writes only into the project's own .ledung/workflow folder"; exit 3; fi`,
+  '    mv -f -- "$t" "$p" || { rm -f -- "$t"; echo "$f could not be written"; exit 3; }',
   '  fi',
   'done',
 ].join('\n');

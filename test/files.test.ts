@@ -300,3 +300,102 @@ test("a container's workflow writer script: folders made, the text from stdin, l
     assert.equal(noRoot.status, 3);
   });
 });
+
+// The local writer checks the way again just before each rename (security review of PR #89, finding 4): a folder
+// swapped for a link (a junction on Windows) after the first check, so the file goes through it, is refused, and what
+// was written through it is taken away again.
+test('the workflow writer refuses a folder swapped for a link between its check and the rename', async () => {
+  const { localWriter } = await import('../src/sessions/flow-files.ts');
+  const project = fs.mkdtempSync(path.join(base, 'swap-'));
+  const outside = fs.mkdtempSync(path.join(base, 'swap-outside-'));
+  const briefs = path.join(project, '.ledung', 'workflow', 'briefs');
+  fs.mkdirSync(briefs, { recursive: true });
+  const write = localWriter(project, {
+    beforeWrite: () => {
+      fs.renameSync(briefs, `${briefs}-old`);
+      fs.symlinkSync(outside, briefs, 'junction');
+    },
+  });
+  await assert.rejects(write([{ path: 'briefs/a.md', text: 'CHANGED' }]), /briefs is a link/);
+  assert.ok(fs.existsSync(`${briefs}-old`), 'the swap ran');
+  assert.deepEqual(fs.readdirSync(outside), [], 'nothing left through the link');
+});
+
+// The container's read script run by a real sh here, as docker exec runs it there (security review of PR #89,
+// finding 1): it must compare the file's real path with the project's, so a link out of the folder is refused.
+test("a container's workflow read script reads only inside the project: a link out is refused, a plain file read", (t) => {
+  if (spawnSync('sh', ['-c', 'readlink -f .'], { windowsHide: true }).status !== 0) {
+    t.skip('no sh with readlink here');
+    return;
+  }
+  return import('../src/runners/docker-runner.ts').then(({ INSIDE_PROJECT_SCRIPT, splitMarked }) => {
+    const project = fs.mkdtempSync(path.join(base, 'read-box-')).replaceAll('\\', '/');
+    const outside = fs.mkdtempSync(path.join(base, 'read-outside-'));
+    const folder = path.join(project, '.ledung', 'workflow');
+    fs.mkdirSync(path.join(folder, 'overlays'), { recursive: true });
+    fs.writeFileSync(path.join(outside, 'x.md'), 'SECRET-OUTSIDE');
+    fs.symlinkSync(outside, path.join(folder, 'briefs'), 'junction');
+    fs.writeFileSync(path.join(folder, 'rules.md'), '# Rules\n');
+    fs.writeFileSync(path.join(folder, 'overlays', 'big.md'), 'x'.repeat(200));
+    fs.writeFileSync(path.join(folder, 'overlays', 'bin.md'), 'a\0b');
+    const files = ['rules.md', 'briefs/x.md', 'overlays/big.md', 'overlays/bin.md', 'manager.md'].map((f) => `.ledung/workflow/${f}`);
+    const run = spawnSync('sh', ['-c', INSIDE_PROJECT_SCRIPT, 'sh', 'MARK', project, '100', '10000', ...files], { encoding: 'utf8', windowsHide: true });
+    assert.equal(run.status, 0, run.stderr);
+    assert.ok(!run.stdout.includes('SECRET-OUTSIDE'), 'the text outside is never printed');
+    const got = splitMarked(run.stdout, files, 'MARK');
+    assert.deepEqual(got.get('.ledung/workflow/rules.md'), { text: '# Rules\n' });
+    assert.deepEqual(got.get('.ledung/workflow/briefs/x.md'), { refused: '.ledung/workflow/briefs/x.md leads outside the project folder.' });
+    assert.deepEqual(got.get('.ledung/workflow/overlays/big.md'), { refused: '.ledung/workflow/overlays/big.md is larger than 100 bytes.' });
+    assert.deepEqual(got.get('.ledung/workflow/overlays/bin.md'), { refused: '.ledung/workflow/overlays/bin.md is not a text file.' });
+    assert.deepEqual(got.get('.ledung/workflow/manager.md'), { missing: true });
+  });
+});
+
+// The container's write script, by a real sh (security review of PR #89, findings 3 and 4): a file that is a link is
+// refused, and so is a folder swapped for a link after the first check, just before the rename. The swap is made by
+// a readlink put in front of the real one, when the script checks the folder again.
+test("a container's workflow writer script refuses a file that is a link, and a folder that became one before the rename", (t) => {
+  if (spawnSync('sh', ['-c', 'readlink -f .'], { windowsHide: true }).status !== 0) {
+    t.skip('no sh with readlink here');
+    return;
+  }
+  return import('../src/runners/docker-runner.ts').then(({ WRITE_FLOW_SCRIPT }) => {
+    const project = fs.mkdtempSync(path.join(base, 'write-box-')).replaceAll('\\', '/');
+    const outside = fs.mkdtempSync(path.join(base, 'write-outside-'));
+    const briefs = path.join(project, '.ledung', 'workflow', 'briefs');
+    fs.mkdirSync(briefs, { recursive: true });
+
+    // A brief that is a link to a file outside.
+    fs.writeFileSync(path.join(outside, 'target.md'), 'KEEP');
+    let linked = true;
+    try {
+      fs.symlinkSync(path.join(outside, 'target.md'), path.join(briefs, 'linked.md'));
+    } catch {
+      linked = false;
+    }
+    if (linked) {
+      const refused = spawnSync('sh', ['-c', WRITE_FLOW_SCRIPT, 'sh', 'write', project, 'briefs/linked.md'], { input: 'CHANGED', encoding: 'utf8', windowsHide: true });
+      assert.equal(refused.status, 3, refused.stdout + refused.stderr);
+      assert.match(refused.stdout, /briefs\/linked\.md is a link/);
+      assert.equal(fs.readFileSync(path.join(outside, 'target.md'), 'utf8'), 'KEEP');
+      fs.rmSync(path.join(briefs, 'linked.md'));
+    } else {
+      t.diagnostic('this machine does not allow file links: the linked brief case was not run');
+    }
+
+    // The folder swapped for a junction to outside right after the script makes it, so the text goes through it: a
+    // mkdir in front of the real one (a shell function, so no file needs to run from the temp folder).
+    const fresh = fs.mkdtempSync(path.join(base, 'swap-box-')).replaceAll('\\', '/');
+    const away = fs.mkdtempSync(path.join(base, 'swap-outside-'));
+    fs.mkdirSync(path.join(fresh, '.ledung', 'workflow'), { recursive: true });
+    const spare = path.join(fresh, 'briefs-link');
+    fs.symlinkSync(away, spare, 'junction');
+    const front = 'mkdir() { command mkdir "$@" || return; case "$2" in */.ledung/workflow/briefs) command mv -- "$2" "$2-old" && command mv -- "$SWAP_FROM" "$2";; esac; }\n';
+    const env = { ...process.env, SWAP_FROM: spare.replaceAll('\\', '/') };
+    const swapped = spawnSync('sh', ['-c', front + WRITE_FLOW_SCRIPT, 'sh', 'write', fresh, 'briefs/a.md'], { input: 'CHANGED', encoding: 'utf8', windowsHide: true, env });
+    assert.ok(fs.existsSync(path.join(fresh, '.ledung', 'workflow', 'briefs-old')), `the swap ran: ${swapped.stdout}${swapped.stderr}`);
+    assert.equal(swapped.status, 3, swapped.stdout + swapped.stderr);
+    assert.match(swapped.stdout, /became a link/);
+    assert.deepEqual(fs.readdirSync(away), [], 'nothing left through the link');
+  });
+});

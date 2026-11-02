@@ -2108,3 +2108,22 @@ test("the builder's save needs the sign-in, Ledung's own Host and Origin, and wr
   assert.equal(fs.existsSync(path.join(outside, 'rules.md')), false);
   fs.rmSync(folder, { recursive: true, force: true });
 });
+
+// Saves are one at a time per project (security review of PR #89, finding 2): two started together from the same
+// version can't both pass the version check, so the second never silently overwrites the first.
+test("two saves of a project's workflow from the same version: the first is saved, the second refused", async (t) => {
+  t.after(() => fs.rmSync(path.join(projectRoot, '.ledung'), { recursive: true, force: true }));
+  fs.rmSync(path.join(projectRoot, '.ledung'), { recursive: true, force: true });
+  const flow = JSON.stringify({ version: 1, blocks: [{ id: 'a', kind: 'work', title: 'A', runs: 'manager', brief: 'briefs/a.md' }] });
+  await sessions.saveFlow('p', [{ path: 'briefs/a.md', text: '# A', base: null }, { path: 'flow.json', text: flow, base: null }]);
+  const base = (await sessions.flowView('p')).versions['briefs/a.md'];
+  assert.ok(base, 'the brief has a version');
+  const [one, two] = await Promise.allSettled([
+    sessions.saveFlow('p', [{ path: 'briefs/a.md', text: '# One', base }]),
+    sessions.saveFlow('p', [{ path: 'briefs/a.md', text: '# Two', base }]),
+  ]);
+  assert.equal(one.status, 'fulfilled', one.status === 'rejected' ? String(one.reason) : '');
+  assert.equal(two.status, 'rejected');
+  assert.match(String((two as PromiseRejectedResult).reason), /has changed since the page read the workflow/);
+  assert.equal(fs.readFileSync(path.join(projectRoot, '.ledung', 'workflow', 'briefs', 'a.md'), 'utf8'), '# One');
+});

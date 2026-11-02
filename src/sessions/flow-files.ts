@@ -130,9 +130,10 @@ export function localLister(root: string, sub: string): () => Promise<string[]> 
 /**
  * Writes files into `root`/.ledung/workflow (#311): no folder on the way and not the file itself may be a link, so
  * nothing written leaves the project's own workflow folder whatever the links say; each file is written beside itself
- * and renamed over the old one, so a reader never sees half a file. All are checked before any is written.
+ * and renamed over the old one, so a reader never sees half a file. All are checked before any is written. `hooks` is
+ * for tests: a step between the checks and writing a file, where a folder can be swapped for a link.
  */
-export function localWriter(root: string): WriteFlowFiles {
+export function localWriter(root: string, hooks: { beforeWrite?: (target: string) => void } = {}): WriteFlowFiles {
   const walk = (realRoot: string, file: string, create: boolean): string => {
     const parts = [...FLOW_FOLDER.split('/'), ...file.split('/')];
     let at = realRoot;
@@ -180,10 +181,15 @@ export function localWriter(root: string): WriteFlowFiles {
       const target = walk(realRoot, f.path, true);
       const temp = `${target}.ledung-${crypto.randomBytes(6).toString('hex')}.tmp`;
       try {
+        hooks.beforeWrite?.(target);
         fs.writeFileSync(temp, f.text, { flag: 'wx' });
+        // Walked again just before the rename: a folder on the way swapped for a link since the walk above is
+        // refused, and the text written through it taken away again (security review of PR #89, finding 4).
+        walk(realRoot, f.path, false);
         fs.renameSync(temp, target);
       } catch (e) {
         fs.rmSync(temp, { force: true });
+        if (e instanceof FileError) throw e;
         throw new FileError(`${f.path} could not be written: ${(e as Error).message}`);
       }
     }
