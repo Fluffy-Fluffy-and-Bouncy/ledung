@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
+import { Component, Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
 import { CHATS, PERMISSION_MODES, PRIORITIES, projectLabel, type AwayInfo, type BoardStatus, type ChatsInfo, type GitHubBudget, type CompactingInfo, type MachineInfo, type McpServerInfo, type PermissionMode, type Priority, type ProjectInfo, type RemoteControlInfo, type SessionInfo } from '../../src/shared/protocol.ts';
 import { AddProjectView, ProjectSettingsView, ProjectStartView } from './projects/ProjectViews.tsx';
 import { ChatsSettingsView, NewChatView } from './chats/ChatViews.tsx';
@@ -15,7 +15,7 @@ import { AwayBanner, AwayMarker, AwayPanel } from './components/AwayPanel.tsx';
 import { awayBannerShown } from './awayBanner.ts';
 import { SettingsView } from './components/SettingsView.tsx';
 import { SettingsFrame, type UpdateState } from './components/SettingsFrame.tsx';
-import { bannerView, tabOf, tabView } from './settingsGroups.ts';
+import { bannerView, tabGroupView, tabOf, tabView } from './settingsGroups.ts';
 import { LookedList, ProblemText } from './components/ClaudeCodeSettings.tsx';
 import { CheckAgain } from './components/CheckAgain.tsx';
 import { usageStopLine } from './components/UsageStopsSettings.tsx';
@@ -81,6 +81,8 @@ import { useComputerLink } from './useComputerLink.ts';
 import { useInstallApp } from './useInstallApp.ts';
 import { InstallNotice } from './components/InstallApp.tsx';
 import { ShortcutNotice } from './components/Shortcuts.tsx';
+import { errorText, isStalePageError } from './pageError.ts';
+import { guardFor, heldRecently, noteHeld, setLeaveGuard, workflowFromHash, workflowHash } from './flowNav.ts';
 
 /** Shown in a frame on another computer's page (issue #241): fixed for the page's life. */
 const IN_FRAME = inFrame();
@@ -119,6 +121,38 @@ const VIEWS = ['waiting', 'usage', 'overview', 'board', 'settings', 'add', 'acco
 
 const isSessionId = (id: string | null) => !!id && !VIEWS.includes(id) && !id.includes(':');
 
+// The workflow page draws with React Flow (issue #310): loaded when first opened, so the page everyone loads stays as small.
+const WorkflowView = lazy(() => import('./components/WorkflowView.tsx').then((m) => ({ default: m.WorkflowView })));
+
+/**
+ * A page loaded on demand that fails to load: a page left open across Restart Ledung asks for a part the new release
+ * doesn't have. Without this the whole page would go blank (review of #310, finding 4). An error while drawing it is
+ * said as that, with its words, and logged (#447: a layout error was read as a stale page).
+ */
+class LoadFailed extends Component<{ children: ReactNode }, { failed: boolean; error: unknown }> {
+  state = { failed: false, error: null as unknown };
+  static getDerivedStateFromError(error: unknown) {
+    return { failed: true, error };
+  }
+  componentDidCatch(error: unknown, info: { componentStack?: string | null }) {
+    console.error('Ledung: this page failed.', error, info.componentStack ?? '');
+  }
+  render() {
+    if (!this.state.failed) return this.props.children;
+    const stale = isStalePageError(this.state.error);
+    return (
+      <div className="page-view"><div className="page-body">
+        <p>{stale ? "This page couldn't be loaded; Ledung may have been updated since this page was opened." : 'This page ran into an error while showing it, so reloading may not help: the details below say what went wrong.'}</p>
+        <button className="primary" onClick={() => location.reload()}>Reload</button>
+        <details className="page-error-details" open={!stale}>
+          <summary>Details</summary>
+          <pre className="mono">{errorText(this.state.error)}</pre>
+        </details>
+      </div></div>
+    );
+  }
+}
+
 function viewFromHash(): string | null {
   const question = location.hash.match(/^#\/waiting\/q\/(\d+)$/);
   if (question) return `q:${question[1]}`;
@@ -128,10 +162,18 @@ function viewFromHash(): string | null {
   if (view) return view[1]!;
   const group = location.hash.match(/^#\/(settings|chats)\/([a-z]+)$/);
   if (group) return `${group[1]}:${group[2]}`;
-  const projectGroup = location.hash.match(/^#\/ps\/([^/]+)\/([a-z]+)$/);
-  if (projectGroup) return `ps:${decodeURIComponent(projectGroup[1]!)}/${projectGroup[2]}`;
-  const project = location.hash.match(/^#\/(p|ps|a)\/(.+)$/);
-  if (project) return `${project[1]}:${decodeURIComponent(project[2]!)}`;
+  // A workflow page, with the flow it shows after its project's name (#447): the page is the project's either way.
+  const workflow = workflowFromHash(location.hash);
+  if (workflow) return `wf:${workflow.project}`;
+  try {
+    const projectGroup = location.hash.match(/^#\/ps\/([^/]+)\/([a-z]+)$/);
+    if (projectGroup) return `ps:${decodeURIComponent(projectGroup[1]!)}/${projectGroup[2]}`;
+    const project = location.hash.match(/^#\/(p|ps|a)\/(.+)$/);
+    if (project) return `${project[1]}:${decodeURIComponent(project[2]!)}`;
+  } catch {
+    // A malformed escape in a typed address: no page, rather than a blank one.
+    return null;
+  }
   return (conversationFromHash(location.hash) ?? messageFromHash(location.hash))?.sessionId ?? null;
 }
 
@@ -145,7 +187,7 @@ function hashFor(id: string | null): string {
   if (id.startsWith('chats:')) return `#/chats/${id.slice('chats:'.length)}`;
   const tab = tabView(id);
   if (tab?.project != null && tab.group) return `#/ps/${encodeURIComponent(tab.project)}/${tab.group}`;
-  const project = id.match(/^(p|ps|a):(.+)$/);
+  const project = id.match(/^(p|ps|a|wf):(.+)$/);
   if (project) return `#/${project[1]}/${encodeURIComponent(project[2]!)}`;
   return `#/s/${id}`;
 }
@@ -195,16 +237,40 @@ export function App() {
     setOpenedComputers((list) => (list.includes(id) ? list : [...list, id]));
   }, IN_FRAME);
 
+  // The address and entry shown last, so a move away the builder's unsaved changes hold back (#447) can be undone.
+  const shownEntry = useRef({ hash: location.hash, state: history.state as unknown });
   useEffect(() => {
     markDeskRoot(viewFromHash());
     markSettingsRoot(viewFromHash());
-    const onHash = () => { markDeskRoot(viewFromHash()); markSettingsRoot(viewFromHash()); setOpenId(viewFromHash()); setHash(location.hash); };
+    shownEntry.current = { hash: location.hash, state: history.state };
+    const onHash = () => {
+      // Back (or Forward) out of a workflow page with unsaved changes in its builder: the page is put back as an entry
+      // of its own, so the one left is just before it, and the builder asks; discarding goes back to it.
+      const held = guardFor(location.hash);
+      if (held) {
+        history.pushState(shownEntry.current.state, '', shownEntry.current.hash || location.pathname);
+        noteHeld();
+        held.ask(() => { setLeaveGuard(null); history.back(); });
+        return;
+      }
+      markDeskRoot(viewFromHash());
+      markSettingsRoot(viewFromHash());
+      shownEntry.current = { hash: location.hash, state: history.state };
+      setOpenId(viewFromHash());
+      setHash(location.hash);
+    };
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
 
   const open = (id: string | null) => {
     const hash = hashFor(id);
+    // Unsaved changes in the workflow builder are not dropped by going elsewhere unasked (#447).
+    const held = guardFor(hash);
+    if (held) {
+      held.ask(() => { setLeaveGuard(null); open(id); });
+      return;
+    }
     if (hash !== location.hash) {
       // Opening Waiting for you, a question in it, or the queue again are history entries; Back and Forward step through them.
       const desk = deskStepsInto(openId, { depth: deskDepth(), root: deskRoot() }, id);
@@ -291,7 +357,8 @@ export function App() {
       if (e.button !== 3 && e.button !== 4) return;
       const before = location.href;
       const back = e.button === 3;
-      setTimeout(() => { if (location.href === before) (back ? history.back() : history.forward()); }, 100);
+      // Not when the workflow builder just held the step back and put the page back (#447).
+      setTimeout(() => { if (location.href === before && !heldRecently()) (back ? history.back() : history.forward()); }, 100);
     };
     window.addEventListener('mouseup', onMouseUp);
     return () => window.removeEventListener('mouseup', onMouseUp);
@@ -342,7 +409,7 @@ export function App() {
       <ChatsSettingsView view={openId!} chats={ledung.chats} run={run} onOpen={open} />
     ) : settingsProject ? () => (
       // Keyed by the project, not the group, so what is typed stays while moving between the tab's groups.
-      <ProjectSettingsView key={settingsProject.name} view={openId!} board={ledung.board} projects={ledung.projects} project={settingsProject} run={run} accounts={ledung.accounts} profiles={settingsProject.profileNames ?? ledung.profiles} lockdownB={ledung.lockdownB} onOpen={open} onRemoved={() => open(null)} onRenamed={reopen} />
+      <ProjectSettingsView key={settingsProject.name} view={openId!} board={ledung.board} projects={ledung.projects} project={settingsProject} run={run} accounts={ledung.accounts} profiles={settingsProject.profileNames ?? ledung.profiles} lockdownB={ledung.lockdownB} onOpen={open} onRemoved={() => open(null)} onRenamed={reopen} onWorkflow={() => open(`wf:${settingsProject.name}`)} />
     ) : null;
 
   // The limits strip follows the selected project's account and keeps the last one over views with no project.
@@ -510,6 +577,27 @@ export function App() {
               run={run}
               onOpenSession={open}
             />
+          ) : openId?.startsWith('wf:') && ledung.projects.some((p) => p.name === openId.slice(3)) ? (
+            <LoadFailed key={openId}>
+              <Suspense fallback={<div className="page-view"><p className="muted page-body">Loading the workflow page…</p></div>}>
+                <WorkflowView
+                  project={openId.slice(3)}
+                  // The flow it shows is in the address (#447): each one opened is a step Back and Forward go through.
+                  shownFlow={workflowFromHash(hash)?.flow ?? null}
+                  onShowFlow={(name) => { location.hash = workflowHash(openId.slice(3), name); }}
+                  onRenamedFlow={(name) => {
+                    try {
+                      history.replaceState(history.state, '', workflowHash(openId.slice(3), name));
+                    } catch (e) {
+                      // Too many history changes at once (Safari): the address stays a step behind, the page goes on.
+                      console.warn('Ledung: the address could not follow the flow shown.', e);
+                    }
+                    shownEntry.current = { hash: location.hash, state: history.state };
+                    setHash(location.hash);
+                  }}
+                  profiles={ledung.projects.find((p) => p.name === openId.slice(3))?.profileNames ?? ledung.profiles} onSettings={() => open(tabGroupView(openId.slice(3), 'workflow'))} />
+              </Suspense>
+            </LoadFailed>
           ) : openId?.startsWith('p:') && ledung.projects.some((p) => p.name === openId.slice(2)) ? (
             <ProjectStartView key={openId} project={ledung.projects.find((p) => p.name === openId.slice(2))!} run={run} onStarted={open} />
           ) : session ? (
@@ -524,6 +612,7 @@ export function App() {
               cameFrom={deskState().ledungFrom ?? null}
               onOpenQuestion={(id) => open(`q:${id}`)}
               onOpenBoardThread={(repo, id) => open(threadOpenId(repo, id))}
+              onOpenWorkflow={(project) => open(`wf:${project}`)}
               onBack={toList}
             />
           ) : (
@@ -851,6 +940,8 @@ export function SessionView(props: {
   onOpenQuestion: (id: number) => void;
   /** Opens a board thread in the Board view. */
   onOpenBoardThread: (repo: string, id: string) => void;
+  /** Opens a project's workflow page (issue #310), from a manager's ⚙. */
+  onOpenWorkflow: (project: string) => void;
   /** The ← to the list, shown only on a phone (issue #171). */
   onBack: () => void;
 }) {
@@ -1005,6 +1096,7 @@ export function SessionView(props: {
           usage={ledung.overview?.sessions[session.id]?.total ?? null}
           showUsage={showUsage}
           onToggleUsage={() => { setFiles([]); setPane(false); setPaneFile(null); setShowUsage((v) => !v); }}
+          onOpenWorkflow={() => props.onOpenWorkflow(session.project)}
         />
         {controls.header.length > 0 && (
           <div className="session-actions">
@@ -1099,7 +1191,7 @@ export function SessionView(props: {
  */
 function SessionMenu(props: {
   session: SessionInfo;
-  /** Its project, for a manager's name colour pickers (issue #83); null once the project is removed. */
+  /** Its project, for a manager's Workflow button (issue #310); null once the project is removed. */
   project: ProjectInfo | null;
   away: AwayInfo | null;
   run: (action: () => Promise<unknown>) => Promise<void>;
@@ -1111,6 +1203,8 @@ function SessionMenu(props: {
   onToggleUsage: () => void;
   /** Shown left of the cog: the Files pane's button (issue #225). */
   before?: ReactNode;
+  /** A manager's project's workflow page (issue #310). */
+  onOpenWorkflow: () => void;
 }) {
   const { session, run } = props;
   const [open, setOpen] = useState(false);
@@ -1164,6 +1258,9 @@ function SessionMenu(props: {
               <span className="menu-label">Away</span>
               <AwayPanel away={props.away} run={run} />
             </div>
+          )}
+          {session.role === 'manager' && props.project && (
+            <button className="menu-row" onClick={thenClose(props.onOpenWorkflow)}>Workflow</button>
           )}
           {menu.includes('permissions') && (
             <label className="mode menu-row" title={MODE_HINT[session.permissionMode]}>

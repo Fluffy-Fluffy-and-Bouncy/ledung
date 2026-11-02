@@ -666,10 +666,12 @@ export function AddProjectView({ run, onAdded, accounts, defaultAccount, profile
  * What is typed is kept while moving between the tab's groups. "What always goes to you" is a group of its own, and the
  * name colours, moved here from the manager's ⚙, still save at once.
  */
-export function ProjectSettingsView({ view, project, projects, run, onOpen, onRemoved, onRenamed, accounts, profiles, board, lockdownB }: {
+export function ProjectSettingsView({ view, project, projects, run, onOpen, onRemoved, onRenamed, onWorkflow, accounts, profiles, board, lockdownB }: {
   view: string; board: BoardStatus | null; project: ProjectInfo; projects: ProjectInfo[]; run: Run; onOpen: (view: string) => void; onRemoved: () => void;
   /** After a rename: the view to open, the same group under the new name. */
   onRenamed: (view: string) => void;
+  /** Opens the project's workflow page, its drawn process (issue #310). */
+  onWorkflow: () => void;
   accounts: AccountInfoView[]; profiles: string[]; lockdownB: string | null;
 }) {
   const narrow = useNarrow(NARROW_QUERY);
@@ -789,6 +791,7 @@ export function ProjectSettingsView({ view, project, projects, run, onOpen, onRe
       {group === 'workflow' && (
         <section>
           <h3>Workflow</h3>
+          <p><button className="small" title="The project's process as a diagram, to see and edit (issue #310)" onClick={onWorkflow}>Show the drawn workflow</button></p>
           {workflow?.workflows.length
             ? <div className="form"><WorkflowFields {...f} workflow={workflow} container={container} /></div>
             : <p><span className="field-name">Workflow</span>: <span className="muted">{workflow ? 'none is configured in Ledung\'s config ("workflow" or "workflows").' : 'looking…'}</span></p>}

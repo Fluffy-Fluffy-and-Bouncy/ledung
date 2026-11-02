@@ -13,6 +13,7 @@ import type { ProjectColours } from '../../src/shared/name-colours.ts';
 import type { ComputerColour, ComputerInfo } from '../../src/shared/computers.ts';
 import type { PaneFolderKey, PaneFolders, SessionChanges, TreeListing } from '../../src/shared/files-pane.ts';
 import type { LineComment } from '../../src/shared/line-comments.ts';
+import type { FlowFileWrite, FlowView } from '../../src/shared/flow.ts';
 import type { SkillChoices } from '../../src/shared/skills.ts';
 import type { SharedUsageView, UsagePublishView } from '../../src/shared/published-usage.ts';
 /** The words Ledung refuses a request with when it needs the passkey (src/server/passkeys.ts). */
@@ -289,6 +290,10 @@ export const api = {
   workflowCheck: (path?: string, config?: string, workflow?: string) =>
     call<WorkflowCheckView>('GET', `/api/workflow-check?${new URLSearchParams({ path: path ?? '', config: config ?? '', workflow: workflow ?? '' }).toString()}`),
   projectsFolder: () => call<{ path: string }>('GET', '/api/projects-folder'),
+  /** A project's drawn workflow, its texts and the checks' problems (issue #310), read-only. */
+  flow: (project: string) => call<FlowView>('GET', `/api/projects/${encodeURIComponent(project)}/flow`),
+  /** The builder saves (issue #311): into the project's own .ledung/workflow; the workflow as it then reads. */
+  saveFlow: (project: string, files: FlowFileWrite[]) => call<FlowView>('POST', `/api/projects/${encodeURIComponent(project)}/flow`, { files }),
   machine: () => call<MachineInfo>('GET', '/api/machine'),
   setLimit: (limit: number) => call('POST', '/api/limit', { limit }),
   setUsageStop: (account: string, kind: string, percent: number | null) => call('POST', '/api/usage-stops', { account, kind, percent }),

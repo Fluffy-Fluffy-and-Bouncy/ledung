@@ -69,6 +69,8 @@ import type { CertificateStatus, LinkPairingInfo, NewComputerInfo, SourceOffer }
 import { computerFrames, computerList, editComputer, knownComputers, readComputerEdits, withEdits, type ComputerInfo, type ComputerSetting } from '../shared/computers.ts';
 
 const MAX_BODY = 1024 * 1024;
+/** A workflow's texts may have 4 MB together (src/sessions/flow-files.ts); JSON's escapes take some more (#311). */
+const FLOW_SAVE_MAX_BODY = 6 * 1024 * 1024;
 const NOT_PAIRED = 'This device is not paired with Ledung. Pair it from Settings → Phones in Ledung on the computer.';
 /**
  * On the not-paired page through the public name: the pairing code or link typed in. Inside a frame on another
@@ -1467,6 +1469,16 @@ export class LedungServer {
           task: typeof body.task === 'string' ? body.task : undefined,
           settings: projectFrom((body.settings ?? {}) as Record<string, unknown>),
         });
+      }
+      // The workflow page (issue #310): the project's flow, read-only and only from inside its folders (src/sessions/flow-files.ts).
+      case 'GET projects/:id/flow':
+        return manager.flowView(decodeURIComponent(id));
+      // The builder saves (issue #311): only into the project's own .ledung/workflow, only the files the format knows,
+      // each replacing the version the page read (src/sessions/flow-files.ts). A change like any other: the sign-in,
+      // Host and Origin checks above, and through the public name an unlocked device.
+      case 'POST projects/:id/flow': {
+        const body = await readJson(req, FLOW_SAVE_MAX_BODY);
+        return manager.saveFlow(decodeURIComponent(id), body.files);
       }
       // Name colours (issue #83): the manager's and its sessions', from the manager's ⚙ menu.
       case 'POST projects/:id/colours': {

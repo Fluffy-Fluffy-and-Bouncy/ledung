@@ -1,0 +1,13 @@
+{
+  "$comment": "A second flow (#447): an asset is made, a person reviews it, and the flow ends Ready or Rejected. Ledung's own process runs it from its \"Make the asset\" block.",
+  "version": 1,
+  "title": "Asset",
+  "start": "produce",
+  "blocks": [
+    { "id": "produce", "kind": "work", "title": "Produce", "runs": "new-session", "model": "sonnet", "brief": "briefs/asset-maker.md", "outcomes": [{ "word": "Done", "to": "review" }] },
+    {
+      "id": "review", "kind": "person", "title": "Review the asset", "runs": "person", "ask": "review",
+      "outcomes": [{ "word": "Ready", "end": true }, { "word": "Rejected", "end": true }, { "word": "Changes needed", "to": "produce" }]
+    }
+  ]
+}

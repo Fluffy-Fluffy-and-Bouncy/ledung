@@ -183,6 +183,7 @@ export const PROJECT_GROUPS: SettingsGroup[] = [
     settings: [
       { label: 'Workflow', about: 'Whether it follows a written process, and which', keywords: ['process', 'agent'] },
       { label: 'Project config for the workflow', about: "The process's config file for this project", keywords: ['process', 'config', 'file'] },
+      { label: 'Drawn workflow', about: 'The process as a diagram, to see and edit', keywords: ['diagram', 'flow', 'builder', 'draw'] },
     ],
   },
   {

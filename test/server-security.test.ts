@@ -1975,3 +1975,127 @@ test('/running answers the proof of the token without the token, and only on thi
   assert.equal((await request({ method: 'POST', path: `/running?nonce=${nonce}`, headers: { origin: ORIGIN } })).status, 405);
   assert.equal((await pub({ path: `/running?nonce=${nonce}` })).status, 404, 'through the public name');
 });
+
+// The workflow page (issue #310): a project's flow, read-only, behind the sign-in and Host check like the file viewer,
+// and only from inside the project folder.
+test("a project's flow needs the sign-in and Ledung's own Host, is read-only, and never reads outside the project", async (t) => {
+  const folder = path.join(projectRoot, '.ledung', 'workflow');
+  fs.mkdirSync(path.join(folder, 'briefs'), { recursive: true });
+  t.after(() => fs.rmSync(path.join(projectRoot, '.ledung'), { recursive: true, force: true }));
+  const flow = { version: 1, blocks: [{ id: 'a', kind: 'work', title: 'A', brief: 'briefs/a.md', outcomes: [{ word: 'Next', to: 'b' }] }, { id: 'b', kind: 'work', title: 'B', brief: 'briefs/out.md' }] };
+  fs.writeFileSync(path.join(folder, 'flow.json'), JSON.stringify(flow));
+  fs.writeFileSync(path.join(folder, 'briefs', 'a.md'), '# A brief');
+  fs.writeFileSync(path.join(path.dirname(projectRoot), 'ledung-secret.md'), 'SECRET');
+  t.after(() => fs.rmSync(path.join(path.dirname(projectRoot), 'ledung-secret.md'), { force: true }));
+  let linked = true;
+  try {
+    fs.symlinkSync(path.join(path.dirname(projectRoot), 'ledung-secret.md'), path.join(folder, 'briefs', 'out.md'));
+  } catch {
+    linked = false;
+  }
+  const p = '/api/projects/p/flow';
+  assert.equal((await request({ path: p })).status, 401);
+  assert.equal((await request({ path: p, headers: { host: 'evil.example:80', cookie: COOKIE } })).status, 403);
+  // A change without Ledung's own origin is refused before anything (the builder's save, issue #311, is tested below).
+  assert.equal((await request({ method: 'POST', path: p, headers: { cookie: COOKIE }, body: '{}' })).status, 403);
+  assert.equal((await request({ method: 'POST', path: p, headers: { cookie: COOKIE, origin: 'https://evil.example' }, body: '{}' })).status, 403);
+  const ok = await request({ path: p, headers: { cookie: COOKIE, origin: 'https://evil.example' } });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.headers['access-control-allow-origin'], undefined, 'no other site may read it');
+  const view = JSON.parse(ok.body);
+  assert.equal(view.source.kind, 'project');
+  assert.deepEqual(view.texts, { 'briefs/a.md': '# A brief' });
+  assert.equal(ok.body.includes('SECRET'), false);
+  if (linked) assert.deepEqual(view.problems, [{ at: 'briefs/out.md', message: "can't be read: Only files inside the project folder can be shown." }]);
+  // A path in flow.json that climbs out is refused by the format itself; nothing is read for it.
+  fs.writeFileSync(path.join(folder, 'flow.json'), JSON.stringify({ ...flow, blocks: [{ id: 'a', kind: 'work', title: 'A', brief: '../../../ledung-secret.md' }] }));
+  const climb = await request({ path: p, headers: { cookie: COOKIE } });
+  assert.equal(JSON.parse(climb.body).flow, null);
+  assert.equal(climb.body.includes('SECRET'), false);
+  assert.match(JSON.parse(climb.body).problems[0].at, /^blocks\.a\.brief$/);
+  const nope = await request({ path: '/api/projects/nope/flow', headers: { cookie: COOKIE } });
+  assert.equal(nope.status, 400);
+  assert.match(JSON.parse(nope.body).error, /no project named "nope"/);
+});
+
+// The builder saves (issue #311, part 2, design decision 4): a change like any other (sign-in, Host, Origin, and through
+// the public name an unlocked device), only into the project's own .ledung/workflow, only the files the format knows,
+// within the limits, never through a link, and each replacing the version the page read.
+test("the builder's save needs the sign-in, Ledung's own Host and Origin, and writes only the format's files inside the project's own workflow folder", async (t) => {
+  const folder = path.join(projectRoot, '.ledung', 'workflow');
+  t.after(() => fs.rmSync(path.join(projectRoot, '.ledung'), { recursive: true, force: true }));
+  fs.rmSync(path.join(projectRoot, '.ledung'), { recursive: true, force: true });
+  const p = '/api/projects/p/flow';
+  const flow = JSON.stringify({ version: 1, manager: 'manager.md', blocks: [{ id: 'a', kind: 'work', title: 'A', runs: 'manager', brief: 'briefs/a.md' }] });
+  const files = [{ path: 'briefs/a.md', text: '# A', base: null }, { path: 'manager.md', text: '# Manager', base: null }, { path: 'flow.json', text: flow, base: null }];
+  const body = JSON.stringify({ files });
+  const json = { 'content-type': 'application/json' };
+  // Refused before anything is written: no sign-in, another Host, no or another Origin.
+  assert.equal((await request({ method: 'POST', path: p, headers: { ...json, origin: ORIGIN }, body })).status, 401);
+  assert.equal((await request({ method: 'POST', path: p, headers: { ...json, cookie: COOKIE, origin: ORIGIN, host: 'evil.example:80' }, body })).status, 403);
+  assert.equal((await request({ method: 'POST', path: p, headers: { ...json, cookie: COOKIE }, body })).status, 403);
+  assert.equal((await request({ method: 'POST', path: p, headers: { ...json, cookie: COOKIE, origin: 'https://evil.example' }, body })).status, 403);
+  assert.equal(fs.existsSync(folder), false, 'nothing was written');
+  // Through the public name a paired device that isn't unlocked can't save either.
+  const d = await deviceWithPasskey('Builder phone');
+  try {
+    const locked = await pubChange(p, body, d.cookie, d.withKey);
+    assert.equal(locked.status, 403, locked.body);
+    assert.match(errorOf(locked), /locked/);
+  } finally {
+    d.page.close();
+  }
+  assert.equal(fs.existsSync(folder), false, 'nothing was written');
+
+  // Saved: the files are in the project's own folder, and the answer is the workflow as it now reads.
+  const saved = await change(p, { files });
+  assert.equal(saved.status, 200, saved.body);
+  const view = JSON.parse(saved.body);
+  assert.deepEqual(view.texts, { 'briefs/a.md': '# A', 'manager.md': '# Manager' });
+  assert.equal(view.raw, flow);
+  assert.equal(view.saveTo, folder);
+  assert.equal(fs.readFileSync(path.join(folder, 'flow.json'), 'utf8'), flow);
+
+  // Only the files the format knows, and only inside the workflow folder.
+  for (const bad of ['../../outside.md', '../flow.json', 'briefs/../../../ledung-escaped.md', '/etc/x.md', 'C:/x.md', 'briefs\\x.md', 'briefs/sub/x.md', 'notes.txt', 'briefs/x.txt', 'overlays/.hidden.md', 'secrets/x.md', 'flow.json/x.md', 'roles/x.md', 'manager.md/x.md', 'briefs/manager.md/x.md', 'Manager.md', '../manager.md']) {
+    const res = await change(p, { files: [{ path: bad, text: 'x', base: null }] });
+    assert.equal(res.status, 400, bad);
+    assert.match(errorOf(res), /not a file the workflow's format has/, bad);
+  }
+  assert.equal(fs.existsSync(path.join(projectRoot, 'outside.md')), false);
+  assert.equal(fs.existsSync(path.join(path.dirname(projectRoot), 'ledung-escaped.md')), false);
+  // Sizes: one text, all of them, the request; and a flow.json that would be no flow at all.
+  assert.match(errorOf(await change(p, { files: [{ path: 'briefs/big.md', text: 'x'.repeat(256 * 1024 + 1), base: null }] })), /larger than the 256 KB/);
+  const many = Array.from({ length: 20 }, (_, i) => ({ path: `briefs/b${i}.md`, text: 'x'.repeat(250 * 1024), base: null }));
+  assert.match(errorOf(await change(p, { files: many })), /Together the files are larger than the 4 MB/);
+  // Past the body limit the request is refused while it comes in: a 413, or the connection cut before the answer.
+  const huge = await request({ method: 'POST', path: p, headers: { ...json, cookie: COOKIE, origin: ORIGIN, connection: 'close' }, body: JSON.stringify({ files: [{ path: 'rules.md', text: 'x'.repeat(7 * 1024 * 1024), base: null }] }) }).catch((e: NodeJS.ErrnoException) => ({ status: e.code }));
+  assert.ok(huge.status === 413 || huge.status === 'ECONNRESET' || huge.status === 'EPIPE', String(huge.status));
+  assert.equal(fs.existsSync(path.join(folder, 'rules.md')), false);
+  assert.match(errorOf(await change(p, { files: [{ path: 'flow.json', text: '{"version":1,"blocks":[]}', base: view.versions['flow.json'] }] })), /would not be a flow/);
+  assert.match(errorOf(await change(p, { files: [] })), /nothing to save/);
+  assert.match(errorOf(await change(p, { files: [{ path: 'rules.md', text: 'a', base: null }, { path: 'rules.md', text: 'b', base: null }] })), /given twice/);
+  assert.equal(fs.readdirSync(path.join(folder, 'briefs')).join(), 'a.md', 'none of those was written');
+
+  // Each file replaces the version the page read: a stale or made-up version, or a new file that is there already, is refused.
+  assert.match(errorOf(await change(p, { files: [{ path: 'briefs/a.md', text: '# B', base: '0000000000000000' }] })), /has changed since the page read the workflow/);
+  assert.match(errorOf(await change(p, { files: [{ path: 'briefs/a.md', text: '# B', base: null }] })), /already in the workflow folder/);
+  assert.match(errorOf(await change(p, { files: [{ path: 'briefs/a.md', text: '# B', base: 'not a version' }] })), /which version it replaces/);
+  assert.equal(fs.readFileSync(path.join(folder, 'briefs', 'a.md'), 'utf8'), '# A');
+  const again = await change(p, { files: [{ path: 'briefs/a.md', text: '# B', base: view.versions['briefs/a.md'] }] });
+  assert.equal(again.status, 200, again.body);
+  assert.equal(fs.readFileSync(path.join(folder, 'briefs', 'a.md'), 'utf8'), '# B');
+
+  // Never through a link: the workflow folder that is a link (a junction on Windows) to somewhere else is not written to.
+  const outside = path.join(path.dirname(projectRoot), `ledung-builder-outside-${process.pid}`);
+  fs.mkdirSync(outside, { recursive: true });
+  t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+  fs.rmSync(path.join(projectRoot, '.ledung'), { recursive: true, force: true });
+  fs.mkdirSync(path.join(projectRoot, '.ledung'));
+  fs.symlinkSync(outside, folder, 'junction');
+  const viaLink = await change(p, { files: [{ path: 'rules.md', text: 'CHANGED', base: null }] });
+  assert.equal(viaLink.status, 400, viaLink.body);
+  assert.match(errorOf(viaLink), /\.ledung\/workflow is a link/);
+  assert.equal(fs.existsSync(path.join(outside, 'rules.md')), false);
+  fs.rmSync(folder, { recursive: true, force: true });
+});
