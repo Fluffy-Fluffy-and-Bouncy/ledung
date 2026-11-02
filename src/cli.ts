@@ -9,6 +9,7 @@
 //   ledung [--no-open]                 starts Ledung in the background, its output in ledung.log in the data folder
 //   ledung --foreground [--no-open]    runs it in this terminal; Ctrl+C or closing the terminal stops it
 //   ledung stop                        stops the running Ledung and its sessions; exits 3 when none runs
+//   ledung account token <name>        puts a long-lived token into an account's Claude Code sign-in (#85)
 //   ledung --version
 //   ledung --open-only                 opens a running Ledung's page; exits 3 when none runs (the macOS app, issue #415)
 import { spawn } from 'node:child_process';
@@ -18,6 +19,7 @@ import { appVersion, PACKAGED } from './platform/paths.ts';
 import { coreArgs } from './platform/node-warnings.ts';
 import { NOT_RUNNING_CODE, openIfRunning } from './platform/running.ts';
 import { startInBackground, stopRunning } from './platform/background.ts';
+import { accountCommand } from './accounts/token-command.ts';
 
 /** Must match main.ts. */
 const RESTART_CODE = 75;
@@ -29,6 +31,7 @@ if (passthrough.includes('--version') || passthrough.includes('-v')) {
   process.exit(0);
 }
 if (passthrough[0] === 'stop') process.exit(await stopRunning({ configFile: configPath() }));
+if (passthrough[0] === 'account') process.exit(await accountCommand(passthrough.slice(1)));
 
 // Already running (issue #415): open its page rather than start a second Ledung on the busy port.
 if (await openIfRunning({ configFile: configPath(), open: !passthrough.includes('--no-open') })) process.exit(0);

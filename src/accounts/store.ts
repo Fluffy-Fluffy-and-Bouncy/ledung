@@ -8,8 +8,9 @@
 // itself, and test/accounts.test.ts checks it against the real Claude Code.
 //
 // Ledung never stores, reads or passes a sign-in token (issue #342, from Anthropic's terms quoted on #339): the
-// user signs in to the folder with Claude Code's own /login. Each account has a sign-in folder on this computer
-// and one in each container its projects run in.
+// user signs in to the folder with Claude Code's own /login, or with their own `ledung account token` in their own
+// terminal (issue #85). Each account has a sign-in folder on this computer and one in each container its projects
+// run in.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -27,6 +28,12 @@ export class AccountError extends Error {}
 
 /** The setting that points Claude Code's sign-in, and only its sign-in, at a folder (#342). */
 export const SIGN_IN_ENV = 'CLAUDE_SECURESTORAGE_CONFIG_DIR';
+/**
+ * Logins Ledung's own environment may carry; a session with its own account never inherits them. Ledung's
+ * CLAUDE_CONFIG_DIR is not one: an account is only the sign-in, and its sessions keep the Claude Code folder
+ * every session has, with its conversations and skills (#342).
+ */
+export const LOGIN_ENV = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', SIGN_IN_ENV];
 
 /** Where a session of the account runs: this computer, or a container (where the login folder is the container's). */
 export type AccountPlace = 'local' | 'docker';
