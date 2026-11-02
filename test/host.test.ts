@@ -202,7 +202,7 @@ for (const [name, hello] of [
 
     // From far ahead, so a host that let it in would re-send the waiting request.
     const outsider = await connect(spec.pipe, 0, hello(1_000_000));
-    const closed = await Promise.race([outsider.closed.then(() => 'closed'), new Promise((r) => setTimeout(() => r('open'), 20000).unref())]);
+    const closed = await Promise.race([outsider.closed.then(() => 'closed'), new Promise((r) => setTimeout(() => r('open'), WAIT_MS).unref())]);
     await outsider.close();
     assert.equal(closed, 'closed', 'the host closes the connection');
     assert.deepEqual(outsider.lines, [], 'no replay and no waiting request');

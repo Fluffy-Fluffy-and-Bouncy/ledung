@@ -12,7 +12,7 @@ import { coreArgs } from '../src/platform/node-warnings.ts';
 import { appDir } from '../src/platform/paths.ts';
 import { freePort } from './free-port.ts';
 import { removeTemp } from './temp.ts';
-import { HANG_MS } from './limits.ts';
+import { HANG_MS, WAIT_MS } from './limits.ts';
 
 const SQLITE = 'SQLite is an experimental feature and might change at any time';
 
@@ -118,7 +118,7 @@ test('a start of the packaged core prints no EXERCISED lines', async () => {
   let out = '';
   try {
     await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`not running within 30 s:\n${out}`)), 30_000);
+      const timer = setTimeout(() => reject(new Error(`not running within 30 s:\n${out}`)), WAIT_MS);
       const look = (d: Buffer) => {
         out += d;
         if (/Ledung is running at/.test(out)) { clearTimeout(timer); resolve(); }

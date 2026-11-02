@@ -246,3 +246,25 @@ test('an exchange of counts still on its way when Ledung closes changes nothing 
   // Without the fix, that answer read the closed database and the run failed on it.
   assert.equal(mac.db.isOpen, false);
 });
+
+test('a closed Ledung starts no exchange of counts, however it is asked to (#463)', { timeout: HANG_MS }, async () => {
+  const mac = await nodes.ledung('mac8.tabs.test');
+  const pc = await nodes.ledung('pc8.tabs.test');
+  await nodes.link(mac, pc);
+  // The calls to the linked computers, counted and passed on: an exchange asked for after close (a change to the links
+  // does that, review of PR #77, Minor 3) sends none.
+  const server = mac.server as unknown as { exchangeWaiting(): void; linked: { callLinked(id: string, route: string, body: Record<string, unknown>): Promise<Record<string, unknown>> } };
+  const callLinked = server.linked.callLinked.bind(server.linked);
+  let calls = 0;
+  server.linked.callLinked = (id, route, body) => {
+    if (route === '/link/waiting') calls++;
+    return callLinked(id, route, body);
+  };
+  server.exchangeWaiting();
+  assert.equal(calls, 1, 'open, the exchange calls the PC');
+  // The database stays open here, so only the closed check can keep the call from going out.
+  await mac.server.close();
+  calls = 0;
+  server.exchangeWaiting();
+  assert.equal(calls, 0, 'closed, it calls no one');
+});

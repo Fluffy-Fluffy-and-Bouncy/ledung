@@ -386,7 +386,7 @@ test('a TLS connection left idle after a request is closed within the keep-alive
   const since = Date.now();
   const closed = await new Promise<boolean>((resolve) => {
     if (socket.destroyed) return resolve(true);
-    const timer = setTimeout(() => resolve(false), 3000);
+    const timer = setTimeout(() => resolve(false), WAIT_MS);
     socket.once('close', () => {
       clearTimeout(timer);
       resolve(true);

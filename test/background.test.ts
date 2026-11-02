@@ -11,7 +11,7 @@ import { logFile, logTail, rotateLog, startInBackground } from '../src/platform/
 import { appDir } from '../src/platform/paths.ts';
 import { freePort } from './free-port.ts';
 import { removeTemp } from './temp.ts';
-import { HANG_MS } from './limits.ts';
+import { HANG_MS, WAIT_MS } from './limits.ts';
 
 let base: string;
 const pids: number[] = [];
@@ -134,7 +134,7 @@ test('ending the process group of the terminal that started Ledung leaves Ledung
     // Its own line, not the first: a run from source prints the EXERCISED line before it (Mac check of PR #11, round 2).
     let out = '';
     const said = await new Promise<string>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`the start never returned; the terminal said: ${out}`)), 30_000);
+      const timer = setTimeout(() => reject(new Error(`the start never returned; the terminal said: ${out}`)), WAIT_MS);
       shell.stdout.on('data', (b: Buffer) => {
         out += b.toString();
         const line = /^started .*$/m.exec(out)?.[0];

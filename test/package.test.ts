@@ -14,7 +14,7 @@ import { appDir, hostEntry, PACKAGED } from '../src/platform/paths.ts';
 import { NPM_REASON, Updater } from '../src/update/updater.ts';
 import { removeTemp } from './temp.ts';
 import { freePort } from './free-port.ts';
-import { HANG_MS } from './limits.ts';
+import { HANG_MS, WAIT_MS } from './limits.ts';
 
 let base: string;
 const savedEnv = { config: process.env.LEDUNG_CONFIG, data: process.env.LEDUNG_DATA_DIR };
@@ -161,7 +161,7 @@ test('the bundles run as plain JavaScript from a folder like the installed packa
   let out = '';
   try {
     const line = await new Promise<string>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`no Config line within 30 s:\n${out}`)), 30_000);
+      const timer = setTimeout(() => reject(new Error(`no Config line within 30 s:\n${out}`)), WAIT_MS);
       const look = (d: Buffer) => {
         out += d;
         const m = /^Config: (.*)$/m.exec(out);
