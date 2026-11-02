@@ -3,7 +3,7 @@
 // question's answer is kept; a Ledung with its own data folder keeps its shortcuts in it.
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { icnsFromPngs, icoFromPng, pngSize } from '../src/platform/icons.ts';
@@ -145,6 +145,9 @@ test('macOS: Add makes Ledung.app with the icon, opening a running Ledung or sta
   const log = path.join(path.dirname(folders.applications), 'data', 'ledung.log');
   assert.ok(run.includes(`\nLEDUNG_LOG_FILE='${log}' nohup "$NODE" '${path.join(path.dirname(folders.applications), 'data', 'launcher.mjs')}' >> '${log}' 2>&1 &\n`), run);
   assert.ok(!run.includes('Terminal'), run);
+  // A start gets the login shell's PATH (#464); opening a running Ledung's page doesn't wait for it.
+  assert.ok(run.indexOf('LEDUNG_START_PATH=login') > run.indexOf('--open-only && exit 0'), run);
+  assert.ok(run.indexOf('\nexport PATH LEDUNG_START_PATH\n') < run.indexOf('nohup'), run);
   assert.equal(fs.existsSync(path.join(app, 'Contents', 'Resources', 'start.command')), false);
   assert.ok(!run.includes('--env-file'), 'a Ledung on the usual folders carries no settings');
   if (process.platform !== 'win32') {
@@ -344,7 +347,8 @@ test('macOS: the LaunchAgent runs Ledung at login in the foreground under launch
   // Through sh, with Ledung.app's Node lookup: a Node upgrade must not stop it silently (Mac check of PR #11, note 2).
   let [shell, flag, script] = agentArgs(text);
   assert.deepEqual([shell, flag], ['/bin/sh', '-c']);
-  assert.ok(script!.startsWith(`NODE='/usr/local/bin/node'\n[ -x "$NODE" ] || NODE=$("\${SHELL:-/bin/zsh}" -lic 'command -v node'`), script);
+  // After the login shell's PATH (#464).
+  assert.ok(script!.includes(`\nNODE='/usr/local/bin/node'\n[ -x "$NODE" ] || NODE=$("\${SHELL:-/bin/zsh}" -lic 'command -v node'`), script);
   assert.ok(script!.endsWith(`\nexec "$NODE" '${cli}' '--foreground' '--no-open'`), script);
   assert.ok(text.includes('<key>RunAtLoad</key><true/>'), text);
   assert.ok(!text.includes('KeepAlive'), 'Stop Ledung stops it until the next login');
@@ -391,8 +395,71 @@ test('Linux: the start at sign-in is an autostart entry; shortcuts stay unavaila
   assert.equal(view.signIn.label, 'Start Ledung when I log in');
   const entry = fs.readFileSync(path.join(root, 'autostart', `${AGENT_LABEL}.desktop`), 'utf8');
   assert.ok(entry.startsWith('[Desktop Entry]\nType=Application\nName=Ledung\n'), entry);
-  assert.ok(entry.includes('\nExec="/usr/bin/node" "/opt/ledung 1/dist/cli.js" "--no-open"\n'), entry);
+  // Through sh for the login shell's PATH (#464), then Node with Ledung's arguments.
+  const [shell, flag, script] = execArgs(entry);
+  assert.deepEqual([shell, flag], ['/bin/sh', '-c']);
+  assert.ok(script!.includes("; NODE='/usr/bin/node'; "), script);
+  assert.ok(script!.endsWith(`; exec "$NODE" '/opt/ledung 1/dist/cli.js' '--no-open'`), script);
   assert.ok(entry.includes('\nTerminal=false\n'), entry);
+});
+
+/** A .desktop file's Exec arguments, as the desktop reads them: % and the file's backslashes first, then the quoting. */
+function execArgs(entry: string): string[] {
+  const line = /^Exec=(.*)$/m.exec(entry)![1]!.replace(/%%/g, '%').replace(/\\\\/g, '\\');
+  return [...line.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1]!.replace(/\\(.)/g, '$1'));
+}
+
+/** The sign-in start's sh script for a stand-in Ledung that prints the PATH it got and how it was set (#464). */
+async function signInRun(name: string, platform: 'darwin' | 'linux'): Promise<{ args: string[]; root: string }> {
+  const root = path.join(base, name);
+  const data = path.join(root, 'data');
+  const cli = path.join(root, 'cli.mjs');
+  fs.mkdirSync(data, { recursive: true });
+  fs.writeFileSync(cli, 'console.log(JSON.stringify({ path: process.env.PATH, how: process.env.LEDUNG_START_PATH }));');
+  await new Shortcuts({ launch: { node: process.execPath, script: cli }, iconDir: data, icons, meta: memoryMeta(), platform, folders: async () => ({ startup: path.join(root, 'start') }) }).act('sign-in-on');
+  const text = fs.readFileSync(path.join(root, 'start', `${AGENT_LABEL}.${platform === 'darwin' ? 'plist' : 'desktop'}`), 'utf8');
+  return { args: platform === 'darwin' ? agentArgs(text) : execArgs(text), root };
+}
+
+/** The PATH Ledung gets: the one given, with Node's own folder added when it isn't on it. */
+function withNode(pathList: string): string {
+  const dir = path.dirname(process.execPath);
+  return pathList.split(':').includes(dir) ? pathList : `${pathList}:${dir}`;
+}
+
+/** launchd's PATH for an agent. */
+const BARE_PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
+
+for (const platform of ['darwin', 'linux'] as const) {
+  test(`${platform}: the start at sign-in runs Ledung with the login shell's PATH, not the bare one it is started with (#464)`, { skip: process.platform === 'win32' && 'runs /bin/sh' }, async () => {
+    const { args: [shell, flag, script], root } = await signInRun(`login-path-${platform}`, platform);
+    assert.equal(shell, '/bin/sh');
+    // A stand-in login shell: its profile prints a line of its own, and its PATH has the folder npm, gh and the
+    // sessions' tools live in; it runs the command it is given the way zsh -lic does.
+    const tools = path.join(root, 'homebrew bin');
+    const login = path.join(root, 'login-shell');
+    fs.writeFileSync(login, `#!/bin/sh\necho 'Welcome back'\nPATH='${tools}:/usr/bin:/bin' exec /bin/sh -c "$2"\n`, { mode: 0o755 });
+    const out = execFileSync(shell!, [flag!, script!], { env: { PATH: BARE_PATH, SHELL: login, HOME: root } }).toString();
+    assert.deepEqual(JSON.parse(out), { path: withNode(`${tools}:/usr/bin:/bin`), how: 'login' });
+    // A login shell that fails: the PATH it was started with, plus Node's folder for npm's `#!/usr/bin/env node`.
+    fs.writeFileSync(login, '#!/bin/sh\necho broken profile >&2\nexit 1\n', { mode: 0o755 });
+    const fallback = execFileSync(shell!, [flag!, script!], { env: { PATH: BARE_PATH, SHELL: login, HOME: root }, stdio: ['ignore', 'pipe', 'pipe'] }).toString();
+    assert.deepEqual(JSON.parse(fallback), { path: withNode(BARE_PATH), how: 'fallback' });
+  });
+}
+
+test("macOS: a login shell that never answers doesn't stop the start at sign-in: Ledung starts on launchd's PATH after about ten seconds (#464)", { skip: process.platform === 'win32' && 'runs /bin/sh' }, async () => {
+  const { args: [shell, flag, script], root } = await signInRun('login-path-hangs', 'darwin');
+  const login = path.join(root, 'login-shell');
+  fs.writeFileSync(login, '#!/bin/sh\nexec sleep 60\n', { mode: 0o755 });
+  const started = Date.now();
+  const result = spawnSync(shell!, [flag!, script!], { env: { PATH: BARE_PATH, SHELL: login, HOME: root }, timeout: 40_000 });
+  const seconds = (Date.now() - started) / 1000;
+  assert.equal(result.status, 0, result.stderr.toString());
+  assert.deepEqual(JSON.parse(result.stdout.toString()), { path: withNode(BARE_PATH), how: 'fallback' });
+  assert.ok(seconds >= 7 && seconds < 30, `started after ${seconds} s`);
+  // Stopped quietly: sh's "Terminated" notice would go to the log.
+  assert.equal(result.stderr.toString(), '');
 });
 
 test('an Exec argument escapes quotes, $, backquotes and backslashes, and doubles %', () => {

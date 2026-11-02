@@ -445,16 +445,19 @@ export class Shortcuts {
     } else if (kind === 'mac') {
       // Under launchd in the foreground: the `ledung` command with --foreground, the release launcher as it is. Through
       // sh with the same Node lookup as Ledung.app, so a Node upgrade doesn't stop it silently (Mac check of PR #11).
+      // With the login shell's PATH, which launchd doesn't give it (#464).
       const run = [...this.nodeOptions(), script, ...(startsInBackground(this.opts.launch) ? ['--foreground'] : []), '--no-open'].map(shQuote).join(' ');
-      const missing = 'echo "Ledung cannot find Node.js. Install Node.js 24, or switch Start at sign-in off and on in Settings in Ledung." >&2; exit 1';
-      fs.writeFileSync(file, AGENT_PLIST(['/bin/sh', '-c', [...findNode(node), `[ -x "$NODE" ] || { ${missing}; }`, `exec "$NODE" ${run}`].join('\n')], this.logFile()));
+      fs.writeFileSync(file, AGENT_PLIST(['/bin/sh', '-c', signInScript(node, run, '/bin/zsh').join('\n')], this.logFile()));
     } else {
+      // Through sh too, for the login shell's PATH (#464): the desktop session's PATH comes from the profile at most,
+      // not from .bashrc, where nvm and others put Node and npm.
+      const run = [...this.nodeOptions(), script, '--no-open'].map(shQuote).join(' ');
       fs.writeFileSync(file, [
         '[Desktop Entry]',
         'Type=Application',
         'Name=Ledung',
         'Comment=Start Ledung in the background. Made by Ledung\'s Settings (issue #456).',
-        `Exec=${[node, ...this.nodeOptions(), script, '--no-open'].map(desktopArg).join(' ')}`,
+        `Exec=${['/bin/sh', '-c', signInScript(node, run, '/bin/sh').join('; ')].map(desktopArg).join(' ')}`,
         'Terminal=false',
         'X-GNOME-Autostart-enabled=true',
         '',
@@ -487,6 +490,9 @@ export class Shortcuts {
       ...findNode(node),
       `[ -x "$NODE" ] || { osascript -e 'display alert "Ledung cannot find Node.js" message "Install Node.js 24, or add the shortcut again in Settings in Ledung."'; exit 1; }`,
       `"$NODE" ${run} --open-only && exit 0`,
+      // Only for a start: opening a running Ledung's page doesn't wait for the login shell.
+      ...loginPath('/bin/zsh'),
+      ...nodeOnPath(),
       startsInBackground(this.opts.launch) ? `exec "$NODE" ${run}` : `${LOG_FILE_SETTING}=${shQuote(this.logFile())} nohup "$NODE" ${run} >> ${shQuote(this.logFile())} 2>&1 &`,
       '',
     ].join('\n'), { mode: 0o755 });
@@ -510,6 +516,42 @@ export class Shortcuts {
  */
 function findNode(node: string): string[] {
   return [`NODE=${shQuote(node)}`, `[ -x "$NODE" ] || NODE=$("\${SHELL:-/bin/zsh}" -lic 'command -v node' 2>/dev/null | tail -n 1)`];
+}
+
+/**
+ * How long the login shell may take to say its PATH, in rounds of a fifth of a second (about ten seconds with the
+ * rounds' own time): a slow or broken profile must not stop Ledung from starting.
+ */
+const LOGIN_PATH_TICKS = 40;
+/** The marker before the login shell's PATH in its answer. */
+const PATH_MARKER = 'LEDUNG_PATH=';
+
+/**
+ * Shell lines that put the person's login-shell PATH in place (#464): launchd, Finder and a desktop session's autostart
+ * give Ledung a bare PATH, and Ledung and its sessions then miss npm (Update Ledung), gh and the tools sessions use.
+ * The shell runs in the background with its answer in a file, and is stopped after LOGIN_PATH_TICKS (quietly: sh's
+ * "Terminated" notice would land in the log); on a timeout, an error or no answer the PATH stays as it was. The marker picks the PATH out of whatever the profile prints itself.
+ * LEDUNG_START_PATH says which it was, for the EXERCISED line; sessions never get LEDUNG_* settings (sessionEnv).
+ * Each line is a whole command, so the lines can be joined with "; " for a .desktop file's Exec.
+ */
+export function loginPath(fallbackShell: string): string[] {
+  const ask = `"\${SHELL:-${fallbackShell}}" -lic 'printf "\\n${PATH_MARKER}%s\\n" "$PATH"' </dev/null >"$T" 2>/dev/null & P=$!`;
+  return [
+    'L=; T=$(mktemp "${TMPDIR:-/tmp}/ledung-path.XXXXXX" 2>/dev/null) || T=',
+    `[ -z "$T" ] || { ${ask}; I=0; while kill -0 "$P" 2>/dev/null && [ "$I" -lt ${LOGIN_PATH_TICKS} ]; do sleep 0.2; I=$((I + 1)); done; kill "$P" 2>/dev/null; L=$(sed -n 's/^${PATH_MARKER}//p' "$T" | tail -n 1); rm -f "$T"; } 2>/dev/null`,
+    'if [ -n "$L" ]; then PATH=$L; LEDUNG_START_PATH=login; else LEDUNG_START_PATH=fallback; fi',
+  ];
+}
+
+/** Shell lines that add Node's own folder to the PATH, for npm's `#!/usr/bin/env node`, and pass the PATH on. */
+function nodeOnPath(): string[] {
+  return ['case ":$PATH:" in *":${NODE%/*}:"*) ;; *) PATH="$PATH:${NODE%/*}" ;; esac', 'export PATH LEDUNG_START_PATH'];
+}
+
+/** The start at sign-in's sh script on macOS and Linux: the login PATH, Node, then Ledung in its place (#464). */
+function signInScript(node: string, run: string, fallbackShell: string): string[] {
+  const missing = 'echo "Ledung cannot find Node.js. Install Node.js 24, or switch Start at sign-in off and on in Settings in Ledung." >&2; exit 1';
+  return [...loginPath(fallbackShell), ...findNode(node), `[ -x "$NODE" ] || { ${missing}; }`, ...nodeOnPath(), `exec "$NODE" ${run}`];
 }
 
 /** Whether a Ledung.app is the one Ledung made: its Info.plist carries Ledung's bundle id. */

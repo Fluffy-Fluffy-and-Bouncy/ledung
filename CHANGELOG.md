@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-02
+- Started at sign-in on macOS or Linux, or from Ledung.app, Ledung now gets the same PATH as in your terminal, so Update Ledung, Ledung's GitHub features and the tools your sessions use work after a login too; a shell profile that hangs delays the start by about ten seconds instead of stopping it. Switch Start Ledung when I sign in off and on in Settings to get it (#464)
 - Settings → About has an update channel, Public or Dev: on Dev an npm-installed Ledung gets dev builds before they go to everyone, and Update & restart now checks npm and updates an npm install with one click (#461)
 
 ## 2026-11-01
