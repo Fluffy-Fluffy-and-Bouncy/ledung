@@ -58,7 +58,7 @@ import { Management, type LinkedMessage, type LinkedPort, type SettingsPort } fr
 import { findTickets } from '../usage/links.ts';
 import { claudeEnvironment, Session, type TurnGate } from './session.ts';
 import {
-  checkContainerSignIn, checkSignIn, containerSignInHelp, dockerExecArgs, runCommand, sdkClaudeBinary, shellFolder, signInCommand, signInHelp, tokenCommand,
+  checkContainerSignIn, checkSignIn, containerSignInHelp, dockerExecArgs, runCommand, sdkClaudeBinary, shellFolder, shownSignIn, signInCommand, signInHelp, tokenCommand,
   type ContainerPlace, type LoginPlace, type SignIn, type SignInContext,
 } from '../accounts/signin.ts';
 import { McpError } from './mcp.ts';
@@ -1073,7 +1073,7 @@ export class SessionManager {
     const inFile = this.config.claudeAccounts;
     const accounts = this.accounts.list().map((a) => this.accountView(inFile[a.name] ? { ...a, inConfigFile: true, whatItIsFor: inFile[a.name]!.whatItIsFor ?? null } : a));
     const identity = raw ? JSON.parse(raw) : null;
-    const defaultKind = this.signIns.get(DEFAULT_ACCOUNT)?.kind;
+    const defaultKind = shownSignIn(this.signIns.get(DEFAULT_ACCOUNT));
     return {
       type: 'accounts', accounts,
       defaultIdentity: defaultKind ? { email: null, organization: null, plan: null, seenAt: null, ...identity, signInKind: defaultKind } : identity,
@@ -1086,7 +1086,7 @@ export class SessionManager {
   private accountView(a: AccountInfoView): AccountInfoView {
     const data = envSetting('DATA_DIR');
     return {
-      ...a, signInKind: this.signIns.get(a.name)?.kind ?? null, loginCommand: signInCommand(a.configDir),
+      ...a, signInKind: shownSignIn(this.signIns.get(a.name)), loginCommand: signInCommand(a.configDir),
       tokenCommand: tokenCommand(a.name, { packaged: PACKAGED, appDir: appDir(), dataDir: data ? path.resolve(data) : undefined, platform: process.platform }),
     };
   }

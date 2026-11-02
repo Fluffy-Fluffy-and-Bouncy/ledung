@@ -4,26 +4,19 @@
 // and settings are shared by every session whatever its account. Ledung takes no tokens (issue #342): a long-lived
 // token goes in through a command the user runs in their own terminal, and the page only shows that command (#85).
 import { Fragment, useState } from 'react';
-import type { AccountChoices, AccountInfoView, ProjectInfo, SignInKind } from '../../../src/shared/protocol.ts';
+import type { AccountChoices, AccountInfoView, ProjectInfo, ShownSignIn } from '../../../src/shared/protocol.ts';
 import { api } from '../api.ts';
 import { CopyButton } from '../components/Markdown.tsx';
 import { formatTime } from '../components/MessageList.tsx';
 import { usePlainTyping } from '../usePlainTyping.ts';
+import { signedInWith } from './signedInWith.ts';
 
 type Run = (action: () => Promise<unknown>) => Promise<void>;
-export type DefaultIdentity = { email: string | null; organization: string | null; plan: string | null; seenAt: number | null; signInKind?: SignInKind | null } | null;
+export type DefaultIdentity = { email: string | null; organization: string | null; plan: string | null; seenAt: number | null; signInKind?: ShownSignIn | null } | null;
 
 function who(a: { email: string | null; organization: string | null; plan: string | null; seenAt: number | null } | null): string {
   if (!a || (!a.email && !a.organization)) return 'not seen yet: shown after its first session starts';
   return [a.email, a.organization, a.plan].filter(Boolean).join(' · ') + (a.seenAt ? ` (seen ${formatTime(a.seenAt)})` : '');
-}
-
-/** How an account is signed in, in words (#85); Claude Code's own answer, Ledung reads no sign-in. */
-function signedInWith(kind: SignInKind | null | undefined): string {
-  if (kind === 'token') return 'Signed in with a long-lived token';
-  if (kind === 'login') return 'Signed in with /login';
-  if (kind === 'key') return 'Signed in with an API key';
-  return 'Not signed in, or not checked yet';
 }
 
 function CommandLine({ text }: { text: string }) {

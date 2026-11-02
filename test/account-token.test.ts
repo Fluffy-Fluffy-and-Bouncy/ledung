@@ -23,6 +23,7 @@ import { Store } from '../src/store/store.ts';
 import { HANG_MS } from './limits.ts';
 import { removeTemp } from './temp.ts';
 import { refuseRealSignInStores } from './signin-stores.ts';
+import { signedInWith } from '../web/src/projects/signedInWith.ts';
 
 const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-token-')));
 process.env.LEDUNG_DATA_DIR = path.join(base, 'data');
@@ -245,6 +246,21 @@ test('the page gets, with each account, how it is signed in and the commands; ad
   assert.equal(event.defaultIdentity?.signInKind, 'token');
 });
 
+test('a sign-in Ledung can\'t classify reads plain "Signed in", never "Not signed in" (Martin, 2026-11-02, question #519)', async () => {
+  const store = new Store(openDatabase(':memory:'));
+  const manager = refuseRealSignInStores(new SessionManager(parseConfig({ port: 4397 }), store, () => {}));
+  made.push(manager);
+  manager.checkSignInWith = async () => readSignIn({ code: 0, stdout: JSON.stringify({ loggedIn: true, authMethod: 'something new' }) });
+  manager.addAccount({ name: 'work' });
+  await manager.checkSignIns();
+  const event = manager.accountsEvent();
+  assert.equal(event.accounts[0]!.signInKind, 'other');
+  assert.equal(event.defaultIdentity?.signInKind, 'other');
+  assert.equal(signedInWith(event.accounts[0]!.signInKind), 'Signed in');
+  assert.equal(signedInWith('token'), 'Signed in with a long-lived token');
+  assert.equal(signedInWith(null), 'Not signed in, or not checked yet');
+});
+
 test('an account not checked yet, or signed out, is not called signed in', async () => {
   const store = new Store(openDatabase(':memory:'));
   const manager = refuseRealSignInStores(new SessionManager(parseConfig({ port: 4397 }), store, () => {}));
@@ -254,6 +270,9 @@ test('an account not checked yet, or signed out, is not called signed in', async
   await manager.checkSignIns();
   assert.equal(manager.accountsEvent().accounts[0]!.signInKind, null);
   assert.equal(manager.accountsEvent().defaultIdentity, null);
+  manager.checkSignInWith = async () => ({ state: 'unknown', method: null, detail: 'no answer', checkedAt: 0 });
+  await manager.checkSignIns();
+  assert.equal(manager.accountsEvent().accounts[0]!.signInKind, null);
 });
 
 /** A data folder with Ledung's own database and these accounts. */

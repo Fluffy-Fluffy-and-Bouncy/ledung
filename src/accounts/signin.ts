@@ -7,7 +7,7 @@
 import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { commandFor, sdkClaudeBinary } from '../runners/claude-program.ts';
-import type { SignInInfo, SignInKind } from '../shared/protocol.ts';
+import type { ShownSignIn, SignInInfo, SignInKind } from '../shared/protocol.ts';
 
 export type SignIn = Omit<SignInInfo, 'account'>;
 
@@ -36,6 +36,11 @@ export function signInKind(method: unknown, subscriptionType: unknown): SignInKi
   if (method !== 'claude.ai') return null;
   if (subscriptionType === null) return 'token';
   return typeof subscriptionType === 'string' && subscriptionType ? 'login' : null;
+}
+
+/** A check's answer as the page shows it: signed in without a kind Ledung knows is `other`, never "not signed in". */
+export function shownSignIn(found: { state: string; kind?: SignInKind | null } | undefined): ShownSignIn | null {
+  return found?.kind ?? (found?.state === 'in' ? 'other' : null);
 }
 
 /** What `claude auth status --json` said, as signed in, signed out, or unknown with why. */

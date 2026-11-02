@@ -394,7 +394,7 @@ export interface AccountInfoView {
   /** The config file's whatItIsFor for it, if any. */
   whatItIsFor?: string | null;
   /** How it is signed in, from the last check (issue #85); null or left out: not known yet, or not signed in. */
-  signInKind?: SignInKind | null;
+  signInKind?: ShownSignIn | null;
   /** The command that starts Claude Code on its sign-in folder here, for /login. */
   loginCommand?: string;
   /** The command that puts a long-lived token into its sign-in here, run in the user's own terminal (issue #85). */
@@ -435,6 +435,9 @@ export interface ClaudeCodeView {
 
 /** How an account is signed in (issue #85): a long-lived token, Claude Code's /login, or an API key. */
 export type SignInKind = 'token' | 'login' | 'key';
+
+/** The same as the page shows it: `other` is signed in, in a way Ledung can't tell (Martin, 2026-11-02, question #519). */
+export type ShownSignIn = SignInKind | 'other';
 
 export interface SignInInfo {
   /** The account's name, or "default" for the computer's own login. */
