@@ -1,6 +1,6 @@
 // The npm channels' publish (issue #461; Martin, 2026-11-02 00:38, Ledung question #1172): a dev build is the next
 // X.Y on npm's `dev` tag and never touches `latest`; a public release is the next plain number on `latest`, on the
-// owner's word; both refuse anything but a clean main that is origin/main. Nothing here talks to npm.
+// owners' word (Martin or FFBuddha); both refuse anything but a clean main that is origin/main. Nothing here talks to npm.
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -75,7 +75,7 @@ test('publishing refuses another branch, a dirty tree, a main not pushed or behi
 test('a public release needs a plain number and the version typed back; a dry run shows it without', () => {
   const pub: PublishOptions = { channel: 'public', dryRun: false };
   const s = { ...clean, version: '2.0.0' };
-  assert.match(refusals(pub, s).join(), /owner's word: run it again with --confirm 2\.0\.0/);
+  assert.match(refusals(pub, s).join(), /owners' word \(Martin or FFBuddha\): run it again with --confirm 2\.0\.0/);
   assert.match(refusals({ ...pub, confirm: '3.0.0' }, s).join(), /--confirm 2\.0\.0/);
   assert.deepEqual(refusals({ ...pub, confirm: '2.0.0' }, s), []);
   assert.deepEqual(refusals({ ...pub, dryRun: true }, s), []);

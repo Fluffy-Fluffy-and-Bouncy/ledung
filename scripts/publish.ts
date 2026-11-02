@@ -3,7 +3,7 @@
 //   npm run publish:dev [-- --dry-run]                         the next dev build, X.Y, to npm's `dev` tag
 //   npm run publish:public -- --confirm <version> [--dry-run]  the next public release, X, to `latest`
 //
-// A dev build is published by the manager after merges; a public release only on the owner's word, which is why it
+// A dev build is published by the manager after merges; a public release only on the owners' word (Martin or FFBuddha), which is why it
 // asks for the version typed back. `npm install -g ledung` gets `latest`, so a dev build never reaches it: the dev
 // command only ever names the `dev` tag, and neither command moves a tag by itself (no `npm dist-tag`).
 //
@@ -61,7 +61,7 @@ export function refusals(opts: PublishOptions, s: PublishState): string[] {
   if (opts.channel === 'public' && !isPublicVersion(s.version)) out.push(`${s.version} is not a plain number: a public release is X.`);
   if (s.published.includes(s.version)) out.push(`${s.version} is already on npm.`);
   if (opts.channel === 'public' && !opts.dryRun && opts.confirm !== s.version) {
-    out.push(`A public release is the owner's word: run it again with --confirm ${s.version} to publish ${displayVersion(s.version)} to everyone.`);
+    out.push(`A public release is the owners' word (Martin or FFBuddha): run it again with --confirm ${s.version} to publish ${displayVersion(s.version)} to everyone.`);
   }
   return out;
 }
