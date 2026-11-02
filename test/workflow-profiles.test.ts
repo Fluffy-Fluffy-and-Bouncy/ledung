@@ -374,6 +374,21 @@ test("a profile that truly does not exist is still refused on the page's save an
   }
 });
 
+test("a page's save for a project that no longer exists gets the plain refusal, not one about its profiles (#96, review of PR #101)", () => {
+  const { manager, cleanup } = projectOnWorkflowProfiles();
+  try {
+    const body = pageBody(manager, 'p', { model: 'haiku' });
+    const gone = (e: Error) => e instanceof UserError && e.message === 'There is no project named "gone".';
+    assert.throws(() => manager.updateProject('gone', body), gone);
+    assert.throws(() => manager.renameProject('gone', 'q', body), gone);
+    assert.deepEqual(manager.projects().map((p) => p.name), ['p']);
+    // The same body saves on a project that is there, so the refusal above is about the name.
+    assert.equal(manager.updateProject('p', body).model, 'haiku');
+  } finally {
+    cleanup();
+  }
+});
+
 test("a project taken out of the workflow can't keep its profiles on the page's save (#96)", () => {
   const { manager, cleanup } = projectOnWorkflowProfiles();
   try {

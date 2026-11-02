@@ -646,7 +646,7 @@ function Sidebar(props: {
   // The Compact sidebar step (#153): which rows a card keeps; what it hides goes in its tooltip.
   const [compact] = useCompactSidebar();
   const shows = compactRows(compact);
-  // "Archived (N)" at the end of each group, unless switched off in Settings (#157).
+  // "Archived (N)" at the end of each group, when switched on in Settings (#157, #95).
   const [archivedShown] = useArchivedLink();
   // The caret sits beside the row's button, not in it (no button inside a button), and carries no data-drag.
   const item = ({ s, depth, drag: group, hidden, folds, folded: isFolded }: FoldedRow<Row>) => {
