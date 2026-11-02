@@ -40,7 +40,9 @@ export function cleanToken(given: string): string | null {
   const lines = given.trim().split(/\r\n|\r|\n/).map((line) => line.trim());
   if (lines.some((line) => !line || /\s/.test(line))) return null;
   const token = lines.join('');
-  return TOKEN.test(token) ? token : null;
+  // A second token can't be told from text by its letters, so it is told by its start: pasted twice at a prompt that
+  // shows nothing is the likely slip (code review of #85, round 2).
+  return TOKEN.test(token) && !token.includes('sk-ant-', 1) ? token : null;
 }
 
 /**

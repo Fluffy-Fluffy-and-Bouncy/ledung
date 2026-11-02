@@ -69,7 +69,8 @@ test('how an account is signed in is told from what claude auth status prints, f
 test('a token is taken only as `claude setup-token` gives one, line ends from a wrapped paste dropped', () => {
   assert.equal(cleanToken(`${FAKE}\n`), FAKE);
   assert.equal(cleanToken(`  ${FAKE.slice(0, 30)}\n${FAKE.slice(30)}\r\n`), FAKE);
-  for (const bad of ['', 'hello', 'sk-ant-api03-abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz', 'sk-ant-oat01-short', `${FAKE}"; rm -rf`, `${FAKE} and more`, `${FAKE}\n\nStore this token safely`, `${FAKE}\nStore this token safely`]) assert.equal(cleanToken(bad), null, bad);
+  assert.equal(cleanToken(`${FAKE.slice(0, 30)}\n    ${FAKE.slice(30)}`), FAKE);
+  for (const bad of ['', 'hello', 'sk-ant-api03-abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz', 'sk-ant-oat01-short', `${FAKE}"; rm -rf`, `${FAKE} and more`, `${FAKE}\n\nStore this token safely`, `${FAKE}\nStore this token safely`, `${FAKE}${FAKE}`, `${FAKE}\n${FAKE}`, `${FAKE}\r${FAKE}`, `${FAKE}\n    ${FAKE}`]) assert.equal(cleanToken(bad), null, bad);
 });
 
 test('hidden typing: Enter ends it, a line end inside a paste does not, backspace and Ctrl+C work, arrows are ignored', () => {
@@ -78,6 +79,10 @@ test('hidden typing: Enter ends it, a line end inside a paste does not, backspac
   assert.deepEqual(applyKeys('', 'abc\ndef'), { held: 'abc\ndef', done: null });
   assert.equal(cleanToken(applyKeys('', `${FAKE.slice(0, 30)}\n${FAKE.slice(30)}\r`).held), FAKE);
   assert.equal(cleanToken(applyKeys('', `${FAKE}\n\nStore\r`).held), null);
+  // The same with CR, which is what a terminal in raw mode sends for Enter and so for a paste's line ends.
+  assert.deepEqual(applyKeys('', 'abc\rdef'), { held: 'abc\rdef', done: null });
+  assert.equal(cleanToken(applyKeys('', `${FAKE.slice(0, 30)}\r${FAKE.slice(30)}\r`).held), FAKE);
+  assert.equal(cleanToken(applyKeys('', `${FAKE}\r\rStore\r`).held), null);
   assert.deepEqual(applyKeys('abc', '\x7f\x7fz'), { held: 'az', done: null });
   assert.deepEqual(applyKeys('abc', '\x03'), { held: '', done: 'stop' });
   assert.deepEqual(applyKeys('abc', '\x1b[A\x1b[D'), { held: 'abc', done: null });
