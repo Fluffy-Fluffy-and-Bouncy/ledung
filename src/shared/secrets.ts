@@ -138,6 +138,8 @@ export function suggestSecretName(before: string, value: string, taken: readonly
  * command: a session reading one asks the person (sensitive), and the file viewer never shows one.
  */
 export const SECRET_FILE_PATTERN = /ledung-secrets|ledung-[0-9a-f]{8}-[0-9a-f-]{27}\.(?:env|secrets)\b|\.secrets\b|CLAUDE_ENV_FILE/i;
+/** The same files for the file viewer and the Files pane: only their folder and names, so a project's own *.secrets file still shows. */
+export const SECRET_RUNTIME_PATTERN = /ledung-secrets-[0-9a-f]{8}|ledung-[0-9a-f]{8}-[0-9a-f-]{27}\.(?:env|secrets)\b/i;
 export const SECRET_FILE_RULE = "Ledung's file of locked secrets, always yours to approve";
 
 /**

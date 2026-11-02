@@ -415,3 +415,28 @@ test('a local session gets the env file and the values only through its environm
   assert.equal(spec.env.CLAUDE_ENV_FILE, '/f.env');
   assert.equal(spec.env.LEDUNG_CONFIG, undefined);
 });
+
+test('changes made together all land, even while the first write waits for the OS to keep the key', async () => {
+  const dir = tmp();
+  try {
+    const guard = memoryGuard();
+    const slow: KeyGuard = { kind: 'slow', load: async () => { await new Promise((r) => setTimeout(r, 50)); return guard.key; }, save: guard.save };
+    const s = await Secrets.open(new Vault(path.join(dir, 'secrets.enc'), slow));
+    await Promise.all([s.add(S1, 'first', 'value-one-1', 'session'), s.add(S1, 'second', 'value-two-2', 'session')]);
+    assert.deepEqual(s.list(S1).map((x) => x.name), ['first', 'second']);
+    const again = await Secrets.open(new Vault(path.join(dir, 'secrets.enc'), guard));
+    assert.deepEqual(again.list(S1).map((x) => x.name), ['first', 'second'], 'both in the vault');
+  } finally {
+    removeTemp(dir);
+  }
+});
+
+test("a project's own *.secrets file still shows in the viewer; only Ledung's runtime files are hidden", () => {
+  const dir = tmp();
+  try {
+    fs.writeFileSync(path.join(dir, 'prod.secrets'), 'not ours');
+    assert.equal(readProjectFile(dir, 'prod.secrets').content, 'not ours');
+  } finally {
+    removeTemp(dir);
+  }
+});

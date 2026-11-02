@@ -965,7 +965,11 @@ export class Session {
       this.deliver();
     } else if (m.type === 'assistant' && status !== 'running' && this.pending.size === 0) {
       // A turn Claude Code started itself (a wake-up, a /loop) begins here.
-      this.turnStartedAt ??= Date.now();
+      if (this.turnStartedAt === null) {
+        this.turnStartedAt = Date.now();
+        // A turn begun this way is a turn for the "once" secrets' rule too (issue #468).
+        this.turnBegan = this.turnStartedAt;
+      }
       this.update({ status: 'running' });
     }
   }

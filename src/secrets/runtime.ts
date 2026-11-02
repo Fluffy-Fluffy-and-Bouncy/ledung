@@ -199,7 +199,8 @@ export function containerEnvFilePart(envFile: string, script: string): string {
   // another user put there first is never what Claude Code sources (review of #468, finding 11).
   const f = shQuote(envFile);
   const write = `(umask 077; t=$(mktemp /tmp/ledung-XXXXXX) || exit 1; printf '%s' ${shQuote(script)} > "$t" && mv -f "$t" ${f} || { rm -f "$t"; exit 1; })`;
-  return `if ${write} && [ -O ${f} ]; then CLAUDE_ENV_FILE=${f}; export CLAUDE_ENV_FILE; fi; `;
+  // Unset first: docker's -e may already have named it (second review of #468).
+  return `unset CLAUDE_ENV_FILE; if ${write} && [ -O ${f} ]; then CLAUDE_ENV_FILE=${f}; export CLAUDE_ENV_FILE; fi; `;
 }
 
 /** The session ids of the files in a local folder of them, for the clean-up at Ledung's start. */

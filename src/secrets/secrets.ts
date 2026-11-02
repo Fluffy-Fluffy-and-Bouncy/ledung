@@ -35,6 +35,8 @@ export class Secrets {
   problem: string | null = null;
   /** Told after every change, with the session or (for a project secret) the project it touches. */
   onChange: (change: { sessionId: string } | { project: string }) => void = () => {};
+  /** Every change, one after another: each starts from the entries the one before left (second review of #468). */
+  private queue: Promise<unknown> = Promise.resolve();
   /** The values to blank, longest first, so a value inside another is never blanked half; each as typed and as JSON escapes it. */
   private blanks: { forms: string[]; mark: string }[] = [];
 
@@ -111,7 +113,17 @@ export class Secrets {
     if (this.problem) throw new SecretError(this.problem);
   }
 
-  async add(scope: SecretScope, name: string, value: string, lifetime: SecretLifetime): Promise<SecretInfo> {
+  private serial<T>(step: () => Promise<T>): Promise<T> {
+    const run = this.queue.catch(() => {}).then(step);
+    this.queue = run;
+    return run;
+  }
+
+  add(scope: SecretScope, name: string, value: string, lifetime: SecretLifetime): Promise<SecretInfo> {
+    return this.serial(() => this.addNow(scope, name, value, lifetime));
+  }
+
+  private async addNow(scope: SecretScope, name: string, value: string, lifetime: SecretLifetime): Promise<SecretInfo> {
     this.usable();
     if (!SECRET_LIFETIMES.includes(lifetime)) throw new SecretError('Say how long it lasts: once, session, kept or project.');
     if (!value) throw new SecretError('There is no value to lock.');
@@ -123,7 +135,11 @@ export class Secrets {
     return this.info(e, false);
   }
 
-  async edit(scope: SecretScope, id: string, edit: { name?: string; lifetime?: SecretLifetime }): Promise<SecretInfo> {
+  edit(scope: SecretScope, id: string, edit: { name?: string; lifetime?: SecretLifetime }): Promise<SecretInfo> {
+    return this.serial(() => this.editNow(scope, id, edit));
+  }
+
+  private async editNow(scope: SecretScope, id: string, edit: { name?: string; lifetime?: SecretLifetime }): Promise<SecretInfo> {
     this.usable();
     const e = this.find(scope, id);
     if (edit.lifetime !== undefined && !SECRET_LIFETIMES.includes(edit.lifetime)) throw new SecretError('Say how long it lasts: once, session, kept or project.');
@@ -135,16 +151,20 @@ export class Secrets {
     return this.info(next, false);
   }
 
-  async remove(scope: SecretScope, id: string): Promise<void> {
-    const e = this.find(scope, id);
-    await this.drop((x) => x === e);
+  remove(scope: SecretScope, id: string): Promise<void> {
+    return this.serial(async () => {
+      const e = this.find(scope, id);
+      await this.dropNow((x) => x === e);
+    });
   }
 
   /** A message carrying these "once" secrets was sent now; kept in the vault, so a restart keeps the rule. */
-  async markSent(sessionId: string, names: readonly string[], at = Date.now()): Promise<void> {
-    const which = (e: Entry) => e.sessionId === sessionId && e.lifetime === 'once' && e.sentAt === undefined && names.includes(e.name);
-    if (!this.entries.some(which)) return;
-    await this.commit(this.entries.map((e) => (which(e) ? { ...e, sentAt: at } : e)), []);
+  markSent(sessionId: string, names: readonly string[], at = Date.now()): Promise<void> {
+    return this.serial(async () => {
+      const which = (e: Entry) => e.sessionId === sessionId && e.lifetime === 'once' && e.sentAt === undefined && names.includes(e.name);
+      if (!this.entries.some(which)) return;
+      await this.commit(this.entries.map((e) => (which(e) ? { ...e, sentAt: at } : e)), []);
+    });
   }
 
   /**
@@ -175,7 +195,11 @@ export class Secrets {
     await this.drop((e) => e.project === project);
   }
 
-  private async drop(which: (e: Entry) => boolean): Promise<void> {
+  private drop(which: (e: Entry) => boolean): Promise<void> {
+    return this.serial(() => this.dropNow(which));
+  }
+
+  private async dropNow(which: (e: Entry) => boolean): Promise<void> {
     const gone = this.entries.filter(which);
     if (!gone.length) return;
     await this.commit(this.entries.filter((e) => !which(e)), gone);
