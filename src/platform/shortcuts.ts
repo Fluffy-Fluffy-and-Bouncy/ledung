@@ -529,8 +529,9 @@ const PATH_MARKER = 'LEDUNG_PATH=';
 /**
  * Shell lines that put the person's login-shell PATH in place (#464): launchd, Finder and a desktop session's autostart
  * give Ledung a bare PATH, and Ledung and its sessions then miss npm (Update Ledung), gh and the tools sessions use.
- * The shell runs in the background with its answer in a file, and is stopped after LOGIN_PATH_TICKS (quietly: sh's
- * "Terminated" notice would land in the log); on a timeout, an error or no answer the PATH stays as it was. The marker picks the PATH out of whatever the profile prints itself.
+ * The shell runs in the background with its answer in a file, and is stopped after LOGIN_PATH_TICKS with KILL, as an
+ * interactive shell ignores TERM (review of PR #68, Important 1), and quietly: sh's notice would land in the log. On a
+ * timeout, an error or no answer the PATH stays as it was. The marker picks the PATH out of whatever the profile prints.
  * LEDUNG_START_PATH says which it was, for the EXERCISED line; sessions never get LEDUNG_* settings (sessionEnv).
  * Each line is a whole command, so the lines can be joined with "; " for a .desktop file's Exec.
  */
@@ -538,7 +539,7 @@ export function loginPath(fallbackShell: string): string[] {
   const ask = `"\${SHELL:-${fallbackShell}}" -lic 'printf "\\n${PATH_MARKER}%s\\n" "$PATH"' </dev/null >"$T" 2>/dev/null & P=$!`;
   return [
     'L=; T=$(mktemp "${TMPDIR:-/tmp}/ledung-path.XXXXXX" 2>/dev/null) || T=',
-    `[ -z "$T" ] || { ${ask}; I=0; while kill -0 "$P" 2>/dev/null && [ "$I" -lt ${LOGIN_PATH_TICKS} ]; do sleep 0.2; I=$((I + 1)); done; kill "$P" 2>/dev/null; L=$(sed -n 's/^${PATH_MARKER}//p' "$T" | tail -n 1); rm -f "$T"; } 2>/dev/null`,
+    `[ -z "$T" ] || { ${ask}; I=0; while kill -0 "$P" 2>/dev/null && [ "$I" -lt ${LOGIN_PATH_TICKS} ]; do sleep 0.2; I=$((I + 1)); done; kill -KILL "$P" 2>/dev/null; L=$(sed -n 's/^${PATH_MARKER}//p' "$T" | tail -n 1); rm -f "$T"; } 2>/dev/null`,
     'if [ -n "$L" ]; then PATH=$L; LEDUNG_START_PATH=login; else LEDUNG_START_PATH=fallback; fi',
   ];
 }

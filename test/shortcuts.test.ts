@@ -450,8 +450,10 @@ for (const platform of ['darwin', 'linux'] as const) {
 
 test("macOS: a login shell that never answers doesn't stop the start at sign-in: Ledung starts on launchd's PATH after about ten seconds (#464)", { skip: process.platform === 'win32' && 'runs /bin/sh' }, async () => {
   const { args: [shell, flag, script], root } = await signInRun('login-path-hangs', 'darwin');
+  // It ignores SIGTERM, as an interactive zsh or bash does (review of PR #68, Important 1), and says who it is.
   const login = path.join(root, 'login-shell');
-  fs.writeFileSync(login, '#!/bin/sh\nexec sleep 60\n', { mode: 0o755 });
+  const pidFile = path.join(root, 'login-shell.pid');
+  fs.writeFileSync(login, `#!/bin/sh\necho $$ > '${pidFile}'\ntrap '' TERM\nwhile :; do sleep 1; done\n`, { mode: 0o755 });
   const started = Date.now();
   const result = spawnSync(shell!, [flag!, script!], { env: { PATH: BARE_PATH, SHELL: login, HOME: root }, timeout: 40_000 });
   const seconds = (Date.now() - started) / 1000;
@@ -460,6 +462,16 @@ test("macOS: a login shell that never answers doesn't stop the start at sign-in:
   assert.ok(seconds >= 7 && seconds < 30, `started after ${seconds} s`);
   // Stopped quietly: sh's "Terminated" notice would go to the log.
   assert.equal(result.stderr.toString(), '');
+  // And stopped for good, not left running for as long as its profile hangs.
+  const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+  let running = true;
+  try {
+    process.kill(pid, 0);
+  } catch {
+    running = false;
+  }
+  if (running) process.kill(pid, 'SIGKILL');
+  assert.equal(running, false, `the login shell ${pid} still runs`);
 });
 
 test('an Exec argument escapes quotes, $, backquotes and backslashes, and doubles %', () => {
