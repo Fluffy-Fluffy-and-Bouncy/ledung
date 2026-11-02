@@ -6,7 +6,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { parseArgs, publishArgs, publishedVersions, refusals, type PublishOptions, type PublishState } from '../scripts/publish.ts';
+import { execFileSync } from 'node:child_process';
+import { parseArgs, publishArgs, publishedVersions, refusals, runPublish, type PublishOptions, type PublishState, type PublishSteps } from '../scripts/publish.ts';
 import { stagePackage } from '../scripts/build-package.ts';
 import { appDir } from '../src/platform/paths.ts';
 import { compareVersions, displayVersion, isDevVersion, isPublicVersion, nextVersion, offeredVersion } from '../src/shared/version.ts';
@@ -124,4 +125,80 @@ test("the package is stamped with the build's version, not the clone's, and the 
   // Without one, the clone's version as before.
   await stagePackage(source, stage);
   assert.equal(JSON.parse(fs.readFileSync(path.join(stage, 'package.json'), 'utf8')).version, JSON.parse(before).version);
+});
+
+// The whole run on a real clone of a local origin (test review of PR #13, finding 2): a refused clone stops before npm
+// is asked or anything is built; a clean main goes on to the build and, unless it is a dry run, the publish.
+const git = (cwd: string, ...args: string[]) =>
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', '-c', 'core.autocrlf=false', ...args], { cwd, stdio: ['ignore', 'pipe', 'pipe'] }).toString().trim();
+
+/** A clone on main that is origin/main, with a package.json at 1.0.0 and a tracked web/public folder. */
+function cleanClone(name: string): string {
+  const origin = path.join(base, `${name}-origin.git`);
+  const clone = path.join(base, name);
+  git(base, 'init', '-q', '--bare', '-b', 'main', origin);
+  git(base, 'clone', '-q', origin, clone);
+  git(clone, 'checkout', '-q', '-B', 'main');
+  fs.writeFileSync(path.join(clone, 'package.json'), JSON.stringify({ name: 'ledung', version: '1.0.0' }));
+  fs.mkdirSync(path.join(clone, 'web', 'public'), { recursive: true });
+  fs.writeFileSync(path.join(clone, 'web', 'public', 'icon.svg'), '<svg/>');
+  git(clone, 'add', '-A');
+  git(clone, 'commit', '-qm', 'first');
+  git(clone, 'push', '-q', 'origin', 'main');
+  return clone;
+}
+
+/** Records every step; npm says it has 1.0.0. */
+function recorder() {
+  const calls: string[] = [];
+  const steps: PublishSteps = {
+    npmView: () => { calls.push('npm view'); return ['1.0.0']; },
+    check: () => { calls.push('check'); },
+    build: async (_s, version) => { calls.push(`build ${version}`); return `ledung-${version}.tgz`; },
+    publish: (args) => { calls.push(`npm ${args.join(' ')}`); },
+    log: () => {},
+    error: (line) => { calls.push(line); },
+  };
+  return { calls, steps };
+}
+
+test('a clean main publishes the next dev build to the dev tag; a dry run builds it and publishes nothing', async () => {
+  const clone = cleanClone('clean');
+  const dry = recorder();
+  assert.equal(await runPublish({ channel: 'dev', dryRun: true }, clone, dry.steps), 0);
+  assert.deepEqual(dry.calls, ['npm view', 'build 1.1.0']);
+  const real = recorder();
+  assert.equal(await runPublish({ channel: 'dev', dryRun: false }, clone, real.steps), 0);
+  assert.deepEqual(real.calls, ['npm view', 'check', 'build 1.1.0', 'npm publish ledung-1.1.0.tgz --tag dev --access public']);
+});
+
+test('a refused clone stops before npm is asked or anything is built: changes, an untracked file the package takes in, another branch, a main not pushed', async () => {
+  const clone = cleanClone('refused');
+  const tryIt = async () => {
+    const r = recorder();
+    assert.equal(await runPublish({ channel: 'dev', dryRun: false }, clone, r.steps), 1);
+    assert.ok(!r.calls.some((c) => /^(npm|check|build)/.test(c)), r.calls.join(' | '));
+    return r.calls.join(' | ');
+  };
+
+  fs.appendFileSync(path.join(clone, 'web', 'public', 'icon.svg'), ' ');
+  assert.match(await tryIt(), /uncommitted changes/);
+  git(clone, 'checkout', '-q', '--', '.');
+
+  // An untracked file where the page is built from would go into the package (code review of PR #13, minor 2).
+  fs.writeFileSync(path.join(clone, 'web', 'public', 'scratch.html'), 'x');
+  assert.match(await tryIt(), /uncommitted changes/);
+  fs.rmSync(path.join(clone, 'web', 'public', 'scratch.html'));
+  // One beside the config, which the package leaves out, does not stop it.
+  fs.writeFileSync(path.join(clone, 'ledung.config.local.json.bak'), '{}');
+  assert.equal(await runPublish({ channel: 'dev', dryRun: true }, clone, recorder().steps), 0);
+
+  git(clone, 'checkout', '-q', '-b', 'feature');
+  assert.match(await tryIt(), /branch feature, not main/);
+  git(clone, 'checkout', '-q', 'main');
+
+  fs.writeFileSync(path.join(clone, 'web', 'public', 'new.svg'), '<svg/>');
+  git(clone, 'add', '-A');
+  git(clone, 'commit', '-qm', 'not pushed');
+  assert.match(await tryIt(), /main is not origin\/main/);
 });

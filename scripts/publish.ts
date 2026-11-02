@@ -41,7 +41,7 @@ export function parseArgs(argv: string[], env: NodeJS.ProcessEnv = process.env):
 /** What the refusals are decided on. */
 export interface PublishState {
   branch: string;
-  /** Tracked files with changes (untracked ones are not published, so they don't count). */
+  /** Tracked files with changes, or untracked files where the package is built from (PACKAGED_PATHS). */
   dirty: boolean;
   head: string;
   originHead: string;
@@ -51,12 +51,18 @@ export interface PublishState {
   published: string[];
 }
 
-/** Why this build must not be published; empty when it may. */
-export function refusals(opts: PublishOptions, s: PublishState): string[] {
+/** Why the clone must not be published from, whatever the version: another branch, changes, not what merged. */
+export function cloneRefusals(s: Pick<PublishState, 'branch' | 'dirty' | 'head' | 'originHead'>): string[] {
   const out: string[] = [];
   if (s.branch !== BRANCH) out.push(`The clone is on ${s.branch === 'HEAD' ? 'no branch' : `branch ${s.branch}`}, not ${BRANCH}.`);
   if (s.dirty) out.push('The clone has uncommitted changes.');
   if (s.head !== s.originHead) out.push(`${BRANCH} is not origin/${BRANCH} (${s.head.slice(0, 7)} against ${s.originHead.slice(0, 7)}): publish only what has merged.`);
+  return out;
+}
+
+/** Why this build must not be published; empty when it may. */
+export function refusals(opts: PublishOptions, s: PublishState): string[] {
+  const out = cloneRefusals(s);
   if (opts.channel === 'dev' && !isDevVersion(s.version)) out.push(`${s.version} is not a dev build's X.Y (a plain number is a public release).`);
   if (opts.channel === 'public' && !isPublicVersion(s.version)) out.push(`${s.version} is not a plain number: a public release is X.`);
   if (s.published.includes(s.version)) out.push(`${s.version} is already on npm.`);
@@ -89,46 +95,80 @@ function npmView(name: string, cwd: string): string[] {
   throw new Error(`npm view ${name} failed:\n${r.stderr || r.stdout}`);
 }
 
-async function main(): Promise<number> {
-  const opts = parseArgs(process.argv.slice(2));
-  const source = appDir();
-  const clone = JSON.parse(fs.readFileSync(path.join(source, 'package.json'), 'utf8')) as { name: string; version: string };
+/**
+ * What goes into the package besides tracked files: an untracked file here is built or copied in (web/public into the
+ * page, for one), so it counts as an uncommitted change (code review of PR #13, minor 2). Untracked files elsewhere,
+ * such as backups beside the config, are left out of the package and don't stop a publish.
+ */
+export const PACKAGED_PATHS = ['src', 'web', 'scripts', 'package.json', 'package-lock.json', 'README.md', 'CHANGELOG.md', 'LICENSE', 'COMMERCIAL.md', 'ledung.config.example.json'];
+
+/** The clone's side of the state, read with git after fetching origin/main. */
+export function cloneState(source: string): Pick<PublishState, 'branch' | 'dirty' | 'head' | 'originHead'> {
   git(source, ['fetch', '--quiet', 'origin', BRANCH]);
-  const published = npmView(clone.name, source);
-  const version = nextVersion(opts.channel, [...published, clone.version]);
-  const state: PublishState = {
+  const changed = git(source, ['status', '--porcelain', '--untracked-files=no']);
+  const untracked = git(source, ['status', '--porcelain', '--untracked-files=all', '--', ...PACKAGED_PATHS]);
+  return {
     branch: git(source, ['rev-parse', '--abbrev-ref', 'HEAD']),
-    dirty: git(source, ['status', '--porcelain', '--untracked-files=no']) !== '',
+    dirty: changed !== '' || untracked !== '',
     head: git(source, ['rev-parse', 'HEAD']),
     originHead: git(source, ['rev-parse', `origin/${BRANCH}`]),
-    version,
-    published,
   };
-  const tag = CHANNEL_TAG[opts.channel];
-  console.log(`${clone.name} ${version} (${displayVersion(version)}) from ${state.head.slice(0, 7)}, to npm's ${tag} tag${opts.dryRun ? ' (dry run)' : ''}.`);
-  const refused = refusals(opts, state);
-  if (refused.length) {
-    for (const r of refused) console.error(`Refused: ${r}`);
+}
+
+/** Everything the publish does outside git; tests replace them, so nothing reaches npm. */
+export interface PublishSteps {
+  npmView(name: string, cwd: string): string[];
+  check(source: string): void;
+  build(source: string, version: string): Promise<string>;
+  publish(args: string[], source: string): void;
+  log(line: string): void;
+  error(line: string): void;
+}
+
+const REAL_STEPS: PublishSteps = {
+  npmView,
+  check: (source) => npm(['run', 'check', '--silent'], source),
+  build: buildPackage,
+  publish: (args, source) => npm(args, source),
+  log: (line) => console.log(line),
+  error: (line) => console.error(line),
+};
+
+/** Publishes `source` to the channel; 0 when published (or a dry run went through), 1 when refused. */
+export async function runPublish(opts: PublishOptions, source: string, steps: PublishSteps = REAL_STEPS): Promise<number> {
+  const clone = JSON.parse(fs.readFileSync(path.join(source, 'package.json'), 'utf8')) as { name: string; version: string };
+  const local = cloneState(source);
+  const refuse = (reasons: string[]) => {
+    for (const r of reasons) steps.error(`Refused: ${r}`);
     return 1;
-  }
+  };
+  // The clone is refused before npm is asked or anything is built (test review of PR #13, finding 2).
+  const early = cloneRefusals(local);
+  if (early.length) return refuse(early);
+  const published = steps.npmView(clone.name, source);
+  const version = nextVersion(opts.channel, [...published, clone.version]);
+  const tag = CHANNEL_TAG[opts.channel];
+  steps.log(`${clone.name} ${version} (${displayVersion(version)}) from ${local.head.slice(0, 7)}, to npm's ${tag} tag${opts.dryRun ? ' (dry run)' : ''}.`);
+  const refused = refusals(opts, { ...local, version, published });
+  if (refused.length) return refuse(refused);
   if (!opts.dryRun) {
-    console.log('Checking...');
-    npm(['run', 'check', '--silent'], source);
+    steps.log('Checking...');
+    steps.check(source);
   }
-  const tgz = await buildPackage(source, version);
+  const tgz = await steps.build(source, version);
   const args = publishArgs(opts.channel, tgz);
   if (opts.dryRun) {
-    console.log(`Dry run: would run npm ${args.join(' ')}`);
+    steps.log(`Dry run: would run npm ${args.join(' ')}`);
     return 0;
   }
-  npm(args, source);
-  console.log(`Published ${displayVersion(version)} to ${tag}.`);
+  steps.publish(args, source);
+  steps.log(`Published ${displayVersion(version)} to ${tag}.`);
   return 0;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   try {
-    process.exitCode = await main();
+    process.exitCode = await runPublish(parseArgs(process.argv.slice(2)), appDir());
   } catch (e) {
     console.error((e as Error).message);
     process.exitCode = 1;
