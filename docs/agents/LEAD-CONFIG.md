@@ -21,7 +21,7 @@ Ledung sessions where the process is and that this file is the project's LEAD-CO
 
 | Key | Value |
 |---|---|
-| `REPO` | `Fluffy-Fluffy-and-Bouncy/Project-Ledung` for issues and the board (moved from `FFBuddha/fleet` 2026-10-12, `docs/decisions.md`). Code and PRs are on the public `Fluffy-Fluffy-and-Bouncy/ledung` since 2026-10-29 (Ledung question #487): open and merge PRs with `gh pr … -R Fluffy-Fluffy-and-Bouncy/ledung`, and refer to issues from there as `Fluffy-Fluffy-and-Bouncy/Project-Ledung#N` |
+| `REPO` | `Fluffy-Fluffy-and-Bouncy/ledung` (public): issues, PRs and code. Code and PRs have been there since 2026-10-29 (question #487); new issues are filed there since 2026-11-02 (Ledung questions #491–#493 and #508: "new issues go on the public repo"). **The open issues were moved to `ledung` on 2026-11-02**, 61 in two batches, each with a "Moved from Project-Ledung#N" line; the old issue is closed with a "Moved to" link, so anyone citing an old number follows that link. Project-Ledung keeps history, its Testing cards and #464, #465, #451, #455, #456, #459, #461, #463, which finish there; refer to those as `Fluffy-Fluffy-and-Bouncy/Project-Ledung#N`. Open and merge PRs with `gh pr … -R Fluffy-Fluffy-and-Bouncy/ledung` |
 | `DEFAULT_BRANCH` | `main` |
 | `WIN_CLONE` | per machine: the clone releases are built from; sessions work in worktrees only — Martin's Windows PC `%USERPROFILE%\claude-project\ledung` · Martin's Mac `~/claude-project/project-ledung` |
 
@@ -29,7 +29,7 @@ Ledung sessions where the process is and that this file is the project's LEAD-CO
 
 | Key | Value |
 |---|---|
-| `BOARD_NUMBER` | `1` — the organisation's board, https://github.com/orgs/Fluffy-Fluffy-and-Bouncy/projects/1 (`docs/decisions.md`, 2026-10-13). Replaces FFBuddha's user board 2 |
+| `BOARD_NUMBER` | `1` — the organisation's board (it holds issues of both repositories), https://github.com/orgs/Fluffy-Fluffy-and-Bouncy/projects/1 (`docs/decisions.md`, 2026-10-13). Replaces FFBuddha's user board 2 |
 | `BOARD_OWNER` | `Fluffy-Fluffy-and-Bouncy` |
 | `BOARD_PROJECT_ID` | `PVT_kwDOFFxMmc4BmwKS` |
 | `STATUS_FIELD_ID` | `PVTSSF_lADOFFxMmc4BmwKSzhlX4Cw` |
