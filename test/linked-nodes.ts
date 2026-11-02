@@ -20,21 +20,25 @@ import { selfSigned } from './self-signed.ts';
 import { removeTemp } from './temp.ts';
 import { refuseRealSignInStores } from './signin-stores.ts';
 import { freePort } from './free-port.ts';
+import { WAIT_MS } from './limits.ts';
 
 export const TOKEN = 'f'.repeat(64);
 export const COOKIE = `ledung_auth=${TOKEN}`;
 
 
-export interface Node { name: string; server: LedungServer; port: number; dir: string; cert: string; store: Store }
+export interface Node { name: string; server: LedungServer; port: number; dir: string; cert: string; store: Store; db: ReturnType<typeof openDatabase> }
 
 export class LinkedNodes {
   private readonly nodes = new Map<string, Node>();
   private readonly cleanup: (() => unknown)[] = [];
+  /** Run after every cleanup step: the databases and folders go only once no Ledung runs (#463). */
+  private readonly lastly: (() => unknown)[] = [];
   clock = Date.now();
   readonly now = () => this.clock;
 
   async close(): Promise<void> {
     for (const fn of this.cleanup.reverse()) await fn();
+    for (const fn of this.lastly) await fn();
   }
 
   /** TLS to a Ledung's public name over its tunnel; a name nobody holds: closed at once. */
@@ -81,12 +85,15 @@ export class LinkedNodes {
       await server.listen();
       return server;
     };
-    const node: Node = { name, server: await start(), port, dir, cert: pair.cert, store };
+    const node: Node = { name, server: await start(), port, dir, cert: pair.cert, store, db };
     this.restarts.set(name, async () => {
       await node.server.close();
       node.server = await start();
     });
-    this.cleanup.push(() => node.server.close(), () => db.close(), () => removeTemp(dir), () => removeTemp(webRoot));
+    // Every server closes before any database: one still running would otherwise answer, or be answered by, a
+    // Ledung whose database is closed (#463: "database is not open" after a test's end).
+    this.cleanup.push(() => node.server.close());
+    this.lastly.push(() => db.isOpen && db.close(), () => removeTemp(dir), () => removeTemp(webRoot));
     this.nodes.set(name, node);
     return node;
   }
@@ -171,7 +178,7 @@ export const directive = (res: { headers: http.IncomingHttpHeaders }, name: stri
   String(res.headers['content-security-policy']).split('; ').find((d) => d.startsWith(`${name} `)) ?? null;
 
 export async function until(check: () => boolean | Promise<boolean>, what: string): Promise<void> {
-  const end = Date.now() + 5000;
+  const end = Date.now() + WAIT_MS;
   while (!(await check())) {
     if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
     await new Promise((r) => setTimeout(r, 20));

@@ -18,8 +18,9 @@ import type { AcmeClient } from '../src/server/acme.ts';
 import type { NewComputerInfo } from '../src/shared/protocol.ts';
 import { removeTemp } from './temp.ts';
 import { freePort } from './free-port.ts';
+import { HANG_MS, WAIT_MS } from './limits.ts';
 
-const T = { timeout: 20_000 };
+const T = { timeout: HANG_MS };
 const ADMIN_KEY = 'the admin key only the admin\'s Ledung holds';
 const OLD_SECRET = 'the secret of the computer already there';
 const ACCOUNT = 'https://acme-v02.api.letsencrypt.org/acme/acct/42';
@@ -55,7 +56,7 @@ async function startRelay(opts: { adminKey?: string | null; invites?: string | n
   return { relay, port, lines, call };
 }
 
-async function waitFor(what: string, ok: () => boolean | Promise<boolean>, ms = 4000): Promise<void> {
+async function waitFor(what: string, ok: () => boolean | Promise<boolean>, ms = WAIT_MS): Promise<void> {
   const until = Date.now() + ms;
   while (!(await ok())) {
     if (Date.now() > until) throw new Error(`timed out waiting for ${what}`);

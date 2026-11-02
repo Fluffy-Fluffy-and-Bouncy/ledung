@@ -18,6 +18,7 @@ import { Store } from '../src/store/store.ts';
 import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { removeTemp } from './temp.ts';
 import { refuseRealSignInStores } from './signin-stores.ts';
+import { WAIT_MS } from './limits.ts';
 
 const tmp = () => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-bang-')));
 /** Windows may hold a folder a moment after a process in it ended: retried, and never the test's failure. */
@@ -132,6 +133,14 @@ test('the exit code and stderr come back; output above the cap is cut, with a no
 /** Whether a process with this marker on its command line is still running. */
 const stillThere = async (marker: string) => (await commandLines()).some((l) => l.includes(marker) && !l.includes('commandLines'));
 
+/** Whether the probe sees it start: asked until it does (#463: a fixed 2 s was a speed check under a full run's load). */
+async function seen(marker: string): Promise<boolean> {
+  for (const end = Date.now() + WAIT_MS; Date.now() < end; await new Promise((r) => setTimeout(r, 100))) {
+    if (await stillThere(marker)) return true;
+  }
+  return false;
+}
+
 test('past its time limit it is ended with everything it started, and the result says it was cut off', async () => {
   const dir = tmp();
   const runner = new LocalRunner({ name: 'p', runner: 'local', path: dir } as never);
@@ -139,8 +148,7 @@ test('past its time limit it is ended with everything it started, and the result
   // A command that starts a child of its own and then waits: both must go.
   const script = `require("child_process").spawn(process.execPath, ["-e", "setTimeout(()=>{}, 60000)", "${marker}"], { stdio: "ignore" }); setTimeout(()=>{}, 60000)`;
   const run = startShell(runner.shell(nodeRun(script), 'bash', process.env as never), { timeoutMs: 6000 });
-  await new Promise((r) => setTimeout(r, 2000));
-  assert.equal(await stillThere(marker), true, 'the probe sees the child while it runs');
+  assert.equal(await seen(marker), true, 'the probe sees the child while it runs');
   const r = await run.done;
   assert.equal(r.cut, 'timeout');
   assert.equal(r.exitCode, null);
@@ -155,8 +163,7 @@ test('what a command leaves behind when it exits is ended too: nothing could sto
   const marker = `ledung-bang-left-${process.pid}-${Date.now()}`;
   const script = `require("child_process").spawn(process.execPath, ["-e", "setTimeout(()=>{}, 60000)", "${marker}"], { stdio: "ignore", detached: true }).unref(); setTimeout(()=>{}, 5000)`;
   const run = startShell(runner.shell(nodeRun(script), 'bash', process.env as never));
-  await new Promise((r) => setTimeout(r, 2000));
-  assert.equal(await stillThere(marker), true, 'the probe sees it while the command runs');
+  assert.equal(await seen(marker), true, 'the probe sees it while the command runs');
   const r = await run.done;
   assert.equal(r.cut, null);
   assert.equal(r.exitCode, 0, r.stderr);
@@ -170,8 +177,7 @@ test('Stop ends a running command with everything it started', async () => {
   const marker = `ledung-bang-stop-${process.pid}-${Date.now()}`;
   const script = `require("child_process").spawn(process.execPath, ["-e", "setTimeout(()=>{}, 60000)", "${marker}"], { stdio: "ignore" }); setTimeout(()=>{}, 60000)`;
   const run = startShell(runner.shell(nodeRun(script), 'bash', process.env as never));
-  await new Promise((r) => setTimeout(r, 2500));
-  assert.equal(await stillThere(marker), true, 'the probe sees the child while it runs');
+  assert.equal(await seen(marker), true, 'the probe sees the child while it runs');
   await run.stop('stopped');
   const r = await run.done;
   assert.equal(r.cut, 'stopped');

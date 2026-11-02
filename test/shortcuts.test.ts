@@ -10,6 +10,7 @@ import { icnsFromPngs, icoFromPng, pngSize } from '../src/platform/icons.ts';
 import { AGENT_LABEL, ASKED_KEY, BUNDLE_ID, desktopArg, ENV_FILE, envFileText, iconFiles, launchTarget, powershell, Shortcuts, STARTER_FILE, starterText, type ShortcutsOptions } from '../src/platform/shortcuts.ts';
 import { appDir } from '../src/platform/paths.ts';
 import { removeTemp } from './temp.ts';
+import { HANG_MS } from './limits.ts';
 
 let base: string;
 const icons = iconFiles(appDir());
@@ -455,7 +456,7 @@ test("macOS: a login shell that never answers doesn't stop the start at sign-in:
   const pidFile = path.join(root, 'login-shell.pid');
   fs.writeFileSync(login, `#!/bin/sh\necho $$ > '${pidFile}'\ntrap '' TERM\nwhile :; do sleep 1; done\n`, { mode: 0o755 });
   const started = Date.now();
-  const result = spawnSync(shell!, [flag!, script!], { env: { PATH: BARE_PATH, SHELL: login, HOME: root }, timeout: 40_000 });
+  const result = spawnSync(shell!, [flag!, script!], { env: { PATH: BARE_PATH, SHELL: login, HOME: root }, timeout: HANG_MS });
   const seconds = (Date.now() - started) / 1000;
   assert.equal(result.status, 0, result.stderr.toString());
   assert.deepEqual(JSON.parse(result.stdout.toString()), { path: withNode(BARE_PATH), how: 'fallback' });

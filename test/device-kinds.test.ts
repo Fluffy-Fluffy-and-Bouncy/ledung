@@ -22,6 +22,7 @@ import { FakePasskey } from './fake-passkey.ts';
 import { removeTemp } from './temp.ts';
 import { refuseRealSignInStores } from './signin-stores.ts';
 import { freePort } from './free-port.ts';
+import { WAIT_MS } from './limits.ts';
 
 const TOKEN = 'c'.repeat(64);
 const MAC = 'mac.example.test';
@@ -257,7 +258,7 @@ test('a computer\'s cookie is renewed daily; the old one works a minute, then us
   const page = await live({ host: MAC, cookie: second, origin: `https://${MAC}` });
   assert.equal((await pub({ path: '/api/state', headers: { cookie: first } })).status, 401);
   // Bounded, so a page left open fails here rather than hanging the run.
-  assert.equal(await Promise.race([page.closed, new Promise((r) => setTimeout(() => r('still open'), 3000))]), 1008);
+  assert.equal(await Promise.race([page.closed, new Promise((r) => setTimeout(() => r('still open'), WAIT_MS))]), 1008);
   assert.equal((await pub({ path: '/api/state', headers: { cookie: second } })).status, 401, 'the new one is out too');
   computer.page.close();
   clock = 0;

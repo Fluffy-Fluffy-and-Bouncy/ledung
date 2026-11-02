@@ -30,6 +30,7 @@ import { readClientHello } from '../remote/clienthello.ts';
 import type { RemoteLink } from '../remote/link.ts';
 import { openFolder } from '../platform/open-folder.ts';
 import { NONCE } from '../platform/running.ts';
+import { exercisedLine } from '../platform/exercised.ts';
 import type { RelayAdmin } from '../remote/admin.ts';
 import type { UsagePublisher } from '../usage/publisher.ts';
 import type { Shortcuts } from '../platform/shortcuts.ts';
@@ -60,6 +61,8 @@ const LINK_PAIR_TIMES_KEY = 'link-pair-times';
 const WAITING_POLL_MS = 30_000;
 /** A change in this computer's count is sent after this, so a burst of questions is one call. */
 const WAITING_PUSH_MS = 1000;
+/** Logged once, the first time a late answer after close is let go (#463). */
+let exercised463 = false;
 
 /** Why linking refuses through the public name (#245 step 1: on the computer itself only). */
 const LINKED_HERE = 'Computers are linked and unlinked';
@@ -569,6 +572,7 @@ export class LedungServer {
   }
 
   close(): Promise<void> {
+    this.closed = true;
     if (this.waitingPoll) clearInterval(this.waitingPoll);
     if (this.waitingPush) clearTimeout(this.waitingPush);
     for (const ws of this.clients) ws.close(1001, 'Ledung is shutting down.');
@@ -965,6 +969,11 @@ export class LedungServer {
   private readonly waitingThere = new Map<string, number>();
   private waitingPoll: NodeJS.Timeout | null = null;
   private waitingPush: NodeJS.Timeout | null = null;
+  /**
+   * Set by close: an exchange still on its way then changes nothing and starts no new one, as the database may be
+   * closed by the time its answer comes (#463: it threw "database is not open" after a test's end).
+   */
+  private closed = false;
   /** The count last sent to the linked computers, so an unchanged one isn't sent again. */
   private waitingSent: number | null = null;
 
@@ -976,7 +985,7 @@ export class LedungServer {
 
   /** Something that may change the count happened: sent to the linked computers shortly, if it did change. */
   private waitingChanged(): void {
-    if (this.waitingPush || !this.linked || !this.servers.length) return;
+    if (this.closed || this.waitingPush || !this.linked || !this.servers.length) return;
     this.waitingPush = setTimeout(() => {
       this.waitingPush = null;
       if (this.waitingNow() !== this.waitingSent) this.exchangeWaiting();
@@ -987,7 +996,8 @@ export class LedungServer {
   /** Sends this computer's count to every linked one and keeps theirs; one that doesn't answer loses its badge. */
   private exchangeWaiting(): void {
     const linked = this.linked;
-    if (!linked) return;
+    // Closed: none starts, from the poll, a push or a change to the links (review of PR #77, Minor 3).
+    if (!linked || this.closed) return;
     const count = this.waitingNow();
     this.waitingSent = count;
     for (const link of linked.list()) {
@@ -997,6 +1007,13 @@ export class LedungServer {
 
   /** A linked computer's count, or undefined when it is offline: the open pages get its tab's badge at once. */
   private noteWaiting(id: string, raw: unknown): void {
+    if (this.closed) {
+      if (!exercised463) {
+        exercised463 = true;
+        exercisedLine('EXERCISED #463 a linked computer\'s answer after close was let go');
+      }
+      return;
+    }
     const count = typeof raw === 'number' && Number.isInteger(raw) && raw >= 0 && raw < 1_000_000 ? raw : undefined;
     if (this.waitingThere.get(id) === count) return;
     if (count === undefined) this.waitingThere.delete(id);

@@ -15,11 +15,12 @@ import { decodeFrame, encodeFrame, FRAME, helloMessage, helloVersion, PROTOCOL_V
 import { Tunnel } from '../src/remote/tunnel.ts';
 import { selfSigned } from './self-signed.ts';
 import { freePort, listenOk } from './free-port.ts';
+import { HANG_MS } from './limits.ts';
 
 const SECRET = 'correct horse battery staple 0123456789';
 const HOST = 'pc.relay.test';
 /** A broken link fails the test by name instead of hanging the file (test review 165, minor 3). */
-const T = { timeout: 10_000 };
+const T = { timeout: HANG_MS };
 const cleanup: (() => unknown)[] = [];
 after(async () => {
   for (const fn of cleanup.reverse()) await fn();

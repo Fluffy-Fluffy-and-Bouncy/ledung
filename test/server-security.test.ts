@@ -28,6 +28,7 @@ import { removeTemp } from './temp.ts';
 import { refuseRealSignInStores } from './signin-stores.ts';
 import { freePort } from './free-port.ts';
 import { stopRunning } from '../src/platform/background.ts';
+import { WAIT_MS } from './limits.ts';
 
 // A port the system says is free right now; a random pick could hit a running Ledung's port.
 const PORT = await freePort();
@@ -596,8 +597,12 @@ test('deciding a sensitive request needs the live page, not just the cookie', as
   assert.equal(passed.status, 400, 'with the key it reaches the manager');
   assert.match(errorOf(passed), /no longer waiting/);
   page.close();
-  await new Promise((r) => setTimeout(r, 200));
-  assert.equal((await change('/api/permissions/perm-sensitive', allow, { 'x-ledung-page': page.key })).status, 403, 'the key dies with its connection');
+  // The close reaches the server when it does (#463: a fixed 200 ms was a speed check): asked until the key is gone.
+  let after = 0;
+  for (const end = Date.now() + WAIT_MS; Date.now() < end; await new Promise((r) => setTimeout(r, 50))) {
+    if ((after = (await change('/api/permissions/perm-sensitive', allow, { 'x-ledung-page': page.key })).status) !== 400) break;
+  }
+  assert.equal(after, 403, 'the key dies with its connection');
 });
 
 test('answering a question about a sensitive request needs the live page', async () => {

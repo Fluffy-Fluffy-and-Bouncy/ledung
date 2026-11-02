@@ -22,6 +22,7 @@ import { selfSigned } from './self-signed.ts';
 import { removeTemp } from './temp.ts';
 import { refuseRealSignInStores } from './signin-stores.ts';
 import { freePort } from './free-port.ts';
+import { HANG_MS, WAIT_MS } from './limits.ts';
 
 const TOKEN = 'd'.repeat(64);
 const COOKIE = `ledung_auth=${TOKEN}`;
@@ -116,7 +117,7 @@ function keyFor(from: Node, to: Node): string {
 }
 
 async function until(check: () => boolean | Promise<boolean>, what: string): Promise<void> {
-  const end = Date.now() + 5000;
+  const end = Date.now() + WAIT_MS;
   while (!(await check())) {
     if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
     await new Promise((r) => setTimeout(r, 20));
@@ -131,7 +132,7 @@ test('a link code is the public name and a secret', () => {
   }
 });
 
-test('two Ledungs link with a code, each keeping only its own key and a hash of the other\'s; the code works once', { timeout: 20_000 }, async () => {
+test('two Ledungs link with a code, each keeping only its own key and a hash of the other\'s; the code works once', { timeout: HANG_MS }, async () => {
   const mac = await ledung('mac.link.test');
   const pc = await ledung('pc.link.test');
   const third = await ledung('third.link.test');
@@ -176,7 +177,7 @@ test('two Ledungs link with a code, each keeping only its own key and a hash of 
   assert.equal((await macPage('GET', 'links')).json.links.length, 1);
 });
 
-test('a code runs out after 10 minutes; wrong guesses do not close it', { timeout: 20_000 }, async () => {
+test('a code runs out after 10 minutes; wrong guesses do not close it', { timeout: HANG_MS }, async () => {
   const one = await ledung('one.link.test');
   const two = await ledung('two.link.test');
   const onePage = await page(one);
@@ -202,7 +203,7 @@ test('a code runs out after 10 minutes; wrong guesses do not close it', { timeou
   assert.equal((await onePage('GET', 'links')).json.links.length, 1);
 });
 
-test('the callback must reach the name the code was used for: a name that does not answer is not linked', { timeout: 20_000 }, async () => {
+test('the callback must reach the name the code was used for: a name that does not answer is not linked', { timeout: HANG_MS }, async () => {
   const home = await ledung('home.link.test');
   const homePage = await page(home);
   const made = await homePage('POST', 'links-code', {});
@@ -221,7 +222,7 @@ test('the callback must reach the name the code was used for: a name that does n
   assert.deepEqual((await homePage('GET', 'links')).json.links, []);
 });
 
-test('/link/ is only for another Ledung through the relay: never locally, never with a cookie; its key opens nothing else', { timeout: 20_000 }, async () => {
+test('/link/ is only for another Ledung through the relay: never locally, never with a cookie; its key opens nothing else', { timeout: HANG_MS }, async () => {
   const a = await ledung('a.link.test');
   const b = await ledung('b.link.test');
   const code = (await (await page(a))('POST', 'links-code', {})).json.code;
@@ -261,7 +262,7 @@ test('/link/ is only for another Ledung through the relay: never locally, never 
   assert.equal(remoteCode.status, 401);
 });
 
-test('unlinking takes effect at once here and is passed on to the other computer', { timeout: 20_000 }, async () => {
+test('unlinking takes effect at once here and is passed on to the other computer', { timeout: HANG_MS }, async () => {
   const x = await ledung('x.link.test');
   const y = await ledung('y.link.test');
   const xPage = await page(x);
@@ -281,7 +282,7 @@ test('unlinking takes effect at once here and is passed on to the other computer
   assert.equal((await yPage('POST', `links/${link.id}/remove`, {})).status, 400);
 });
 
-test('without end-to-end encryption through the relay there is no linking', { timeout: 20_000 }, async () => {
+test('without end-to-end encryption through the relay there is no linking', { timeout: HANG_MS }, async () => {
   const plain = await ledung('plain.link.test', false);
   const plainPage = await page(plain);
   const view = (await plainPage('GET', 'links')).json;
@@ -291,7 +292,7 @@ test('without end-to-end encryption through the relay there is no linking', { ti
   assert.equal((await viaTunnel('plain.link.test', '/link/pair', { body: '{}' })).status, 404);
 });
 
-test('making and using a link code needs the open page, as pairing a device does', { timeout: 20_000 }, async () => {
+test('making and using a link code needs the open page, as pairing a device does', { timeout: HANG_MS }, async () => {
   const node = await ledung('pagekey.link.test');
   const origin = `http://127.0.0.1:${node.port}`;
   for (const route of ['links-code', 'links-join']) {
@@ -300,7 +301,7 @@ test('making and using a link code needs the open page, as pairing a device does
   }
 });
 
-test('a linked computer\'s manager messages reach this one\'s managers through /link/message, named by the key, within the limits', { timeout: 20_000 }, async () => {
+test('a linked computer\'s manager messages reach this one\'s managers through /link/message, named by the key, within the limits', { timeout: HANG_MS }, async () => {
   const mac = await ledung('msgmac.link.test');
   const pc = await ledung('msgpc.link.test');
   const code = (await (await page(mac))('POST', 'links-code', {})).json.code;

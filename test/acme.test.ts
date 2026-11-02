@@ -25,12 +25,13 @@ import { selfSigned } from './self-signed.ts';
 import { removeTemp } from './temp.ts';
 import { refuseRealSignInStores } from './signin-stores.ts';
 import { freePort } from './free-port.ts';
+import { HANG_MS, WAIT_MS } from './limits.ts';
 
 const PUBLIC = 'pc.acme.test';
 const DIRECTORY = 'https://acme.test/dir';
 const DAY = 86_400_000;
 const MINUTE = 60_000;
-const T = { timeout: 30_000 };
+const T = { timeout: HANG_MS };
 const cleanup: (() => unknown)[] = [];
 after(async () => {
   for (const fn of cleanup.reverse()) await fn();
@@ -177,7 +178,7 @@ function handTimers(): Timers & { pending: { fn: () => void; ms: number }[]; fir
 }
 
 async function until(check: () => boolean, what: string): Promise<void> {
-  const end = Date.now() + 15_000;
+  const end = Date.now() + WAIT_MS;
   while (!check()) {
     if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
     await new Promise((r) => setTimeout(r, 5));
