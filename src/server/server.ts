@@ -37,7 +37,6 @@ import type { Shortcuts } from '../platform/shortcuts.ts';
 import { LinkError, LinkedComputers } from '../remote/linked.ts';
 import { ManagementError, type SettingsPort } from '../sessions/management.ts';
 import { waitingCount } from '../shared/waiting.ts';
-import { exercisedLine } from '../platform/exercised.ts';
 
 /** Calls a linked computer may make in a minute (#245). */
 const LINK_PER_MINUTE = 60;
