@@ -30,15 +30,22 @@ export interface TokenCommandDeps {
   print(line: string): void;
 }
 
-/** The token without the spaces and line ends a terminal adds when it wraps a long line; null when it isn't one. */
+/**
+ * The token out of what was given; null when it isn't one. A terminal that wraps a long line leaves a line end and
+ * maybe an indent inside it, so those go. A space inside a line or a blank line means more than the token was copied,
+ * and letters are legal in a token, so joining it on would store a damaged one that `claude auth status` still calls
+ * signed in (test review of #85, finding 1).
+ */
 export function cleanToken(given: string): string | null {
-  const token = given.replace(/\s+/g, '');
+  const lines = given.trim().split(/\r\n|\r|\n/).map((line) => line.trim());
+  if (lines.some((line) => !line || /\s/.test(line))) return null;
+  const token = lines.join('');
   return TOKEN.test(token) ? token : null;
 }
 
 /**
  * One piece of typed or pasted text, applied to what is held so far: Enter at the end of a piece ends it; a line end
- * inside one is a wrapped paste and is dropped. Keys that are not text (arrows and the like) are ignored.
+ * inside one is pasted text and is kept for cleanToken to judge. Keys that are not text (arrows and the like) are ignored.
  */
 export function applyKeys(held: string, piece: string): { held: string; done: 'enter' | 'stop' | null } {
   let text = held;
@@ -50,6 +57,7 @@ export function applyKeys(held: string, piece: string): { held: string; done: 'e
     if (key === '\x7f' || key === '\b') text = text.slice(0, -1);
     else if (key === '\r' || key === '\n') {
       if (i === keys.length - 1) return { held: text, done: 'enter' };
+      text += key;
     } else if (key >= ' ') text += key;
   }
   return { held: text, done: null };

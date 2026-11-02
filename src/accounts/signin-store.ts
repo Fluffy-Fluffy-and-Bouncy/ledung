@@ -29,7 +29,8 @@ export function keychainEntry(folder: string, user = os.userInfo().username): { 
 
 /**
  * The record Claude Code itself makes of a CLAUDE_CODE_OAUTH_TOKEN: no refresh token, no expiry (#342: read from
- * Claude Code 2.1.295, and a dummy one stored so was sent and refused with 401, so it is used).
+ * Claude Code 2.1.295, and a dummy one stored so was sent and refused with 401, so it is used; the same 401 on
+ * 2.1.316, 2026-11-02, with a throwaway Claude folder, issue #85).
  */
 export function signInRecord(token: string): string {
   return JSON.stringify({ claudeAiOauth: { accessToken: token, refreshToken: null, expiresAt: null, scopes: ['user:inference'], subscriptionType: null, rateLimitTier: null } });
