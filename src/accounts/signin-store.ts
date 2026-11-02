@@ -18,11 +18,23 @@ export const CREDENTIALS = '.credentials.json';
 export type RunInput = (command: string, args: string[], input: string | null, timeoutMs: number) => Promise<{ stdout: string }>;
 
 /**
+ * This computer's user name. os.userInfo() asks the system, and throws when the process can't reach the Mac's own
+ * services (uv_os_get_passwd ENOENT): Ledung writes each account's about file at its start, so that stopped it starting.
+ */
+export function localUser(read: () => string = () => os.userInfo().username): string {
+  try {
+    return read();
+  } catch {
+    return process.env.USER ?? process.env.LOGNAME ?? '';
+  }
+}
+
+/**
  * The macOS Keychain entry of a sign-in folder: "Claude Code-credentials-" and the first 8 hex of the sha256 of
  * the path as written, NFC (Claude Code's code; one entry per folder in the Mac probe), with the macOS user as
  * its account.
  */
-export function keychainEntry(folder: string, user = os.userInfo().username): { service: string; account: string } {
+export function keychainEntry(folder: string, user = localUser()): { service: string; account: string } {
   return { service: `Claude Code-credentials-${createHash('sha256').update(folder.normalize('NFC')).digest('hex').slice(0, 8)}`, account: user };
 }
 

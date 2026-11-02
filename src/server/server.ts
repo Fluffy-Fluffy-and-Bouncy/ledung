@@ -162,7 +162,7 @@ export interface ServerOptions {
   /** How often Waiting-for-you counts are exchanged with linked computers (issue #273); tests shorten it. */
   waitingPollMs?: number;
   /** Shows a folder in the file manager (Settings' Open folder, issue #414); tests replace it. */
-  openFolder?: (folder: string) => void;
+  openFolder?: (folder: string) => Promise<void>;
 }
 
 /** Where the computers' names and colours from the page are kept (issue #240), as the chats' settings are. */
@@ -1159,6 +1159,15 @@ export class LedungServer {
   }
 
   /** Paired devices are managed only on this computer: a device can't pair others or list them. */
+  /** Says why, with the folder so it can be opened by hand; the page shows it (issue #82). */
+  private async openAccountFolder(folder: string): Promise<void> {
+    try {
+      await (this.opts.openFolder ?? openFolder)(folder);
+    } catch (e) {
+      throw new UserError(`Couldn't open ${folder}: ${(e as Error).message}`);
+    }
+  }
+
   private requireLocal(req: IncomingMessage, what = 'Devices are managed'): void {
     if (this.guard.isPublic(req)) throw new HttpError(403, `${what} in Settings on the computer Ledung runs on.`);
   }
@@ -1425,7 +1434,7 @@ export class LedungServer {
       case 'POST accounts/:id/open-folder':
         this.requireLocal(req, 'Folders are opened');
         await this.requirePage(req, url);
-        (this.opts.openFolder ?? openFolder)(manager.accountFolder(decodeURIComponent(id)));
+        await this.openAccountFolder(manager.accountFolder(decodeURIComponent(id)));
         return { ok: true };
       case 'POST accounts/:id/remove':
         // Says where it signed out, and where not because the folder is another login's too (review of #342, I3).

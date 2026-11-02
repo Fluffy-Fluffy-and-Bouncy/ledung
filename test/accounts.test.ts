@@ -11,7 +11,7 @@ import { openDatabase } from '../src/store/database.ts';
 import { Store } from '../src/store/store.ts';
 import { AccountStore, canonicalContainerFolder, SIGN_IN_ENV } from '../src/accounts/store.ts';
 import { checkSignIn, runCommand, sdkClaudeBinary, type LoginPlace, type SignIn } from '../src/accounts/signin.ts';
-import { keychainEntry, removeSignIn, type RunInput } from '../src/accounts/signin-store.ts';
+import { keychainEntry, localUser, removeSignIn, type RunInput } from '../src/accounts/signin-store.ts';
 import { DockerRunner } from '../src/runners/docker-runner.ts';
 import { parseConfig, type DockerProjectConfig } from '../src/config.ts';
 import { SessionManager } from '../src/sessions/manager.ts';
@@ -197,6 +197,26 @@ test('the Keychain entry on macOS is the one Claude Code reads for the folder', 
   const folder = '/Users/m/.ledung/accounts/work';
   assert.deepEqual(keychainEntry(folder, 'm'), { service: 'Claude Code-credentials-' + crypto.createHash('sha256').update(folder).digest('hex').slice(0, 8), account: 'm' });
   assert.notDeepEqual(keychainEntry(`${folder}/`, 'm'), keychainEntry(folder, 'm'), 'named from the path exactly as written');
+});
+
+test("a system that can't say who the user is doesn't stop Ledung starting (issue #82)", () => {
+  const saved = { USER: process.env.USER, LOGNAME: process.env.LOGNAME };
+  try {
+    process.env.USER = 'from-env';
+    const noPasswd = () => {
+      throw new Error('uv_os_get_passwd returned ENOENT');
+    };
+    assert.equal(localUser(() => 'from-system'), 'from-system');
+    assert.equal(localUser(noPasswd), 'from-env');
+    delete process.env.USER;
+    delete process.env.LOGNAME;
+    assert.equal(localUser(noPasswd), '');
+  } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
 });
 
 test("removing an account removes only its own sign-in: not the other accounts', not the computer's, not the shared details (R2-M4)", async () => {

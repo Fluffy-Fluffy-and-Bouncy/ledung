@@ -51,6 +51,8 @@ let managerQuestion = 0;
 let paneStore: Store;
 /** The folders Settings' Open folder was asked to show (issue #414); nothing is opened for real. */
 const openedFolders: string[] = [];
+/** When set, Open folder fails with these words (issue #82). */
+let openFolderFails: string | null = null;
 let relayDir: string;
 // Settings → Shortcuts (issue #415): made in a folder inside .test/, never on the real Desktop or Applications.
 let shortcutDir: string;
@@ -118,7 +120,10 @@ before(async () => {
     launch: { node: process.execPath, script: path.join(shortcutDir, 'launcher.mjs') }, iconDir: shortcutDir, icons: iconFiles(appDir()), platform: 'darwin',
     meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) }, folders: async () => ({ applications: path.join(shortcutDir, 'Applications') }),
   });
-  server = new LedungServer({ port: PORT, token: TOKEN, store, manager, webRoot, updater, publicName: PUBLIC, relayAdmin, shortcuts, now: () => Date.now() + clockShift, openFolder: (f) => openedFolders.push(f) });
+  server = new LedungServer({ port: PORT, token: TOKEN, store, manager, webRoot, updater, publicName: PUBLIC, relayAdmin, shortcuts, now: () => Date.now() + clockShift, openFolder: async (f) => {
+    openedFolders.push(f);
+    if (openFolderFails) throw new Error(openFolderFails);
+  } });
   server.attachRemote(new RemoteLink({ server, dir: relayDir, configured: { relay: 'wss://relay.example.test', name: 'pc', publicName: PUBLIC, secret: 's', tls: 'optional' }, fetch: offline, log: () => {} }));
   await server.listen();
 });
@@ -1294,6 +1299,12 @@ test("an account's folder opens only on this computer, from its open page (issue
     assert.ok(fs.statSync(folder).isDirectory());
     assert.equal((await change('/api/accounts/nobody/open-folder', {}, { 'x-ledung-page': page.key })).status, 400);
     assert.deepEqual(openedFolders, [folder]);
+    // The file manager couldn't be started: the page is told why and where, not ok (issue #82).
+    openFolderFails = 'No application knows how to open it';
+    const failed = await change(p, {}, { 'x-ledung-page': page.key });
+    openFolderFails = null;
+    assert.equal(failed.status, 400, failed.body);
+    assert.equal(errorOf(failed), `Couldn't open ${folder}: No application knows how to open it`);
   } finally {
     page.close();
     paneStore.database.prepare('DELETE FROM accounts WHERE name = ?').run('work');
