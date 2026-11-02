@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { connectHost, HostConnection, hostSecret } from '../src/host/client.ts';
 import { pipePath, type HostSpec } from '../src/host/protocol.ts';
 import { removeTemp } from './temp.ts';
+import { WAIT_MS } from './limits.ts';
 
 // A stop takes longer still: the host lists every process (to record Claude Code's tree, step-1a spike
 // finding 2) before it closes Claude Code's input, and on Windows that list is a PowerShell/WMI query
@@ -85,7 +86,7 @@ async function connect(pipe: string, from: number, hello: Record<string, unknown
   return {
     lines,
     send: (text) => socket!.write(text + '\n'),
-    async waitFor(pred, ms = 20000) {
+    async waitFor(pred, ms = WAIT_MS) {
       const end = Date.now() + ms;
       for (;;) {
         const hit = lines.find(pred);
@@ -257,7 +258,7 @@ test("Ledung's side ends cleanly when the host refuses it, also when it writes a
   // What the Agent SDK does on attaching: it writes at once, and goes on writing into the closed socket.
   const writes = setInterval(() => conn.stdin.write(JSON.stringify({ cmd: 'echo', text: 'x' }) + '\n'), 20);
   try {
-    const code = await within(new Promise<number | null>((resolve) => conn.on('exit', resolve)), 20000, 'the refused connection ending');
+    const code = await within(new Promise<number | null>((resolve) => conn.on('exit', resolve)), WAIT_MS, 'the refused connection ending');
     await new Promise((r) => setTimeout(r, 300));
     assert.equal(typeof code, 'number', 'it reports the end like a process that exited');
     assert.deepEqual(errors, []);
@@ -281,7 +282,7 @@ test("a socket error on Ledung's side ends the connection like an exit, without 
     const ended = new Promise<number | null>((resolve) => conn.on('exit', resolve));
     const socket = (conn as unknown as { socket: net.Socket }).socket;
     socket.destroy(Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
-    assert.equal(typeof (await within(ended, 20000, 'the connection ending')), 'number');
+    assert.equal(typeof (await within(ended, WAIT_MS, 'the connection ending')), 'number');
   } finally {
     await stopQuietly(spec.pipe, spec.secret);
   }
@@ -304,7 +305,7 @@ test('a host started by Ledung gets its secret only through its record, and Ledu
   const handlers = { onLine: (seq: number, _at: number, json: string) => lines.push({ seq, json }), onStderr: () => {} };
   const echo = async (c: HostConnection, text: string) => {
     c.stdin.write(JSON.stringify({ cmd: 'echo', text }) + '\n');
-    await until(() => lines.some((l) => l.json.includes(text)), 20000, `"${text}" coming back through the connection`);
+    await until(() => lines.some((l) => l.json.includes(text)), WAIT_MS, `"${text}" coming back through the connection`);
   };
   try {
     conn = connectHost(sessionId, { launch: { command: process.execPath, args: [fake], env: { ...process.env } as Record<string, string>, stop: { kind: 'local' } } }, handlers);

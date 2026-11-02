@@ -20,6 +20,7 @@ import { selfSigned } from './self-signed.ts';
 import { removeTemp } from './temp.ts';
 import { refuseRealSignInStores } from './signin-stores.ts';
 import { freePort } from './free-port.ts';
+import { WAIT_MS } from './limits.ts';
 
 export const TOKEN = 'f'.repeat(64);
 export const COOKIE = `ledung_auth=${TOKEN}`;
@@ -171,7 +172,7 @@ export const directive = (res: { headers: http.IncomingHttpHeaders }, name: stri
   String(res.headers['content-security-policy']).split('; ').find((d) => d.startsWith(`${name} `)) ?? null;
 
 export async function until(check: () => boolean | Promise<boolean>, what: string): Promise<void> {
-  const end = Date.now() + 5000;
+  const end = Date.now() + WAIT_MS;
   while (!(await check())) {
     if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
     await new Promise((r) => setTimeout(r, 20));

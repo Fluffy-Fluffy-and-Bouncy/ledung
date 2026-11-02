@@ -18,8 +18,9 @@ import { hashSecret, remoteSecretText } from '../src/remote/secret.ts';
 import { Tunnel } from '../src/remote/tunnel.ts';
 import { removeTemp } from './temp.ts';
 import { freePort, listenOk } from './free-port.ts';
+import { HANG_MS, WAIT_MS } from './limits.ts';
 
-const T = { timeout: 15_000 };
+const T = { timeout: HANG_MS };
 const ROOT = path.join(import.meta.dirname, '..');
 const OLD_SECRET = 'the secret of the computer already there';
 /** 13 characters, as test/fixtures/clienthello-edge.hex's name, so it can be swapped in place. */
@@ -73,7 +74,7 @@ async function connectedTunnel(relayPort: number, targetPort: number, name: stri
   cleanup.push(() => tunnel.stop());
   tunnel.start();
   // A deadline, so a relay that won't take the name fails the test instead of hanging the file.
-  const until = Date.now() + 3000;
+  const until = Date.now() + WAIT_MS;
   while (tunnel.status().state !== 'connected') {
     if (Date.now() > until) {
       tunnel.stop();
@@ -213,7 +214,7 @@ test('a computer removed while it is signing in is refused when its hello arrive
   // A deadline, so a relay that lets it in fails the test instead of hanging it.
   const closed = new Promise<number | string>((resolve) => {
     held.once('close', (code) => resolve(code));
-    setTimeout(() => resolve('still open'), 3000).unref();
+    setTimeout(() => resolve('still open'), WAIT_MS).unref();
   });
   held.send(helloMessage());
   assert.equal(await closed, 4003);

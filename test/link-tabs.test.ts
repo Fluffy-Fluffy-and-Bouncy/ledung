@@ -12,6 +12,7 @@ import { LINKS_FILE } from '../src/remote/linked.ts';
 import { directive, keyFor, LinkedNodes, until } from './linked-nodes.ts';
 import { FakePasskey } from './fake-passkey.ts';
 import { frameAnswer, frameAsk, framePaired, pairsThroughLink, shownComputerOf } from '../web/src/computerFrame.ts';
+import { HANG_MS } from './limits.ts';
 
 const nodes = new LinkedNodes();
 after(() => nodes.close());
@@ -33,7 +34,7 @@ test('the known computers are the config\'s, then the linked ones it does not li
   assert.equal(knownComputers([], [{ name: 'A'.repeat(40), publicName: 'long.example.test' }])[0]!.name, 'A'.repeat(24));
 });
 
-test('linking two Ledungs with no computers in their config gives each the other\'s tab and lets its pages frame this one, at once', { timeout: 20_000 }, async () => {
+test('linking two Ledungs with no computers in their config gives each the other\'s tab and lets its pages frame this one, at once', { timeout: HANG_MS }, async () => {
   const mac = await nodes.ledung('mac.tabs.test');
   const pc = await nodes.ledung('pc.tabs.test');
   const macPage = await nodes.page(mac);
@@ -75,7 +76,7 @@ test('linking two Ledungs with no computers in their config gives each the other
   assert.deepEqual((await tabs(pcPage)).map((c) => c.id), ['pc.tabs.test']);
 });
 
-test('the config wins over a link for name, colour and port', { timeout: 20_000 }, async () => {
+test('the config wins over a link for name, colour and port', { timeout: HANG_MS }, async () => {
   const config = [{ name: 'Mac', publicName: 'mac2.tabs.test', colour: 'pink' as const, port: 4399 }];
   const pc = await nodes.ledung('pc2.tabs.test', config);
   const mac = await nodes.ledung('mac2.tabs.test');
@@ -87,7 +88,7 @@ test('the config wins over a link for name, colour and port', { timeout: 20_000 
     `frame-ancestors https://${mac.name} http://127.0.0.1:4399 http://localhost:4399`);
 });
 
-test('a hello tells the port: kept in links.json, and the framers follow it at once', { timeout: 20_000 }, async () => {
+test('a hello tells the port: kept in links.json, and the framers follow it at once', { timeout: HANG_MS }, async () => {
   const mac = await nodes.ledung('mac3.tabs.test');
   const pc = await nodes.ledung('pc3.tabs.test');
   await nodes.link(mac, pc);
@@ -110,7 +111,7 @@ test('a hello tells the port: kept in links.json, and the framers follow it at o
   }
 });
 
-test('a passkey check in a frame on a linked computer\'s page counts from the moment of linking, and stops at unlinking', { timeout: 20_000 }, async () => {
+test('a passkey check in a frame on a linked computer\'s page counts from the moment of linking, and stops at unlinking', { timeout: HANG_MS }, async () => {
   const pc = await nodes.ledung('pc4.tabs.test');
   const mac = await nodes.ledung('mac4.tabs.test');
   const pcPage = await nodes.page(pc);
@@ -185,7 +186,7 @@ test('the count a tab shows is what waits for the user there: open questions and
   assert.equal(waitingCount([q('open', 'user'), q('open', 'manager'), q('answered', 'user')], [q('pending', 'user'), q('pending', 'manager'), q('allowed', 'user')]), 2);
 });
 
-test('each linked computer\'s tab shows its Waiting-for-you count, live over the link', { timeout: 20_000 }, async () => {
+test('each linked computer\'s tab shows its Waiting-for-you count, live over the link', { timeout: HANG_MS }, async () => {
   // The poll every 30 s, as in use: within this test a count only arrives when the link is made, or pushed on a change.
   const mac = await nodes.ledung('mac5.tabs.test');
   const pc = await nodes.ledung('pc5.tabs.test');
@@ -207,7 +208,7 @@ test('each linked computer\'s tab shows its Waiting-for-you count, live over the
 
 });
 
-test('a linked computer that goes offline loses its badge at the next exchange, rather than showing an old number', { timeout: 20_000 }, async () => {
+test('a linked computer that goes offline loses its badge at the next exchange, rather than showing an old number', { timeout: HANG_MS }, async () => {
   const mac = await nodes.ledung('mac6.tabs.test', undefined, 200);
   const pc = await nodes.ledung('pc6.tabs.test');
   await nodes.link(mac, pc);

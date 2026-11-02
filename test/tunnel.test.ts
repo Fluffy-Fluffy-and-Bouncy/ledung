@@ -18,13 +18,14 @@ import type { RemoteStatus, ServerEvent } from '../src/shared/protocol.ts';
 import { remoteLine } from '../web/src/remoteStatus.ts';
 import { refuseRealSignInStores } from './signin-stores.ts';
 import { freePort, listenOk } from './free-port.ts';
+import { HANG_MS, WAIT_MS } from './limits.ts';
 
 const PORT = await freePort();
 const TOKEN = 'b'.repeat(64);
 const SECRET = 'a secret long enough for the relay';
 const PUBLIC = 'pc.tunnel.test';
 /** A broken link fails the test by name instead of hanging the file (test review 165, minor 3). */
-const T = { timeout: 10_000 };
+const T = { timeout: HANG_MS };
 let server: LedungServer;
 const cleanup: (() => unknown)[] = [];
 
@@ -57,7 +58,7 @@ function tunnel(relayPort: number, secret = SECRET) {
   return { t, statuses };
 }
 
-async function until(what: () => boolean, ms = 3000): Promise<void> {
+async function until(what: () => boolean, ms = WAIT_MS): Promise<void> {
   const end = Date.now() + ms;
   while (!what()) {
     if (Date.now() > end) throw new Error('timed out');
@@ -198,7 +199,7 @@ test('when the relay goes away the tunnel says reconnecting, the local page work
   await localWorks();
   const again = await startRelay(first.port);
   cleanup.push(() => again.relay.close());
-  await until(() => t.status().state === 'connected', 5000);
+  await until(() => t.status().state === 'connected');
   assert.match(await get(first.port, PUBLIC), /Unknown host/, 'requests go through again');
   assert.deepEqual(statuses.map((s) => s.state).filter((s, i, all) => s !== all[i - 1]), ['connected', 'reconnecting', 'connected']);
 });

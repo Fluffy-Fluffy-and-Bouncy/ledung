@@ -14,6 +14,7 @@ import { appDir, hostEntry, PACKAGED } from '../src/platform/paths.ts';
 import { NPM_REASON, Updater } from '../src/update/updater.ts';
 import { removeTemp } from './temp.ts';
 import { freePort } from './free-port.ts';
+import { HANG_MS } from './limits.ts';
 
 let base: string;
 const savedEnv = { config: process.env.LEDUNG_CONFIG, data: process.env.LEDUNG_DATA_DIR };
@@ -143,7 +144,7 @@ test('the bundles run as plain JavaScript from a folder like the installed packa
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.stdout.trim(), '9.8.7');
   // The host loads and reads its spec (a missing one is its own error, not a module or type error).
-  const h = spawnSync(process.execPath, [path.join(pkgDir, 'dist', 'host.js'), path.join(base, 'no-such-spec.json')], { encoding: 'utf8', timeout: 20_000 });
+  const h = spawnSync(process.execPath, [path.join(pkgDir, 'dist', 'host.js'), path.join(base, 'no-such-spec.json')], { encoding: 'utf8', timeout: HANG_MS });
   assert.doesNotMatch(h.stderr, /ERR_UNKNOWN_FILE_EXTENSION|ERR_MODULE_NOT_FOUND|SyntaxError/);
   assert.match(h.stderr, /ENOENT.*no-such-spec\.json/);
 

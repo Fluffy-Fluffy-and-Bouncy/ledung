@@ -16,6 +16,7 @@ import type { UpdateView } from '../src/shared/protocol.ts';
 import { removeTemp } from './temp.ts';
 import { refuseRealSignInStores } from './signin-stores.ts';
 import { freePort } from './free-port.ts';
+import { WAIT_MS } from './limits.ts';
 
 const TOKEN = 'f'.repeat(64);
 const COOKIE = `ledung_auth=${TOKEN}`;
@@ -66,7 +67,7 @@ test("an npm install's Check for updates and Update Ledung follow the channel ch
 
     assert.equal((await api('POST', 'update', {})).updating, true);
     let v = await api('GET', 'update');
-    for (const end = Date.now() + 30_000; v.updating && Date.now() < end;) {
+    for (const end = Date.now() + WAIT_MS; v.updating && Date.now() < end;) {
       await new Promise((r) => setTimeout(r, 50));
       v = await api('GET', 'update');
     }

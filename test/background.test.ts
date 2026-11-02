@@ -11,6 +11,7 @@ import { logFile, logTail, rotateLog, startInBackground } from '../src/platform/
 import { appDir } from '../src/platform/paths.ts';
 import { freePort } from './free-port.ts';
 import { removeTemp } from './temp.ts';
+import { HANG_MS } from './limits.ts';
 
 let base: string;
 const pids: number[] = [];
@@ -114,7 +115,7 @@ test('a start returns once Ledung answers, which then runs on with its output in
 
 // What closing the terminal or Ctrl+C there does: every process in its process group is ended. The started Ledung is
 // in a group of its own and lives on (test review of PR #11: with detached false the other tests stayed green).
-test('ending the process group of the terminal that started Ledung leaves Ledung running', { skip: process.platform === 'win32' && 'process groups are POSIX', timeout: 60_000 }, async () => {
+test('ending the process group of the terminal that started Ledung leaves Ledung running', { skip: process.platform === 'win32' && 'process groups are POSIX', timeout: HANG_MS }, async () => {
   const { dir, data, config } = folder('terminal');
   const { script } = await standIn(dir, data, config);
   const terminal = path.join(dir, 'terminal.ts');

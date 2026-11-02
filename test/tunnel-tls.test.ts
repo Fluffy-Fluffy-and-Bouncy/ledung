@@ -29,12 +29,13 @@ import { selfSigned } from './self-signed.ts';
 import { removeTemp } from './temp.ts';
 import { refuseRealSignInStores } from './signin-stores.ts';
 import { freePort } from './free-port.ts';
+import { HANG_MS, WAIT_MS } from './limits.ts';
 
 const TOKEN = 'c'.repeat(64);
 const INSTALL_COOKIE = `ledung_auth=${TOKEN}`;
 const PUBLIC = 'pc.tls.test';
 const PUBLIC_ORIGIN = `https://${PUBLIC}`;
-const T = { timeout: 15_000 };
+const T = { timeout: HANG_MS };
 const cleanup: (() => unknown)[] = [];
 const first = selfSigned(PUBLIC);
 
@@ -122,7 +123,7 @@ function rawAnswer(stream: Duplex, bytes: string | Buffer, ms = 1500): Promise<{
   });
 }
 
-async function until(what: () => boolean, ms = 3000): Promise<void> {
+async function until(what: () => boolean, ms = WAIT_MS): Promise<void> {
   const end = Date.now() + ms;
   while (!what()) {
     if (Date.now() > end) throw new Error('timed out');

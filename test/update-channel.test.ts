@@ -9,6 +9,7 @@ import path from 'node:path';
 import { NPM_DEV_REASON, NPM_REASON, Updater, type Command, type UpdaterOptions } from '../src/update/updater.ts';
 import type { UpdateView } from '../src/shared/protocol.ts';
 import { removeTemp } from './temp.ts';
+import { WAIT_MS } from './limits.ts';
 
 let base: string;
 before(() => { base = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-channel-')); });
@@ -38,7 +39,7 @@ function npmUpdater(extra: Partial<UpdaterOptions> = {}) {
 }
 
 async function settled(u: Updater): Promise<UpdateView> {
-  for (const end = Date.now() + 30_000; Date.now() < end;) {
+  for (const end = Date.now() + WAIT_MS; Date.now() < end;) {
     const v = u.view();
     if (!v.updating) return v;
     await new Promise((r) => setTimeout(r, 20));

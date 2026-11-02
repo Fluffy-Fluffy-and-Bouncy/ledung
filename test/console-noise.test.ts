@@ -12,6 +12,7 @@ import { coreArgs } from '../src/platform/node-warnings.ts';
 import { appDir } from '../src/platform/paths.ts';
 import { freePort } from './free-port.ts';
 import { removeTemp } from './temp.ts';
+import { HANG_MS } from './limits.ts';
 
 const SQLITE = 'SQLite is an experimental feature and might change at any time';
 
@@ -93,7 +94,7 @@ test("the package's start of the core drops the SQLite warning and no other", ()
     "process.emitWarning('Plain warning');",
   ].join('\n'));
   const data = path.join(base, 'warns-data');
-  const r = spawnSync(process.execPath, coreArgs(script, [], false, true), { encoding: 'utf8', env: childEnv(data), timeout: 20_000 });
+  const r = spawnSync(process.execPath, coreArgs(script, [], false, true), { encoding: 'utf8', env: childEnv(data), timeout: HANG_MS });
   assert.equal(r.status, 0, r.stderr);
   assert.doesNotMatch(r.stderr, /SQLite/);
   assert.match(r.stderr, /ExperimentalWarning: Some other feature is experimental/);

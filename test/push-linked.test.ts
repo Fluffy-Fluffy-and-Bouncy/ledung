@@ -13,6 +13,7 @@ import { phone } from './push-phone.ts';
 import { computerFromHash } from '../web/src/computerFrame.ts';
 import { framedPushNote } from '../web/src/push.ts';
 import { removeTemp } from './temp.ts';
+import { HANG_MS } from './limits.ts';
 
 const nodes = new LinkedNodes();
 const dirs: string[] = [];
@@ -50,7 +51,7 @@ function newQuestion(node: Node) {
   return q;
 }
 
-test('a new item on a linked computer buzzes the phone subscribed on this one, with that computer\'s name, opening its tab', { timeout: 20_000 }, async () => {
+test('a new item on a linked computer buzzes the phone subscribed on this one, with that computer\'s name, opening its tab', { timeout: HANG_MS }, async () => {
   const A = 'mac.pushlink.test', B = 'pc.pushlink.test';
   // A's tabs name B "Studio PC" (its config), the name the phone should see.
   const a = await withPush(A, [{ name: 'Desk Mac', publicName: A }, { name: 'Studio PC', publicName: B }]);
@@ -85,7 +86,7 @@ test('a new item on a linked computer buzzes the phone subscribed on this one, w
   assert.deepEqual(onB.read(b.sent[0]!.body), { computer: 'Desk Mac', kind: 'question', item: `${A}:q${qa.id}`, open: `/#/c/${A}` });
 });
 
-test('/link/push takes only a linked computer\'s key, and only the kinds and tags a push carries', { timeout: 20_000 }, async () => {
+test('/link/push takes only a linked computer\'s key, and only the kinds and tags a push carries', { timeout: HANG_MS }, async () => {
   const A = 'mac2.pushlink.test', B = 'pc2.pushlink.test';
   const a = await withPush(A);
   const b = await withPush(B);
@@ -204,7 +205,7 @@ async function mountTabs(page: any) {
   };
 }
 
-test('a tapped push for a linked computer opens the page with that computer\'s tab showing, and the address back at the start', { timeout: 30_000 }, async () => {
+test('a tapped push for a linked computer opens the page with that computer\'s tab showing, and the address back at the start', { timeout: HANG_MS }, async () => {
   const opened = await pageParts(`https://${A_ID}/#/c/${B_ID}`);
   try {
     const { page } = opened;
@@ -244,7 +245,7 @@ test('a tapped push for a linked computer opens the page with that computer\'s t
   assert.match(app.slice(link, own), /setShownComputer\(id\);\s+setOpenedComputers\(/);
 });
 
-test('Settings in another computer\'s tab says pushes come through the first tab, with no switch that can\'t work there', { timeout: 30_000 }, async () => {
+test('Settings in another computer\'s tab says pushes come through the first tab, with no switch that can\'t work there', { timeout: HANG_MS }, async () => {
   const opened = await pageParts(`https://${B_ID}/`);
   try {
     const { page } = opened;
