@@ -142,6 +142,9 @@ function cleanClone(name: string): string {
   fs.writeFileSync(path.join(clone, 'package.json'), JSON.stringify({ name: 'ledung', version: '1.0.0' }));
   fs.mkdirSync(path.join(clone, 'web', 'public'), { recursive: true });
   fs.writeFileSync(path.join(clone, 'web', 'public', 'icon.svg'), '<svg/>');
+  // A tracked file the package does not take in: a change to it is still a change (test review of PR #13 round 2).
+  fs.mkdirSync(path.join(clone, 'docs'));
+  fs.writeFileSync(path.join(clone, 'docs', 'notes.md'), '# notes\n');
   git(clone, 'add', '-A');
   git(clone, 'commit', '-qm', 'first');
   git(clone, 'push', '-q', 'origin', 'main');
@@ -172,6 +175,19 @@ test('a clean main publishes the next dev build to the dev tag; a dry run builds
   assert.deepEqual(real.calls, ['npm view', 'check', 'build 1.1.0', 'npm publish ledung-1.1.0.tgz --tag dev --access public']);
 });
 
+test("a public release from a clean main is refused without --confirm, with nothing checked, built or published, and goes to latest with it", async () => {
+  const clone = cleanClone('public');
+  const without = recorder();
+  assert.equal(await runPublish({ channel: 'public', dryRun: false }, clone, without.steps), 1);
+  assert.deepEqual(without.calls, ['npm view', "Refused: A public release is the owners' word (Martin or FFBuddha): run it again with --confirm 2.0.0 to publish v2 to everyone."]);
+  const wrong = recorder();
+  assert.equal(await runPublish({ channel: 'public', dryRun: false, confirm: '1.1.0' }, clone, wrong.steps), 1);
+  assert.ok(!wrong.calls.some((c) => /^(npm publish|check|build)/.test(c)), wrong.calls.join(' | '));
+  const confirmed = recorder();
+  assert.equal(await runPublish({ channel: 'public', dryRun: false, confirm: '2.0.0' }, clone, confirmed.steps), 0);
+  assert.deepEqual(confirmed.calls, ['npm view', 'check', 'build 2.0.0', 'npm publish ledung-2.0.0.tgz --tag latest --access public']);
+});
+
 test('a refused clone stops before npm is asked or anything is built: changes, an untracked file the package takes in, another branch, a main not pushed', async () => {
   const clone = cleanClone('refused');
   const tryIt = async () => {
@@ -182,6 +198,9 @@ test('a refused clone stops before npm is asked or anything is built: changes, a
   };
 
   fs.appendFileSync(path.join(clone, 'web', 'public', 'icon.svg'), ' ');
+  assert.match(await tryIt(), /uncommitted changes/);
+  git(clone, 'checkout', '-q', '--', '.');
+  fs.appendFileSync(path.join(clone, 'docs', 'notes.md'), 'more\n');
   assert.match(await tryIt(), /uncommitted changes/);
   git(clone, 'checkout', '-q', '--', '.');
 
