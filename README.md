@@ -1,5 +1,7 @@
 # Project Ledung
 
+**Agentic engineering, with you at the helm.**
+
 Ledung runs several Claude Code sessions on your computer and shows them in one place: the sessions and who started them, every question waiting for an answer, permission requests, token usage and machine load. It serves a web page on your own computer, which you can open in a browser or install as an app window. With a relay, your phone can reach it from anywhere.
 
 It runs on Windows, macOS and Linux.
