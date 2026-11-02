@@ -124,6 +124,7 @@ export function resumedState(info: SessionInfo): {
 
 /** The EXERCISED line of issue #425, once per run. */
 let exercised425 = false;
+let exercised96 = false;
 
 export class SessionManager {
   private readonly live = new Map<string, Session>();
@@ -1514,18 +1515,28 @@ export class SessionManager {
     return this.projectInfo(this.projectStore.get(p.config.name)!);
   }
 
-  /** What updateProject refuses, checked without writing anything, so a rename can check first (review-116 round 2). */
+  /**
+   * What updateProject refuses, checked without writing anything, so a rename can check first (review-116 round 2).
+   * The page's save doesn't send where a project is, so it is filled in as the store does: every check sees the project
+   * that would be stored. Without it a project's workflow, and so that workflow's profiles, looked absent (#96).
+   */
   private checkSettings(name: string, config: ProjectConfig): void {
     const current = this.projectStore.get(name);
-    if (current) this.checkAccount({ ...config, runner: current.config.runner } as ProjectConfig);
-    this.checkProfiles(config);
-    this.checkWorkflow(config, current?.config);
-    if (current) {
-      const where = current.config.runner === 'local'
-        ? { runner: 'local' as const, path: current.config.path }
-        : { runner: 'docker' as const, container: current.config.container, pathInContainer: current.config.pathInContainer, user: current.config.user };
-      this.checkLockdownOf({ ...config, ...where, name });
+    // Nothing to check against: the store's own "no project" refusal says what is wrong.
+    if (!current) return;
+    const where = current.config.runner === 'local'
+      ? { runner: 'local' as const, path: current.config.path }
+      : { runner: 'docker' as const, container: current.config.container, pathInContainer: current.config.pathInContainer, user: current.config.user };
+    const full = { ...config, ...where, name };
+    this.checkAccount(full);
+    this.checkProfiles(full);
+    const namesProfile = config.profiles?.manager ?? config.profiles?.session;
+    if (!exercised96 && namesProfile && config.runner === undefined) {
+      exercised96 = true;
+      exercisedLine('EXERCISED #96 a project naming a profile checked on the page\'s save with its stored place');
     }
+    this.checkWorkflow(full, current.config);
+    this.checkLockdownOf(full);
   }
 
   /** A project's name colours (issue #83), set from its manager's ⚙ menu; only palette colours. */
