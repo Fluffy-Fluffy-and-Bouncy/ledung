@@ -5,8 +5,9 @@
 // signed in, by account, token or API key; exit 1 and "loggedIn": false with an empty login folder). A token's or a key's worth is not checked: one that
 // is present counts as signed in, and a bad one still fails at the session's first turn.
 import { execFile } from 'node:child_process';
+import path from 'node:path';
 import { commandFor, sdkClaudeBinary } from '../runners/claude-program.ts';
-import type { SignInInfo } from '../shared/protocol.ts';
+import type { ShownSignIn, SignInInfo, SignInKind } from '../shared/protocol.ts';
 
 export type SignIn = Omit<SignInInfo, 'account'>;
 
@@ -23,6 +24,25 @@ export type RunCommand = (command: string, args: string[], env: Record<string, s
 /** The SDK's own copy of Claude Code, which a check uses when it is given no other (issue #341 moved it to the runners). */
 export { sdkClaudeBinary } from '../runners/claude-program.ts';
 
+/**
+ * How Claude Code is signed in, from what `auth status` says, so the sign-in itself is never read (issue #85). Probed
+ * on Claude Code 2.1.316, 2026-11-02: a `/login` says "claude.ai" with its plan as subscriptionType; a token in the
+ * sign-in store says "claude.ai" with subscriptionType null, the record having none; CLAUDE_CODE_OAUTH_TOKEN says
+ * "oauth_token"; ANTHROPIC_API_KEY says "api_key". A Claude Code that leaves the field out can't be told apart.
+ */
+export function signInKind(method: unknown, subscriptionType: unknown): SignInKind | null {
+  if (method === 'oauth_token') return 'token';
+  if (method === 'api_key') return 'key';
+  if (method !== 'claude.ai') return null;
+  if (subscriptionType === null) return 'token';
+  return typeof subscriptionType === 'string' && subscriptionType ? 'login' : null;
+}
+
+/** A check's answer as the page shows it: signed in without a kind Ledung knows is `other`, never "not signed in". */
+export function shownSignIn(found: { state: string; kind?: SignInKind | null } | undefined): ShownSignIn | null {
+  return found?.kind ?? (found?.state === 'in' ? 'other' : null);
+}
+
 /** What `claude auth status --json` said, as signed in, signed out, or unknown with why. */
 export function readAuthStatus(result: CommandResult): SignIn {
   const at = Date.now();
@@ -33,6 +53,14 @@ export function readAuthStatus(result: CommandResult): SignIn {
   }
   const method = typeof parsed.authMethod === 'string' && parsed.authMethod !== 'none' ? parsed.authMethod : null;
   return parsed.loggedIn ? { state: 'in', method, detail: null, checkedAt: at } : { state: 'out', method: null, detail: null, checkedAt: at };
+}
+
+/** What `claude auth status --json` said, with how it is signed in when it is (issue #85). */
+export function readSignIn(result: CommandResult): SignIn {
+  const found = readAuthStatus(result);
+  if (found.state !== 'in') return found;
+  const said = jsonOf(result.stdout) as { authMethod?: unknown; subscriptionType?: unknown };
+  return { ...found, kind: signInKind(said.authMethod, said.subscriptionType) };
 }
 
 /** Parsed JSON, or null for anything else (an older Claude Code without the command, an error text). */
@@ -78,7 +106,7 @@ export async function checkSignIn(
   // --settings goes before the command: `auth status` has no option of its own for it (Claude Code 2.1.304).
   const settings = opts.where?.settings && Object.keys(opts.where.settings).length ? ['--settings', JSON.stringify(opts.where.settings)] : [];
   const { command, args } = commandFor(binary);
-  return readAuthStatus(await (opts.run ?? runCommand)(command, [...args, ...settings, 'auth', 'status', '--json'], env, opts.timeoutMs ?? 15000, opts.where?.cwd));
+  return readSignIn(await (opts.run ?? runCommand)(command, [...args, ...settings, 'auth', 'status', '--json'], env, opts.timeoutMs ?? 15000, opts.where?.cwd));
 }
 
 /** A container login folder as the shell writes it: "~/" becomes the container user's $HOME (kept paths have no quotes or "$"). */
@@ -111,7 +139,7 @@ export async function checkContainerSignIn(place: ContainerPlace, folder: string
     : `CLAUDE_SECURESTORAGE_CONFIG_DIR=${shellFolder(folder)} exec env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN claude auth status --json`;
   const result = await (opts.run ?? runCommand)('docker', [...dockerExecArgs(place), 'sh', '-c', script], process.env as Record<string, string>, opts.timeoutMs ?? 20000);
   // Not running, or no Claude Code in it: an answer that isn't JSON says so.
-  return readAuthStatus(result);
+  return readSignIn(result);
 }
 
 /** How to sign in, for the page's banner and a refused session start. What to type is between backticks. */
@@ -130,6 +158,17 @@ export function signInCommand(dir: string, platform = process.platform): string 
   // The sign-in folder goes in Claude Code's environment, which each shell sets its own way. The path is the
   // one Ledung keeps, written exactly so: macOS names the Keychain entry from it (#342).
   return platform === 'win32' ? `$env:CLAUDE_SECURESTORAGE_CONFIG_DIR="${dir}"; claude` : `CLAUDE_SECURESTORAGE_CONFIG_DIR="${dir}" claude`;
+}
+
+/**
+ * The command that puts a long-lived token into an account's sign-in (issue #85), for the page to show: `ledung` from
+ * the npm package, otherwise this copy's own cli.ts, since a clone or a release has no `ledung` on the PATH. A Ledung
+ * with a data folder of its own says so, or the command would look for the account in the usual one.
+ */
+export function tokenCommand(name: string, how: { packaged: boolean; appDir: string; dataDir?: string | undefined; platform?: string }): string {
+  const run = how.packaged ? 'ledung' : `node "${path.join(how.appDir, 'src', 'cli.ts')}"`;
+  const data = !how.dataDir ? '' : how.platform === 'win32' ? `$env:LEDUNG_DATA_DIR="${how.dataDir}"; ` : `LEDUNG_DATA_DIR="${how.dataDir}" `;
+  return `${data}${run} account token ${name}`;
 }
 
 /** The command, run on this computer, that starts Claude Code on a sign-in folder inside a container. */

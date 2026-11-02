@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-02
+- Long-lived tokens work for accounts: run `ledung account token <name>` in your own terminal, the command is shown with a copy button when you add an account and under each account, and Accounts now shows whether each is signed in with a token or `/login` (#85)
 - Open folder on an account now says in the page why it failed instead of doing nothing, and on Windows the folder window is no longer asked to open hidden (#83)
 - Ledung no longer fails to start on a Mac when the system can't say who the user is (#83)
 - A request whose address doesn't parse is now refused with a 400, also on the live connection, without an error in the log (Fluffy-Fluffy-and-Bouncy/Project-Ledung#467)

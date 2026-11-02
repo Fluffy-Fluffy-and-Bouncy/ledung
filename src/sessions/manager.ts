@@ -58,11 +58,11 @@ import { Management, type LinkedMessage, type LinkedPort, type SettingsPort } fr
 import { findTickets } from '../usage/links.ts';
 import { claudeEnvironment, Session, type TurnGate } from './session.ts';
 import {
-  checkContainerSignIn, checkSignIn, containerSignInHelp, dockerExecArgs, runCommand, sdkClaudeBinary, shellFolder, signInHelp,
+  checkContainerSignIn, checkSignIn, containerSignInHelp, dockerExecArgs, runCommand, sdkClaudeBinary, shellFolder, shownSignIn, signInCommand, signInHelp, tokenCommand,
   type ContainerPlace, type LoginPlace, type SignIn, type SignInContext,
 } from '../accounts/signin.ts';
 import { McpError } from './mcp.ts';
-import { userDataDir } from '../platform/paths.ts';
+import { appDir, envSetting, PACKAGED, userDataDir } from '../platform/paths.ts';
 import { validateSensitive } from './sensitive.ts';
 import { idleReason, idleStopBlocker } from './idle.ts';
 import { chooseProfile, FULL_PROFILE, pluginIdsIn, profileByName, profileNames, type Profile } from './profiles.ts';
@@ -1071,10 +1071,23 @@ export class SessionManager {
   accountsEvent(): Extract<import('../shared/protocol.ts').ServerEvent, { type: 'accounts' }> {
     const raw = this.store.getMeta(SessionManager.IDENTITY_KEY);
     const inFile = this.config.claudeAccounts;
-    const accounts = this.accounts.list().map((a) => inFile[a.name] ? { ...a, inConfigFile: true, whatItIsFor: inFile[a.name]!.whatItIsFor ?? null } : a);
+    const accounts = this.accounts.list().map((a) => this.accountView(inFile[a.name] ? { ...a, inConfigFile: true, whatItIsFor: inFile[a.name]!.whatItIsFor ?? null } : a));
+    const identity = raw ? JSON.parse(raw) : null;
+    const defaultKind = shownSignIn(this.signIns.get(DEFAULT_ACCOUNT));
     return {
-      type: 'accounts', accounts, defaultIdentity: raw ? JSON.parse(raw) : null, choices: this.accountChoices(), signedOut: this.signedOut(),
+      type: 'accounts', accounts,
+      defaultIdentity: defaultKind ? { email: null, organization: null, plan: null, seenAt: null, ...identity, signInKind: defaultKind } : identity,
+      choices: this.accountChoices(), signedOut: this.signedOut(),
       claudeProblem: this.claudeProblem, claudeLooked: this.claudeProblem ? this.claudeLooked : [], configFileProblems: this.accountFileProblems,
+    };
+  }
+
+  /** An account as the page shows it: how it is signed in (from the last check) and the commands to sign it in (#85). */
+  private accountView(a: AccountInfoView): AccountInfoView {
+    const data = envSetting('DATA_DIR');
+    return {
+      ...a, signInKind: shownSignIn(this.signIns.get(a.name)), loginCommand: signInCommand(a.configDir),
+      tokenCommand: tokenCommand(a.name, { packaged: PACKAGED, appDir: appDir(), dataDir: data ? path.resolve(data) : undefined, platform: process.platform }),
     };
   }
 
@@ -1187,7 +1200,7 @@ export class SessionManager {
     const found = await Promise.all(places.map((p) => this.checkPlace(p)));
     const out = places.filter((_, i) => found[i]!.state === 'out');
     const state: SignIn['state'] = out.length ? 'out' : found.some((f) => f.state === 'unknown') ? 'unknown' : 'in';
-    const combined = { state, method: found.find((f) => f.method)?.method ?? null, detail: found.find((f) => f.detail)?.detail ?? null, checkedAt: Date.now() };
+    const combined = { state, method: found.find((f) => f.method)?.method ?? null, kind: found.find((f) => f.kind)?.kind ?? null, detail: found.find((f) => f.detail)?.detail ?? null, checkedAt: Date.now() };
     this.signIns.set(name, { ...combined, help: out.map((p) => this.placeHelp(name, p)).join(' ') });
     return combined;
   }
@@ -1294,7 +1307,7 @@ export class SessionManager {
       this.publishAccounts();
       // A new login folder is empty until someone signs in to it: the banner says so (issue #333).
       void this.checkSignIns([added.name]);
-      return added;
+      return this.accountView(added);
     } catch (e) {
       throw e instanceof AccountError ? new UserError(e.message) : e;
     }
