@@ -52,6 +52,8 @@ function rig(opts: {
   setup?: Record<string, ProjectBoardInput>;
   db?: DatabaseSync;
   directory?: RepoDirectory;
+  /** Locked secrets' blanking (issue #468). */
+  blank?: (text: string) => string;
 } = {}): Rig {
   const config = parseConfig({ board: { ...opts.board } }).board!;
   const settings = new BoardStore(opts.db ?? openDatabase(':memory:'));
@@ -77,7 +79,7 @@ function rig(opts: {
     board: null as never, boards: null as never, backend: null as never,
   };
   r.boards = new Boards({
-    store: settings, config, userName: 'Sam', directory: opts.directory,
+    store: settings, config, userName: 'Sam', directory: opts.directory, blank: opts.blank,
     backendFor: (repo) => {
       const b = new FakeBackend(fakes[repo] ?? (fakes[repo] = new FakeBoard()), login);
       backends.set(repo, b);
@@ -535,6 +537,16 @@ test('recipients, length, caps and the outgoing check are refused with the reaso
   await refused({ to: ['@alice'], text: 'x' }, /board is off for "Quiet"/, 'Quiet');
   for (let i = 0; i < 20; i++) await r.boards.post('m-desk', 'Desk', { to: ['@alice'], text: `post ${i}` });
   await refused({ to: ['@alice'], text: 'one too many' }, /posted 20 times in the last hour/);
+});
+
+test("a locked secret's value never reaches the board: it goes out as 🔑name (issue #468)", async () => {
+  const r = rig({ blank: (t) => t.split('hunter2-board').join('🔑db-password') });
+  await r.board.pollOnce();
+  r.settings.approveContact('alice', null, 0);
+  await r.boards.post('m-desk', 'Desk', { to: ['@alice'], title: 'about hunter2-board', text: 'the password is hunter2-board' });
+  const sent = JSON.stringify(r.backend.sent);
+  assert.ok(!sent.includes('hunter2-board'), sent);
+  assert.ok(sent.includes('🔑db-password'));
 });
 
 test('a post while the board is down is refused, not queued', async () => {

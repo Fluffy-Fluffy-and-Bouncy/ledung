@@ -7,7 +7,11 @@ import { readDraft, writeDraft, type DraftStore } from './drafts.ts';
 /** How long after the last key the draft is written (issue #323). */
 export const DRAFT_WRITE_DELAY = 300;
 
-export function useDraft(sessionId: string, store: DraftStore = localStorage): [string, Dispatch<SetStateAction<string>>] {
+/**
+ * The text, its setter, and saveNow: sets the text and writes the draft at once, for a change that must not
+ * wait the delay (a locked secret leaves the saved draft immediately, issue #468).
+ */
+export function useDraft(sessionId: string, store: DraftStore = localStorage): [string, Dispatch<SetStateAction<string>>, (text: string) => void] {
   const [text, setText] = useState(() => readDraft(store, sessionId));
   /** The text as of the last render, for the writes that happen outside one (leaving, hiding). */
   const latest = useRef(text);
@@ -39,5 +43,11 @@ export function useDraft(sessionId: string, store: DraftStore = localStorage): [
       flush();
     };
   }, [flush]);
-  return [text, setText];
+  const saveNow = useCallback((next: string) => {
+    latest.current = next;
+    saved.current = next;
+    writeDraft(store, sessionId, next);
+    setText(next);
+  }, [store, sessionId]);
+  return [text, setText, saveNow];
 }

@@ -8,7 +8,7 @@ import { promisify } from 'node:util';
 import type { SpawnOptions } from '@anthropic-ai/claude-agent-sdk';
 import type { DockerProjectConfig } from '../config.ts';
 import type { LaunchSpec } from '../host/protocol.ts';
-import { failureReason, ghApiAnswer, PLUGIN_FILES, sessionEnv, type Runner } from './runner.ts';
+import { failureReason, ghApiAnswer, PLUGIN_FILES, sessionEnv, type LaunchSecrets, type Runner } from './runner.ts';
 import { GIT_STATE, type GhAnswer, type GitState } from '../sessions/pr-poll.ts';
 import { containerProblem, lockdownOf } from '../projects/lockdown.ts';
 import { stopInContainer } from '../host/stop.ts';
@@ -16,6 +16,7 @@ import type { ShellSpawn } from './shell-run.ts';
 import { shellFolder } from '../accounts/signin.ts';
 import { SIGN_IN_ENV } from '../accounts/store.ts';
 import { SKILL_HEAD_BYTES, type SkillFile } from '../sessions/skills.ts';
+import { containerEnvFilePart } from '../secrets/runtime.ts';
 
 const run = promisify(execFile);
 
@@ -172,20 +173,23 @@ export class DockerRunner implements Runner {
     }
   }
 
-  launchSpec(options: SpawnOptions): LaunchSpec {
+  launchSpec(options: SpawnOptions, secrets?: LaunchSecrets): LaunchSpec {
     // Pass on only what the SDK added or changed; the rest of this machine's environment stays out.
     const env = sessionEnv(options);
     const login = loginFolderPart(env);
     // A key goes by name only: docker takes its value from its own environment (which the host passes
-    // on), so it never appears on a command line (projects and accounts, P3).
+    // on), so it never appears on a command line (projects and accounts, P3). So does a locked secret (#468).
+    const byName = new Set([...SECRET_ENV, ...(secrets?.names ?? [])]);
     const envFlags = Object.entries(login.env)
-      .filter(([k, v]) => process.env[k] !== v)
-      .flatMap(([k, v]) => ['-e', SECRET_ENV.has(k) ? k : `${k}=${v}`]);
+      .filter(([k, v]) => process.env[k] !== v || byName.has(k))
+      .flatMap(([k, v]) => ['-e', byName.has(k) ? k : `${k}=${v}`]);
+    // The env file is the container's (#468): written inside it at launch, private to the container user.
+    const envFile = secrets ? containerEnvFilePart(secrets.envFile, secrets.script) : '';
     const user = this.project.user ? ['-u', this.project.user] : [];
     const pidFile = `/tmp/${this.tag}.pid`;
     const args = [
       'exec', '-i', ...user, '-w', this.cwd, ...envFlags, '-e', `LEDUNG_TAG=${this.tag}`, this.project.container,
-      'setsid', '-w', 'sh', '-c', `echo $$ > ${pidFile}; ${login.set}exec claude "$@"`, 'sh', ...options.args,
+      'setsid', '-w', 'sh', '-c', `echo $$ > ${pidFile}; ${login.set}${envFile}exec claude "$@"`, 'sh', ...options.args,
     ];
     return { command: 'docker', args, env, stop: { kind: 'docker', container: this.project.container, user: this.project.user, tag: this.tag } };
   }
@@ -194,12 +198,12 @@ export class DockerRunner implements Runner {
    * A `!` command in the container, as the project's user, in its folder (issue #212): bash where the image
    * has it, else sh. Its own tag, so ending it ends what it started there and nothing of the session's.
    */
-  shell(command: string, _kind: unknown, base: Record<string, string>): ShellSpawn & { shellName: string } {
+  shell(command: string, _kind: unknown, base: Record<string, string>, secretNames: readonly string[] = []): ShellSpawn & { shellName: string } {
     const env = sessionEnv({ env: base });
     const login = loginFolderPart(env);
     const tag = `${this.tag}-sh${++this.shells}-`;
-    // The login goes by name only, as for Claude Code (launchSpec).
-    const envFlags = Object.keys(env).filter((k) => SECRET_ENV.has(k)).flatMap((k) => ['-e', k]);
+    // The login goes by name only, as for Claude Code (launchSpec), and so do locked secrets (#468).
+    const envFlags = Object.keys(env).filter((k) => SECRET_ENV.has(k) || secretNames.includes(k)).flatMap((k) => ['-e', k]);
     const user = this.project.user ? ['-u', this.project.user] : [];
     const script = `echo $$ > /tmp/${tag}.pid; ${login.set}if command -v bash >/dev/null 2>&1; then exec bash -c "$1"; else exec sh -c "$1"; fi`;
     const args = ['exec', ...user, '-w', this.cwd, ...envFlags, '-e', `LEDUNG_TAG=${tag}`, this.project.container, 'sh', '-c', script, 'sh', command];

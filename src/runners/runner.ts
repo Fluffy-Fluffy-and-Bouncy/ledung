@@ -22,8 +22,11 @@ export interface Runner {
    * config asks for (issue #341). Left out by a runner that names no program: a container runs its own `claude`.
    */
   claudeProgram?(): Promise<ClaudeChoice>;
-  /** Turns what the Agent SDK would start into what the host should start, and how to stop it. */
-  launchSpec(options: SpawnOptions): LaunchSpec;
+  /**
+   * Turns what the Agent SDK would start into what the host should start, and how to stop it. `secrets`: the
+   * session's locked secrets (issue #468), whose values are in options.env; never put on a command line.
+   */
+  launchSpec(options: SpawnOptions, secrets?: LaunchSecrets): LaunchSpec;
   /** The git branch of the session's folder, or null if it isn't a repository (step 5). */
   currentBranch(): Promise<string | null>;
   /**
@@ -57,7 +60,17 @@ export interface Runner {
    * How to run a person's `!` command in the session's folder (issue #212): `kind` is the shell on Windows,
    * `env` the session's environment (sessionEnv's rules, with the project's login). Throws a readable error.
    */
-  shell(command: string, kind: ShellKind, env: Record<string, string>): ShellSpawn & { shellName: string };
+  shell(command: string, kind: ShellKind, env: Record<string, string>, secretNames?: readonly string[]): ShellSpawn & { shellName: string };
+}
+
+/**
+ * A session's locked secrets at its launch (issue #468): the variables whose values options.env carries, and the
+ * env file Claude Code sources before each Bash command (CLAUDE_ENV_FILE) with its fixed text.
+ */
+export interface LaunchSecrets {
+  names: readonly string[];
+  envFile: string;
+  script: string;
 }
 
 /** A failed command's reason in a few words, for away mode's record. */

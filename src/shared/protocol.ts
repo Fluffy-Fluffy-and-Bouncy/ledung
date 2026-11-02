@@ -5,6 +5,7 @@ import type { NameColour, ProjectColours } from './name-colours.ts';
 import type { ComputerInfo } from './computers.ts';
 import type { SkillChoices, SkillInfo } from './skills.ts';
 import type { Macro } from './macros.ts';
+import type { SecretInfo } from './secrets.ts';
 
 export type SessionStatus =
   /** The process is starting. */
@@ -1161,6 +1162,8 @@ export interface ConfigStatus {
 }
 
 export type ServerEvent =
+  /** A session's locked secrets changed (issue #468): names and lifetimes, never a value. */
+  | { type: 'secrets'; sessionId: string; secrets: SecretInfo[] }
   /** `build` names the running release; when it changes, the page offers a reload. */
   | {
       type: 'hello';

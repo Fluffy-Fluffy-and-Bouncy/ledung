@@ -5,6 +5,7 @@
 // out with the suggestions in src/shared/sensitive-suggestions.ts and which the user can edit.
 import { suggestionName } from '../shared/sensitive-suggestions.ts';
 import { HOLDS_BACK, SETTINGS_RULE, settingsAction } from './word.ts';
+import { SECRET_FILE_PATTERN, SECRET_FILE_RULE } from '../shared/secrets.ts';
 
 export interface SensitiveRules {
   /** Regular expressions (case-insensitive) matched against Bash and PowerShell commands. */
@@ -39,6 +40,10 @@ export function matchSensitive(
   alwaysAsked: readonly string[] = [],
 ): SensitiveMatch | null {
   if (alwaysAsked.includes(toolName)) return { rule: settingsAction(toolName) ? SETTINGS_RULE : ALWAYS_ASKED_RULE };
+  // A session reading a running session's file of locked secrets directly asks the person, whatever the lists say
+  // (issue #468, the manager's addition 2 on question #1565): the values reach commands through the environment.
+  const named = [...((toolName === 'Bash' || toolName === 'PowerShell') && typeof input.command === 'string' ? [input.command] : []), ...filePaths(input)];
+  if (named.some((t) => SECRET_FILE_PATTERN.test(t))) return { rule: SECRET_FILE_RULE };
   if ((toolName === 'Bash' || toolName === 'PowerShell') && typeof input.command === 'string') {
     // PowerShell quotes and escapes differently from a POSIX shell, so its commands are matched whole, line
     // by line: more asked than needed rather than a gap (#213: `Start-Process … -Verb RunAs` comes this way).

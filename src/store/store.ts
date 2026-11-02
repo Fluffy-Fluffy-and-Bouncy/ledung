@@ -140,6 +140,17 @@ export class Store {
     this.db = db;
   }
 
+  /** A locked secret's exact value becomes 🔑name in everything stored (issue #468); none set: unchanged. */
+  private blank: { text: (s: string) => string; json: (s: string) => string } = { text: (s) => s, json: (s) => s };
+
+  setBlanker(blank: { text: (s: string) => string; json: (s: string) => string }): void {
+    this.blank = blank;
+  }
+
+  private json(data: unknown): string {
+    return this.blank.json(JSON.stringify(data));
+  }
+
   /** The database itself, for the other stores that share it (projects). */
   get database(): DatabaseSync {
     return this.db;
@@ -252,7 +263,7 @@ export class Store {
   }
 
   setHeldMessages(id: string, texts: string[]): void {
-    this.db.prepare('UPDATE sessions SET held = ? WHERE id = ?').run(texts.length ? JSON.stringify(texts) : null, id);
+    this.db.prepare('UPDATE sessions SET held = ? WHERE id = ?').run(texts.length ? this.json(texts) : null, id);
   }
 
   /** Sessions the database still thinks are running, e.g. after Ledung was stopped abruptly. */
@@ -292,7 +303,7 @@ export class Store {
       const r = data === null
         ? undefined
         : this.db.prepare('INSERT INTO messages (session_id, at, kind, data, seq) VALUES (?, ?, ?, ?, ?) RETURNING *')
-            .get(sessionId, at, 'sdk', JSON.stringify(trimForStorage(data)), seq);
+            .get(sessionId, at, 'sdk', this.json(trimForStorage(data)), seq);
       this.db.prepare('UPDATE sessions SET host_seq = ? WHERE id = ? AND host_seq < ?').run(seq, sessionId, seq);
       this.db.exec('COMMIT');
       return r ? toMessage(r) : null;
@@ -305,7 +316,7 @@ export class Store {
   addMessage(sessionId: string, kind: StoredMessage['kind'], data: unknown, at = Date.now()): StoredMessage {
     const r = this.db
       .prepare('INSERT INTO messages (session_id, at, kind, data) VALUES (?, ?, ?, ?) RETURNING *')
-      .get(sessionId, at, kind, JSON.stringify(data));
+      .get(sessionId, at, kind, this.json(data));
     return toMessage(r!);
   }
 
@@ -513,9 +524,9 @@ export class Store {
   }): QuestionInfo {
     const r = this.db
       .prepare('INSERT INTO questions (session_id, asked_at, question, options, addressed_to, status, about_question, about_request, details, shots, earlier, sources) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *')
-      .get(q.sessionId, Date.now(), q.question, q.options ? JSON.stringify(q.options) : null, q.addressedTo, 'open', q.aboutQuestion ?? null, q.aboutRequest ?? null,
-        q.details ? JSON.stringify(q.details) : null, q.shots?.length ? JSON.stringify(q.shots) : null, q.earlier ? JSON.stringify(q.earlier) : null,
-        q.sources?.length ? JSON.stringify(q.sources) : null);
+      .get(q.sessionId, Date.now(), this.blank.text(q.question), q.options ? this.json(q.options) : null, q.addressedTo, 'open', q.aboutQuestion ?? null, q.aboutRequest ?? null,
+        q.details ? this.json(q.details) : null, q.shots?.length ? this.json(q.shots) : null, q.earlier ? this.json(q.earlier) : null,
+        q.sources?.length ? this.json(q.sources) : null);
     return this.withOriginal(toQuestion(r!));
   }
 
@@ -565,7 +576,7 @@ export class Store {
   addInbox(sessionId: string, source: string, text: string): InboxItem {
     const r = this.db
       .prepare('INSERT INTO inbox (session_id, created_at, source, text) VALUES (?, ?, ?, ?) RETURNING *')
-      .get(sessionId, Date.now(), source, text) as Record<string, any>;
+      .get(sessionId, Date.now(), source, this.blank.text(text)) as Record<string, any>;
     return { id: Number(r.id), sessionId: r.session_id, createdAt: Number(r.created_at), source: r.source, text: r.text };
   }
 
@@ -576,7 +587,7 @@ export class Store {
 
   /** Rewrites a waiting inbox item, e.g. the note after a compact once its outcome is known. */
   setInboxText(id: number, text: string): void {
-    this.db.prepare('UPDATE inbox SET text = ? WHERE id = ? AND delivered_at IS NULL').run(text, id);
+    this.db.prepare('UPDATE inbox SET text = ? WHERE id = ? AND delivered_at IS NULL').run(this.blank.text(text), id);
   }
 
   /** Removes waiting inbox items (a note that a newer one replaces). */
@@ -617,7 +628,7 @@ export class Store {
   answerQuestion(id: number, answer: string, by: string, forwardedFrom: number | null = null, here = false): boolean {
     const r = this.db
       .prepare(`UPDATE questions SET status = 'answered', answer = ?, answered_at = ?, answered_by = ?, forwarded_from = ?, answered_here = ? WHERE id = ? AND status = 'open'`)
-      .run(answer, Date.now(), by, forwardedFrom, here ? 1 : 0, id);
+      .run(this.blank.text(answer), Date.now(), by, forwardedFrom, here ? 1 : 0, id);
     return Number(r.changes) === 1;
   }
 
@@ -666,7 +677,7 @@ export class Store {
   ): PermissionInfo {
     this.db
       .prepare('INSERT INTO permissions (id, session_id, at, tool_name, input, title, reason, status, request_id, addressed_to, sensitive) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(p.id, p.sessionId, Date.now(), p.toolName, JSON.stringify(p.input), p.title, p.reason, 'pending', p.requestId ?? null, p.addressedTo ?? 'user', p.sensitive ?? null);
+      .run(p.id, p.sessionId, Date.now(), p.toolName, this.json(p.input), p.title && this.blank.text(p.title), p.reason && this.blank.text(p.reason), 'pending', p.requestId ?? null, p.addressedTo ?? 'user', p.sensitive ?? null);
     return this.getPermission(p.id)!;
   }
 

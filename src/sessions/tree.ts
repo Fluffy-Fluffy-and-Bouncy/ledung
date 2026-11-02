@@ -8,6 +8,7 @@ import path from 'node:path';
 import { FileError } from './files.ts';
 import type { TreeEntry, TreeListing } from '../shared/files-pane.ts';
 import { gitRead } from './git-read.ts';
+import { SECRET_FILE_PATTERN } from '../shared/secrets.ts';
 
 export type { TreeEntry, TreeListing };
 
@@ -48,6 +49,8 @@ function problem(realRoot: string, real: string, rules: TreeRules, refused: stri
   if (inside === null) return 'Only folders inside the session\'s folder can be listed.';
   if (inside.split(path.sep).some(hiddenName)) return 'Hidden folders and files (names starting with . or $) are not listed.';
   if (refused.some((r) => within(r, real) !== null)) return 'Folders where settings and sign-ins are kept are not listed.';
+  // A running session's file of locked secrets, wherever its folder is (issue #468).
+  if (SECRET_FILE_PATTERN.test(real)) return 'Folders where settings and sign-ins are kept are not listed.';
   for (const r of rules.hiddenFrom) {
     const at = longName(r);
     const rel = at === null ? null : within(at, real);
@@ -80,7 +83,7 @@ export async function listTree(root: string, rel: string, rules: TreeRules): Pro
   const at = within(realRoot, real)!.split(path.sep).filter(Boolean).join('/');
   const entries: TreeEntry[] = [];
   for (const d of dirents) {
-    if (hiddenName(d.name)) continue;
+    if (hiddenName(d.name) || SECRET_FILE_PATTERN.test(d.name)) continue;
     const full = path.join(real, d.name);
     let dir: boolean;
     let size: number | null = null;

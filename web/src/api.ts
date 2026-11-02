@@ -14,6 +14,7 @@ import type { ComputerColour, ComputerInfo } from '../../src/shared/computers.ts
 import type { PaneFolderKey, PaneFolders, SessionChanges, TreeListing } from '../../src/shared/files-pane.ts';
 import type { LineComment } from '../../src/shared/line-comments.ts';
 import type { SkillChoices } from '../../src/shared/skills.ts';
+import type { SecretInfo, SecretLifetime } from '../../src/shared/secrets.ts';
 import type { SharedUsageView, UsagePublishView } from '../../src/shared/published-usage.ts';
 /** The words Ledung refuses a request with when it needs the passkey (src/server/passkeys.ts). */
 export const PASSKEY_NEEDED = 'This needs your passkey.';
@@ -198,6 +199,11 @@ export const api = {
   /** Runs it; through the public name signed with the passkey, each command on its own. */
   shell: (sessionId: string, command: string, confirmed: boolean) => call('POST', `/api/sessions/${sessionId}/shell`, { command, confirmed }),
   shellStop: (sessionId: string) => call('POST', `/api/sessions/${sessionId}/shell-stop`, {}),
+  // Locked secrets (issue #468): the value goes once, on its own; nothing that comes back carries it.
+  secrets: (sessionId: string) => call<SecretInfo[]>('GET', `/api/sessions/${sessionId}/secrets`),
+  addSecret: (sessionId: string, secret: { name: string; value: string; lifetime: SecretLifetime }) => call<SecretInfo>('POST', `/api/sessions/${sessionId}/secrets`, secret),
+  editSecret: (sessionId: string, secret: string, edit: { name?: string; lifetime?: SecretLifetime }) => call<SecretInfo>('POST', `/api/sessions/${sessionId}/secret-edit`, { secret, ...edit }),
+  removeSecret: (sessionId: string, secret: string) => call('POST', `/api/sessions/${sessionId}/secret-remove`, { secret }),
   setPermissionMode: (sessionId: string, mode: PermissionMode) => call('POST', `/api/sessions/${sessionId}/permission-mode`, { mode }),
   interrupt: (sessionId: string) => call('POST', `/api/sessions/${sessionId}/interrupt`, {}),
   mcpServers: (sessionId: string) => call<McpServerInfo[]>('GET', `/api/sessions/${sessionId}/mcp`),

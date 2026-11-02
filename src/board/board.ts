@@ -42,6 +42,10 @@ export interface BoardContext {
   wake(managerId: string): Promise<void>;
   /** The project's sensitive patterns (the config's and its own). */
   sensitive(project: string): { commandPatterns: string[]; pathPatterns: string[] };
+  /** A locked secret's exact value as 🔑name (issue #468); none: unchanged. */
+  blank?(text: string): string;
+  /** Whether a text holds a locked secret's value: an attachment with one is refused (issue #468). */
+  holdsSecret?(text: string): boolean;
   /** A question from Ledung, in the manager's name, to the user; returns its number. */
   askUser(managerId: string, question: string, options: string[] | null, shots?: QuestionShot[]): number;
   /** Something the page shows changed. */
@@ -457,6 +461,7 @@ export class Board {
     const rules = this.ctx.sensitive(project);
     const sensitive = sensitiveInText(f.inside, rules) ?? (f.text === null ? null : sensitiveInText(f.text, rules));
     if (sensitive) throw new BoardError('access', `Not posted: attachment ${f.inside}: ${sensitive}, one of the project's sensitive patterns.`);
+    if (f.text !== null && this.ctx.holdsSecret?.(f.text)) throw new BoardError('access', `Not posted: attachment ${f.inside} contains a secret locked in Ledung. Leave it out; never post secrets on the board.`);
     const secret = f.text === null ? null : tokenLike(f.text);
     if (secret) throw new BoardError('access', `Not posted: attachment ${f.inside} contains what looks like ${secret}. Leave it out; never post secrets on the board.`);
   }
@@ -714,10 +719,15 @@ export class Board {
   }
 
   /** board_post: checks, then sends, or holds it for the user's first-post answer (decision 6). */
+  private blankSecrets(text: string): string {
+    return this.ctx.blank?.(text) ?? text;
+  }
+
   async post(managerId: string, project: string, args: PostArgs): Promise<string> {
     const problem = this.notReady(project);
     if (problem) throw new BoardError('access', problem);
-    const text = args.text.trim();
+    // A locked secret's value never goes onto the board, however it got into the post (issue #468).
+    const text = this.blankSecrets(args.text).trim();
     if (!text) throw new BoardError('access', 'The post is empty.');
     if (text.length > MAX_POST_CHARS) throw new BoardError('access', `The post is ${text.length} characters; at most ${MAX_POST_CHARS}. Put the whole question or answer in one shorter post.`);
     const now = this.now();
@@ -747,7 +757,7 @@ export class Board {
     if (notAllowed.length) {
       throw new BoardError('access', `Not posted: ${notAllowed.map(formatAddress).join(', ')} ${notAllowed.length === 1 ? 'is' : 'are'} not on the allowlist of "${project}". ${this.ctx.userName} adds people in the project's board settings.`);
     }
-    const title = thread ? undefined : oneLine(args.title?.trim() || text.split('\n')[0]!, 120);
+    const title = thread ? undefined : oneLine(this.blankSecrets(args.title ?? '').trim() || text.split('\n')[0]!, 120);
     // The outgoing check (trust rule 4): nothing guarded goes into a shared place by accident.
     const whole = `${title ?? ''}\n${text}`;
     const secret = tokenLike(whole);
