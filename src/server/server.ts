@@ -993,7 +993,8 @@ export class LedungServer {
   /** Sends this computer's count to every linked one and keeps theirs; one that doesn't answer loses its badge. */
   private exchangeWaiting(): void {
     const linked = this.linked;
-    if (!linked) return;
+    // Closed: none starts, from the poll, a push or a change to the links (review of PR #77, Minor 3).
+    if (!linked || this.closed) return;
     const count = this.waitingNow();
     this.waitingSent = count;
     for (const link of linked.list()) {

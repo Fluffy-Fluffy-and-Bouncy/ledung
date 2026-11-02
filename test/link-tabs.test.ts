@@ -228,12 +228,21 @@ test('an exchange of counts still on its way when Ledung closes changes nothing 
   // The PC goes offline and the Mac starts an exchange (as its poll would): the PC's badge will go, once the failed
   // call comes back. That is a few turns later, by when the Mac has closed and its database with it.
   nodes.offline(pc.name);
-  (mac.server as unknown as { exchangeWaiting(): void }).exchangeWaiting();
+  // The real answer handling, counted when it runs after close, so the test sees the late answer come (test review of
+  // PR #77, Minor 3) rather than pass because none did.
+  const server = mac.server as unknown as { exchangeWaiting(): void; noteWaiting(id: string, raw: unknown): void; closed: boolean };
+  const noteWaiting = server.noteWaiting.bind(server);
+  let late = 0;
+  server.noteWaiting = (id, raw) => {
+    if (server.closed) late++;
+    noteWaiting(id, raw);
+  };
+  server.exchangeWaiting();
   const closing = mac.server.close();
   mac.db.close();
   await closing;
-  // Time for the failed call to come back: a socket closed on the next turn, then TLS and the request report it.
-  await new Promise((r) => setTimeout(r, 1500));
-  // Reaching here is the test: without the close, the answer read the closed database and the run failed on it.
+  // The failed call comes back a few turns later: a socket closed on the next turn, then TLS and the request report it.
+  await until(() => late > 0, 'the PC\'s answer after close');
+  // Without the fix, that answer read the closed database and the run failed on it.
   assert.equal(mac.db.isOpen, false);
 });

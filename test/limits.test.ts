@@ -11,8 +11,11 @@ const files = fs.readdirSync(dir, { recursive: true, encoding: 'utf8' })
 
 const RULES: [RegExp, string][] = [
   [/\btimeout:\s*\d/, "a test's or a child process's timeout: HANG_MS"],
-  [/\b(?:end|until|deadline)\s*=\s*Date\.now\(\)\s*\+\s*\d[\d_]*\s*[;)]/, 'a deadline for a wait: WAIT_MS'],
+  // Any name, and a product of numbers: `2 * WAIT_MS` passes, `5 * 1000` doesn't (test review of PR #77, Important 2).
+  [/\b\w+\s*=\s*Date\.now\(\)\s*\+\s*\d[\d_]*(?:\s*\*\s*\d[\d_]*)*\s*[;)]/, 'a deadline for a wait: WAIT_MS'],
   [/\b(?:until|waitFor|within)\s*(?:<[^>]*>)?\([^{]*\bms\s*=\s*\d/, "a wait helper's budget: WAIT_MS"],
+  // The same budget given where the helper is called, as host.test's `within(…, 20000, …)` was.
+  [/\b(?:until|waitFor|within)\s*\(.*,\s*\d[\d_]{3,}\s*[,)]/, "a wait helper's budget: WAIT_MS"],
 ];
 
 test('every test timeout and wait budget is a limit from test/limits.ts, not a number', () => {
@@ -38,6 +41,11 @@ test('the rules catch the forms they are for', () => {
     'async function until(what: () => boolean, ms = 3000): Promise<void> {',
     "async function waitFor(what: string, ok: () => boolean, ms = 4000): Promise<void> {",
     '    async waitFor(pred, ms = 20000) {',
+    "  await within(ended, 20000, 'the connection ending');",
+    "  await until(() => t.status().state === 'connected', 5000);",
+    "  await waitFor('x', ok, 4000);",
+    '  const stop = Date.now() + 5000;',
+    '  const end = Date.now() + 5 * 1000;',
   ]) assert.ok(caught(line), line);
   for (const line of [
     "test('x', { timeout: HANG_MS }, async () => {",
@@ -45,5 +53,7 @@ test('the rules catch the forms they are for', () => {
     "startShell(cmd, { timeoutMs: 6000 });",
     'const later = () => clock(Date.now() + 2 * 3600_000);',
     "function raw(port: number, bytes: string, ms = 1500): Promise<string> {",
+    "  await within(ended, WAIT_MS, 'the connection ending');",
+    "  await until(() => calls.length === 2, 'two calls');",
   ]) assert.ok(!caught(line), line);
 });
