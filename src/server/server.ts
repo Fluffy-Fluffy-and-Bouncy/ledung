@@ -36,6 +36,7 @@ import type { Shortcuts } from '../platform/shortcuts.ts';
 import { LinkError, LinkedComputers } from '../remote/linked.ts';
 import { ManagementError, type SettingsPort } from '../sessions/management.ts';
 import { waitingCount } from '../shared/waiting.ts';
+import { exercisedLine } from '../platform/exercised.ts';
 
 /** Calls a linked computer may make in a minute (#245). */
 const LINK_PER_MINUTE = 60;
@@ -380,13 +381,14 @@ export class LedungServer {
       this.handle(req, res).catch((e) => this.fail(res, e));
     });
     server.on('upgrade', (req, socket, head) => {
-      const url = new URL(req.url ?? '/', 'http://127.0.0.1');
-      if (url.pathname !== '/ws' || !this.guard.hostAllowed(req) || !this.guard.originAllowed(req) || !this.guard.mayUse(req)) {
+      const refuse = (status: string): void => {
         // Ended rather than destroyed, so the refusal gets out through TLS too (issue #201); cut off if it lingers.
-        socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+        socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\n\r\n`);
         setTimeout(() => socket.destroy(), 1000).unref();
-        return;
-      }
+      };
+      const url = requestUrl(req);
+      if (!url) return refuse('400 Bad Request');
+      if (url.pathname !== '/ws' || !this.guard.hostAllowed(req) || !this.guard.originAllowed(req) || !this.guard.mayUse(req)) return refuse('403 Forbidden');
       const device = this.guard.deviceOf(req)?.id ?? null;
       const viaPublic = this.guard.isPublic(req);
       this.wss.handleUpgrade(req, socket, head, (ws) => this.onClient(ws, device, viaPublic));
@@ -698,8 +700,9 @@ export class LedungServer {
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const url = requestUrl(req);
+    if (!url) throw new HttpError(400, 'Bad request path.');
     if (!this.guard.hostAllowed(req)) throw new HttpError(403, 'Unknown host.');
-    const url = new URL(req.url ?? '/', 'http://127.0.0.1');
 
     const remote = this.guard.isPublic(req);
     if (remote) {
@@ -1931,6 +1934,18 @@ export class LedungServer {
 
 /** A request's body, read once: the passkey check hashes the very bytes the route then parses. */
 const bodies = new WeakMap<IncomingMessage, Promise<Buffer>>();
+/** The EXERCISED line of Project-Ledung#467, once per run. */
+let badPathTraced = false;
+/** The request's URL, or null for a path that doesn't parse, which is refused with a 400 before any other check (Project-Ledung#467). */
+function requestUrl(req: IncomingMessage): URL | null {
+  const url = URL.parse(req.url ?? '/', 'http://127.0.0.1');
+  if (!url && !badPathTraced) {
+    badPathTraced = true;
+    exercisedLine('EXERCISED #467 refused a request path that does not parse');
+  }
+  return url;
+}
+
 /** A request from this computer itself (loopback), not from another one on the local network (issue #415). */
 function fromThisComputer(req: IncomingMessage): boolean {
   const from = req.socket.remoteAddress ?? '';

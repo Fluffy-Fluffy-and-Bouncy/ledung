@@ -353,6 +353,44 @@ test('the live connection needs both the cookie and Ledung\'s own origin', async
   assert.equal(await connect({ cookie: COOKIE, origin: ORIGIN }), 'open');
 });
 
+/** Sends a request head as written, so no client tidies its path first; resolves with the reply's status line, empty
+ * when no reply came within two seconds. */
+function rawRequest(head: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let reply = '';
+    const socket = net.connect(PORT, '127.0.0.1', () => socket.write(head));
+    socket.setTimeout(2000, () => socket.destroy());
+    socket.on('data', (c) => (reply += c));
+    socket.on('close', () => resolve(reply.split('\r\n')[0] ?? ''));
+    socket.on('error', reject);
+  });
+}
+
+// Paths `new URL` can't parse against Ledung's address (Project-Ledung#467).
+const BAD_PATHS = ['//..%2f.env', '//[', '//%'];
+
+test("a request path that doesn't parse is refused with a 400 before any other check, and logs nothing (Project-Ledung#467)", async (t) => {
+  const logged = t.mock.method(console, 'error', () => {});
+  for (const bad of BAD_PATHS) {
+    for (const headers of [`Host: 127.0.0.1:${PORT}\r\nCookie: ${COOKIE}`, 'Host: evil.example:80']) {
+      assert.match(await rawRequest(`GET ${bad} HTTP/1.1\r\n${headers}\r\nConnection: close\r\n\r\n`), /^HTTP\/1\.1 400 /, `${bad} with ${headers}`);
+    }
+  }
+  assert.equal(logged.mock.callCount(), 0);
+  assert.equal((await request({ path: '/api/state', headers: { cookie: COOKIE } })).status, 200);
+});
+
+test("a live-connection request whose path doesn't parse is refused, and Ledung keeps serving (Project-Ledung#467)", async () => {
+  const upgrade = 'Connection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==';
+  for (const bad of BAD_PATHS) {
+    for (const headers of [`Host: 127.0.0.1:${PORT}\r\nCookie: ${COOKIE}\r\nOrigin: ${ORIGIN}`, 'Host: evil.example:80']) {
+      assert.match(await rawRequest(`GET ${bad} HTTP/1.1\r\n${headers}\r\n${upgrade}\r\n\r\n`), /^HTTP\/1\.1 400 /, `${bad} with ${headers}`);
+    }
+  }
+  assert.equal((await request({ path: '/api/state', headers: { cookie: COOKIE } })).status, 200);
+  assert.equal(await connect({ cookie: COOKIE, origin: ORIGIN }), 'open');
+});
+
 test('restarting is refused when Ledung was not started by the launcher', async () => {
   const res = await request({
     method: 'POST', path: '/api/restart', body: '{}',
