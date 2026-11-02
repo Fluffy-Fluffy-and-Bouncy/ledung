@@ -267,7 +267,7 @@ export class SessionManager {
     this.secrets = secrets;
     this.secretsDir = localDir;
     this.secretBook = metaPlaceBook({ get: (k) => this.store.getMeta(k), set: (k, v) => this.store.setMeta(k, v) });
-    this.store.setBlanker({ text: (s) => secrets.blank(s), json: (s) => secrets.blankJson(s) });
+    this.store.setBlanker({ text: (s) => secrets.blank(s), deep: (d) => secrets.blankDeep(d) });
     secrets.onChange = (change) => this.secretsChanged(change);
   }
 
@@ -333,8 +333,9 @@ export class SessionManager {
    */
   async cleanSecretsAtStart(running: readonly string[]): Promise<void> {
     if (!this.secrets || !this.secretBook) return;
-    const live = new Set(running);
-    await this.secrets.dropOnceExcept(live);
+    await this.secrets.dropOnceExcept(new Set(running));
+    // Asked at each deletion, not a list from before: a session started meanwhile keeps its files (review of #468, finding 2).
+    const live = { has: (id: string) => running.includes(id) || this.live.has(id) };
     const containers = this.projectStore.list().map((p) => p.config).filter((p) => p.runner === 'docker')
       .map((p) => ({ container: p.container, user: p.user || undefined }));
     const unique = [...new Map(containers.map((c) => [`${c.container}:${c.user ?? ''}`, c])).values()];

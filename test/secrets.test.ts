@@ -157,8 +157,16 @@ test('lifetimes: once goes after its turn, this session when it is archived, kep
   await assert.rejects(secrets.add(S1, 'path', 'x', 'session'), /used by the shell/);
   await assert.rejects(secrets.add(S1, 'empty', '', 'session'), /no value/);
 
-  await secrets.removeOnce('s1', new Set(['otp']));
-  assert.ok(!secrets.names(S1).has('otp'));
+  // Once: not yet sent, a turn's end or the session's stop leaves it; sent during a turn, that turn's end leaves it
+  // too, and the next turn's end takes it (the turn that answers the message).
+  await secrets.turnEnded('s1', Date.now());
+  await secrets.sessionStopped('s1');
+  assert.ok(secrets.names(S1).has('otp'), 'still in the box: kept');
+  await secrets.markSent('s1', ['otp'], 2000);
+  await secrets.turnEnded('s1', 1000);
+  assert.ok(secrets.names(S1).has('otp'), 'sent during the turn that ended');
+  await secrets.turnEnded('s1', 3000);
+  assert.ok(!secrets.names(S1).has('otp'), 'gone after the turn that answered it');
   await secrets.endSession('s1');
   assert.deepEqual(secrets.list(S1).map((s) => s.name), ['kept-pass', 'deploy-key']);
   // Renamed and made the session's again: the project's other sessions lose it.
@@ -168,10 +176,36 @@ test('lifetimes: once goes after its turn, this session when it is archived, kep
   assert.deepEqual(secrets.list(S1).map((s) => s.name), ['kept-pass']);
   await secrets.dropProject('p');
   assert.deepEqual(secrets.list(S2), []);
-  // At Ledung's start, the "once" secrets of sessions that are not running had their turn.
+  // At Ledung's start, the sent "once" secrets of sessions that are not running had their turn; unsent ones stay.
   await secrets.add(S1, 'otp', '654321', 'once');
+  await secrets.add(S1, 'unsent', '111111', 'once');
+  await secrets.markSent('s1', ['otp']);
   await secrets.dropOnceExcept(new Set(['s9']));
-  assert.deepEqual(secrets.list(S1), []);
+  assert.deepEqual(secrets.list(S1).map((s) => s.name), ['unsent']);
+});
+
+test('a project secret clashes with no session of the project; a failed vault write changes nothing; dangerous variables are refused', async () => {
+  const secrets = Secrets.memory();
+  await secrets.add(S2, 'db-password', 'one-value-1', 'session');
+  await assert.rejects(secrets.add(S1, 'db-password', 'two-value-2', 'project'), /A session of this project already has/);
+  const mine = await secrets.add(S1, 'db-password', 'two-value-2', 'session');
+  await assert.rejects(secrets.edit(S1, mine.id, { lifetime: 'project' }), /A session of this project already has/);
+  assert.deepEqual(secrets.values(S2), [{ env: 'DB_PASSWORD', value: 'one-value-1' }], "S2's own value stays its own");
+
+  const dir = tmp();
+  try {
+    const failing: KeyGuard = { kind: 'failing', load: async () => null, save: async () => { throw new Error('DPAPI timed out'); } };
+    const s = await Secrets.open(new Vault(path.join(dir, 'secrets.enc'), failing));
+    await assert.rejects(s.add(S1, 'pw', 'never-stored-1', 'session'), /DPAPI timed out/);
+    assert.deepEqual(s.list(S1), [], 'not half-added');
+    assert.equal(s.blank('never-stored-1'), 'never-stored-1');
+  } finally {
+    removeTemp(dir);
+  }
+  for (const name of ['https-proxy', 'no-proxy', 'git-ssh-command', 'node-extra-ca-certs', 'node-tls-reject-unauthorized', 'pythonpath', 'java-tool-options', 'ssh-auth-sock', 'docker-host', 'kubeconfig', 'npm-config-registry', 'editor', 'xdg-config-home']) {
+    assert.ok(secretNameProblem(name), name);
+  }
+  for (const name of ['npm-token', 'gh-token', 'db-password', 'api-key']) assert.equal(secretNameProblem(name), null, name);
 });
 
 test('blanking: the exact value becomes 🔑name in text and in JSON, a longer value first; values too short are left alone', async () => {
@@ -180,16 +214,30 @@ test('blanking: the exact value becomes 🔑name in text and in JSON, a longer v
   await secrets.add(S1, 'pass', 'p"a\\ss', 'session');
   await secrets.add(S1, 'long', 'p"a\\ss-and-more', 'session');
   assert.equal(secrets.blank('x p"a\\ss-and-more y p"a\\ss abc'), 'x 🔑long y 🔑pass abc');
-  const json = JSON.stringify({ out: 'got p"a\\ss here' });
-  assert.equal(JSON.parse(secrets.blankJson(json)).out, 'got 🔑pass here');
+  assert.deepEqual(secrets.blankDeep({ out: 'got p"a\\ss here', inner: JSON.stringify({ x: 'p"a\\ss' }) }), { out: 'got 🔑pass here', inner: JSON.stringify({ x: '🔑pass' }) }, 'also JSON inside a string');
   assert.ok(secrets.holdsValue('…p"a\\ss…'));
   assert.ok(!secrets.holdsValue('nothing'));
+});
+
+test('blanking never touches the structure of what is stored: a value that is a number, a key or true changes only strings', async () => {
+  const secrets = Secrets.memory();
+  await secrets.add(S1, 'pin', '1234', 'session');
+  await secrets.add(S1, 'word', 'true', 'session');
+  await secrets.add(S1, 'key', 'text', 'session');
+  const data = { seq: 51234, ok: true, text: 'pin 1234, true text', list: [1234, 'x1234'] };
+  assert.deepEqual(secrets.blankDeep(data), { seq: 51234, ok: true, text: 'pin 🔑pin, 🔑word 🔑key', list: [1234, 'x🔑pin'] });
+  const store = new Store(openDatabase(':memory:'));
+  store.setBlanker({ text: (s) => secrets.blank(s), deep: (d) => secrets.blankDeep(d) });
+  store.createSession({ id: 's1', project: 'p', runner: 'local', title: 't', parentId: null, permissionMode: 'default', role: 'session' });
+  const stored = store.addHostLine('s1', 1, Date.now(), { type: 'result', num_turns: 1234, usage: { input_tokens: 12345 } });
+  assert.deepEqual(stored!.data, { type: 'result', num_turns: 1234, usage: { input_tokens: 12345 } });
+  assert.ok(store.createPermission({ id: 'p1', sessionId: 's1', toolName: 'Bash', input: { text: 'true' }, title: null, reason: null }));
 });
 
 test('everything Ledung stores is blanked: tool output, messages, questions, answers, permissions, the inbox and held messages', async () => {
   const secrets = Secrets.memory();
   const store = new Store(openDatabase(':memory:'));
-  store.setBlanker({ text: (s) => secrets.blank(s), json: (s) => secrets.blankJson(s) });
+  store.setBlanker({ text: (s) => secrets.blank(s), deep: (d) => secrets.blankDeep(d) });
   store.createSession({ id: 's1', project: 'p', runner: 'local', title: 't', parentId: null, permissionMode: 'default', role: 'session' });
   await secrets.add(S1, 'token', VALUE, 'session');
   const tool = store.addHostLine('s1', 1, Date.now(), { type: 'user', message: { content: [{ type: 'tool_result', content: `echo ${VALUE}` }] } });
@@ -210,6 +258,10 @@ test('a session reading a runtime file of secrets asks the person, whatever the 
   assert.ok(SECRET_FILE_PATTERN.test(local));
   for (const [tool, input] of [['Bash', { command: `cat /tmp/ledung-${id}.secrets` }], ['Read', { file_path: local }], ['PowerShell', { command: `Get-Content ${local}` }], ['Grep', { pattern: 'x', path: path.dirname(local) }]] as const) {
     assert.match(matchSensitive(tool, input as Record<string, unknown>)?.rule ?? '', /locked secrets/, tool);
+  }
+  // Globbing past the names, or through the env file's variable, asks too (review of #468, finding 3).
+  for (const command of ['cat /tmp/ledung-secrets-*/*.secrets', 'find "$TMPDIR" -name \'*.secrets\'', 'cat "$(dirname "$CLAUDE_ENV_FILE")"/*']) {
+    assert.match(matchSensitive('Bash', { command })?.rule ?? '', /locked secrets/, command);
   }
   assert.equal(matchSensitive('Bash', { command: 'echo "$NPM_TOKEN" | wc -c' }), null, 'using the variable is not reading the file');
   // Even inside a project folder (a project under the temp folder), the viewer refuses it.
@@ -257,10 +309,13 @@ test('a session: its launch writes the files and gives Claude Code the env file;
     const rt = new LocalSecretRuntime(dir, id, null);
     const live = new SessionSecrets({ secrets, scope: { sessionId: id, project: 'p' }, runtime: rt, book });
     await secrets.add({ sessionId: id, project: 'p' }, 'npm-token', VALUE, 'session');
+    await secrets.add({ sessionId: id, project: 'p' }, 'otp-at-launch', '24680', 'once');
     const launch = (await live.launch(null))!;
     assert.equal(launch.env.CLAUDE_ENV_FILE, rt.envFile);
     assert.equal(launch.env.NPM_TOKEN, VALUE, 'in the launch environment too (PowerShell, MCP servers)');
+    assert.equal(launch.env.OTP_AT_LAUNCH, undefined, 'never a "once" one');
     assert.deepEqual(launch.secrets.names, ['NPM_TOKEN']);
+    await secrets.remove({ sessionId: id, project: 'p' }, secrets.list({ sessionId: id, project: 'p' }).find((s) => s.name === 'otp-at-launch')!.id);
     assert.ok(!launch.secrets.script.includes(VALUE));
     assert.deepEqual(book.get(id), { kind: 'local', dir });
     assert.equal(live.list(true)[0]!.reachesNow, true);
@@ -268,11 +323,13 @@ test('a session: its launch writes the files and gives Claude Code the env file;
     assert.ok(fs.readFileSync(valuesFile, 'utf8').includes('NPM_TOKEN'));
 
     await secrets.add({ sessionId: id, project: 'p' }, 'otp', '987654', 'once');
+    await secrets.add({ sessionId: id, project: 'p' }, 'unsent', '135791', 'once');
     await live.refresh();
     assert.ok(fs.readFileSync(valuesFile, 'utf8').includes('export OTP='));
     const sent = live.forClaude(`use ${secretToken('otp')} and ${secretToken('npm-token')}, not ${VALUE}`);
     assert.equal(sent.text, `use ${secretForClaude('otp')} and ${secretForClaude('npm-token')}, not 🔑npm-token`);
     assert.deepEqual(sent.once, ['otp']);
+    await live.sent(sent.once);
 
     // Reattached by a later Ledung: it still reaches the session, from the book.
     const again = new SessionSecrets({ secrets, scope: { sessionId: id, project: 'p' }, runtime: new LocalSecretRuntime(dir, id, null), book });
@@ -283,7 +340,7 @@ test('a session: its launch writes the files and gives Claude Code the env file;
     assert.equal(fs.existsSync(valuesFile), false);
     assert.equal(fs.existsSync(rt.envFile), false);
     assert.equal(book.get(id), null);
-    assert.deepEqual(secrets.list({ sessionId: id, project: 'p' }).map((s) => s.name), ['npm-token'], 'the "once" one went with the end');
+    assert.deepEqual(secrets.list({ sessionId: id, project: 'p' }).map((s) => s.name), ['npm-token', 'unsent'], 'the sent "once" one went with the end, not the unsent one');
     // A session started before #468: no env file, so it gets them from its next start.
     const before = new SessionSecrets({ secrets, scope: { sessionId: id, project: 'p' }, runtime: rt, book });
     before.attached();
@@ -324,7 +381,8 @@ test('a container session: values reach the container on stdin, never in docker\
   assert.ok(!calls[0]!.args.join(' ').includes(VALUE), 'not on the command line');
   assert.equal(calls[0]!.input, exportLines([{ env: 'NPM_TOKEN', value: VALUE }]));
   assert.deepEqual(calls[0]!.args.slice(0, 5), ['exec', '-i', '-u', 'dev', 'box']);
-  assert.match(calls[0]!.args.at(-1)!, /umask 077; t=\$\(mktemp \/tmp\/ledung-XXXXXX\) && cat > "\$t" && mv -f "\$t" '\/tmp\/ledung-c0ffee00-[^']+\.secrets'/);
+  assert.match(calls[0]!.args.at(-1)!, /umask 077; t=\$\(mktemp \/tmp\/ledung-XXXXXX\) \|\| exit 1; trap 'rm -f "\$t"' EXIT; cat > "\$t" && mv -f "\$t" '\/tmp\/ledung-c0ffee00-[^']+\.secrets'/);
+  assert.match(rt.envScript([]), /\[ -O '\/tmp\/ledung-c0ffee00-[^']+\.secrets' \]/, 'only a file of the container user\'s own is sourced');
 
   const runner = new DockerRunner({ name: 'c', runner: 'docker', container: 'box', pathInContainer: '/work', user: 'dev' } as never, 'c0ffee00-0000-4000-8000-000000000006');
   const script = rt.envScript(['NPM_TOKEN']);

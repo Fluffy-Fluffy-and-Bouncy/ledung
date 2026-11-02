@@ -49,14 +49,22 @@ const RESERVED = new Set([
   'PATH', 'HOME', 'USER', 'USERNAME', 'LOGNAME', 'SHELL', 'PWD', 'OLDPWD', 'TMP', 'TEMP', 'TMPDIR', 'LANG', 'TERM', 'IFS', 'ENV',
   'PS1', 'PS2', 'PS4', 'PROMPT_COMMAND', 'HOSTNAME', 'SHLVL', 'CDPATH', 'SHELLOPTS', 'BASHOPTS', 'NODE_OPTIONS', 'PATHEXT', 'COMSPEC',
   'SYSTEMROOT', 'WINDIR', 'APPDATA', 'LOCALAPPDATA', 'USERPROFILE', 'PROGRAMFILES', 'HOMEDRIVE', 'HOMEPATH',
+  'EDITOR', 'VISUAL', 'PAGER', 'LESS', 'LESSOPEN', 'ZDOTDIR', 'HISTFILE', 'PSMODULEPATH', 'PROMPT', 'MAIL', 'TZ', 'DISPLAY',
+  'SHELL_SESSION_HISTORY', 'PERLLIB', 'GEM_HOME', 'GEM_PATH', 'CARGO_HOME', 'GOPATH', 'GOFLAGS', 'MAKEFLAGS', 'CC', 'CXX',
 ]);
-const RESERVED_PREFIXES = ['LEDUNG_', 'CLAUDE_', 'ANTHROPIC_', 'BASH_', 'LD_', 'DYLD_', 'LC_', 'MCP_', 'OTEL_'];
+// Also what changes where programs connect, what they load or run, or whom they trust (review of #468, finding 5):
+// the values reach Claude Code's own environment and every command's.
+const RESERVED_PREFIXES = [
+  'LEDUNG_', 'CLAUDE_', 'ANTHROPIC_', 'BASH_', 'LD_', 'DYLD_', 'LC_', 'MCP_', 'OTEL_', 'GIT_', 'NODE_', 'NPM_CONFIG_', 'PYTHON', 'PERL',
+  'RUBY', 'JAVA_', 'XDG_', 'MSYS', 'SSH_', 'SSL_', 'DOCKER_', 'KUBE', 'ELECTRON_', 'CURL_', 'REQUESTS_', 'GH_HOST', 'GH_CONFIG',
+];
+const RESERVED_SUFFIXES = ['_PROXY'];
 
 /** Why a name can't be a secret's, or null. */
 export function secretNameProblem(name: string): string | null {
   if (!/^[a-z][a-z0-9._-]{0,39}$/.test(name)) return 'A name is 1 to 40 small letters, digits, "-", "_" or ".", starting with a letter.';
   const env = envName(name);
-  if (RESERVED.has(env) || RESERVED_PREFIXES.some((p) => env.startsWith(p))) return `$${env} is used by the shell, Claude Code or Ledung; choose another name.`;
+  if (RESERVED.has(env) || RESERVED_PREFIXES.some((p) => env.startsWith(p)) || RESERVED_SUFFIXES.some((p) => env.endsWith(p)) || env === 'NO_PROXY') return `$${env} is used by the shell, Claude Code or Ledung; choose another name.`;
   return null;
 }
 
@@ -129,7 +137,7 @@ export function suggestSecretName(before: string, value: string, taken: readonly
  * The runtime files a running session's secrets are in (src/secrets/runtime.ts), named in a tool call's path or
  * command: a session reading one asks the person (sensitive), and the file viewer never shows one.
  */
-export const SECRET_FILE_PATTERN = /ledung-secrets-[0-9a-f]{8}|ledung-[0-9a-f]{8}-[0-9a-f-]{27}\.(?:env|secrets)\b/i;
+export const SECRET_FILE_PATTERN = /ledung-secrets|ledung-[0-9a-f]{8}-[0-9a-f-]{27}\.(?:env|secrets)\b|\.secrets\b|CLAUDE_ENV_FILE/i;
 export const SECRET_FILE_RULE = "Ledung's file of locked secrets, always yours to approve";
 
 /**

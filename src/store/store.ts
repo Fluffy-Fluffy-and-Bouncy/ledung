@@ -141,14 +141,15 @@ export class Store {
   }
 
   /** A locked secret's exact value becomes 🔑name in everything stored (issue #468); none set: unchanged. */
-  private blank: { text: (s: string) => string; json: (s: string) => string } = { text: (s) => s, json: (s) => s };
+  private blank: { text: (s: string) => string; deep: <T>(data: T) => T } = { text: (s) => s, deep: (d) => d };
 
-  setBlanker(blank: { text: (s: string) => string; json: (s: string) => string }): void {
+  setBlanker(blank: { text: (s: string) => string; deep: <T>(data: T) => T }): void {
     this.blank = blank;
   }
 
   private json(data: unknown): string {
-    return this.blank.json(JSON.stringify(data));
+    // Strings only, never the JSON's structure (review of #468, finding 1).
+    return JSON.stringify(this.blank.deep(data));
   }
 
   /** The database itself, for the other stores that share it (projects). */

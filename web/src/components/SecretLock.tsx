@@ -10,7 +10,7 @@ import { usePlainTyping } from '../usePlainTyping.ts';
 export const SECRET_LIMITS = [
   'Claude gets only the name; the value is in the environment of the session\'s commands, as $NAME.',
   'A session that was running before this Ledung release gets its secrets from its next start or resume.',
-  'Claude Code\'s PowerShell tool sees only the secrets the session had when it started.',
+  'Claude Code\'s PowerShell tool and MCP servers see only the secrets the session had when it started (never a "once" one), and keep them until it restarts, even when removed.',
   'While the session can use a secret, its value is in a file only you can read.',
 ];
 

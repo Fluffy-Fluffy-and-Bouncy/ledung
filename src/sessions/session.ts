@@ -46,6 +46,7 @@ import { userDataDir } from '../platform/paths.ts';
 import { startShell, SHELL_TIMEOUT_MS, type ShellKind, type ShellRun } from '../runners/shell-run.ts';
 import { bashModeText } from './bang.ts';
 import type { SessionSecrets } from '../secrets/live.ts';
+import { localSecretsDir } from '../secrets/runtime.ts';
 import type { LaunchSecrets } from '../runners/runner.ts';
 import { SECRET_FOR_CLAUDE_START, SECRET_RULE, type SecretInfo } from '../shared/secrets.ts';
 import { conversationBefore } from './earlier.ts';
@@ -321,9 +322,8 @@ export class Session {
   /** Its locked secrets (issue #468), and what its launch gives the runner. */
   private readonly secrets: SessionSecrets | null;
   private launchSecrets: LaunchSecrets | undefined;
-  /** "Once" secrets of messages delivered (they go when that turn ends) and of messages still held. */
-  private readonly onceArmed = new Set<string>();
-  private readonly onceHeld = new Set<string>();
+  /** When the turn now under way (or the last one) began, for the "once" secrets' rule (issue #468). */
+  private turnBegan = 0;
 
   constructor(opts: SessionOptions) {
     this.id = opts.info.id;
@@ -663,7 +663,8 @@ export class Session {
     // Level B's own temp folder; a reattached session already runs with it.
     const tmp = this.airgap?.sandbox ? this.airgapTmp ?? airgapTempFolder(this.id) : null;
     // Ledung's data folder and the hosts' sockets are out of every session's reach (#104).
-    const boundary = boundarySettings({ dataDir: userDataDir(), ownLoginFolder: this.loginFolder() ?? process.env.CLAUDE_CONFIG_DIR ?? null });
+    // And every local session's file of locked secrets, to the file tools (review of #468, finding 3).
+    const boundary = boundarySettings({ dataDir: userDataDir(), ownLoginFolder: this.loginFolder() ?? process.env.CLAUDE_CONFIG_DIR ?? null, toolsDenied: [localSecretsDir(userDataDir())] });
     // Its locked secrets (issue #468), written for this launch; a reattached process already has its env file.
     const launched = this.secrets && !this.attachTo ? await this.secrets.launch(tmp) : null;
     this.launchSecrets = launched?.secrets;
@@ -1263,16 +1264,14 @@ export class Session {
     if (this.turnOpen) return;
     this.turnOpen = true;
     this.turnStartedAt = Date.now();
+    this.turnBegan = this.turnStartedAt;
     this.turnCommands = [];
     this.gate.started(this.id, trigger);
   }
 
   private endTurn(): void {
-    // The turn a "once" secret was sent with is over: it goes (issue #468).
-    if (this.onceArmed.size) {
-      void this.secrets?.removeOnce(new Set(this.onceArmed)).catch((e) => console.error(`Secrets of ${this.id}: ${(e as Error).message}`));
-      this.onceArmed.clear();
-    }
+    // The "once" secrets sent before this turn began had their turn (issue #468).
+    void this.secrets?.turnEnded(this.turnBegan).catch((e) => console.error(`Secrets of ${this.id}: ${(e as Error).message}`));
     if (!this.turnOpen) return;
     this.turnOpen = false;
     this.gate.ended(this.id, [...new Set(this.turnCommands)]);
@@ -1352,10 +1351,6 @@ export class Session {
           : 'ledung';
     this.usage.startTurn(trigger);
     if (context) this.contextFor.set(userText, context);
-    if (held.length) {
-      for (const n of this.onceHeld) this.onceArmed.add(n);
-      this.onceHeld.clear();
-    }
     this.pushInput(userText);
     this.lastActivity = Date.now();
     this.update({ status: 'running', queuedAt: null });
@@ -1432,18 +1427,18 @@ export class Session {
     // A chat starts as "New chat" (issue #211); either is named after the first message.
     // Claude reads a locked secret's token as its name and variable, never the value (issue #468).
     const sent = this.secrets?.forClaude(text) ?? { text, once: [] };
-    if (info.title === 'New session' || info.title === 'New chat') this.update({ title: text.replace(/\s+/g, ' ').trim().slice(0, 80) || info.title });
+    if (sent.once.length) void this.secrets?.sent(sent.once).catch((e) => console.error(`Secrets of ${this.id}: ${(e as Error).message}`));
+    const title = this.secrets?.blank(text) ?? text;
+    if (info.title === 'New session' || info.title === 'New chat') this.update({ title: title.replace(/\s+/g, ' ').trim().slice(0, 80) || info.title });
     this.record('user', here ? { text, here: true } : { text });
     this.lastActivity = Date.now();
     if (info.clearDue != null) this.cancelClear(`${this.userName} (wrote to the session)`);
     if (info.status === 'running' || info.status === 'waiting') {
       this.usage.startTurn('user');
-      for (const n of sent.once) this.onceArmed.add(n);
       // Not pushInput: this joins the turn already running, whose resume guard must stay (review of #24).
       this.input.push(sent.text);
       return;
     }
-    for (const n of sent.once) this.onceHeld.add(n);
     this.store.setHeldMessages(this.id, [...this.store.heldMessages(this.id), sent.text]);
     this.deliver();
   }
@@ -1649,8 +1644,6 @@ export class Session {
 
   /** Its Claude Code ended: the secrets' plain-text files go, and its "once" secrets with them (issue #468). */
   private async secretsEnded(): Promise<void> {
-    this.onceArmed.clear();
-    this.onceHeld.clear();
     await this.secrets?.ended().catch((e) => console.error(`Secrets of ${this.id}: ${(e as Error).message}`));
   }
 

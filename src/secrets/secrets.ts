@@ -18,6 +18,8 @@ interface Entry {
   sessionId: string;
   project: string;
   createdAt: number;
+  /** A "once" secret: when the message carrying it was sent; it goes when a turn that began after that ends. */
+  sentAt?: number;
 }
 
 /** Where a secret applies: a session, and its project for the project's secrets. */
@@ -33,8 +35,8 @@ export class Secrets {
   problem: string | null = null;
   /** Told after every change, with the session or (for a project secret) the project it touches. */
   onChange: (change: { sessionId: string } | { project: string }) => void = () => {};
-  /** The values to blank, longest first, so a value inside another is never blanked half. */
-  private blanks: { value: string; json: string; mark: string; markJson: string }[] = [];
+  /** The values to blank, longest first, so a value inside another is never blanked half; each as typed and as JSON escapes it. */
+  private blanks: { forms: string[]; mark: string }[] = [];
 
   private constructor(vault: Vault | null) {
     this.vault = vault;
@@ -83,18 +85,25 @@ export class Secrets {
     return this.visible(scope).map((e) => ({ env: envName(e.name), value: e.value }));
   }
 
+  /** The values for a launch environment: not the "once" ones, which a process that outlives their turn would keep. */
+  launchValues(scope: SecretScope): SecretValue[] {
+    return this.visible(scope).filter((e) => e.lifetime !== 'once').map((e) => ({ env: envName(e.name), value: e.value }));
+  }
+
   private find(scope: SecretScope, id: string): Entry {
     const e = this.visible(scope).find((x) => x.id === id);
     if (!e) throw new SecretError('No such secret in this session.');
     return e;
   }
 
-  private checkName(scope: SecretScope, name: string, except: string | null): void {
+  private checkName(scope: SecretScope, name: string, except: string | null, lifetime: SecretLifetime): void {
     const problem = secretNameProblem(name);
     if (problem) throw new SecretError(problem);
-    // Two names can share a variable (a-b and a_b): the variable has to be unique too.
-    if (this.visible(scope).some((e) => e.id !== except && envName(e.name) === envName(name))) {
-      throw new SecretError(`This session already has a secret named "${name}" (or another for $${envName(name)}).`);
+    // Two names can share a variable (a-b and a_b): the variable has to be unique too. A project secret reaches
+    // every session of the project, so it must clash with none of theirs (review of #468, finding 4).
+    const pool = lifetime === 'project' ? this.entries.filter((e) => e.project === scope.project) : this.visible(scope);
+    if (pool.some((e) => e.id !== except && envName(e.name) === envName(name))) {
+      throw new SecretError(`${lifetime === 'project' ? 'A session of this project' : 'This session'} already has a secret named "${name}" (or another for $${envName(name)}).`);
     }
   }
 
@@ -108,10 +117,9 @@ export class Secrets {
     if (!value) throw new SecretError('There is no value to lock.');
     if (value.length > MAX_SECRET_LENGTH) throw new SecretError(`A secret is at most ${MAX_SECRET_LENGTH} characters.`);
     if (value.includes('\0')) throw new SecretError('A secret can\'t contain a NUL character.');
-    this.checkName(scope, name, null);
+    this.checkName(scope, name, null, lifetime);
     const e: Entry = { id: crypto.randomUUID(), name, value, lifetime, sessionId: scope.sessionId, project: scope.project, createdAt: Date.now() };
-    this.entries.push(e);
-    await this.changed(e);
+    await this.commit([...this.entries, e], [e]);
     return this.info(e, false);
   }
 
@@ -119,14 +127,12 @@ export class Secrets {
     this.usable();
     const e = this.find(scope, id);
     if (edit.lifetime !== undefined && !SECRET_LIFETIMES.includes(edit.lifetime)) throw new SecretError('Say how long it lasts: once, session, kept or project.');
-    if (edit.name !== undefined && edit.name !== e.name) this.checkName(scope, edit.name, e.id);
-    const before = { ...e };
-    if (edit.name !== undefined) e.name = edit.name;
-    if (edit.lifetime !== undefined) e.lifetime = edit.lifetime;
+    const next: Entry = { ...e, name: edit.name ?? e.name, lifetime: edit.lifetime ?? e.lifetime };
+    if (next.name !== e.name || (next.lifetime === 'project' && e.lifetime !== 'project')) this.checkName(scope, next.name, e.id, next.lifetime);
     // A project secret made the session's again is the session's it is shown in.
-    if (before.lifetime === 'project' && e.lifetime !== 'project') e.sessionId = scope.sessionId;
-    await this.changed(before, e);
-    return this.info(e, false);
+    if (e.lifetime === 'project' && next.lifetime !== 'project') next.sessionId = scope.sessionId;
+    await this.commit(this.entries.map((x) => (x === e ? next : x)), [e, next]);
+    return this.info(next, false);
   }
 
   async remove(scope: SecretScope, id: string): Promise<void> {
@@ -134,9 +140,24 @@ export class Secrets {
     await this.drop((x) => x === e);
   }
 
-  /** The session's "once" secrets, after the turn they were sent with. */
-  async removeOnce(sessionId: string, names: ReadonlySet<string>): Promise<void> {
-    await this.drop((e) => e.sessionId === sessionId && e.lifetime === 'once' && names.has(e.name));
+  /** A message carrying these "once" secrets was sent now; kept in the vault, so a restart keeps the rule. */
+  async markSent(sessionId: string, names: readonly string[], at = Date.now()): Promise<void> {
+    const which = (e: Entry) => e.sessionId === sessionId && e.lifetime === 'once' && e.sentAt === undefined && names.includes(e.name);
+    if (!this.entries.some(which)) return;
+    await this.commit(this.entries.map((e) => (which(e) ? { ...e, sentAt: at } : e)), []);
+  }
+
+  /**
+   * A turn of the session that began at `turnBegan` ended: the "once" secrets sent before it began had their turn.
+   * One sent during it stays for the next turn, which is the one that answers it (review of #468, finding 7).
+   */
+  async turnEnded(sessionId: string, turnBegan: number): Promise<void> {
+    await this.drop((e) => e.sessionId === sessionId && e.lifetime === 'once' && e.sentAt !== undefined && e.sentAt <= turnBegan);
+  }
+
+  /** The session's Claude Code ended: its "once" secrets that were sent go; one still in the message box stays. */
+  async sessionStopped(sessionId: string): Promise<void> {
+    await this.drop((e) => e.sessionId === sessionId && e.lifetime === 'once' && e.sentAt !== undefined);
   }
 
   /** A session that ended for good (archived): its own secrets but those kept until removed. */
@@ -144,9 +165,9 @@ export class Secrets {
     await this.drop((e) => e.sessionId === sessionId && (e.lifetime === 'once' || e.lifetime === 'session'));
   }
 
-  /** At Ledung's start: "once" secrets of sessions no longer running had their turn. */
+  /** At Ledung's start: the sent "once" secrets of sessions no longer running had their turn. */
   async dropOnceExcept(live: ReadonlySet<string>): Promise<void> {
-    await this.drop((e) => e.lifetime === 'once' && !live.has(e.sessionId));
+    await this.drop((e) => e.lifetime === 'once' && e.sentAt !== undefined && !live.has(e.sessionId));
   }
 
   /** A removed project takes its project secrets along. */
@@ -157,13 +178,17 @@ export class Secrets {
   private async drop(which: (e: Entry) => boolean): Promise<void> {
     const gone = this.entries.filter(which);
     if (!gone.length) return;
-    this.entries = this.entries.filter((e) => !which(e));
-    await this.changed(...gone);
+    await this.commit(this.entries.filter((e) => !which(e)), gone);
   }
 
-  private async changed(...touched: Entry[]): Promise<void> {
+  /**
+   * The new entries, in the vault first: a write that fails changes nothing, so a refused lock can be tried
+   * again and nothing in use is lost at the next start (review of #468, finding 6).
+   */
+  private async commit(next: Entry[], touched: Entry[]): Promise<void> {
+    if (this.vault) await this.vault.write(next);
+    this.entries = next;
     this.reblank();
-    if (this.vault) await this.vault.write(this.entries);
     const told = new Set<string>();
     for (const e of touched) {
       const key = e.lifetime === 'project' ? `p:${e.project}` : `s:${e.sessionId}`;
@@ -178,28 +203,33 @@ export class Secrets {
     this.blanks = this.entries
       .filter((e) => e.value.length >= MIN_BLANKED_LENGTH && !seen.has(e.value) && seen.add(e.value))
       .sort((a, b) => b.value.length - a.value.length)
-      .map((e) => {
-        const mark = `🔑${e.name}`;
-        return { value: e.value, json: JSON.stringify(e.value).slice(1, -1), mark, markJson: JSON.stringify(mark).slice(1, -1) };
-      });
+      .map((e) => ({ forms: [...new Set([e.value, JSON.stringify(e.value).slice(1, -1)])], mark: `🔑${e.name}` }));
   }
 
-  /** Text with every secret's exact value replaced by 🔑name. */
+  /** Text with every secret's exact value replaced by 🔑name, also as it reads inside JSON in the text. */
   blank(text: string): string {
     let out = text;
-    for (const b of this.blanks) if (out.includes(b.value)) out = out.split(b.value).join(b.mark);
+    for (const b of this.blanks) for (const f of b.forms) if (out.includes(f)) out = out.split(f).join(b.mark);
     return out;
   }
 
-  /** The same for JSON text: the value as JSON writes it inside a string. */
-  blankJson(json: string): string {
-    let out = json;
-    for (const b of this.blanks) if (out.includes(b.json)) out = out.split(b.json).join(b.markJson);
-    return out;
+  /**
+   * The same for data about to be stored as JSON: only its strings are blanked, never its structure, so a value
+   * that is also a number, a key or `true` can't break or change the record (review of #468, finding 1).
+   */
+  blankDeep<T>(data: T): T {
+    if (!this.blanks.length) return data;
+    const walk = (v: unknown): unknown => {
+      if (typeof v === 'string') return this.blank(v);
+      if (Array.isArray(v)) return v.map(walk);
+      if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
+      return v;
+    };
+    return walk(data) as T;
   }
 
   /** Whether a text holds any secret's value (a board attachment is refused for it). */
   holdsValue(text: string): boolean {
-    return this.blanks.some((b) => text.includes(b.value));
+    return this.blanks.some((b) => b.forms.some((f) => text.includes(f)));
   }
 }

@@ -42,12 +42,14 @@ export function exportLines(values: readonly SecretValue[]): string {
   return values.map((v) => `export ${v.env}=${shQuote(v.value)}\n`).join('');
 }
 
-function envScriptFor(valuesFile: string, launchNames: readonly string[], chained: string | null): string {
+function envScriptFor(valuesFile: string, launchNames: readonly string[], chained: string | null, ownOnly = false): string {
+  // In a container's /tmp, which other users share, only a file of this user's own is read (review of #468, finding 11).
+  const own = ownOnly ? ` && [ -O ${shQuote(valuesFile)} ]` : '';
   return [
     '# Ledung: this session\'s locked secrets (issue #468). Never print them.',
     ...(chained ? [`if [ -f ${shQuote(chained)} ]; then . ${shQuote(chained)}; fi`] : []),
     ...(launchNames.length ? [`unset ${launchNames.join(' ')} 2>/dev/null`] : []),
-    `if [ -f ${shQuote(valuesFile)} ]; then . ${shQuote(valuesFile)}; fi`,
+    `if [ -f ${shQuote(valuesFile)} ]${own}; then . ${shQuote(valuesFile)}; fi`,
     '',
   ].join('\n');
 }
@@ -171,7 +173,7 @@ export class DockerSecretRuntime implements SecretRuntime {
   }
 
   envScript(launchNames: readonly string[]): string {
-    return envScriptFor(this.valuesFile, launchNames, null);
+    return envScriptFor(this.valuesFile, launchNames, null, true);
   }
 
   /** The launch writes it (DockerRunner.launchSpec), since only the container has it. */
@@ -183,7 +185,7 @@ export class DockerSecretRuntime implements SecretRuntime {
       return;
     }
     // A new file renamed into place: /tmp is shared, so nothing another user put there is written through.
-    await this.sh(`umask 077; t=$(mktemp /tmp/ledung-XXXXXX) && cat > "$t" && mv -f "$t" ${shQuote(this.valuesFile)}`, exportLines(values));
+    await this.sh(`umask 077; t=$(mktemp /tmp/ledung-XXXXXX) || exit 1; trap 'rm -f "$t"' EXIT; cat > "$t" && mv -f "$t" ${shQuote(this.valuesFile)}`, exportLines(values));
   }
 
   async clear(): Promise<void> {
@@ -193,7 +195,11 @@ export class DockerSecretRuntime implements SecretRuntime {
 
 /** The part of a container's launch script that writes the env file, private to the container user, and names it. */
 export function containerEnvFilePart(envFile: string, script: string): string {
-  return `(umask 077; printf '%s' ${shQuote(script)} > ${shQuote(envFile)}); CLAUDE_ENV_FILE=${shQuote(envFile)}; export CLAUDE_ENV_FILE; `;
+  // A new file renamed into place, named only once it is the container user's own: /tmp is shared, and a file
+  // another user put there first is never what Claude Code sources (review of #468, finding 11).
+  const f = shQuote(envFile);
+  const write = `(umask 077; t=$(mktemp /tmp/ledung-XXXXXX) || exit 1; printf '%s' ${shQuote(script)} > "$t" && mv -f "$t" ${f} || { rm -f "$t"; exit 1; })`;
+  return `if ${write} && [ -O ${f} ]; then CLAUDE_ENV_FILE=${f}; export CLAUDE_ENV_FILE; fi; `;
 }
 
 /** The session ids of the files in a local folder of them, for the clean-up at Ledung's start. */
@@ -216,7 +222,7 @@ export function localRuntimeSessions(dir: string): Map<string, string[]> {
 }
 
 /** The files in a container's /tmp of sessions that aren't running: listed and removed in one call. */
-export async function cleanContainer(target: ContainerTarget, live: ReadonlySet<string>, exec?: (args: string[], input: string | null) => Promise<{ stdout: string }>): Promise<number> {
+export async function cleanContainer(target: ContainerTarget, live: { has(id: string): boolean }, exec?: (args: string[], input: string | null) => Promise<{ stdout: string }>): Promise<number> {
   const run = exec ?? ((args, input) => runWithInput('docker', args, input, 20_000));
   const user = target.user ? ['-u', target.user] : [];
   const { stdout } = await run(['exec', '-i', ...user, target.container, 'sh', '-c', 'for f in /tmp/ledung-*.env /tmp/ledung-*.secrets; do [ -f "$f" ] && echo "$f"; done; true'], null);

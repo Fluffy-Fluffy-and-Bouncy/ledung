@@ -74,14 +74,17 @@ export class SessionSecrets {
     try {
       if (tempFolder && this.runtime instanceof LocalSecretRuntime) this.runtime.moveTo(tempFolder);
       const values = this.secrets.values(this.scope);
-      const names = values.map((v) => v.env);
+      // In the launch environment too, for what doesn't source the env file (the PowerShell tool, MCP servers); not
+      // a "once" one, which that process would keep after its turn (review of #468, finding 8).
+      const atLaunch = this.secrets.launchValues(this.scope);
+      const names = atLaunch.map((v) => v.env);
       const script = this.runtime.envScript(names);
       this.book.set(this.scope.sessionId, this.place());
       this.runtime.prepare(script);
-      await this.runtime.write(values);
+      // A container is asked only when there is something to write (finding 13).
+      if (values.length || this.runtime instanceof LocalSecretRuntime) await this.runtime.write(values);
       this.reach = true;
-      // In the launch environment too, for what doesn't source the env file (the PowerShell tool, MCP servers).
-      const env = { ...Object.fromEntries(values.map((v) => [v.env, v.value])), CLAUDE_ENV_FILE: this.runtime.envFile };
+      const env = { ...Object.fromEntries(atLaunch.map((v) => [v.env, v.value])), CLAUDE_ENV_FILE: this.runtime.envFile };
       return { env, secrets: { names, envFile: this.runtime.envFile, script } };
     } catch (e) {
       this.log(`Secrets for session ${this.scope.sessionId}: could not write its files: ${(e as Error).message}`);
@@ -104,13 +107,12 @@ export class SessionSecrets {
     }
   }
 
-  /** Its Claude Code ended: the plain-text files go, and so do its "once" secrets. */
+  /** Its Claude Code ended: the plain-text files go, and so do its "once" secrets that were sent. */
   async ended(): Promise<void> {
     this.reach = false;
     await this.runtime.clear();
     this.book.set(this.scope.sessionId, null);
-    const once = new Set(this.secrets.list(this.scope).filter((s) => s.lifetime === 'once').map((s) => s.name));
-    if (once.size) await this.secrets.removeOnce(this.scope.sessionId, once);
+    await this.secrets.sessionStopped(this.scope.sessionId);
   }
 
   list(live: boolean): SecretInfo[] {
@@ -149,8 +151,14 @@ export class SessionSecrets {
     return this.secrets.blank(text);
   }
 
-  removeOnce(names: ReadonlySet<string>): Promise<void> {
-    return this.secrets.removeOnce(this.scope.sessionId, names);
+  /** A message carrying these "once" secrets was sent. */
+  sent(names: readonly string[]): Promise<void> {
+    return this.secrets.markSent(this.scope.sessionId, names);
+  }
+
+  /** A turn that began at `began` ended: the "once" secrets sent before it go. */
+  turnEnded(began: number): Promise<void> {
+    return this.secrets.turnEnded(this.scope.sessionId, began);
   }
 }
 
@@ -159,23 +167,19 @@ export class SessionSecrets {
  * on question #1565), in the places the book recorded, in the local folder, and in the containers named.
  */
 export async function cleanStaleRuntime(o: {
-  book: PlaceBook; live: ReadonlySet<string>; localDir: string; containers: { container: string; user?: string }[]; log: (line: string) => void;
+  book: PlaceBook; live: { has(id: string): boolean }; localDir: string; containers: { container: string; user?: string }[]; log: (line: string) => void;
 }): Promise<void> {
   let removed = 0;
-  for (const [id, place] of o.book.all()) {
-    if (o.live.has(id)) continue;
-    try {
-      await runtimeAt(place, id).clear();
-      o.book.set(id, null);
-      removed++;
-    } catch {
-      // A container that isn't running: tried again on the next start.
-    }
-  }
+  // This computer's first: it needs no container to answer.
   for (const [id, files] of localRuntimeSessions(o.localDir)) {
     if (o.live.has(id)) continue;
-    await runtimeAt({ kind: 'local', dir: o.localDir }, id).clear();
     for (const f of files) fs.rmSync(f, { force: true });
+    removed++;
+  }
+  for (const [id, place] of o.book.all()) {
+    if (o.live.has(id)) continue;
+    await runtimeAt(place, id).clear();
+    if (!o.live.has(id)) o.book.set(id, null);
     removed++;
   }
   for (const target of o.containers) {
