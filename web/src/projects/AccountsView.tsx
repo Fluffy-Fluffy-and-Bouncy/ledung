@@ -1,19 +1,36 @@
 // Claude accounts (projects and accounts, P3): the accounts Ledung knows, who each is logged in as,
 // which projects use it, the accounts for chats and new projects (issue #283), and adding one. Each is a
 // sign-in folder the user signs in to with Claude Code's own /login, and only the sign-in: conversations, skills
-// and settings are shared by every session whatever its account. Ledung takes no tokens (issue #342).
-import { useState } from 'react';
-import type { AccountChoices, AccountInfoView, ProjectInfo } from '../../../src/shared/protocol.ts';
+// and settings are shared by every session whatever its account. Ledung takes no tokens (issue #342): a long-lived
+// token goes in through a command the user runs in their own terminal, and the page only shows that command (#85).
+import { Fragment, useState } from 'react';
+import type { AccountChoices, AccountInfoView, ProjectInfo, ShownSignIn } from '../../../src/shared/protocol.ts';
 import { api } from '../api.ts';
+import { CopyButton } from '../components/Markdown.tsx';
 import { formatTime } from '../components/MessageList.tsx';
 import { usePlainTyping } from '../usePlainTyping.ts';
+import { signedInWith } from './signedInWith.ts';
 
 type Run = (action: () => Promise<unknown>) => Promise<void>;
-export type DefaultIdentity = { email: string | null; organization: string | null; plan: string | null; seenAt: number | null } | null;
+export type DefaultIdentity = { email: string | null; organization: string | null; plan: string | null; seenAt: number | null; signInKind?: ShownSignIn | null } | null;
 
 function who(a: { email: string | null; organization: string | null; plan: string | null; seenAt: number | null } | null): string {
   if (!a || (!a.email && !a.organization)) return 'not seen yet: shown after its first session starts';
   return [a.email, a.organization, a.plan].filter(Boolean).join(' · ') + (a.seenAt ? ` (seen ${formatTime(a.seenAt)})` : '');
+}
+
+function CommandLine({ text }: { text: string }) {
+  return <div className="sign-in-command"><code className="remote-record">{text}</code> <CopyButton text={text} /></div>;
+}
+
+/** The command for a long-lived token (#85), with what it does. */
+function TokenCommand({ command }: { command: string }) {
+  return (
+    <>
+      <p className="muted">With a long-lived token: get one with <span className="mono">claude setup-token</span>, then run this in your own terminal on this computer and paste it. It goes straight into Claude Code's sign-in; Ledung never receives it.</p>
+      <CommandLine text={command} />
+    </>
+  );
 }
 
 export function AccountsSettings(props: { accounts: AccountInfoView[]; choices: AccountChoices; defaultIdentity: DefaultIdentity; configFileProblems: string[]; projects: ProjectInfo[]; run: Run; remote?: boolean }) {
@@ -40,12 +57,13 @@ export function AccountsSettings(props: { accounts: AccountInfoView[]; choices: 
           <tbody>
             <tr>
               <td><strong>default</strong><div className="muted">this computer's own Claude Code login</div></td>
-              <td>{who(props.defaultIdentity)}</td>
+              <td>{who(props.defaultIdentity)}<div className="muted">{signedInWith(props.defaultIdentity?.signInKind)}</div></td>
               <td>{usedBy(null)}</td>
               <td />
             </tr>
             {props.accounts.map((a) => (
-              <tr key={a.name}>
+              <Fragment key={a.name}>
+              <tr>
                 <td>
                   <strong>{a.name}</strong>
                   {a.whatItIsFor && <div>{a.whatItIsFor}</div>}
@@ -53,7 +71,7 @@ export function AccountsSettings(props: { accounts: AccountInfoView[]; choices: 
                   <div className="muted">sign-in folder <span className="mono">{a.configDir}</span></div>
                   <div className="muted">in containers <span className="mono">{a.containerDir ?? `~/.ledung-accounts/${a.name}`}</span></div>
                 </td>
-                <td>{who(a)}</td>
+                <td>{who(a)}<div className="muted">{signedInWith(a.signInKind)}</div></td>
                 <td>{usedBy(a.name)}</td>
                 <td className="account-actions">
                   {/* Opens Finder or Explorer on the computer Ledung runs on, so not from a phone (issue #414). */}
@@ -62,9 +80,27 @@ export function AccountsSettings(props: { accounts: AccountInfoView[]; choices: 
                   <button className="small" onClick={() => void props.run(() => api.removeAccount(a.name))}>Remove</button>
                 </td>
               </tr>
+              <tr>
+                <td colSpan={4}>
+                  <details>
+                    <summary className="muted">Sign in, or change how it is signed in</summary>
+                    {a.loginCommand && <>
+                      <p className="muted">With Claude Code's own <span className="mono">/login</span>: run this in a terminal on this computer, then type <span className="mono">/login</span>.</p>
+                      <CommandLine text={a.loginCommand} />
+                    </>}
+                    {a.tokenCommand && <TokenCommand command={a.tokenCommand} />}
+                    <p className="muted">Either one replaces the sign-in that is there. For a project in a container, sign in inside the container with <span className="mono">/login</span>.</p>
+                  </details>
+                </td>
+              </tr>
+              </Fragment>
             ))}
           </tbody>
         </table>
+        <p>
+          <button className="small" onClick={() => void props.run(() => api.checkSignIn())}>Check again</button>
+          {' '}<span className="muted">after signing in from a terminal, to see it here</span>
+        </p>
 
         <div className="form">
           <label>Account for chats <span className="muted">(new chats run on it; a running chat keeps its account until it restarts)</span>
@@ -86,7 +122,7 @@ export function AccountsSettings(props: { accounts: AccountInfoView[]; choices: 
           <p className="muted">
             Ledung makes a folder for this account's Claude Code sign-in, and only that: conversations, memory, skills and settings stay the same for every account, so moving a project to another account changes only whose plan and limits it uses.
             After adding it, sign in once with Claude Code's own <span className="mono">/login</span> as shown (for a container project,
-            inside the container). Ledung never sees or keeps a sign-in token.
+            inside the container), or put in a long-lived token with the command shown. Ledung never sees or keeps a sign-in token.
           </p>
           <button
             className="primary"
@@ -101,11 +137,11 @@ export function AccountsSettings(props: { accounts: AccountInfoView[]; choices: 
         {added && (
           <div className="banner">
             Added <strong>{added.name}</strong>. Choose it in a project's settings (⚙ next to the project), or above for chats and new projects.
-            {' '}Now sign in once. In PowerShell:
-            <pre className="mono">{`$env:CLAUDE_SECURESTORAGE_CONFIG_DIR="${added.configDir}"; claude`}</pre>
-            (on macOS or Linux: <span className="mono">CLAUDE_SECURESTORAGE_CONFIG_DIR="{added.configDir}" claude</span>), then type <span className="mono">/login</span> and
-            sign in with this account. For a container project, the same inside the container:
+            {' '}Now sign in once. With Claude Code's own <span className="mono">/login</span>: run this in a terminal on this computer, then type <span className="mono">/login</span> and sign in with this account.
+            {added.loginCommand && <CommandLine text={added.loginCommand} />}
+            For a container project, the same inside the container:
             <pre className="mono">{`docker exec -it <container> sh -c 'CLAUDE_SECURESTORAGE_CONFIG_DIR=${(added.containerDir ?? `~/.ledung-accounts/${added.name}`).replace(/^~\//, '$HOME/')} exec claude'`}</pre>
+            {added.tokenCommand && <TokenCommand command={added.tokenCommand} />}
           </div>
         )}
       </div>

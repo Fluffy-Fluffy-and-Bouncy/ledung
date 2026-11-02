@@ -9,8 +9,13 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
-## 2026-11-02
+## 2026-11-03
 - Lock a secret in the message box: select text and press the 🔑 that appears, or press 🔑 by Send for a masked field. It becomes a chip `🔑 name`, leaves the box and the saved draft at once, and Claude gets only the name, as `$NAME` in its commands; the value is kept encrypted for your user (Windows DPAPI, macOS Keychain, Linux secret service), lasts once, for the session or until removed (also for the whole project), and Ledung shows 🔑name wherever the value would appear again. Session ⚙ → Secrets lists and removes them. A session running before this release gets its secrets from its next start or resume (Fluffy-Fluffy-and-Bouncy/Project-Ledung#468)
+
+## 2026-11-02
+- Long-lived tokens work for accounts: run `ledung account token <name>` in your own terminal, the command is shown with a copy button when you add an account and under each account, and Accounts now shows whether each is signed in with a token or `/login` (#85)
+- Open folder on an account now says in the page why it failed instead of doing nothing, and on Windows the folder window is no longer asked to open hidden (#83)
+- Ledung no longer fails to start on a Mac when the system can't say who the user is (#83)
 - A request whose address doesn't parse is now refused with a 400, also on the live connection, without an error in the log (Fluffy-Fluffy-and-Bouncy/Project-Ledung#467)
 - Started at sign-in on macOS or Linux, or from Ledung.app, Ledung now gets the same PATH as in your terminal, so Update Ledung, Ledung's GitHub features and the tools your sessions use work after a login too; a shell profile that hangs delays the start by about ten seconds instead of stopping it. Switch Start Ledung when I sign in off and on in Settings to get it (#464)
 - Settings → About has an update channel, Public or Dev: on Dev an npm-installed Ledung gets dev builds before they go to everyone, and Update & restart now checks npm and updates an npm install with one click (#461)

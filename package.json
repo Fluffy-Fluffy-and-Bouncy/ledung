@@ -3,7 +3,15 @@
   "version": "1.0.0",
   "license": "AGPL-3.0-only",
   "author": "Project Ledung <martin@projectledung.com>",
-  "description": "Runs several Claude Code sessions locally and shows them in one place.",
+  "description": "The local command deck for agentic engineering: a manager runs your Claude Code sessions, and every decision that matters reaches you.",
+  "keywords": [
+    "agentic-engineering",
+    "ai-agents",
+    "claude-code",
+    "developer-tools",
+    "multi-agent",
+    "orchestration"
+  ],
   "type": "module",
   "bin": {
     "ledung": "dist/cli.js"

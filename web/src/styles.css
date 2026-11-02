@@ -1058,6 +1058,8 @@ a.button-link { align-self: center; padding: 0.3rem 0.7rem; border-radius: 6px; 
 .remote-tls { color: var(--danger); }
 .remote-certificate p { margin: 0.3rem 0; }
 .remote-record { word-break: break-all; }
+.sign-in-command { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin: 0.25rem 0 0.5rem; }
+.sign-in-command .copy-button { position: static; flex: none; opacity: 1; }
 /* Join with a code, Settings → Relay and the Approve card (issue #237). */
 .relay-row { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin: 0.35rem 0; }
 .relay-row input { flex: 1 1 14rem; min-width: 0; }
