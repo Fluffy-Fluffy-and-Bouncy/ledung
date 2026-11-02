@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-03
+- The sidebar's new defaults: no status dot, compact step "Name + ship" and no "Archived (N)" entry, each changeable in Settings → Look; a browser that switched the dot or Archived off, or chose a compact step other than None, keeps its choice, and archived sessions are reached by switching Archived on (#95)
+
 ## 2026-11-02
 - Long-lived tokens work for accounts: run `ledung account token <name>` in your own terminal, the command is shown with a copy button when you add an account and under each account, and Accounts now shows whether each is signed in with a token or `/login` (#85)
 - Open folder on an account now says in the page why it failed instead of doing nothing, and on Windows the folder window is no longer asked to open hidden (#83)

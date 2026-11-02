@@ -4,8 +4,8 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { ARCHIVED_LINK_KEY, readArchivedLink, saveArchivedLink, showsArchivedLink, type ArchivedLinkStore } from '../web/src/archivedLink.ts';
 
-// Issue #157: the sidebar's "Archived (N)" entry can be switched off in Settings, per browser, shown
-// by default. Switching it back on is the way back to the archived sessions (Martin, 2026-10-16 23:43).
+// Issue #157: the sidebar's "Archived (N)" entry can be switched in Settings, per browser, off by
+// default (issue #95). Switching it on is the way to the archived sessions (Martin, 2026-10-16 23:43).
 
 function memoryStore(): ArchivedLinkStore & { data: Map<string, string> } {
   const data = new Map<string, string>();
@@ -17,35 +17,39 @@ function memoryStore(): ArchivedLinkStore & { data: Map<string, string> } {
   };
 }
 
-test('the entry is shown in a browser that never switched it off', () => {
-  assert.equal(readArchivedLink(memoryStore()), true);
+test('no entry in a browser that never chose', () => {
+  assert.equal(readArchivedLink(memoryStore()), false);
 });
 
-test('the switch is kept in this browser and back on removes the entry', () => {
+test('the switch is kept in this browser, on as an entry and back off removes it', () => {
   const store = memoryStore();
-  saveArchivedLink(store, false);
-  assert.equal(readArchivedLink(store), false);
-  assert.equal(store.data.get(ARCHIVED_LINK_KEY), '0');
   saveArchivedLink(store, true);
   assert.equal(readArchivedLink(store), true);
+  assert.equal(store.data.get(ARCHIVED_LINK_KEY), '1');
+  saveArchivedLink(store, false);
+  assert.equal(readArchivedLink(store), false);
   assert.equal(store.data.has(ARCHIVED_LINK_KEY), false);
 });
 
-test('only the stored "0" hides the entry; any other value shows it', () => {
-  for (const other of ['1', 'x', '', 'false']) {
+test('only the stored "1" shows the entry; any other value hides it, also the "0" of a browser that switched it off', () => {
+  for (const other of ['0', 'x', '', 'false']) {
     const store = memoryStore();
     store.setItem(ARCHIVED_LINK_KEY, other);
-    assert.equal(readArchivedLink(store), true, other);
+    assert.equal(readArchivedLink(store), false, other);
   }
+  const on = memoryStore();
+  on.setItem(ARCHIVED_LINK_KEY, '1');
+  assert.equal(readArchivedLink(on), true);
 });
 
-test('a browser whose storage refuses shows the entry and saving does not throw', () => {
+test('a browser whose storage refuses shows no entry and saving does not throw', () => {
   const broken: ArchivedLinkStore = {
     getItem: () => { throw new Error('denied'); },
     setItem: () => { throw new Error('denied'); },
     removeItem: () => { throw new Error('denied'); },
   };
-  assert.equal(readArchivedLink(broken), true);
+  assert.equal(readArchivedLink(broken), false);
+  assert.doesNotThrow(() => saveArchivedLink(broken, true));
   assert.doesNotThrow(() => saveArchivedLink(broken, false));
 });
 
