@@ -1158,8 +1158,7 @@ export class LedungServer {
     if (sessionId && this.opts.store.getSession(sessionId)?.role === 'manager') this.requireOpenPage(req);
   }
 
-  /** Paired devices are managed only on this computer: a device can't pair others or list them. */
-  /** Says why, with the folder so it can be opened by hand; the page shows it (issue #82). */
+  /** Says why, with the folder so it can be opened by hand; the page shows it (issue #83). */
   private async openAccountFolder(folder: string): Promise<void> {
     try {
       await (this.opts.openFolder ?? openFolder)(folder);
@@ -1168,6 +1167,7 @@ export class LedungServer {
     }
   }
 
+  /** Paired devices are managed only on this computer: a device can't pair others or list them. */
   private requireLocal(req: IncomingMessage, what = 'Devices are managed'): void {
     if (this.guard.isPublic(req)) throw new HttpError(403, `${what} in Settings on the computer Ledung runs on.`);
   }

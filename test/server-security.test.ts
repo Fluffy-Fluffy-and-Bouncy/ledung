@@ -51,7 +51,7 @@ let managerQuestion = 0;
 let paneStore: Store;
 /** The folders Settings' Open folder was asked to show (issue #414); nothing is opened for real. */
 const openedFolders: string[] = [];
-/** When set, Open folder fails with these words (issue #82). */
+/** When set, Open folder fails with these words (issue #83). */
 let openFolderFails: string | null = null;
 let relayDir: string;
 // Settings → Shortcuts (issue #415): made in a folder inside .test/, never on the real Desktop or Applications.
@@ -1299,7 +1299,7 @@ test("an account's folder opens only on this computer, from its open page (issue
     assert.ok(fs.statSync(folder).isDirectory());
     assert.equal((await change('/api/accounts/nobody/open-folder', {}, { 'x-ledung-page': page.key })).status, 400);
     assert.deepEqual(openedFolders, [folder]);
-    // The file manager couldn't be started: the page is told why and where, not ok (issue #82).
+    // The file manager couldn't be started: the page is told why and where, not ok (issue #83).
     openFolderFails = 'No application knows how to open it';
     const failed = await change(p, {}, { 'x-ledung-page': page.key });
     openFolderFails = null;

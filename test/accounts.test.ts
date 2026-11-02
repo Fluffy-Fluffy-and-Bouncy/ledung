@@ -199,7 +199,7 @@ test('the Keychain entry on macOS is the one Claude Code reads for the folder', 
   assert.notDeepEqual(keychainEntry(`${folder}/`, 'm'), keychainEntry(folder, 'm'), 'named from the path exactly as written');
 });
 
-test("a system that can't say who the user is doesn't stop Ledung starting (issue #82)", () => {
+test("a system that can't say who the user is doesn't stop Ledung starting (issue #83)", () => {
   const saved = { USER: process.env.USER, LOGNAME: process.env.LOGNAME };
   try {
     process.env.USER = 'from-env';

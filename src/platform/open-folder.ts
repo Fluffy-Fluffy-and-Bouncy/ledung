@@ -67,6 +67,6 @@ let exercised = false;
 export async function openFolder(folder: string): Promise<void> {
   const [command, args] = openFolderCommand(folder);
   await runOpener(command, args, openRun());
-  if (!exercised) exercisedLine(`EXERCISED #82 ${command} was waited for and opened the folder`);
+  if (!exercised) exercisedLine(`EXERCISED #83 ${command} was waited for and opened the folder`);
   exercised = true;
 }
