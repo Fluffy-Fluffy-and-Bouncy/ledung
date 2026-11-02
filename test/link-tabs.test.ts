@@ -218,3 +218,22 @@ test('a linked computer that goes offline loses its badge at the next exchange, 
   nodes.offline(pc.name);
   await until(async () => (await badge()) === undefined, 'the badge to go while the PC is offline');
 });
+
+test('an exchange of counts still on its way when Ledung closes changes nothing after, its database closed (#463)', { timeout: HANG_MS }, async () => {
+  const mac = await nodes.ledung('mac7.tabs.test');
+  const pc = await nodes.ledung('pc7.tabs.test');
+  await nodes.link(mac, pc);
+  const macPage = await nodes.page(mac);
+  await until(async () => ((await macPage('GET', 'state')).json.computers as { id: string; waiting?: number }[]).find((c) => c.id === pc.name)?.waiting === 0, 'the PC\'s count');
+  // The PC goes offline and the Mac starts an exchange (as its poll would): the PC's badge will go, once the failed
+  // call comes back. That is a few turns later, by when the Mac has closed and its database with it.
+  nodes.offline(pc.name);
+  (mac.server as unknown as { exchangeWaiting(): void }).exchangeWaiting();
+  const closing = mac.server.close();
+  mac.db.close();
+  await closing;
+  // Time for the failed call to come back: a socket closed on the next turn, then TLS and the request report it.
+  await new Promise((r) => setTimeout(r, 1500));
+  // Reaching here is the test: without the close, the answer read the closed database and the run failed on it.
+  assert.equal(mac.db.isOpen, false);
+});
