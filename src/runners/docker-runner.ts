@@ -228,6 +228,9 @@ export class DockerRunner implements Runner {
         if (e) reject(Object.assign(e, { stdout, stderr }));
         else resolve({ stdout });
       });
+      // A docker exec that ends before reading it all (container stopped, the script refusing) breaks the pipe: its
+      // exit says what went wrong, and an unhandled stdin error would end Ledung (as in src/runners/runner.ts).
+      child.stdin?.on('error', () => {});
       child.stdin?.end(input);
     });
   }
@@ -345,7 +348,7 @@ export const WRITE_FLOW_SCRIPT = [
   '  fi',
   '  if [ "$mode" = remove ]; then rm -f -- "$p" || { echo "$f could not be removed"; exit 3; }; fi',
   '  if [ "$mode" = write ]; then',
-  '    t="$p.ledung-$.tmp"',
+  '    t="$p.ledung-$$.tmp"',
   '    if [ -e "$t" ] || [ -L "$t" ]; then echo "$f could not be written: $t is in the way"; exit 3; fi',
   '    if (set -C; cat > "$t") && mv -f -- "$t" "$p"; then :; else rm -f -- "$t"; echo "$f could not be written"; exit 3; fi',
   '  fi',

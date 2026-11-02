@@ -353,7 +353,8 @@ export function flowWrites(given: unknown): FlowFileWrite[] {
 
 /**
  * Saves the builder's files into the project's own place (#311): each must still be the version the page read (none,
- * for a new file), so a change made meanwhile, by hand or in another window, is never written over. The texts go
+ * for a new file), so a change made meanwhile, by hand or in another window, is not written over (one made in the moment
+ * between that check and the write still can be: saves are one at a time per project, hand edits are not). The texts go
  * first, then the other flows, then flow.json, so a flow on disk never links a brief or runs a flow that isn't written
  * yet; a flow deleted or renamed is removed last (#447), once nothing written still runs it under its old name.
  */

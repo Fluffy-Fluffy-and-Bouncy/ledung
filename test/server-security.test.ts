@@ -2047,8 +2047,17 @@ test("the builder's save needs the sign-in, Ledung's own Host and Origin, and wr
   }
   assert.equal(fs.existsSync(folder), false, 'nothing was written');
 
+  // Only from the open page: a script with the sign-in token alone can't rewrite what a manager follows (review, #104 F1).
+  const noPage = await change(p, { files });
+  assert.equal(noPage.status, 403, noPage.body);
+  assert.match(errorOf(noPage), /open page/);
+  assert.equal(fs.existsSync(folder), false, 'nothing was written');
+  const page = await livePage();
+  t.after(() => page.close());
+  const save = (b: unknown) => change(p, b, { 'x-ledung-page': page.key });
+
   // Saved: the files are in the project's own folder, and the answer is the workflow as it now reads.
-  const saved = await change(p, { files });
+  const saved = await save({ files });
   assert.equal(saved.status, 200, saved.body);
   const view = JSON.parse(saved.body);
   assert.deepEqual(view.texts, { 'briefs/a.md': '# A', 'manager.md': '# Manager' });
@@ -2058,31 +2067,31 @@ test("the builder's save needs the sign-in, Ledung's own Host and Origin, and wr
 
   // Only the files the format knows, and only inside the workflow folder.
   for (const bad of ['../../outside.md', '../flow.json', 'briefs/../../../ledung-escaped.md', '/etc/x.md', 'C:/x.md', 'briefs\\x.md', 'briefs/sub/x.md', 'notes.txt', 'briefs/x.txt', 'overlays/.hidden.md', 'secrets/x.md', 'flow.json/x.md', 'roles/x.md', 'manager.md/x.md', 'briefs/manager.md/x.md', 'Manager.md', '../manager.md']) {
-    const res = await change(p, { files: [{ path: bad, text: 'x', base: null }] });
+    const res = await save({ files: [{ path: bad, text: 'x', base: null }] });
     assert.equal(res.status, 400, bad);
     assert.match(errorOf(res), /not a file the workflow's format has/, bad);
   }
   assert.equal(fs.existsSync(path.join(projectRoot, 'outside.md')), false);
   assert.equal(fs.existsSync(path.join(path.dirname(projectRoot), 'ledung-escaped.md')), false);
   // Sizes: one text, all of them, the request; and a flow.json that would be no flow at all.
-  assert.match(errorOf(await change(p, { files: [{ path: 'briefs/big.md', text: 'x'.repeat(256 * 1024 + 1), base: null }] })), /larger than the 256 KB/);
+  assert.match(errorOf(await save({ files: [{ path: 'briefs/big.md', text: 'x'.repeat(256 * 1024 + 1), base: null }] })), /larger than the 256 KB/);
   const many = Array.from({ length: 20 }, (_, i) => ({ path: `briefs/b${i}.md`, text: 'x'.repeat(250 * 1024), base: null }));
-  assert.match(errorOf(await change(p, { files: many })), /Together the files are larger than the 4 MB/);
+  assert.match(errorOf(await save({ files: many })), /Together the files are larger than the 4 MB/);
   // Past the body limit the request is refused while it comes in: a 413, or the connection cut before the answer.
-  const huge = await request({ method: 'POST', path: p, headers: { ...json, cookie: COOKIE, origin: ORIGIN, connection: 'close' }, body: JSON.stringify({ files: [{ path: 'rules.md', text: 'x'.repeat(7 * 1024 * 1024), base: null }] }) }).catch((e: NodeJS.ErrnoException) => ({ status: e.code }));
+  const huge = await request({ method: 'POST', path: p, headers: { ...json, cookie: COOKIE, origin: ORIGIN, 'x-ledung-page': page.key, connection: 'close' }, body: JSON.stringify({ files: [{ path: 'rules.md', text: 'x'.repeat(7 * 1024 * 1024), base: null }] }) }).catch((e: NodeJS.ErrnoException) => ({ status: e.code }));
   assert.ok(huge.status === 413 || huge.status === 'ECONNRESET' || huge.status === 'EPIPE', String(huge.status));
   assert.equal(fs.existsSync(path.join(folder, 'rules.md')), false);
-  assert.match(errorOf(await change(p, { files: [{ path: 'flow.json', text: '{"version":1,"blocks":[]}', base: view.versions['flow.json'] }] })), /would not be a flow/);
-  assert.match(errorOf(await change(p, { files: [] })), /nothing to save/);
-  assert.match(errorOf(await change(p, { files: [{ path: 'rules.md', text: 'a', base: null }, { path: 'rules.md', text: 'b', base: null }] })), /given twice/);
+  assert.match(errorOf(await save({ files: [{ path: 'flow.json', text: '{"version":1,"blocks":[]}', base: view.versions['flow.json'] }] })), /would not be a flow/);
+  assert.match(errorOf(await save({ files: [] })), /nothing to save/);
+  assert.match(errorOf(await save({ files: [{ path: 'rules.md', text: 'a', base: null }, { path: 'rules.md', text: 'b', base: null }] })), /given twice/);
   assert.equal(fs.readdirSync(path.join(folder, 'briefs')).join(), 'a.md', 'none of those was written');
 
   // Each file replaces the version the page read: a stale or made-up version, or a new file that is there already, is refused.
-  assert.match(errorOf(await change(p, { files: [{ path: 'briefs/a.md', text: '# B', base: '0000000000000000' }] })), /has changed since the page read the workflow/);
-  assert.match(errorOf(await change(p, { files: [{ path: 'briefs/a.md', text: '# B', base: null }] })), /already in the workflow folder/);
-  assert.match(errorOf(await change(p, { files: [{ path: 'briefs/a.md', text: '# B', base: 'not a version' }] })), /which version it replaces/);
+  assert.match(errorOf(await save({ files: [{ path: 'briefs/a.md', text: '# B', base: '0000000000000000' }] })), /has changed since the page read the workflow/);
+  assert.match(errorOf(await save({ files: [{ path: 'briefs/a.md', text: '# B', base: null }] })), /already in the workflow folder/);
+  assert.match(errorOf(await save({ files: [{ path: 'briefs/a.md', text: '# B', base: 'not a version' }] })), /which version it replaces/);
   assert.equal(fs.readFileSync(path.join(folder, 'briefs', 'a.md'), 'utf8'), '# A');
-  const again = await change(p, { files: [{ path: 'briefs/a.md', text: '# B', base: view.versions['briefs/a.md'] }] });
+  const again = await save({ files: [{ path: 'briefs/a.md', text: '# B', base: view.versions['briefs/a.md'] }] });
   assert.equal(again.status, 200, again.body);
   assert.equal(fs.readFileSync(path.join(folder, 'briefs', 'a.md'), 'utf8'), '# B');
 
@@ -2093,7 +2102,7 @@ test("the builder's save needs the sign-in, Ledung's own Host and Origin, and wr
   fs.rmSync(path.join(projectRoot, '.ledung'), { recursive: true, force: true });
   fs.mkdirSync(path.join(projectRoot, '.ledung'));
   fs.symlinkSync(outside, folder, 'junction');
-  const viaLink = await change(p, { files: [{ path: 'rules.md', text: 'CHANGED', base: null }] });
+  const viaLink = await save({ files: [{ path: 'rules.md', text: 'CHANGED', base: null }] });
   assert.equal(viaLink.status, 400, viaLink.body);
   assert.match(errorOf(viaLink), /\.ledung\/workflow is a link/);
   assert.equal(fs.existsSync(path.join(outside, 'rules.md')), false);

@@ -1475,8 +1475,10 @@ export class LedungServer {
         return manager.flowView(decodeURIComponent(id));
       // The builder saves (issue #311): only into the project's own .ledung/workflow, only the files the format knows,
       // each replacing the version the page read (src/sessions/flow-files.ts). A change like any other: the sign-in,
-      // Host and Origin checks above, and through the public name an unlocked device.
+      // Host and Origin checks above, and through the public name an unlocked device. And the open page: what it
+      // writes is what a manager is told to follow, so a script with the sign-in token alone can't rewrite it (#104 F1).
       case 'POST projects/:id/flow': {
+        this.requireOpenPage(req);
         const body = await readJson(req, FLOW_SAVE_MAX_BODY);
         return manager.saveFlow(decodeURIComponent(id), body.files);
       }
