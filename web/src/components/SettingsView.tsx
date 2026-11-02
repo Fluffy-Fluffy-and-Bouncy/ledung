@@ -11,7 +11,7 @@
 // a side menu of groups, one group on screen at a time, each at its own address; features that are off are one line.
 import { Fragment, useEffect, useState, type ReactNode } from 'react';
 import { BoatSlider } from './BoatSlider.tsx';
-import type { AccountChoices, AccountInfoView, BoardStatus, CertificateStatus, ConfigStatus, NewComputerInfo, ProjectInfo, RelayAdminView, RemoteStatus, SessionInfo, SourceOffer, UpdateStepView, UsageStopInfo } from '../../../src/shared/protocol.ts';
+import type { AccountChoices, AccountInfoView, BoardStatus, CertificateStatus, ConfigStatus, NewComputerInfo, ProjectInfo, RelayAdminView, RemoteStatus, SessionInfo, SourceOffer, UpdateStepView, UpdateView, UsageStopInfo } from '../../../src/shared/protocol.ts';
 import { UsageStopsSettings } from './UsageStopsSettings.tsx';
 import { SkillDefaults } from './SkillPicker.tsx';
 import { ProfilesSettings } from './ProfilesSettings.tsx';
@@ -164,7 +164,7 @@ function GroupContent(props: GroupProps) {
     case 'config':
       return props.config ? <ConfigFileSettings config={props.config} /> : <p className="muted">…</p>;
     default:
-      return <About source={props.source} />;
+      return <About source={props.source} update={props.update} />;
   }
 }
 
@@ -368,14 +368,7 @@ function UpdatePanel({ update }: { update: UpdateState }) {
   const [confirming, setConfirming] = useState(false);
   if (error) return <p className="restart-problem">{error}</p>;
   if (!view) return <p className="muted">…</p>;
-  if (view.npm) {
-    return (
-      <div className="update-panel">
-        <p className="muted">Running Ledung <code>{displayVersion(view.npm.version)}</code>, installed from npm.</p>
-        <p className="muted">{view.reason}</p>
-      </div>
-    );
-  }
+  if (view.npm) return <NpmUpdatePanel update={update} />;
   if (!view.available) return <p className="muted">{view.reason}</p>;
   const busy = view.checking || view.updating || view.restarting;
   const check = view.check;
@@ -430,6 +423,64 @@ function UpdatePanel({ update }: { update: UpdateState }) {
   );
 }
 
+/**
+ * Update Ledung on an npm install (#461): Check asks npm for the version of the channel chosen in About; Update
+ * installs that version with npm and restarts into it.
+ */
+function NpmUpdatePanel({ update }: { update: UpdateState }) {
+  const { view, act } = update;
+  const [confirming, setConfirming] = useState(false);
+  if (!view?.npm) return null;
+  const busy = view.checking || view.updating || view.restarting;
+  // A check of the other channel says nothing about this one.
+  const check = view.npmCheck && view.npmCheck.channel === (view.channel ?? 'public') ? view.npmCheck : null;
+  const offer = !!check?.offered && !check.upToDate && !view.updating && !view.restarting;
+  const channel = CHANNEL_LABEL[view.channel ?? 'public'];
+  return (
+    <div className="update-panel">
+      <p className="muted">Running Ledung <code>{displayVersion(view.npm.version)}</code>, installed from npm, on the {channel} channel (Settings → About).</p>
+      <div className="restart-confirm">
+        <button className="small" disabled={busy} onClick={() => { setConfirming(false); act(api.updateCheck); }}>
+          {view.checking ? 'Checking…' : 'Check for updates'}
+        </button>
+        {check && !view.checking && (
+          !check.offered
+            ? <span>npm has no {channel} version yet</span>
+            : check.upToDate
+              ? <span className="update-ok">Up to date ({channel}: {displayVersion(check.offered)})</span>
+              : <span>{displayVersion(check.offered)} is out on {channel}</span>
+        )}
+      </div>
+      {view.checkError && <pre className="update-output restart-problem">{view.checkError}</pre>}
+      {offer && !view.canRestart && <p className="muted">{view.reason}</p>}
+      {offer && view.canRestart && (
+        confirming ? (
+          <div className="restart-confirm">
+            <span className="muted">npm install -g ledung@{check!.offered}, then restart. Sessions keep running.</span>
+            <button className="small primary" onClick={() => { setConfirming(false); act(api.update); }}>Update now</button>
+            <button className="small" onClick={() => setConfirming(false)}>Cancel</button>
+          </div>
+        ) : (
+          <div className="restart-confirm"><button className="small primary" onClick={() => setConfirming(true)}>Update Ledung</button></div>
+        )
+      )}
+      {view.steps.length > 0 && (
+        <ol className="update-steps">
+          {view.steps.map((s, i) => (
+            <li key={i} className={`update-step ${s.state}`}>
+              <span className="update-mark">{STEP_MARK[s.state]}</span> {s.label}
+              {s.state === 'failed' && s.output && <pre className="update-output">{s.output}</pre>}
+            </li>
+          ))}
+        </ol>
+      )}
+      {view.refused && <p className="restart-problem">{view.refused}</p>}
+      {view.restarting && <p className="muted">The new version is installed. Restarting into it…</p>}
+      {!view.steps.length && !offer && <p className="muted">{view.reason}</p>}
+    </div>
+  );
+}
+
 /** Whether phones can reach this Ledung through the relay (issue #160): set in the config, or joined with a code here (#237). */
 function RemoteBody(props: { remote: RemoteStatus | null }) {
   const line = remoteLine(props.remote);
@@ -471,7 +522,7 @@ function CertificateSettings({ cert }: { cert: CertificateStatus }) {
 }
 
 /** The license, Anthropic's software, and the source of the running version: AGPL section 13 asks that everyone using it over a network is offered that source (#332). */
-function About({ source }: { source: SourceOffer | null }) {
+function About({ source, update }: { source: SourceOffer | null; update: UpdateState }) {
   return (
     <section>
       <h3>About</h3>
@@ -486,6 +537,37 @@ function About({ source }: { source: SourceOffer | null }) {
           Running <code>{source.version}</code>. <a href={source.url} target="_blank" rel="noreferrer">Source</a>
         </p>
       )}
+      {update.view && <ChannelChoice update={update} />}
     </section>
+  );
+}
+
+type Channel = NonNullable<UpdateView['channel']>;
+const CHANNEL_LABEL: Record<Channel, string> = { public: 'Public', dev: 'Dev' };
+
+/**
+ * Update channel: Public / Dev (#461; Martin, 2026-11-02 00:38, Ledung question #1172). Public follows npm's
+ * `latest`, Dev its `dev` tag, where dev builds go before a public release. Only an npm install follows it.
+ */
+function ChannelChoice({ update }: { update: UpdateState }) {
+  const view = update.view!;
+  const channel: Channel = view.channel ?? 'public';
+  return (
+    <>
+      <h3>Update channel</h3>
+      <div className="restart-confirm" role="radiogroup" aria-label="Update channel">
+        {(['public', 'dev'] as const).map((c) => (
+          <label key={c}>
+            <input type="radio" name="update-channel" checked={channel === c} disabled={view.updating || view.restarting} onChange={() => update.act(() => api.updateChannel(c))} /> {CHANNEL_LABEL[c]}
+          </label>
+        ))}
+      </div>
+      <p className="muted">
+        {channel === 'dev'
+          ? 'Dev: updates to dev builds, made after changes are merged and before a public release, as well as public releases.'
+          : 'Public: updates to public releases only, as npm install -g ledung gets them.'}
+        {' '}{view.npm ? 'Check for updates is under Update & restart.' : 'This Ledung updates from main in the folder it was built from, so the channel applies only once it is installed from npm.'}
+      </p>
+    </>
   );
 }

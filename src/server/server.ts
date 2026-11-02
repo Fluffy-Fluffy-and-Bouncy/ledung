@@ -1766,9 +1766,19 @@ export class LedungServer {
       case 'GET update':
         return this.updater().view();
       case 'POST update-check':
-        return this.updater().runCheck();
+        return this.updater().checkForUpdates();
       case 'POST update':
-        return this.updater().startUpdate();
+        return this.updater().runUpdate();
+      // Settings → About's Public / Dev (#461): guarded as the update it steers (sign-in, origin, an unlocked device).
+      case 'POST update-channel': {
+        const channel = (await readJson(req)).channel;
+        if (channel !== 'public' && channel !== 'dev') throw new HttpError(400, 'The channel is public or dev.');
+        try {
+          return this.updater().setChannel(channel);
+        } catch (e) {
+          throw new HttpError(400, (e as Error).message);
+        }
+      }
       case 'POST certificate-check':
         if (this.opts.onCertificateCheck) this.opts.onCertificateCheck();
         else if (!this.remoteLink?.checkNow()) throw new HttpError(404, 'This Ledung gets no certificate by ACME.');

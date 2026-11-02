@@ -1014,6 +1014,17 @@ export interface UpdateView {
   reason?: string;
   /** Set when Ledung was installed from npm: the installed version. Updates come from npm then (#105). */
   npm?: { version: string };
+  /** Settings → About's update channel (#461): which npm dist-tag an npm install follows. A clone install keeps main. */
+  channel?: 'public' | 'dev';
+  /** The last check of npm for the channel's version, on an npm install. */
+  npmCheck?: {
+    checkedAt: string;
+    channel: 'public' | 'dev';
+    /** The version the channel offers; null when npm has none on it. */
+    offered: string | null;
+    /** The installed version is the offered one or newer: nothing to install. */
+    upToDate: boolean;
+  } | null;
   /** The update ends in a restart, which needs the launcher. */
   canRestart: boolean;
   /** The release Ledung runs: its source folder and commit (null when its source was not a git clone). */

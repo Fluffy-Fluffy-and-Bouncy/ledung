@@ -88,7 +88,10 @@ export const LEDUNG_GROUPS: SettingsGroup[] = [
     settings: [{ label: 'Notifications', storedIn: 'browser', about: 'A browser notification when something needs your answer', keywords: ['alert', 'notify', 'sound', 'popup'] }],
   },
   { id: 'config', label: 'Config file', part: 'info', settings: [{ label: 'Config file', storedIn: 'config', about: "Ledung's config file and its problems", keywords: ['json', 'port', 'file', 'settings'] }] },
-  { id: 'about', label: 'About', part: 'info', settings: [{ label: 'About', about: 'Version and where Ledung runs from', keywords: ['version', 'licence', 'license'] }] },
+  { id: 'about', label: 'About', part: 'info', settings: [
+    { label: 'About', about: 'Version and where Ledung runs from', keywords: ['version', 'licence', 'license'] },
+    { label: 'Update channel', about: 'Public releases only, or dev builds too (npm installs)', keywords: ['channel', 'dev', 'public', 'npm', 'beta'] },
+  ] },
 ];
 
 /** The group the Ledung tab opens on a wide screen when the address names none. */

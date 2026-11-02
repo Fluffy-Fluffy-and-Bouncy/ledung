@@ -381,6 +381,20 @@ test("checking and updating need the sign-in and Ledung's own origin, like every
   }
 });
 
+test("choosing the update channel needs the sign-in and Ledung's own origin, and takes only public or dev (#461)", async () => {
+  const p = '/api/update-channel';
+  const body = JSON.stringify({ channel: 'dev' });
+  assert.equal((await request({ method: 'POST', path: p, body })).status, 401);
+  assert.equal((await request({ method: 'POST', path: p, headers: { cookie: COOKIE }, body })).status, 403);
+  assert.equal((await request({ method: 'POST', path: p, headers: { cookie: COOKIE, origin: 'https://evil.example' }, body })).status, 403);
+  const json = { cookie: COOKIE, origin: ORIGIN, 'content-type': 'application/json' };
+  const bad = await request({ method: 'POST', path: p, headers: json, body: JSON.stringify({ channel: 'latest' }) });
+  assert.equal(bad.status, 400);
+  assert.match(bad.body, /public or dev/);
+  // Past the guard; the channel itself is then the updater's to keep.
+  assert.ok(![401, 403].includes((await request({ method: 'POST', path: p, headers: json, body })).status));
+});
+
 test('names on the local network are accepted only when Ledung is opened to it', async () => {
   const { Guard } = await import('../src/server/security.ts');
   const req = (host: string, origin?: string) => ({ headers: { host, origin } }) as any;

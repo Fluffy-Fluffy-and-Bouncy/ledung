@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-02
+- Settings → About has an update channel, Public or Dev: on Dev an npm-installed Ledung gets dev builds before they go to everyone, and Update & restart now checks npm and updates an npm install with one click (#461)
+
 ## 2026-11-01
 - On the phone, a linked computer's tab keeps its Settings → Look choices (theme, typing, sidebar) instead of losing them (#459)
 - `ledung` and the Ledung icon start Ledung in the background with no window, so no terminal has to stay open; Stop Ledung in Settings → Update & restart or `ledung stop` stops it, Start Ledung when I sign in (off unless switched on) starts it with Windows, macOS or Linux, its output goes to ledung.log in the data folder, and `ledung --foreground` runs it in the terminal as before (#456)

@@ -26,7 +26,9 @@ The first start creates the user data folder (`%APPDATA%\Ledung` on Windows, `~/
 2. Add a Claude account under **Claude & usage → Accounts**, and sign in to it with the command the page shows.
 3. Add a project with **Add project**: a folder on this computer or in a running container, or a brand-new one.
 
-**Updating.** Run `npm install -g ledung` again, then press **Restart Ledung** (Settings → Update & restart). Sessions keep running through the restart, and since they run your installed Claude Code, not a program inside the package, they don't stand in the update's way. The package installs exactly the dependency versions Ledung was tested with, and has no Claude Code of its own: it runs the one you installed.
+**Updating.** In Settings → Update & restart, **Check for updates** asks npm for a newer version and **Update Ledung** installs it and restarts; by hand, run `npm install -g ledung` again, then press **Restart Ledung**. Sessions keep running through the restart, and since they run your installed Claude Code, not a program inside the package, they don't stand in the update's way. The package installs exactly the dependency versions Ledung was tested with, and has no Claude Code of its own: it runs the one you installed.
+
+**Dev builds.** Builds made between public releases are published to npm's `dev` tag: `npm install -g ledung@dev` installs the newest, and **Update channel: Dev** in Settings → About makes Check for updates and Update Ledung follow them (Public, the default, follows public releases only). `npm install -g ledung` always gets the public release. A public release is a plain number (v1, v2), a dev build after it adds one (v1.1, v1.2).
 
 **Stopping.** **Stop Ledung** (Settings → Update & restart, on the computer Ledung runs on) or `ledung stop` in a terminal stops Ledung and its sessions; started with `ledung --foreground`, Ctrl+C or closing its window does the same. Open a session and press **Resume** to continue it.
 

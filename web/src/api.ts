@@ -216,6 +216,7 @@ export const api = {
   updateStatus: () => call<UpdateView>('GET', '/api/update'),
   updateCheck: () => call<UpdateView>('POST', '/api/update-check', {}),
   update: () => call<UpdateView>('POST', '/api/update', {}),
+  updateChannel: (channel: UpdateView['channel']) => call<UpdateView>('POST', '/api/update-channel', { channel }),
   /** Look the CAA record up now while Ledung waits for it (issue #202). */
   certificateCheck: () => call('POST', '/api/certificate-check', {}),
   // Join with a code and Leave this relay (issue #237).
