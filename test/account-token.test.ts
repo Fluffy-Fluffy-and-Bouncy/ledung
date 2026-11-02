@@ -70,6 +70,7 @@ test('a token is taken only as `claude setup-token` gives one, line ends from a 
   assert.equal(cleanToken(`${FAKE}\n`), FAKE);
   assert.equal(cleanToken(`  ${FAKE.slice(0, 30)}\n${FAKE.slice(30)}\r\n`), FAKE);
   assert.equal(cleanToken(`${FAKE.slice(0, 30)}\n    ${FAKE.slice(30)}`), FAKE);
+  assert.equal(cleanToken(`${FAKE.slice(0, 30)}\r\n${FAKE.slice(30)}`), FAKE);
   for (const bad of ['', 'hello', 'sk-ant-api03-abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz', 'sk-ant-oat01-short', `${FAKE}"; rm -rf`, `${FAKE} and more`, `${FAKE}\n\nStore this token safely`, `${FAKE}\nStore this token safely`, `${FAKE}${FAKE}`, `${FAKE}\n${FAKE}`, `${FAKE}\r${FAKE}`, `${FAKE}\n    ${FAKE}`]) assert.equal(cleanToken(bad), null, bad);
 });
 
