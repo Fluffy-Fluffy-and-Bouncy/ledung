@@ -4,8 +4,8 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { STATUS_DOT_KEY, readStatusDot, rowStatus, saveStatusDot, type DotStore } from '../web/src/statusDot.ts';
 
-// Issue #151: the status dot left of every sidebar row can be switched off in Settings, per browser,
-// shown by default. With it off, the row's status is its tooltip and an ended session looks ended.
+// Issue #151: the status dot left of every sidebar row can be switched in Settings, per browser, off
+// by default (issue #95). With it off, the row's status is its tooltip and an ended session looks ended.
 
 function memoryStore(): DotStore & { data: Map<string, string> } {
   const data = new Map<string, string>();
@@ -17,26 +17,37 @@ function memoryStore(): DotStore & { data: Map<string, string> } {
   };
 }
 
-test('the dot is shown in a browser that never switched it off', () => {
-  assert.equal(readStatusDot(memoryStore()), true);
+test('no dot in a browser that never chose', () => {
+  assert.equal(readStatusDot(memoryStore()), false);
 });
 
-test('the switch is kept in this browser and back on removes the entry', () => {
+test('the switch is kept in this browser, on as an entry and back off removes it', () => {
   const store = memoryStore();
-  saveStatusDot(store, false);
-  assert.equal(readStatusDot(store), false);
   saveStatusDot(store, true);
   assert.equal(readStatusDot(store), true);
+  assert.equal(store.data.get(STATUS_DOT_KEY), '1');
+  saveStatusDot(store, false);
+  assert.equal(readStatusDot(store), false);
   assert.equal(store.data.has(STATUS_DOT_KEY), false);
 });
 
-test('a browser whose storage refuses shows the dot and saving does not throw', () => {
+test('a browser that switched it off when on was the default keeps it off', () => {
+  const store = memoryStore();
+  store.setItem(STATUS_DOT_KEY, '0');
+  assert.equal(readStatusDot(store), false);
+  // The positive branch: the same read on the entry for on finds it.
+  store.setItem(STATUS_DOT_KEY, '1');
+  assert.equal(readStatusDot(store), true);
+});
+
+test('a browser whose storage refuses shows no dot and saving does not throw', () => {
   const broken: DotStore = {
     getItem: () => { throw new Error('denied'); },
     setItem: () => { throw new Error('denied'); },
     removeItem: () => { throw new Error('denied'); },
   };
-  assert.equal(readStatusDot(broken), true);
+  assert.equal(readStatusDot(broken), false);
+  assert.doesNotThrow(() => saveStatusDot(broken, true));
   assert.doesNotThrow(() => saveStatusDot(broken, false));
 });
 

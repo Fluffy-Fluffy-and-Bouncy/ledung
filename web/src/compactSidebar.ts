@@ -2,11 +2,16 @@
 // mockup's columns A–D (Martin, 2026-10-16 15:14: "in the settings menu have a slider that goes from
 // none to max with live updates"). Kept per browser, like the status dot switch (#151). The ship is
 // shown at every step (Martin, 15:04: "I always want to show the ascii art"); what a step hides
-// from a row goes into the row's tooltip, so nothing is lost.
+// from a row goes into the row's tooltip, so nothing is lost. "Name + ship" unless set (Martin,
+// 2026-11-03 00:19, issue #95): None now has an entry of its own, and steps stored before that keep
+// their meaning.
 
 export const COMPACT_KEY = 'ledung.compactSidebar';
 
 export type CompactStep = 1 | 2 | 3 | 4;
+
+/** The step of a browser that never chose one: "Name + ship". */
+const DEFAULT_STEP: CompactStep = 3;
 
 /** The slider's steps, in order, with the label Settings shows for each. */
 export const COMPACT_STEPS: { step: CompactStep; label: string }[] = [
@@ -21,15 +26,15 @@ export type CompactStore = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 
 const asStep = (n: number): CompactStep | null => (n === 1 || n === 2 || n === 3 || n === 4 ? n : null);
 
-/** The step this browser keeps; None unless set, and None for anything it doesn't know. */
+/** The step this browser keeps; the default unless set, and the default for anything it doesn't know. */
 export function readCompact(store: CompactStore): CompactStep {
-  try { return asStep(Number(store.getItem(COMPACT_KEY))) ?? 1; } catch { return 1; }
+  try { return asStep(Number(store.getItem(COMPACT_KEY))) ?? DEFAULT_STEP; } catch { return DEFAULT_STEP; }
 }
 
-/** Saves the step; None is the default, so it removes the entry. */
+/** Saves the step; the default removes the entry. */
 export function saveCompact(store: CompactStore, step: CompactStep): void {
   try {
-    if (step === 1) store.removeItem(COMPACT_KEY);
+    if (step === DEFAULT_STEP) store.removeItem(COMPACT_KEY);
     else store.setItem(COMPACT_KEY, String(step));
   } catch { /* private mode: kept for this visit only */ }
 }
@@ -47,8 +52,8 @@ export interface CompactRows {
 }
 
 /**
- * The same on a touch screen, where the hidden rows' tooltip can't be opened: the steps are opt-in, and keeping the
- * rows there left the phone's sidebar unchanged (issue #207, Martin 2026-10-18: "Steps work the same on the phone").
+ * The same on a touch screen, where the hidden rows' tooltip can't be opened: keeping the rows there left the
+ * phone's sidebar unchanged (issue #207, Martin 2026-10-18: "Steps work the same on the phone").
  */
 export function compactRows(step: CompactStep): CompactRows {
   switch (step) {

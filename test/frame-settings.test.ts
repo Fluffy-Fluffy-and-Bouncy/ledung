@@ -9,7 +9,8 @@ import {
 } from '../web/src/frameSettings.ts';
 import { THEME_KEY, readTheme, saveTheme } from '../web/src/theme.ts';
 import { COMPACT_KEY, readCompact, saveCompact } from '../web/src/compactSidebar.ts';
-import { readStatusDot, saveStatusDot } from '../web/src/statusDot.ts';
+import { STATUS_DOT_KEY, readStatusDot, saveStatusDot } from '../web/src/statusDot.ts';
+import { ARCHIVED_LINK_KEY, readArchivedLink, saveArchivedLink } from '../web/src/archivedLink.ts';
 
 function memoryStore(): SettingsStore & { data: Map<string, string> } {
   const data = new Map<string, string>();
@@ -45,18 +46,51 @@ function loadFrame() {
 test('a choice made in a linked computer\'s tab is still there after the frame loads again', () => {
   const first = loadFrame();
   saveTheme(first.store, 'dark');
-  saveCompact(first.store, 3);
-  saveStatusDot(first.store, false);
+  saveCompact(first.store, 2);
+  saveStatusDot(first.store, true);
   assert.equal(readTheme(first.own), 'dark', 'applies at once in the frame');
 
   const again = loadFrame();
   assert.equal(readTheme(again.own), 'dark');
-  assert.equal(readCompact(again.own), 3);
-  assert.equal(readStatusDot(again.own), false);
+  assert.equal(readCompact(again.own), 2);
+  assert.equal(readStatusDot(again.own), true);
 
   // Back to a default removes it there too, so the next load does not bring the old choice back.
   saveTheme(again.store, 'system');
   assert.equal(readTheme(loadFrame().own), 'system');
+});
+
+test('the choices that differ from the sidebar\'s defaults survive a frame load, and a default brings no old choice back', () => {
+  const first = loadFrame();
+  saveCompact(first.store, 1);
+  saveStatusDot(first.store, true);
+  saveArchivedLink(first.store, true);
+
+  const again = loadFrame();
+  assert.equal(readCompact(again.own), 1, 'None is kept');
+  assert.equal(readStatusDot(again.own), true, 'the dot on is kept');
+  assert.equal(readArchivedLink(again.own), true, 'Archived on is kept');
+
+  saveCompact(again.store, 3);
+  saveStatusDot(again.store, false);
+  saveArchivedLink(again.store, false);
+  const last = loadFrame();
+  assert.equal(readCompact(last.own), 3);
+  assert.equal(readStatusDot(last.own), false);
+  assert.equal(readArchivedLink(last.own), false);
+});
+
+test('choices a framing page kept while the old defaults held keep their meaning', () => {
+  const first = loadFrame();
+  // As an older Ledung sent them: the dot and Archived switched off, a compact step.
+  first.store.setItem(STATUS_DOT_KEY, '0');
+  first.store.setItem(ARCHIVED_LINK_KEY, '0');
+  first.store.setItem(COMPACT_KEY, '4');
+
+  const again = loadFrame();
+  assert.equal(readStatusDot(again.own), false);
+  assert.equal(readArchivedLink(again.own), false);
+  assert.equal(readCompact(again.own), 4);
 });
 
 test('the framing page keeps each computer\'s choices apart from its own', () => {
