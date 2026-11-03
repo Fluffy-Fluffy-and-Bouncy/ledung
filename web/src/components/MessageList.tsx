@@ -1,6 +1,6 @@
 // A session's history, from Ledung's own copy of every message (want 10), each with its time (want 9).
 // Technical messages (tool calls, results, turn summaries) can be hidden per session (want 8).
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, type CSSProperties } from 'react';
+import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import type { PermissionInfo, QuestionInfo, ShellBlock, StoredMessage } from '../../../src/shared/protocol.ts';
 import { shellFooter } from '../../../src/shared/bang.ts';
 import { quietTexts, type TurnEntry } from '../../../src/shared/quiet-reply.ts';
@@ -14,7 +14,7 @@ import { PermissionCard } from './PermissionCard.tsx';
 import { QuestionCard } from './QuestionCard.tsx';
 import { toolSummary } from './ToolPreview.tsx';
 import { distanceFromBottom, isStuck, restoredScrollTop } from '../scrollAnchor.ts';
-import { insertByTime, shownWoven, wovenQuestions } from '../conversation.ts';
+import { insertByTime, lastOwnMessage, shownWoven, wovenQuestions } from '../conversation.ts';
 
 type Item =
   | { key: string; at: number; type: 'user'; text: string; byLedung: boolean; context: string | null }
@@ -161,6 +161,22 @@ export const MessageList = memo(function MessageList(props: {
   );
   const decisions = useMemo(() => decisionsFrom(messages), [messages]);
   const scroller = useRef<HTMLDivElement>(null);
+  // The person's latest message sticks to the top once it has scrolled above it (issue #102). The copy that sticks
+  // sits in a spot of no height just before the message, so showing or cutting it never moves the chat's place.
+  const own = useMemo(() => lastOwnMessage(items) as Extract<Item, { type: 'user' }> | null, [items]);
+  const pinSpot = useRef<HTMLDivElement>(null);
+  const [pinned, setPinned] = useState(false);
+  const updatePinned = () => {
+    const el = scroller.current, msg = pinSpot.current?.nextElementSibling;
+    setPinned(!!el && !!msg && msg.getBoundingClientRect().top < el.getBoundingClientRect().top);
+  };
+  const showWhole = () => {
+    const el = scroller.current, msg = pinSpot.current?.nextElementSibling;
+    if (!el || !msg) return;
+    const reduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const top = el.scrollTop + msg.getBoundingClientRect().top - el.getBoundingClientRect().top - parseFloat(getComputedStyle(el).paddingTop);
+    el.scrollTo({ top, behavior: reduced ? 'auto' : 'smooth' });
+  };
   const stick = useRef(true);
   /** The question already scrolled to, so later messages don't pull the view away again or back to it. */
   const focused = useRef<string | null>(null);
@@ -189,6 +205,7 @@ export const MessageList = memo(function MessageList(props: {
       }
     }
     if (stick.current) el.scrollTop = el.scrollHeight;
+    updatePinned();
   }, [items, showTechnical, target, hasEarlier]);
 
   useEffect(() => {
@@ -204,6 +221,7 @@ export const MessageList = memo(function MessageList(props: {
     const observer = new ResizeObserver(() => {
       if (el.clientHeight <= 0) return;
       el.scrollTop = restoredScrollTop(stick.current, distance.current, el.scrollHeight, el.clientHeight);
+      updatePinned();
     });
     observer.observe(el);
     return () => observer.disconnect();
@@ -219,33 +237,70 @@ export const MessageList = memo(function MessageList(props: {
         if (d === null) return;
         distance.current = d;
         stick.current = isStuck(d);
+        updatePinned();
       }}
     >
       {props.hasEarlier && (
         <button className="load-earlier" onClick={props.onLoadEarlier}>Load earlier messages</button>
       )}
       {items.map((item) => (
-        <MessageItem
-          key={item.key}
-          item={item}
-          showTechnical={showTechnical}
-          userName={props.userName}
-          tint={props.tint}
-          sessionId={sessionId}
-          onQuote={props.onQuote}
-          onOpenFile={props.onOpenFile}
-          onOpenBoardThread={props.onOpenBoardThread}
-          onOpenQuestion={props.onOpenQuestion}
-          titleOf={item.type === 'question' || item.type === 'permission' ? props.titleOf : undefined}
-          question={item.type === 'question' ? props.questions[item.questionId] : undefined}
-          focused={item.type === 'question' ? item.questionId === focus : item.type === 'assistant' && item.anchor !== undefined && item.anchor === focusMessage}
-          live={item.type === 'permission' ? permissions[item.permissionId] : undefined}
-          decision={item.type === 'permission' ? decisions.get(item.permissionId) : undefined}
-        />
+        <Fragment key={item.key}>
+          {item === own && (
+            <div className="pin-spot" ref={pinSpot}>
+              {pinned && <PinnedMessage text={own.text} at={own.at} userName={props.userName} onShowWhole={showWhole} />}
+            </div>
+          )}
+          <MessageItem
+            item={item}
+            showTechnical={showTechnical}
+            userName={props.userName}
+            tint={props.tint}
+            sessionId={sessionId}
+            onQuote={props.onQuote}
+            onOpenFile={props.onOpenFile}
+            onOpenBoardThread={props.onOpenBoardThread}
+            onOpenQuestion={props.onOpenQuestion}
+            titleOf={item.type === 'question' || item.type === 'permission' ? props.titleOf : undefined}
+            question={item.type === 'question' ? props.questions[item.questionId] : undefined}
+            focused={item.type === 'question' ? item.questionId === focus : item.type === 'assistant' && item.anchor !== undefined && item.anchor === focusMessage}
+            live={item.type === 'permission' ? permissions[item.permissionId] : undefined}
+            decision={item.type === 'permission' ? decisions.get(item.permissionId) : undefined}
+          />
+        </Fragment>
       ))}
     </div>
   );
 });
+
+/** The person's latest message while it sticks: cut to a few lines with a fade when longer; a click shows it whole. */
+function PinnedMessage(props: { text: string; at: number; userName: string; onShowWhole: () => void }) {
+  const body = useRef<HTMLDivElement>(null);
+  const [cut, setCut] = useState(false);
+  useLayoutEffect(() => {
+    const el = body.current;
+    if (el) setCut(el.scrollHeight > el.clientHeight + 1);
+  }, [props.text]);
+  return (
+    <div className="pinned-strip">
+      <div
+        className="msg user pinned"
+        role="button"
+        tabIndex={0}
+        title="Show your whole message"
+        onClick={props.onShowWhole}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            props.onShowWhole();
+          }
+        }}
+      >
+        <div className="msg-meta"><span className="who">{props.userName}</span><time className="time">{formatTime(props.at)}</time></div>
+        <div className="msg-body"><div ref={body} className={`plain pinned-text${cut ? ' cut' : ''}`}>{props.text}</div></div>
+      </div>
+    </div>
+  );
+}
 
 interface ItemProps {
   item: Item;

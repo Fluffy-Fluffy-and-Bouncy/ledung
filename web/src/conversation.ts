@@ -67,3 +67,15 @@ export function insertByTime<T extends { at: number }>(list: readonly T[], extra
 export function shownWoven<Q extends { id: number }>(woven: readonly Q[], showTechnical: boolean, focus: number | null): Q[] {
   return showTechnical ? [...woven] : woven.filter((q) => q.id === focus);
 }
+
+/**
+ * The chat's latest message the person typed, which sticks to the top while the replies scroll under it
+ * (Simon, 2026-11-03, issue #102): not a delivery by Ledung, which also brings a manager's messages.
+ */
+export function lastOwnMessage<T extends { type: string; byLedung?: boolean }>(items: readonly T[]): T | null {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i]!;
+    if (it.type === 'user' && !it.byLedung) return it;
+  }
+  return null;
+}
