@@ -510,7 +510,8 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
   if (r) {
     const run = z.string().min(1).max(20).describe('The run, e.g. "run-3".');
     tools.push(
-      tool('flow_start', `Start a piece of work in your project's workflow (when you route work in, or ${who} asks you to run the workflow on something). Ledung tracks it through the flow and says what to do at its first block; you coordinate it.`, {
+      // A manager routes work in; another session starts a run only when the person asks it (Simon, 2026-11-03).
+      tool('flow_start', `Start a piece of work in your project's workflow (${h.role === 'manager' ? `when you route work in, or ${who} asks` : `only when ${who} asks you`} to run the workflow on something). Ledung tracks it through the flow and says what to do at its first block; you coordinate it.`, {
         title: z.string().min(1).max(120).describe('What the work is, e.g. "Fix the cart total".'),
         ref: z.string().min(1).max(60).optional().describe('An issue or PR, e.g. "#142".'),
         flow: z.string().min(1).max(120).optional().describe('A flow by name or title; default: the main one.'),

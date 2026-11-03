@@ -94,12 +94,21 @@ test('part 3a: a run started by the manager moves through the example flow, the 
   const third = await runs.step('manager-1', { run: 'run-1', outcome: 'changes requested' });
   assert.match(third, /Recorded "Changes requested" for "Code review" \(its 3rd time\): run-1 "Fix the cart total" \(#142\) goes to "Person decides"\. At "Person decides" \(decide\), a person's step: ask Simon \(a question/);
   const run = ports.runs.get('run-1')!;
-  assert.deepEqual(run.counts['code-review'], { 'changes requested': 3 });
+  // Taken its last counted time, the word's count starts again (review of 3a).
+  assert.deepEqual(run.counts['code-review'], { 'changes requested': 0 });
   assert.deepEqual(run.counts.fix, { fixed: 2 });
   assert.equal(run.at, 'decide');
   assert.equal(run.history.length, 7);
   assert.deepEqual({ ...run.history[1], at: 0 }, { block: 'build', word: 'PR opened', n: 1, to: 'code-review', by: 'manager "Manager: shop"', at: 0, note: 'PR #143' });
   assert.ok(changed.length === 8 && changed.every((p) => p === 'shop'));
+  // The person sends it back; the next three rounds go as the first three did: the limit holds every time round.
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Fix again' });
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Fixed' });
+  for (const round of [4, 5]) {
+    assert.match(await runs.step('manager-1', { run: 'run-1', outcome: 'Changes requested' }), /goes to "Fix"/, `round ${round}`);
+    await runs.step('manager-1', { run: 'run-1', outcome: 'Fixed' });
+  }
+  assert.match(await runs.step('manager-1', { run: 'run-1', outcome: 'Changes requested' }), /\(its 3rd time\): .* goes to "Person decides"/);
   // On to the end: the block with no outcomes ends the run with its title.
   await runs.step('manager-1', { run: 'run-1', outcome: 'Go on' });
   await runs.step('manager-1', { run: 'run-1', outcome: 'Accepted' });
@@ -130,11 +139,21 @@ test('part 3a: any session may start a run and coordinates it; the manager may m
   await assert.rejects(runs.step('session-2', { run: 'run-1', outcome: 'Done' }), /coordinated by session "Helper", not by you/);
   await runs.step('manager-1', { run: 'run-1', outcome: 'Done' });
   await assert.rejects(runs.start('manager-1', { title: 'x', flow: 'nope' }), /There is no flow "nope"; the project's flows: main \("Ledung's own process"\), asset \("Asset"\)/);
-  assert.match(await runs.step('session-1', { run: 'run-1', outcome: 'dropped by Simon', stop: true }), /is stopped at "review": dropped by Simon/);
+  assert.match(await runs.step('session-1', { run: 'run-1', outcome: 'dropped by Simon', stop: true }), /is stopped at "Review the asset": dropped by Simon/);
   assert.equal(ports.runs.get('run-1')!.state, 'stopped');
   const status = await runs.status('manager-1');
   assert.match(status, /- run-1 "Asset only", flow "Asset": stopped \(dropped by Simon\)/);
   assert.match(await runs.status('manager-1', 'run-1'), /Counts: Produce: "done" ×1\.\nHistory:\n- .* Produce: "Done" by manager "Manager: shop" → Review the asset\n- .* Review the asset: "stopped" by session "Helper" → end/);
+});
+
+test('part 3a: a run needs a title; a removed project stops its open runs', async () => {
+  const { runs, ports } = await engine();
+  await assert.rejects(runs.start('manager-1', { title: '  ' }), /Give the run a title/);
+  await runs.start('manager-1', { title: 'Open one' });
+  await runs.start('manager-1', { title: 'Ended one', flow: 'asset' });
+  await runs.step('manager-1', { run: 'run-2', outcome: 'x', stop: true });
+  runs.stopProject('shop', 'the project "shop" was removed');
+  assert.deepEqual(ports.runs.list('shop').map((r) => [r.id, r.state, r.ending]), [['run-1', 'stopped', 'the project "shop" was removed'], ['run-2', 'stopped', 'x']]);
 });
 
 test('part 3a: following switched off, the tools say so and no run starts', async () => {
@@ -157,6 +176,10 @@ test('part 3a: the run tools exist only for a session given them, with short des
   assert.deepEqual(toolNames(base).filter((t) => t.startsWith('flow_')), []);
   const runs: RunHandlers = { start: async () => 'started', step: async () => 'stepped', status: async () => 'status' };
   assert.deepEqual(toolNames({ ...base, runs }).filter((t) => t.startsWith('flow_')), ['flow_start', 'flow_step', 'flow_status']);
+  // Only a manager routes work in; another session starts a run when the person asks it.
+  const described = (role: 'manager' | 'session') => (ledungToolServer({ ...base, role, runs }).instance as unknown as { _registeredTools: Record<string, { description?: string }> })._registeredTools.flow_start!.description!;
+  assert.match(described('session'), /only when Simon asks you to run the workflow/);
+  assert.match(described('manager'), /when you route work in, or Simon asks to run the workflow/);
   const tools = (ledungToolServer({ ...base, runs }).instance as unknown as { _registeredTools: Record<string, { description?: string }> })._registeredTools;
   for (const t of ['flow_start', 'flow_step', 'flow_status']) assert.ok(tools[t]!.description!.length < 260, `${t} is short`);
 });

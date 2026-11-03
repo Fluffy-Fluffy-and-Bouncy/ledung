@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { boardConfig, parseProject, workflowsOf } from '../config.ts';
 import { checkFolder, chosenWorkflow, projectWorkflow, withProfilesWarning, type WorkflowCheck } from './workflow.ts';
-import { findFlow, flowInstructions, flowPlaces, readFlows, readFlowView, saveFlowFiles, type FlowPlace } from './flow-files.ts';
+import { flowInstructions, flowPlaces, readFlows, readFlowView, saveFlowFiles, type FlowPlace } from './flow-files.ts';
 import type { FlowView } from '../shared/flow.ts';
 import { remoteControlName } from './remote-control.ts';
 import { loosensGate } from '../projects/gate.ts';
@@ -1117,8 +1117,8 @@ export class SessionManager {
    */
   private async runHandlers(project: ProjectConfig, sessionId: string): Promise<RunHandlers | null> {
     if (project.followFlow === false) return null;
-    const found = await findFlow(this.flowPlacesOf(project)).catch(() => null);
-    if (!found || !('text' in found)) return null;
+    // As the tools read it, so they are offered only when they can work (review of 3a).
+    if (!(await readFlows(this.flowPlacesOf(project)).catch(() => null))) return null;
     const plain = async (fn: () => Promise<string>) => {
       try {
         return await fn();
@@ -1780,6 +1780,7 @@ export class SessionManager {
     await Promise.all(running.map((s) => s.stop(`The project "${name}" was removed.`).catch(() => {})));
     for (const s of running) this.live.delete(s.id);
     this.projectStore.remove(name);
+    this.flowRuns.stopProject(name, `the project "${name}" was removed`);
     // Its secrets, the project's and its sessions', go with it (issue #468).
     void this.secrets?.dropProject(name).catch((e) => console.error(`Secrets of ${name}: ${(e as Error).message}`));
     this.boards?.refresh();

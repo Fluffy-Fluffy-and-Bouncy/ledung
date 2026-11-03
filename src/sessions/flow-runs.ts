@@ -4,7 +4,7 @@
 // counts it, takes the counted outcome on its Nth time and the plain one otherwise, moves the run and says what to do
 // at the next block. Ledung never picks the outcome from text (#1184), and the workflow guides: no locks (#1183).
 import type { SessionInfo } from '../shared/protocol.ts';
-import { DEFAULT_FLOW, flowFileOf, ordinal, type Flow, type FlowBlock } from '../shared/flow.ts';
+import { DEFAULT_FLOW, endingKey, flowFileOf, ordinal, type Flow, type FlowBlock } from '../shared/flow.ts';
 import { decideStep, outcomeList, runLabel, startBlock, type FlowRun, type RunStep } from '../shared/flow-run.ts';
 import type { RunStore } from './run-store.ts';
 
@@ -33,7 +33,7 @@ export interface FlowRunsPorts {
   now?(): number;
 }
 
-/** The longest note a step keeps in the history; the whole note goes on to the next block. */
+/** The longest note a step keeps in the history. */
 const NOTE_KEPT = 600;
 /** How many runs flow_status lists without a run named. */
 const STATUS_LISTED = 20;
@@ -105,6 +105,7 @@ export class FlowRuns {
   start(callerId: string, args: { title: string; ref?: string; flow?: string }): Promise<string> {
     const caller = this.p.getSession(callerId);
     if (!caller) return Promise.reject(new FlowRunError('Your session is not known to Ledung.'));
+    if (!args.title.trim()) return Promise.reject(new FlowRunError('Give the run a title: what the work is.'));
     return this.one(caller.project, async () => {
       const flows = await this.flowsOf(caller.project);
       const name = this.pickFlow(flows, args.flow);
@@ -129,7 +130,7 @@ export class FlowRuns {
     return this.one(caller.project, async () => {
       const run = this.ownRun(callerId, args.run);
       if (run.state === 'ended' || run.state === 'stopped') throw new FlowRunError(`${runLabel(run)} has ${run.state === 'ended' ? `ended (${run.ending})` : 'been stopped'}; start a new run for more work.`);
-      if (args.stop) return this.stopRun(run, args.outcome.trim() || 'stopped', this.who(callerId));
+      if (args.stop) return this.stopRun(run, args.outcome.trim() || 'stopped', this.who(callerId), await this.p.flows(run.project).catch(() => null));
       const flows = await this.flowsOf(run.project);
       const flow = this.flowOf(flows, run);
       const block = flow.blocks.find((b) => b.id === run.at);
@@ -186,8 +187,11 @@ export class FlowRuns {
     } catch (e) {
       throw new FlowRunError(`${(e as Error).message} Nothing was recorded.`);
     }
-    const key = word.trim().toLowerCase();
-    const counts = { ...run.counts, [block.id]: { ...run.counts[block.id], [key]: decision.n } };
+    // After the last counted outcome of its word the count starts again, so "two rounds, then a person" holds every
+    // time round (#318, review of part 3a: a count that never reset let the 4th, 5th... time take the plain outcome).
+    const key = endingKey(word);
+    const last = Math.max(0, ...(block.outcomes ?? []).filter((o) => o.times && endingKey(o.word) === key).map((o) => o.times!));
+    const counts = { ...run.counts, [block.id]: { ...run.counts[block.id], [key]: decision.outcome?.times && decision.outcome.times === last ? 0 : decision.n } };
     const said = decision.kind === 'end' ? decision.word : decision.outcome.word;
     const step: RunStep = {
       block: block.id, word: said, n: decision.n, to: decision.kind === 'move' ? decision.to : null, by, at: this.now(),
@@ -206,11 +210,17 @@ export class FlowRuns {
     return `Recorded "${said}" for "${block.title}"${counted}: ${runLabel(moved)} goes to "${next.title}". ${this.arrival(flows, moved, flow, next)}`;
   }
 
-  private stopRun(run: FlowRun, why: string, by: string): string {
+  private stopRun(run: FlowRun, why: string, by: string, flows: ProjectFlows | null): string {
     const step: RunStep = { block: run.at ?? '', word: 'stopped', n: 1, to: null, by, at: this.now(), note: why.slice(0, NOTE_KEPT) };
     this.p.runs.update(run.id, { state: 'stopped', ending: why, history: [...run.history, step], question: null }, this.now());
     this.p.changed(run.project);
-    return `${runLabel(run)} is stopped at "${run.at}": ${why}.`;
+    const at = flows?.flows.get(run.flow)?.blocks.find((b) => b.id === run.at)?.title ?? run.at;
+    return `${runLabel(run)} is stopped${at ? ` at "${at}"` : ''}: ${why}.`;
+  }
+
+  /** A project removed: its open runs stop, so a project added later under its name doesn't take them over (review of 3a). */
+  stopProject(project: string, why: string): void {
+    for (const run of this.p.runs.list(project, { open: true, limit: 10000 })) this.stopRun(run, why, 'Ledung', null);
   }
 
   /** What to do at a block the run has just reached. */

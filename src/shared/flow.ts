@@ -33,7 +33,8 @@ export type Runs = (typeof RUNS)[number];
 /**
  * One way out of a block (#1184): when the result is `word` (as the manager reads it, not a string Ledung matches), the
  * work goes `to` that block; with `times`, only on that occurrence of the word for one piece of work, which Ledung
- * counts (part 3), the plain one taking the others ("Failed → Planner", "Failed, the 3rd time → Person").
+ * counts (part 3), the plain one taking the others ("Failed → Planner", "Failed, the 3rd time → Person"). Once the
+ * last counted one of a word is taken its count starts again, so the limit holds every time round (#318).
  */
 export interface FlowOutcome {
   word: string;
