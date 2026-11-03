@@ -116,6 +116,7 @@ async function engine(opts: { following?: boolean; flows?: Awaited<ReturnType<ty
     },
     worktreeHost: () => opts.host ?? null,
     worktreeSetup: () => opts.setup,
+    sessionsOf: (_p, run) => store.listSessions().filter((x) => x.runBlock?.run === run).map((x) => x.id),
     workingIn: (_p, folder) => store.listSessions().filter((x) => x.status !== 'ended' && x.workDir === folder).map((x) => x.title),
     tiers: () => ['Blocks a finished PR', 'Process'],
     userName: 'Simon',
@@ -689,6 +690,12 @@ test('part 3f: tidy at the end: archived by default, stopped or kept as the flow
   await a.runs.step('manager-1', { run: 'run-1', outcome: 'Done' });
   assert.match(await a.runs.step('manager-1', { run: 'run-1', outcome: 'Merged' }), /has ended: "Merged"\. Its sessions: 2 archived\./);
   assert.deepEqual(a.archived.sort(), ['block-1', 'block-2']);
+  // A block visited twice had a session each time: both are tidied, not only its latest.
+  const twice = await engine({ flows: flowsOf3({ ...F3, limit: undefined }) });
+  await twice.runs.start('manager-1', { title: 'Two' });
+  for (const outcome of ['Done', 'Changes', 'Fixed']) await twice.runs.step('manager-1', { run: 'run-1', outcome });
+  assert.match(await twice.runs.step('manager-1', { run: 'run-1', outcome: 'Merged' }), /Its sessions: 3 archived\./);
+  assert.deepEqual(twice.archived.sort(), ['block-1', 'block-2', 'block-3']);
   const stop = await engine({ flows: flowsOf3({ ...F3, limit: undefined, tidy: 'stop' }) });
   await stop.runs.start('manager-1', { title: 'One' });
   assert.match(await stop.runs.step('manager-1', { run: 'run-1', outcome: 'x', stop: true }), /Its sessions: 1 stopped\./);

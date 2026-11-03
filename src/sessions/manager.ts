@@ -324,6 +324,7 @@ export class SessionManager {
           : dockerWorktreeHost(config, (command, cwd) => new DockerRunner(config, 'worktree', cwd).shell(command, null, env()));
       },
       worktreeSetup: (name) => this.projectStore.get(name)?.config.worktreeSetup,
+      sessionsOf: (name, run) => this.store.listSessions().filter((s) => s.project === name && s.runBlock?.run === run).map((s) => s.id),
       workingIn: (name, folder) => this.store.listSessions().filter((s) => s.project === name && s.status !== 'ended' && s.workDir === folder).map((s) => s.title),
       lastReply: (id) => lastReplyOf(this.store.listMessages(id, { limit: 200 })),
       ask: (a) => {

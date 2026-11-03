@@ -77,6 +77,8 @@ export interface FlowRunsPorts {
   worktreeSetup(project: string): string | undefined;
   /** Sessions not ended that work in this folder (review of 3f): a worktree is never removed under them. */
   workingIn(project: string, folder: string): string[];
+  /** Every session a run's blocks started, a block's earlier ones too (a new session on each visit). */
+  sessionsOf(project: string, run: string): string[];
   /** The project's question tiers, in order. */
   tiers(project: string): string[];
   userName: string;
@@ -443,7 +445,9 @@ export class FlowRuns {
     if (mode === 'keep') return '';
     // A session another open run still uses (its parent's, handed on as the caller's) is that run's.
     const others = new Set(this.p.runs.list(run.project, { open: true, limit: 10000 }).filter((r) => r.id !== run.id).flatMap((r) => Object.values(r.sessions)));
-    const ids = [...new Set(Object.entries(run.sessions).filter(([k]) => k !== CALLER).map(([, id]) => id))].filter((id) => !others.has(id));
+    // Its blocks' sessions as they are now, and the ones a block had on an earlier visit (the try-out of 3f: a first
+    // review's session was left out).
+    const ids = [...new Set([...Object.entries(run.sessions).filter(([k]) => k !== CALLER).map(([, id]) => id), ...this.p.sessionsOf(run.project, run.id)])].filter((id) => !others.has(id));
     const done: string[] = [];
     const working: string[] = [];
     for (const id of ids) {
