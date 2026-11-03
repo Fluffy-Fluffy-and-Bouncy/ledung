@@ -53,6 +53,8 @@ test('part 3e: a proposal is what would be written, the flows before and after, 
   assert.deepEqual(p.flows.map((f) => [f.name, f.before?.flow?.blocks.length, f.after?.flow?.blocks.length]), [['main', 8, 9]]);
   assert.deepEqual(p.texts, [{ file: 'briefs/second.md', before: null, after: '# Second reviewer\n\nRead the PR again.\n' }]);
   assert.deepEqual(p.problems.filter((x) => !x.hint), []);
+  // The example's frames are fitted round the page's own layout, and a block added moves the others: said as a hint.
+  assert.deepEqual(p.problems.filter((x) => x.hint && x.at === 'flow.json: frames').length, 1);
   assert.match(proposalSummary(p), /^- flow\.json \("Ledung's own process"\): adds Second review; changes Code review\n- briefs\/second\.md: new$/);
   // A brief named but not given is found by the checks, as the builder's would.
   const missing = await buildProposal(view, [{ file: 'flow.json', text: withSecondReview(dir) }], 'x');
@@ -120,6 +122,7 @@ test('part 3e: a proposal is a review to Simon; Accepted saves it through the bu
   assert.equal(q.details!.review!.solving, 'Simon wants a second reviewer before his review.');
   assert.match(q.details!.review!.done, /Manager: shop proposes this change to shop's workflow:\n\n- flow\.json \("Ledung's own process"\): adds Second review; changes Code review\n- briefs\/second\.md: new/);
   assert.match(q.details!.review!.notes!, /The checks find no problems/);
+  assert.match(q.details!.review!.notes!, /Hints:\n\n- flow\.json: frames: Its frames are drawn where they say.*Auto-arrange in the builder/);
   // Nothing is written yet.
   assert.equal(flowJson(dir).blocks.length, 8);
   const shown = manager.flowProposal('shop', q.details!.flowProposal!);

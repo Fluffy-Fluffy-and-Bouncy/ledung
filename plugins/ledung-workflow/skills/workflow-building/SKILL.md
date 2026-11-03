@@ -39,6 +39,8 @@ Read the current files first with your own file tools (`.ledung/workflow/flow.js
 
 `start` is where work enters (default: the first block). `overlays` and `frames` may be left out.
 
+Keep what is drawn: leave each block's `at` (its place on the canvas) and the `frames` as they are, and give a new block an `at` near its neighbours. Frames are rectangles where they say; when the blocks have no `at`, the page lays them out itself, and adding or removing a block moves the others, perhaps out of their frames (the review says so; the person can Auto-arrange in the builder after saving).
+
 ## A block
 
 | Field | What |

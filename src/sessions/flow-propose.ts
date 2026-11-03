@@ -94,6 +94,19 @@ export async function buildProposal(view: FlowView, changes: ProposedChange[], w
     ...result.problems,
     ...result.flows.flatMap((f) => f.problems.map((p) => ({ ...p, at: `${f.file}: ${p.at}` }))),
   ];
+  // Frames are rectangles where they say, and blocks with no position are laid out by the page (#446): a block added or
+  // taken out moves the others, so they may leave their frames. Said, as the builder would pin them (seen in the try-out).
+  for (const f of flows) {
+    const was = f.before?.flow;
+    const is = f.after?.flow;
+    if (!was || !is || !is.frames.length || is.blocks.every((b) => b.at)) continue;
+    const ids = (x: Flow) => x.blocks.map((b) => b.id).sort().join();
+    if (ids(was) === ids(is)) continue;
+    problems.push({
+      at: `${f.after!.file}: frames`, hint: true,
+      message: `Its frames are drawn where they say, and its blocks have no positions of their own, so with blocks added or taken out the page lays them out anew and some may fall outside their frames (the diagrams show it). After saving, Auto-arrange in the builder fits the frames round their blocks again.`,
+    });
+  }
   const titles = Object.fromEntries([...old, ...now].map((f) => [f.name, f.title]));
   return { why: why.trim(), writes, flows, texts, problems, titles, read: { ...view.versions }, createdAt: Date.now() };
 }
