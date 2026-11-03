@@ -132,7 +132,7 @@ test("the paragraph is part of the instructions Claude Code's tool server limit 
   const dir = projectFolder(true);
   const project = parseProject({ name: 'p', runner: 'local', path: dir }) as LocalProjectConfig;
   const w = projectWorkflow(WORKFLOW, project)!;
-  const limitFor = async (workflow: typeof w | null) => {
+  const limitFor = async (workflow: typeof w | null, flow?: () => Promise<string | null>) => {
     const store = new Store(openDatabase(':memory:'));
     const management = new Management({
       store, userName: 'Simon', publish: () => {}, wake: () => {}, resume: async () => {},
@@ -145,7 +145,7 @@ test("the paragraph is part of the instructions Claude Code's tool server limit 
     });
     const info = store.createSession({ id: 's', project: 'p', runner: 'local', title: 'Lead', parentId: null, permissionMode: 'default', role: 'manager' });
     const session = new Session({
-      info, store, publish: () => {}, userName: 'Simon', management, workflow,
+      info, store, publish: () => {}, userName: 'Simon', management, workflow, flow,
       runner: new LocalRunner(project),
       gate: { mayStart: () => true, started: () => {}, ended: () => {} },
     });
@@ -155,6 +155,11 @@ test("the paragraph is part of the instructions Claude Code's tool server limit 
     // A manager's instructions already run past the default limit, so the limit is their length; the
     // paragraph comes after a blank line, so it raises the limit by its own length and two line breaks.
     assert.equal(await limitFor(w) - await limitFor(null), workflowInstructions(w, 'manager').length + 2);
+    // The flow's line (issue #310) follows the workflow's, or stands alone, and the limit covers it too.
+    const line = 'The process is drawn in x/flow.json.';
+    assert.equal(await limitFor(w, async () => line) - await limitFor(w), line.length + 1);
+    assert.equal(await limitFor(null, async () => line) - await limitFor(null), line.length + 2);
+    assert.equal(await limitFor(null, async () => null), await limitFor(null));
   } finally {
     if (own !== undefined) process.env[MCP_LIMIT_ENV] = own;
     removeTemp(dir);

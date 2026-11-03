@@ -15,6 +15,9 @@ is nothing user-facing in it).
 - Long-lived tokens work for accounts: run `ledung account token <name>` in your own terminal, the command is shown with a copy button when you add an account and under each account, and Accounts now shows whether each is signed in with a token or `/login` (#85)
 
 ## 2026-11-02
+- New **workflow page**: a project's process drawn from `.ledung/workflow/` as blocks with outcome arrows ("Failed (3rd time)"), frames and a tab per flow, with each block's brief, the standing rules and any problems in the files; a list on a phone. Open it from the project's tab in Settings → Workflow, or its manager's ⚙. (Fluffy-Fluffy-and-Bouncy/Project-Ledung#310, Fluffy-Fluffy-and-Bouncy/Project-Ledung#318, Fluffy-Fluffy-and-Bouncy/Project-Ledung#446, Fluffy-Fluffy-and-Bouncy/Project-Ledung#447)
+- The workflow page's **Edit** draws and changes a workflow on a canvas (blocks, outcomes, sub-steps, frames, overlays, other flows) with the checks live, and **Save** writes the files into the project's own `.ledung/workflow`; a project without one starts empty or from a starter. (Fluffy-Fluffy-and-Bouncy/Project-Ledung#311, Fluffy-Fluffy-and-Bouncy/Project-Ledung#318, Fluffy-Fluffy-and-Bouncy/Project-Ledung#322, Fluffy-Fluffy-and-Bouncy/Project-Ledung#446, Fluffy-Fluffy-and-Bouncy/Project-Ledung#447)
+- A project's manager is told where its drawn workflow is, and its other flows by name. (Fluffy-Fluffy-and-Bouncy/Project-Ledung#310, Fluffy-Fluffy-and-Bouncy/Project-Ledung#447)
 - Open folder on an account now says in the page why it failed instead of doing nothing, and on Windows the folder window is no longer asked to open hidden (#83)
 - Ledung no longer fails to start on a Mac when the system can't say who the user is (#83)
 - A request whose address doesn't parse is now refused with a 400, also on the live connection, without an error in the log (Fluffy-Fluffy-and-Bouncy/Project-Ledung#467)

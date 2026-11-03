@@ -1,0 +1,52 @@
+{
+  "$comment": "Ledung's own process as a flow (issues #310, #322, docs/steps/workflow-builder.md): the example for the format, its tests and the workflow page's screenshots. Its frames (#446) are fitted round the blocks where the page lays them out. Work that needs an asset runs the asset flow first (flows/asset.json, #447).",
+  "version": 1,
+  "title": "Ledung's own process",
+  "start": "issue",
+  "manager": "manager.md",
+  "blocks": [
+    {
+      "id": "issue", "kind": "work", "title": "Issue", "runs": "manager", "brief": "briefs/issue.md",
+      "outcomes": [{ "word": "Ready", "to": "build" }, { "word": "Needs an asset", "to": "asset" }]
+    },
+    {
+      "id": "asset", "kind": "flow", "title": "Make the asset", "flow": "asset",
+      "outcomes": [{ "word": "Ready", "to": "build" }, { "word": "Rejected", "end": true }]
+    },
+    {
+      "id": "build", "kind": "work", "title": "Build", "runs": "new-session", "model": "opus", "brief": "briefs/builder.md",
+      "substeps": [
+        {
+          "id": "self-review", "kind": "check", "title": "Self-review", "brief": "briefs/reviewer.md", "model": "sonnet", "when": "done",
+          "outcomes": [{ "word": "No findings", "to": "done" }, { "word": "Findings", "to": "owner" }, { "word": "Findings", "times": 3, "to": "report" }]
+        }
+      ],
+      "outcomes": [{ "word": "PR opened", "to": "code-review" }]
+    },
+    {
+      "id": "code-review", "kind": "check", "title": "Code review", "runs": "new-session", "model": "opus", "brief": "briefs/reviewer.md",
+      "outcomes": [
+        { "word": "Approved", "to": "functional-review" },
+        { "word": "Changes requested", "to": "fix" },
+        { "word": "Changes requested", "times": 3, "to": "decide" }
+      ]
+    },
+    { "id": "fix", "kind": "work", "title": "Fix", "runs": "continue", "continues": "build", "brief": "briefs/builder.md", "outcomes": [{ "word": "Fixed", "to": "code-review" }] },
+    {
+      "id": "decide", "kind": "person", "title": "Person decides", "runs": "person", "ask": "question", "brief": "briefs/decide.md",
+      "outcomes": [{ "word": "Go on", "to": "functional-review" }, { "word": "Fix again", "to": "fix" }]
+    },
+    {
+      "id": "functional-review", "kind": "person", "title": "Functional review", "runs": "person", "ask": "review", "brief": "briefs/functional-review.md",
+      "outcomes": [{ "word": "Accepted", "to": "merge" }, { "word": "Changes needed", "to": "fix" }]
+    },
+    { "id": "merge", "kind": "work", "title": "Merge + release", "runs": "manager", "brief": "briefs/merge.md" }
+  ],
+  "overlays": [
+    { "id": "check-before-push", "title": "Check before every push", "file": "overlays/check-before-push.md", "blocks": ["build", "fix"] }
+  ],
+  "frames": [
+    { "id": "planning", "title": "Planning", "colour": "blue", "at": { "x": 291, "y": -42 }, "size": { "width": 258, "height": 194 } },
+    { "id": "building", "title": "Building", "colour": "green", "at": { "x": -14, "y": 306 }, "size": { "width": 588, "height": 466 } }
+  ]
+}
