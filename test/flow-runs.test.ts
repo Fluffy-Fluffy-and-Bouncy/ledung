@@ -548,3 +548,18 @@ test('part 3d: followed: a wait waits, sub-steps at once, the caller\'s session 
   assert.equal(ports.runs.get('run-1')!.state, 'ended');
   assert.equal(ports.runs.get('run-1')!.ending, 'Ship it');
 });
+
+test('part 3c review: the page gets every open run and only the latest others', () => {
+  const store = new Store(openDatabase(':memory:'));
+  const runs = new RunStore(store.database);
+  for (let i = 0; i < 40; i++) {
+    const r = runs.create({ project: 'shop', title: `done ${i}`, ref: null, flow: 'main', at: 'issue', coordinator: 'm', parent: null, now: i });
+    runs.update(r.id, { state: 'ended', ending: 'x' }, 100 + i);
+  }
+  runs.create({ project: 'shop', title: 'open 1', ref: null, flow: 'main', at: 'issue', coordinator: 'm', parent: null, now: 1 });
+  runs.create({ project: 'shop', title: 'open 2', ref: null, flow: 'main', at: 'issue', coordinator: 'm', parent: null, now: 2 });
+  const page = runs.forPage('shop');
+  assert.equal(page.length, 32);
+  assert.deepEqual(page.filter((r) => r.state === 'running').map((r) => r.title).sort(), ['open 1', 'open 2']);
+  assert.ok(page.some((r) => r.title === 'done 39') && !page.some((r) => r.title === 'done 0'));
+});

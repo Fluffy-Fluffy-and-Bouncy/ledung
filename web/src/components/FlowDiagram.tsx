@@ -35,8 +35,8 @@ export type BlockData = {
   runsFlow?: string | null;
   /** The runs at this block now (workflow part 3c): a marker each, above the block. */
   runs?: { id: string; label: string; title: string; waiting: boolean }[];
-  /** Per outcome, its counted pin's progress ("Failed 2 of 3"), or null (part 3c). */
-  counts?: (string | null)[];
+  /** Per outcome, its counted pin's progress, or null (part 3c): "2 of 3" on the pin beside its word. */
+  counts?: ({ short: string; full: string } | null)[];
   /** On the chosen run's path (part 3c); `here`: where it is now. */
   path?: 'passed' | 'here';
 };
@@ -60,7 +60,7 @@ function BlockNode({ data }: NodeProps<Node<BlockData>>) {
     <div className={`flow-block kind-${b.kind}${data.selected ? ' selected' : ''}${data.problem ? ' has-problem' : ''}${data.marked ? ' marked' : ''}${data.path ? ` on-path ${data.path}` : ''}`} style={{ width: size.width, minHeight: size.height }} title={data.hasBrief ? 'Open its brief' : 'Show this block'}>
       {!!data.runs?.length && (
         // Above the block, so a block with runs in it is laid out as one without (part 3c).
-        <div className="flow-run-markers" aria-label={`${data.runs.length === 1 ? 'One run' : `${data.runs.length} runs`} here`}>
+        <div className="flow-run-markers" role="group" aria-label={`${data.runs.length === 1 ? 'One run' : `${data.runs.length} runs`} here`}>
           {data.runs.slice(0, 3).map((r) => <span key={r.id} className={`flow-run-marker${r.waiting ? ' waiting' : ''}`} title={r.title}>● {r.label}</span>)}
           {data.runs.length > 3 && <span className="flow-run-marker more" title={data.runs.slice(3).map((r) => r.title).join('\n')}>+{data.runs.length - 3}</span>}
         </div>
@@ -107,7 +107,7 @@ function BlockNode({ data }: NodeProps<Node<BlockData>>) {
             return (
               <li key={j} className={`flow-pin${o.to === undefined && !o.end ? ' loose' : ''}${o.end ? ' ends' : ''}${o.times ? ' counted' : ''}${data.counts?.[j] ? ' has-count' : ''}${data.focusOutcome === j ? ' chosen' : ''}`} title={o.end ? `${name}: ends the flow` : o.to === undefined ? `${name}: leads nowhere yet; drag its dot to a block` : name}>
                 <span className="flow-pin-word">{name}</span>
-                {data.counts?.[j] && <span className="flow-pin-count" title="How far a run has counted this outcome's word">{data.counts[j]}</span>}
+                {data.counts?.[j] && <span className="flow-pin-count" title={`${data.counts[j]!.full}: how far a run has counted this outcome's word`}>{data.counts[j]!.short}</span>}
                 {o.end && <span className="flow-pin-end">■ end</span>}
                 <Handle type="source" position={Position.Right} id={`o${j}`} className="h-pin" />
               </li>

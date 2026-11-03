@@ -218,9 +218,9 @@ export class FlowRuns {
     return runs.map((r) => `- ${runLabel(r)}, flow "${flows?.titles.get(r.flow) ?? r.flow}": ${this.stateLine(r, titleOf(r, r.at))}`).join('\n');
   }
 
-  /** The project's runs for the page, the latest changed first. */
+  /** The project's runs for the page, the latest changed first: the open ones and the latest others. */
   list(project: string): FlowRun[] {
-    return this.p.runs.list(project);
+    return this.p.runs.forPage(project);
   }
 
   // --- moving a run ----------------------------------------------------------------------------------

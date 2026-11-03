@@ -587,6 +587,7 @@ export function App() {
                 <WorkflowView
                   project={openId.slice(3)}
                   liveRuns={ledung.runs[openId.slice(3)]}
+                  connected={ledung.hellos}
                   // The flow it shows is in the address (#447): each one opened is a step Back and Forward go through.
                   shownFlow={workflowFromHash(hash)?.flow ?? null}
                   onShowFlow={(name) => { location.hash = workflowHash(openId.slice(3), name); }}
@@ -1062,7 +1063,7 @@ export function SessionView(props: {
             // The run and block it serves (workflow part 3c), linked to the workflow page.
             <div className="muted run-line">
               Workflow:{' '}
-              <a href={workflowHash(session.project, session.runBlock.flow)} title="Show the run on the workflow page">
+              <a href={workflowHash(session.project, session.runBlock.flow)} title="Open the workflow page, where the Runs list shows the run">
                 {session.runBlock.run}{session.runBlock.runTitle ? ` "${session.runBlock.runTitle}"` : ''} · {session.runBlock.blockTitle ?? session.runBlock.block}
               </a>
             </div>

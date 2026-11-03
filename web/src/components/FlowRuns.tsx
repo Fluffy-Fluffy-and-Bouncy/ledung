@@ -1,6 +1,7 @@
 // Runs on the workflow page (workflow part 3c, docs/steps/workflow-follow.md): a marker on each block with the runs in
 // it, a counted pin's progress ("Failed 2 of 3"), and the Runs list beside the rules, each run's flow, block, state and
 // history; choosing one marks its path through the diagram.
+import { useEffect, useState } from 'react';
 import type { FlowRun } from '../../../src/shared/flow-run.ts';
 import { openRun as open } from '../flowRuns.ts';
 import type { QuestionRun } from '../../../src/shared/questions.ts';
@@ -16,17 +17,33 @@ function since(at: number, now = Date.now()): string {
 }
 
 function stateLine(r: FlowRun, blockTitle: (flow: string, id: string) => string): string {
-  if (r.state === 'ended') return `ended "${r.ending}"`;
-  if (r.state === 'stopped') return `stopped: ${r.ending}`;
+  if (r.state === 'ended') return r.ending ? `ended "${r.ending}"` : 'ended';
+  if (r.state === 'stopped') return r.ending ? `stopped: ${r.ending}` : 'stopped';
   const at = r.at ? blockTitle(r.flow, r.at) : '?';
   return r.state === 'waiting' ? `waiting at ${at} for ${since(r.atSince)}` : `at ${at}`;
 }
 
 /** The Runs list (part 3c): open ones first, then the latest ended; a run chosen shows its history and marks its path. */
-export function RunsPanel({ runs, chosen, onChoose, flowTitle, blockTitle }: {
+export function RunsPanel({ runs, chosen, onChoose, flowTitle, blockTitle, error }: {
   runs: readonly FlowRun[]; chosen: string | null; onChoose: (id: string | null) => void;
   flowTitle: (name: string) => string; blockTitle: (flow: string, id: string) => string;
+  /** The runs could not be read: said, rather than shown as none. */
+  error?: string | null;
 }) {
+  // "Waiting for 5 min" goes on counting while the page is open (review of 3c).
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => tick((n) => n + 1), 60_000);
+    return () => clearInterval(t);
+  }, []);
+  if (error && !runs.length) {
+    return (
+      <div className="flow-panel-body flow-runs">
+        <h3>Runs</h3>
+        <p className="flow-problem-inline">The runs could not be read: {error}</p>
+      </div>
+    );
+  }
   if (!runs.length) {
     return (
       <div className="flow-panel-body flow-runs">
@@ -35,7 +52,9 @@ export function RunsPanel({ runs, chosen, onChoose, flowTitle, blockTitle }: {
       </div>
     );
   }
-  const shown = [...runs.filter(open), ...runs.filter((r) => !open(r)).slice(0, 10)];
+  // The chosen one always, so its path can be unmarked again (review of 3c).
+  const ended = runs.filter((r) => !open(r));
+  const shown = [...runs.filter(open), ...ended.slice(0, 10), ...ended.slice(10).filter((r) => r.id === chosen)];
   return (
     <div className="flow-panel-body flow-runs">
       <h3>Runs</h3>
@@ -69,7 +88,7 @@ export function RunsPanel({ runs, chosen, onChoose, flowTitle, blockTitle }: {
 export function RunLine({ run, project }: { run: QuestionRun; project: string }) {
   return (
     <div className="muted run-line">
-      Workflow: <a href={workflowHash(project, run.flow)} title="Show the run on the workflow page">{run.run} "{run.runTitle}" · {run.blockTitle}</a>
+      Workflow: <a href={workflowHash(project, run.flow)} title="Open the workflow page, where the Runs list shows the run">{run.run} "{run.runTitle}" · {run.blockTitle}</a>
       {run.person ? <> · <span className="chip" title="Whose call this is, as the workflow says">{run.person}'s call</span></> : null}
       {' '}· your answer moves the run
     </div>

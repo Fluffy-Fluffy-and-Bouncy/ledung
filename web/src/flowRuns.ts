@@ -6,7 +6,8 @@ import type { FlowRun } from '../../src/shared/flow-run.ts';
 /** What the diagram shows of the runs, by block id. */
 export interface RunMarks {
   at: Map<string, { id: string; label: string; title: string; waiting: boolean }[]>;
-  counts: Map<string, (string | null)[]>;
+  /** Per outcome of a block, its counted pin's progress: "2 of 3" on the pin, the whole ("Failed 2 of 3") in the list. */
+  counts: Map<string, ({ short: string; full: string } | null)[]>;
   path: Map<string, 'passed' | 'here'>;
 }
 
@@ -35,7 +36,7 @@ export function pinCounts(flow: Flow | null, runs: readonly FlowRun[], flowName:
   return new Map((flow?.blocks ?? []).map((b) => [b.id, (b.outcomes ?? []).map((o) => {
     if (!o.times) return null;
     const n = Math.max(0, ...counting.map((r) => r.counts[b.id]?.[endingKey(o.word)] ?? 0));
-    return n ? `${o.word} ${Math.min(n, o.times)} of ${o.times}` : null;
+    return n ? { short: `${Math.min(n, o.times)} of ${o.times}`, full: `${o.word} ${Math.min(n, o.times)} of ${o.times}` } : null;
   })]));
 }
 

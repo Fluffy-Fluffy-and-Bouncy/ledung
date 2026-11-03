@@ -59,6 +59,13 @@ export class RunStore {
     return this.db.prepare(`SELECT * FROM flow_runs WHERE project = ?${open} ORDER BY updated_at DESC, id DESC LIMIT ?`).all(project, opts.limit ?? 200).map(toRun);
   }
 
+  /** For the page: every open run, and the latest `ended` of the others (review of 3c: each change goes to every page). */
+  forPage(project: string, ended = 30): FlowRun[] {
+    return this.db.prepare(`SELECT * FROM flow_runs WHERE project = ? AND (state IN ('running', 'waiting') OR id IN (
+      SELECT id FROM flow_runs WHERE project = ? AND state NOT IN ('running', 'waiting') ORDER BY updated_at DESC, id DESC LIMIT ?)) ORDER BY updated_at DESC, id DESC`)
+      .all(project, project, ended).map(toRun);
+  }
+
   /** The run a person block's question belongs to. */
   byQuestion(question: number): FlowRun | undefined {
     const row = this.db.prepare(`SELECT * FROM flow_runs WHERE question = ? AND state IN ('running', 'waiting')`).get(question);

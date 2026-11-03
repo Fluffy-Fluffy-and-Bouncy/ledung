@@ -37,8 +37,9 @@ test("part 3c: a counted pin shows how far a run has got, the chosen run's or th
   const review = main.blocks.findIndex((x) => x.id === 'code-review');
   const pins = (chosen: FlowRun | null) => pinCounts(main, [a, b, ended], 'main', chosen).get(main.blocks[review]!.id);
   // Only the counted pin ("Changes requested (3rd time)", the third) shows it; the plain ones show nothing.
-  assert.deepEqual(pins(null), [null, null, 'Changes requested 2 of 3']);
-  assert.deepEqual(pins(b), [null, null, 'Changes requested 1 of 3']);
+  // "2 of 3" on the pin beside its word; the whole in its title and in the phone list (review of 3c).
+  assert.deepEqual(pins(null), [null, null, { short: '2 of 3', full: 'Changes requested 2 of 3' }]);
+  assert.deepEqual(pins(b)![2]!.full, 'Changes requested 1 of 3');
   // A run chosen in another flow counts nothing here.
   assert.deepEqual(pins(run({ id: 'run-9', flow: 'asset' })), [null, null, null]);
 });

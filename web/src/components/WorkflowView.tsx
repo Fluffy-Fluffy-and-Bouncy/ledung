@@ -113,7 +113,7 @@ function BlockList({ flow, layout, texts, onSelect, flowTitle, marks }: { flow: 
               return <span key={`s${i}`} className="flow-list-substep">{t.head} · {t.detail}{t.outcomes ? ` · ${t.outcomes}` : ''}{t.note ? ` · ${t.note}` : ''}</span>;
             })}
             {arrowsFrom(layout, b.id).map((line, i) => <span key={i} className="flow-list-arrow">{line}</span>)}
-            {(marks.counts.get(b.id) ?? []).filter(Boolean).map((c, i) => <span key={`c${i}`} className="flow-pin-count">{c}</span>)}
+            {(marks.counts.get(b.id) ?? []).map((c, i) => c && <span key={`c${i}`} className="flow-pin-count">{c.full}</span>)}
             {b.brief && texts[b.brief] !== undefined && <span className="flow-block-brief">📄 {b.brief.split('/').pop()}</span>}
           </button>
         </li>
@@ -233,10 +233,12 @@ function notEditable(view: FlowView): string | null {
   return null;
 }
 
-export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowFlow, onRenamedFlow, liveRuns }: {
+export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowFlow, onRenamedFlow, liveRuns, connected = 0 }: {
   project: string; profiles: string[]; onSettings: () => void;
   /** The project's runs as the live connection last sent them (part 3c); none yet: those read on opening. */
   liveRuns?: FlowRun[];
+  /** The live connection's hellos: a reconnect reads the runs again (review of 3c). */
+  connected?: number;
   /**
    * The flow shown, from the address (#447): null for the default one. Showing another is a history entry
    * (`onShowFlow`), so Back steps through the flows viewed; a flow renamed in the builder replaces its entry.
@@ -264,11 +266,12 @@ export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowF
   }, [project]);
   // Its runs (part 3c): read on opening, then as the live connection sends them; one chosen shows its path.
   const [readRuns, setReadRuns] = useState<FlowRun[]>([]);
+  const [runsError, setRunsError] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
-    api.runs(project).then((r) => live && setReadRuns(r), () => {});
+    api.runs(project).then((r) => { if (live) { setReadRuns(r); setRunsError(null); } }, (e: Error) => live && setRunsError(e.message));
     return () => { live = false; };
-  }, [project]);
+  }, [project, connected]);
   const runs = liveRuns ?? readRuns;
   const [chosenRun, setChosenRun] = useState<string | null>(null);
   const flows = useMemo(() => (view ? flowsOf(view) : []), [view]);
@@ -295,6 +298,7 @@ export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowF
     const r = runs.find((x) => x.id === id);
     if (r && r.flow !== shownName) onShowFlow(r.flow);
   };
+  const runsPanel = <RunsPanel runs={runs} chosen={chosenRun} onChoose={chooseRun} flowTitle={flowNameTitle} error={runsError} blockTitle={(f, id) => flows.find((x) => x.name === f)?.flow?.blocks.find((b) => b.id === id)?.title ?? id} />;
   const managerShown = manager && !!view?.flow?.manager;
   const showDiagram = !narrow || diagramOnPhone;
   const source = view?.source;
@@ -376,6 +380,13 @@ export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowF
       {view && layout && (
         <div className={`flow-main${(block || managerShown) && narrow ? ' block-open' : ''}`}>
           <div className="flow-drawing">
+            {/* On a phone the Runs list comes before the blocks, so a run chosen marks a path that is in view (review of 3c). */}
+            {narrow && runs.length > 0 && (
+              <details className="flow-runs-fold" open={runs.some((r) => r.state === 'running' || r.state === 'waiting')}>
+                <summary>Runs ({runs.filter((r) => r.state === 'running' || r.state === 'waiting').length} under way)</summary>
+                {runsPanel}
+              </details>
+            )}
             {narrow && (
               <div className="flow-switch" role="group" aria-label="Show as">
                 <button className={`small${showDiagram ? '' : ' on'}`} aria-pressed={!showDiagram} onClick={() => setDiagramOnPhone(false)}>List</button>
@@ -392,7 +403,7 @@ export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowF
               : managerShown
                 ? <ManagerPanel flow={view.flow!} texts={view.texts} onClose={() => setManager(false)} />
                 : <>
-                  <RunsPanel runs={runs} chosen={chosenRun} onChoose={chooseRun} flowTitle={flowNameTitle} blockTitle={(f, id) => flows.find((x) => x.name === f)?.flow?.blocks.find((b) => b.id === id)?.title ?? id} />
+                  {!(narrow && runs.length > 0) && runsPanel}
                   <Rules view={view} onManager={openManager} />
                 </>}
           </aside>

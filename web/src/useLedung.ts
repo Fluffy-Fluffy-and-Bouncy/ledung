@@ -126,6 +126,8 @@ export function useLedung(openSessionId: string | null) {
             secretsChanged(event.sessionId, event.secrets);
             break;
           case 'hello':
+            // What the live connection sent of runs before may be out of date; the page reads them again (review of 3c).
+            setRuns({});
             // Reconnected to another release (after a restart): offer its page rather than reloading
             // under Simon's hands (decision of 2026-10-13).
             if (buildRef.current === null) buildRef.current = event.build;

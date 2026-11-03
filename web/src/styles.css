@@ -1731,7 +1731,9 @@ button.settings-menu-item.danger { color: var(--danger); }
 
 /* Runs on the workflow page (workflow part 3c): markers above a block with the runs in it, a counted pin's progress, the
    chosen run's path, and the Runs list beside the rules. The markers sit above the block so the layout is unchanged. */
-.flow-run-markers { position: absolute; bottom: 100%; left: -1px; display: flex; gap: 3px; margin-bottom: 3px; max-width: calc(100% + 2px); }
+/* On the right half, clear of the arrow that comes in at the middle of the top (review of 3c). */
+.flow-block { position: relative; }
+.flow-run-markers { position: absolute; bottom: 100%; right: -1px; display: flex; justify-content: flex-end; gap: 3px; margin-bottom: 3px; max-width: calc(50% - 8px); }
 .flow-run-marker { font-size: 10px; line-height: 16px; padding: 0 6px; border-radius: 8px; background: var(--accent); color: var(--accent-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
 .flow-run-marker.waiting { background: var(--warn-bg); color: var(--text); border: 1px solid var(--warn-border); line-height: 14px; }
 .flow-run-marker.more { background: var(--panel); color: var(--muted); border: 1px solid var(--border); line-height: 14px; }
@@ -1740,8 +1742,9 @@ button.settings-menu-item.danger { color: var(--danger); }
 .flow-pin-count { flex: none; font-size: 10px; line-height: 14px; margin-top: 2px; padding: 0 5px; border-radius: 7px; background: var(--warn-bg); border: 1px solid var(--warn-border); color: var(--text); white-space: nowrap; }
 .flow-list-item .flow-pin-count { display: inline-block; margin: 2px 4px 0 0; }
 .flow-list-item .flow-block-top .flow-run-marker { margin-left: 0.4rem; display: inline-block; }
-.flow-block.on-path { box-shadow: 0 0 0 2px var(--ok); }
-.flow-block.on-path.here { box-shadow: 0 0 0 3px var(--accent); }
+/* An outline, so a problem's or an overlay's ring stays seen (review of 3c). */
+.flow-block.on-path { outline: 2px dashed var(--ok); outline-offset: 3px; }
+.flow-block.on-path.here { outline: 3px solid var(--accent); outline-offset: 3px; }
 .flow-list-item.on-path { border-left: 3px solid var(--ok); }
 .flow-list-item.on-path.here { border-left-color: var(--accent); }
 .flow-runs { border-bottom: 1px solid var(--border); }
@@ -1754,3 +1757,5 @@ button.settings-menu-item.danger { color: var(--danger); }
 .flow-run-history { margin: 6px 0 4px; padding-left: 1.3rem; font-size: 0.85rem; display: flex; flex-direction: column; gap: 3px; }
 .flow-run-note { white-space: pre-wrap; overflow-wrap: anywhere; }
 .run-line a { color: inherit; text-decoration: underline dotted; }
+.flow-runs-fold { margin: 0 0 0.5rem; }
+.flow-runs-fold > summary { cursor: pointer; padding: 0.5rem 0; min-height: 44px; box-sizing: border-box; display: flex; align-items: center; font-weight: 600; }
