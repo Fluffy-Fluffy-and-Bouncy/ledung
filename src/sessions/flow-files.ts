@@ -383,13 +383,37 @@ export async function saveFlowFiles(place: FlowPlace, given: unknown): Promise<v
 }
 
 /**
+ * A project's flows for following them (workflow part 3): flow.json and each flows/<name>.json that reads as a flow,
+ * by name, without the texts the page needs; null when the project has no flow.json Ledung can read.
+ */
+export async function readFlows(places: FlowPlace[]): Promise<{ folder: string; flows: Map<string, Flow>; titles: Map<string, string> } | null> {
+  const found = await findFlow(places);
+  if (!found || !('text' in found)) return null;
+  const main = parseFlow(found.text).flow;
+  if (!main) return null;
+  const flows = new Map<string, Flow>([[DEFAULT_FLOW, main]]);
+  const reserved = `${FLOWS_FOLDER}/${DEFAULT_FLOW}.json`;
+  const files = (await found.place.list().catch(() => [])).filter((f) => FLOW_IN_FOLDER.test(f) && f !== reserved).slice(0, FLOWS_MAX);
+  const read = files.length ? await found.place.read(files) : new Map<string, FileRead>();
+  for (const f of files) {
+    const r = read.get(f);
+    const flow = r && 'text' in r ? parseFlow(r.text, f).flow : null;
+    if (flow) flows.set(FLOW_IN_FOLDER.exec(f)![1]!, flow);
+  }
+  return { folder: found.place.folder, flows, titles: new Map([...flows].map(([n, f]) => [n, f.title?.trim() || n])) };
+}
+
+/** The manager's line when Ledung follows the flow with it (workflow part 3); short, for #32's limit. */
+export const FOLLOW_LINE = "Ledung follows it with you: start each piece of work with flow_start and report how each block ended with flow_step (the outcome's word); Ledung counts the outcomes, moves the work and says what to do next.";
+
+/**
  * What a manager is told about its project's flow (issue #310, part 1), after the workflow's own lines; short, since
  * the instructions are near Claude Code's limit (#32). The manager routes the work by reading results against the
  * outcomes; Ledung counts them (part 3, #1184). The manager's file, its standing procedures between steps, when
  * the flow has one, in a few words more (#322); the project's other flows by name, when it has some (#447). Null: the
- * project has no flow Ledung can read.
+ * project has no flow Ledung can read. `following`: Ledung follows the flow with the manager (part 3), said in a line more.
  */
-export async function flowInstructions(places: FlowPlace[]): Promise<string | null> {
+export async function flowInstructions(places: FlowPlace[], following = false): Promise<string | null> {
   const found = await findFlow(places).catch(() => null);
   if (!found || !('text' in found)) return null;
   const sep = found.place.folder.includes('\\') ? '\\' : '/';
@@ -407,5 +431,5 @@ export async function flowInstructions(places: FlowPlace[]): Promise<string | nu
   const flows = others.length
     ? ` Other flows, in ${FLOWS_FOLDER}${sep}<name>.json: ${others.slice(0, FLOWS_NAMED).join(', ')}${more}. Each piece of work runs in one flow, ${FLOW_FILE}'s unless you or the person pick another; a "Run flow" block starts its flow as a piece of work of its own, and the word that flow ends with is the block's outcome.`
     : '';
-  return `The process is drawn in ${found.place.folder}${sep}${FLOW_FILE} (blocks, who acts, where a person decides; Ledung's workflow page shows it), with the briefs it links and any standing rules (${RULES_FILE}) beside it: read them and follow the flow: judge each result against its block's outcomes, which say where the work goes next.${named ? ` Your standing procedures between steps: ${named} there.` : ''}${flows}`;
+  return `The process is drawn in ${found.place.folder}${sep}${FLOW_FILE} (blocks, who acts, where a person decides; Ledung's workflow page shows it), with the briefs it links and any standing rules (${RULES_FILE}) beside it: read them and follow the flow: judge each result against its block's outcomes, which say where the work goes next.${named ? ` Your standing procedures between steps: ${named} there.` : ''}${flows}${following ? ` ${FOLLOW_LINE}` : ''}`;
 }

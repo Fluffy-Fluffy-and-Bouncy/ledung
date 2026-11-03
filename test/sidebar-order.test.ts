@@ -60,7 +60,7 @@ test("a database that already ran migration 23 (the message board) gets the orde
   try {
     // A database as main left it before this change: everything up to 23, no position columns.
     const before = openDatabase(tmp.file);
-    before.exec('ALTER TABLE projects DROP COLUMN position; ALTER TABLE sessions DROP COLUMN position; ALTER TABLE sessions DROP COLUMN work_dir; ALTER TABLE sessions DROP COLUMN status_since; ALTER TABLE devices DROP COLUMN kind; ALTER TABLE devices DROP COLUMN partitioned; ALTER TABLE devices DROP COLUMN logged_on_at; ALTER TABLE devices DROP COLUMN cookie_at; ALTER TABLE devices DROP COLUMN old_cookie_hash; ALTER TABLE devices DROP COLUMN old_cookie_until; ALTER TABLE devices DROP COLUMN paired_via; ALTER TABLE sessions DROP COLUMN claude_program; ALTER TABLE accounts DROP COLUMN container_dir; ALTER TABLE accounts DROP COLUMN containers; ALTER TABLE sessions DROP COLUMN trimmed_at; ALTER TABLE limits DROP COLUMN seen_at; ALTER TABLE questions DROP COLUMN earlier; ALTER TABLE questions DROP COLUMN sources; PRAGMA user_version = 23;');
+    before.exec('ALTER TABLE projects DROP COLUMN position; ALTER TABLE sessions DROP COLUMN position; ALTER TABLE sessions DROP COLUMN work_dir; ALTER TABLE sessions DROP COLUMN status_since; ALTER TABLE devices DROP COLUMN kind; ALTER TABLE devices DROP COLUMN partitioned; ALTER TABLE devices DROP COLUMN logged_on_at; ALTER TABLE devices DROP COLUMN cookie_at; ALTER TABLE devices DROP COLUMN old_cookie_hash; ALTER TABLE devices DROP COLUMN old_cookie_until; ALTER TABLE devices DROP COLUMN paired_via; ALTER TABLE sessions DROP COLUMN claude_program; ALTER TABLE accounts DROP COLUMN container_dir; ALTER TABLE accounts DROP COLUMN containers; ALTER TABLE sessions DROP COLUMN trimmed_at; ALTER TABLE limits DROP COLUMN seen_at; ALTER TABLE questions DROP COLUMN earlier; ALTER TABLE questions DROP COLUMN sources; DROP TABLE flow_runs; ALTER TABLE sessions DROP COLUMN run_block; PRAGMA user_version = 23;');
     // And without 26's added columns (its rebuilt tables take either shape).
     before.exec('ALTER TABLE board_projects DROP COLUMN repo; ALTER TABLE board_projects DROP COLUMN allow; ALTER TABLE board_outbox DROP COLUMN board; DROP TABLE board_boards; ALTER TABLE board_outbox DROP COLUMN attachments; DROP TABLE board_attachments;');
     // And without 30's (issue #263).
@@ -69,7 +69,7 @@ test("a database that already ran migration 23 (the message board) gets the orde
     before.exec('DROP TRIGGER usage_daily_insert; DROP TRIGGER usage_daily_update; DROP TRIGGER usage_daily_delete; DROP TABLE usage_daily; DROP INDEX usage_by_branch; DROP INDEX usage_by_session; CREATE INDEX usage_by_session ON usage(session_id, at);');
     before.close();
     const after = open(tmp.file);
-    assert.equal((after.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 40);
+    assert.equal((after.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 41);
     const columns = (table: string) => (after.db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
     assert.ok(columns('projects').includes('position'));
     assert.ok(columns('sessions').includes('position'));

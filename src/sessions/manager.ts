@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { boardConfig, parseProject, workflowsOf } from '../config.ts';
 import { checkFolder, chosenWorkflow, projectWorkflow, withProfilesWarning, type WorkflowCheck } from './workflow.ts';
-import { flowInstructions, flowPlaces, readFlowView, saveFlowFiles, type FlowPlace } from './flow-files.ts';
+import { findFlow, flowInstructions, flowPlaces, readFlows, readFlowView, saveFlowFiles, type FlowPlace } from './flow-files.ts';
 import type { FlowView } from '../shared/flow.ts';
 import { remoteControlName } from './remote-control.ts';
 import { loosensGate } from '../projects/gate.ts';
@@ -86,6 +86,10 @@ import { SecretError, type Secrets, type SecretScope } from '../secrets/secrets.
 import { cleanStaleRuntime, metaPlaceBook, SessionSecrets, type PlaceBook } from '../secrets/live.ts';
 import { DockerSecretRuntime, LocalSecretRuntime } from '../secrets/runtime.ts';
 import type { SecretInfo, SecretLifetime } from '../shared/secrets.ts';
+import { FlowRunError, FlowRuns } from './flow-runs.ts';
+import { RunStore } from './run-store.ts';
+import type { FlowRun } from '../shared/flow-run.ts';
+import type { RunHandlers } from './tools.ts';
 
 const LIMIT_KEY = 'max-working-sessions';
 /** Usage stops once set in Settings (issue #278), and the ones lifted by hand, by window; kept in meta, so no migration. */
@@ -141,6 +145,8 @@ export class SessionManager {
   private readonly store: Store;
   private readonly publish: (event: ServerEvent) => void;
   private readonly management: Management;
+  /** Runs through the projects' flows (workflow part 3). */
+  readonly flowRuns: FlowRuns;
   /** The linked computers (#245), set by the server whenever its public name changes. */
   private linked: LinkedPort | null = null;
   /** Settings' page-only actions for managers (#263), set by the server. */
@@ -237,6 +243,22 @@ export class SessionManager {
         const ev = this.readEvidenceFile(id, file, true);
         return { file: ev.file, kind: ev.kind === 'text' ? 'text' : 'image' };
       },
+    });
+    this.flowRuns = new FlowRuns({
+      runs: new RunStore(store.database),
+      getSession: (id) => this.store.getSession(id),
+      managerOf: (project) => this.projectStore.get(project)?.managerId ?? null,
+      flows: (project) => {
+        const config = this.projectStore.get(project)?.config;
+        return config ? readFlows(this.flowPlacesOf(config)) : Promise.resolve(null);
+      },
+      following: (project) => this.projectStore.get(project)?.config.followFlow !== false,
+      tell: (id, text) => {
+        this.store.addInbox(id, 'ledung', text);
+        this.live.get(id)?.deliver();
+      },
+      changed: (project) => this.publish({ type: 'runs', project, runs: this.flowRuns.list(project) }),
+      userName: config.userName,
     });
     this.gate = {
       usageHold: (id) => this.usageHold(id),
@@ -852,8 +874,11 @@ export class SessionManager {
       secrets: this.sessionSecrets(project, info),
       // Looked at on every start and resume, so a config file written meanwhile is found (issue #21).
       workflow: withProfilesWarning(projectWorkflow(chosenWorkflow(workflowsOf(this.config), project), project), profiles.warning),
-      // A manager is told where its project's flow is (issue #310), looked for on every start and resume too.
-      flow: info.role === 'manager' && info.project !== CHATS ? () => flowInstructions(this.flowPlacesOf(project)) : undefined,
+      // A manager is told where its project's flow is (issue #310), looked for on every start and resume too; with the
+      // run tools' line when Ledung follows it (workflow part 3).
+      flow: info.role === 'manager' && info.project !== CHATS ? () => flowInstructions(this.flowPlacesOf(project), project.followFlow !== false) : undefined,
+      // The run tools only where there is a flow to follow (part 3, "keeping context small").
+      runs: info.project !== CHATS ? () => this.runHandlers(project, info.id) : undefined,
       remoteControl: launch.remoteControl,
       sensitive: {
         commandPatterns: [...this.config.sensitive.commandPatterns, ...project.sensitive.commandPatterns],
@@ -1084,6 +1109,34 @@ export class SessionManager {
       list: () => container.listFlowFolder(),
       write: (files) => container.writeFlowFiles(files),
     } : undefined);
+  }
+
+  /**
+   * The run tools for one session (workflow part 3), or null when its project doesn't follow a flow: switched off, or no
+   * flow.json there. An error reaches the session as the tool's answer.
+   */
+  private async runHandlers(project: ProjectConfig, sessionId: string): Promise<RunHandlers | null> {
+    if (project.followFlow === false) return null;
+    const found = await findFlow(this.flowPlacesOf(project)).catch(() => null);
+    if (!found || !('text' in found)) return null;
+    const plain = async (fn: () => Promise<string>) => {
+      try {
+        return await fn();
+      } catch (e) {
+        throw e instanceof FlowRunError ? new Error(e.message) : e;
+      }
+    };
+    return {
+      start: (a) => plain(() => this.flowRuns.start(sessionId, a)),
+      step: (a) => plain(() => this.flowRuns.step(sessionId, a)),
+      status: (run) => plain(() => this.flowRuns.status(sessionId, run)),
+    };
+  }
+
+  /** A project's runs for the workflow page (part 3), the latest changed first. */
+  flowRunsOf(name: string): FlowRun[] {
+    if (!this.projectStore.get(name)) throw new UserError(`There is no project named "${name}".`);
+    return this.flowRuns.list(name);
   }
 
   /** The workflow page (issue #310, part 1): a project's flow with its texts and the checks' problems, read-only. */
@@ -2609,6 +2662,7 @@ function projectInfo(p: StoredProject): ProjectInfo {
     questionTiers: tiersOf(c.questionTiers),
     extraFolders: c.runner === 'local' ? c.extraFolders ?? [] : [],
     workflow: c.workflow ?? null,
+    followFlow: c.followFlow !== false,
     managerId: p.managerId,
     createdAt: p.createdAt,
     colours: p.colours,

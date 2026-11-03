@@ -44,6 +44,8 @@ export interface Settings {
   workflowName: string;
   /** Its own path to the project config for the workflow; empty: the configured one. */
   workflowConfig: string;
+  /** Ledung follows its drawn flow (workflow part 3); on by default. */
+  followFlow: boolean;
   /** Lockdown (issue #109): off unless set; the board and Remote Control only if let in. */
   lockdownLevel: 'off' | 'A' | 'B';
   lockdownBoard: boolean;
@@ -55,7 +57,7 @@ export interface Settings {
 }
 
 export const emptySettings = (name = ''): Settings => ({
-  name, account: '', model: '', managerModel: '', permissionMode: '', managerGrant: '', projectToolsUnasked: false, projectSettingsTools: false, publishUsageName: false, usageRepo: '', managerProfile: '', sessionProfile: '', skills: {}, ...withSuggestions({ commandPatterns: [], pathPatterns: [] }), devShipCommand: '', ticketPattern: '', ticketUrl: '', questionTiers: DEFAULT_TIERS.join('\n'), extraFolders: '', workflowUse: null, workflowName: '', workflowConfig: '',
+  name, account: '', model: '', managerModel: '', permissionMode: '', managerGrant: '', projectToolsUnasked: false, projectSettingsTools: false, publishUsageName: false, usageRepo: '', managerProfile: '', sessionProfile: '', skills: {}, ...withSuggestions({ commandPatterns: [], pathPatterns: [] }), devShipCommand: '', ticketPattern: '', ticketUrl: '', questionTiers: DEFAULT_TIERS.join('\n'), extraFolders: '', workflowUse: null, workflowName: '', workflowConfig: '', followFlow: true,
   lockdownLevel: 'off', lockdownBoard: false, lockdownRemoteControl: false, lockdownNetwork: '', lockdownDockerNetwork: '',
 });
 
@@ -73,6 +75,7 @@ export function settingsOf(p: ProjectInfo): Settings {
     questionTiers: p.questionTiers.join('\n'),
     extraFolders: p.extraFolders.join('\n'),
     workflowUse: p.workflow?.use ?? null, workflowName: p.workflow?.name ?? '', workflowConfig: p.workflow?.projectConfig ?? '',
+    followFlow: p.followFlow !== false,
     lockdownLevel: p.lockdown.level, lockdownBoard: p.lockdown.board, lockdownRemoteControl: p.lockdown.remoteControl,
     lockdownNetwork: (p.lockdown.network ?? []).join('\n'), lockdownDockerNetwork: p.lockdown.dockerNetwork ?? '',
   };
@@ -109,6 +112,8 @@ export function toApi(s: Settings, keep: ProjectInfo | null): Record<string, unk
         },
       }
       : {}),
+    // Stored only when switched off: on is the default (Simon, 2026-11-03).
+    ...(s.followFlow ? {} : { followFlow: false }),
     // Left out when off, so an unlocked project's settings stay as they were (issue #109).
     ...(s.lockdownLevel !== 'off'
       ? {
@@ -149,7 +154,7 @@ export const FIELD_GROUP: Record<keyof Settings, string> = {
   managerGrant: 'powers', projectToolsUnasked: 'powers', projectSettingsTools: 'powers', devShipCommand: 'powers',
   lockdownLevel: 'powers', lockdownBoard: 'powers', lockdownRemoteControl: 'powers', lockdownNetwork: 'powers', lockdownDockerNetwork: 'powers',
   skills: 'skills', managerProfile: 'skills', sessionProfile: 'skills',
-  workflowUse: 'workflow', workflowName: 'workflow', workflowConfig: 'workflow',
+  workflowUse: 'workflow', workflowName: 'workflow', workflowConfig: 'workflow', followFlow: 'workflow',
   ticketPattern: 'tickets', ticketUrl: 'tickets', questionTiers: 'tickets',
 };
 

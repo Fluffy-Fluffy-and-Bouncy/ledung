@@ -1,5 +1,6 @@
 // Types shared by the core and the page. Only types here: the page imports this file too.
 
+import type { FlowRun } from './flow-run.ts';
 import type { QuestionDetails } from './questions.ts';
 import type { NameColour, ProjectColours } from './name-colours.ts';
 import type { ComputerInfo } from './computers.ts';
@@ -163,6 +164,8 @@ export interface SessionInfo {
   statusSince?: number | null;
   /** Its elevated commands raise UAC on this PC's desktop (#213): the status line says so while one runs. */
   uac?: boolean;
+  /** The run and block of the project's flow it was started or continued for (workflow part 3); null or left out: none. */
+  runBlock?: { run: string; block: string } | null;
 }
 
 /**
@@ -332,6 +335,8 @@ export interface ProjectInfo {
   extraFolders: string[];
   /** Whether it follows a configured workflow (issue #21) and which by name (issue #132; none: the first); null: the default for its kind. */
   workflow: { use?: boolean; name?: string; projectConfig?: string } | null;
+  /** Ledung follows its flow (workflow part 3); on unless switched off. */
+  followFlow?: boolean;
   /** Its one manager, once started. */
   managerId: string | null;
   createdAt: number;
@@ -1230,6 +1235,8 @@ export type ServerEvent =
       macros?: Macro[];
     }
   | { type: 'config'; config: ConfigStatus }
+  /** A project's runs through its flows changed (workflow part 3): all of them, the latest changed first. */
+  | { type: 'runs'; project: string; runs: FlowRun[] }
   | { type: 'chats'; chats: ChatsInfo }
   | { type: 'computers'; computers: ComputerInfo[] }
   | { type: 'session'; session: SessionInfo }

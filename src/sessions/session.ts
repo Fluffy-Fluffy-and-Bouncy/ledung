@@ -31,7 +31,7 @@ import { deskQuestion, questionText, type QuestionDetails } from '../shared/ques
 import { compactionUsage, contextAfterCompact, UsageRecorder, type SessionFacts } from '../usage/recorder.ts';
 import { findTickets } from '../usage/links.ts';
 import type { PullRequestPoller } from './pr-poll.ts';
-import { CONTEXT_TOOLS, instructions, LEDUNG_SERVER, LEDUNG_TOOLS, ledungToolServer, MCP_LIMIT_ENV, mcpLimitFor, SETTINGS_CHANGE_RULE, SETTINGS_CHANGE_TOOLS, SETTINGS_TOOLS, USAGE_PUBLISH_TOOLS, USER_APPROVED_TOOLS, type BoardHandlers, type ManagerHandlers, type ToolHandlers } from './tools.ts';
+import { CONTEXT_TOOLS, instructions, LEDUNG_SERVER, LEDUNG_TOOLS, ledungToolServer, MCP_LIMIT_ENV, mcpLimitFor, SETTINGS_CHANGE_RULE, SETTINGS_CHANGE_TOOLS, SETTINGS_TOOLS, USAGE_PUBLISH_TOOLS, USER_APPROVED_TOOLS, type BoardHandlers, type ManagerHandlers, type RunHandlers, type ToolHandlers } from './tools.ts';
 import type { Boards } from '../board/boards.ts';
 import { commandKinds } from '../resources/commands.ts';
 import { FRESH_FACTS, pauseReason, type IdleState } from './idle.ts';
@@ -165,6 +165,8 @@ export interface SessionOptions {
   workflow?: ProjectWorkflow | null;
   /** For a manager: what it is told about its project's flow (issue #310), or null when there is none; asked at every start and resume. */
   flow?: () => Promise<string | null>;
+  /** The run tools (workflow part 3), bound to this session, or null when its project has no flow or doesn't follow it; asked at every start and resume. */
+  runs?: () => Promise<RunHandlers | null>;
   /** The project's sensitive patterns (the built-in ones always apply too). */
   sensitive?: Partial<SensitiveRules>;
   /** The managers' project tools run unasked instead of always going to the user (issue #37; opt-in of 2026-10-14). */
@@ -236,6 +238,7 @@ export class Session {
   /** The nudges file's problem this session was last told of, so it is told once, not every prompt (issue #405). */
   private nudgesProblemTold: string | null = null;
   private readonly flow: (() => Promise<string | null>) | null;
+  private readonly runs: (() => Promise<RunHandlers | null>) | null;
   private readonly sensitiveRules: Partial<SensitiveRules>;
   private readonly alwaysAsked: readonly string[];
   private readonly ticketConfig: { pattern: string; url: string } | undefined;
@@ -340,6 +343,7 @@ export class Session {
     this.management = opts.management;
     this.grant = opts.grant;
     this.workflow = opts.workflow ?? null;
+    this.runs = opts.runs ?? null;
     this.flow = opts.flow ?? null;
     this.sensitiveRules = opts.sensitive ?? {};
     // Settings' actions stay asked whatever projectToolsUnasked says (issue #263).
@@ -652,6 +656,7 @@ export class Session {
       withdraw: (id, reason) => this.withdraw(id, reason),
       manager: role === 'manager' ? this.managerHandlers() : undefined,
       board: role === 'manager' ? this.boardHandlers() : undefined,
+      runs: (this.runs ? await this.runs().catch(() => null) : null) ?? undefined,
       airgap: !!this.airgap,
       self: role === 'manager' ? undefined : {
         compact: (note, then) => this.management.compactSelf(this.id, note, then),
