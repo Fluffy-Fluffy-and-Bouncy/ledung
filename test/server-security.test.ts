@@ -2583,6 +2583,41 @@ test("a project whose flow files a shared flow's named briefs lead to, or a flow
     assert.equal(fs.existsSync(path.join(own, 'briefs', 'x.md')), false, `${how}: nothing was written`);
   }
 
+  // A brief no flow names, only listed (test review round 5): the shared briefs/j.md is what Ledung's lister lists, so a
+  // link there into the project's briefs/ counts as much as a named one. A junction (on Windows its entry is not a
+  // folder, so the lister lists it) runs on every account; a file link only where file links can be made.
+  const forms: [string, () => void, () => void][] = [
+    ["briefs/j.md, listed, a junction to the project's briefs/",
+      () => fs.mkdirSync(path.join(theirs, 'briefs', 'j.md')),
+      () => fs.symlinkSync(path.join(own, 'briefs'), path.join(theirs, 'briefs', 'j.md'), 'junction')],
+  ];
+  try {
+    fs.symlinkSync(path.join(shared, 'probe-target'), path.join(shared, 'probe-link'), 'file');
+    fs.rmSync(path.join(shared, 'probe-link'));
+    forms.push(["briefs/j.md, listed, a file link to the project's briefs/x.md",
+      () => fs.writeFileSync(path.join(theirs, 'briefs', 'j.md'), '# Theirs'),
+      () => fs.symlinkSync(path.join(own, 'briefs', 'x.md'), path.join(theirs, 'briefs', 'j.md'), 'file')]);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EPERM') throw e;
+    t.diagnostic('file symlinks need another account here: the listed file-link case is left out');
+  }
+  for (const [how, real, link] of forms) {
+    reset();
+    fs.mkdirSync(path.join(theirs, 'briefs'));
+    real();
+    const ok = await save({ files: [{ path: 'briefs/x.md', text: '# Brief', base: null }] });
+    assert.equal(ok.status, 200, `${how}, a real one: ${ok.body}`);
+    assert.equal(fs.readFileSync(path.join(own, 'briefs', 'x.md'), 'utf8'), '# Brief', `${how}: the probe sees a file that was written`);
+
+    fs.rmSync(path.join(own, 'briefs', 'x.md'));
+    fs.rmSync(path.join(theirs, 'briefs', 'j.md'), { recursive: true });
+    link();
+    const refused = await save({ files: [{ path: 'briefs/x.md', text: '# Brief', base: null }] });
+    assert.equal(refused.status, 400, `${how}, a link: ${refused.body}`);
+    assert.match(errorOf(refused), /shared workflow "proc"/, how);
+    assert.equal(fs.existsSync(path.join(own, 'briefs', 'x.md')), false, `${how}: nothing was written`);
+  }
+
   // A flow deleted (code review round 3 and test review round 4): with the shared flows/ a folder of its own the deletion
   // goes through; with it linked to the project's flows/, the project's flows/extra.json is the workflow's, and stays.
   const extra = JSON.stringify({ version: 1, title: 'Extra', blocks: [{ id: 'a', kind: 'work', title: 'A', runs: 'manager' }] });
