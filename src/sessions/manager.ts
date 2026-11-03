@@ -1250,13 +1250,19 @@ export class SessionManager {
    */
   private async settleProposal(q: QuestionInfo): Promise<void> {
     const p = q.details?.flowProposal ? this.proposals.get(q.details.flowProposal) : undefined;
-    if (!p || p.state !== 'open' || q.answer === null) return;
+    // Only the review it was put as: the one link from an answer to a write (review of 3e).
+    if (!p || p.question !== q.id || p.state !== 'open' || q.answer === null) return;
     const accepted = q.answer.trim() === ACCEPTED || q.answer.trim().startsWith(`${ACCEPTED}`);
     if (!accepted) {
       this.proposals.setState(p.id, 'declined');
       return;
     }
     try {
+      // What the person saw checked must still be the workflow it is saved into (review of 3e): any file changed since,
+      // also one the proposal doesn't write (a flow it runs, a brief), and it is not saved.
+      const now = (await this.flowView(p.project)).versions;
+      const moved = [...new Set([...Object.keys(p.read ?? {}), ...Object.keys(now)])].filter((f) => (p.read ?? {})[f] !== now[f]);
+      if (moved.length) throw new Error(`the workflow changed since it was proposed (${moved.slice(0, 5).join(', ')}), so what was checked is not what would be saved.`);
       await this.saveFlow(p.project, p.writes);
       this.proposals.setState(p.id, 'saved');
       this.store.addInbox(p.manager, 'ledung', `Ledung: ${this.config.userName} accepted review #${q.id}, and your workflow change is saved into ${p.project}'s .ledung/workflow (${p.writes.map((w) => w.path).join(', ')}). The workflow page shows it. Run tools added for a project that had no flow come with your next start.`);

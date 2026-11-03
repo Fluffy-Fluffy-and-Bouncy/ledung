@@ -54,11 +54,16 @@ export async function buildProposal(view: FlowView, changes: ProposedChange[], w
   }
   if (!view.saveTo) throw new FileError("Ledung can't write into this project's folder, so nothing can be proposed for it.");
   if (!changes.length) throw new FileError('Give the files that change.');
+  // A file there that couldn't be read is not a new one (review of 3e): say so, rather than fail later on Accepted.
+  const unread = new Set(view.problems.filter((p) => p.message.startsWith("can't be read")).map((p) => p.at));
+  if (view.source && view.raw === null) unread.add('flow.json');
+  for (const f of view.flows) if (f.raw === null) unread.add(f.file);
   const before = filesOf(view);
   const after = new Map(before);
   const writes: FlowFileWrite[] = [];
   for (const c of changes) {
     const file = c.file.trim().replace(/^\.ledung\/workflow\//, '');
+    if (unread.has(file)) throw new FileError(`${file} is in the workflow folder but can't be read, so Ledung can't tell what it replaces; the workflow page says why.`);
     if (c.remove) {
       if (c.text !== undefined) throw new FileError(`${file}: give its text or remove it, not both.`);
       if (!before.has(file)) throw new FileError(`${file} is not there to remove.`);
@@ -89,7 +94,8 @@ export async function buildProposal(view: FlowView, changes: ProposedChange[], w
     ...result.problems,
     ...result.flows.flatMap((f) => f.problems.map((p) => ({ ...p, at: `${f.file}: ${p.at}` }))),
   ];
-  return { why: why.trim(), writes, flows, texts, problems, createdAt: Date.now() };
+  const titles = Object.fromEntries([...old, ...now].map((f) => [f.name, f.title]));
+  return { why: why.trim(), writes, flows, texts, problems, titles, read: { ...view.versions }, createdAt: Date.now() };
 }
 
 /** What a proposal changes, in a line per file, for the review and the manager. */

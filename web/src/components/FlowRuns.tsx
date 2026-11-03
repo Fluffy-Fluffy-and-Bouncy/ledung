@@ -24,11 +24,13 @@ function stateLine(r: FlowRun, blockTitle: (flow: string, id: string) => string)
 }
 
 /** The Runs list (part 3c): open ones first, then the latest ended; a run chosen shows its history and marks its path. */
-export function RunsPanel({ runs, chosen, onChoose, flowTitle, blockTitle, error }: {
+export function RunsPanel({ runs, chosen, onChoose, flowTitle, blockTitle, error, heading = true }: {
   runs: readonly FlowRun[]; chosen: string | null; onChoose: (id: string | null) => void;
   flowTitle: (name: string) => string; blockTitle: (flow: string, id: string) => string;
   /** The runs could not be read: said, rather than shown as none. */
   error?: string | null;
+  /** False where a fold above it says "Runs" already (a phone). */
+  heading?: boolean;
 }) {
   // "Waiting for 5 min" goes on counting while the page is open (review of 3c).
   const [, tick] = useState(0);
@@ -54,10 +56,11 @@ export function RunsPanel({ runs, chosen, onChoose, flowTitle, blockTitle, error
   }
   // The chosen one always, so its path can be unmarked again (review of 3c).
   const ended = runs.filter((r) => !open(r));
+  const h = heading ? <h3>Runs</h3> : null;
   const shown = [...runs.filter(open), ...ended.slice(0, 10), ...ended.slice(10).filter((r) => r.id === chosen)];
   return (
     <div className="flow-panel-body flow-runs">
-      <h3>Runs</h3>
+      {h}
       <ol className="flow-run-list">
         {shown.map((r) => (
           <li key={r.id} className={`flow-run state-${r.state}${r.id === chosen ? ' chosen' : ''}`}>

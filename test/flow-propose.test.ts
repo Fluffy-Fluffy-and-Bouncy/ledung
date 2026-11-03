@@ -142,14 +142,21 @@ test('part 3e: Changes needed declines it; a file changed meanwhile is never wri
   fs.appendFileSync(path.join(b.dir, '.ledung', 'workflow', 'flow.json'), '\n');
   await answer(b.manager, b.q.id, 'Accepted.');
   assert.equal(b.manager.flowProposal('shop', b.q.details!.flowProposal!).state, 'failed');
-  assert.match(b.store.undeliveredInbox('mgr').at(-1)!.text, /could not be saved: flow\.json has changed since/);
+  assert.match(b.store.undeliveredInbox('mgr').at(-1)!.text, /could not be saved: the workflow changed since it was proposed \(flow\.json\)/);
+  // Also a file the proposal doesn't write: the flow its Run flow block runs (review of 3e).
+  const c = await proposed();
+  fs.rmSync(path.join(c.dir, '.ledung', 'workflow', 'flows', 'asset.json'));
+  await answer(c.manager, c.q.id, 'Accepted.');
+  assert.equal(c.manager.flowProposal('shop', c.q.details!.flowProposal!).state, 'failed');
+  assert.match(c.store.undeliveredInbox('mgr').at(-1)!.text, /changed since it was proposed \(flows\/asset\.json\)/);
+  assert.equal(flowJson(c.dir).blocks.length, 8);
 });
 
 test('part 3e: proposals are kept per project in the database', () => {
   const store = new Store(openDatabase(':memory:'));
   const proposals = new ProposalStore(store.database);
-  const p = proposals.create('shop', 'mgr', { why: 'x', writes: [], flows: [], texts: [], problems: [], createdAt: 1 });
-  assert.deepEqual({ ...proposals.get(p.id)! }, { why: 'x', writes: [], flows: [], texts: [], problems: [], createdAt: 1, id: p.id, project: 'shop', manager: 'mgr', question: null, state: 'open' });
+  const p = proposals.create('shop', 'mgr', { why: 'x', writes: [], flows: [], texts: [], problems: [], titles: {}, read: {}, createdAt: 1 });
+  assert.deepEqual({ ...proposals.get(p.id)! }, { why: 'x', writes: [], flows: [], texts: [], problems: [], titles: {}, read: {}, createdAt: 1, id: p.id, project: 'shop', manager: 'mgr', question: null, state: 'open' });
   proposals.setQuestion(p.id, 7);
   proposals.setState(p.id, 'saved');
   assert.deepEqual([proposals.get(p.id)!.question, proposals.get(p.id)!.state], [7, 'saved']);
@@ -183,4 +190,13 @@ test('part 3e: the "workflow building" skill ships as Ledung\'s own plugin, and 
   assert.ok(guide.includes('flow_propose') && guide.includes('"times": 3') && guide.includes('"session": "caller"'));
   // The package and the release carry it (scripts/build-package.ts, scripts/release.ts).
   assert.ok((JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', 'package.json'), 'utf8')).files as string[]).includes('plugins/'));
+});
+
+test('part 3e review: line comments on the manager\'s code never answer a proposed workflow change', async () => {
+  const { openReviewFor } = await import('../src/shared/line-comments.ts');
+  const q = (id: number, details: Record<string, unknown>) => ({ id, sessionId: 'mgr', askedAt: id, question: 'x', options: null, addressedTo: 'user', status: 'open', answer: null, answeredAt: null, answeredBy: null, aboutQuestion: null, forwardedFrom: null, aboutRequest: null, shots: null, deliveredAt: null, withdrawnReason: null, details }) as never;
+  const code = q(1, { review: { solving: 'a', done: 'b' } });
+  const flow = q(2, { review: { solving: 'a', done: 'b' }, flowProposal: 1 });
+  assert.equal((openReviewFor('mgr', [code, flow]) as { id: number } | null)?.id, 1);
+  assert.equal(openReviewFor('mgr', [flow]), null);
 });

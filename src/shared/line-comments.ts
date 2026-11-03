@@ -86,7 +86,8 @@ export function lineCommentsMessage(userName: string, text: string, comments: st
  */
 export function openReviewFor(sessionId: string, questions: readonly QuestionInfo[]): QuestionInfo | null {
   const byId = new Map(questions.map((q) => [q.id, q]));
-  const mine = questions.filter((q) => q.status === 'open' && q.addressedTo === 'user' && q.details?.review
+  // A proposed workflow change (part 3e) is never answered by comments on code: its Accepted writes the workflow.
+  const mine = questions.filter((q) => q.status === 'open' && q.addressedTo === 'user' && q.details?.review && q.details.flowProposal === undefined
     && (q.sessionId === sessionId || (q.aboutQuestion !== null && byId.get(q.aboutQuestion)?.sessionId === sessionId)));
   return mine.sort((a, b) => b.askedAt - a.askedAt)[0] ?? null;
 }

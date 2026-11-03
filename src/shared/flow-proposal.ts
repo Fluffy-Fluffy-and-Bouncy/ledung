@@ -26,6 +26,10 @@ export interface FlowProposal {
   flows: { name: string; before: ProposalFlow | null; after: ProposalFlow | null }[];
   /** The other files that change (briefs, rules, the manager's file): before and after (null: none). */
   texts: { file: string; before: string | null; after: string | null }[];
+  /** The version of every workflow file as read when it was proposed: Accepted saves only if none has changed. */
+  read: Record<string, string>;
+  /** Every flow's title by its name, as it would be: what a Run flow block runs, in words. */
+  titles: Record<string, string>;
   /** What the checks find in the workflow as it would be; hints apart. */
   problems: FlowProblem[];
   createdAt: number;

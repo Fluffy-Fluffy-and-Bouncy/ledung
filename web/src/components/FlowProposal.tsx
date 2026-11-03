@@ -4,6 +4,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api.ts';
 import type { FlowProposal, ProposalFlow } from '../../../src/shared/flow-proposal.ts';
+import type { Flow } from '../../../src/shared/flow.ts';
 import { layoutFlow } from '../flowLayout.ts';
 import { Diagram } from './WorkflowView.tsx';
 import { useNarrow } from './FlowDiagram.tsx';
@@ -11,14 +12,23 @@ import { Markdown } from './Markdown.tsx';
 
 const NO_MARKS = { at: new Map(), counts: new Map(), path: new Map() };
 
-function Side({ label, side, narrow }: { label: string; side: ProposalFlow | null; narrow: boolean }) {
+/** The blocks of one side that the other doesn't have as they are: added or changed after, removed or changed before. */
+function changedBlocks(side: Flow | null, other: Flow | null): Set<string> {
+  const there = new Map((other?.blocks ?? []).map((b) => [b.id, JSON.stringify({ ...b, at: 0 })]));
+  return new Set((side?.blocks ?? []).filter((b) => there.get(b.id) !== JSON.stringify({ ...b, at: 0 })).map((b) => b.id));
+}
+
+function Side({ label, side, other, narrow, titles }: { label: string; side: ProposalFlow | null; other: ProposalFlow | null; narrow: boolean; titles: Record<string, string> }) {
   const layout = useMemo(() => (side?.flow ? layoutFlow(side.flow) : null), [side]);
+  // The blocks that change are outlined on both sides; briefs are named, not read, so none shows as missing.
+  const marks = useMemo(() => ({ ...NO_MARKS, path: new Map([...changedBlocks(side?.flow ?? null, other?.flow ?? null)].map((id) => [id, 'here' as const])) }), [side, other]);
+  const texts = useMemo(() => Object.fromEntries((side?.flow?.blocks ?? []).flatMap((b) => (b.brief ? [[b.brief, '']] : []))), [side]);
   return (
     <div className="proposal-side">
       <h5>{label}</h5>
       {!side ? <p className="muted">{label === 'Before' ? 'A new flow.' : 'Removed.'}</p>
         : !side.flow || !layout ? <p className="flow-problem-inline">{side.file} doesn't read as a flow.</p>
-        : <Diagram flow={side.flow} layout={layout} texts={{}} selected={null} onSelect={() => {}} narrow={narrow} flowTitle={() => undefined} marks={NO_MARKS} />}
+        : <Diagram flow={side.flow} layout={layout} texts={texts} selected={null} onSelect={() => {}} narrow={narrow} flowTitle={(n) => titles[n]} marks={marks} fit still={narrow} />}
     </div>
   );
 }
@@ -38,13 +48,14 @@ export default function FlowProposalView({ project, id }: { project: string; id:
   return (
     <section className="proposal">
       <h4>The workflow before and after</h4>
+      <p className="muted">The blocks that change are outlined.</p>
       {p.state !== 'open' && <p className="muted">This proposal is {p.state === 'saved' ? 'saved' : p.state === 'declined' ? 'declined' : 'accepted but could not be saved'}.</p>}
       {p.flows.map((f) => (
         <div key={f.name} className="proposal-flow">
           <h5 className="proposal-flow-title">{f.after?.title ?? f.before?.title} <span className="muted mono">{f.after?.file ?? f.before?.file}</span></h5>
           <div className="proposal-sides">
-            <Side label="Before" side={f.before} narrow={narrow} />
-            <Side label="After" side={f.after} narrow={narrow} />
+            <Side label="Before" side={f.before} other={f.after} narrow={narrow} titles={p.titles ?? {}} />
+            <Side label="After" side={f.after} other={f.before} narrow={narrow} titles={p.titles ?? {}} />
           </div>
         </div>
       ))}

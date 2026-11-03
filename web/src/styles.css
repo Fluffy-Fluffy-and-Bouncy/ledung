@@ -1561,7 +1561,7 @@ button.settings-menu-item.danger { color: var(--danger); }
 .flow-overlay summary { cursor: pointer; }
 .flow-roles { list-style: none; padding: 0; margin: 0.2rem 0 0.6rem; display: flex; flex-direction: column; gap: 0.25rem; }
 .flow-roles button.link, .flow-role-link button.link { font: inherit; font-weight: 600; }
-.workflow-view .react-flow {
+.workflow-view .react-flow, .proposal .react-flow {
   --xy-background-color: var(--bg);
   --xy-background-pattern-color: var(--border);
   --xy-edge-stroke: var(--muted);
@@ -1573,9 +1573,9 @@ button.settings-menu-item.danger { color: var(--danger); }
   --xy-controls-button-border-color: var(--border);
   --xy-attribution-background-color: transparent;
 }
-.workflow-view .react-flow__handle { opacity: 0; pointer-events: none; }
+.workflow-view .react-flow__handle, .proposal .react-flow__handle { opacity: 0; pointer-events: none; }
 .workflow-view .react-flow__node { cursor: pointer; }
-.workflow-view .react-flow__edge-text { font-size: 11px; }
+.workflow-view .react-flow__edge-text, .proposal .react-flow__edge-text { font-size: 11px; }
 .flow-edge-label { position: absolute; pointer-events: none; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; font-size: 11px; line-height: 16px; white-space: nowrap; }
 .flow-panel-body .markdown h1 { font-size: 1.05rem; margin: 0.3rem 0; }
 .flow-block, .flow-list-item { box-sizing: border-box; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-left: 4px solid var(--muted); border-radius: 8px; padding: 0.4rem 0.6rem; font-size: 12px; text-align: left; }
@@ -1612,7 +1612,7 @@ button.settings-menu-item.danger { color: var(--danger); }
 .flow-pin.ends { display: flex; justify-content: flex-end; gap: 0.35rem; }
 .flow-pin-end { flex: none; font-size: 10px; color: var(--muted); }
 .flow-pin.ends .react-flow__handle.h-pin { border-radius: 1px; background: var(--muted); }
-.workflow-view .react-flow__handle.h-pin { opacity: 1; width: 8px; height: 8px; min-width: 0; min-height: 0; background: var(--muted); border: 1px solid var(--panel); }
+.workflow-view .react-flow__handle.h-pin, .proposal .react-flow__handle.h-pin { opacity: 1; width: 8px; height: 8px; min-width: 0; min-height: 0; background: var(--muted); border: 1px solid var(--panel); }
 .flow-pin.counted .react-flow__handle.h-pin { background: var(--warn-border); }
 .flow-pin.loose .react-flow__handle.h-pin { background: var(--panel); border: 2px solid var(--danger); }
 .flow-pin.chosen .react-flow__handle.h-pin { background: var(--accent); }
@@ -1732,7 +1732,7 @@ button.settings-menu-item.danger { color: var(--danger); }
   .flow-field input, .flow-field select, .flow-field textarea { font-size: 16px; }
 }
 /* A large flow's map (#318), in the page's colours, light and dark. */
-.workflow-view .react-flow {
+.workflow-view .react-flow, .proposal .react-flow {
   --xy-minimap-background-color: var(--panel);
   --xy-minimap-mask-background-color: color-mix(in srgb, var(--bg) 65%, transparent);
 }
@@ -1768,7 +1768,8 @@ button.settings-menu-item.danger { color: var(--danger); }
 .flow-run-history { margin: 6px 0 4px; padding-left: 1.3rem; font-size: 0.85rem; display: flex; flex-direction: column; gap: 3px; }
 .flow-run-note { white-space: pre-wrap; overflow-wrap: anywhere; }
 .run-line a { color: inherit; text-decoration: underline dotted; }
-.flow-runs-fold { margin: 0 0 0.5rem; }
+.flow-runs-fold { margin: 0 1rem 0.5rem; }
+.flow-runs-fold .flow-runs { padding: 0; border-bottom: 0; }
 .flow-runs-fold > summary { cursor: pointer; padding: 0.5rem 0; min-height: 44px; box-sizing: border-box; display: flex; align-items: center; font-weight: 600; }
 
 /* A proposed workflow change on its review page (workflow part 3e): each flow before and after, side by side on a
@@ -1779,8 +1780,8 @@ button.settings-menu-item.danger { color: var(--danger); }
 .proposal-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
 .proposal-side { min-width: 0; border: 1px solid var(--border); border-radius: 6px; padding: 0.4rem; }
 .proposal-side h5 { margin: 0 0 0.3rem; color: var(--muted); }
-.proposal-side .flow-canvas { height: 420px; }
+.proposal-side .flow-canvas { height: 420px; min-height: 0; }
 @media (max-width: 760px) {
   .proposal-sides { grid-template-columns: 1fr; }
-  .proposal-side .flow-canvas { height: 340px; }
+  .proposal-side .flow-canvas { height: 300px; min-height: 0; }
 }

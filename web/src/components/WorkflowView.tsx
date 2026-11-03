@@ -31,7 +31,13 @@ const flowTitles = (flows: readonly FlowEntry[]) => (name: string): string | und
   return f ? f.flow?.title ?? f.name : undefined;
 };
 
-export function Diagram({ flow, layout, texts, selected, onSelect, narrow, flowTitle, marks }: { flow: Flow; layout: FlowLayout; texts: Record<string, string>; selected: string | null; onSelect: (id: string) => void; narrow: boolean; flowTitle: (name: string) => string | undefined; marks: RunMarks }) {
+export function Diagram({ flow, layout, texts, selected, onSelect, narrow, flowTitle, marks, fit = false, still = false }: {
+  flow: Flow; layout: FlowLayout; texts: Record<string, string>; selected: string | null; onSelect: (id: string) => void; narrow: boolean; flowTitle: (name: string) => string | undefined; marks: RunMarks;
+  /** Opened fitted whatever its size: a before and after side by side are read as shapes (part 3e). */
+  fit?: boolean;
+  /** Doesn't take a swipe or the wheel, so the page around it scrolls (a proposal's review on a phone, part 3e). */
+  still?: boolean;
+}) {
   const amended = amendedBy(flow.overlays);
   const [sizes, onMeasured] = useMeasured();
   const title = titles(flow);
@@ -69,7 +75,8 @@ export function Diagram({ flow, layout, texts, selected, onSelect, narrow, flowT
   // A small flow opens fitted; a large one at a readable zoom from its start, with a map to find the rest (#318).
   const box = useRef<HTMLDivElement>(null);
   const startId = flow.start && layout.blocks.some((p) => p.block.id === flow.start) ? flow.start : layout.blocks[0]?.block.id;
-  const opening = useOpeningView(box, [...layout.blocks, ...flow.frames.map((f) => ({ ...f.at, ...f.size }))], layout.blocks.find((p) => p.block.id === startId));
+  const read = useOpeningView(box, [...layout.blocks, ...flow.frames.map((f) => ({ ...f.at, ...f.size }))], layout.blocks.find((p) => p.block.id === startId));
+  const opening = read && fit ? { fit: true as const } : read;
   return (
     <div className="flow-canvas" ref={box}>
       {opening && (
@@ -77,6 +84,7 @@ export function Diagram({ flow, layout, texts, selected, onSelect, narrow, flowT
           nodes={nodes} edges={edges} nodeTypes={NODE_TYPES} edgeTypes={EDGE_TYPES} minZoom={0.2} maxZoom={2}
           {...(opening.fit ? { fitView: true, fitViewOptions: { padding: 0.15 } } : { defaultViewport: opening })}
           nodesDraggable={false} nodesConnectable={false} edgesFocusable={false} elementsSelectable={false}
+          {...(still ? { panOnDrag: false, zoomOnScroll: false, zoomOnPinch: false, preventScrolling: false } : {})}
           onNodeClick={(_, n) => n.type === 'block' && onSelect(n.id)} onNodesChange={onMeasured}
         >
           <Background gap={24} />
@@ -384,7 +392,7 @@ export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowF
             {narrow && runs.length > 0 && (
               <details className="flow-runs-fold" open={runs.some((r) => r.state === 'running' || r.state === 'waiting')}>
                 <summary>Runs ({runs.filter((r) => r.state === 'running' || r.state === 'waiting').length} under way)</summary>
-                {runsPanel}
+                <RunsPanel runs={runs} chosen={chosenRun} onChoose={chooseRun} flowTitle={flowNameTitle} error={runsError} heading={false} blockTitle={(f, id) => flows.find((x) => x.name === f)?.flow?.blocks.find((b) => b.id === id)?.title ?? id} />
               </details>
             )}
             {narrow && (
