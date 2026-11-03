@@ -54,6 +54,7 @@ import { conversationBefore } from './earlier.ts';
 import { attachSources, type SourceContext } from './sources.ts';
 import type { SessionRole, ShellBlock } from '../shared/protocol.ts';
 import { exercisedLine } from '../platform/exercised.ts';
+import { classifierReason, ONCE_ACTION, ONCE_GRANT_MS, onceGrant, refusalOf, refusalQuestion, sameCall } from './refusals.ts';
 
 /** The EXERCISED line of issue #369, once per run. */
 let sourcesExercised = false;
@@ -251,6 +252,8 @@ export class Session {
   private askedThisTurn = false;
   /** Who allowed a call, for the note after it (issue #18). */
   private readonly allowedBy = new AllowedNotes();
+  /** The latest tool calls by id, so a refusal in a tool result can be shown with its exact input (issue #104). */
+  private readonly toolCalls = new Map<string, { toolName: string; input: Record<string, unknown> }>();
   /** Context to attach to a delivered message, by its exact text, picked up by the UserPromptSubmit hook. */
   private readonly contextFor = new Map<string, string>();
   private readonly usage = new UsageRecorder();
@@ -580,6 +583,64 @@ export class Session {
   }
 
   /**
+   * A call the auto mode classifier refused and the user then allowed once, with their own tap on Ledung's question
+   * (issue #104): exactly that call, once, within a day of the answer. An `allow` here gets past the classifier, as
+   * mergeOnAnswer's does. Settings actions keep their own rule (settingsOnWord). Null: as before.
+   */
+  private onceOnTap(toolName: string, input: Record<string, unknown>, toolUseId: string | undefined): Record<string, unknown> | null {
+    if (settingsAction(toolName) || SETTINGS_CHANGE_TOOLS.includes(toolName)) return null;
+    const now = Date.now();
+    const q = onceGrant(this.store.answeredSince(this.id, now - ONCE_GRANT_MS), this.id, toolName, input, now);
+    // Used up atomically, so two calls racing for one grant can't both run.
+    if (!q || !this.store.useWord(this.id, `q${q.id}`, ONCE_ACTION)) return null;
+    const why = `${this.userName} allowed this exact call once, at ${new Date(q.answeredAt!).toLocaleTimeString()}, in their answer to question #${q.id}`;
+    this.record('event', { text: `Refused call allowed once: ${why}.` });
+    this.allowedBy.onceAllowed(toolUseId, this.userName, q.answeredAt!, q.id);
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: `Allowed by Ledung: ${why}.` } };
+  }
+
+  /**
+   * A tool result that is the auto mode classifier's refusal (issue #104): the user is asked at once, Allow once or
+   * Deny, at the top of Waiting for you and with a push (every question addressed to the user pushes). Always the
+   * user's, never a manager's, whoever started the session. Once per refused call; while one such question is open
+   * for the same call, a repeat of it is only noted.
+   */
+  private raiseRefusal(toolUseId: string, reason: string): void {
+    const call = this.toolCalls.get(toolUseId);
+    if (!call) return;
+    const mine = this.store.listQuestions(500, false).filter((q) => q.sessionId === this.id && refusalOf(q));
+    if (mine.some((q) => refusalOf(q)!.toolUseId === toolUseId)) return;
+    const open = mine.find((q) => q.status === 'open' && sameCall(refusalOf(q)!, call.toolName, call.input));
+    if (open) {
+      this.record('event', { text: `The auto mode classifier refused the same call again; it still waits for ${this.userName} as question #${open.id}.` });
+      return;
+    }
+    const info = this.store.getSession(this.id)!;
+    const asked = refusalQuestion({ ...call, reason, toolUseId }, { title: info.title, project: info.project }, this.management.questionTiers(this.id)[0]);
+    const q = this.store.createQuestion({ sessionId: this.id, question: asked.question, options: asked.options, addressedTo: 'user', details: asked.details });
+    this.record('event', { text: `The auto mode classifier refused a ${call.toolName} call; Ledung asked ${this.userName} (question #${q.id}).` });
+    this.record('question', { questionId: q.id });
+    this.publish({ type: 'question', question: q });
+  }
+
+  /** The tool calls in an assistant message, kept for raiseRefusal; refusals in a user message's tool results. */
+  private watchRefusals(m: SDKMessage): void {
+    const content = (m.type === 'assistant' || m.type === 'user') && Array.isArray(m.message.content) ? m.message.content as unknown[] : [];
+    for (const b of content as { type?: string; id?: string; name?: string; input?: unknown; tool_use_id?: string; content?: unknown; is_error?: boolean }[]) {
+      if (m.type === 'assistant' && b.type === 'tool_use' && b.id && b.name) {
+        this.toolCalls.set(b.id, { toolName: b.name, input: b.input && typeof b.input === 'object' ? b.input as Record<string, unknown> : {} });
+        // The latest few hundred are plenty: a refusal comes right after its call.
+        if (this.toolCalls.size > 300) this.toolCalls.delete(this.toolCalls.keys().next().value!);
+      }
+      // Only an error result: a successful one that merely shows the words (a grep of this file) is no refusal.
+      if (m.type === 'user' && b.type === 'tool_result' && b.is_error === true && b.tool_use_id) {
+        const reason = classifierReason(b.content);
+        if (reason !== null) this.raiseRefusal(b.tool_use_id, reason);
+      }
+    }
+  }
+
+  /**
    * The PreToolUse hook's answer for set_project_settings (issue #306): refused, asked of the user as a sensitive
    * call when it loosens what reaches them (Martin's a on question #687), else allowed, unless the project's own
    * sensitive lists name the tool. Only a manager has the tool; anyone else's call is refused. usage_publish the
@@ -723,6 +784,8 @@ export class Session {
           if (merge) return merge;
           const named = this.settingsOnWord(toolName, toolInput, toolUseId);
           if (named) return named;
+          const once = this.onceOnTap(toolName, toolInput, toolUseId);
+          if (once) return once;
           return sensitiveHookOutput(toolName, toolInput, this.sensitiveRules, this.alwaysAsked);
         }] }],
         // After a call someone in Ledung allowed: say who, so the session never guesses. A call that
@@ -910,6 +973,11 @@ export class Session {
   }
 
   private onMessage(m: SDKMessage): void {
+    try {
+      this.watchRefusals(m);
+    } catch (e) {
+      console.error(`Refusals for session ${this.id}: ${(e as Error).message}`);
+    }
     if (m.type === 'system' && m.subtype === 'init') {
       this.update({ claudeSessionId: m.session_id, model: m.model, claudeVersion: m.claude_code_version, cwd: m.cwd });
     }

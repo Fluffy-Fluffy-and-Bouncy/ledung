@@ -45,7 +45,9 @@ export function waitingLists(
   });
   const order = deskCompare(visibleTiers);
   const forYou = items.filter((i) => i.q.status === 'open' && i.q.addressedTo === 'user' && shown(i.project))
-    .sort((a, b) => order({ tier: a.tier, rank: a.v.rank, askedAt: a.q.askedAt }, { tier: b.tier, rank: b.v.rank, askedAt: b.q.askedAt }));
+    // A call the auto mode classifier refused comes first, whatever its tier (issue #104): a session waits on it now.
+    .sort((a, b) => Number(!!b.q.details?.refusal) - Number(!!a.q.details?.refusal)
+      || order({ tier: a.tier, rank: a.v.rank, askedAt: a.q.askedAt }, { tier: b.tier, rank: b.v.rank, askedAt: b.q.askedAt }));
   const done = items.filter((i) => i.q.status !== 'open' && shown(i.project))
     .sort((a, b) => (b.q.answeredAt ?? b.q.askedAt) - (a.q.answeredAt ?? a.q.askedAt)).slice(0, 30);
   // A question a manager is handling is in no list; it opens alone, e.g. from a manager's question about it.

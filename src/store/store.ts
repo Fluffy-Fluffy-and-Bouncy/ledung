@@ -606,6 +606,12 @@ export class Store {
     return r ? this.withOriginal(toQuestion(r)) : undefined;
   }
 
+  /** A session's questions answered since `since`, without their stored context: cheap enough for every tool call (issue #104). */
+  answeredSince(sessionId: string, since: number): QuestionInfo[] {
+    return this.db.prepare(`SELECT * FROM questions WHERE session_id = ? AND status = 'answered' AND answered_at > ? ORDER BY answered_at DESC`)
+      .all(sessionId, since).map((r) => toQuestion({ ...(r as Row), earlier: null, sources: null }));
+  }
+
   /**
    * Open questions (oldest first), then the `recent` most recently closed ones. `refs` false leaves out the original,
    * the kept conversation and the attached sources, for Ledung's own reads that never show them and run on every

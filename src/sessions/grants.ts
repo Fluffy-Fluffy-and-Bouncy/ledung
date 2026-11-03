@@ -94,6 +94,13 @@ export class AllowedNotes {
     if (toolUseID) this.notes.set(toolUseID, `Ledung allowed this call without asking: ${why}.`);
   }
 
+  /** A refused call the user allowed once with their own tap (issue #104): who, when, and on which question. */
+  onceAllowed(toolUseID: string | undefined, who: string, at: number, questionId: number): void {
+    if (toolUseID) {
+      this.notes.set(toolUseID, `${who} allowed this exact call once in Ledung, at ${new Date(at).toLocaleString()} (question #${questionId}), after the auto mode classifier refused it. That grant is used up now.`);
+    }
+  }
+
   /** The note for a finished call, once; undefined when nobody in Ledung allowed it. */
   take(toolUseID: string | undefined): string | undefined {
     if (!toolUseID) return undefined;

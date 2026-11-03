@@ -48,6 +48,7 @@ let projectRoot: string;
 let boardCache: string;
 let sessions: SessionManager;
 const questionAbout: Record<string, number> = {};
+let refusalQuestion = 0;
 let managerQuestion = 0;
 let paneStore: Store;
 /** The folders Settings' Open folder was asked to show (issue #414); nothing is opened for real. */
@@ -91,6 +92,10 @@ before(async () => {
     store.withdrawQuestion(q.id, 'test');
     questionAbout[id] = q.id;
   }
+  // A call the auto mode classifier refused, and Ledung's question about it, no longer open (issue #104).
+  const rq = store.createQuestion({ sessionId: 's1', question: 'refused', options: ['Allow once', 'Deny'], addressedTo: 'user', details: { refusal: { toolName: 'Bash', input: { command: 'x' }, reason: 'r', toolUseId: 't' } } });
+  store.withdrawQuestion(rq.id, 'test');
+  refusalQuestion = rq.id;
   // A manager and a question it asked, no longer open (#104 review, finding F1).
   store.createSession({ id: 'm1', project: 'p', runner: 'local', title: 'lead', parentId: null, permissionMode: 'default', role: 'manager' });
   const mq = store.createQuestion({ sessionId: 'm1', question: 'merge #1?', options: null, addressedTo: 'user' });
@@ -619,6 +624,20 @@ test('answering a question about a sensitive request needs the live page', async
   assert.match(errorOf(plain), /no longer open/);
   const page = await livePage();
   const passed = await change(`/api/questions/${questionAbout['perm-sensitive']}/answer`, answer, { 'x-ledung-page': page.key });
+  page.close();
+  assert.equal(passed.status, 400);
+  assert.match(errorOf(passed), /no longer open/);
+});
+
+test("answering Ledung's question about a refused call, whose Allow once lets the call through, needs the live page (issue #104)", async () => {
+  const answer = { answer: 'Allow once' };
+  assert.equal((await change(`/api/questions/${refusalQuestion}/answer`, answer)).status, 403);
+  // Another question of the same ordinary session needs only the cookie, as before.
+  const plain = await change(`/api/questions/${questionAbout['perm-plain']}/answer`, answer);
+  assert.equal(plain.status, 400);
+  assert.match(errorOf(plain), /no longer open/);
+  const page = await livePage();
+  const passed = await change(`/api/questions/${refusalQuestion}/answer`, answer, { 'x-ledung-page': page.key });
   page.close();
   assert.equal(passed.status, 400);
   assert.match(errorOf(passed), /no longer open/);
