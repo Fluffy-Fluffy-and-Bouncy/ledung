@@ -2464,3 +2464,71 @@ test("a project whose flow folder holds a shared workflow's, through a link to a
     assert.match(shown.readOnly, /shared workflow "proc"/, how);
   }
 });
+
+// A link inside a shared workflow's flow folder into the project's (review round 3 of PR #116; Martin, 2026-11-03 12:43,
+// Ledung question #1314): its briefs/ or flows/, or one file, linked to the project's makes the project's file the
+// workflow's too, so the project's save of that file is refused, whether the project's file or folder exists yet or not.
+test("a project whose flow files a shared workflow's flow folder links to from inside: the save of those files is refused", async (t) => {
+  const shared = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-109-links-'));
+  const before = sessions.currentConfig;
+  t.after(() => {
+    sessions.applyConfig(before, []);
+    fs.rmSync(path.join(projectRoot, '.ledung'), { recursive: true, force: true });
+    removeTemp(shared);
+  });
+  fs.rmSync(path.join(projectRoot, '.ledung'), { recursive: true, force: true });
+  sessions.applyConfig({ ...before, workflows: [{ name: 'proc', folder: shared, managerFile: 'lead.md', sessionFile: 'worker.md', projectConfig: 'LEAD.md' }] }, []);
+  const p = '/api/projects/p/flow';
+  const page = await livePage();
+  t.after(() => page.close());
+  const save = (b: unknown) => change(p, b, { 'x-ledung-page': page.key });
+  const own = path.join(projectRoot, '.ledung', 'workflow');
+  const flow = JSON.stringify({ version: 1, title: 'Links', blocks: [{ id: 'a', kind: 'work', title: 'A', runs: 'manager' }] });
+  const theirs = path.join(shared, '.ledung', 'workflow');
+  fs.mkdirSync(theirs, { recursive: true });
+  const textOf = (file: string) => (file.endsWith('.json') ? flow : '# Brief');
+
+  // The positive branch first: the shared folder's briefs/ and flows/ are folders of its own, and the project's save of
+  // the same names is written.
+  fs.mkdirSync(path.join(theirs, 'briefs'));
+  fs.mkdirSync(path.join(theirs, 'flows'));
+  const ok = await save({ files: [{ path: 'briefs/x.md', text: '# Brief', base: null }, { path: 'flows/extra.json', text: flow, base: null }] });
+  assert.equal(ok.status, 200, ok.body);
+  assert.equal(fs.readFileSync(path.join(own, 'briefs', 'x.md'), 'utf8'), '# Brief', 'the probe sees a file that was written');
+  assert.equal(fs.existsSync(path.join(theirs, 'briefs', 'x.md')), false, 'nothing went into the shared folder');
+
+  const cases: [string, string, () => void][] = [
+    ["the shared briefs/ linked to the project's, which is there", 'briefs/x.md', () => {
+      fs.mkdirSync(path.join(own, 'briefs'), { recursive: true });
+      fs.symlinkSync(path.join(own, 'briefs'), path.join(theirs, 'briefs'), 'junction');
+    }],
+    ["the shared flows/ linked to the project's, not made yet", 'flows/extra.json', () => {
+      fs.symlinkSync(path.join(own, 'flows'), path.join(theirs, 'flows'), 'junction');
+    }],
+    ["the shared overlays/ linked to the project's, with no project flow folder yet", 'overlays/rules.md', () => {
+      fs.rmSync(path.join(projectRoot, '.ledung'), { recursive: true, force: true });
+      fs.symlinkSync(path.join(own, 'overlays'), path.join(theirs, 'overlays'), 'junction');
+    }],
+  ];
+  // One file linked (a symlink, which only some accounts on Windows may make): the shared flow.json is the project's.
+  try {
+    fs.symlinkSync(path.join(shared, 'probe-target'), path.join(shared, 'probe-link'), 'file');
+    fs.rmSync(path.join(shared, 'probe-link'));
+    cases.push(["the shared flow.json linked to the project's, not made yet", 'flow.json', () => {
+      fs.symlinkSync(path.join(own, 'flow.json'), path.join(theirs, 'flow.json'), 'file');
+    }]);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EPERM') throw e;
+    t.diagnostic('file symlinks need another account here: the one-file case is left out');
+  }
+  for (const [how, file, link] of cases) {
+    fs.rmSync(path.join(own, 'briefs', 'x.md'), { force: true });
+    fs.rmSync(path.join(own, 'flows'), { recursive: true, force: true });
+    for (const f of ['briefs', 'flows', 'overlays', 'flow.json']) fs.rmSync(path.join(theirs, f), { recursive: true, force: true });
+    link();
+    const refused = await save({ files: [{ path: file, text: textOf(file), base: null }] });
+    assert.equal(refused.status, 400, `${how}: ${refused.body}`);
+    assert.match(errorOf(refused), /shared workflow "proc"/, how);
+    assert.equal(fs.existsSync(path.join(own, ...file.split('/'))), false, `${how}: nothing was written`);
+  }
+});

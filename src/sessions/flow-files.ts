@@ -262,6 +262,41 @@ export function sharedFolderOf(projectFolder: string, workflows: readonly Workfl
   });
 }
 
+/**
+ * Where a configured workflow's flow folder leads, links inside it followed too (review round 3 of PR #116): the folder,
+ * each file and folder the format names in it, and each entry of its briefs/, overlays/ and flows/, whether there yet or
+ * a link to something not made yet.
+ */
+function sharedReach(folder: string): string[] {
+  const root = path.join(path.resolve(folder), ...FLOW_FOLDER.split('/'));
+  const folders = [...FLOW_TEXT_FOLDERS, FLOWS_FOLDER];
+  const entries = folders.flatMap((sub) => {
+    try {
+      return fs.readdirSync(path.join(root, sub)).map((name) => path.join(root, sub, name));
+    } catch {
+      return [];
+    }
+  });
+  return [root, ...[FLOW_FILE, RULES_FILE, MANAGER_FILE, ...folders].map((f) => path.join(root, f)), ...entries]
+    .map((p) => wouldBe(p)).filter((p): p is string => p !== null);
+}
+
+/**
+ * Refuses a save when a file it would write (or remove) is, links followed, a file a configured workflow's flow folder
+ * reaches (review round 3 of PR #116): a link inside that folder (its briefs/, flows/, one file) into the project's makes
+ * the project's file the workflow's too. Checked at each save, so the page's reads don't list every workflow's folder.
+ */
+function refuseShared(projectFolder: string, files: readonly string[], workflows: readonly WorkflowConfig[]): void {
+  if (!workflows.length) return;
+  const own = path.join(path.resolve(projectFolder), ...FLOW_FOLDER.split('/'));
+  const targets = files.map((f) => [f, wouldBe(path.join(own, ...f.split('/')))] as const);
+  for (const w of workflows) {
+    const reach = sharedReach(w.folder);
+    const hit = targets.find(([, t]) => t !== null && reach.some((r) => sameOrInside(r, t)));
+    if (hit) throw new FileError(`${hit[0]} is also the shared workflow "${w.name}"'s file (a link in its folder leads here), so it is part of the flow every project following "${w.name}" runs: Ledung's builder doesn't save it. Change it in that workflow's own repository, by a reviewed change.`);
+  }
+}
+
 let sharedExercised = false;
 
 /**
@@ -281,9 +316,15 @@ export function flowPlaces(project: ProjectConfig, workflow: WorkflowConfig | un
       readOnly: `${project.name}'s folder is the shared workflow "${shared.name}"'s folder, so its flow is the one every project following "${shared.name}" runs: Ledung's builder doesn't save it. Change it in that workflow's own repository, by a reviewed change.`,
     });
   } else if (project.runner === 'local') {
+    const write = localWriter(project.path);
     places.push({
       kind: 'project', folder: path.join(project.path, ...FLOW_FOLDER.split('/')),
-      read: localReader(project.path, FLOW_FOLDER), list: localLister(project.path, FLOW_FOLDER), write: localWriter(project.path),
+      read: localReader(project.path, FLOW_FOLDER), list: localLister(project.path, FLOW_FOLDER),
+      // Nothing it writes may be a file a shared workflow's folder links to (review round 3 of PR #116).
+      write: async (files) => {
+        refuseShared(project.path, files.map((f) => f.path), workflows);
+        await write(files);
+      },
     });
   } else if (container) {
     places.push({
