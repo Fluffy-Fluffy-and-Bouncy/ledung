@@ -2,7 +2,7 @@
 // questions of other sessions woven into a manager's conversation.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { conversationFromHash, conversationHash, conversationOf, insertByTime, shownWoven, wovenQuestions } from '../web/src/conversation.ts';
+import { conversationFromHash, conversationHash, conversationOf, insertByTime, lastOwnMessage, shownWoven, wovenQuestions } from '../web/src/conversation.ts';
 
 // A project with manager M running session S, and a session U the user started without a manager.
 const q = (id: number, sessionId: string, addressedTo: string, askedAt = id) => ({ id, sessionId, addressedTo, askedAt });
@@ -47,4 +47,13 @@ test('woven entries go in by time, after entries of the same time', () => {
   const out = insertByTime(list, [{ at: 5, k: 'x' }, { at: 20, k: 'y' }, { at: 99, k: 'z' }]);
   assert.deepEqual(out.map((e) => e.k), ['x', 'a', 'b', 'y', 'c', 'z']);
   assert.deepEqual(list.map((e) => e.k), ['a', 'b', 'c'], 'the list given is left as it was');
+});
+
+test("the message that sticks is the person's latest, not a delivery by Ledung", () => {
+  const own = (key: string) => ({ key, type: 'user', byLedung: false });
+  const delivered = (key: string) => ({ key, type: 'user', byLedung: true });
+  const reply = (key: string) => ({ key, type: 'assistant' });
+  assert.equal(lastOwnMessage([own('a'), reply('b'), own('c'), reply('d'), delivered('e'), reply('f')])?.key, 'c');
+  assert.equal(lastOwnMessage([delivered('a'), reply('b')]), null, 'only deliveries: nothing sticks');
+  assert.equal(lastOwnMessage([]), null);
 });

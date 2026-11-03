@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-03
+- In a chat, your latest message sticks to the top while the replies after it scroll under it, cut to a few lines with a fade when long; click it to see it whole. Scrolled up above it, it sits in its place again (#102)
 - Lock a secret in the message box: select text and press the 🔑 that appears, or press 🔑 by Send for a masked field. It becomes a chip `🔑 name`, leaves the box and the saved draft at once, and Claude gets only the name, as `$NAME` in its commands; the value is kept encrypted for your user (Windows DPAPI, macOS Keychain, Linux secret service), lasts once, for the session or until removed (also for the whole project), and Ledung shows 🔑name wherever the value would appear again. Session ⚙ → Secrets lists and removes them. A session running before this release gets its secrets from its next start or resume (Fluffy-Fluffy-and-Bouncy/Project-Ledung#468)
 - Saving a project's settings no longer refuses a session profile that comes from its workflow, and a container project in a workflow saves instead of failing with a path error (#96)
 - The sidebar's new defaults: no status dot, compact step "Name + ship" and no "Archived (N)" entry, each changeable in Settings → Look; a browser that switched the dot or Archived off, or chose a compact step other than None, keeps its choice, and archived sessions are reached by switching Archived on (#95)
