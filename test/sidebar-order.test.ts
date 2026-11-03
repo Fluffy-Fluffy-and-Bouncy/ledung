@@ -69,7 +69,7 @@ test("a database that already ran migration 23 (the message board) gets the orde
     before.exec('DROP TRIGGER usage_daily_insert; DROP TRIGGER usage_daily_update; DROP TRIGGER usage_daily_delete; DROP TABLE usage_daily; DROP INDEX usage_by_branch; DROP INDEX usage_by_session; CREATE INDEX usage_by_session ON usage(session_id, at);');
     before.close();
     const after = open(tmp.file);
-    assert.equal((after.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 42);
+    assert.equal((after.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 43);
     const columns = (table: string) => (after.db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
     assert.ok(columns('projects').includes('position'));
     assert.ok(columns('sessions').includes('position'));

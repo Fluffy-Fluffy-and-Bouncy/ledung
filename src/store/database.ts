@@ -576,7 +576,34 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE questions ADD COLUMN sources TEXT;
   `,
-  // 41: runs, pieces of work going through a project's flow (workflow part 3, docs/steps/workflow-follow.md): where
+  // 41: orders on record (issue #105): the person's own words, checked by Ledung, allowing one command in a manager and
+  // the session it sent the order to. The statuses are the process's GOAL.md ones. No foreign keys: an order outlives
+  // a trimmed session as the record of what was allowed. Its project is its manager's, read with it, so a rename moves it. IF NOT EXISTS: a test winds a database back to 37 and starts it again.
+  `
+  CREATE TABLE IF NOT EXISTS orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    manager_id TEXT NOT NULL,
+    session_id TEXT,
+    command TEXT NOT NULL,
+    match TEXT NOT NULL,
+    until TEXT NOT NULL,
+    source_kind TEXT NOT NULL,
+    source_ref INTEGER NOT NULL,
+    words TEXT NOT NULL,
+    words_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    away_since INTEGER,
+    status TEXT NOT NULL,
+    status_at INTEGER NOT NULL,
+    note TEXT,
+    runs INTEGER NOT NULL DEFAULT 0,
+    taken INTEGER NOT NULL DEFAULT 0,
+    last_run_at INTEGER,
+    keep_question INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS orders_by_status ON orders (status, status_at);
+  `,
+  // 42: runs, pieces of work going through a project's flow (workflow part 3, docs/steps/workflow-follow.md): where
   // each is (at, since when), the count of each outcome's word per block, the session that ran each block, the run and
   // block a child run's ending goes to, the history of its steps, its state and how it ended, who coordinates it, and
   // the person block's open question. Counts, sessions and history are JSON (src/shared/flow-run.ts). And on a session,
@@ -605,7 +632,7 @@ const MIGRATIONS: string[] = [
   CREATE INDEX flow_runs_by_project ON flow_runs(project, updated_at);
   ALTER TABLE sessions ADD COLUMN run_block TEXT;
   `,
-  // 42: a manager's proposed workflow changes (workflow part 3e): the files it would write with the versions they replace,
+  // 43: a manager's proposed workflow changes (workflow part 3e): the files it would write with the versions they replace,
   // the flows before and after and the checks' problems, as JSON (src/sessions/flow-propose.ts); its review question,
   // and whether it is open, saved, declined or failed. Kept apart from the question so the page's question list stays small.
   `

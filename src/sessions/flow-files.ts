@@ -6,13 +6,16 @@
 //
 // Writing them (issue #311, part 2, design decision 4): the builder saves straight into the project's own
 // .ledung/workflow, never a shared workflow's folder; only the files the format knows, never through a link, each
-// replacing exactly the version the page read.
+// replacing exactly the version the page read. A project whose folder is a shared workflow's folder has no own place
+// at all (ledung#109): its flow is the one every project following that workflow runs, so it is shown read-only.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ProjectConfig, WorkflowConfig } from '../config.ts';
 import { DEFAULT_FLOW, FLOW_FILE, FLOW_FOLDER, FLOW_IN_FOLDER, FLOW_TEXT_FOLDERS, FLOWS_FOLDER, linkedTexts, MANAGER_FILE, RULES_FILE, WRITABLE_FLOW_FILE, type Flow, type FlowEntry, type FlowFileWrite, type FlowProblem, type FlowView } from '../shared/flow.ts';
 import { FileError, readProjectBytes } from './files.ts';
+import { sameFolder } from '../accounts/store.ts';
+import { exercisedLine } from '../platform/exercised.ts';
 import { checkFlow, checkFlowCalls, machinePathIn, parseFlow, personGatedFlows } from '../shared/flow-check.ts';
 import { projectWorkflow } from './workflow.ts';
 
@@ -53,6 +56,8 @@ export interface FlowPlace {
   list: () => Promise<string[]>;
   /** Writes files into the folder (#311); only the project's own place has it. */
   write?: WriteFlowFiles;
+  /** Why the builder doesn't save here, when the project's own folder is a shared workflow's (ledung#109). */
+  readOnly?: string;
 }
 
 /** The most .md files the builder lists of each folder it lists (FLOW_TEXT_FOLDERS). */
@@ -206,16 +211,125 @@ export interface ContainerFiles {
   write: WriteFlowFiles;
 }
 
+/** The most links one path is followed through before giving up on it (a loop). */
+const LINKS_MAX = 40;
+
+/**
+ * Where a path leads with every link on the way resolved, also when its end isn't there yet: the part that exists is
+ * resolved, a link whose target is missing is followed by what it says, and the rest is added back. Null: a loop.
+ * So a flow folder not made yet is compared where it would be made (code review of PR #116).
+ */
+function wouldBe(p: string, links = 0): string | null {
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    // Missing, or a link to something missing: below.
+  }
+  try {
+    if (fs.lstatSync(p).isSymbolicLink()) return links >= LINKS_MAX ? null : wouldBe(path.resolve(path.dirname(p), fs.readlinkSync(p)), links + 1);
+  } catch {
+    // Not there at all: its folder is resolved instead.
+  }
+  const parent = path.dirname(p);
+  if (parent === p) return p;
+  const up = wouldBe(parent, links);
+  return up === null ? null : path.join(up, path.basename(p));
+}
+
+/** `inner` is `outer` or a folder inside it, letter case ignored where the file system ignores it (as sameFolder). */
+function sameOrInside(outer: string, inner: string, platform = process.platform): boolean {
+  if (sameFolder(outer, inner, platform)) return true;
+  const fold = (p: string) => (platform === 'win32' || platform === 'darwin' ? path.resolve(p).toLowerCase() : path.resolve(p));
+  const rel = path.relative(fold(outer), fold(inner));
+  // A name starting with ".." ("..x") is inside; ".." itself or "../…" is not.
+  return rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+}
+
+/**
+ * The configured workflow whose flow folder (.ledung/workflow) the project's own is, or holds (ledung#109), through
+ * links and junctions on either side, and whether or not it has been made yet: the same folder, a link to it, a
+ * workflow folder linked into the project's, or one linked to a folder inside the project's (flows/, briefs/: review
+ * round 2 of PR #116), whose files the project's save would then write. Its flow is the one every project following
+ * that workflow runs, so the builder must not save there from this project's page either.
+ */
+export function sharedFolderOf(projectFolder: string, workflows: readonly WorkflowConfig[]): WorkflowConfig | undefined {
+  const flowOf = (folder: string) => wouldBe(path.join(path.resolve(folder), ...FLOW_FOLDER.split('/')));
+  const own = flowOf(projectFolder);
+  if (own === null) return undefined;
+  return workflows.find((w) => {
+    const theirs = flowOf(w.folder);
+    return theirs !== null && sameOrInside(own, theirs);
+  });
+}
+
+/** The flows besides the default one a folder's listing holds, as the page reads them (#447). */
+const flowFilesIn = (all: readonly string[]) => all.filter((f) => FLOW_IN_FOLDER.test(f) && f !== `${FLOWS_FOLDER}/${DEFAULT_FLOW}.json`).slice(0, FLOWS_MAX);
+
+/**
+ * Where a configured workflow's flow folder leads, links inside it followed too (review rounds 3 and 4 of PR #116): the
+ * folder, each file and folder the format names in it, what Ledung's own lister lists there (its names and caps, so a
+ * save never resolves more than the page would read), and every text its flows name, at any path in the folder; each
+ * whether there yet or a link to something not made yet.
+ */
+async function sharedReach(folder: string): Promise<string[]> {
+  const root = path.join(path.resolve(folder), ...FLOW_FOLDER.split('/'));
+  const listed = await localLister(folder, FLOW_FOLDER)();
+  const flowFiles = flowFilesIn(listed);
+  const read = await localReader(folder, FLOW_FOLDER)([FLOW_FILE, ...flowFiles]);
+  const named = [FLOW_FILE, ...flowFiles].flatMap((f) => {
+    const r = read.get(f);
+    const flow = r && 'text' in r ? parseFlow(r.text, f).flow : null;
+    return flow ? linkedTexts(flow) : [];
+  });
+  const names = new Set([FLOW_FILE, RULES_FILE, MANAGER_FILE, ...FLOW_TEXT_FOLDERS, FLOWS_FOLDER, ...listed, ...named]);
+  return [root, ...[...names].map((f) => path.join(root, ...f.split('/')))]
+    .map((p) => wouldBe(p)).filter((p): p is string => p !== null);
+}
+
+/**
+ * Refuses a save when a file it would write (or remove) is, links followed, a file a configured workflow's flow folder
+ * reaches (review round 3 of PR #116): a link inside that folder (its briefs/, flows/, one file) into the project's makes
+ * the project's file the workflow's too. Checked at each save, so the page's reads don't list every workflow's folder.
+ */
+async function refuseShared(projectFolder: string, files: readonly string[], workflows: readonly WorkflowConfig[]): Promise<void> {
+  if (!workflows.length) return;
+  const own = path.join(path.resolve(projectFolder), ...FLOW_FOLDER.split('/'));
+  const targets = files.map((f) => [f, wouldBe(path.join(own, ...f.split('/')))] as const);
+  for (const w of workflows) {
+    const reach = await sharedReach(w.folder);
+    const hit = targets.find(([, t]) => t !== null && reach.some((r) => sameOrInside(r, t)));
+    if (hit) throw new FileError(`${hit[0]} is also the shared workflow "${w.name}"'s file (a link in its folder leads here), so it is part of the flow every project following "${w.name}" runs: Ledung's builder doesn't save it. Change it in that workflow's own repository, by a reviewed change.`);
+  }
+}
+
+let sharedExercised = false;
+
 /**
  * The places a project's flow may be, in the order they count: its own .ledung/workflow first, then the shared
- * workflow's folder it follows (question #1073).
+ * workflow's folder it follows (question #1073). `workflows` are all the configured ones: a project whose folder is
+ * one of theirs gets that folder as the shared workflow's place, read-only, instead of a place of its own (ledung#109).
  */
-export function flowPlaces(project: ProjectConfig, workflow: WorkflowConfig | undefined, container?: ContainerFiles): FlowPlace[] {
+export function flowPlaces(project: ProjectConfig, workflow: WorkflowConfig | undefined, container?: ContainerFiles, workflows: readonly WorkflowConfig[] = workflow ? [workflow] : []): FlowPlace[] {
   const places: FlowPlace[] = [];
-  if (project.runner === 'local') {
+  const shared = project.runner === 'local' ? sharedFolderOf(project.path, workflows) : undefined;
+  if (project.runner === 'local' && shared) {
+    if (!sharedExercised) exercisedLine(`EXERCISED #109 project ${project.name}'s folder is workflow ${shared.name}'s, shown read-only`);
+    sharedExercised = true;
+    places.push({
+      kind: 'workflow', folder: path.join(project.path, ...FLOW_FOLDER.split('/')), workflow: shared.name,
+      read: localReader(project.path, FLOW_FOLDER), list: localLister(project.path, FLOW_FOLDER),
+      readOnly: `${project.name}'s folder is the shared workflow "${shared.name}"'s folder, so its flow is the one every project following "${shared.name}" runs: Ledung's builder doesn't save it. Change it in that workflow's own repository, by a reviewed change.`,
+    });
+  } else if (project.runner === 'local') {
+    const write = localWriter(project.path);
     places.push({
       kind: 'project', folder: path.join(project.path, ...FLOW_FOLDER.split('/')),
-      read: localReader(project.path, FLOW_FOLDER), list: localLister(project.path, FLOW_FOLDER), write: localWriter(project.path),
+      read: localReader(project.path, FLOW_FOLDER), list: localLister(project.path, FLOW_FOLDER),
+      // Nothing it writes may be a file a shared workflow's folder links to (review round 3 of PR #116).
+      write: async (files) => {
+        await refuseShared(project.path, files.map((f) => f.path), workflows);
+        await write(files);
+      },
     });
   } else if (container) {
     places.push({
@@ -231,7 +345,8 @@ export function flowPlaces(project: ProjectConfig, workflow: WorkflowConfig | un
   }
   // A shared workflow's folder is on this computer; a container project follows one only when it says so (#21).
   // The builder never writes there (#311): one project's change would change every project that follows it.
-  if (workflow && projectWorkflow(workflow, project)) {
+  // Not twice: the workflow whose folder is the project's own is already its first place.
+  if (workflow && projectWorkflow(workflow, project) && workflow.name !== shared?.name) {
     places.push({
       kind: 'workflow', folder: path.join(workflow.folder, ...FLOW_FOLDER.split('/')), workflow: workflow.name,
       read: localReader(workflow.folder, FLOW_FOLDER), list: localLister(workflow.folder, FLOW_FOLDER),
@@ -257,11 +372,14 @@ export async function findFlow(places: FlowPlace[]): Promise<{ place: FlowPlace;
 export async function readFlowView(project: string, places: FlowPlace[], profiles?: readonly string[]): Promise<FlowView> {
   const expected = `${FLOW_FOLDER}/${FLOW_FILE}`;
   const saveTo = places.find((p) => p.kind === 'project' && p.write)?.folder ?? null;
+  // Why there is nowhere to save, for the page (ledung#109).
+  const why = saveTo === null ? places.find((p) => p.readOnly)?.readOnly : undefined;
+  const readOnly = why ? { readOnly: why } : {};
   const found = await findFlow(places);
-  if (!found) return { project, source: null, expected, flow: null, rules: null, texts: {}, problems: [], raw: null, versions: {}, saveTo, flows: [] };
+  if (!found) return { project, source: null, expected, flow: null, rules: null, texts: {}, problems: [], raw: null, versions: {}, saveTo, flows: [], ...readOnly };
   const { place } = found;
   const source = { kind: place.kind, folder: place.folder, ...(place.workflow ? { workflow: place.workflow } : {}) };
-  if ('refused' in found) return { project, source, expected, flow: null, rules: null, texts: {}, problems: [{ at: FLOW_FILE, message: `can't be read: ${found.refused}` }], raw: null, versions: {}, saveTo, flows: [] };
+  if ('refused' in found) return { project, source, expected, flow: null, rules: null, texts: {}, problems: [{ at: FLOW_FILE, message: `can't be read: ${found.refused}` }], raw: null, versions: {}, saveTo, flows: [], ...readOnly };
   const parsed = parseFlow(found.text);
   const versions: Record<string, string> = { [FLOW_FILE]: textVersion(found.text) };
   const all: string[] = await place.list().catch(() => []);
@@ -269,7 +387,7 @@ export async function readFlowView(project: string, places: FlowPlace[], profile
   let budget = FLOW_TEXTS_MAX_BYTES - Buffer.byteLength(found.text);
   // "main" is the default flow's name, flow.json's (#447): flows/main.json would be a second flow of that name.
   const reserved = `${FLOWS_FOLDER}/${DEFAULT_FLOW}.json`;
-  const flowFiles = all.filter((f) => FLOW_IN_FOLDER.test(f) && f !== reserved).slice(0, FLOWS_MAX);
+  const flowFiles = flowFilesIn(all);
   const flowReads = flowFiles.length ? await place.read(flowFiles, budget) : new Map<string, FileRead>();
   const flows: FlowEntry[] = flowFiles.map((file) => {
     const name = FLOW_IN_FOLDER.exec(file)![1]!;
@@ -314,7 +432,7 @@ export async function readFlowView(project: string, places: FlowPlace[], profile
   return {
     project, source, expected, flow: parsed.flow, rules: ruleText, texts,
     problems: [...parsed.problems, ...refused, ...checked, ...(calls.get(DEFAULT_FLOW) ?? []), ...paths.filter((p): p is FlowProblem => p !== null)],
-    raw: found.text, versions, saveTo, flows,
+    raw: found.text, versions, saveTo, flows, ...readOnly,
   };
 }
 
@@ -365,7 +483,7 @@ export function flowWrites(given: unknown): FlowFileWrite[] {
  * yet; a flow deleted or renamed is removed last (#447), once nothing written still runs it under its old name.
  */
 export async function saveFlowFiles(place: FlowPlace, given: unknown): Promise<void> {
-  if (place.kind !== 'project' || !place.write) throw new FileError("The builder writes only into the project's own workflow folder.");
+  if (place.kind !== 'project' || !place.write) throw new FileError(place.readOnly ?? "The builder writes only into the project's own workflow folder.");
   const files = flowWrites(given);
   const now = await place.read(files.map((f) => f.path));
   for (const f of files) {

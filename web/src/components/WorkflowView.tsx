@@ -233,7 +233,7 @@ function Rules({ view, onManager }: { view: FlowView; onManager: () => void }) {
 
 /** Why the flow can't be edited here, or null when it can (#311). */
 function notEditable(view: FlowView): string | null {
-  if (!view.saveTo) return "Ledung can't write into this project's folder.";
+  if (!view.saveTo) return view.readOnly ?? "Ledung can't write into this project's folder.";
   if (view.source && !view.flow) return "flow.json can't be read as a flow, so the builder can't open it: fix it by hand first (the problems above say what).";
   // The builder edits all the flows together (#447), so each must be one.
   const bad = view.flows.find((f) => !f.flow);

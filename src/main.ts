@@ -85,6 +85,8 @@ async function main(): Promise<void> {
   void manager.cleanSecretsAtStart(attached).catch((e) => console.log(`Secrets: the clean-up at start failed: ${(e as Error).message}`));
   // Only now: an away period that ran out while Ledung was off tells the managers that are live (issue #328).
   manager.away.begin();
+  // A once-order whose run was under way when Ledung stopped: its result went to that Ledung (review of PR #107, finding 4).
+  manager.orders.recover();
   // Whether Claude Code is signed in, so a first start says how to sign in before a session fails on it (issue #333).
   void manager.checkSignIns();
 

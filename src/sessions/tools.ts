@@ -7,9 +7,11 @@ import { z } from 'zod';
 import { PERMISSION_MODES, type AttachedSource, type PermissionMode, type QuestionInfo, type SessionRole } from '../shared/protocol.ts';
 import { failedSourcesNote, MAX_SOURCES, type SourceInput } from './sources.ts';
 import {
-  ACCEPTED, CHANGES_NEEDED, detailsProblem, hasDetails, MAX_REVIEW_EVIDENCE, optionAnswer, questionText, type Opinion, type QuestionDetails, type QuestionOption, type ReviewDetails,
+  ACCEPTED, CHANGES_NEEDED, detailsProblem, hasDetails, MAX_REVIEW_EVIDENCE, optionAnswer, questionText, splitOption, type OrderCommandDetails, type Opinion, type QuestionDetails, type QuestionOption, type ReviewDetails,
 } from '../shared/questions.ts';
 import type { ShotInput } from './management.ts';
+import { commandProblem, type OrderSpec } from './orders.ts';
+import { CONFIRM, CONFIRM_KEY } from '../shared/orders.ts';
 import { SETTINGS_ACTIONS } from './word.ts';
 import { SETTINGS_PATCH, type SettingsPatch } from '../projects/settings-tools.ts';
 
@@ -20,7 +22,7 @@ const MANAGER_TOOLS = [
   'start_session', 'list_sessions', 'read_session', 'send_message', 'stop_session', 'archive_session', 'clear_session', 'compact_session',
   'answer_question', 'forward_answer', 'list_managers', 'message_manager',
   'decide_permission', 'list_permissions',
-  'machine_status', 'set_priority', 'pause_session', 'resume_session', 'list_projects', 'away_log',
+  'machine_status', 'set_priority', 'pause_session', 'resume_session', 'list_projects', 'away_log', 'order_done',
   'mcp_status', 'reconnect_mcp_server',
   // Reads what Settings shows, nothing secret (issue #263); the Settings actions themselves are SETTINGS_TOOLS.
   'settings_status',
@@ -83,12 +85,37 @@ export interface NewProjectArgs extends Omit<ProjectArgs, 'folder'> {
   task?: string;
 }
 
+/**
+ * An order on record (issue #105), for start_session and send_message: a command the person ordered, and where they
+ * said it. Ledung checks the words against its own record before anything is sent.
+ */
+const orderSchema = z.object({
+  command: z.string().min(1).describe('The command as it will run: exactly, or (match "pattern") with * where any text may stand.'),
+  match: z.enum(['exact', 'pattern']).optional().describe('Default exact. A pattern matches one plain command only, never a chained one.'),
+  until: z.enum(['once', 'done']).optional().describe('once (default): until it has run once without failing; done: until you mark it done with order_done.'),
+  question: z.number().int().positive().optional().describe('The source: the number of your own question the person answered, on this computer, in the last two days.'),
+  typed: z.object({
+    words: z.string().min(3).describe("Words of the person's message, verbatim, as they typed them to you: they find the message. The order records and quotes the whole message, never a piece of it."),
+    at: z.string().min(1).describe('When they typed them, as HH:MM (or an ISO date and time).'),
+  }).optional().describe('Or the source: words the person typed to you on this computer in the last two days. Give exactly one of question or typed.'),
+}).describe(
+  "An order from the person, on record: Ledung checks the source against its own record (only the person's own words count), shows the order on the page where they can cancel it, " +
+  "starts the session's message with their words verbatim, and lets exactly this command run without a prompt in you and in that session. Never for anything the person did not order.",
+);
+
+/** The order as the handlers take it. */
+function orderSpec(o: z.infer<typeof orderSchema> | undefined): OrderSpec | undefined {
+  return o && { command: o.command, match: o.match, until: o.until, question: o.question, typed: o.typed };
+}
+
 /** The manager's tools, already bound to the manager they belong to. */
 export interface ManagerHandlers {
-  startSession(args: { task: string; title?: string; permissionMode?: PermissionMode; model?: string; profile?: string; cwd?: string }): Promise<string>;
+  startSession(args: { task: string; title?: string; permissionMode?: PermissionMode; model?: string; profile?: string; cwd?: string; order?: OrderSpec }): Promise<string>;
   listSessions(): string;
   readSession(id: string, last?: number): string;
-  sendMessage(id: string, text: string): Promise<string>;
+  sendMessage(id: string, text: string, order?: OrderSpec): Promise<string>;
+  /** Marks one of the manager's orders done (issue #105). */
+  orderDone(id: number): string;
   stopSession(id: string): Promise<string>;
   /** id omitted: the manager itself. */
   clearSession(id: string | undefined, then?: string, seconds?: number): Promise<string>;
@@ -216,10 +243,42 @@ export interface AskArgs {
   about_question?: number;
   about_request?: string;
   sources?: SourceInput[];
+  /** The exact command the question asks the person to confirm as an order (issue #105); Ledung adds the option that confirms it. */
+  order_command?: { command: string; match?: 'exact' | 'pattern' };
+}
+
+/**
+ * The order command an ask_user question carries (issue #105, Martin 2026-11-03, Ledung question #1290 "a"), checked,
+ * and Ledung's own Confirm order option added last: only a pick of that option confirms an order for exactly that
+ * command. The manager's options never confirm, and none may look like Ledung's: a label the manager writes can say
+ * "No, do not push" (review round 2 of PR #107, finding 1).
+ */
+function orderCommandDetails(a: AskArgs, objects: QuestionOption[] | undefined): { orderCommand: OrderCommandDetails; objects?: QuestionOption[]; plain?: string[] } {
+  const c = a.order_command!;
+  const match = c.match ?? 'exact';
+  const bad = commandProblem(c.command ?? '', match);
+  if (bad) throw new Error(`order_command: ${bad} Nothing was asked.`);
+  const labels = objects ? objects.map((o) => splitOption(o.text).label.replace(/\*\*|`/g, '')) : (a.options as string[] | undefined) ?? [];
+  if (labels.some((l) => l.trim().toLowerCase().startsWith(CONFIRM.toLowerCase()))) {
+    throw new Error(`order_command: "${CONFIRM}" is Ledung's own option, which it adds itself; none of yours may start with it. Nothing was asked.`);
+  }
+  if (objects?.some((o) => o.key === CONFIRM_KEY)) throw new Error(`order_command: the key "${CONFIRM_KEY}" is for Ledung's own ${CONFIRM} option. Nothing was asked.`);
+  const what = match === 'exact' ? 'exactly the command shown' : 'commands of the pattern shown';
+  if (objects) {
+    const mine: QuestionOption = { key: CONFIRM_KEY, text: `**${CONFIRM}**: Ledung's own option. It lets ${what} run without a prompt; no other option does.` };
+    return { orderCommand: { command: c.command.trim(), match, confirm: optionAnswer(mine) }, objects: [...objects, mine] };
+  }
+  return { orderCommand: { command: c.command.trim(), match, confirm: CONFIRM }, plain: [...labels, CONFIRM] };
+}
+
+/** What the question shows of its order command, after the asker's text, so the chat and the phone show it too. */
+function orderCommandText(c: OrderCommandDetails): string {
+  const fence = '`'.repeat(Math.max(2, ...(c.command.match(/`+/g) ?? []).map((s) => s.length)) + 1);
+  return `**Order for Ledung**: answering "${c.confirm}" confirms an order that lets ${c.match === 'exact' ? 'exactly this command' : 'commands of this pattern (`*` is any text; one plain command only)'} run without a prompt:\n\n${fence}\n${c.command}\n${fence}`;
 }
 
 /** What a review doesn't take besides its own sections: opinions and checks go in its notes, files in its evidence (docs/steps/pr-review.md). */
-const NOT_IN_A_REVIEW: (keyof AskArgs)[] = ['question', 'options', 'issue', 'evidence', 'opinions', 'recommended', 'why', 'reviewer', 'screenshots', 'about_request'];
+const NOT_IN_A_REVIEW: (keyof AskArgs)[] = ['question', 'options', 'issue', 'evidence', 'opinions', 'recommended', 'why', 'reviewer', 'screenshots', 'about_request', 'order_command'];
 
 /** A review's fields, checked: its sections can't be missing, so a review never arrives without its context. */
 function reviewDetails(a: AskArgs): QuestionDetails {
@@ -249,19 +308,23 @@ export function askedQuestion(a: AskArgs): { question: string; options: string[]
     const details = reviewDetails(a);
     return { question: questionText(undefined, details), options: null, details };
   }
-  const objects = a.options?.length && typeof a.options[0] !== 'string' ? a.options as QuestionOption[] : undefined;
+  const given = a.options?.length && typeof a.options[0] !== 'string' ? a.options as QuestionOption[] : undefined;
+  const order = a.order_command ? orderCommandDetails(a, given) : undefined;
+  const objects = order ? order.objects : given;
   const details: QuestionDetails = {
     title: a.title, issue: a.issue, evidence: a.evidence, options: objects, opinions: a.opinions?.length ? a.opinions : undefined,
     recommended: a.recommended, why: a.why, reviewer: a.reviewer, tier: a.tier, rank: a.rank, refs: a.refs,
+    orderCommand: order?.orderCommand,
   };
   for (const k of Object.keys(details) as (keyof QuestionDetails)[]) if (details[k] === undefined) delete details[k];
   const problem = detailsProblem(details);
   if (problem) throw new Error(problem);
-  const question = questionText(a.question, details);
-  if (!question.trim()) throw new Error('Give the question, or at least issue.');
+  const text = questionText(a.question, details);
+  if (!text.trim()) throw new Error('Give the question, or at least issue.');
+  const question = details.orderCommand ? `${text}\n\n${orderCommandText(details.orderCommand)}` : text;
   return {
     question,
-    options: objects ? objects.map(optionAnswer) : (a.options as string[] | undefined) ?? null,
+    options: objects ? objects.map(optionAnswer) : order?.plain ?? (a.options as string[] | undefined) ?? null,
     details: hasDetails(details) ? details : null,
   };
 }
@@ -462,12 +525,22 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
           ? {
             about_question: z.number().int().positive().optional().describe("The number of the question from one of your sessions that this is about; later pass the answer on with forward_answer."),
             about_request: z.string().min(8).optional().describe(`A permission request from one of your sessions to put to ${who}: Ledung writes the question with the exact request, your question text becomes your note under it, and ${who}'s answer decides the request.`),
+            order_command: z.object({
+              command: z.string().min(1).describe('The command as it will run: exactly, or (match "pattern") with * where any text may stand.'),
+              match: z.enum(['exact', 'pattern']).optional().describe('Default exact.'),
+            }).optional().describe(
+              `The exact command this question asks ${who} to confirm as an order. Ledung shows it on the question page and adds its own last option, "${CONFIRM}"; ` +
+              `none of your options confirms, and none may start with those words. If ${who} picks it, ` +
+              'an order you then give with start_session or send_message, citing this question, is in force at once, for exactly this command. ' +
+              `Without it an answer only proposes an order, which ${who} must confirm on the page first.`,
+            ),
           }
           : {}),
       },
       async (args: AskArgs) => {
         if (args.about_request && !args.review) {
           return safely(() => {
+            if (args.order_command) throw new Error('order_command goes with a question of your own, not with about_request. Nothing was asked.');
             const q = h.ask(args.question ?? args.issue ?? '', null, args.about_question ?? null, args.about_request, { tier: args.tier, rank: args.rank, refs: args.refs });
             return `Question #${q.id} about request ${args.about_request} is recorded and has gone to ${h.asksWhom}. Ledung applies the answer to the request itself and tells you. End your turn now.`;
           });
@@ -575,7 +648,8 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
         cwd: z.string().min(1).optional().describe(
           "The folder the session works in: the project folder (the default), a folder inside it, or one under the project's extra folders (its settings), such as a git worktree. Claude Code treats it as the project folder. Kept when the session is resumed or cleared; the folder must exist (create worktrees yourself).",
         ),
-      }, async (a) => safely(() => m.startSession({ task: a.task, title: a.title, permissionMode: a.permission_mode, model: a.model, profile: a.profile, cwd: a.cwd }))) as never,
+        order: orderSchema.optional(),
+      }, async (a) => safely(() => m.startSession({ task: a.task, title: a.title, permissionMode: a.permission_mode, model: a.model, profile: a.profile, cwd: a.cwd, order: orderSpec(a.order) }))) as never,
       tool('list_sessions', 'List the sessions you started: status and how long they have been in it, and open questions.', {}, async () => safely(() => m.listSessions())) as never,
       tool('read_session', "Read the recent messages of one of your sessions.", {
         id,
@@ -584,7 +658,11 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
       tool('send_message', 'Send an instruction to one of your sessions. It arrives when the session is free; a session that has ended is resumed first.', {
         id,
         text: z.string().min(1),
-      }, async (a) => safely(() => m.sendMessage(a.id, a.text))) as never,
+        order: orderSchema.optional(),
+      }, async (a) => safely(() => m.sendMessage(a.id, a.text, orderSpec(a.order)))) as never,
+      tool('order_done', `Mark one of your orders done (an order you gave with start_session or send_message, "until": "done"): it allows nothing more. An order "until": "once" is done by itself once its command has run without failing.`, {
+        id: z.number().int().positive().describe('The order number, as Ledung gave it when the order was recorded.'),
+      }, async (a) => safely(() => m.orderDone(a.id))) as never,
       tool('stop_session', 'Stop one of your sessions.', { id }, async (a) => safely(() => m.stopSession(a.id))) as never,
       tool('clear_session', `Clear the conversation of one of your sessions, or your own, exactly as if ${who} typed /clear: the session keeps running with an empty context. When the session is free (your own: when this turn ends; what was already waiting for it arrives first), ${who} gets a countdown to cancel it; you are told if they do. Ledung never clears on its own; when to clear is your project's rule. Save what must survive (notes, handoff) before clearing.`, {
         id: z.string().min(8).optional().describe('The session id, as list_sessions shows it. Leave out to clear yourself.'),

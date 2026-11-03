@@ -24,6 +24,8 @@ import { RunLine } from './FlowRuns.tsx';
 const FlowProposalView = lazy(() => import('./FlowProposal.tsx'));
 import { NewComputerCard } from './RelaySettings.tsx';
 import { LinkPairingCard } from './LinkPairingCard.tsx';
+import { OrderCard } from './OrderCards.tsx';
+import type { OrderInfo } from '../../../src/shared/orders.ts';
 
 export { waitingCount } from '../../../src/shared/waiting.ts';
 
@@ -55,6 +57,8 @@ export function WaitingView(props: {
   newComputers: NewComputerInfo[];
   /** Pairings linked computers asked for (issue #273). */
   linkPairings: LinkPairingInfo[];
+  /** Orders on record (issue #105): shown first, each with Cancel. */
+  orders: OrderInfo[];
   run: (action: () => Promise<unknown>) => Promise<void>;
 }) {
   const [filter, setFilterState] = useState(() => readFilter(localStorage));
@@ -284,6 +288,14 @@ function Queue(p: {
     </div>
   );
 
+  // Orders not done when an away period ended (issue #105), first of all: "keep it?" (question #1278).
+  const keep = p.forYou.filter((i) => i.q.details?.order && !i.q.details.order.confirm);
+  // Proposed orders (Ledung question #1290 "a"): the person confirms the exact command before it is in force.
+  const confirm = p.forYou.filter((i) => i.q.details?.order?.confirm);
+  // The orders themselves, in the projects shown.
+  const orders = props.orders.filter((o) => filter.mode === 'all' ? !filter.hidden.includes(o.project) : o.project === filter.one);
+  // Calls the auto mode classifier refused (issue #104), first in the list: a session waits on each now.
+  const refused = p.forYou.filter((i) => i.q.details?.refusal);
   let place = 0;
   return (
     <div className="waiting-view desk-view">
@@ -292,11 +304,17 @@ function Queue(p: {
         <div className="desk-body">
           <p className="lede muted">Ordered by what each answer unblocks, and each answer takes you to the next.<span className="kbd-hint"> <kbd>Enter</kbd> opens the first question.</span></p>
           {!waiting && <div className="empty-box">Nothing is waiting for you{filter.mode === 'one' && filter.one ? ` in ${filter.one}` : ''}. New questions appear here as they are asked.</div>}
+          {keep.length > 0 && <div className="group">{groupHead('Orders from your away time: keep them?', 'var(--danger)', keep.length)}{keep.map((i) => row(i, ++place))}</div>}
+          {confirm.length > 0 && <div className="group">{groupHead('Orders to confirm', 'var(--danger)', confirm.length)}{confirm.map((i) => row(i, ++place))}</div>}
+          {orders.length > 0 && <div className="group">{groupHead('Orders', 'var(--accent)', orders.length)}{orders.map((o) => (
+            <OrderCard key={o.id} order={o} userName={props.userName} sessionTitle={titleOf} onOpenSession={props.onOpenSession} run={props.run} />
+          ))}</div>}
+          {refused.length > 0 && <div className="group">{groupHead('Refused by auto mode', 'var(--danger)', refused.length)}{refused.map((i) => row(i, ++place))}</div>}
           {props.newComputers.length > 0 && <>{groupHead('New computers', 'var(--warn-border)', props.newComputers.length)}{props.newComputers.map((c) => <NewComputerCard key={c.name} computer={c} run={props.run} />)}</>}
           {props.linkPairings.length > 0 && <>{groupHead('Paired through the link', 'var(--warn-border)', props.linkPairings.length)}{props.linkPairings.map((l) => <LinkPairingCard key={l.id} pairing={l} run={props.run} />)}</>}
           {p.permsForYou.length > 0 && <>{groupHead('Permission prompts', 'var(--warn-border)', p.permsForYou.length)}{p.permsForYou.map(permission)}</>}
           {[...p.tiers, null].map((t) => {
-            const qs = p.forYou.filter((i) => i.tier === t);
+            const qs = p.forYou.filter((i) => i.tier === t && !i.q.details?.refusal && !i.q.details?.order);
             if (!qs.length) return null;
             return (
               <div key={t ?? ''} className="group">
@@ -616,6 +634,13 @@ function QuestionPage({ ctx, item, list, onAnswered }: { ctx: DeskContext; item:
           <RefersTo q={q} userName={props.userName} nameOf={nameOf} tintOf={tintOf} onOpenConversation={(s, id) => props.onGoToConversation(id, s)} onOpenMessage={props.onGoToMessage} onOpenQuestion={(id) => props.questions.some((x) => x.id === id) ? () => props.onOpenQuestion(id) : null} />
 
           {v.issue && <section className="block"><h4>The issue</h4><div className="issue prose">{mdText(v.issue)}</div></section>}
+          {q.details?.orderCommand && (
+            <section className="block">
+              <h4>The order you confirm</h4>
+              <div className="muted">Answering "{q.details.orderCommand.confirm}" lets {q.details.orderCommand.match === 'exact' ? 'exactly this command' : 'commands of this pattern'} run without a prompt:</div>
+              <pre className="order-command">{q.details.orderCommand.command}</pre>
+            </section>
+          )}
           {v.evidence && <section className="block"><details className="ev"><summary>Evidence</summary><div className="prose">{mdText(v.evidence)}</div></details></section>}
 
           {q.status === 'answered' && (

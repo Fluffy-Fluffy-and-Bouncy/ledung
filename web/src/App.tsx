@@ -559,6 +559,7 @@ export function App() {
               sidebarHidden={sidebarHidden}
               onToggleSidebar={toggleSidebar}
               newComputers={ledung.newComputers}
+              orders={ledung.orders}
               linkPairings={ledung.linkPairings}
               run={run}
             />

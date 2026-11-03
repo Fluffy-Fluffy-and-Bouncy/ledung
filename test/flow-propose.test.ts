@@ -203,3 +203,30 @@ test('part 3e review: line comments on the manager\'s code never answer a propos
   assert.equal((openReviewFor('mgr', [code, flow]) as { id: number } | null)?.id, 1);
   assert.equal(openReviewFor('mgr', [flow]), null);
 });
+
+test("part 3e with ledung#109: a project that is a shared workflow's folder can't be proposed for; its manager is told why", async () => {
+  const dir = copy();
+  const workflow = { name: 'proc', folder: dir, managerFile: 'm.md', sessionFile: 's.md', projectConfig: 'p.json' };
+  const project = parseProject({ name: 'shop', runner: 'local', path: dir });
+  const view = await readFlowView('shop', flowPlaces(project, workflow, undefined, [workflow]));
+  assert.ok(view.readOnly);
+  await assert.rejects(buildProposal(view, [{ file: 'flow.json', text: withSecondReview(dir) }], 'x'), /folder is the shared workflow "proc"'s folder/);
+  // Through the manager's tool, as flow_propose calls it: nothing is asked, nothing written.
+  const store = new Store(openDatabase(':memory:'));
+  const manager = refuseRealSignInStores(new SessionManager(parseConfig({ userName: 'Simon', workflows: [workflow], projects: [{ name: 'shop', runner: 'local', path: dir }] }), store, () => {}));
+  store.createSession({ id: 'mgr', project: 'shop', runner: 'local', title: 'Manager: shop', parentId: null, permissionMode: 'default', role: 'manager' });
+  await assert.rejects(manager.proposeFlow('mgr', [{ file: 'flow.json', text: withSecondReview(dir) }], 'x'), /shared workflow "proc"'s folder.*Nothing was proposed/);
+  assert.equal(store.listQuestions().length, 0);
+  assert.equal(flowJson(dir).blocks.length, 8);
+});
+
+test("part 3e with ledung#109: a proposal accepted after its project became a shared workflow's folder is not saved", async () => {
+  const { dir, store, q } = await proposed();
+  // The same Ledung's database, now with a workflow whose folder is the project's (a config change since the proposal).
+  const workflow = { name: 'proc', folder: dir, managerFile: 'm.md', sessionFile: 's.md', projectConfig: 'p.json' };
+  const later = refuseRealSignInStores(new SessionManager(parseConfig({ userName: 'Simon', workflows: [workflow], projects: [{ name: 'shop', runner: 'local', path: dir }] }), store, () => {}));
+  await answer(later, q.id, 'Accepted.');
+  assert.equal(later.flowProposal('shop', q.details!.flowProposal!).state, 'failed');
+  assert.match(store.undeliveredInbox('mgr').at(-1)!.text, /could not be saved: .*shared workflow "proc"'s folder/);
+  assert.equal(flowJson(dir).blocks.length, 8);
+});

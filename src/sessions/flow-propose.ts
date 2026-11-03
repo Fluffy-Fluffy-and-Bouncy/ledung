@@ -49,6 +49,8 @@ function flowsOf(view: FlowView): ProposalFlow[] {
  * problems the checks find in the result. Throws FileError with the reason when it can't be proposed.
  */
 export async function buildProposal(view: FlowView, changes: ProposedChange[], why: string, profiles?: readonly string[]): Promise<Omit<FlowProposal, 'id' | 'project' | 'question' | 'state'>> {
+  // A project whose folder is a shared workflow's is read-only (ledung#109): its flow is every follower's.
+  if (view.readOnly) throw new FileError(view.readOnly);
   if (view.source?.kind === 'workflow') {
     throw new FileError(`This project follows the shared workflow "${view.source.workflow}" with no .ledung/workflow of its own; the person makes its own copy in the builder first (Edit, Save), then you can propose changes to it.`);
   }

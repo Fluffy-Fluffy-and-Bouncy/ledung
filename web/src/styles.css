@@ -1785,3 +1785,12 @@ button.settings-menu-item.danger { color: var(--danger); }
   .proposal-sides { grid-template-columns: 1fr; }
   .proposal-side .flow-canvas { height: 300px; min-height: 0; }
 }
+
+/* Orders on record (issue #105). */
+.order-card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 0.6rem 0.8rem; margin: 0.4rem 0; display: flex; flex-direction: column; gap: 0.3rem; }
+.order-card.status-done, .order-card.status-dropped { opacity: 0.65; }
+.order-card .order-head { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: baseline; }
+.order-card .order-words { margin: 0; padding-left: 0.7rem; border-left: 3px solid var(--accent); white-space: pre-wrap; }
+.order-card .order-source { font-size: 0.85em; }
+.order-card .order-command { margin: 0; padding: 0.35rem 0.5rem; background: var(--bg); border-radius: 4px; white-space: pre-wrap; word-break: break-all; font-size: 0.85em; }
+.order-card > button { align-self: flex-start; }
