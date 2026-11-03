@@ -281,6 +281,8 @@ function Queue(p: {
     </div>
   );
 
+  // Calls the auto mode classifier refused (issue #104), first in the list: a session waits on each now.
+  const refused = p.forYou.filter((i) => i.q.details?.refusal);
   let place = 0;
   return (
     <div className="waiting-view desk-view">
@@ -289,11 +291,12 @@ function Queue(p: {
         <div className="desk-body">
           <p className="lede muted">Ordered by what each answer unblocks, and each answer takes you to the next.<span className="kbd-hint"> <kbd>Enter</kbd> opens the first question.</span></p>
           {!waiting && <div className="empty-box">Nothing is waiting for you{filter.mode === 'one' && filter.one ? ` in ${filter.one}` : ''}. New questions appear here as they are asked.</div>}
+          {refused.length > 0 && <div className="group">{groupHead('Refused by auto mode', 'var(--danger)', refused.length)}{refused.map((i) => row(i, ++place))}</div>}
           {props.newComputers.length > 0 && <>{groupHead('New computers', 'var(--warn-border)', props.newComputers.length)}{props.newComputers.map((c) => <NewComputerCard key={c.name} computer={c} run={props.run} />)}</>}
           {props.linkPairings.length > 0 && <>{groupHead('Paired through the link', 'var(--warn-border)', props.linkPairings.length)}{props.linkPairings.map((l) => <LinkPairingCard key={l.id} pairing={l} run={props.run} />)}</>}
           {p.permsForYou.length > 0 && <>{groupHead('Permission prompts', 'var(--warn-border)', p.permsForYou.length)}{p.permsForYou.map(permission)}</>}
           {[...p.tiers, null].map((t) => {
-            const qs = p.forYou.filter((i) => i.tier === t);
+            const qs = p.forYou.filter((i) => i.tier === t && !i.q.details?.refusal);
             if (!qs.length) return null;
             return (
               <div key={t ?? ''} className="group">

@@ -21,6 +21,7 @@ import type { RelayAdminView, RelayInviteInfo } from '../shared/protocol.ts';
 import type { ComputerInfo } from '../shared/computers.ts';
 import { USAGE_REPO, type UsagePublishChange, type UsagePublishView } from '../shared/published-usage.ts';
 import { stateFor } from './elapsed.ts';
+import { refusalAnswerText, refusalOf } from './refusals.ts';
 
 /** What managers need of the linked computers (#245): who they are, and one call to one of them. */
 export interface LinkedPort {
@@ -1611,6 +1612,11 @@ export function buildDelivery(
   const userParts: string[] = [];
   const context: string[] = [];
   for (const q of answers) {
+    // A refused call Ledung asked about (issue #104): the session didn't ask, so it is told what the answer means.
+    if (refusalOf(q)) {
+      userParts.push(refusalAnswerText(q, userName));
+      continue;
+    }
     if (q.answeredBy === 'user') {
       userParts.push(`Answer to your question #${q.id}:\n\n${q.answer}`);
       context.push(

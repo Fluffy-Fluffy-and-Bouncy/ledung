@@ -104,6 +104,19 @@ export interface QuestionDetails {
   refs?: string[];
   /** A review instead of a question (docs/steps/pr-review.md): its sections, shown on a page of their own. */
   review?: ReviewDetails;
+  /**
+   * A call the auto mode classifier refused, raised by Ledung itself (issue #104): never given by ask_user, which
+   * builds its details from the fields above only. Answered "Allow once", it lets that exact call through one time.
+   */
+  refusal?: RefusalDetails;
+}
+
+/** The refused call (issue #104): the tool, its input as the session sent it, the classifier's reason and the call's id. */
+export interface RefusalDetails {
+  toolName: string;
+  input: Record<string, unknown>;
+  reason: string;
+  toolUseId: string;
 }
 
 /** One option as the desk shows it. `answer` is the text the session gets when it is picked. */
