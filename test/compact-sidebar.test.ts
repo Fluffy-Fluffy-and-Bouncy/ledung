@@ -5,7 +5,7 @@ import path from 'node:path';
 import { COMPACT_KEY, COMPACT_STEPS, compactRows, readCompact, rowTooltip, saveCompact, type CompactStore } from '../web/src/compactSidebar.ts';
 
 // Issue #153: a Compact sidebar slider in Settings, four steps from None to Tightest, kept per
-// browser. Step 2 drops the time row, steps 3 and 4 the usage line too and turn "+ Session" into
+// browser, "Name + ship" unless set (issue #95). Step 2 drops the time row, steps 3 and 4 the usage line too and turn "+ Session" into
 // "+"; the ship stays at every step; what a step hides goes into the row's tooltip.
 
 function memoryStore(): CompactStore & { data: Map<string, string> } {
@@ -20,37 +20,48 @@ function memoryStore(): CompactStore & { data: Map<string, string> } {
 
 const read = (file: string) => readFileSync(path.join(import.meta.dirname, '..', ...file.split('/')), 'utf8');
 
-test('a browser that never moved the slider is at None', () => {
-  assert.equal(readCompact(memoryStore()), 1);
+test('a browser that never moved the slider is at Name + ship', () => {
+  const step = readCompact(memoryStore());
+  assert.equal(COMPACT_STEPS.find((s) => s.step === step)?.label, 'Name + ship');
 });
 
-test('the step is kept in this browser, and back at None removes the entry', () => {
+test('the step is kept in this browser, None as an entry, and back at the default removes the entry', () => {
   const store = memoryStore();
-  for (const step of [2, 3, 4] as const) {
+  for (const step of [1, 2, 4] as const) {
     saveCompact(store, step);
     assert.equal(readCompact(store), step);
+    assert.equal(store.data.get(COMPACT_KEY), String(step));
   }
-  saveCompact(store, 1);
-  assert.equal(readCompact(store), 1);
+  saveCompact(store, 3);
+  assert.equal(readCompact(store), 3);
   assert.equal(store.data.has(COMPACT_KEY), false);
 });
 
-test('a stored value it does not know reads as None', () => {
-  for (const bad of ['0', '5', '2.5', 'max', '']) {
+test('a step stored while None was the default keeps its meaning', () => {
+  for (const step of [2, 3, 4] as const) {
     const store = memoryStore();
-    store.setItem(COMPACT_KEY, bad);
-    assert.equal(readCompact(store), 1, bad);
+    store.setItem(COMPACT_KEY, String(step));
+    assert.equal(readCompact(store), step);
   }
 });
 
-test('a browser whose storage refuses is at None and saving does not throw', () => {
+test('a stored value it does not know reads as the default', () => {
+  for (const bad of ['0', '5', '2.5', 'max', '']) {
+    const store = memoryStore();
+    store.setItem(COMPACT_KEY, bad);
+    assert.equal(readCompact(store), 3, bad);
+  }
+});
+
+test('a browser whose storage refuses is at the default and saving does not throw', () => {
   const broken: CompactStore = {
     getItem: () => { throw new Error('denied'); },
     setItem: () => { throw new Error('denied'); },
     removeItem: () => { throw new Error('denied'); },
   };
-  assert.equal(readCompact(broken), 1);
+  assert.equal(readCompact(broken), 3);
   assert.doesNotThrow(() => saveCompact(broken, 4));
+  assert.doesNotThrow(() => saveCompact(broken, 3));
 });
 
 test('four steps, None first, in the order of the mockup columns', () => {

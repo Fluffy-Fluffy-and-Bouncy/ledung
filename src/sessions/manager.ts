@@ -11,6 +11,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { boardConfig, parseProject, workflowsOf } from '../config.ts';
 import { checkFolder, chosenWorkflow, projectWorkflow, withProfilesWarning, type WorkflowCheck } from './workflow.ts';
+import { flowInstructions, flowPlaces, readFlowView, saveFlowFiles, type FlowPlace } from './flow-files.ts';
+import type { FlowView } from '../shared/flow.ts';
 import { remoteControlName } from './remote-control.ts';
 import { loosensGate } from '../projects/gate.ts';
 import { bangRefusal } from './bang.ts';
@@ -128,6 +130,7 @@ export function resumedState(info: SessionInfo): {
 
 /** The EXERCISED line of issue #425, once per run. */
 let exercised425 = false;
+let exercised96 = false;
 
 export class SessionManager {
   private readonly live = new Map<string, Session>();
@@ -849,6 +852,8 @@ export class SessionManager {
       secrets: this.sessionSecrets(project, info),
       // Looked at on every start and resume, so a config file written meanwhile is found (issue #21).
       workflow: withProfilesWarning(projectWorkflow(chosenWorkflow(workflowsOf(this.config), project), project), profiles.warning),
+      // A manager is told where its project's flow is (issue #310), looked for on every start and resume too.
+      flow: info.role === 'manager' && info.project !== CHATS ? () => flowInstructions(this.flowPlacesOf(project)) : undefined,
       remoteControl: launch.remoteControl,
       sensitive: {
         commandPatterns: [...this.config.sensitive.commandPatterns, ...project.sensitive.commandPatterns],
@@ -1066,6 +1071,49 @@ export class SessionManager {
     const workflow = chosenWorkflow(workflowsOf(this.config), project);
     const read = workflow && projectWorkflow(workflow, project) ? readWorkflowProfiles(workflow) : null;
     return effectiveProfiles(this.config, read);
+  }
+
+  /** The builder's save running per project (#311): the next waits for it. */
+  private readonly flowSaves = new Map<string, Promise<void>>();
+
+  /** Where a project's flow may be (issue #310): its own folder, then the shared workflow it follows. */
+  private flowPlacesOf(project: ProjectConfig): FlowPlace[] {
+    const container = project.runner === 'docker' ? new DockerRunner(project, 'flow') : null;
+    return flowPlaces(project, chosenWorkflow(workflowsOf(this.config), project), container ? {
+      read: (files, max, budget) => container.readInsideProject(files, max, budget),
+      list: () => container.listFlowFolder(),
+      write: (files) => container.writeFlowFiles(files),
+    } : undefined);
+  }
+
+  /** The workflow page (issue #310, part 1): a project's flow with its texts and the checks' problems, read-only. */
+  async flowView(name: string): Promise<FlowView> {
+    const project = this.projectStore.get(name)?.config;
+    if (!project) throw new UserError(`There is no project named "${name}".`);
+    // A block's profile is checked against what the project's sessions can use: the config and its workflow's profiles file (#298).
+    return readFlowView(project.name, this.flowPlacesOf(project), profileNames(this.profilesFor(project).profiles));
+  }
+
+  /**
+   * The builder saves (issue #311, part 2, design decision 4): the files straight into the project's own
+   * .ledung/workflow, each the version the page read, then the workflow as it now reads.
+   */
+  async saveFlow(name: string, files: unknown): Promise<FlowView> {
+    const project = this.projectStore.get(name)?.config;
+    if (!project) throw new UserError(`There is no project named "${name}".`);
+    const own = this.flowPlacesOf(project).find((p) => p.kind === 'project');
+    if (!own) throw new UserError(`Ledung can't write into ${name}'s folder.`);
+    // One save per project at a time, so two that read the same versions can't both pass the check (review of #311, finding 2).
+    const before = this.flowSaves.get(project.name) ?? Promise.resolve();
+    const saving = before.then(() => saveFlowFiles(own, files));
+    this.flowSaves.set(project.name, saving.catch(() => {}));
+    try {
+      await saving;
+    } catch (e) {
+      throw e instanceof FileError ? new UserError(e.message) : e;
+    }
+    console.log(`Workflow: saved ${Array.isArray(files) ? files.length : 0} file(s) into ${own.folder} from the builder.`);
+    return this.flowView(name);
   }
 
   /** A project as the page shows it, with the profiles its sessions can use (#298, review round 1). */
@@ -1608,18 +1656,28 @@ export class SessionManager {
     return this.projectInfo(this.projectStore.get(p.config.name)!);
   }
 
-  /** What updateProject refuses, checked without writing anything, so a rename can check first (review-116 round 2). */
+  /**
+   * What updateProject refuses, checked without writing anything, so a rename can check first (review-116 round 2).
+   * The page's save doesn't send where a project is, so it is filled in as the store does: every check sees the project
+   * that would be stored. Without it a project's workflow, and so that workflow's profiles, looked absent (#96).
+   */
   private checkSettings(name: string, config: ProjectConfig): void {
     const current = this.projectStore.get(name);
-    if (current) this.checkAccount({ ...config, runner: current.config.runner } as ProjectConfig);
-    this.checkProfiles(config);
-    this.checkWorkflow(config, current?.config);
-    if (current) {
-      const where = current.config.runner === 'local'
-        ? { runner: 'local' as const, path: current.config.path }
-        : { runner: 'docker' as const, container: current.config.container, pathInContainer: current.config.pathInContainer, user: current.config.user };
-      this.checkLockdownOf({ ...config, ...where, name });
+    // Nothing to check against: the store's own "no project" refusal says what is wrong.
+    if (!current) return;
+    const where = current.config.runner === 'local'
+      ? { runner: 'local' as const, path: current.config.path }
+      : { runner: 'docker' as const, container: current.config.container, pathInContainer: current.config.pathInContainer, user: current.config.user };
+    const full = { ...config, ...where, name };
+    this.checkAccount(full);
+    this.checkProfiles(full);
+    const namesProfile = config.profiles?.manager ?? config.profiles?.session;
+    if (!exercised96 && namesProfile && config.runner === undefined) {
+      exercised96 = true;
+      exercisedLine('EXERCISED #96 a project naming a profile checked on the page\'s save with its stored place');
     }
+    this.checkWorkflow(full, current.config);
+    this.checkLockdownOf(full);
   }
 
   /** A project's name colours (issue #83), set from its manager's ⚙ menu; only palette colours. */

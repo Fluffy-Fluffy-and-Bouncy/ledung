@@ -287,7 +287,7 @@ function AutocorrectSwitch() {
   );
 }
 
-/** The status dot on every session row in the sidebar, shown unless switched off here (#151). */
+/** The status dot on every session row in the sidebar, off unless switched on here (#151, #95). */
 function StatusDotSwitch() {
   const [on, set] = useStatusDot();
   return (
@@ -301,8 +301,8 @@ function StatusDotSwitch() {
 }
 
 /**
- * "Archived (N)" at the end of each project group in the sidebar, shown unless switched off here
- * (#157). Switching it back on is the way back to the archived sessions (Martin, 2026-10-16 23:43).
+ * "Archived (N)" at the end of each project group in the sidebar, off unless switched on here
+ * (#157, #95). Switching it on is the way to the archived sessions (Martin, 2026-10-16 23:43).
  */
 function ArchivedLinkSwitch() {
   const [on, set] = useArchivedLink();
@@ -311,12 +311,12 @@ function ArchivedLinkSwitch() {
       <label className="toggle" title="The Archived (N) entry under each project in the sidebar, which opens its archived sessions">
         <input type="checkbox" checked={on} onChange={(e) => set(e.target.checked)} /> Show "Archived" in the sidebar
       </label>
-      <p className="muted">Off: no Archived entry under the projects; switch it back on to open their archived sessions.</p>
+      <p className="muted">Off: no Archived entry under the projects; switch it on to open their archived sessions.</p>
     </>
   );
 }
 
-/** How compact the sidebar's session cards are, from None to Tightest; the sidebar follows as it is dragged (#153). */
+/** How compact the sidebar's session cards are, from None to Tightest, "Name + ship" unless set; the sidebar follows as it is dragged (#153, #95). */
 function CompactSlider() {
   const [step, set] = useCompactSidebar();
   const label = COMPACT_STEPS.find((s) => s.step === step)!.label;

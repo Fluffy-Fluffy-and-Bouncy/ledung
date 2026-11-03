@@ -1519,3 +1519,210 @@ button.settings-menu-item.danger { color: var(--danger); }
 .session-menu .secrets-list .secret-name { flex: 1 1 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-menu .secrets-list select { flex: 1; min-width: 0; }
 .session-menu .secrets-limits ul { margin: 0.3rem 0 0; padding-left: 1.1rem; font-size: 0.85em; }
+
+/* The workflow page (issue #310): the diagram in the page's own colours, light and dark. */
+.workflow-view { height: 100%; }
+.flow-problems { margin: 0.6rem 1rem 0; padding: 0.5rem 0.8rem; background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: 8px; font-size: 0.9em; }
+.flow-problems ul { margin: 0.3rem 0 0; padding-left: 1.2rem; }
+.flow-problems code, .flow-problem-inline code { font-size: 0.9em; }
+/* Hints (#1184): suggestions, not faults; folded, in the page's own colours. */
+.flow-hints { margin: 0.6rem 1rem 0; padding: 0.4rem 0.8rem; border: 1px dashed var(--border); border-radius: 8px; font-size: 0.9em; color: var(--muted); }
+.flow-hints summary { cursor: pointer; }
+.flow-hints ul { margin: 0.3rem 0 0; padding-left: 1.2rem; }
+.flow-builder .flow-hints { max-height: 7rem; overflow: auto; }
+.flow-outcome-row { display: grid; grid-template-columns: minmax(0, 1.5fr) 3.6rem minmax(0, 1fr) auto; gap: 0.3rem; align-items: center; }
+.flow-outcome-row input, .flow-outcome-row select { min-width: 0; }
+.flow-outcome-times { display: flex; align-items: center; gap: 0.15rem; }
+.flow-outcome-times input { width: 100%; }
+.flow-outcome-name { font-size: 0.8em; color: var(--muted); grid-column: 1 / -1; margin-top: -0.2rem; }
+.flow-arrow.arrow-back .react-flow__edge-path { stroke-dasharray: 6 4; }
+.flow-arrow.arrow-counted .react-flow__edge-path { stroke: var(--warn-border); stroke-dasharray: 2 4; stroke-width: 2; }
+.flow-problem-inline { color: var(--danger); }
+.flow-main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(16rem, 24rem); }
+.flow-drawing { min-height: 0; display: flex; flex-direction: column; }
+.flow-canvas { flex: 1; min-height: 420px; }
+.flow-panel { border-left: 1px solid var(--border); background: var(--panel); overflow: auto; min-height: 0; }
+.flow-panel-body { padding: 0.6rem 1rem 1.5rem; }
+.flow-panel-body h3 { margin: 0.4rem 0; font-size: 1rem; }
+.flow-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.flow-panel-arrows { padding-left: 1.1rem; margin: 0.3rem 0 0.6rem; }
+.flow-overlay { margin: 0.4rem 0; }
+.flow-overlay summary { cursor: pointer; }
+.flow-roles { list-style: none; padding: 0; margin: 0.2rem 0 0.6rem; display: flex; flex-direction: column; gap: 0.25rem; }
+.flow-roles button.link, .flow-role-link button.link { font: inherit; font-weight: 600; }
+.workflow-view .react-flow {
+  --xy-background-color: var(--bg);
+  --xy-background-pattern-color: var(--border);
+  --xy-edge-stroke: var(--muted);
+  --xy-edge-label-background-color: var(--panel);
+  --xy-edge-label-color: var(--text);
+  --xy-controls-button-background-color: var(--panel);
+  --xy-controls-button-background-color-hover: var(--panel-2);
+  --xy-controls-button-color: var(--text);
+  --xy-controls-button-border-color: var(--border);
+  --xy-attribution-background-color: transparent;
+}
+.workflow-view .react-flow__handle { opacity: 0; pointer-events: none; }
+.workflow-view .react-flow__node { cursor: pointer; }
+.workflow-view .react-flow__edge-text { font-size: 11px; }
+.flow-edge-label { position: absolute; pointer-events: none; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; font-size: 11px; line-height: 16px; white-space: nowrap; }
+.flow-panel-body .markdown h1 { font-size: 1.05rem; margin: 0.3rem 0; }
+.flow-block, .flow-list-item { box-sizing: border-box; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-left: 4px solid var(--muted); border-radius: 8px; padding: 0.4rem 0.6rem; font-size: 12px; text-align: left; }
+.flow-block.selected { outline: 2px solid var(--accent); }
+.flow-block:hover { border-color: var(--accent); }
+.kind-work { border-left-color: var(--accent); }
+.kind-check { border-left-color: var(--s3); }
+.kind-person { border-left-color: var(--dot-waiting); background: var(--warn-bg); }
+.kind-timer { border-left-color: var(--s7); }
+.kind-fork, .kind-join { border-left-color: var(--s5); }
+/* A Run flow block (#447): a double edge, as a block that holds another flow. */
+.kind-flow { border-left: 4px double var(--s2); }
+.flow-block-runs { color: var(--s2); font-weight: 600; }
+.flow-block-top { display: flex; justify-content: space-between; align-items: center; }
+.flow-kind { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+.flow-block-title { display: block; font-weight: 600; font-size: 13px; margin: 0.1rem 0; }
+.flow-block-actor, .flow-block-brief, .flow-list-arrow { display: block; color: var(--muted); font-size: 11px; }
+/* A block's brief and the overlays that amend it (#318), on one line. */
+.flow-block-foot { display: flex; gap: 0.5rem; align-items: center; }
+.flow-block-overlays { font-size: 10px; color: var(--s7); border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; line-height: 14px; white-space: nowrap; }
+.flow-block.marked { box-shadow: 0 0 0 2px var(--s7); }
+.flow-block-brief.missing { color: var(--danger); }
+/* Outcome pins (#446): a row each at the block's foot, its word by the dot on the right edge its arrow leaves from.
+   flowLayout's PIN_ROW keeps room for them (18 px a row); the rows reach the block's edge so the dot sits on it. */
+.flow-block { display: flex; flex-direction: column; }
+.flow-pins { list-style: none; margin: 4px calc(-0.6rem - 1px) 0 0; padding: 0; margin-top: auto; padding-top: 4px; }
+.flow-pin { position: relative; height: 18px; line-height: 18px; font-size: 11px; text-align: right; padding-right: 10px; }
+.flow-pin-word { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.flow-pin.counted .flow-pin-word { color: var(--warn-border); }
+.flow-pin.loose .flow-pin-word { color: var(--danger); font-style: italic; }
+.flow-pin.chosen .flow-pin-word { color: var(--accent); font-weight: 600; }
+.flow-pin.ends { display: flex; justify-content: flex-end; gap: 0.35rem; }
+.flow-pin-end { flex: none; font-size: 10px; color: var(--muted); }
+.flow-pin.ends .react-flow__handle.h-pin { border-radius: 1px; background: var(--muted); }
+.workflow-view .react-flow__handle.h-pin { opacity: 1; width: 8px; height: 8px; min-width: 0; min-height: 0; background: var(--muted); border: 1px solid var(--panel); }
+.flow-pin.counted .react-flow__handle.h-pin { background: var(--warn-border); }
+.flow-pin.loose .react-flow__handle.h-pin { background: var(--panel); border: 2px solid var(--danger); }
+.flow-pin.chosen .react-flow__handle.h-pin { background: var(--accent); }
+.flow-add-pin { font: inherit; font-size: 10px; line-height: 14px; padding: 0 5px; border: 1px dashed var(--border); border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; }
+.flow-add-pin:hover { border-color: var(--accent); color: var(--accent); }
+/* Comment frames (#446): behind the blocks, a faint tint of a name colour; only the title bar takes the pointer, so
+   the canvas pans and the blocks are clicked through it. */
+.react-flow__node-frame { pointer-events: none !important; }
+.flow-frame { width: 100%; height: 100%; box-sizing: border-box; border: 1.5px solid var(--border); border-radius: 10px; background: color-mix(in srgb, var(--border) 14%, transparent); }
+.flow-frame.coloured { --nc: light-dark(var(--name-light), var(--name-dark)); border-color: color-mix(in srgb, var(--nc) 65%, transparent); background: color-mix(in srgb, var(--nc) 9%, transparent); }
+.flow-frame.selected, .flow-frame.coloured.selected { outline: 2px solid var(--accent); outline-offset: 2px; background: transparent; }
+.flow-frame-title { pointer-events: all; display: inline-block; max-width: calc(100% - 16px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: 13px; padding: 4px 10px; color: var(--muted); }
+.flow-frame.coloured .flow-frame-title { color: var(--nc); }
+.flow-builder .flow-frame-title { cursor: grab; }
+.react-flow__node-frame .react-flow__resize-control { pointer-events: all; }
+.flow-list-frame { font-weight: 600; font-size: 12px; color: var(--muted); border-left: 4px solid var(--border); padding: 0.3rem 0 0 0.5rem; margin-top: 0.3rem; }
+.flow-list-frame.coloured { --nc: light-dark(var(--name-light), var(--name-dark)); color: var(--nc); border-left-color: var(--nc); }
+.flow-swatches { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.flow-swatch { width: 24px; height: 24px; padding: 0; border-radius: 50%; border: 1px solid var(--border); background: var(--bg); color: var(--muted); font-size: 12px; cursor: pointer; }
+.flow-swatch.named { background: light-dark(var(--name-light), var(--name-dark)); }
+.flow-swatch.on { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* A continued session (#322): the accent, dashed long, so it reads as "the same one" and not as a way the work goes. */
+.flow-arrow.arrow-continue .react-flow__edge-path { stroke: var(--accent); stroke-dasharray: 10 5; stroke-width: 1.5; opacity: 0.85; }
+/* Sub-steps inside their block (#322), a row each; flowLayout's blockSize keeps room for them (14 px a line). */
+.flow-substeps { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; }
+.flow-substep { overflow-wrap: anywhere; border-left: 3px solid var(--muted); border-top: 1px dashed var(--border); padding: 4px 0 4px 6px; font-size: 10.5px; line-height: 14px; }
+.flow-substep-head { display: block; font-weight: 600; }
+.flow-substep-detail { display: block; color: var(--muted); }
+.flow-substep-note { display: block; color: var(--s3); font-style: italic; }
+.flow-list-substep { display: block; font-size: 12px; color: var(--muted); }
+.flow-panel-substeps { padding-left: 1.1rem; margin: 0.3rem 0 0.6rem; display: flex; flex-direction: column; gap: 0.4rem; }
+.flow-panel-body h4 { margin: 0.8rem 0 0.2rem; font-size: 0.9rem; }
+.flow-substep-edit { border: 1px dashed var(--border); border-radius: 6px; padding: 0.4rem 0.5rem; display: flex; flex-direction: column; gap: 0.4rem; }
+.flow-substep-edit-head { display: flex; justify-content: space-between; align-items: center; gap: 0.4rem; }
+.flow-substep-edit-title { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flow-substep-edit-tools { display: flex; gap: 0.25rem; flex: none; }
+.flow-substep-brief textarea { width: 100%; box-sizing: border-box; }
+.flow-substep-brief summary { cursor: pointer; font-size: 0.85em; color: var(--muted); }
+.flow-switch { display: flex; gap: 0.3rem; padding: 0.5rem 1rem 0; }
+.flow-switch button.on { border-color: var(--accent); color: var(--accent); }
+/* A tab per flow (#447); on a phone they scroll sideways. */
+.flow-tabs { display: flex; gap: 0.25rem; align-items: flex-end; padding: 0.4rem 1rem 0; border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: thin; flex: none; }
+.flow-tab { flex: none; border: 1px solid var(--border); border-bottom: none; border-radius: 6px 6px 0 0; background: transparent; color: var(--muted); padding: 0.25rem 0.7rem; font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; margin-bottom: -1px; }
+.flow-tab.on { background: var(--panel); color: var(--text); border-color: var(--border); border-bottom: 1px solid var(--panel); font-weight: 600; }
+.flow-tab .flow-tab-bad { color: var(--danger); margin-left: 0.3rem; font-weight: 400; }
+.flow-tab-add { flex: none; display: flex; gap: 0.25rem; align-items: center; margin-left: 0.4rem; padding-bottom: 0.2rem; }
+.flow-tab-add input { width: 10rem; }
+.flow-list { list-style: none; margin: 0; padding: 0.5rem 1rem 1rem; display: flex; flex-direction: column; gap: 0.45rem; }
+.flow-list-item { display: block; width: 100%; padding: 0.55rem 0.7rem; font-size: 13px; }
+.flow-list-item .flow-block-title { font-size: 14px; }
+.flow-list-item .flow-list-arrow, .flow-list-item .flow-block-actor { font-size: 12px; }
+@media (max-width: 760px) {
+  .flow-main { display: flex; flex-direction: column; overflow: auto; }
+  .flow-drawing { flex: none; }
+  .flow-canvas { min-height: 60dvh; }
+  .flow-panel { border-left: none; border-top: 1px solid var(--border); overflow: visible; }
+  .flow-main.block-open .flow-drawing { display: none; }
+  .workflow-view { overflow: auto; }
+}
+
+/* The workflow builder (issue #311): palette, canvas and fields; on a phone the list and the fields only. */
+.flow-saved { margin: 0.6rem 1rem 0; padding: 0.4rem 0.8rem; border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 8px; background: var(--panel); display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; }
+.flow-note { margin: 0.5rem 1rem 0; }
+.flow-empty .flow-start { display: flex; flex-wrap: wrap; gap: 0.7rem; margin: 0.8rem 0; }
+.flow-start button { display: flex; flex-direction: column; align-items: flex-start; gap: 0.2rem; padding: 0.7rem 1rem; text-align: left; max-width: 22rem; }
+.flow-where { font-size: 0.85em; margin-top: 0.15rem; }
+.flow-tools { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; justify-content: flex-end; }
+.flow-check-count { font-size: 0.85em; color: var(--muted); padding: 0 0.3rem; white-space: nowrap; }
+.flow-check-count.bad { color: var(--danger); }
+.flow-confirm { margin: 0.6rem 1rem 0; padding: 0.5rem 0.8rem; border: 1px solid var(--warn-border); background: var(--warn-bg); border-radius: 8px; display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; justify-content: space-between; }
+.flow-confirm.flow-error { border-color: var(--danger); }
+.flow-confirm-buttons { display: flex; gap: 0.4rem; }
+.flow-builder .flow-problems { max-height: 9rem; overflow: auto; }
+.flow-builder .flow-problems button.link { font: inherit; }
+.flow-main.flow-main-edit { grid-template-columns: 9.5rem minmax(0, 1fr) minmax(17rem, 24rem); }
+.flow-palette { border-right: 1px solid var(--border); background: var(--panel); padding: 0.5rem; overflow: auto; display: flex; flex-direction: column; gap: 0.35rem; min-height: 0; }
+.flow-palette-head { font-size: 0.8em; }
+.flow-palette-item { display: flex; flex-direction: column; align-items: flex-start; text-align: left; gap: 0.1rem; padding: 0.35rem 0.5rem; border: 1px solid var(--border); border-left: 4px solid var(--muted); border-radius: 6px; background: var(--bg); color: var(--text); cursor: grab; }
+.flow-palette-item:hover { border-color: var(--accent); }
+.flow-palette-hint { font-size: 11px; color: var(--muted); }
+.flow-palette-help { font-size: 0.78em; margin-top: 0.4rem; line-height: 1.35; }
+.flow-builder .flow-canvas { position: relative; }
+.flow-canvas-empty { position: absolute; inset: 40% 0 auto; text-align: center; pointer-events: none; z-index: 5; }
+.flow-builder .react-flow__handle { opacity: 1; pointer-events: all; width: 10px; height: 10px; background: var(--panel); border: 2px solid var(--muted); }
+.flow-builder .react-flow__handle.h-pass { border-color: var(--accent); }
+.flow-builder .react-flow__handle.h-in { border-color: var(--border); background: var(--bg); }
+.flow-builder .react-flow__handle.h-hidden { opacity: 0; pointer-events: none; }
+.flow-builder .react-flow__handle:hover { background: var(--accent); }
+.flow-builder .react-flow__handle.h-pin { width: 10px; height: 10px; border: 2px solid var(--panel); cursor: crosshair; }
+.flow-new-brief.naming input { outline: 2px solid var(--accent); }
+.flow-builder .react-flow__node { cursor: grab; }
+.flow-builder .react-flow__edge { cursor: pointer; }
+.flow-arrow.chosen .react-flow__edge-path { stroke: var(--accent); stroke-width: 2.5; }
+.flow-block.has-problem, .flow-list-item.has-problem { box-shadow: 0 0 0 2px var(--danger); }
+.flow-block.selected.has-problem { box-shadow: 0 0 0 2px var(--danger), 0 0 0 4px var(--accent); }
+.flow-fields { display: flex; flex-direction: column; gap: 0.55rem; }
+.flow-field { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; flex: 1; }
+.flow-field-label { font-size: 0.8em; color: var(--muted); }
+.flow-field-hint { font-size: 0.78em; }
+.flow-field input, .flow-field select, .flow-field textarea { width: 100%; box-sizing: border-box; }
+.flow-field textarea { resize: vertical; font-size: 12px; }
+.flow-field input[aria-invalid="true"] { border-color: var(--danger); }
+.flow-field-row { display: flex; gap: 0.5rem; align-items: flex-end; }
+.flow-fieldset { border: 1px solid var(--border); border-radius: 8px; padding: 0.3rem 0.6rem 0.6rem; margin: 0; display: flex; flex-direction: column; gap: 0.45rem; min-width: 0; }
+.flow-fieldset legend { font-size: 0.85em; color: var(--muted); padding: 0 0.3rem; }
+.flow-new-brief input { flex: 1; min-width: 0; }
+.flow-check { display: flex; gap: 0.4rem; align-items: flex-start; font-size: 0.9em; }
+.flow-delete { align-self: flex-start; margin-top: 0.3rem; }
+@media (max-width: 760px) {
+  .flow-builder .session-head > .session-head-text { grid-column: 1 / -1; grid-row: 1; }
+  .flow-builder .session-head > .session-corner { grid-column: 1 / -1; grid-row: 2; justify-self: stretch; }
+  .flow-builder .flow-tools { justify-content: flex-start; width: 100%; }
+  .flow-builder .flow-main { display: flex; flex-direction: column; overflow: visible; }
+  .flow-builder .flow-panel { border-top: 1px solid var(--border); }
+  .flow-builder.workflow-view { overflow: auto; }
+  .flow-field-row { flex-wrap: wrap; }
+  .flow-field input, .flow-field select, .flow-field textarea { font-size: 16px; }
+}
+/* A large flow's map (#318), in the page's colours, light and dark. */
+.workflow-view .react-flow {
+  --xy-minimap-background-color: var(--panel);
+  --xy-minimap-mask-background-color: color-mix(in srgb, var(--bg) 65%, transparent);
+}
+.flow-minimap { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+/* An error a page ran into (#447): its words, scrollable, not wider than the page. */
+.page-error-details pre { white-space: pre-wrap; word-break: break-word; max-height: 50vh; overflow: auto; font-size: 12px; }

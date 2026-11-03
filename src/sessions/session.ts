@@ -163,6 +163,8 @@ export interface SessionOptions {
   grant?: string;
   /** The project's workflow, if it follows one (issue #21). */
   workflow?: ProjectWorkflow | null;
+  /** For a manager: what it is told about its project's flow (issue #310), or null when there is none; asked at every start and resume. */
+  flow?: () => Promise<string | null>;
   /** The project's sensitive patterns (the built-in ones always apply too). */
   sensitive?: Partial<SensitiveRules>;
   /** The managers' project tools run unasked instead of always going to the user (issue #37; opt-in of 2026-10-14). */
@@ -233,6 +235,7 @@ export class Session {
   private readonly workflow: ProjectWorkflow | null;
   /** The nudges file's problem this session was last told of, so it is told once, not every prompt (issue #405). */
   private nudgesProblemTold: string | null = null;
+  private readonly flow: (() => Promise<string | null>) | null;
   private readonly sensitiveRules: Partial<SensitiveRules>;
   private readonly alwaysAsked: readonly string[];
   private readonly ticketConfig: { pattern: string; url: string } | undefined;
@@ -337,6 +340,7 @@ export class Session {
     this.management = opts.management;
     this.grant = opts.grant;
     this.workflow = opts.workflow ?? null;
+    this.flow = opts.flow ?? null;
     this.sensitiveRules = opts.sensitive ?? {};
     // Settings' actions stay asked whatever projectToolsUnasked says (issue #263).
     this.alwaysAsked = [...(opts.projectToolsUnasked ? [] : USER_APPROVED_TOOLS), ...SETTINGS_TOOLS];
@@ -642,7 +646,7 @@ export class Session {
       grant: this.grant,
       tiers: () => this.management.questionTiers(this.id),
       // Part of Ledung's instructions, so the length limit worked out from them covers it (#32).
-      workflow: this.workflow ? workflowInstructions(this.workflow, role) : undefined,
+      workflow: [this.workflow ? workflowInstructions(this.workflow, role) : null, this.flow ? await this.flow().catch(() => null) : null].filter(Boolean).join(' ') || undefined,
       ask: (question, options, about, aboutRequest, details, shots, sources) => this.ask(question, options, about, aboutRequest, details, shots, sources),
       attach: (sources) => attachSources(sources, this.sourceContext()),
       withdraw: (id, reason) => this.withdraw(id, reason),
