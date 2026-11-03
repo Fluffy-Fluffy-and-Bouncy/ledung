@@ -1,6 +1,6 @@
 # Workflows that fit: what Ledung does, and what stays prose
 
-Nov 3, 2026 · **Proposal, not approved.** Simon asked: "make the workflow format and builder compatible with different workflows". This document says where each part of a real process belongs, and proposes a part 3f. Nothing here is built.
+Nov 3, 2026 · **Approved (Simon, 2026-11-03, #1593)**: "a — All five, plus #115 and #110". Simon asked: "make the workflow format and builder compatible with different workflows". This document says where each part of a real process belongs, and part 3f below is what was built from it.
 
 ## The principle
 
@@ -90,9 +90,9 @@ Each gap below is placed by the same rule.
   - Make it a setting only if a project needs the other way round.
 - **#117 An author line on a flow.** Trivial, and nothing depends on it. **After**, or with #110 if convenient.
 
-## Proposed part 3f
+## Part 3f
 
-**A proposal: Simon picks.** These are the Ledung-side additions most worth doing before part 3 goes public. Each one passes the rule above, and the table shows more than one process needs it.
+Approved with all five, plus #115 and #110. Each is a setting on the flow or block, editable in the builder and checked by the flow checks. **Defaults: only tidying (archive) and one run per ref are on; the rest is off unless set.**
 
 ### 1. A worktree per run
 

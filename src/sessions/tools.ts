@@ -160,7 +160,7 @@ export interface ManagerHandlers {
  * follows it. Any session may start a run when the person asks it; whoever started one coordinates it.
  */
 export interface RunHandlers {
-  start(args: { title: string; ref?: string; flow?: string }): Promise<string>;
+  start(args: { title: string; ref?: string; flow?: string; again?: boolean }): Promise<string>;
   step(args: { run: string; outcome: string; note?: string; block?: string; stop?: boolean }): Promise<string>;
   status(run?: string): Promise<string>;
 }
@@ -599,6 +599,7 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
         title: z.string().min(1).max(120).describe('What the work is, e.g. "Fix the cart total".'),
         ref: z.string().min(1).max(60).optional().describe('An issue or PR, e.g. "#142".'),
         flow: z.string().min(1).max(120).optional().describe('A flow by name or title; default: the main one.'),
+        again: z.boolean().optional().describe('Start it although a run for this ref is under way.'),
       }, async (a) => safely(() => r.start(a))) as never,
       tool('flow_step', "Report how a run's current block ended, by the outcome's word as you read the result. Ledung counts it, takes the outcome (a counted one on its Nth time) and says what to do next.", {
         run,

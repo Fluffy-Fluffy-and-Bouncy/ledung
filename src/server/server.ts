@@ -1494,6 +1494,18 @@ export class LedungServer {
       // The workflow page (issue #310): the project's flow, read-only and only from inside its folders (src/sessions/flow-files.ts).
       case 'GET projects/:id/flow':
         return manager.flowView(decodeURIComponent(id));
+      // ledung#110 "Back to shared": the project's own flow.json and flows/ are removed. A change to what its manager
+      // follows, so from the open page only, as the builder's save.
+      case 'POST projects/:id/flow/:id':
+        if (parts[3] !== 'back-to-shared') throw new HttpError(404, 'Not found.');
+        this.requireOpenPage(req);
+        return manager.backToSharedFlow(decodeURIComponent(id));
+      // A queued run started past its limit (part 3f): the person's alone, from the open page, as it starts sessions.
+      case 'POST projects/:id/runs/:id/start': {
+        this.requireOpenPage(req);
+        await manager.startRunAnyway(decodeURIComponent(id), decodeURIComponent(parts[3] ?? ''));
+        return;
+      }
       // A manager's proposed workflow change (part 3e), for its review page: read like the flow.
       case 'GET projects/:id/proposals/:id':
         return manager.flowProposal(decodeURIComponent(id), Number(parts[3]));

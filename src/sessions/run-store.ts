@@ -28,6 +28,8 @@ function toRun(r: Row): FlowRun {
     ending: r.ending ?? null,
     coordinator: r.coordinator,
     question: r.question == null ? null : Number(r.question),
+    worktree: r.worktree ? JSON.parse(r.worktree) : null,
+    queue: r.queue ?? null,
     startedAt: Number(r.started_at),
     updatedAt: Number(r.updated_at),
   };
@@ -55,14 +57,14 @@ export class RunStore {
 
   /** A project's runs, the latest changed first; `open`: only those not ended or stopped. */
   list(project: string, opts: { open?: boolean; limit?: number } = {}): FlowRun[] {
-    const open = opts.open ? ` AND state IN ('running', 'waiting')` : '';
+    const open = opts.open ? ` AND state IN ('running', 'waiting', 'queued')` : '';
     return this.db.prepare(`SELECT * FROM flow_runs WHERE project = ?${open} ORDER BY updated_at DESC, id DESC LIMIT ?`).all(project, opts.limit ?? 200).map(toRun);
   }
 
   /** For the page: every open run, and the latest `ended` of the others (review of 3c: each change goes to every page). */
   forPage(project: string, ended = 30): FlowRun[] {
-    return this.db.prepare(`SELECT * FROM flow_runs WHERE project = ? AND (state IN ('running', 'waiting') OR id IN (
-      SELECT id FROM flow_runs WHERE project = ? AND state NOT IN ('running', 'waiting') ORDER BY updated_at DESC, id DESC LIMIT ?)) ORDER BY updated_at DESC, id DESC`)
+    return this.db.prepare(`SELECT * FROM flow_runs WHERE project = ? AND (state IN ('running', 'waiting', 'queued') OR id IN (
+      SELECT id FROM flow_runs WHERE project = ? AND state NOT IN ('running', 'waiting', 'queued') ORDER BY updated_at DESC, id DESC LIMIT ?)) ORDER BY updated_at DESC, id DESC`)
       .all(project, project, ended).map(toRun);
   }
 
@@ -72,13 +74,18 @@ export class RunStore {
     return row ? toRun(row) : undefined;
   }
 
+  /** The queued runs of a project, first in line first (part 3f). */
+  queued(project: string): FlowRun[] {
+    return this.db.prepare(`SELECT * FROM flow_runs WHERE project = ? AND state = 'queued' ORDER BY at_since, id`).all(project).map(toRun);
+  }
+
   /** The runs a Run flow block of this run waits for. */
   children(id: string): FlowRun[] {
     return this.db.prepare('SELECT * FROM flow_runs WHERE parent_run = ? ORDER BY id').all(runNumber(id)).map(toRun);
   }
 
-  update(id: string, fields: Partial<{ at: string | null; atSince: number; counts: FlowRun['counts']; sessions: FlowRun['sessions']; history: RunStep[]; state: RunState; ending: string | null; question: number | null; coordinator: string }>, now: number): FlowRun {
-    const columns: Record<string, string> = { at: 'at', atSince: 'at_since', counts: 'counts', sessions: 'sessions', history: 'history', state: 'state', ending: 'ending', question: 'question', coordinator: 'coordinator' };
+  update(id: string, fields: Partial<{ at: string | null; atSince: number; counts: FlowRun['counts']; sessions: FlowRun['sessions']; history: RunStep[]; state: RunState; ending: string | null; question: number | null; coordinator: string; worktree: FlowRun['worktree']; queue: FlowRun['queue'] }>, now: number): FlowRun {
+    const columns: Record<string, string> = { at: 'at', atSince: 'at_since', counts: 'counts', sessions: 'sessions', history: 'history', state: 'state', ending: 'ending', question: 'question', coordinator: 'coordinator', worktree: 'worktree', queue: 'queue' };
     const entries = Object.entries(fields).filter(([k, v]) => k in columns && v !== undefined);
     const values = entries.map(([, v]) => (v !== null && typeof v === 'object' ? JSON.stringify(v) : v) as string | number | null);
     this.db.prepare(`UPDATE flow_runs SET ${[...entries.map(([k]) => `${columns[k]} = ?`), 'updated_at = ?'].join(', ')} WHERE id = ?`).run(...values, now, runNumber(id));

@@ -121,6 +121,10 @@ export interface FlowBlock {
   timer?: { every: number; of: string } | { clock: 'hourly' | 'daily' | 'weekly' };
   /** For a Run flow block (#447): the name of the flow it runs ("main" for the default one). */
   flow?: string;
+  /** At most this many runs in the block at once; the others wait before it, in line (part 3f). None: no limit. */
+  limit?: number;
+  /** For a continued step (part 3f): its session is compacted, or cleared, before it gets the step. None: as it is. */
+  context?: 'compact' | 'clear';
   /** Where the canvas puts it (part 2); none: laid out automatically. */
   at?: { x: number; y: number };
 }
@@ -162,7 +166,35 @@ export interface Flow {
   overlays: FlowOverlay[];
   /** Comment frames round groups of blocks (#446); none: an empty list. */
   frames: FlowFrame[];
+  /** A git worktree per run, made when it starts and removed safely when it ends (part 3f). None: no worktree. */
+  worktree?: FlowWorktree;
+  /** At most this many runs of the flow at once; the others wait at its start, in line (part 3f). None: no limit. */
+  limit?: number;
+  /** What happens to a run's sessions when it ends (part 3f). None: they are archived. */
+  tidy?: FlowTidy;
+  /** false: a ref may have several open runs; none or true: flow_start refuses a second one (part 3f). */
+  oneRunPerRef?: boolean;
 }
+
+/**
+ * A run's worktree (part 3f, Simon 2026-11-03, question #1593): made from `base` (none: the branch the project folder
+ * is on) on `branch` (a pattern with {id}, and optionally {ref}; none: "run/{id}"); removed when the run ends, only
+ * if nothing is uncommitted and the branch is merged or pushed, on every ending, on those `on` names, or never.
+ */
+export interface FlowWorktree {
+  base?: string;
+  branch?: string;
+  remove?: 'never' | { on?: string[] };
+}
+
+/** "archive" (the default), "stop" or "keep" a run's sessions when it ends; `on`: only on those endings, else kept. */
+export type FlowTidy = 'archive' | 'stop' | 'keep' | { sessions: 'archive' | 'stop'; on?: string[] };
+
+/** Defaults of the part 3f settings, as the page and the skill show them. */
+export const DEFAULT_BRANCH = 'run/{id}';
+export const DEFAULT_TIDY = 'archive';
+/** The ending a run stopped by hand has, for `remove.on` and `tidy.on`. */
+export const STOPPED_ENDING = 'Stopped';
 
 /** "1st", "2nd", "3rd", "11th", "22nd". */
 export function ordinal(n: number): string {
@@ -259,6 +291,11 @@ export interface FlowView {
   versions: Record<string, string>;
   /** The folder the builder saves into: always the project's own, never a shared workflow's (#311). */
   saveTo: string | null;
+  /**
+   * ledung#110: the project has its own flow while following a shared workflow that has one too: that workflow's name,
+   * and whether the project's flow files (flow.json, flows/) or rules differ from it. None: not so.
+   */
+  shared?: { workflow: string; differs: boolean };
   /** Why there is nowhere to save, when the project's own folder is a shared workflow's (ledung#109). */
   readOnly?: string;
   /**

@@ -52,9 +52,10 @@ export class DockerRunner implements Runner {
   /** Numbers the `!` commands, each with its own tag (issue #212). */
   private shells = 0;
 
-  constructor(project: DockerProjectConfig, sessionId: string) {
+  /** `workDir`: a folder inside the project the session works in, such as its run's worktree (workflow part 3f). */
+  constructor(project: DockerProjectConfig, sessionId: string, workDir?: string | null) {
     this.project = project;
-    this.cwd = project.pathInContainer;
+    this.cwd = workDir || project.pathInContainer;
     this.tag = `ledung-${sessionId}`;
   }
 

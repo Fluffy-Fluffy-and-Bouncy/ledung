@@ -429,11 +429,52 @@ export async function readFlowView(project: string, places: FlowPlace[], profile
   for (const [f, text] of Object.entries(texts)) versions[f] = textVersion(text);
   // The texts too: nothing in the folder may be tied to one computer (part 6).
   const paths = [...(ruleText === null ? [] : [machinePathIn(RULES_FILE, ruleText)]), ...linked.map((f) => (texts[f] === undefined ? null : machinePathIn(f, texts[f])))];
+  const shared = await sharedDifference(places, place, found.text, flows, ruleText);
   return {
+    ...(shared ? { shared } : {}),
     project, source, expected, flow: parsed.flow, rules: ruleText, texts,
     problems: [...parsed.problems, ...refused, ...checked, ...(calls.get(DEFAULT_FLOW) ?? []), ...paths.filter((p): p is FlowProblem => p !== null)],
     raw: found.text, versions, saveTo, flows, ...readOnly,
   };
+}
+
+/**
+ * ledung#110: a project's own flow beside the shared workflow's it follows: whether its flow files or rules differ from
+ * the shared ones. Null when the flow shown is not the project's own, or the shared workflow has no flow.
+ */
+async function sharedDifference(places: FlowPlace[], place: FlowPlace, own: string, flows: FlowEntry[], rules: string | null): Promise<{ workflow: string; differs: boolean } | null> {
+  if (place.kind !== 'project') return null;
+  const other = places.find((p) => p.kind === 'workflow' && p.workflow);
+  if (!other) return null;
+  const theirs = (await other.read([FLOW_FILE]).catch(() => null))?.get(FLOW_FILE);
+  if (!theirs || !('text' in theirs)) return null;
+  const listed = (await other.list().catch(() => [] as string[])).filter((f) => FLOW_IN_FOLDER.test(f));
+  const read = await other.read([...listed, RULES_FILE]).catch(() => new Map<string, FileRead>());
+  const text = (f: string) => {
+    const r = read.get(f);
+    return r && 'text' in r ? r.text : null;
+  };
+  const same = (a: string | null, b: string | null) => (a ?? '').replace(/\r\n/g, '\n').trim() === (b ?? '').replace(/\r\n/g, '\n').trim();
+  const differs = !same(own, theirs.text) || !same(rules, text(RULES_FILE))
+    || listed.length !== flows.length || flows.some((f) => !listed.includes(f.file) || !same(f.raw, text(f.file)));
+  return { workflow: other.workflow!, differs };
+}
+
+/**
+ * The project's own copy of a shared flow taken away (ledung#110, "Back to shared"): its flow.json and flows/, so the
+ * shared workflow's flow counts again; its briefs, rules and the rest stay, in git as before. Only what was read.
+ */
+export async function backToShared(places: FlowPlace[]): Promise<string[]> {
+  const own = places.find((p) => p.kind === 'project' && p.write);
+  const other = places.find((p) => p.kind === 'workflow');
+  if (!own?.write || !other) throw new FileError("This project follows no shared workflow, or Ledung can't write into its folder.");
+  const theirs = (await other.read([FLOW_FILE]))?.get(FLOW_FILE);
+  if (!theirs || !('text' in theirs)) throw new FileError("The shared workflow has no flow to go back to.");
+  const mine = (await own.read([FLOW_FILE])).get(FLOW_FILE);
+  if (!mine || !('text' in mine)) throw new FileError('This project has no flow of its own.');
+  const files = [FLOW_FILE, ...(await own.list()).filter((f) => FLOW_IN_FOLDER.test(f))];
+  await own.write(files.map((path) => ({ path, remove: true as const })));
+  return files;
 }
 
 /**
@@ -524,6 +565,14 @@ export async function readFlows(places: FlowPlace[]): Promise<{ folder: string; 
     return r && 'text' in r ? r.text : null;
   };
   return { folder: place.folder, flows, titles: new Map([...flows].map(([n, f]) => [n, f.title?.trim() || n])), text };
+}
+
+/** ledung#115: a manager told both a written workflow and a drawn flow is told which says what. */
+export const BOTH_LINE = 'Where both say something: the flow says what happens next and who does it; the written workflow files say how.';
+
+/** The written workflow's line and the drawn flow's, and #115's line when there are both. */
+export function workflowLines(written: string | null, flow: string | null): string | undefined {
+  return [written, flow, written && flow ? BOTH_LINE : null].filter(Boolean).join(' ') || undefined;
 }
 
 /** The manager's line when Ledung follows the flow with it (workflow part 3); short, for #32's limit. */

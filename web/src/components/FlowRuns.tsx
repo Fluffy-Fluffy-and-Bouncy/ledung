@@ -3,7 +3,7 @@
 // history; choosing one marks its path through the diagram.
 import { useEffect, useState } from 'react';
 import type { FlowRun } from '../../../src/shared/flow-run.ts';
-import { openRun as open } from '../flowRuns.ts';
+import { openRun as open, placeInLine } from '../flowRuns.ts';
 import type { QuestionRun } from '../../../src/shared/questions.ts';
 import { workflowHash } from '../flowNav.ts';
 import { formatTime } from './MessageList.tsx';
@@ -16,22 +16,30 @@ function since(at: number, now = Date.now()): string {
   return h < 48 ? `${h} h` : `${Math.round(h / 24)} days`;
 }
 
-function stateLine(r: FlowRun, blockTitle: (flow: string, id: string) => string): string {
+function stateLine(r: FlowRun, blockTitle: (flow: string, id: string) => string, runs: readonly FlowRun[]): string {
   if (r.state === 'ended') return r.ending ? `ended "${r.ending}"` : 'ended';
   if (r.state === 'stopped') return r.ending ? `stopped: ${r.ending}` : 'stopped';
   const at = r.at ? blockTitle(r.flow, r.at) : '?';
+  // In line (part 3f): to start, or before a block that takes only so many at once.
+  if (r.state === 'queued') return `${r.queue === 'flow' ? 'queued to start' : `queued before ${at}`}, number ${placeInLine(runs, r)} in line, for ${since(r.atSince)}`;
   return r.state === 'waiting' ? `waiting at ${at} for ${since(r.atSince)}` : `at ${at}`;
 }
 
 /** The Runs list (part 3c): open ones first, then the latest ended; a run chosen shows its history and marks its path. */
-export function RunsPanel({ runs, chosen, onChoose, flowTitle, blockTitle, error, heading = true }: {
+export function RunsPanel({ runs, chosen, onChoose, flowTitle, blockTitle, error, heading = true, follow, onStart }: {
   runs: readonly FlowRun[]; chosen: string | null; onChoose: (id: string | null) => void;
   flowTitle: (name: string) => string; blockTitle: (flow: string, id: string) => string;
   /** The runs could not be read: said, rather than shown as none. */
   error?: string | null;
   /** False where a fold above it says "Runs" already (a phone). */
   heading?: boolean;
+  /** How the shown flow is followed, in a line (part 3f); empty: nothing set. */
+  follow?: string;
+  /** "Start anyway" for a queued run (part 3f): the error, if it couldn't. */
+  onStart?: (id: string) => Promise<string | null>;
 }) {
+  const [starting, setStarting] = useState<string | null>(null);
+  const [startError, setStartError] = useState<{ id: string; text: string } | null>(null);
   // "Waiting for 5 min" goes on counting while the page is open (review of 3c).
   const [, tick] = useState(0);
   useEffect(() => {
@@ -61,13 +69,26 @@ export function RunsPanel({ runs, chosen, onChoose, flowTitle, blockTitle, error
   return (
     <div className="flow-panel-body flow-runs">
       {h}
+      {follow && <p className="muted flow-follow-line">{follow}</p>}
       <ol className="flow-run-list">
         {shown.map((r) => (
           <li key={r.id} className={`flow-run state-${r.state}${r.id === chosen ? ' chosen' : ''}`}>
             <button className="flow-run-head" aria-pressed={r.id === chosen} onClick={() => onChoose(r.id === chosen ? null : r.id)} title={r.id === chosen ? 'Stop marking its path' : 'Mark its path on the diagram'}>
               <span className="flow-run-title"><span className="mono">{r.id}</span> {r.title}{r.ref ? <span className="chip">{r.ref}</span> : null}</span>
-              <span className="muted">{flowTitle(r.flow)} · {stateLine(r, blockTitle)}{r.parent ? ` · for ${r.parent.run}` : ''}</span>
+              <span className="muted">{flowTitle(r.flow)} · {stateLine(r, blockTitle, runs)}{r.parent ? ` · for ${r.parent.run}` : ''}</span>
             </button>
+            {r.state === 'queued' && onStart && (
+              <div className="flow-run-actions">
+                <button className="small" disabled={starting === r.id} title="Start it now, past the limit" onClick={async () => {
+                  setStarting(r.id);
+                  const problem = await onStart(r.id);
+                  setStarting(null);
+                  setStartError(problem ? { id: r.id, text: problem } : null);
+                }}>{starting === r.id ? 'Starting…' : 'Start anyway'}</button>
+                {startError?.id === r.id && <span className="flow-problem-inline">{startError.text}</span>}
+              </div>
+            )}
+            {r.id === chosen && r.worktree && <p className="muted flow-run-note">Worktree <span className="mono">{r.worktree.path}</span>, branch <span className="mono">{r.worktree.branch}</span>{r.worktree.own ? '' : ` (${r.parent?.run}'s)`}</p>}
             {r.id === chosen && (
               r.history.length
                 ? <ol className="flow-run-history">

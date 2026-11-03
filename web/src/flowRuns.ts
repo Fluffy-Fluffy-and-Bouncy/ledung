@@ -1,7 +1,7 @@
 // What the workflow page shows of the runs (workflow part 3c): the markers on the blocks, a counted pin's progress and
 // the chosen run's path; the components are in components/FlowRuns.tsx.
 import { endingKey, type Flow } from '../../src/shared/flow.ts';
-import type { FlowRun } from '../../src/shared/flow-run.ts';
+import { OPEN_STATES, type FlowRun } from '../../src/shared/flow-run.ts';
 
 /** What the diagram shows of the runs, by block id. */
 export interface RunMarks {
@@ -12,7 +12,7 @@ export interface RunMarks {
 }
 
 /** A run still under way: running, or waiting for a person, a wait or a child run. */
-export const openRun = (r: FlowRun) => r.state === 'running' || r.state === 'waiting';
+export const openRun = (r: FlowRun) => OPEN_STATES.includes(r.state);
 const open = openRun;
 
 /** The open runs at each block of a flow, as markers: the ref when it has one (short), else the title. */
@@ -38,6 +38,26 @@ export function pinCounts(flow: Flow | null, runs: readonly FlowRun[], flowName:
     const n = Math.max(0, ...counting.map((r) => r.counts[b.id]?.[endingKey(o.word)] ?? 0));
     return n ? { short: `${Math.min(n, o.times)} of ${o.times}`, full: `${o.word} ${Math.min(n, o.times)} of ${o.times}` } : null;
   })]));
+}
+
+/** A queued run's place in its line (part 3f): among those queued for the same flow start, or before the same block. */
+export function placeInLine(runs: readonly FlowRun[], run: FlowRun): number {
+  const line = runs.filter((r) => r.state === 'queued' && r.flow === run.flow && r.queue === run.queue && (run.queue === 'flow' || r.at === run.at))
+    .sort((a, b) => a.atSince - b.atSince || Number(a.id.slice(4)) - Number(b.id.slice(4)));
+  return Math.max(1, line.findIndex((r) => r.id === run.id) + 1);
+}
+
+/** How a flow is followed (part 3f), in a line for the Runs list: "2 at once · a worktree per run". Empty: nothing set. */
+export function followLine(flow: Flow | null): string {
+  if (!flow) return '';
+  const tidy = flow.tidy ?? 'archive';
+  const mode = typeof tidy === 'string' ? tidy : tidy.sessions;
+  return [
+    flow.limit !== undefined ? `${flow.limit} at once` : '',
+    flow.worktree ? 'a worktree per run' : '',
+    mode === 'keep' ? "sessions kept at the end" : mode === 'stop' ? 'sessions stopped at the end' : '',
+    flow.oneRunPerRef === false ? 'several runs per ref' : '',
+  ].filter(Boolean).join(' · ');
 }
 
 /** The blocks a run has been through, and where it is now. */

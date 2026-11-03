@@ -10,6 +10,9 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-03
+- A workflow can give each piece of work its own git worktree, made when it starts and removed at its end only when nothing is lost, run at most so many pieces at once (the rest wait in line, with Start anyway in the Runs list), and make a continued step's session fresh first; when a piece of work ends its sessions are archived, and a second one for the same issue is refused unless asked again. Each is a setting in the builder. (no issue)
+- A manager with both a written workflow and a drawn one is told which says what: the drawn flow what happens next and who does it, the written files how. (#115)
+- The first Save that gives a project its own copy of a shared workflow asks first, and the workflow page says when the project's copy differs from the shared one, with Back to shared. (#110)
 - **Ledung follows the workflow**: where a project has a drawn workflow, its manager starts each piece of work as a run and reports how each step ended; Ledung keeps where every run is, counts each outcome (the 3rd "Changes requested" goes where the flow says) and says what to do next. On by default, switchable in the project's Workflow settings. (no issue)
 - Blocks act: Ledung starts a block's session itself with the block's model, profile, brief and sub-steps and what the step before handed on, gives a "continue" step to the session that did the earlier block, asks you a person block as a question or review whose answer moves the work on, and runs a Run flow block's flow as a run of its own. (no issue)
 - The workflow page shows where each run is (markers on the blocks, "2 of 3" on counted outcomes) and a Runs list with each run's history and path; a session started for a step shows its run and step in its header, and so do person steps in Waiting for you. (no issue)

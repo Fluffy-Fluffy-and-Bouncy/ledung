@@ -39,6 +39,17 @@ Read the current files first with your own file tools (`.ledung/workflow/flow.js
 
 `start` is where work enters (default: the first block). `overlays` and `frames` may be left out.
 
+**How Ledung follows it** (settings on the flow; only the last two are on by default):
+
+| Setting | What | Default |
+|---|---|---|
+| `"worktree": { "base": "main", "branch": "run/{id}", "remove": { "on": ["Merged"] } }` | a git worktree per run, its sessions work there; removed at the end only when nothing is uncommitted and the branch is merged or pushed (`"remove": "never"` keeps them) | off |
+| `"limit": 2` | at most this many runs at once; the others wait at the start, in line | off |
+| `"tidy": "archive"` (or `"stop"`, `"keep"`, `{ "sessions": "archive", "on": ["Merged"] }`) | what happens to a run's sessions when it ends | archive |
+| `"oneRunPerRef": false` | allow several runs for one issue or PR | on (one) |
+
+On a block: `"limit": 1` (one run in it at a time), and on a `continue` block `"context": "compact"` or `"clear"` (its session made fresh before the step; off unless set). The project's own setup command for new worktrees is a project setting, not part of the flow.
+
 Keep what is drawn: leave each block's `at` (its place on the canvas) and the `frames` as they are, and give a new block an `at` near its neighbours. Frames are rectangles where they say; when the blocks have no `at`, the page lays them out itself, and adding or removing a block moves the others, perhaps out of their frames (the review says so; the person can Auto-arrange in the builder after saving).
 
 ## A block

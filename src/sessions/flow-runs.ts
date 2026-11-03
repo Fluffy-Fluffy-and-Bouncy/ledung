@@ -4,8 +4,9 @@
 // counts it, takes the counted outcome on its Nth time and the plain one otherwise, moves the run and says what to do
 // at the next block. Ledung never picks the outcome from text (#1184), and the workflow guides: no locks (#1183).
 import type { QuestionInfo, RunBlock, SessionInfo, StoredMessage } from '../shared/protocol.ts';
-import { DEFAULT_FLOW, endingKey, flowFileOf, ordinal, type Flow, type FlowBlock } from '../shared/flow.ts';
-import { decideStep, outcomeList, runLabel, startBlock, type FlowRun, type RunStep } from '../shared/flow-run.ts';
+import { DEFAULT_FLOW, DEFAULT_TIDY, endingKey, flowFileOf, ordinal, STOPPED_ENDING, type Flow, type FlowBlock } from '../shared/flow.ts';
+import { makeWorktree, removeWorktree, type WorktreeHost } from './run-worktrees.ts';
+import { decideStep, OPEN_STATES, outcomeList, runLabel, startBlock, type FlowRun, type RunStep } from '../shared/flow-run.ts';
 import { sessionOf } from '../shared/flow-check.ts';
 import { ACCEPTED, CHANGES_NEEDED, questionText, type QuestionDetails } from '../shared/questions.ts';
 import type { RunStore } from './run-store.ts';
@@ -29,6 +30,8 @@ export interface BlockSessionStart {
   model?: string;
   profile?: string;
   runBlock: RunBlock;
+  /** The run's worktree, where the session works (part 3f); none: the project folder. */
+  cwd?: string;
 }
 
 /** A person block's question or review (part 3b), asked of the person for the run's coordinator. */
@@ -55,7 +58,7 @@ export interface FlowRunsPorts {
   /** Starts a block's session (part 3b); throws with the reason. */
   startSession(s: BlockSessionStart): Promise<SessionInfo>;
   /** Hands a session the next block: in its inbox, resumed first if it ended; throws when it can't be. */
-  continueSession(id: string, text: string, runBlock: RunBlock): Promise<void>;
+  continueSession(id: string, text: string, runBlock: RunBlock, fresh?: { context: 'compact' | 'clear'; by: string }): Promise<void>;
   /** A session's last reply, for the handoff to the next block; empty: none. */
   lastReply(id: string): string;
   /** Puts a person block to the person (part 3b): the question, stored and shown. */
@@ -66,6 +69,12 @@ export interface FlowRunsPorts {
   withdraw(questionId: number, reason: string): void;
   /** Stops a block's session that has done its part (an earlier round's). */
   stopSession(id: string, reason: string): Promise<void>;
+  /** Archives an ended session (part 3f, a run's tidying). */
+  archiveSession(id: string, by: string): void;
+  /** How Ledung reaches the project's git (part 3f); null: it can't (a removed project). */
+  worktreeHost(project: string): WorktreeHost | null;
+  /** The project's setup command for a new worktree (its settings); none: nothing is run. */
+  worktreeSetup(project: string): string | undefined;
   /** The project's question tiers, in order. */
   tiers(project: string): string[];
   userName: string;
@@ -154,7 +163,7 @@ export class FlowRuns {
   // --- the tools -------------------------------------------------------------------------------------
 
   /** flow_start: a new run at the flow's start block, coordinated by the caller; what to do there. */
-  start(callerId: string, args: { title: string; ref?: string; flow?: string }): Promise<string> {
+  start(callerId: string, args: { title: string; ref?: string; flow?: string; again?: boolean }): Promise<string> {
     const caller = this.p.getSession(callerId);
     if (!caller) return Promise.reject(new FlowRunError('Your session is not known to Ledung.'));
     if (!args.title.trim()) return Promise.reject(new FlowRunError('Give the run a title: what the work is.'));
@@ -163,11 +172,44 @@ export class FlowRuns {
       const name = this.pickFlow(flows, args.flow);
       const flow = flows.flows.get(name)!;
       const first = startBlock(flow);
-      const run = this.p.runs.create({
-        project: caller.project, title: args.title.trim(), ref: args.ref?.trim() || null, flow: name, at: first.id, coordinator: callerId, parent: null, now: this.now(),
-      });
+      const ref = args.ref?.trim() || null;
+      // One run per ref (part 3f), unless the flow allows more or the caller says again.
+      if (ref && flow.oneRunPerRef !== false && !args.again) {
+        const already = this.p.runs.list(caller.project, { open: true, limit: 10000 }).find((r) => r.ref?.trim().toLowerCase() === ref.toLowerCase());
+        if (already) {
+          const titleOf = (id: string | null) => flows.flows.get(already.flow)?.blocks.find((b) => b.id === id)?.title ?? id ?? '';
+          throw new FlowRunError(`${runLabel(already)} is already under way for ${ref} (${this.stateLine(already, titleOf(already.at))}): report on it, or start another with again: true.`);
+        }
+      }
+      const full = flow.limit !== undefined && this.working(caller.project, name) >= flow.limit;
+      const run = this.p.runs.create({ project: caller.project, title: args.title.trim(), ref, flow: name, at: first.id, coordinator: callerId, parent: null, now: this.now() });
+      const started = `Started ${runLabel(run)} in the flow "${flows.titles.get(name)}".`;
+      if (full) {
+        // At most N at once (part 3f): it waits at the start, in line, and Ledung starts it when one ends.
+        const queued = this.p.runs.update(run.id, { state: 'queued', queue: 'flow' }, this.now());
+        this.p.changed(caller.project);
+        return `${started} The flow takes ${flow.limit} at once, so it is queued, number ${this.place(queued)} in line: Ledung starts it when one ends, and tells you. ${this.p.userName} can start it anyway from the Runs list.`;
+      }
       this.p.changed(caller.project);
-      return `Started ${runLabel(run)} in the flow "${flows.titles.get(name)}". ${await this.arrive(flows, run, flow, first, null)}`;
+      return `${started} ${await this.begin(flows, run, flow, null, false)}`;
+    });
+  }
+
+  /** The person's "start anyway" for a queued run (part 3f): it goes on past its flow's or block's limit. */
+  startAnyway(project: string, id: string, by: string): Promise<string> {
+    return this.one(project, async () => {
+      const run = this.p.runs.get(id);
+      if (!run || run.project !== project) throw new FlowRunError(`There is no run "${id}" in ${project}.`);
+      if (run.state !== 'queued') throw new FlowRunError(`${runLabel(run)} is not in line.`);
+      const flows = await this.flowsOf(project);
+      const flow = this.flowOf(flows, run);
+      const block = flow.blocks.find((b) => b.id === run.at) ?? startBlock(flow);
+      const text = run.queue === 'flow'
+        ? await this.begin(flows, run, flow, null, true)
+        : await this.arrive(flows, this.p.runs.update(run.id, { state: 'running', queue: null }, this.now()), flow, block, this.lastHandoff(run, flow));
+      this.p.changed(project);
+      this.p.tell(run.coordinator, `Ledung: ${by} started ${runLabel(run)} past its limit. ${text}`);
+      return text;
     });
   }
 
@@ -182,7 +224,12 @@ export class FlowRuns {
     return this.one(caller.project, async () => {
       const run = this.ownRun(callerId, args.run);
       if (run.state === 'ended' || run.state === 'stopped') throw new FlowRunError(`${runLabel(run)} has ${run.state === 'ended' ? `ended (${run.ending})` : 'been stopped'}; start a new run for more work.`);
-      if (args.stop) return this.stopRun(run, args.outcome.trim() || 'stopped', this.who(callerId), await this.p.flows(run.project).catch(() => null));
+      if (args.stop) {
+        const flows = await this.p.flows(run.project).catch(() => null);
+        const stopped = this.stopRun(run, args.outcome.trim() || 'stopped', this.who(callerId), flows);
+        return `${stopped} ${await this.afterEnd(flows, this.p.runs.get(run.id)!, STOPPED_ENDING)}`.trim();
+      }
+      if (run.state === 'queued') throw new FlowRunError(`${runLabel(run)} is in line (${this.stateLine(run, run.at ?? '')}): it has no step to report yet. Stop it with stop: true, or ${this.p.userName} can start it anyway.`);
       const flows = await this.flowsOf(run.project);
       const flow = this.flowOf(flows, run);
       const block = flow.blocks.find((b) => b.id === run.at);
@@ -208,6 +255,7 @@ export class FlowRuns {
       return [
         `${runLabel(run)} in the flow "${flows?.titles.get(run.flow) ?? run.flow}", coordinated by ${this.who(run.coordinator)}: ${this.stateLine(run, titleOf(run, run.at))}.`,
         run.parent ? `Started by "${run.parent.block}" of ${run.parent.run}, which waits for it.` : '',
+        run.worktree ? `Worktree: ${run.worktree.path} (branch ${run.worktree.branch}, from ${run.worktree.base}${run.worktree.own ? '' : `, its parent's`}).` : '',
         counts.length ? `Counts: ${counts.join('; ')}.` : '',
         sessions.length ? `Sessions: ${sessions.join('; ')}.` : '',
         run.history.length ? `History:\n${run.history.map((h) => `- ${new Date(h.at).toISOString().slice(0, 16).replace('T', ' ')} ${titleOf(run, h.block)}: "${h.word}"${h.n > 1 ? ` (${ordinal(h.n)} time)` : ''} by ${h.by} → ${h.to === null ? 'end' : titleOf(run, h.to)}`).join('\n')}` : 'No steps yet.',
@@ -228,6 +276,7 @@ export class FlowRuns {
   private stateLine(run: FlowRun, at: string): string {
     if (run.state === 'ended') return `ended "${run.ending}"`;
     if (run.state === 'stopped') return `stopped (${run.ending})`;
+    if (run.state === 'queued') return `queued ${run.queue === 'flow' ? 'to start' : `before "${at}"`}, number ${this.place(run)} in line`;
     return `${run.state === 'waiting' ? 'waiting' : 'at'} "${at}" since ${new Date(run.atSince).toISOString().slice(0, 16).replace('T', ' ')}`;
   }
 
@@ -260,13 +309,163 @@ export class FlowRuns {
     if (decision.kind === 'end') {
       const ended = this.p.runs.update(run.id, { at: null, atSince: this.now(), counts, history, state: 'ended', ending: decision.word, question: null }, this.now());
       this.p.changed(run.project);
-      const done = `Recorded "${said}" for "${block.title}". ${runLabel(ended)} has ended: "${decision.word}".`;
+      const after = await this.afterEnd(flows, ended, decision.word);
+      const done = `Recorded "${said}" for "${block.title}". ${runLabel(ended)} has ended: "${decision.word}".${after ? ` ${after}` : ''}`;
       return ended.parent ? `${done} ${await this.childEnded(flows, ended, handoff)}` : done;
     }
     const next = flow.blocks.find((b) => b.id === decision.to)!;
     const moved = this.p.runs.update(run.id, { at: next.id, atSince: this.now(), counts, history, state: 'running', question: null }, this.now());
     this.p.changed(run.project);
-    return `Recorded "${said}" for "${block.title}"${counted}: ${runLabel(moved)} goes to "${next.title}". ${await this.arrive(flows, moved, flow, next, handoff)}`;
+    const text = `Recorded "${said}" for "${block.title}"${counted}: ${runLabel(moved)} goes to "${next.title}". ${await this.enterBlock(flows, moved, flow, next, handoff, false)}`;
+    // A place freed at the block it left (part 3f).
+    if (block.limit !== undefined) await this.release(run.project, flows);
+    return text;
+  }
+
+  // --- part 3f: a worktree per run, runs at once, tidying -----------------------------------------------
+
+  /**
+   * Runs of a flow under way: started, also those in line before a block (they have started); not those waiting to
+   * start. A Run flow block's runs count with their parent.
+   */
+  private working(project: string, flow: string): number {
+    return this.p.runs.list(project, { open: true, limit: 10000 }).filter((r) => r.flow === flow && !r.parent && !(r.state === 'queued' && r.queue === 'flow')).length;
+  }
+
+  /** Runs at a block now, not in line before it. */
+  private busyAt(project: string, flow: string, block: string, besides: string): number {
+    return this.p.runs.list(project, { open: true, limit: 10000 }).filter((r) => r.flow === flow && r.at === block && r.id !== besides && r.state !== 'queued').length;
+  }
+
+  /** A queued run's place in its line: its flow's start, or the block it waits before; 1 is next. */
+  private place(run: FlowRun): number {
+    const line = this.p.runs.queued(run.project).filter((r) => r.flow === run.flow && r.queue === run.queue && (run.queue === 'flow' || r.at === run.at));
+    return Math.max(1, line.findIndex((r) => r.id === run.id) + 1);
+  }
+
+  /**
+   * A run starts work (part 3f): its worktree is made, or a child run takes its parent's, then it goes to its block. A
+   * worktree git refuses is said, and the run goes on in the project folder.
+   */
+  private async begin(flows: ProjectFlows, run: FlowRun, flow: Flow, handoff: Handoff, anyway: boolean): Promise<string> {
+    let now = this.p.runs.update(run.id, { state: 'running', queue: null, atSince: this.now() }, this.now());
+    let note = '';
+    const parent = now.parent ? this.p.runs.get(now.parent.run) : undefined;
+    if (!now.worktree && parent?.worktree) {
+      now = this.p.runs.update(now.id, { worktree: { ...parent.worktree, own: false } }, this.now());
+    } else if (!now.worktree && !now.parent && flow.worktree) {
+      const host = this.p.worktreeHost(now.project);
+      try {
+        if (!host) throw new Error('the project is not there.');
+        const made = await makeWorktree(host, now, flow.worktree, this.p.worktreeSetup(now.project));
+        now = this.p.runs.update(now.id, { worktree: made.worktree }, this.now());
+        note = `Ledung made its worktree ${made.worktree.path} on branch ${made.worktree.branch}, from ${made.worktree.base}; its sessions work there.` +
+          (made.setupProblem ? ` The project's setup command failed there: ${made.setupProblem}` : '');
+      } catch (e) {
+        note = `Ledung could not make its worktree: ${(e as Error).message} Its sessions work in the project folder.`;
+      }
+    }
+    this.p.changed(now.project);
+    const block = flow.blocks.find((b) => b.id === now.at) ?? startBlock(flow);
+    return `${note ? `${note} ` : ''}${await this.enterBlock(flows, now, flow, block, handoff, anyway)}`;
+  }
+
+  /** A run comes to a block (part 3f): in line before it when the block has its limit of runs, else it acts. */
+  private async enterBlock(flows: ProjectFlows, run: FlowRun, flow: Flow, block: FlowBlock, handoff: Handoff, anyway: boolean): Promise<string> {
+    if (!anyway && block.limit !== undefined && this.busyAt(run.project, run.flow, block.id, run.id) >= block.limit) {
+      const queued = this.p.runs.update(run.id, { state: 'queued', queue: 'block', at: block.id, atSince: this.now() }, this.now());
+      this.p.changed(run.project);
+      return `"${block.title}" (${block.id}) takes ${block.limit} at once, so ${run.id} waits before it, number ${this.place(queued)} in line: Ledung goes on when one leaves it, and tells you.`;
+    }
+    return this.arrive(flows, run, flow, block, handoff);
+  }
+
+  /** What the last step of a run handed on, for a run that goes on after waiting in line. */
+  private lastHandoff(run: FlowRun, flow: Flow): Handoff {
+    const last = run.history.at(-1);
+    const from = last && flow.blocks.find((b) => b.id === last.block);
+    return from ? this.handoff(run, flow, from, last.note) : null;
+  }
+
+  /** Queued runs that now have a place go on, first in line first; their coordinators are told (part 3f). */
+  private async release(project: string, known: ProjectFlows | null): Promise<void> {
+    const flows = known ?? await this.p.flows(project).catch(() => null);
+    if (!flows) return;
+    for (const q of this.p.runs.queued(project)) {
+      const run = this.p.runs.get(q.id)!;
+      if (run.state !== 'queued') continue;
+      const flow = flows.flows.get(run.flow);
+      const block = flow?.blocks.find((b) => b.id === run.at);
+      if (!flow || !block) continue;
+      let text: string;
+      try {
+        if (run.queue === 'flow') {
+          if (flow.limit !== undefined && this.working(project, run.flow) >= flow.limit) continue;
+          text = await this.begin(flows, run, flow, null, false);
+        } else {
+          if (block.limit !== undefined && this.busyAt(project, run.flow, block.id, run.id) >= block.limit) continue;
+          text = await this.arrive(flows, this.p.runs.update(run.id, { state: 'running', queue: null }, this.now()), flow, block, this.lastHandoff(run, flow));
+        }
+      } catch (e) {
+        text = `but it could not go on: ${(e as Error).message}`;
+      }
+      this.p.changed(project);
+      this.p.tell(run.coordinator, `Ledung: ${runLabel(run)} is out of line. ${text}`);
+    }
+  }
+
+  /**
+   * A run ended or was stopped (part 3f): its sessions are tidied as the flow says (archived by default), its worktree
+   * removed if the flow says so and it is safe, and runs in line go on. What happened, for the coordinator.
+   */
+  private async afterEnd(flows: ProjectFlows | null, run: FlowRun, ending: string): Promise<string> {
+    const flow = flows?.flows.get(run.flow) ?? null;
+    const said = [await this.tidy(run, flow, ending), await this.dropWorktree(run, flow, ending)].filter(Boolean).join(' ');
+    await this.release(run.project, flows);
+    return said;
+  }
+
+  /** The flow's tidying of a run's sessions on this ending: archive (the default), stop or keep. */
+  private async tidy(run: FlowRun, flow: Flow | null, ending: string): Promise<string> {
+    const t = flow?.tidy ?? DEFAULT_TIDY;
+    const mode = typeof t === 'string' ? t : !t.on || t.on.some((e) => endingKey(e) === endingKey(ending)) ? t.sessions : 'keep';
+    if (mode === 'keep') return '';
+    // A session another open run still uses (its parent's, handed on as the caller's) is that run's.
+    const others = new Set(this.p.runs.list(run.project, { open: true, limit: 10000 }).filter((r) => r.id !== run.id).flatMap((r) => Object.values(r.sessions)));
+    const ids = [...new Set(Object.entries(run.sessions).filter(([k]) => k !== CALLER).map(([, id]) => id))].filter((id) => !others.has(id));
+    const done: string[] = [];
+    const working: string[] = [];
+    for (const id of ids) {
+      const s = this.p.getSession(id);
+      if (!s || s.archivedAt) continue;
+      if (s.status === 'running' || s.status === 'starting' || s.status === 'stopping') {
+        working.push(`"${s.title}"`);
+        continue;
+      }
+      if (s.status !== 'ended') await this.p.stopSession(id, `${run.id} ended.`).catch(() => {});
+      if (mode === 'archive') this.p.archiveSession(id, `Ledung (${run.id} ended)`);
+      done.push(id);
+    }
+    if (!done.length && !working.length) return '';
+    return `Its sessions: ${done.length} ${mode === 'archive' ? 'archived' : 'stopped'}${working.length ? `; ${working.join(', ')} still working, so kept` : ''}.`;
+  }
+
+  /** The run's own worktree removed if the flow says so on this ending and it is safe; else kept, with why. */
+  private async dropWorktree(run: FlowRun, flow: Flow | null, ending: string): Promise<string> {
+    const wt = run.worktree;
+    if (!wt?.own) return '';
+    const remove = flow?.worktree?.remove;
+    if (remove === 'never') return `Its worktree ${wt.path} stays: the flow keeps worktrees.`;
+    if (remove?.on && !remove.on.some((e) => endingKey(e) === endingKey(ending))) return `Its worktree ${wt.path} stays: the flow removes it only on ${remove.on.map((e) => `"${e}"`).join(', ')}.`;
+    const host = this.p.worktreeHost(run.project);
+    if (!host) return `Its worktree ${wt.path} stays: the project is not there.`;
+    const r = await removeWorktree(host, wt);
+    if ('removed' in r) {
+      this.p.runs.update(run.id, { worktree: null }, this.now());
+      this.p.changed(run.project);
+      return `Its worktree ${wt.path} is removed.`;
+    }
+    return `Its worktree ${wt.path} is kept: ${r.kept}. Deal with that, then remove it (git worktree remove).`;
   }
 
   /**
@@ -302,7 +501,7 @@ export class FlowRuns {
   private stopRun(run: FlowRun, why: string, by: string, flows: ProjectFlows | null): string {
     if (run.question !== null) this.p.withdraw(run.question, `The run was stopped: ${why}.`);
     // A run's own Run flow blocks' runs stop with it; a parent waiting for this one is said (review of 3b, finding 5).
-    for (const child of this.p.runs.children(run.id)) if (child.state === 'running' || child.state === 'waiting') this.stopRun(child, `${run.id}, which it ran for, was stopped`, by, flows);
+    for (const child of this.p.runs.children(run.id)) if (OPEN_STATES.includes(child.state)) this.stopRun(child, `${run.id}, which it ran for, was stopped`, by, flows);
     const parent = run.parent ? this.p.runs.get(run.parent.run) : undefined;
     const waits = parent && parent.state === 'waiting' && parent.at === run.parent!.block
       ? ` ${runLabel(parent)} still waits at "${parent.at}" for it: report that block's outcome with flow_step, or stop it.`
@@ -343,7 +542,8 @@ export class FlowRuns {
     const brief = await this.briefOf(flows, block);
     const subs = block.substeps?.length ? `\n\n${this.substepsLine(block)}` : '';
     const given = handoff ? `\n\n"${handoff.from}" handed on:\n\n${handoff.text}` : '';
-    return `At ${at}: ${block.runs === 'manager' ? 'your own step' : 'a step for you to see through'}.${given}${brief ? `\n\n${brief}` : ''}${subs}\n\n${outs} ${report}`;
+    const tree = run.worktree ? ` The run's worktree: ${run.worktree.path} (branch ${run.worktree.branch}).` : '';
+    return `At ${at}: ${block.runs === 'manager' ? 'your own step' : 'a step for you to see through'}.${tree}${given}${brief ? `\n\n${brief}` : ''}${subs}\n\n${outs} ${report}`;
   }
 
   /**
@@ -384,6 +584,7 @@ export class FlowRuns {
     const words = [...new Map((block.outcomes ?? []).map((o) => [endingKey(o.word), o.word])).values()];
     return [
       `You run "${block.title}" (block ${block.id}) of ${runLabel(run)}, in the flow "${flows.titles.get(run.flow) ?? run.flow}". Ledung started this from the flow; ${this.who(run.coordinator)} coordinates the run.`,
+      run.worktree ? `The run has its own git worktree, ${run.worktree.path}, on branch ${run.worktree.branch} (from ${run.worktree.base}): work and commit there, not in the project folder.` : '',
       await this.briefOf(flows, block),
       block.substeps?.length ? this.substepsLine(block) : '',
       handoff ? `What "${handoff.from}" handed on:\n\n${handoff.text}` : '',
@@ -404,25 +605,28 @@ export class FlowRuns {
       ? run.sessions[block.continues ?? ''] ?? run.sessions[sessionOf(flow, block.id) ?? ''] ?? handed
       : handed;
     if (own && this.p.getSession(own)) {
-      await this.p.continueSession(own, text, runBlock);
+      // A fresh context first, when the block says so (part 3f): compacted, or cleared with the step as its handoff.
+      await this.p.continueSession(own, text, runBlock, block.runs === 'continue' && block.context ? { context: block.context, by: run.coordinator } : undefined);
       this.p.runs.update(run.id, { sessions: { ...run.sessions, [block.id]: own } }, this.now());
       this.p.changed(run.project);
       const which = block.runs === 'continue' && block.continues && run.sessions[block.continues] === own
         ? `which ran "${flow.blocks.find((b) => b.id === block.continues)?.title ?? block.continues}"`
         : own === run.sessions[CALLER] ? "the caller's session this flow was handed" : `which ran "${flow.blocks.find((b) => b.id === sessionOf(flow, block.id))?.title ?? block.continues}"`;
-      return `Ledung gave it to session "${this.p.getSession(own)?.title}" (${own}), ${which}`;
+      const fresh = block.runs === 'continue' && block.context ? `, ${block.context === 'compact' ? 'compacted' : 'cleared'} first` : '';
+      return `Ledung gave it to session "${this.p.getSession(own)?.title}" (${own}), ${which}${fresh}`;
     }
     // A new session: the block's own, or one for a continued block whose session isn't there (said so).
     const from = block.runs === 'continue' ? flow.blocks.find((b) => b.id === sessionOf(flow, block.id)) ?? block : block;
     const s = await this.p.startSession({
       project: run.project, coordinator: run.coordinator, title: short(`${block.title}: ${run.title}`, 80), task: text,
       model: block.model ?? from.model, profile: block.profile ?? from.profile, runBlock,
+      ...(run.worktree ? { cwd: run.worktree.path } : {}),
     });
     // The block's session from an earlier round has done its part: stopped, unless another block of the run still uses
     // it (a continued one), so a loop doesn't leave a session behind each round (review of 3b, finding 4).
     const earlier = run.sessions[block.id];
     // Nor one an open run of its Run flow blocks goes on in (the caller's session, review of 3d).
-    const inChildren = (id: string) => this.p.runs.children(run.id).some((c) => (c.state === 'running' || c.state === 'waiting') && Object.values(c.sessions).includes(id));
+    const inChildren = (id: string) => this.p.runs.children(run.id).some((c) => OPEN_STATES.includes(c.state) && Object.values(c.sessions).includes(id));
     if (earlier && earlier !== s.id && !Object.entries(run.sessions).some(([b, id]) => b !== block.id && id === earlier) && !inChildren(earlier)) {
       await this.p.stopSession(earlier, `A new session took "${block.title}" of ${run.id}.`).catch(() => {});
     }
@@ -482,7 +686,7 @@ export class FlowRuns {
     this.p.changed(run.project);
     const hands = block.session !== 'caller' ? '' : caller ? ` It goes on in the caller's session ${caller}.` : ' No session ran before it, so its session steps start their own.';
     return `At "${block.title}" (${block.id}): Ledung started ${child.id} in the flow "${flows.titles.get(name) ?? name}" for it, and ${run.id} waits; the way ${child.id} ends is "${block.title}"'s outcome.${hands}\n\n` +
-      `${child.id}: ${await this.arrive(flows, this.p.runs.get(child.id)!, flow, first, handoff)}`;
+      `${child.id}: ${await this.begin(flows, this.p.runs.get(child.id)!, flow, handoff, false)}`;
   }
 
   /**

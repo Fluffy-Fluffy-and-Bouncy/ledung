@@ -697,6 +697,23 @@ ${note}`);
       : `"${s.title}" is compacted when it is free${note ? ', then gets your message' : ''}. You are told if the compact fails.`;
   }
 
+  /**
+   * A run's continued step with a fresh context first (workflow part 3f, `context` on the block): the session is compacted,
+   * or cleared with the person's usual countdown, and the step arrives after it as its note. One already waiting or under
+   * way: the step comes as it is. `requester`: the run's coordinator, told if a compact fails.
+   */
+  async freshStep(sessionId: string, requester: string, context: 'compact' | 'clear', text: string): Promise<void> {
+    const s = this.store.getSession(sessionId);
+    if (!s) throw new ManagementError('The session is gone.');
+    if (this.pendingClearOrCompact(sessionId)) this.store.addInbox(sessionId, 'ledung', text);
+    else if (context === 'compact') this.queueCompact(s, requester, undefined, text);
+    else {
+      this.store.addInbox(sessionId, `${CLEAR_SOURCE}:${CLEAR_SECONDS}:${requester}`, "Clear requested by Ledung's workflow before the session's next step.");
+      this.store.addInbox(sessionId, CLEAR_NOTE_SOURCE, `Your conversation was cleared by Ledung's workflow before your next step.\n\n${text}`);
+    }
+    await this.reach(sessionId);
+  }
+
   /** compact_self: a session compacts itself after this turn. */
   compactSelf(sessionId: string, instructions?: string, then?: string): string {
     const refused = this.queueCompact(this.store.getSession(sessionId)!, sessionId, compactNote(instructions), then);

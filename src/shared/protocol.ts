@@ -350,6 +350,8 @@ export interface ProjectInfo {
   workflow: { use?: boolean; name?: string; projectConfig?: string } | null;
   /** Ledung follows its flow (workflow part 3); on unless switched off. */
   followFlow?: boolean;
+  /** Run in a run's new worktree (workflow part 3f); null: nothing. */
+  worktreeSetup?: string | null;
   /** Its one manager, once started. */
   managerId: string | null;
   createdAt: number;

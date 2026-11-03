@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { boardConfig, parseProject, workflowsOf } from '../config.ts';
 import { checkFolder, chosenWorkflow, projectWorkflow, withProfilesWarning, type WorkflowCheck } from './workflow.ts';
-import { flowInstructions, flowPlaces, readFlows, readFlowView, saveFlowFiles, type FlowPlace } from './flow-files.ts';
+import { backToShared, flowInstructions, flowPlaces, readFlows, readFlowView, saveFlowFiles, type FlowPlace } from './flow-files.ts';
 import type { FlowView } from '../shared/flow.ts';
 import { remoteControlName } from './remote-control.ts';
 import { loosensGate } from '../projects/gate.ts';
@@ -88,6 +88,7 @@ import { cleanStaleRuntime, metaPlaceBook, SessionSecrets, type PlaceBook } from
 import { DockerSecretRuntime, LocalSecretRuntime } from '../secrets/runtime.ts';
 import type { SecretInfo, SecretLifetime } from '../shared/secrets.ts';
 import { FlowRunError, FlowRuns, lastReplyOf } from './flow-runs.ts';
+import { dockerWorktreeHost, localWorktreeHost } from './run-worktrees.ts';
 import { RunStore } from './run-store.ts';
 import type { FlowRun } from '../shared/flow-run.ts';
 import type { RunBlock } from '../shared/protocol.ts';
@@ -290,7 +291,7 @@ export class SessionManager {
       // Part 3b: a block's session is started under the run's coordinator with the block's settings, its step from Ledung.
       startSession: async (b) => {
         const s = await this.start(b.project, b.task, {
-          parentId: b.coordinator, title: b.title, model: b.model, profile: b.profile, runBlock: b.runBlock,
+          parentId: b.coordinator, title: b.title, model: b.model, profile: b.profile, runBlock: b.runBlock, ...(b.cwd ? { cwd: b.cwd, runWorktree: true } : {}),
           intro: `Your step, from Ledung's workflow (run ${b.runBlock.run}, block ${b.runBlock.block}):`,
         });
         // A start that failed ends the session rather than throwing (review of 3b, finding 2).
@@ -300,13 +301,29 @@ export class SessionManager {
       stopSession: async (id, reason) => {
         if (this.store.getSession(id)?.status !== 'ended') await this.stop(id, reason);
       },
-      continueSession: async (id, text, runBlock) => {
+      continueSession: async (id, text, runBlock, fresh) => {
         this.store.updateSession(id, { runBlock });
         this.publish({ type: 'session', session: this.store.getSession(id)! });
-        this.store.addInbox(id, 'ledung', `Your next step, from Ledung's workflow (run ${runBlock.run}, block ${runBlock.block}):\n\n${text}`);
+        const step = `Your next step, from Ledung's workflow (run ${runBlock.run}, block ${runBlock.block}):\n\n${text}`;
+        // A fresh context first (part 3f): the step comes as the note after the compact or clear.
+        if (fresh) {
+          await this.management.freshStep(id, fresh.by, fresh.context, step);
+          return;
+        }
+        this.store.addInbox(id, 'ledung', step);
         await this.resumeIfEnded(id);
         this.live.get(id)?.deliver();
       },
+      archiveSession: (id, by) => void this.archive(id, by),
+      worktreeHost: (name) => {
+        const config = this.projectStore.get(name)?.config;
+        if (!config) return null;
+        const env = () => Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => e[1] !== undefined));
+        return config.runner === 'local'
+          ? localWorktreeHost(config.path, (command, cwd) => new LocalRunner(config, cwd, this.config.claudeExecutable).shell(command, this.config.windowsShell, env()))
+          : dockerWorktreeHost(config, (command, cwd) => new DockerRunner(config, 'worktree', cwd).shell(command, null, env()));
+      },
+      worktreeSetup: (name) => this.projectStore.get(name)?.config.worktreeSetup,
       lastReply: (id) => lastReplyOf(this.store.listMessages(id, { limit: 200 })),
       ask: (a) => {
         const q = this.store.createQuestion({ sessionId: a.coordinator, question: a.question, options: a.options, addressedTo: 'user', details: a.details });
@@ -1290,6 +1307,16 @@ export class SessionManager {
     }
   }
 
+  /** The person starts a queued run past its limit (part 3f). */
+  async startRunAnyway(name: string, run: string): Promise<void> {
+    if (!this.projectStore.get(name)) throw new UserError(`There is no project named "${name}".`);
+    try {
+      await this.flowRuns.startAnyway(name, run, this.config.userName);
+    } catch (e) {
+      throw e instanceof FlowRunError ? new UserError(e.message) : e;
+    }
+  }
+
   /** A project's runs for the workflow page (part 3), the latest changed first. */
   flowRunsOf(name: string): FlowRun[] {
     if (!this.projectStore.get(name)) throw new UserError(`There is no project named "${name}".`);
@@ -1325,6 +1352,25 @@ export class SessionManager {
       throw e instanceof FileError ? new UserError(e.message) : e;
     }
     console.log(`Workflow: saved ${Array.isArray(files) ? files.length : 0} file(s) into ${own.folder} from the builder.`);
+    return this.flowView(name);
+  }
+
+  /**
+   * ledung#110 "Back to shared": the project's own flow.json and flows/ are removed, so the shared workflow it follows
+   * counts again; then the workflow as it now reads. One save at a time per project, as the builder's.
+   */
+  async backToSharedFlow(name: string): Promise<FlowView> {
+    const project = this.projectStore.get(name)?.config;
+    if (!project) throw new UserError(`There is no project named "${name}".`);
+    const before = this.flowSaves.get(project.name) ?? Promise.resolve();
+    const going = before.then(() => backToShared(this.flowPlacesOf(project)));
+    this.flowSaves.set(project.name, going.then(() => {}, () => {}));
+    try {
+      const files = await going;
+      console.log(`Workflow: ${name} went back to its shared workflow's flow; removed ${files.join(', ')}.`);
+    } catch (e) {
+      throw e instanceof FileError ? new UserError(e.message) : e;
+    }
     return this.flowView(name);
   }
 
@@ -2255,7 +2301,7 @@ export class SessionManager {
   }
 
   private runnerFor(project: ProjectConfig, info: SessionInfo): Runner {
-    return project.runner === 'local' ? new LocalRunner(project, info.workDir, this.config.claudeExecutable) : new DockerRunner(project, info.id);
+    return project.runner === 'local' ? new LocalRunner(project, info.workDir, this.config.claudeExecutable) : new DockerRunner(project, info.id, info.workDir);
   }
 
   /**
@@ -2263,8 +2309,11 @@ export class SessionManager {
    * extra folders, as a real path; null for the project folder (decision of 2026-10-14). Only local
    * projects: a container's folders would need their own checks inside the container.
    */
-  private workFolder(project: ProjectConfig, wanted: string | undefined): string | null {
+  private workFolder(project: ProjectConfig, wanted: string | undefined, runWorktree = false): string | null {
     if (wanted === undefined || !wanted.trim()) return null;
+    // A container session may work in its run's worktree, and only there (workflow part 3f): Ledung made it inside the
+    // project folder, so it is checked by its form; the runner checks it is there before every start.
+    if (project.runner !== 'local' && runWorktree && path.posix.relative(project.pathInContainer, wanted).match(/^\.ledung\/worktrees\/run-\d+$/)) return wanted;
     if (project.runner !== 'local') throw new UserError(`A working folder (cwd) is not available for container projects such as "${project.name}"; the session runs in the project folder.`);
     let folder: string | null;
     try {
@@ -2301,12 +2350,14 @@ export class SessionManager {
       role?: SessionRole; parentId?: string; title?: string; permissionMode?: PermissionMode; model?: string; profile?: string; cwd?: string; here?: boolean; before?: string;
       /** A block's session (workflow part 3b): the run and block it serves, and the heading of its task in place of the manager's. */
       runBlock?: RunBlock; intro?: string;
+      /** `cwd` is its run's worktree (part 3f): allowed in a container project too. */
+      runWorktree?: boolean;
     } = {},
   ): Promise<SessionInfo> {
     const project = this.project(projectName);
     // Managers work in the project folder, so the project keeps one place for its manager.
     if (opts.cwd !== undefined && opts.role === 'manager') throw new UserError('A manager always works in the project folder.');
-    const workDir = this.workFolder(project, opts.cwd);
+    const workDir = this.workFolder(project, opts.cwd, opts.runWorktree === true);
     if (project.account) {
       try {
         this.accounts.envFor(project.account);
@@ -2833,6 +2884,7 @@ function projectInfo(p: StoredProject): ProjectInfo {
     extraFolders: c.runner === 'local' ? c.extraFolders ?? [] : [],
     workflow: c.workflow ?? null,
     followFlow: c.followFlow !== false,
+    worktreeSetup: c.worktreeSetup ?? null,
     managerId: p.managerId,
     createdAt: p.createdAt,
     colours: p.colours,

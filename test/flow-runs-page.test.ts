@@ -13,7 +13,7 @@ const main = parseFlow(fs.readFileSync(path.join(import.meta.dirname, 'fixtures'
 
 const run = (r: Partial<FlowRun> & { id: string }): FlowRun => ({
   project: 'shop', title: 'Fix the cart', ref: null, flow: 'main', at: 'build', atSince: 0, counts: {}, sessions: {}, parent: null, history: [],
-  state: 'running', ending: null, coordinator: 'm', question: null, startedAt: 0, updatedAt: 0, ...r,
+  state: 'running', ending: null, coordinator: 'm', question: null, worktree: null, queue: null, startedAt: 0, updatedAt: 0, ...r,
 });
 
 test('part 3c: a marker on the block each open run is at, by its ref or its title; ended runs and other flows have none', () => {

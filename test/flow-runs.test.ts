@@ -4,6 +4,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import fs from 'node:fs';
+import os from 'node:os';
+import { execFileSync } from 'node:child_process';
+import { removeTemp } from './temp.ts';
+import { localWorktreeHost, makeWorktree, removeWorktree } from '../src/sessions/run-worktrees.ts';
 import { openDatabase } from '../src/store/database.ts';
 import { Store } from '../src/store/store.ts';
 import { parseProject } from '../src/config.ts';
@@ -12,6 +17,7 @@ import { flowInstructions, flowPlaces, FOLLOW_LINE, readFlows } from '../src/ses
 import { decideStep, countBadge } from '../src/shared/flow-run.ts';
 import { checkFlow, checkFlowCalls, parseFlow } from '../src/shared/flow-check.ts';
 import { answerWord, FlowRuns, lastReplyOf, type BlockSessionStart, type FlowRunsPorts } from '../src/sessions/flow-runs.ts';
+import type { WorktreeHost } from '../src/sessions/run-worktrees.ts';
 import { RunStore, runNumber } from '../src/sessions/run-store.ts';
 import { ledungToolServer, type RunHandlers, type ToolHandlers } from '../src/sessions/tools.ts';
 import type { SessionInfo } from '../src/shared/protocol.ts';
@@ -57,7 +63,7 @@ test('part 3a: a counted word with no plain one says the flow has nothing for th
 });
 
 /** A run engine on the example flow with a real database, a manager and one of its sessions. */
-async function engine(opts: { following?: boolean; flows?: Awaited<ReturnType<typeof example>> } = {}) {
+async function engine(opts: { following?: boolean; flows?: Awaited<ReturnType<typeof example>>; host?: WorktreeHost | null; setup?: string } = {}) {
   const store = new Store(openDatabase(':memory:'));
   const flows = opts.flows ?? await example();
   const told: { id: string; text: string }[] = [];
@@ -72,6 +78,7 @@ async function engine(opts: { following?: boolean; flows?: Awaited<ReturnType<ty
   const replies = new Map<string, string>();
   const withdrawn: number[] = [];
   const stopped: string[] = [];
+  const archived: string[] = [];
   let made = 0;
   const ports: FlowRunsPorts = {
     runs: new RunStore(store.database),
@@ -84,7 +91,8 @@ async function engine(opts: { following?: boolean; flows?: Awaited<ReturnType<ty
     startSession: async (b) => {
       started.push(b);
       const s = store.createSession({ id: `block-${++made}`, project: b.project, runner: 'local', title: b.title, parentId: b.coordinator, permissionMode: 'default', requestedModel: b.model ?? null, profile: b.profile ?? 'full' });
-      store.updateSession(s.id, { runBlock: b.runBlock });
+      // Between turns, as a real session is once it has done its step.
+      store.updateSession(s.id, { runBlock: b.runBlock, status: 'idle' });
       return store.getSession(s.id)!;
     },
     continueSession: async (id, text, runBlock) => {
@@ -102,6 +110,12 @@ async function engine(opts: { following?: boolean; flows?: Awaited<ReturnType<ty
       stopped.push(id);
       store.updateSession(id, { status: 'ended', endReason: reason });
     },
+    archiveSession: (id) => {
+      archived.push(id);
+      store.updateSession(id, { archivedAt: Date.now() });
+    },
+    worktreeHost: () => opts.host ?? null,
+    worktreeSetup: () => opts.setup,
     tiers: () => ['Blocks a finished PR', 'Process'],
     userName: 'Simon',
     now: () => (clock += 1000),
@@ -112,7 +126,7 @@ async function engine(opts: { following?: boolean; flows?: Awaited<ReturnType<ty
     await runs.onAnswered(store.getQuestion(id)!);
   };
   const runs = new FlowRuns(ports);
-  return { runs, ports, store, told, changed, started, continued, replies, withdrawn, stopped, answer };
+  return { runs, ports, store, told, changed, started, continued, replies, withdrawn, stopped, archived, answer };
 }
 
 test('part 3a: a run started by the manager moves through the example flow, the 3rd "Changes requested" taking the counted outcome', async () => {
@@ -336,7 +350,7 @@ test(`part 3b: a Run flow block runs its flow as a child run; the way that ends 
   assert.equal(parent.state, 'running');
   assert.equal(parent.history.at(-1)!.by, 'the flow "Asset" (run-2)');
   assert.equal(parent.history.at(-1)!.word, 'Ready');
-  assert.match(told.at(-1)!.text, /run-2 "New logo" has ended: "Ready"\. It was run by "Make the asset" of run-1 "New logo": Recorded "Ready" for "Make the asset": run-1 "New logo" goes to "Build"\. At "Build" \(build\): Ledung started session/);
+  assert.match(told.at(-1)!.text, /run-2 "New logo" has ended: "Ready"\. Its sessions: 1 archived\. It was run by "Make the asset" of run-1 "New logo": Recorded "Ready" for "Make the asset": run-1 "New logo" goes to "Build"\. At "Build" \(build\): Ledung started session/);
   assert.equal(store.getSession('block-2')!.title, 'Build: New logo');
 });
 
@@ -595,4 +609,165 @@ test(`part 3d review: a check in a flow handed the caller's session starts its o
   await runs.step('manager-1', { run: 'run-1', outcome: 'Ok' });
   assert.equal(ports.runs.get('run-1')!.at, 'build');
   assert.ok(!stopped.includes(builder));
+});
+
+// --- Part 3f (docs/steps/workflow-fit.md, Simon 2026-11-03, question #1593) ----------------------------------------------
+
+/** A flow for 3f: Build (new session) → Review (one at a time) → Fix (continues Build, compacted first) → done. */
+const F3 = {
+  version: 1, title: 'Small', limit: 2,
+  blocks: [
+    { id: 'build', kind: 'work', title: 'Build', runs: 'new-session', outcomes: [{ word: 'Done', to: 'review' }] },
+    { id: 'review', kind: 'check', title: 'Review', runs: 'new-session', limit: 1, outcomes: [{ word: 'Merged', end: true }, { word: 'Rejected', end: true }, { word: 'Changes', to: 'fix' }, { word: 'Changes', times: 3, to: 'fix-person' }] },
+    { id: 'fix-person', kind: 'person', title: 'Decide', ask: 'question', outcomes: [{ word: 'Fix', to: 'fix' }, { word: 'Drop', end: true }] },
+    { id: 'fix', kind: 'work', title: 'Fix', runs: 'continue', continues: 'build', context: 'compact', outcomes: [{ word: 'Fixed', to: 'review' }] },
+  ],
+};
+const flowsOf3 = (raw: Record<string, unknown>) => {
+  const flow = parseFlow(JSON.stringify(raw)).flow!;
+  return { folder: '/w', flows: new Map([['main', flow]]), titles: new Map([['main', flow.title ?? 'main']]), text: async () => null };
+};
+
+test('part 3f: the format: worktree, limit, tidy and oneRunPerRef on a flow, limit and context on a block, checked', () => {
+  const ok = parseFlow(JSON.stringify({ ...F3, worktree: { base: 'main', branch: 'run/{id}-{ref}', remove: { on: ['Merged'] } }, tidy: { sessions: 'stop', on: ['Merged', 'Stopped'] }, oneRunPerRef: false }));
+  assert.deepEqual(ok.problems, []);
+  assert.deepEqual(checkFlow(ok.flow!, () => true).filter((p) => !p.hint), []);
+  const bad = parseFlow(JSON.stringify({
+    ...F3, worktree: { branch: 'runs/x', remove: { on: ['Shipped'] } }, tidy: { sessions: 'archive', on: ['Nope'] },
+    blocks: [{ ...F3.blocks[0], context: 'clear' }, ...F3.blocks.slice(1)],
+  })).flow!;
+  const said = checkFlow(bad, () => true).map((p) => `${p.at}: ${p.message}`);
+  assert.ok(said.some((m) => m.startsWith('worktree.branch: "runs/x" must have {id}')));
+  assert.ok(said.some((m) => m.startsWith('worktree.remove.on: "Shipped" is not a way the flow ends: it ends with "Merged", "Rejected", "Drop", "Stopped"')));
+  assert.ok(said.some((m) => m.startsWith('tidy.on: "Nope"')));
+  assert.ok(said.some((m) => m.startsWith('blocks.build.context:')));
+  assert.match(parseFlow(JSON.stringify({ ...F3, worktree: { remove: 'always' } })).problems[0]!.message, /is "never" or \{ "on"/);
+  assert.match(parseFlow(JSON.stringify({ ...F3, worktree: { bas: 'main' } })).problems.map((p) => p.at).join(), /worktree\.bas/);
+});
+
+test('part 3f: at most N runs at once: the others wait in line and start when one ends; start anyway goes past', async () => {
+  const { runs, ports, started, told } = await engine({ flows: flowsOf3(F3) });
+  for (const n of [1, 2]) assert.match(await runs.start('manager-1', { title: `Issue ${n}`, ref: `#${n}` }), /At "Build" \(build\): Ledung started session/);
+  assert.match(await runs.start('manager-1', { title: 'Issue 3', ref: '#3' }), /The flow takes 2 at once, so it is queued, number 1 in line: Ledung starts it when one ends, and tells you\. Simon can start it anyway from the Runs list\./);
+  assert.match(await runs.start('manager-1', { title: 'Issue 4', ref: '#4' }), /queued, number 2 in line/);
+  assert.equal(started.length, 2);
+  assert.deepEqual(ports.runs.list('shop').map((r) => [r.id, r.state, r.queue]).sort(), [['run-1', 'running', null], ['run-2', 'running', null], ['run-3', 'queued', 'flow'], ['run-4', 'queued', 'flow']]);
+  assert.match(await runs.status('manager-1'), /run-3 "Issue 3" \(#3\), flow "Small": queued to start, number 1 in line/);
+  await assert.rejects(runs.step('manager-1', { run: 'run-3', outcome: 'Done' }), /is in line .*: it has no step to report yet/);
+  // Review takes one at a time: run-2 waits before it while run-1 is there.
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Done' });
+  assert.match(await runs.step('manager-1', { run: 'run-2', outcome: 'Done' }), /"Review" \(review\) takes 1 at once, so run-2 waits before it, number 1 in line/);
+  assert.equal(ports.runs.get('run-2')!.queue, 'block');
+  // run-1 ends: run-2 goes into Review, and run-3 starts; their coordinator is told.
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Merged' });
+  assert.equal(ports.runs.get('run-2')!.at, 'review');
+  assert.equal(ports.runs.get('run-2')!.state, 'running');
+  assert.equal(ports.runs.get('run-3')!.state, 'running');
+  assert.equal(ports.runs.get('run-4')!.state, 'queued');
+  assert.ok(told.some((t) => /^Ledung: run-2 "Issue 2" \(#2\) is out of line\. At "Review"/.test(t.text)));
+  assert.ok(told.some((t) => /^Ledung: run-3 "Issue 3" \(#3\) is out of line\. At "Build"/.test(t.text)));
+  // The person starts run-4 anyway.
+  assert.match(await runs.startAnyway('shop', 'run-4', 'Simon'), /At "Build" \(build\): Ledung started session/);
+  assert.equal(ports.runs.get('run-4')!.state, 'running');
+  await assert.rejects(runs.startAnyway('shop', 'run-4', 'Simon'), /is not in line/);
+});
+
+test('part 3f: one run per ref: a second is refused unless again, or the flow allows it', async () => {
+  const { runs } = await engine({ flows: flowsOf3({ ...F3, limit: undefined }) });
+  await runs.start('manager-1', { title: 'Cart', ref: '#142' });
+  await assert.rejects(runs.start('manager-1', { title: 'Cart again', ref: ' #142 ' }), /run-1 "Cart" \(#142\) is already under way for #142 \(at "Build".*\): report on it, or start another with again: true\./);
+  assert.match(await runs.start('manager-1', { title: 'Cart again', ref: '#142', again: true }), /Started run-2/);
+  const allows = await engine({ flows: flowsOf3({ ...F3, limit: undefined, oneRunPerRef: false }) });
+  await allows.runs.start('manager-1', { title: 'Cart', ref: '#142' });
+  assert.match(await allows.runs.start('manager-1', { title: 'Cart 2', ref: '#142' }), /Started run-2/);
+});
+
+test('part 3f: tidy at the end: archived by default, stopped or kept as the flow says, per ending', async () => {
+  const a = await engine({ flows: flowsOf3({ ...F3, limit: undefined }) });
+  await a.runs.start('manager-1', { title: 'One' });
+  await a.runs.step('manager-1', { run: 'run-1', outcome: 'Done' });
+  assert.match(await a.runs.step('manager-1', { run: 'run-1', outcome: 'Merged' }), /has ended: "Merged"\. Its sessions: 2 archived\./);
+  assert.deepEqual(a.archived.sort(), ['block-1', 'block-2']);
+  const stop = await engine({ flows: flowsOf3({ ...F3, limit: undefined, tidy: 'stop' }) });
+  await stop.runs.start('manager-1', { title: 'One' });
+  assert.match(await stop.runs.step('manager-1', { run: 'run-1', outcome: 'x', stop: true }), /Its sessions: 1 stopped\./);
+  assert.deepEqual(stop.archived, []);
+  const keep = await engine({ flows: flowsOf3({ ...F3, limit: undefined, tidy: { sessions: 'archive', on: ['Merged'] } }) });
+  await keep.runs.start('manager-1', { title: 'One' });
+  await keep.runs.step('manager-1', { run: 'run-1', outcome: 'Done' });
+  assert.doesNotMatch(await keep.runs.step('manager-1', { run: 'run-1', outcome: 'Rejected' }), /Its sessions/);
+  assert.deepEqual(keep.archived, []);
+});
+
+test('part 3f: a fresh context on a continued step: the session is compacted first, the step its note', async () => {
+  const { runs, ports } = await engine({ flows: flowsOf3({ ...F3, limit: undefined }) });
+  const fresh: unknown[] = [];
+  const plain = ports.continueSession;
+  ports.continueSession = async (id, text, runBlock, f) => { fresh.push(f ?? null); return plain(id, text, runBlock); };
+  await runs.start('manager-1', { title: 'One' });
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Done' });
+  assert.match(await runs.step('manager-1', { run: 'run-1', outcome: 'Changes' }), /Ledung gave it to session "Build: One" \(block-1\), which ran "Build", compacted first/);
+  assert.deepEqual(fresh, [{ context: 'compact', by: 'manager-1' }]);
+});
+
+/** A git repository with one commit on main, for worktrees. */
+function gitRepo(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-wt-'));
+  const git = (...args: string[]) => execFileSync('git', ['-C', dir, ...args], { windowsHide: true, stdio: 'pipe' });
+  git('init', '-q', '-b', 'main');
+  git('config', 'user.email', 't@t'); git('config', 'user.name', 't');
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'a\n');
+  git('add', '.'); git('commit', '-qm', 'one');
+  return dir;
+}
+const nodeShell = (dir: string) => localWorktreeHost(dir, (command, cwd) => ({ command: process.execPath, args: ['-e', command], cwd, env: { ...process.env } as Record<string, string> }));
+
+test('part 3f: a worktree per run: made from the base, set up, kept out of git\'s view, removed only when safe', async () => {
+  const dir = gitRepo();
+  const host = nodeShell(dir);
+  const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, ...args], { windowsHide: true, stdio: 'pipe' }).toString().trim();
+  const made = await makeWorktree(host, { id: 'run-7', ref: '#142' }, { branch: 'run/{id}-{ref}' }, "require('fs').writeFileSync('setup.txt', 'ok')");
+  assert.equal(made.setupProblem, null);
+  assert.deepEqual({ ...made.worktree, path: path.relative(dir, made.worktree.path) }, { path: path.join('.ledung', 'worktrees', 'run-7'), branch: 'run/run-7-142', base: 'main', own: true });
+  assert.equal(fs.readFileSync(path.join(made.worktree.path, 'setup.txt'), 'utf8'), 'ok');
+  assert.equal(git(dir, 'status', '--porcelain'), '', 'the main checkout sees nothing of it');
+  // Not safe: an uncommitted file (the setup's own counts), then a commit neither merged nor pushed.
+  assert.match((await removeWorktree(host, made.worktree) as { kept: string }).kept, /changes that are not committed \(1 file\)/);
+  git(made.worktree.path, 'add', '.'); git(made.worktree.path, 'commit', '-qm', 'work');
+  assert.match((await removeWorktree(host, made.worktree) as { kept: string }).kept, /neither merged into main nor pushed/);
+  // Merged into its base: removed, and its branch with it.
+  git(dir, 'merge', '-q', '--ff-only', 'run/run-7-142');
+  assert.deepEqual(await removeWorktree(host, made.worktree), { removed: true });
+  assert.equal(fs.existsSync(made.worktree.path), false);
+  assert.equal(git(dir, 'branch', '--list', 'run/run-7-142'), '');
+  // A setup command that fails leaves the worktree, said; a branch name git refuses is refused.
+  const failed = await makeWorktree(host, { id: 'run-8', ref: null }, {}, 'process.exit(3)');
+  assert.match(failed.setupProblem!, /exit code 3/);
+  assert.equal(failed.worktree.branch, 'run/run-8');
+  await assert.rejects(makeWorktree(host, { id: 'run-9', ref: null }, { branch: 'bad..{id}' }, undefined));
+  removeTemp(dir);
+});
+
+test('part 3f: a run gets its worktree, its sessions work there, and it goes when the run ends safely', async () => {
+  const dir = gitRepo();
+  const { runs, ports, started } = await engine({ flows: flowsOf3({ ...F3, limit: undefined, worktree: { remove: { on: ['Merged'] } } }), host: nodeShell(dir) });
+  assert.match(await runs.start('manager-1', { title: 'One', ref: '#1' }), /Ledung made its worktree .*run-1 on branch run\/run-1, from main; its sessions work there\./);
+  const wt = ports.runs.get('run-1')!.worktree!;
+  assert.equal(started[0]!.cwd, wt.path);
+  assert.match(started[0]!.task, /The run has its own git worktree, .*run-1, on branch run\/run-1 \(from main\): work and commit there/);
+  // Rejected: the flow removes worktrees only on Merged, so it stays.
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Done' });
+  assert.match(await runs.step('manager-1', { run: 'run-1', outcome: 'Rejected' }), /Its worktree .* stays: the flow removes it only on "Merged"\./);
+  assert.ok(fs.existsSync(wt.path));
+  // Merged with nothing new: removed.
+  await runs.start('manager-1', { title: 'Two', ref: '#2' });
+  await runs.step('manager-1', { run: 'run-2', outcome: 'Done' });
+  assert.match(await runs.step('manager-1', { run: 'run-2', outcome: 'Merged' }), /Its worktree .*run-2 is removed\./);
+  assert.equal(ports.runs.get('run-2')!.worktree, null);
+  // Merged with uncommitted work: kept, with why.
+  await runs.start('manager-1', { title: 'Three', ref: '#3' });
+  fs.writeFileSync(path.join(ports.runs.get('run-3')!.worktree!.path, 'wip.txt'), 'x');
+  await runs.step('manager-1', { run: 'run-3', outcome: 'Done' });
+  assert.match(await runs.step('manager-1', { run: 'run-3', outcome: 'Merged' }), /Its worktree .*run-3 is kept: it has changes that are not committed \(1 file\)\. Deal with that, then remove it/);
+  removeTemp(dir);
 });

@@ -4,8 +4,13 @@
 // step had, by its word; Ledung never picks the arrow from text (2026-10-26, #1184).
 import { endingKey, outcomeName, ordinal, type Flow, type FlowBlock, type FlowOutcome } from './flow.ts';
 
-/** running: at a block someone works on; waiting: for a person, a wait block or a child run; ended; stopped by hand. */
-export const RUN_STATES = ['running', 'waiting', 'ended', 'stopped'] as const;
+/**
+ * running: at a block someone works on; waiting: for a person, a wait block or a child run; queued: in line for its
+ * flow's or its block's limit (part 3f), at the block it waits before; ended; stopped by hand.
+ */
+export const RUN_STATES = ['running', 'waiting', 'queued', 'ended', 'stopped'] as const;
+/** A run still under way: running, waiting or queued. */
+export const OPEN_STATES: readonly RunState[] = ['running', 'waiting', 'queued'];
 export type RunState = (typeof RUN_STATES)[number];
 
 /** One step of a run's history: the block it was at, the outcome's word, who reported it, when, and where it went. */
@@ -50,8 +55,20 @@ export interface FlowRun {
   coordinator: string;
   /** The open question or review a person block put to the person; null: none. */
   question: number | null;
+  /** Its git worktree (part 3f), as its sessions see the folder; a child run shares its parent's. Null: none. */
+  worktree: RunWorktree | null;
+  /** For a queued run (part 3f): in line for its flow's limit (not started yet) or its block's. Null: not queued. */
+  queue: 'flow' | 'block' | null;
   startedAt: number;
   updatedAt: number;
+}
+
+/** A run's worktree (part 3f): its folder, branch and the branch it came from; `own`: made for this run (not inherited). */
+export interface RunWorktree {
+  path: string;
+  branch: string;
+  base: string;
+  own: boolean;
 }
 
 /** What a step does: where the outcome leads, or how the flow ends. */

@@ -15,7 +15,7 @@ import { FlowBuilder } from './FlowBuilder.tsx';
 import { Markdown } from './Markdown.tsx';
 import type { FlowRun } from '../../../src/shared/flow-run.ts';
 import { RunsPanel } from './FlowRuns.tsx';
-import { blockRuns, pinCounts, runPath, type RunMarks } from '../flowRuns.ts';
+import { blockRuns, followLine, openRun, pinCounts, runPath, type RunMarks } from '../flowRuns.ts';
 
 /** A block's title by its id, for "continues Build". */
 const titles = (flow: Flow) => (id: string) => flow.blocks.find((b) => b.id === id)?.title ?? id;
@@ -265,6 +265,7 @@ export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowF
   // The builder (#311): open with the flows it edits (#447) and the one shown first.
   const [editing, setEditing] = useState<Workspace | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
+  const [backing, setBacking] = useState(false);
   // The flow shown (#447), by name; one that is gone shows the default one, and says so.
   const shownName = shownFlow ?? DEFAULT_FLOW;
   useEffect(() => {
@@ -306,7 +307,10 @@ export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowF
     const r = runs.find((x) => x.id === id);
     if (r && r.flow !== shownName) onShowFlow(r.flow);
   };
-  const runsPanel = <RunsPanel runs={runs} chosen={chosenRun} onChoose={chooseRun} flowTitle={flowNameTitle} error={runsError} blockTitle={(f, id) => flows.find((x) => x.name === f)?.flow?.blocks.find((b) => b.id === id)?.title ?? id} />;
+  // "Start anyway" for a queued run (part 3f); the live connection brings the change.
+  const startRun = (id: string) => api.startRun(project, id).then(() => null, (e: Error) => e.message);
+  const follow = followLine(flow);
+  const runsPanel = <RunsPanel runs={runs} chosen={chosenRun} onChoose={chooseRun} flowTitle={flowNameTitle} error={runsError} follow={follow} onStart={startRun} blockTitle={(f, id) => flows.find((x) => x.name === f)?.flow?.blocks.find((b) => b.id === id)?.title ?? id} />;
   const managerShown = manager && !!view?.flow?.manager;
   const showDiagram = !narrow || diagramOnPhone;
   const source = view?.source;
@@ -370,6 +374,19 @@ export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowF
         </details>
       )}
       {view && view.source && cannot && <p className="muted flow-note">{cannot}</p>}
+      {view?.shared?.differs && (
+        // ledung#110: a project's own copy, which no longer gets the shared workflow's changes.
+        <div className="flow-note flow-shared-note" role="status">
+          <span>{project} has its own copy of the shared workflow "{view.shared.workflow}", and it differs from it: {project} doesn't get changes made to "{view.shared.workflow}".</span>{' '}
+          {backing
+            ? <span className="flow-confirm-buttons">
+                <span>Remove {project}'s own flow.json and flows/ so it follows "{view.shared.workflow}" again? Its briefs and rules stay.</span>
+                <button className="small deny" onClick={() => api.backToShared(project).then((v) => { setView(v); setBacking(false); setSaved(`${project} follows "${view.shared!.workflow}" again.`); }, (e: Error) => { setBacking(false); setError(e.message); })}>Back to shared</button>
+                <button className="small" onClick={() => setBacking(false)}>Keep its own</button>
+              </span>
+            : <button className="small" onClick={() => setBacking(true)}>Back to shared…</button>}
+        </div>
+      )}
       {view && !view.source && (
         <div className="page-body flow-empty">
           <p>{project} has no drawn workflow yet.</p>
@@ -390,9 +407,9 @@ export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowF
           <div className="flow-drawing">
             {/* On a phone the Runs list comes before the blocks, so a run chosen marks a path that is in view (review of 3c). */}
             {narrow && runs.length > 0 && (
-              <details className="flow-runs-fold" open={runs.some((r) => r.state === 'running' || r.state === 'waiting')}>
-                <summary>Runs ({runs.filter((r) => r.state === 'running' || r.state === 'waiting').length} under way)</summary>
-                <RunsPanel runs={runs} chosen={chosenRun} onChoose={chooseRun} flowTitle={flowNameTitle} error={runsError} heading={false} blockTitle={(f, id) => flows.find((x) => x.name === f)?.flow?.blocks.find((b) => b.id === id)?.title ?? id} />
+              <details className="flow-runs-fold" open={runs.some(openRun)}>
+                <summary>Runs ({runs.filter(openRun).length} under way)</summary>
+                <RunsPanel runs={runs} chosen={chosenRun} onChoose={chooseRun} flowTitle={flowNameTitle} error={runsError} heading={false} follow={follow} onStart={startRun} blockTitle={(f, id) => flows.find((x) => x.name === f)?.flow?.blocks.find((b) => b.id === id)?.title ?? id} />
               </details>
             )}
             {narrow && (

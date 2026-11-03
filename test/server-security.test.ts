@@ -2651,3 +2651,14 @@ test("a project whose flow files a shared flow's named briefs lead to, or a flow
     }
   }
 });
+
+// Part 3f and ledung#110: starting a queued run past its limit and taking a project back to its shared flow are the
+// person's, from the open page: the sign-in cookie and Origin alone are refused, before anything happens.
+test('start anyway and back to shared need the open page', async () => {
+  for (const p of ['/api/projects/p/runs/run-1/start', '/api/projects/p/flow/back-to-shared']) {
+    assert.equal((await request({ method: 'POST', path: p, headers: { origin: ORIGIN } })).status, 401, p);
+    const refused = await change(p, {});
+    assert.equal(refused.status, 403, p);
+    assert.match(errorOf(refused), /Only Ledung's open page can do this/);
+  }
+});

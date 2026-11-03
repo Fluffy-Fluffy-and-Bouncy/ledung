@@ -38,6 +38,7 @@ import { FRESH_FACTS, pauseReason, type IdleState } from './idle.ts';
 import { skillsFromFiles, skillsOff, withSkillsOff, type SkillChoices } from './skills.ts';
 import { needsPluginIds, parseSettingsFile, pluginIdsIn, profileOptions, settingsFilePath, type Profile } from './profiles.ts';
 import { workflowInstructions, type ProjectWorkflow } from './workflow.ts';
+import { workflowLines } from './flow-files.ts';
 import { promptNudges } from './workflow-nudges.ts';
 import { RemoteControl } from './remote-control.ts';
 import { McpError, mcpServers, reconnectMcp } from './mcp.ts';
@@ -783,7 +784,8 @@ export class Session {
       grant: this.grant,
       tiers: () => this.management.questionTiers(this.id),
       // Part of Ledung's instructions, so the length limit worked out from them covers it (#32).
-      workflow: [this.workflow ? workflowInstructions(this.workflow, role) : null, this.flow ? await this.flow().catch(() => null) : null].filter(Boolean).join(' ') || undefined,
+      // ledung#115: with both, which says what.
+      workflow: workflowLines(this.workflow ? workflowInstructions(this.workflow, role) : null, this.flow ? await this.flow().catch(() => null) : null),
       ask: (question, options, about, aboutRequest, details, shots, sources) => this.ask(question, options, about, aboutRequest, details, shots, sources),
       attach: (sources) => attachSources(sources, this.sourceContext()),
       withdraw: (id, reason) => this.withdraw(id, reason),

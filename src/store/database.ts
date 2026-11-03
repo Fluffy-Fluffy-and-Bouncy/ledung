@@ -646,6 +646,12 @@ const MIGRATIONS: string[] = [
     created_at INTEGER NOT NULL
   );
   `,
+  // 44: a run's worktree (workflow part 3f, approved by Simon 2026-11-03, question #1593), as JSON RunWorktree, and what
+  // a queued run is in line for: its flow's limit or its block's. Null: none.
+  `
+  ALTER TABLE flow_runs ADD COLUMN worktree TEXT;
+  ALTER TABLE flow_runs ADD COLUMN queue TEXT;
+  `,
 ];
 
 export function databaseFile(dir = userDataDir()): string {

@@ -9,10 +9,10 @@ import { Background, Controls, MarkerType, ReactFlow, ReactFlowProvider, useReac
 import '@xyflow/react/dist/style.css';
 import { api } from '../api.ts';
 import { usePlainTyping } from '../usePlainTyping.ts';
-import { BLOCK_KINDS, DEFAULT_FLOW, FLOW_FILE, flowEndings, flowFileOf, MANAGER_FILE, outcomeName, runsSession, SUBSTEP_TO, SUBSTEP_WHEN, WRITABLE_FLOW_FILE, type BlockKind, type FlowBlock, type FlowProblem, type FlowSubstep, type FlowSubstepOutcome, type FlowView, type Runs, type SubstepTo } from '../../../src/shared/flow.ts';
+import { BLOCK_KINDS, DEFAULT_BRANCH, DEFAULT_FLOW, DEFAULT_TIDY, STOPPED_ENDING, FLOW_FILE, flowEndings, flowFileOf, MANAGER_FILE, outcomeName, runsSession, SUBSTEP_TO, SUBSTEP_WHEN, WRITABLE_FLOW_FILE, type BlockKind, type FlowBlock, type FlowProblem, type FlowSubstep, type FlowSubstepOutcome, type FlowView, type FlowWorktree, type Runs, type SubstepTo } from '../../../src/shared/flow.ts';
 import { NAME_COLOURS, type NameColour } from '../../../src/shared/name-colours.ts';
 import { actorLine, BLOCK_HEIGHT, BLOCK_WIDTH, blockSize, flowLine, KIND_LABEL, layoutFlow, outcomeHandles, substepText, substepToText, type PlacedKind, type Point } from '../flowLayout.ts';
-import { addBlock, addEndings, addFlow, addFrame, addOutcome, addOverlay, addSubstep, amendedBy, arrange, boxRound, connect, deleteBlocks, deleteFlow, deleteFrame, deleteOutcome, deleteOverlay, deleteSubstep, flowNameProblem, flowOf, frameMembers, framesInside, moveBlock, moveFrame, moveSubstep, newBrief, newManagerFile, newOverlayFile, newSubstepBrief, outcomeKeys, PALETTE, pinned, renameFlow, setBlock, setFlowTitle, setFrame, setManager, setOutcome, setOverlay, setSubstep, substepKeys, toggleAmends, wireOutcome, withDraft, workspaceBlocksSaving, workspaceProblems, workspaceWrites, type Draft, type DraftFlow, type Workspace } from '../flowEdit.ts';
+import { addBlock, addEndings, addFlow, addFrame, addOutcome, addOverlay, addSubstep, amendedBy, arrange, boxRound, connect, deleteBlocks, deleteFlow, deleteFrame, deleteOutcome, deleteOverlay, deleteSubstep, flowNameProblem, flowOf, frameMembers, framesInside, moveBlock, moveFrame, moveSubstep, newBrief, newManagerFile, newOverlayFile, newSubstepBrief, outcomeKeys, PALETTE, pinned, renameFlow, setBlock, setFollow, setFlowTitle, setFrame, setManager, setOutcome, setOverlay, setSubstep, substepKeys, toggleAmends, wireOutcome, withDraft, workspaceBlocksSaving, workspaceProblems, workspaceWrites, type Draft, type DraftFlow, type Workspace } from '../flowEdit.ts';
 import { setLeaveGuard } from '../flowNav.ts';
 import { ARROW_COLOUR, continueHandles, EDGE_TYPES, FlowMiniMap, FlowTabs, frameColour, frameNode, NODE_TYPES, useMeasured, useOpeningView, withLabelSpots, type BlockData } from './FlowDiagram.tsx';
 
@@ -79,7 +79,9 @@ export function FlowBuilder({ project, view, initial, shown, onShowFlow, onRenam
       setSelection(null);
     }
   }, [ws, current]);
-  const [confirm, setConfirm] = useState<'save' | 'leave' | null>(null);
+  const [confirm, setConfirm] = useState<'save' | 'leave' | 'fork' | null>(null);
+  // ledung#110: the person agreed that this save gives the project its own copy of the shared flow.
+  const [forkAgreed, setForkAgreed] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showProblems, setShowProblems] = useState(true);
@@ -200,8 +202,13 @@ export function FlowBuilder({ project, view, initial, shown, onShowFlow, onRenam
     return () => window.removeEventListener('beforeunload', on);
   }, [dirty]);
 
-  const save = async (anyway: boolean) => {
+  const save = async (anyway: boolean, agreed = forkAgreed) => {
     setError(null);
+    // ledung#110: the first save of a shared workflow's flow forks the project off it, so it asks first.
+    if (ws.flows.some((f) => f.base.copy) && !agreed) {
+      setConfirm('fork');
+      return;
+    }
     if (cantSave) {
       const empty = ws.flows.find((f) => !f.draft.blocks.length);
       setError(empty
@@ -293,6 +300,12 @@ export function FlowBuilder({ project, view, initial, shown, onShowFlow, onRenam
         <div className="flow-confirm" role="alertdialog">
           <span>The workflow has {allProblems === 1 ? 'a problem' : `${allProblems} problems`} ({ws.flows.length > 1 ? 'each listed under its flow\'s tab' : 'listed below'}). Save it as a draft anyway? It is saved as it is, and the problems show on the workflow page until they are fixed.</span>
           <span className="flow-confirm-buttons"><button className="small primary" onClick={() => save(true)}>Save anyway</button><button className="small" onClick={() => setConfirm(null)}>Keep editing</button></span>
+        </div>
+      )}
+      {confirm === 'fork' && (
+        <div className="flow-confirm" role="alertdialog">
+          <span>{project} follows the shared workflow "{view.source?.workflow}". Saving gives {project} its own copy of it in {where}: from then on {project} follows that copy and no longer gets changes made to "{view.source?.workflow}". The workflow page offers "Back to shared" later. Save a copy?</span>
+          <span className="flow-confirm-buttons"><button className="small primary" onClick={() => { setForkAgreed(true); void save(false, true); }}>Save a copy</button><button className="small" onClick={() => setConfirm(null)}>Keep editing</button></span>
         </div>
       )}
       {confirm === 'leave' && (
@@ -749,6 +762,20 @@ function BlockFields({ draft, entry, focus, naming, profiles, narrow, commit, on
           </select>
         </Field>
       </div>}
+      <div className="flow-field-row">
+        <Field label="Runs at once" hint="In this block; more wait before it, in line. Empty: no limit.">
+          <input type="number" min={1} max={100} value={b.limit ?? ''} placeholder="no limit" onChange={(e) => set({ limit: e.target.value ? Math.min(100, Math.max(1, Math.floor(Number(e.target.value)))) : undefined }, 'limit')} />
+        </Field>
+        {b.runs === 'continue' && (
+          <Field label="Its session first">
+            <select value={b.context ?? ''} onChange={(e) => set({ context: optional(e.target.value) as FlowBlock['context'] })}>
+              <option value="">as it is</option>
+              <option value="compact">compacted</option>
+              <option value="clear">cleared (the step is its handoff)</option>
+            </select>
+          </Field>
+        )}
+      </div>
       <Outcomes draft={draft} entry={entry} focus={focus} naming={naming} commit={commit} onFocus={(outcome) => onSelect({ kind: 'block', key, ...(outcome === undefined ? {} : { outcome }) })} />
       {b.kind !== 'flow' && <fieldset className="flow-fieldset">
         <legend>Brief</legend>
@@ -1089,6 +1116,84 @@ function FrameFields({ draft, frameKey, narrow, commit, onClose, onSelect }: {
  * With nothing selected: the flow's title, its name and deleting it (#447), the standing rules, the manager's file
  * (#322), the overlays (#318) and the frames (#446).
  */
+/** Endings as a person types them: "Merged, Rejected". */
+const endingsText = (list: string[] | undefined) => (list ?? []).join(', ');
+const endingsOf = (text: string) => [...new Set(text.split(',').map((e) => e.trim()).filter(Boolean))];
+
+/**
+ * How Ledung follows the flow (part 3f, Simon 2026-11-03, question #1593): a worktree per run, at most N at once, what
+ * happens to a run's sessions when it ends, and one run per ref. Only the last two are on unless set.
+ */
+function FollowFields({ draft, commit }: { draft: Draft; commit: (next: Draft, group?: string) => void }) {
+  const typing = usePlainTyping();
+  const w = draft.worktree;
+  const removeMode = !w?.remove ? 'every' : w.remove === 'never' ? 'never' : w.remove.on ? 'on' : 'every';
+  const tidy = draft.tidy ?? DEFAULT_TIDY;
+  const tidyMode = typeof tidy === 'string' ? tidy : tidy.sessions;
+  const tidyOn = typeof tidy === 'string' ? undefined : tidy.on;
+  const endings = flowEndings(flowOf(draft));
+  const setWt = (patch: Partial<FlowWorktree>, group?: string) => {
+    const next = { ...w, ...patch };
+    for (const k of Object.keys(patch) as (keyof FlowWorktree)[]) if (patch[k] === undefined) delete next[k];
+    commit(setFollow(draft, { worktree: next }), group);
+  };
+  return (
+    <fieldset className="flow-fieldset">
+      <legend>Following it</legend>
+      <span className="muted flow-field-hint">What Ledung does for each run (a piece of work going through this flow). One run per ref and archiving at the end are on unless switched off; the rest is off unless set.</span>
+      <label className="toggle">
+        <input type="checkbox" checked={!!w} onChange={(e) => commit(setFollow(draft, { worktree: e.target.checked ? {} : undefined }))} />
+        {' '}<span><span className="field-name">A git worktree per run</span> <span className="muted">(made when it starts, in .ledung/worktrees; every session of the run works there)</span></span>
+      </label>
+      {w && (
+        <>
+          <div className="flow-field-row">
+            <Field label="From branch"><input {...typing} className="mono" value={w.base ?? ''} placeholder="the one the project is on" onChange={(e) => setWt({ base: optional(e.target.value) }, 'wt-base')} /></Field>
+            <Field label="Branch"><input {...typing} className="mono" value={w.branch ?? ''} placeholder={DEFAULT_BRANCH} onChange={(e) => setWt({ branch: optional(e.target.value) }, 'wt-branch')} /></Field>
+          </div>
+          <Field label="Removed when the run ends" hint="Only if nothing is uncommitted and its branch is merged or pushed; otherwise Ledung keeps it and says why. The project's setup command (its settings, Workflow) runs in each new one.">
+            <select value={removeMode} onChange={(e) => setWt({ remove: e.target.value === 'never' ? 'never' : e.target.value === 'on' ? { on: endings.slice(0, 1) } : undefined })}>
+              <option value="every">on every ending</option>
+              <option value="on">only on these endings…</option>
+              <option value="never">never</option>
+            </select>
+          </Field>
+          {removeMode === 'on' && w.remove !== 'never' && (
+            <Field label="Endings" hint={`Its endings: ${[...endings, STOPPED_ENDING].join(', ')}.`}>
+              <input {...typing} value={endingsText(w.remove?.on)} onChange={(e) => setWt({ remove: { on: endingsOf(e.target.value) } }, 'wt-on')} />
+            </Field>
+          )}
+        </>
+      )}
+      <Field label="Runs at once" hint="More wait at the start, in line; Ledung starts the next when one ends. Empty: no limit.">
+        <input type="number" min={1} max={100} value={draft.limit ?? ''} placeholder="no limit" onChange={(e) => commit(setFollow(draft, { limit: e.target.value ? Math.min(100, Math.max(1, Math.floor(Number(e.target.value)))) : undefined }), 'limit')} />
+      </Field>
+      <Field label="When a run ends, its sessions are">
+        <select value={tidyMode} onChange={(e) => {
+          const mode = e.target.value as 'archive' | 'stop' | 'keep';
+          commit(setFollow(draft, { tidy: mode === 'keep' || !tidyOn ? (mode === DEFAULT_TIDY ? undefined : mode) : { sessions: mode, on: tidyOn } }));
+        }}>
+          <option value="archive">stopped and archived (the default)</option>
+          <option value="stop">stopped</option>
+          <option value="keep">kept as they are</option>
+        </select>
+      </Field>
+      {tidyMode !== 'keep' && (
+        <Field label="Only on these endings" hint="Empty: on every ending, a stop too.">
+          <input {...typing} value={endingsText(tidyOn)} placeholder="every ending" onChange={(e) => {
+            const on = endingsOf(e.target.value);
+            commit(setFollow(draft, { tidy: on.length ? { sessions: tidyMode as 'archive' | 'stop', on } : tidyMode === DEFAULT_TIDY ? undefined : tidyMode }), 'tidy-on');
+          }} />
+        </Field>
+      )}
+      <label className="toggle">
+        <input type="checkbox" checked={draft.oneRunPerRef !== false} onChange={(e) => commit(setFollow(draft, { oneRunPerRef: e.target.checked ? undefined : false }))} />
+        {' '}<span><span className="field-name">One run per issue or PR</span> <span className="muted">(a second flow_start for the same ref is refused, unless asked again)</span></span>
+      </label>
+    </fieldset>
+  );
+}
+
 function FlowFields({ draft, commit, narrow, onSelect, ws, flow, commitWs, onDeleted }: {
   draft: Draft; commit: (next: Draft, group?: string) => void; narrow: boolean; onSelect: (s: Selection) => void;
   ws: Workspace; flow: DraftFlow; commitWs: (next: Workspace, group?: string) => void; onDeleted: () => void;
@@ -1137,6 +1242,7 @@ function FlowFields({ draft, commit, narrow, onSelect, ws, flow, commitWs, onDel
               : <button className="small deny flow-delete" onClick={() => setDeleting(true)}>Delete this flow</button>)}
           </>
         )}
+      <FollowFields draft={draft} commit={commit} />
       <Field label="Standing rules (rules.md)" hint={`Markdown every session of the project reads: rules that belong to no single step${ws.flows.length > 1 ? '; the same for every flow' : ''}.`}>
         <textarea {...typing} className="mono" rows={narrow ? 10 : 16} value={draft.rules ?? ''} placeholder={draft.rules === null ? 'No rules.md yet: what you write here is saved as one.' : undefined}
           onChange={(e) => commit({ ...draft, rules: e.target.value }, 'rules')} />

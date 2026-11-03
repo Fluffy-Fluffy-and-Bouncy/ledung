@@ -302,6 +302,10 @@ export const api = {
   flow: (project: string) => call<FlowView>('GET', `/api/projects/${encodeURIComponent(project)}/flow`),
   /** Its runs through its flows (workflow part 3c), the latest changed first. */
   runs: (project: string) => call<FlowRun[]>('GET', `/api/projects/${encodeURIComponent(project)}/runs`),
+  /** ledung#110: takes away the project's own flow, so the shared workflow's counts again; the workflow as it then reads. */
+  backToShared: (project: string) => call<FlowView>('POST', `/api/projects/${encodeURIComponent(project)}/flow/back-to-shared`),
+  /** Starts a queued run past its limit (part 3f). */
+  startRun: (project: string, run: string) => call<void>('POST', `/api/projects/${encodeURIComponent(project)}/runs/${encodeURIComponent(run)}/start`),
   /** A manager's proposed workflow change (part 3e), for its review page. */
   proposal: (project: string, id: number) => call<FlowProposal>('GET', `/api/projects/${encodeURIComponent(project)}/proposals/${id}`),
   /** The builder saves (issue #311): into the project's own .ledung/workflow; the workflow as it then reads. */
