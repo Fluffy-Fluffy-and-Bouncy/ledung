@@ -54,6 +54,15 @@ export const DROP = 'Drop it';
 export const CONFIRM = 'Confirm order';
 export const CANCEL = 'Cancel order';
 
+/**
+ * The key of the Confirm order option Ledung adds to a manager's question that carries an order command, when its
+ * options have keys. Only that option confirms, with Ledung's words: a label the manager writes can say "No"
+ * (review round 2 of PR #107, finding 1).
+ */
+export const CONFIRM_KEY = 'ok';
+/** The answers Ledung's own Confirm order option gives: with plain options, and with keyed ones. */
+export const CONFIRM_ANSWERS: readonly string[] = [CONFIRM, `${CONFIRM_KEY} — ${CONFIRM}`];
+
 /** Whether an answer is this option: exactly it, or it with the page's note after it. */
 export const picked = (answer: string | null, option: string): boolean => {
   const a = (answer ?? '').trim();

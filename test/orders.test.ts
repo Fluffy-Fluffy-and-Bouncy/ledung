@@ -16,6 +16,7 @@ import { waitingLists } from '../web/src/waitingLists.ts';
 import type { AwayKind, ServerEvent } from '../src/shared/protocol.ts';
 
 const DEPLOY = 'scripts/deploy.sh --stats';
+const PUSH_MAIN = 'git push --force origin main';
 const HOUR = 3600_000;
 
 function setup() {
@@ -57,11 +58,13 @@ function setup() {
     return q.id;
   };
   /**
-   * A question of the manager's that showed the person this exact command (order_command), answered with its confirm
-   * option: the source of an order in force at once (Martin 2026-11-03, Ledung question #1290 "a").
+   * A question of the manager's that showed the person this exact command (order_command), as ask_user makes it, answered
+   * with Ledung's own Confirm order option: the source of an order in force at once (Martin 2026-11-03, Ledung question
+   * #1290 "a"; review round 2 of PR #107, finding 1).
    */
-  const agreed = (command: string, answer = 'Yes, publish') => {
-    const q = store.createQuestion({ sessionId: 'mgr', question: `Run ${command}?`, options: ['Yes, publish', 'Not yet'], addressedTo: 'user', details: { orderCommand: { command, match: 'exact', confirm: 'Yes, publish' } } });
+  const agreed = (command: string, answer: string = CONFIRM, match: 'exact' | 'pattern' = 'exact') => {
+    const a = askedQuestion({ question: `Run ${command}?`, options: ['Yes, publish', 'Not yet'], order_command: { command, match } });
+    const q = store.createQuestion({ sessionId: 'mgr', question: a.question, options: a.options, addressedTo: 'user', details: a.details });
     store.answerQuestion(q.id, answer, 'user', null, true);
     return q.id;
   };
@@ -214,7 +217,7 @@ test('the ordered command runs without a prompt in the session and in its manage
   assert.equal(await worker.decide('scripts/deploy.sh --all', 'c1'), null, 'another command is not covered');
   assert.equal(await worker.decide(DEPLOY, 'c2'), 'allow');
   const note = await worker.ran('c2');
-  assert.match(note!, /under order #1: Simon's own words, "Yes, publish" \(answer to question #\d+, \d\d:\d\d\)/);
+  assert.match(note!, /under order #1: Simon's own words, "Confirm order" \(answer to question #\d+, \d\d:\d\d\)/);
   const manager = await t.hooksOf('mgr');
   assert.equal(await manager.decide(DEPLOY, 'm1'), 'allow', 'in the manager too');
   // Another session of the same manager is not covered.
@@ -324,7 +327,7 @@ test('away kind "ordered": on, an order from the away period runs and away_log l
     if (kind) {
       assert.equal(decided, 'allow');
       assert.match(after, /ALLOWED · ordered/);
-      assert.match(after, /Allowed by order #1: Simon's own words, "Yes, publish" \(run by its session "Worker 1"\)/);
+      assert.match(after, /Allowed by order #1: Simon's own words, "Confirm order" \(run by its session "Worker 1"\)/);
       assert.equal(t.store.getOrder(1)!.status, 'open');
     } else {
       assert.equal(decided, null);
@@ -452,36 +455,62 @@ test('words alone only propose an order: it allows nothing until the person conf
   t.confirm(2, CANCEL);
   assert.equal(t.store.getOrder(2)!.status, 'dropped');
   assert.equal(await worker.decide('rm -rf build', 'e'), null);
+  // The page's Cancel order drops a proposed one too; a Confirm after it no longer puts it in force (test review round 2, F2).
+  assert.equal(t.store.getOrder(3)!.status, 'waiting');
+  assert.equal(t.orders.cancel(3).status, 'dropped');
+  t.confirm(3);
+  assert.equal(t.store.getOrder(3)!.status, 'dropped');
+  assert.equal(await worker.decide('gh pr merge 5 --admin', 'f'), null);
 });
 
-test('an ask_user answer confirms only when its question showed that exact command and the person picked its confirm option', async () => {
+test("an ask_user answer confirms only when its question showed that exact command and the person picked Ledung's own Confirm order", async () => {
   // Martin 2026-11-03, Ledung question #1290 "a": "An ask_user answer whose question already showed that exact command counts as the confirm."
-  const asked = askedQuestion({ question: 'Deploy the stats?', options: ['Yes, deploy', 'No'], tier: 'x', order_command: { command: DEPLOY, confirm: 'Yes, deploy' } });
-  assert.deepEqual(asked.details!.orderCommand, { command: DEPLOY, match: 'exact', confirm: 'Yes, deploy' });
-  assert.match(asked.question, /answering "Yes, deploy" confirms an order that lets exactly this command run without a prompt:\n\n```\nscripts\/deploy\.sh --stats\n```$/);
-  const keyed = askedQuestion({ question: 'Deploy?', options: [{ key: 'a', text: '**Deploy** now' }, { key: 'b', text: 'Wait' }], order_command: { command: DEPLOY, confirm: 'a' } });
-  assert.equal(keyed.details!.orderCommand!.confirm, 'a — Deploy');
-  assert.throws(() => askedQuestion({ question: 'Deploy?', options: ['Yes', 'No'], order_command: { command: DEPLOY, confirm: 'Sure' } }), /not one of the options/);
-  assert.throws(() => askedQuestion({ question: 'Deploy?', options: ['Yes', 'No'], order_command: { command: '*', match: 'pattern', confirm: 'Yes' } }), /start with the program/);
+  // Ledung adds the confirming option itself, last; the manager's own options never confirm (review round 2 of PR #107, finding 1).
+  const asked = askedQuestion({ question: 'Deploy the stats?', options: ['Yes, deploy', 'No'], tier: 'x', order_command: { command: DEPLOY } });
+  assert.deepEqual(asked.options, ['Yes, deploy', 'No', CONFIRM]);
+  assert.deepEqual(asked.details!.orderCommand, { command: DEPLOY, match: 'exact', confirm: CONFIRM });
+  assert.match(asked.question, /answering "Confirm order" confirms an order that lets exactly this command run without a prompt:\n\n```\nscripts\/deploy\.sh --stats\n```$/);
+  const keyed = askedQuestion({ question: 'Force-push main?', options: [{ key: 'a', text: '**No, do not push**' }, { key: 'b', text: 'Yes' }], order_command: { command: PUSH_MAIN } });
+  assert.deepEqual(keyed.options, ['a — No, do not push', 'b — Yes', 'ok — Confirm order']);
+  assert.equal(keyed.details!.orderCommand!.confirm, 'ok — Confirm order');
+  // No option of the manager's may pass for Ledung's: not its words, not its key.
+  assert.throws(() => askedQuestion({ question: 'Deploy?', options: ['No', 'confirm order'], order_command: { command: DEPLOY } }), /Ledung's own option/);
+  assert.throws(() => askedQuestion({ question: 'Deploy?', options: [{ key: 'a', text: '**Confirm order**: no, wait' }], order_command: { command: DEPLOY } }), /Ledung's own option/);
+  assert.throws(() => askedQuestion({ question: 'Deploy?', options: [{ key: 'ok', text: 'No' }], order_command: { command: DEPLOY } }), /the key "ok" is for Ledung's own/);
+  assert.throws(() => askedQuestion({ question: 'Deploy?', options: ['Yes', 'No'], order_command: { command: '*', match: 'pattern' } }), /start with the program/);
 
   const t = setup();
   t.store.createSession({ id: 'w0', project: 'p', runner: 'local', title: 'Worker 0', parentId: 'mgr', permissionMode: 'auto' });
-  const send = (question: number, command = DEPLOY) => t.management.sendMessage('mgr', 'w0', 'Deploy.', { command, question });
-  // Another pick, another command or another match: refused.
-  await assert.rejects(send(t.agreed(DEPLOY, 'Not yet')), /did not pick "Yes, publish"/);
+  const send = (question: number, command = DEPLOY, match?: 'exact' | 'pattern') => t.management.sendMessage('mgr', 'w0', 'Deploy.', { command, question, ...(match ? { match } : {}) });
+  // A pick of the manager's own option, even a "Yes", never confirms; nor does another command or another match.
+  await assert.rejects(send(t.agreed(DEPLOY, 'Yes, publish')), /did not pick Ledung's "Confirm order"/);
+  await assert.rejects(send(t.agreed(DEPLOY, 'Not yet')), /did not pick Ledung's "Confirm order"/);
   await assert.rejects(send(t.agreed('scripts/other.sh')), /showed the person another command \(exact: scripts\/other\.sh\)/);
+  // An exact command with a literal * confirmed as exact can't come back as a pattern (test review round 2, F1).
+  await assert.rejects(send(t.agreed('rm build/*'), 'rm build/*', 'pattern'), /showed the person another command \(exact: rm build\/\*\)/);
+  // The review's case: a "No, do not push" option the manager named as the confirm, on a question stored that way.
+  const no = t.store.createQuestion({ sessionId: 'mgr', question: 'Force-push main?', options: ['a — No, do not push', 'b — Yes'], addressedTo: 'user', details: { orderCommand: { command: PUSH_MAIN, match: 'exact', confirm: 'a — No, do not push' } } });
+  t.store.answerQuestion(no.id, 'a — No, do not push', 'user', null, true);
+  await assert.rejects(send(no.id, PUSH_MAIN), /did not pick Ledung's "Confirm order"/);
+  assert.equal(t.orders.list().length, 0);
+  // Ledung's Confirm order on the keyed question puts exactly that command in force.
+  const ok = t.store.createQuestion({ sessionId: 'mgr', question: keyed.question, options: keyed.options, addressedTo: 'user', details: keyed.details });
+  t.store.answerQuestion(ok.id, 'ok — Confirm order', 'user', null, true);
+  assert.match(await send(ok.id, PUSH_MAIN), /Order #1 recorded \(answer to question #\d+, \d\d:\d\d, where Simon confirmed this exact command\)/);
   // The exact command, picked: in force at once, with no confirm question.
   const yes = t.agreed(DEPLOY);
-  assert.match(await send(yes), /Order #1 recorded \(answer to question #\d+, \d\d:\d\d, where Simon confirmed this exact command\)/);
-  assert.equal(t.store.getOrder(1)!.status, 'open');
-  assert.equal(t.confirmQ(1), undefined);
+  assert.match(await send(yes), /Order #2 recorded \(answer to question #\d+, \d\d:\d\d, where Simon confirmed this exact command\)/);
+  assert.equal(t.store.getOrder(2)!.status, 'open');
+  assert.equal(t.confirmQ(2), undefined);
   assert.equal(await (await t.hooksOf('w0')).decide(DEPLOY, 'a'), 'allow');
+  // The exact text with the * also confirms as exact, so the refusal above is about the match alone.
+  assert.match(await send(t.agreed('rm build/*'), 'rm build/*'), /Order #3 recorded/);
   // It backs that one order only.
-  await assert.rejects(send(yes), /question #\d+ has already confirmed order #1; ask again for another/);
+  await assert.rejects(send(yes), /question #\d+ has already confirmed order #2; ask again for another/);
   // A question without the command only proposes.
   await send(t.answered('Yes, publish'));
-  assert.equal(t.store.getOrder(2)!.status, 'waiting');
-  assert.ok(t.confirmQ(2));
+  assert.equal(t.store.getOrder(4)!.status, 'waiting');
+  assert.ok(t.confirmQ(4));
 });
 
 test('while the person is away, an ordered merge still passes the floors: the order replaces the ask, not the checks', async () => {
@@ -511,7 +540,7 @@ test('while the person is away, an ordered merge still passes the floors: the or
   assert.equal(await w1.decide(MERGE, 'b'), 'allow', 'green: it runs');
   log = formatLog(t.away.log('mgr'), t.away.current(), 'Simon');
   assert.match(log, /ALLOWED · ordered/);
-  assert.match(log, /Allowed by order #1: Simon's own words, "Yes, publish"; PR #9 open, mergeable, no failing checks, 1 check green/);
+  assert.match(log, /Allowed by order #1: Simon's own words, "Confirm order"; PR #9 open, mergeable, no failing checks, 1 check green/);
   // A merge away mode can't check is held: a floor fails closed.
   assert.equal(await (await t.hooksOf('w2')).decide(ADMIN, 'c'), null);
   assert.match(t.store.getOrder(2)!.note!, /away mode can't check this merge's floors: away mode does not let --admin through/);

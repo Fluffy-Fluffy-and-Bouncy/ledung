@@ -7,10 +7,11 @@ import { z } from 'zod';
 import { PERMISSION_MODES, type AttachedSource, type PermissionMode, type QuestionInfo, type SessionRole } from '../shared/protocol.ts';
 import { failedSourcesNote, MAX_SOURCES, type SourceInput } from './sources.ts';
 import {
-  ACCEPTED, CHANGES_NEEDED, detailsProblem, hasDetails, MAX_REVIEW_EVIDENCE, optionAnswer, questionText, type OrderCommandDetails, type Opinion, type QuestionDetails, type QuestionOption, type ReviewDetails,
+  ACCEPTED, CHANGES_NEEDED, detailsProblem, hasDetails, MAX_REVIEW_EVIDENCE, optionAnswer, questionText, splitOption, type OrderCommandDetails, type Opinion, type QuestionDetails, type QuestionOption, type ReviewDetails,
 } from '../shared/questions.ts';
 import type { ShotInput } from './management.ts';
 import { commandProblem, type OrderSpec } from './orders.ts';
+import { CONFIRM, CONFIRM_KEY } from '../shared/orders.ts';
 import { SETTINGS_ACTIONS } from './word.ts';
 import { SETTINGS_PATCH, type SettingsPatch } from '../projects/settings-tools.ts';
 
@@ -218,24 +219,32 @@ export interface AskArgs {
   about_question?: number;
   about_request?: string;
   sources?: SourceInput[];
-  /** The exact command the question asks the person to confirm as an order, and the option that confirms it (issue #105). */
-  order_command?: { command: string; match?: 'exact' | 'pattern'; confirm: string };
+  /** The exact command the question asks the person to confirm as an order (issue #105); Ledung adds the option that confirms it. */
+  order_command?: { command: string; match?: 'exact' | 'pattern' };
 }
 
 /**
- * The order command an ask_user question carries (issue #105, Martin 2026-11-03, Ledung question #1290 "a"): checked,
- * with the answer its confirming option gives, so the person's pick of it confirms an order for exactly that command.
+ * The order command an ask_user question carries (issue #105, Martin 2026-11-03, Ledung question #1290 "a"), checked,
+ * and Ledung's own Confirm order option added last: only a pick of that option confirms an order for exactly that
+ * command. The manager's options never confirm, and none may look like Ledung's: a label the manager writes can say
+ * "No, do not push" (review round 2 of PR #107, finding 1).
  */
-function orderCommandDetails(a: AskArgs, objects: QuestionOption[] | undefined): OrderCommandDetails {
+function orderCommandDetails(a: AskArgs, objects: QuestionOption[] | undefined): { orderCommand: OrderCommandDetails; objects?: QuestionOption[]; plain?: string[] } {
   const c = a.order_command!;
   const match = c.match ?? 'exact';
   const bad = commandProblem(c.command ?? '', match);
   if (bad) throw new Error(`order_command: ${bad} Nothing was asked.`);
-  const want = (c.confirm ?? '').trim();
-  const confirm = objects ? objects.find((o) => o.key === want) && optionAnswer(objects.find((o) => o.key === want)!)
-    : (a.options as string[] | undefined)?.find((o) => o.trim() === want)?.trim();
-  if (!confirm) throw new Error(`order_command.confirm is "${want}", which is not one of the options (give its key, or its label for plain options). Nothing was asked.`);
-  return { command: c.command.trim(), match, confirm };
+  const labels = objects ? objects.map((o) => splitOption(o.text).label.replace(/\*\*|`/g, '')) : (a.options as string[] | undefined) ?? [];
+  if (labels.some((l) => l.trim().toLowerCase().startsWith(CONFIRM.toLowerCase()))) {
+    throw new Error(`order_command: "${CONFIRM}" is Ledung's own option, which it adds itself; none of yours may start with it. Nothing was asked.`);
+  }
+  if (objects?.some((o) => o.key === CONFIRM_KEY)) throw new Error(`order_command: the key "${CONFIRM_KEY}" is for Ledung's own ${CONFIRM} option. Nothing was asked.`);
+  const what = match === 'exact' ? 'exactly the command shown' : 'commands of the pattern shown';
+  if (objects) {
+    const mine: QuestionOption = { key: CONFIRM_KEY, text: `**${CONFIRM}**: Ledung's own option. It lets ${what} run without a prompt; no other option does.` };
+    return { orderCommand: { command: c.command.trim(), match, confirm: optionAnswer(mine) }, objects: [...objects, mine] };
+  }
+  return { orderCommand: { command: c.command.trim(), match, confirm: CONFIRM }, plain: [...labels, CONFIRM] };
 }
 
 /** What the question shows of its order command, after the asker's text, so the chat and the phone show it too. */
@@ -275,11 +284,13 @@ export function askedQuestion(a: AskArgs): { question: string; options: string[]
     const details = reviewDetails(a);
     return { question: questionText(undefined, details), options: null, details };
   }
-  const objects = a.options?.length && typeof a.options[0] !== 'string' ? a.options as QuestionOption[] : undefined;
+  const given = a.options?.length && typeof a.options[0] !== 'string' ? a.options as QuestionOption[] : undefined;
+  const order = a.order_command ? orderCommandDetails(a, given) : undefined;
+  const objects = order ? order.objects : given;
   const details: QuestionDetails = {
     title: a.title, issue: a.issue, evidence: a.evidence, options: objects, opinions: a.opinions?.length ? a.opinions : undefined,
     recommended: a.recommended, why: a.why, reviewer: a.reviewer, tier: a.tier, rank: a.rank, refs: a.refs,
-    orderCommand: a.order_command ? orderCommandDetails(a, objects) : undefined,
+    orderCommand: order?.orderCommand,
   };
   for (const k of Object.keys(details) as (keyof QuestionDetails)[]) if (details[k] === undefined) delete details[k];
   const problem = detailsProblem(details);
@@ -289,7 +300,7 @@ export function askedQuestion(a: AskArgs): { question: string; options: string[]
   const question = details.orderCommand ? `${text}\n\n${orderCommandText(details.orderCommand)}` : text;
   return {
     question,
-    options: objects ? objects.map(optionAnswer) : (a.options as string[] | undefined) ?? null,
+    options: objects ? objects.map(optionAnswer) : order?.plain ?? (a.options as string[] | undefined) ?? null,
     details: hasDetails(details) ? details : null,
   };
 }
@@ -493,9 +504,9 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
             order_command: z.object({
               command: z.string().min(1).describe('The command as it will run: exactly, or (match "pattern") with * where any text may stand.'),
               match: z.enum(['exact', 'pattern']).optional().describe('Default exact.'),
-              confirm: z.string().min(1).describe("The option whose pick confirms the order: its key, or its label for plain options."),
             }).optional().describe(
-              `The exact command this question asks ${who} to confirm as an order. Ledung shows it on the question page; if ${who} picks the confirm option, ` +
+              `The exact command this question asks ${who} to confirm as an order. Ledung shows it on the question page and adds its own last option, "${CONFIRM}"; ` +
+              `none of your options confirms, and none may start with those words. If ${who} picks it, ` +
               'an order you then give with start_session or send_message, citing this question, is in force at once, for exactly this command. ' +
               `Without it an answer only proposes an order, which ${who} must confirm on the page first.`,
             ),

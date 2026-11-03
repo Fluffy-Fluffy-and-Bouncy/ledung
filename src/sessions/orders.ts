@@ -11,7 +11,7 @@
 // from it that is not done asks whether it stays ("a failed goal/order couldnt stay forever", question #1278).
 import type { Store } from '../store/store.ts';
 import type { AwayInfo, ServerEvent } from '../shared/protocol.ts';
-import { CANCEL, CONFIRM, DROP, KEEP, inForce, picked, sourceText, statusText, type OrderInfo, type OrderSource } from '../shared/orders.ts';
+import { CANCEL, CONFIRM, CONFIRM_ANSWERS, DROP, KEEP, inForce, picked, sourceText, statusText, type OrderInfo, type OrderSource } from '../shared/orders.ts';
 import type { QuestionDetails } from '../shared/questions.ts';
 import type { QuestionInfo } from '../shared/protocol.ts';
 import { words as plainWords } from './away.ts';
@@ -106,8 +106,8 @@ function typedAt(at: string): ((t: number) => boolean) | null {
  *
  * Words alone never put an order in force (review of PR #107, finding 1; Martin 2026-11-03, Ledung question #1290 "a"):
  * they only propose it, and the person confirms the exact command on the page. The one exception is a question of the
- * manager's that showed the person this exact command (order_command) and whose confirm option they picked; it
- * confirms one order only.
+ * manager's that showed the person this exact command (order_command) and whose Confirm order option, Ledung's own,
+ * they picked; it confirms one order only.
  */
 export function attest(store: Store, managerId: string, spec: Pick<OrderSpec, 'command' | 'match' | 'question' | 'typed'>, now: number): Attested | { error: string } {
   const since = now - WORDS_WINDOW_MS;
@@ -128,7 +128,8 @@ export function attest(store: Store, managerId: string, spec: Pick<OrderSpec, 'c
     const used = c ? store.orderFromQuestion(q!.id) : undefined;
     const bound = !c ? null
       : c.command !== (spec.command ?? '').trim() || c.match !== (spec.match ?? 'exact') ? `question #${q!.id} showed the person another command (${c.match}: ${c.command})`
-      : !picked(q!.answer, c.confirm) ? `the person did not pick "${c.confirm}" in question #${q!.id}`
+      // Only Ledung's own Confirm order option, never a label the manager wrote (review round 2 of PR #107, finding 1).
+      : !CONFIRM_ANSWERS.includes(c.confirm) || !picked(q!.answer, c.confirm) ? `the person did not pick Ledung's "${CONFIRM}" in question #${q!.id}`
       : used !== undefined ? `question #${q!.id} has already confirmed order #${used}; ask again for another`
       : null;
     if (bound) return { error: `Ledung can't attest this order: ${bound}.` };

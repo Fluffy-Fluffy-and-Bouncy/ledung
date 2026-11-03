@@ -126,7 +126,7 @@ export interface QuestionDetails {
 export interface OrderCommandDetails {
   command: string;
   match: 'exact' | 'pattern';
-  /** The answer that confirms it: the text the confirming option gives, as the page sends it. */
+  /** The answer that confirms it: what Ledung's own Confirm order option gives, as the page sends it (one of CONFIRM_ANSWERS). */
   confirm: string;
 }
 
