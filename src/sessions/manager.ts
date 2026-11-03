@@ -20,7 +20,7 @@ import { matchSensitive } from './sensitive.ts';
 import { AIRGAP_PROFILE, isLocked, levelProblem, lockdownOf, opensUp, othersSettings, overlapProblem, projectFolders, within } from '../projects/lockdown.ts';
 import { LATER_SUGGESTIONS, withSuggestions } from '../shared/sensitive-suggestions.ts';
 import { isNameColour, parseNameColour } from '../shared/name-colours.ts';
-import { ledungTier, reviewAnswerProblem, tiersOf } from '../shared/questions.ts';
+import { ACCEPTED, ledungTier, questionText, reviewAnswerProblem, tiersOf, type QuestionDetails } from '../shared/questions.ts';
 import {
   BrowseError, createProjectFolder, defaultProjectsFolder, defaultRoots, isInside, listContainer, listContainers, listLocal,
   type ContainerInfo, type FolderListing,
@@ -90,7 +90,17 @@ import { FlowRunError, FlowRuns, lastReplyOf } from './flow-runs.ts';
 import { RunStore } from './run-store.ts';
 import type { FlowRun } from '../shared/flow-run.ts';
 import type { RunBlock } from '../shared/protocol.ts';
-import type { RunHandlers } from './tools.ts';
+import type { ProposeHandlers, RunHandlers } from './tools.ts';
+import { buildProposal, ProposalStore, proposalSummary, type ProposedChange } from './flow-propose.ts';
+import type { FlowProposal } from '../shared/flow-proposal.ts';
+
+/** Ledung's own plugin with the "workflow building" skill (part 3e, #1577), shipped beside src/ and web/. */
+export const WORKFLOW_PLUGIN = () => path.join(appDir(), 'plugins', 'ledung-workflow');
+/** The skill's text without its front matter: the guide flow_propose gives a manager that can't load the plugin. */
+export function workflowGuide(dir = WORKFLOW_PLUGIN()): string {
+  const text = fs.readFileSync(path.join(dir, 'skills', 'workflow-building', 'SKILL.md'), 'utf8');
+  return text.replace(/^---[\s\S]*?\n---\n+/, '');
+}
 
 const LIMIT_KEY = 'max-working-sessions';
 /** Usage stops once set in Settings (issue #278), and the ones lifted by hand, by window; kept in meta, so no migration. */
@@ -148,6 +158,8 @@ export class SessionManager {
   private readonly management: Management;
   /** Runs through the projects' flows (workflow part 3). */
   readonly flowRuns: FlowRuns;
+  /** Managers' proposed workflow changes (part 3e). */
+  private readonly proposals: ProposalStore;
   /** The linked computers (#245), set by the server whenever its public name changes. */
   private linked: LinkedPort | null = null;
   /** Settings' page-only actions for managers (#263), set by the server. */
@@ -246,6 +258,7 @@ export class SessionManager {
         return { file: ev.file, kind: ev.kind === 'text' ? 'text' : 'image' };
       },
     });
+    this.proposals = new ProposalStore(store.database);
     this.flowRuns = new FlowRuns({
       runs: new RunStore(store.database),
       getSession: (id) => this.store.getSession(id),
@@ -912,6 +925,10 @@ export class SessionManager {
       flow: info.role === 'manager' && info.project !== CHATS ? () => flowInstructions(this.flowPlacesOf(project), project.followFlow !== false) : undefined,
       // The run tools only where there is a flow to follow (part 3, "keeping context small").
       runs: info.project !== CHATS ? () => this.runHandlers(project, info.id) : undefined,
+      // A manager whose project follows its workflow builds and changes it by proposing (part 3e); with the "workflow
+      // building" skill as Ledung's own plugin where Claude Code runs on this computer, else the guide from the tool (#1577).
+      propose: info.role === 'manager' && info.project !== CHATS && project.followFlow !== false ? this.proposeHandlers(project, info.id) : null,
+      ledungPlugins: info.role === 'manager' && info.project !== CHATS && project.followFlow !== false && project.runner === 'local' ? [WORKFLOW_PLUGIN()] : [],
       remoteControl: launch.remoteControl,
       sensitive: {
         commandPatterns: [...this.config.sensitive.commandPatterns, ...project.sensitive.commandPatterns],
@@ -1091,6 +1108,8 @@ export class SessionManager {
     this.publish({ type: 'question', question: q });
     // A question that went to a manager: tell the manager Simon answered it directly.
     this.management.onUserAnswered(q);
+    // A proposed workflow change is saved on Accepted (part 3e), before the answer reaches the manager.
+    await this.settleProposal(q);
     // A person block's answer moves its run (workflow part 3b).
     await this.flowRuns.onAnswered(q).catch((e) => console.error(`Workflow: ${(e as Error).message}`));
     // A held first board post waits for this answer (decision 6). Awaited, so the note on how the post went
@@ -1168,6 +1187,83 @@ export class SessionManager {
       step: (a) => plain(() => this.flowRuns.step(sessionId, a)),
       status: (run) => plain(() => this.flowRuns.status(sessionId, run)),
     };
+  }
+
+  /** flow_propose for one manager (part 3e): a container project's manager gets the guide from it too. */
+  private proposeHandlers(project: ProjectConfig, managerId: string): ProposeHandlers {
+    return {
+      propose: (changes, why) => this.proposeFlow(managerId, changes, why),
+      ...(project.runner === 'docker' ? { guide: () => workflowGuide() } : {}),
+    };
+  }
+
+  /**
+   * A manager's proposed workflow change (part 3e): checked as the builder checks a save, kept, and put to the person as
+   * a review with the flows before and after; nothing is written until it is accepted.
+   */
+  async proposeFlow(managerId: string, changes: ProposedChange[], why: string): Promise<string> {
+    const manager = this.store.getSession(managerId);
+    if (!manager || manager.role !== 'manager') throw new Error('Only a manager proposes workflow changes.');
+    const project = this.project(manager.project);
+    const view = await this.flowView(project.name);
+    let data;
+    try {
+      data = await buildProposal(view, changes, why, profileNames(this.profilesFor(project).profiles));
+    } catch (e) {
+      throw e instanceof FileError ? new Error(`${e.message} Nothing was proposed.`) : e;
+    }
+    const proposal = this.proposals.create(project.name, managerId, data);
+    const faults = data.problems.filter((p) => !p.hint);
+    const hints = data.problems.filter((p) => p.hint);
+    const listed = (list: typeof faults) => list.slice(0, 12).map((p) => `- ${p.at}: ${p.message}`).join('\n');
+    const tiers = tiersOf(project.questionTiers);
+    const details: QuestionDetails = {
+      title: `Workflow change: ${why.trim().split('\n')[0]!.slice(0, 160)}`,
+      tier: tiers.find((t) => /process/i.test(t)) ?? tiers[0],
+      flowProposal: proposal.id,
+      review: {
+        solving: why.trim(),
+        done: `${manager.title} proposes this change to ${project.name}'s workflow:\n\n${proposalSummary(data)}\n\nThe diagrams below show each flow before and after. Accepted saves it into the project's .ledung/workflow.`,
+        notes: faults.length
+          ? `The checks find ${faults.length === 1 ? 'one problem' : `${faults.length} problems`} in the workflow as it would be:\n\n${listed(faults)}`
+          : `The checks find no problems in the workflow as it would be.${hints.length ? ` Hints:\n\n${listed(hints)}` : ''}`,
+      },
+    };
+    const q = this.store.createQuestion({ sessionId: managerId, question: questionText(undefined, details), options: null, addressedTo: 'user', details });
+    this.proposals.setQuestion(proposal.id, q.id);
+    this.publish({ type: 'question', question: q });
+    return `Your change is put to ${this.config.userName} as review #${q.id}, with the flows before and after.${faults.length ? ` The checks find ${faults.length} problem${faults.length === 1 ? '' : 's'} (said in the review):\n${listed(faults)}\nIf they are real, propose again with them fixed and withdraw review #${q.id}.` : ''} ` +
+      'Accepted saves it; Changes needed comes back with the note. End your turn now.';
+  }
+
+  /** A proposal for the page's review (part 3e). */
+  flowProposal(name: string, id: number): FlowProposal {
+    const p = this.proposals.get(id);
+    if (!p || p.project !== name) throw new UserError('There is no such proposal in this project.');
+    const { manager: _, ...shown } = p;
+    return shown;
+  }
+
+  /**
+   * The person answered a proposal's review (part 3e): Accepted saves it through the builder's save (each file the
+   * version read when it was proposed), Changes needed declines it; the manager is told how the save went.
+   */
+  private async settleProposal(q: QuestionInfo): Promise<void> {
+    const p = q.details?.flowProposal ? this.proposals.get(q.details.flowProposal) : undefined;
+    if (!p || p.state !== 'open' || q.answer === null) return;
+    const accepted = q.answer.trim() === ACCEPTED || q.answer.trim().startsWith(`${ACCEPTED}`);
+    if (!accepted) {
+      this.proposals.setState(p.id, 'declined');
+      return;
+    }
+    try {
+      await this.saveFlow(p.project, p.writes);
+      this.proposals.setState(p.id, 'saved');
+      this.store.addInbox(p.manager, 'ledung', `Ledung: ${this.config.userName} accepted review #${q.id}, and your workflow change is saved into ${p.project}'s .ledung/workflow (${p.writes.map((w) => w.path).join(', ')}). The workflow page shows it. Run tools added for a project that had no flow come with your next start.`);
+    } catch (e) {
+      this.proposals.setState(p.id, 'failed');
+      this.store.addInbox(p.manager, 'ledung', `Ledung: ${this.config.userName} accepted review #${q.id}, but the change could not be saved: ${(e as Error).message} Read the workflow files again and propose it anew.`);
+    }
   }
 
   /** A project's runs for the workflow page (part 3), the latest changed first. */

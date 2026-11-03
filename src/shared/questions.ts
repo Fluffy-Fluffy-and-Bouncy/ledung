@@ -106,6 +106,8 @@ export interface QuestionDetails {
   review?: ReviewDetails;
   /** A person block of a run asked it (workflow part 3b): the answer moves the run; shown with the question. */
   run?: QuestionRun;
+  /** A manager's proposed workflow change (part 3e), by its number: the review page shows it before and after. */
+  flowProposal?: number;
 }
 
 /** The run and block a person block's question belongs to (workflow part 3b), with their titles as asked. */

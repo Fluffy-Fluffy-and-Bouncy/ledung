@@ -31,7 +31,7 @@ const flowTitles = (flows: readonly FlowEntry[]) => (name: string): string | und
   return f ? f.flow?.title ?? f.name : undefined;
 };
 
-function Diagram({ flow, layout, texts, selected, onSelect, narrow, flowTitle, marks }: { flow: Flow; layout: FlowLayout; texts: Record<string, string>; selected: string | null; onSelect: (id: string) => void; narrow: boolean; flowTitle: (name: string) => string | undefined; marks: RunMarks }) {
+export function Diagram({ flow, layout, texts, selected, onSelect, narrow, flowTitle, marks }: { flow: Flow; layout: FlowLayout; texts: Record<string, string>; selected: string | null; onSelect: (id: string) => void; narrow: boolean; flowTitle: (name: string) => string | undefined; marks: RunMarks }) {
   const amended = amendedBy(flow.overlays);
   const [sizes, onMeasured] = useMeasured();
   const title = titles(flow);

@@ -2097,6 +2097,10 @@ test("a project's flow needs the sign-in and Ledung's own Host, is read-only, an
   assert.equal(listed.status, 200);
   assert.deepEqual(JSON.parse(listed.body), []);
   assert.equal((await request({ path: '/api/projects/nope/runs', headers: { cookie: COOKIE } })).status, 400);
+  // A proposed workflow change (part 3e), for its review page: the same checks.
+  assert.equal((await request({ path: '/api/projects/p/proposals/1' })).status, 401);
+  assert.equal((await request({ path: '/api/projects/p/proposals/1', headers: { host: 'evil.example:80', cookie: COOKIE } })).status, 403);
+  assert.equal((await request({ path: '/api/projects/p/proposals/1', headers: { cookie: COOKIE } })).status, 400);
 });
 
 // The builder saves (issue #311, part 2, design decision 4): a change like any other (sign-in, Host, Origin, and through

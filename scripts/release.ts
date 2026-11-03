@@ -74,7 +74,8 @@ step('Building the page', () => sh(npm, ['run', 'build', '--silent'], source));
 
 step(`Copying to ${target}`, () => {
   fs.mkdirSync(target, { recursive: true });
-  for (const item of ['src', 'package.json', 'package-lock.json']) {
+  // plugins/: Ledung's own plugin for its sessions, the "workflow building" skill (workflow part 3e).
+  for (const item of ['src', 'plugins', 'package.json', 'package-lock.json']) {
     fs.cpSync(path.join(source, item), path.join(target, item), { recursive: true });
   }
   fs.cpSync(path.join(source, 'web', 'dist'), path.join(target, 'web', 'dist'), { recursive: true });

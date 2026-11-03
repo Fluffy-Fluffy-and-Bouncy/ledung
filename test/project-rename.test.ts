@@ -109,7 +109,7 @@ test('every column that holds a project name is one rename moves', () => {
     .map((c) => `${t}.${c.name}`)).sort();
   assert.deepEqual(found, [
     'board_boards.front_desk', 'board_deliveries.project', 'board_outbox.project', 'board_posts.from_project', 'board_projects.name',
-    'flow_runs.project', 'projects.name', 'sessions.project', 'turn_resources.project', 'usage.project', 'usage_daily.project',
+    'flow_proposals.project', 'flow_runs.project', 'projects.name', 'sessions.project', 'turn_resources.project', 'usage.project', 'usage_daily.project',
   ]);
 });
 

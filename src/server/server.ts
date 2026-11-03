@@ -1493,6 +1493,9 @@ export class LedungServer {
       // The workflow page (issue #310): the project's flow, read-only and only from inside its folders (src/sessions/flow-files.ts).
       case 'GET projects/:id/flow':
         return manager.flowView(decodeURIComponent(id));
+      // A manager's proposed workflow change (part 3e), for its review page: read like the flow.
+      case 'GET projects/:id/proposals/:id':
+        return manager.flowProposal(decodeURIComponent(id), Number(parts[3]));
       // Its runs through its flows (workflow part 3c), for the workflow page; the live connection sends changes.
       case 'GET projects/:id/runs':
         return manager.flowRunsOf(decodeURIComponent(id));

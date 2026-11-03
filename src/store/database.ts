@@ -605,6 +605,20 @@ const MIGRATIONS: string[] = [
   CREATE INDEX flow_runs_by_project ON flow_runs(project, updated_at);
   ALTER TABLE sessions ADD COLUMN run_block TEXT;
   `,
+  // 42: a manager's proposed workflow changes (workflow part 3e): the files it would write with the versions they replace,
+  // the flows before and after and the checks' problems, as JSON (src/sessions/flow-propose.ts); its review question,
+  // and whether it is open, saved, declined or failed. Kept apart from the question so the page's question list stays small.
+  `
+  CREATE TABLE flow_proposals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project TEXT NOT NULL,
+    manager TEXT NOT NULL,
+    question INTEGER,
+    data TEXT NOT NULL,
+    state TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  `,
 ];
 
 export function databaseFile(dir = userDataDir()): string {

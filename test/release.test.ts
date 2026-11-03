@@ -22,6 +22,7 @@ function makeSource(check: string): void {
   removeTemp(source);
   fs.mkdirSync(path.join(source, 'scripts'), { recursive: true });
   fs.cpSync(path.join(appDir(), 'src'), path.join(source, 'src'), { recursive: true });
+  fs.cpSync(path.join(appDir(), 'plugins'), path.join(source, 'plugins'), { recursive: true });
   fs.cpSync(path.join(appDir(), 'scripts', 'release.ts'), path.join(source, 'scripts', 'release.ts'));
   // src imports zod and friends; the release's own install has nothing to fetch.
   fs.symlinkSync(path.join(appDir(), 'node_modules'), path.join(source, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');

@@ -3,7 +3,7 @@
 // keyboard, and a One project / All filter. Permission prompts head the queue and the recently answered
 // questions follow. What a manager is handling is not listed: the manager handles it (issue #96). Answers
 // take the same path as the chat's question card.
-import { Fragment, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { Fragment, lazy, Suspense, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { CHATS, projectLabel, type ChatsInfo, type LinkPairingInfo, type NewComputerInfo, type PermissionInfo, type ProjectInfo, type QuestionInfo, type SessionInfo } from '../../../src/shared/protocol.ts';
 import { disagree, MAX_BORDER_PARTS, mergeTiers, type DeskOpinion } from '../../../src/shared/questions.ts';
 import { findTickets } from '../../../src/shared/tickets.ts';
@@ -20,6 +20,8 @@ import { ScreenshotView, shotCount } from './ScreenshotView.tsx';
 import { usePlainTyping } from '../usePlainTyping.ts';
 import { Withdraw } from './Withdraw.tsx';
 import { RunLine } from './FlowRuns.tsx';
+
+const FlowProposalView = lazy(() => import('./FlowProposal.tsx'));
 import { NewComputerCard } from './RelaySettings.tsx';
 import { LinkPairingCard } from './LinkPairingCard.tsx';
 
@@ -410,6 +412,10 @@ function ReviewPage({ ctx, item, list, onAnswered }: { ctx: DeskContext; item: I
           )}
           <RefersTo q={q} userName={props.userName} nameOf={nameOf} tintOf={tintOf} onOpenConversation={(s, id) => props.onGoToConversation(id, s)} onOpenMessage={props.onGoToMessage} onOpenQuestion={(id) => props.questions.some((x) => x.id === id) ? () => props.onOpenQuestion(id) : null} />
           <ReviewSections review={review} sessionId={q.sessionId} />
+          {q.details?.flowProposal !== undefined && (
+            // A proposed workflow change (part 3e): its flows before and after, loaded only for such a review.
+            <Suspense fallback={<p className="muted">Loading the diagrams…</p>}><FlowProposalView project={project} id={q.details.flowProposal} /></Suspense>
+          )}
           {evidence.length > 0 && <ReviewEvidenceList q={q} evidence={evidence} shown={shown} onShow={show} />}
           <ReviewAnswer q={q} answeredBy={answeredBy} noteFocus={noteFocus} onAnswered={() => onAnswered(q.id)} />
           <div className="keys">

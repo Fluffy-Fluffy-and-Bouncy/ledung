@@ -122,6 +122,8 @@ export async function stagePackage(source: string, stage: string, version?: stri
   fs.writeFileSync(path.join(stage, 'npm-shrinkwrap.json'), `${JSON.stringify(packageShrinkwrap(manifest, lock), null, 2)}\n`);
   await bundleCore(source, path.join(stage, 'dist'));
   fs.cpSync(path.join(source, 'web', 'dist'), path.join(stage, 'web', 'dist'), { recursive: true });
+  // Ledung's own plugin for its sessions, the "workflow building" skill (workflow part 3e).
+  fs.cpSync(path.join(source, 'plugins'), path.join(stage, 'plugins'), { recursive: true });
   for (const file of EXTRA_FILES) fs.cpSync(path.join(source, file), path.join(stage, file));
 }
 

@@ -28,6 +28,8 @@ const MANAGER_TOOLS = [
   'project_settings',
   // The message board (docs/steps/message-board.md): never user-approved; the outgoing check guards posts (decision 6).
   'board_post', 'board_read', 'board_threads',
+  // A workflow change only proposed: the person accepts it in a review before anything is written (part 3e).
+  'flow_propose',
 ];
 /**
  * Manager tools that reach beyond the manager's own project: always the user's to approve, in every
@@ -136,6 +138,13 @@ export interface RunHandlers {
   status(run?: string): Promise<string>;
 }
 
+/** flow_propose (workflow part 3e), bound to a manager whose project follows its workflow. */
+export interface ProposeHandlers {
+  propose(changes: { file: string; text?: string; remove?: boolean }[], why: string): Promise<string>;
+  /** The "workflow building" guide, for a manager that has no skill for it (a container project's, #1577). */
+  guide?: () => string;
+}
+
 /** The board tools, bound to a manager whose project has the board on (docs/steps/message-board.md). */
 export interface BoardHandlers {
   post(args: { to?: string[]; thread?: string; title?: string; text: string; attachments?: string[] }): Promise<string>;
@@ -168,6 +177,8 @@ export interface ToolHandlers {
   board?: BoardHandlers;
   /** Only in a project that has a flow and follows it (workflow part 3); short descriptions, as they are in every turn's context. */
   runs?: RunHandlers;
+  /** Managers only, in a project that follows its workflow (part 3e). */
+  propose?: ProposeHandlers;
   /**
    * Its project is in lockdown level B (issue #109): a manager gets only the tools for its own sessions
    * and ask_user; nothing that reaches other managers, other projects or the board.
@@ -526,6 +537,24 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
       tool('flow_status', "Your project's runs: where each is, or one in full (counts, sessions, history).", {
         run: run.optional(),
       }, async (a) => safely(() => r.status(a.run))) as never,
+    );
+  }
+
+  const pr = h.propose;
+  if (h.role === 'manager' && pr) {
+    tools.push(
+      tool('flow_propose', `Propose new or changed workflow files (.ledung/workflow) to ${who}: Ledung checks them and asks ${who} in a review with before and after diagrams; Accepted saves them. Never change the workflow another way.${pr.guide ? ' Call it with no changes for the guide to the format.' : ''}`, {
+        changes: z.array(z.object({
+          file: z.string().min(1).max(200).describe('Its path in .ledung/workflow, e.g. "flow.json", "briefs/reviewer.md".'),
+          text: z.string().max(262144).optional().describe('The whole new text.'),
+          remove: z.boolean().optional().describe('Remove it (a flow in flows/ only).'),
+        })).max(300).optional(),
+        why: z.string().min(1).max(4000).optional().describe('Why, for the review.'),
+      }, async (a) => safely(() => {
+        if (!a.changes?.length && pr.guide) return pr.guide();
+        if (!a.why?.trim()) throw new Error(`Say why, for ${who}'s review.`);
+        return pr.propose(a.changes ?? [], a.why);
+      })) as never,
     );
   }
 
