@@ -1095,11 +1095,13 @@ export class SessionManager {
   /** Where a project's flow may be (issue #310): its own folder, then the shared workflow it follows. */
   private flowPlacesOf(project: ProjectConfig): FlowPlace[] {
     const container = project.runner === 'docker' ? new DockerRunner(project, 'flow') : null;
-    return flowPlaces(project, chosenWorkflow(workflowsOf(this.config), project), container ? {
+    const workflows = workflowsOf(this.config);
+    // All the workflows, so a project whose folder is one of theirs can't save into it (ledung#109).
+    return flowPlaces(project, chosenWorkflow(workflows, project), container ? {
       read: (files, max, budget) => container.readInsideProject(files, max, budget),
       list: () => container.listFlowFolder(),
       write: (files) => container.writeFlowFiles(files),
-    } : undefined);
+    } : undefined, workflows);
   }
 
   /** The workflow page (issue #310, part 1): a project's flow with its texts and the checks' problems, read-only. */
@@ -1117,8 +1119,10 @@ export class SessionManager {
   async saveFlow(name: string, files: unknown): Promise<FlowView> {
     const project = this.projectStore.get(name)?.config;
     if (!project) throw new UserError(`There is no project named "${name}".`);
-    const own = this.flowPlacesOf(project).find((p) => p.kind === 'project');
-    if (!own) throw new UserError(`Ledung can't write into ${name}'s folder.`);
+    const places = this.flowPlacesOf(project);
+    const own = places.find((p) => p.kind === 'project');
+    // A project whose folder is a shared workflow's: refused with the reason (ledung#109).
+    if (!own) throw new UserError(places.find((p) => p.readOnly)?.readOnly ?? `Ledung can't write into ${name}'s folder.`);
     // One save per project at a time, so two that read the same versions can't both pass the check (review of #311, finding 2).
     const before = this.flowSaves.get(project.name) ?? Promise.resolve();
     const saving = before.then(() => saveFlowFiles(own, files));
