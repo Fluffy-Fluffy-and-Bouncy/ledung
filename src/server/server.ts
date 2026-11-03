@@ -1803,8 +1803,9 @@ export class LedungServer {
         const about = question?.aboutRequest;
         // A sensitive one is signed for itself; else, to a manager, the page key alone (issue #192). Ledung's question
         // about a refused call too: its Allow once lets that call through, past the sensitive list (issue #104, review finding 1).
-        // A keep-it question about an order (issue #105) as well: Keep puts the person's order back in force.
-        if ((about && store.getPermission(about)?.sensitive) || question?.details?.refusal || question?.details?.order) await this.requirePage(req, url);
+        // A question about an order (issue #105) as well: Confirm or Keep puts the person's order in force; so does the
+        // confirm option of a question that showed the exact command (order_command, Ledung question #1290 "a").
+        if ((about && store.getPermission(about)?.sensitive) || question?.details?.refusal || question?.details?.order || question?.details?.orderCommand) await this.requirePage(req, url);
         else this.requirePageForManager(req, question?.sessionId);
         const body = await readJson(req);
         return manager.answerQuestion(Number(id), String(body.answer ?? ''), !this.guard.isPublic(req));

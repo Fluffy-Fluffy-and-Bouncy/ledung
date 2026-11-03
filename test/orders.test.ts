@@ -10,7 +10,8 @@ import { buildDelivery, Management } from '../src/sessions/management.ts';
 import { Session } from '../src/sessions/session.ts';
 import { Away, formatLog } from '../src/sessions/away.ts';
 import { commandProblem, covers, Orders } from '../src/sessions/orders.ts';
-import { DROP, KEEP, statusText } from '../src/shared/orders.ts';
+import { askedQuestion } from '../src/sessions/tools.ts';
+import { CANCEL, CONFIRM, DROP, KEEP, statusText } from '../src/shared/orders.ts';
 import { waitingLists } from '../web/src/waitingLists.ts';
 import type { AwayKind, ServerEvent } from '../src/shared/protocol.ts';
 
@@ -55,12 +56,31 @@ function setup() {
     if (opts.at !== undefined) store.database.prepare('UPDATE questions SET answered_at = ? WHERE id = ?').run(opts.at, q.id);
     return q.id;
   };
+  /**
+   * A question of the manager's that showed the person this exact command (order_command), answered with its confirm
+   * option: the source of an order in force at once (Martin 2026-11-03, Ledung question #1290 "a").
+   */
+  const agreed = (command: string, answer = 'Yes, publish') => {
+    const q = store.createQuestion({ sessionId: 'mgr', question: `Run ${command}?`, options: ['Yes, publish', 'Not yet'], addressedTo: 'user', details: { orderCommand: { command, match: 'exact', confirm: 'Yes, publish' } } });
+    store.answerQuestion(q.id, answer, 'user', null, true);
+    return q.id;
+  };
+  /** Ledung's question to confirm a proposed order. */
+  const confirmQ = (orderId: number) => store.listQuestions(200).find((q) => q.details?.order?.orderId === orderId && q.details.order.confirm)!;
+  /** The person's answer to it, on the page. */
+  const confirm = (orderId: number, answer: string = CONFIRM) => {
+    const q = confirmQ(orderId);
+    store.answerQuestion(q.id, answer, 'user', null, true);
+    orders.answered(store.getQuestion(q.id)!);
+  };
+  /** What GitHub says of a PR, for away mode's floors. */
+  const github = { json: JSON.stringify({ state: 'OPEN', mergeable: 'MERGEABLE', statusCheckRollup: [] }) };
   /** Words the person typed into the manager: on this computer (here) unless told otherwise, and with no `from`. */
   const typed = (text: string, at = Date.now(), data: Record<string, unknown> = { here: true }) => store.addMessage('mgr', 'user', { text, ...data }, at);
   const hooksOf = async (id: string) => {
     const session = new Session({
       info: store.getSession(id)!, store, userName: 'Simon', management, away, orders,
-      publish, runner: { cwd: '.', currentBranch: async () => null } as never,
+      publish, runner: { cwd: '.', currentBranch: async () => null, pullRequestView: async () => ({ json: github.json }) } as never,
       gate: { mayStart: () => true, started: () => {}, ended: () => {} },
     });
     (session as unknown as { q: unknown }).q = {};
@@ -88,7 +108,7 @@ function setup() {
     };
   };
   const goAway = (allow: AwayKind[]) => away.start('23:59', allow);
-  return { store, management, orders, away, published, told, tasks, starts, answered, typed, hooksOf, goAway };
+  return { store, management, orders, away, published, told, tasks, starts, answered, agreed, confirmQ, confirm, github, typed, hooksOf, goAway };
 }
 
 test("start_session and send_message take an order on the person's own word; any other source is refused, with the reason", async () => {
@@ -125,7 +145,7 @@ test("start_session and send_message take an order on the person's own word; any
   // The person's own words: an answer given here, to this manager's question; or what they typed here, at that time.
   const q = t.answered('Yes, publish');
   const started = await t.management.startSession('mgr', { task: 'Run the deploy.', order: { command: DEPLOY, question: q } });
-  assert.match(started, /Order #1 recorded \(answer to question #\d+/);
+  assert.match(started, /Order #1 proposed \(answer to question #\d+, \d\d:\d\d\): it allows nothing until Simon confirms this exact command/);
   assert.ok(t.tasks[0]!.startsWith('Yes, publish\n\n— Simon\'s own words (answer to question #'), 'the task starts with the words verbatim');
   assert.ok(t.tasks[0]!.endsWith('Run the deploy.'));
   const at = Date.now() - 5 * 60_000;
@@ -140,10 +160,10 @@ test("start_session and send_message take an order on the person's own word; any
   await refused({ typed: { words: 'Publish the old stats', at: new Date(old).toISOString() } }, /no message the person typed/);
   assert.deepEqual(t.orders.list().map((o) => o.id), [1], 'none of them recorded');
   const sent = await t.management.sendMessage('mgr', 'w0', 'Deploy.', { command: DEPLOY, typed: { words: 'deploy the stats tonight', at: hhmm } });
-  assert.match(sent, /Order #2 recorded \(typed on this computer/);
+  assert.match(sent, /Order #2 proposed \(typed on this computer/);
   assert.ok(t.store.undeliveredInbox('w0')[0]!.text.startsWith('Please deploy the stats tonight, then go to bed.\n\n— Simon'), 'the message starts with the whole message verbatim');
   const page = t.orders.list();
-  assert.deepEqual(page.map((o) => [o.id, o.sessionId, o.project, o.words, o.status]), [[2, 'w0', 'p', 'Please deploy the stats tonight, then go to bed.', 'open'], [1, 'w1', 'p', 'Yes, publish', 'open']]);
+  assert.deepEqual(page.map((o) => [o.id, o.sessionId, o.project, o.words, o.status]), [[2, 'w0', 'p', 'Please deploy the stats tonight, then go to bed.', 'waiting'], [1, 'w1', 'p', 'Yes, publish', 'waiting']]);
 });
 
 test("a typed order records and quotes the person's whole message, never the manager's piece of it", async () => {
@@ -156,6 +176,8 @@ test("a typed order records and quotes the person's whole message, never the man
   assert.equal(o.words, said, 'the record holds the whole message');
   assert.ok(t.tasks[0]!.startsWith(`${said}\n\n— Simon's own words (typed on this computer`), 'the task starts with the whole message');
   assert.equal(t.orders.list()[0]!.words, said, 'the page shows the whole message');
+  assert.match(t.confirmQ(1).question, /> Do not deploy the stats to production yet\.\n> Wait for my word\./, 'and so does the question that confirms it');
+  t.confirm(1);
   const worker = await t.hooksOf('w1');
   assert.equal(await worker.decide(DEPLOY, 'a'), 'allow');
   assert.match((await worker.ran('a'))!, /Simon's own words, "Do not deploy the stats to production yet\. Wait for my word\." \(typed on this computer/, 'the note quotes the whole message');
@@ -184,7 +206,7 @@ test('a pattern must name its program plainly and can only cover one plain comma
 
 test('the ordered command runs without a prompt in the session and in its manager, with a note quoting the words; nothing else does', async () => {
   const t = setup();
-  const q = t.answered('Yes, publish');
+  const q = t.agreed(DEPLOY);
   await t.management.startSession('mgr', { task: 'Deploy.', order: { command: DEPLOY, question: q, until: 'done' } });
   const worker = await t.hooksOf('w1');
   // The premise: without the order, nothing lets this through (positive branch of the absence asserts below).
@@ -220,14 +242,14 @@ test('start_session: a refused order starts no session; an order whose session c
   assert.equal(t.store.getOrder(1), undefined, 'and its order discarded');
   // The positive branch: a start that comes up keeps its order.
   t.starts.end = false;
-  await t.management.startSession('mgr', { task: 'Deploy.', order: { command: DEPLOY, question: t.answered('Yes, publish') } });
+  await t.management.startSession('mgr', { task: 'Deploy.', order: { command: DEPLOY, question: t.agreed(DEPLOY) } });
   assert.equal(t.store.getOrder(2)?.sessionId, 'w2');
 });
 
 test('an order allows nothing while its session is still starting, in the manager either', async () => {
   // Review of PR #107, finding 5: start_session records the order before the session exists.
   const t = setup();
-  const o = t.orders.record('mgr', null, { command: DEPLOY, question: t.answered('Yes, publish') }, null);
+  const o = t.orders.record('mgr', null, { command: DEPLOY, question: t.agreed(DEPLOY) }, null);
   assert.ok(!('error' in o));
   const manager = await t.hooksOf('mgr');
   assert.equal(await manager.decide(DEPLOY, 'm1'), null, 'not yet: no session');
@@ -238,7 +260,7 @@ test('an order allows nothing while its session is still starting, in the manage
 
 test('a once-order runs once: done after it ran; given back with its error when it failed', async () => {
   const t = setup();
-  await t.management.startSession('mgr', { task: 'Deploy.', order: { command: DEPLOY, question: t.answered('Yes, publish') } });
+  await t.management.startSession('mgr', { task: 'Deploy.', order: { command: DEPLOY, question: t.agreed(DEPLOY) } });
   const worker = await t.hooksOf('w1');
   assert.equal(await worker.decide(DEPLOY, 'a'), 'allow');
   assert.equal(await worker.decide(DEPLOY, 'b'), null, 'taken while the first run is under way');
@@ -254,8 +276,8 @@ test('a once-order runs once: done after it ran; given back with its error when 
 test("a once-order whose run never reported back (a restart, the session's end) waits on the person's word, with why", async () => {
   // Review of PR #107, finding 4: otherwise it stays taken, reads open, and never runs again.
   const t = setup();
-  await t.management.startSession('mgr', { task: 'Deploy.', order: { command: DEPLOY, question: t.answered('Yes, publish') } });
-  await t.management.startSession('mgr', { task: 'Build.', order: { command: 'scripts/build.sh', question: t.answered('Yes, publish') } });
+  await t.management.startSession('mgr', { task: 'Deploy.', order: { command: DEPLOY, question: t.agreed(DEPLOY) } });
+  await t.management.startSession('mgr', { task: 'Build.', order: { command: 'scripts/build.sh', question: t.agreed('scripts/build.sh') } });
   assert.deepEqual(t.orders.recover(), [], 'nothing under way, nothing asked');
   const w1 = await t.hooksOf('w1');
   assert.equal(await w1.decide(DEPLOY, 'a'), 'allow');
@@ -278,7 +300,7 @@ test("a once-order whose run never reported back (a restart, the session's end) 
 
 test('an until-done order holds until the manager marks it done', async () => {
   const t = setup();
-  await t.management.startSession('mgr', { task: 'Deploy.', order: { command: DEPLOY, question: t.answered('Yes, publish'), until: 'done' } });
+  await t.management.startSession('mgr', { task: 'Deploy.', order: { command: DEPLOY, question: t.agreed(DEPLOY), until: 'done' } });
   const worker = await t.hooksOf('w1');
   assert.equal(await worker.decide(DEPLOY, 'a'), 'allow');
   await worker.ran('a');
@@ -292,7 +314,7 @@ test('away kind "ordered": on, an order from the away period runs and away_log l
   for (const kind of [true, false]) {
     const t = setup();
     t.goAway(kind ? ['merge', 'ordered'] : ['merge']);
-    await t.management.startSession('mgr', { task: 'Deploy.', order: { command: DEPLOY, question: t.answered('Yes, publish') } });
+    await t.management.startSession('mgr', { task: 'Deploy.', order: { command: DEPLOY, question: t.agreed(DEPLOY) } });
     assert.notEqual(t.store.getOrder(1)!.awaySince, null, 'recorded during the away period');
     const worker = await t.hooksOf('w1');
     const log = formatLog(t.away.log('mgr'), t.away.current(), 'Simon');
@@ -315,7 +337,7 @@ test('away kind "ordered": on, an order from the away period runs and away_log l
 
 test('an order recorded before the person left still runs while they are away, with the kind off', async () => {
   const t = setup();
-  await t.management.startSession('mgr', { task: 'Deploy.', order: { command: DEPLOY, question: t.answered('Yes, publish') } });
+  await t.management.startSession('mgr', { task: 'Deploy.', order: { command: DEPLOY, question: t.agreed(DEPLOY) } });
   t.goAway(['merge']);
   const worker = await t.hooksOf('w1');
   assert.equal(await worker.decide(DEPLOY, 'a'), 'allow');
@@ -326,7 +348,7 @@ test('at the end of away, every order from the period that is not done asks "kee
   const t = setup();
   t.goAway(['ordered']);
   for (const command of ['scripts/a.sh', 'scripts/b.sh', 'scripts/c.sh']) {
-    await t.management.startSession('mgr', { task: 'Go.', order: { command, question: t.answered('Yes, publish') } });
+    await t.management.startSession('mgr', { task: 'Go.', order: { command, question: t.agreed(command) } });
   }
   const w1 = await t.hooksOf('w1');
   assert.equal(await w1.decide('scripts/a.sh', 'a'), 'allow');
@@ -373,7 +395,7 @@ test('at the end of away, every order from the period that is not done asks "kee
 test('a period that ran out while Ledung was stopped is settled at the next start', async () => {
   const t = setup();
   t.goAway(['ordered']);
-  await t.management.startSession('mgr', { task: 'Go.', order: { command: DEPLOY, question: t.answered('Yes, publish') } });
+  await t.management.startSession('mgr', { task: 'Go.', order: { command: DEPLOY, question: t.agreed(DEPLOY) } });
   t.away.stop();
   // The period's end passes with nothing running: wind its time back, then start again.
   const meta = JSON.parse(t.store.getMeta('away')!);
@@ -383,4 +405,114 @@ test('a period that ran out while Ledung was stopped is settled at the next star
   t.away.begin();
   t.away.stop();
   assert.equal(t.store.listQuestions(100).filter((q) => q.details?.order).length, 1);
+});
+
+test('words alone only propose an order: it allows nothing until the person confirms the exact command on the page', async () => {
+  // Review of PR #107, finding 1 (its R1 and R3); Martin 2026-11-03, Ledung question #1290 "a".
+  const t = setup();
+  t.store.createSession({ id: 'w0', project: 'p', runner: 'local', title: 'Worker 0', parentId: 'mgr', permissionMode: 'auto' });
+  const PUSH = 'git push --force origin main';
+  const at = Date.now();
+  t.typed('thanks, looks good to me', at);
+  const sent = await t.management.sendMessage('mgr', 'w0', 'Push it.', { command: PUSH, typed: { words: 'looks good', at: new Date(at).toISOString() } });
+  assert.match(sent, /Order #1 proposed/);
+  assert.match(t.store.undeliveredInbox('w0')[0]!.text, /proposed as order #1\. It allows nothing until Simon confirms this exact command on the page/);
+  const worker = await t.hooksOf('w0');
+  const manager = await t.hooksOf('mgr');
+  assert.equal(await worker.decide(PUSH, 'a'), null, 'proposed: nothing in the session');
+  assert.equal(await manager.decide(PUSH, 'm1'), null, 'nor in the manager');
+  // One plain answer proposes as many as the manager likes; each is asked on its own (R3).
+  const q = t.answered('Not yet');
+  for (const command of ['rm -rf build', 'gh pr merge 5 --admin']) await t.management.sendMessage('mgr', 'w0', 'Go.', { command, question: q });
+  assert.deepEqual(t.orders.list().map((o) => o.status), ['waiting', 'waiting', 'waiting']);
+  // The question shows the exact command, the whole message, the session and the manager, first in Waiting for you.
+  const cq = t.confirmQ(1);
+  assert.deepEqual(cq.options, [CONFIRM, CANCEL]);
+  assert.match(cq.question, /Your manager "Manager" proposes an order for its session "Worker 0", resting on your own words \(typed on this computer/);
+  assert.match(cq.question, /> thanks, looks good to me/);
+  assert.match(cq.question, /```\ngit push --force origin main\n```/);
+  t.store.createQuestion({ sessionId: 'mgr', question: 'Which colour?', options: null, addressedTo: 'user', details: { tier: 'Blocks a finished PR', rank: 0 } });
+  const lists = waitingLists(t.store.listQuestions(100), () => 'p', () => ['Blocks a finished PR'], () => true, ['Blocks a finished PR']);
+  assert.deepEqual(lists.forYou.map((i) => !!i.q.details?.order?.confirm), [true, true, true, false]);
+  // Only the person's own answer confirms: not a manager's, not one passed on.
+  for (const by of [{ answeredBy: 'manager' as const, forwardedFrom: null }, { answeredBy: 'user' as const, forwardedFrom: 99 }]) {
+    t.orders.answered({ ...cq, status: 'answered', answer: CONFIRM, ...by });
+  }
+  assert.equal(t.store.getOrder(1)!.status, 'waiting');
+  assert.equal(await worker.decide(PUSH, 'b'), null);
+  // The person confirms: exactly that command runs, nothing chained; the session is told.
+  t.confirm(1);
+  assert.equal(t.store.getOrder(1)!.status, 'open');
+  assert.equal(await worker.decide(`${PUSH} && rm -rf /`, 'c'), null);
+  assert.equal(await worker.decide(PUSH, 'd'), 'allow');
+  assert.match(t.told.find((x) => x.id === 'w0')!.text, /Simon confirmed order #1 on the page/);
+  const told = buildDelivery('Simon', [t.store.getQuestion(cq.id)!], [], () => 'x', (id) => t.store.getOrder(id));
+  assert.match(told.userText, /about order #1: confirmed\. Order #1 is in force/);
+  // Cancel drops one; it never runs.
+  t.confirm(2, CANCEL);
+  assert.equal(t.store.getOrder(2)!.status, 'dropped');
+  assert.equal(await worker.decide('rm -rf build', 'e'), null);
+});
+
+test('an ask_user answer confirms only when its question showed that exact command and the person picked its confirm option', async () => {
+  // Martin 2026-11-03, Ledung question #1290 "a": "An ask_user answer whose question already showed that exact command counts as the confirm."
+  const asked = askedQuestion({ question: 'Deploy the stats?', options: ['Yes, deploy', 'No'], tier: 'x', order_command: { command: DEPLOY, confirm: 'Yes, deploy' } });
+  assert.deepEqual(asked.details!.orderCommand, { command: DEPLOY, match: 'exact', confirm: 'Yes, deploy' });
+  assert.match(asked.question, /answering "Yes, deploy" confirms an order that lets exactly this command run without a prompt:\n\n```\nscripts\/deploy\.sh --stats\n```$/);
+  const keyed = askedQuestion({ question: 'Deploy?', options: [{ key: 'a', text: '**Deploy** now' }, { key: 'b', text: 'Wait' }], order_command: { command: DEPLOY, confirm: 'a' } });
+  assert.equal(keyed.details!.orderCommand!.confirm, 'a — Deploy');
+  assert.throws(() => askedQuestion({ question: 'Deploy?', options: ['Yes', 'No'], order_command: { command: DEPLOY, confirm: 'Sure' } }), /not one of the options/);
+  assert.throws(() => askedQuestion({ question: 'Deploy?', options: ['Yes', 'No'], order_command: { command: '*', match: 'pattern', confirm: 'Yes' } }), /start with the program/);
+
+  const t = setup();
+  t.store.createSession({ id: 'w0', project: 'p', runner: 'local', title: 'Worker 0', parentId: 'mgr', permissionMode: 'auto' });
+  const send = (question: number, command = DEPLOY) => t.management.sendMessage('mgr', 'w0', 'Deploy.', { command, question });
+  // Another pick, another command or another match: refused.
+  await assert.rejects(send(t.agreed(DEPLOY, 'Not yet')), /did not pick "Yes, publish"/);
+  await assert.rejects(send(t.agreed('scripts/other.sh')), /showed the person another command \(exact: scripts\/other\.sh\)/);
+  // The exact command, picked: in force at once, with no confirm question.
+  const yes = t.agreed(DEPLOY);
+  assert.match(await send(yes), /Order #1 recorded \(answer to question #\d+, \d\d:\d\d, where Simon confirmed this exact command\)/);
+  assert.equal(t.store.getOrder(1)!.status, 'open');
+  assert.equal(t.confirmQ(1), undefined);
+  assert.equal(await (await t.hooksOf('w0')).decide(DEPLOY, 'a'), 'allow');
+  // It backs that one order only.
+  await assert.rejects(send(yes), /question #\d+ has already confirmed order #1; ask again for another/);
+  // A question without the command only proposes.
+  await send(t.answered('Yes, publish'));
+  assert.equal(t.store.getOrder(2)!.status, 'waiting');
+  assert.ok(t.confirmQ(2));
+});
+
+test('while the person is away, an ordered merge still passes the floors: the order replaces the ask, not the checks', async () => {
+  // Spec-gap 3 of the review of PR #107; Martin 2026-11-03, Ledung question #1290 (no note on the floors: they apply).
+  const MERGE = 'gh pr merge 9 --squash';
+  const ADMIN = 'gh pr merge 5 --admin';
+  const failing = JSON.stringify({ state: 'OPEN', mergeable: 'MERGEABLE', statusCheckRollup: [{ name: 'check', status: 'COMPLETED', conclusion: 'FAILURE' }] });
+  const green = JSON.stringify({ state: 'OPEN', mergeable: 'MERGEABLE', statusCheckRollup: [{ name: 'check', status: 'COMPLETED', conclusion: 'SUCCESS' }] });
+  // Here: the person is present and ordered it; away mode's floors are not asked.
+  const here = setup();
+  here.github.json = failing;
+  await here.management.startSession('mgr', { task: 'Merge.', order: { command: MERGE, question: here.agreed(MERGE) } });
+  assert.equal(await (await here.hooksOf('w1')).decide(MERGE, 'h'), 'allow');
+
+  const t = setup();
+  t.goAway(['ordered']);
+  await t.management.startSession('mgr', { task: 'Merge.', order: { command: MERGE, question: t.agreed(MERGE) } });
+  await t.management.startSession('mgr', { task: 'Merge.', order: { command: ADMIN, question: t.agreed(ADMIN) } });
+  const w1 = await t.hooksOf('w1');
+  t.github.json = failing;
+  assert.equal(await w1.decide(MERGE, 'a'), null, 'a failing check holds it');
+  assert.match(statusText(t.store.getOrder(1)!, 'Simon'), /^refused: held for Simon: failing checks: check \(order #1\)$/);
+  let log = formatLog(t.away.log('mgr'), t.away.current(), 'Simon');
+  assert.match(log, /HELD · ordered/);
+  assert.match(log, /FAIL failing checks: check/);
+  t.github.json = green;
+  assert.equal(await w1.decide(MERGE, 'b'), 'allow', 'green: it runs');
+  log = formatLog(t.away.log('mgr'), t.away.current(), 'Simon');
+  assert.match(log, /ALLOWED · ordered/);
+  assert.match(log, /Allowed by order #1: Simon's own words, "Yes, publish"; PR #9 open, mergeable, no failing checks, 1 check green/);
+  // A merge away mode can't check is held: a floor fails closed.
+  assert.equal(await (await t.hooksOf('w2')).decide(ADMIN, 'c'), null);
+  assert.match(t.store.getOrder(2)!.note!, /away mode can't check this merge's floors: away mode does not let --admin through/);
 });

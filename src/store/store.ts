@@ -758,12 +758,19 @@ export class Store {
 
   // ------------------------------------------------------------ orders on record (issue #105)
 
-  addOrder(o: Omit<OrderInfo, 'id' | 'project' | 'status' | 'statusAt' | 'note' | 'runs' | 'lastRunAt' | 'keepQuestion'>): OrderInfo {
+  /** `status`: open when the person confirmed the exact command, waiting (proposed) when they still must (issue #105). */
+  addOrder(o: Omit<OrderInfo, 'id' | 'project' | 'status' | 'statusAt' | 'note' | 'runs' | 'lastRunAt' | 'keepQuestion'>, status: 'open' | 'waiting'): OrderInfo {
     const r = this.db.prepare(`INSERT INTO orders (manager_id, session_id, command, match, until, source_kind, source_ref, words, words_at, created_at, away_since, status, status_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?) RETURNING id`)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`)
       .get(o.managerId, o.sessionId || null, o.command, o.match, o.until, o.source.kind,
-        o.source.kind === 'question' ? o.source.questionId : o.source.messageId, o.words, o.wordsAt, o.createdAt, o.awaySince, o.createdAt) as { id: number };
+        o.source.kind === 'question' ? o.source.questionId : o.source.messageId, o.words, o.wordsAt, o.createdAt, o.awaySince, status, o.createdAt) as { id: number };
     return this.getOrder(Number(r.id))!;
+  }
+
+  /** The order a question's answer is the source of, if any: a question that confirmed a command backs one order. */
+  orderFromQuestion(questionId: number): number | undefined {
+    const r = this.db.prepare(`SELECT id FROM orders WHERE source_kind = 'question' AND source_ref = ? ORDER BY id LIMIT 1`).get(questionId) as { id: number | bigint } | undefined;
+    return r ? Number(r.id) : undefined;
   }
 
   /** The session an order went to, once start_session has made it. */

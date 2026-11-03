@@ -110,8 +110,24 @@ export interface QuestionDetails {
    * builds its details from the fields above only. Answered "Allow once", it lets that exact call through one time.
    */
   refusal?: RefusalDetails;
-  /** Raised by Ledung at the end of an away period (issue #105): an order not done, "keep it?". Never given by ask_user. */
+  /**
+   * Raised by Ledung about an order (issue #105): a proposed order to confirm, or one not done, "keep it?". Never given
+   * by ask_user.
+   */
   order?: OrderQuestionDetails;
+  /**
+   * The exact command an ask_user question puts to the person (issue #105, Martin 2026-11-03, Ledung question #1290 "a"):
+   * shown on the question page, and the person's pick of `confirm` confirms an order for exactly it.
+   */
+  orderCommand?: OrderCommandDetails;
+}
+
+/** A command an ask_user question asks the person to confirm as an order (issue #105). */
+export interface OrderCommandDetails {
+  command: string;
+  match: 'exact' | 'pattern';
+  /** The answer that confirms it: the text the confirming option gives, as the page sends it. */
+  confirm: string;
 }
 
 /** The refused call (issue #104): the tool, its input as the session sent it, the classifier's reason and the call's id. */

@@ -40,13 +40,25 @@ export interface OrderInfo {
   keepQuestion: number | null;
 }
 
-/** A Ledung question about an order (issue #105): the end of away asks whether a not-done order stays. */
+/**
+ * A Ledung question about an order (issue #105): `confirm`, a proposed order the person confirms before it is in force
+ * (Martin 2026-11-03, Ledung question #1290 "a"); otherwise the end of away asks whether a not-done order stays.
+ */
 export interface OrderQuestionDetails {
   orderId: number;
+  confirm?: boolean;
 }
 
 export const KEEP = 'Keep it';
 export const DROP = 'Drop it';
+export const CONFIRM = 'Confirm order';
+export const CANCEL = 'Cancel order';
+
+/** Whether an answer is this option: exactly it, or it with the page's note after it. */
+export const picked = (answer: string | null, option: string): boolean => {
+  const a = (answer ?? '').trim();
+  return a === option || a.startsWith(`${option}\n\nNote: `);
+};
 
 /** Whether the order still lets its command through: open, or refused (it may still run once allowed). */
 export const inForce = (o: Pick<OrderInfo, 'status'>): boolean => o.status === 'open' || o.status === 'refused';

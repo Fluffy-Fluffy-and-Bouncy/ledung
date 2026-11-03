@@ -11,7 +11,7 @@
 // from it that is not done asks whether it stays ("a failed goal/order couldnt stay forever", question #1278).
 import type { Store } from '../store/store.ts';
 import type { AwayInfo, ServerEvent } from '../shared/protocol.ts';
-import { DROP, KEEP, inForce, sourceText, statusText, type OrderInfo, type OrderSource } from '../shared/orders.ts';
+import { CANCEL, CONFIRM, DROP, KEEP, inForce, picked, sourceText, statusText, type OrderInfo, type OrderSource } from '../shared/orders.ts';
 import type { QuestionDetails } from '../shared/questions.ts';
 import type { QuestionInfo } from '../shared/protocol.ts';
 import { words as plainWords } from './away.ts';
@@ -46,6 +46,11 @@ export interface Attested {
   source: OrderSource;
   words: string;
   wordsAt: number;
+  /**
+   * Whether the person already confirmed exactly this command: they picked the confirm option of a question that showed
+   * it (order_command). Otherwise the order is only proposed (Martin 2026-11-03, Ledung question #1290 "a").
+   */
+  confirmed: boolean;
 }
 
 let exercised = false;
@@ -98,8 +103,13 @@ function typedAt(at: string): ((t: number) => boolean) | null {
  * person's own words to this manager: an answer to one of its questions, given on this computer and not passed on by
  * a manager, or a message typed into it on this computer (no `from`: Ledung's deliveries and other sessions' words
  * carry one), in the last two days. Ledung's own questions (a refused call, a keep-it) are no source.
+ *
+ * Words alone never put an order in force (review of PR #107, finding 1; Martin 2026-11-03, Ledung question #1290 "a"):
+ * they only propose it, and the person confirms the exact command on the page. The one exception is a question of the
+ * manager's that showed the person this exact command (order_command) and whose confirm option they picked; it
+ * confirms one order only.
  */
-export function attest(store: Store, managerId: string, spec: Pick<OrderSpec, 'question' | 'typed'>, now: number): Attested | { error: string } {
+export function attest(store: Store, managerId: string, spec: Pick<OrderSpec, 'command' | 'match' | 'question' | 'typed'>, now: number): Attested | { error: string } {
   const since = now - WORDS_WINDOW_MS;
   if ((spec.question === undefined) === (spec.typed === undefined)) {
     return { error: 'Give the source of the order as exactly one of: question (the number of your question the person answered) or typed (their words and the time they typed them).' };
@@ -114,7 +124,15 @@ export function attest(store: Store, managerId: string, spec: Pick<OrderSpec, 'q
       : !store.answeredHere(q.id) ? `question #${q.id} was not answered on this computer`
       : null;
     if (why) return { error: `Ledung can't attest this order: ${why}.` };
-    return { source: { kind: 'question', questionId: q!.id }, words: q!.answer!, wordsAt: q!.answeredAt! };
+    const c = q!.details?.orderCommand;
+    const used = c ? store.orderFromQuestion(q!.id) : undefined;
+    const bound = !c ? null
+      : c.command !== (spec.command ?? '').trim() || c.match !== (spec.match ?? 'exact') ? `question #${q!.id} showed the person another command (${c.match}: ${c.command})`
+      : !picked(q!.answer, c.confirm) ? `the person did not pick "${c.confirm}" in question #${q!.id}`
+      : used !== undefined ? `question #${q!.id} has already confirmed order #${used}; ask again for another`
+      : null;
+    if (bound) return { error: `Ledung can't attest this order: ${bound}.` };
+    return { source: { kind: 'question', questionId: q!.id }, words: q!.answer!, wordsAt: q!.answeredAt!, confirmed: !!c };
   }
   const t = spec.typed!;
   const want = squash(t.words ?? '');
@@ -129,7 +147,7 @@ export function attest(store: Store, managerId: string, spec: Pick<OrderSpec, 'q
   }
   // The whole message as Ledung has it, never the manager's piece of it: a piece can drop the "Do not" in front
   // (review of PR #107, finding 2). The manager's words only find the message.
-  return { source: { kind: 'typed', messageId: hit.id }, words: (hit.data.text as string).trim(), wordsAt: hit.at };
+  return { source: { kind: 'typed', messageId: hit.id }, words: (hit.data.text as string).trim(), wordsAt: hit.at, confirmed: false };
 }
 
 /** What the order allows, in a sentence. */
@@ -146,11 +164,17 @@ function fenced(text: string): string {
   return `${fence}\n${text}\n${fence}`;
 }
 
+/** Whether the order is proposed: waiting on the person's confirm, with no run before it. */
+const proposed = (o: Pick<OrderInfo, 'status' | 'runs'>) => o.status === 'waiting' && o.runs === 0;
+
 /** What starts the task or message the order goes with: the person's words verbatim, then what Ledung recorded. */
 export function orderPreamble(o: OrderInfo, userName: string): string {
+  const head = `— ${userName}'s own words (${sourceText(o)}), checked by Ledung against its own record`;
   return [
     o.words,
-    `— ${userName}'s own words (${sourceText(o)}), checked by Ledung against its own record and recorded as order #${o.id}. It allows ${allowsText(o, 'session')}:`,
+    proposed(o)
+      ? `${head} and proposed as order #${o.id}. It allows nothing until ${userName} confirms this exact command on the page; then it allows ${allowsText(o, 'session')}, and you are told:`
+      : `${head}; ${userName} confirmed this exact command, recorded as order #${o.id}. It allows ${allowsText(o, 'session')}:`,
     fenced(o.command),
     'Any other command, or this one with anything chained onto it, is asked as usual.',
     '---',
@@ -158,9 +182,28 @@ export function orderPreamble(o: OrderInfo, userName: string): string {
 }
 
 /** What the manager is told when its order was recorded. */
-export function orderRecorded(o: OrderInfo): string {
-  return `Order #${o.id} recorded (${sourceText(o)}): it allows ${allowsText(o, 'manager')}. The session's message starts with the person's words. ` +
-    `The order shows on the page, where the person can cancel it.${o.until === 'done' ? ' Mark it done with order_done when it is.' : ''}`;
+export function orderRecorded(o: OrderInfo, userName: string): string {
+  const done = o.until === 'done' ? ' Mark it done with order_done when it is.' : '';
+  if (proposed(o)) {
+    return `Order #${o.id} proposed (${sourceText(o)}): it allows nothing until ${userName} confirms this exact command; Ledung asks them first in Waiting for you, and you are told their answer. ` +
+      `Confirmed, it allows ${allowsText(o, 'manager')}. The session's message starts with the person's words.${done}`;
+  }
+  return `Order #${o.id} recorded (${sourceText(o)}, where ${userName} confirmed this exact command): it allows ${allowsText(o, 'manager')}. The session's message starts with the person's words. ` +
+    `The order shows on the page, where the person can cancel it.${done}`;
+}
+
+/** The question that asks the person to confirm a proposed order (Martin 2026-11-03, Ledung question #1290 "a"). */
+export function confirmQuestion(o: OrderInfo, userName: string, tier: string | undefined, managerTitle: string, sessionTitle: string): { question: string; options: string[]; details: QuestionDetails } {
+  const title = `Confirm order #${o.id}?`;
+  const issue = [
+    `Your manager "${managerTitle}" proposes an order for its session "${sessionTitle}", resting on your own words (${sourceText(o)}):`,
+    o.words.split('\n').map((l) => `> ${l}`).join('\n'),
+    `Confirmed, it lets ${o.match === 'exact' ? 'exactly this command' : 'commands of this pattern (`*` is any text; one plain command only)'} run without a prompt in "${sessionTitle}" and in "${managerTitle}", ${o.until === 'once' ? 'once' : 'until the manager marks it done'}:`,
+    fenced(o.command),
+    ...(o.awaySince !== null ? ['It was proposed while you were away.'] : []),
+    `**${CONFIRM}** puts it in force. **${CANCEL}** drops it. Until you answer, it allows nothing.`,
+  ].join('\n\n');
+  return { question: `**${title}**\n\n${issue}`, options: [CONFIRM, CANCEL], details: { title, issue, ...(tier ? { tier } : {}), rank: 0, order: { orderId: o.id, confirm: true } } };
 }
 
 /** The note after an ordered call: the words and their source. */
@@ -192,6 +235,11 @@ export function keepAnswerText(q: QuestionInfo, o: OrderInfo | undefined, userNa
   const a = (q.answer ?? '').trim();
   const head = `${userName} answered Ledung's question #${q.id} about order #${q.details!.order!.orderId}`;
   if (!o) return `${head}, which no longer exists: ${a}`;
+  if (q.details!.order!.confirm) {
+    if (picked(a, CONFIRM)) return `${head}: confirmed. Order #${o.id} is in force; it allows ${allowsText(o, 'manager')}:\n\n${fenced(o.command)}${note(a, CONFIRM)}`;
+    if (picked(a, CANCEL)) return `${head}: cancelled. Order #${o.id} is dropped; it allows nothing.${note(a, CANCEL)}`;
+    return `${head} without confirming or cancelling it, so it stays proposed and allows nothing:\n\n${a}`;
+  }
   if (a.startsWith(KEEP)) return `${head}: keep it. Order #${o.id} is open again and is your top item; it allows ${allowsText(o, 'manager')}:\n\n${fenced(o.command)}${note(a, KEEP)}`;
   if (a.startsWith(DROP)) return `${head}: drop it. Order #${o.id} is dropped; nothing more runs under it.${note(a, DROP)}`;
   return `${head} without keeping or dropping it, so it stays waiting on their word and allows nothing:\n\n${a}`;
@@ -238,19 +286,36 @@ export class Orders {
     const until = spec.until ?? 'once';
     const bad = commandProblem(spec.command ?? '', match);
     if (bad) return { error: `Order refused: ${bad}` };
-    const word = attest(this.o.store, managerId, spec, now);
-    if ('error' in word) return word;
+    const attested = attest(this.o.store, managerId, spec, now);
+    if ('error' in attested) return attested;
+    const { confirmed, ...word } = attested;
+    // Not confirmed: proposed, waiting on the person's word (one of the process's five statuses), allowing nothing.
     const o = this.o.store.addOrder({
       managerId, sessionId: sessionId ?? '', command: spec.command.trim(), match, until, ...word, createdAt: now, awaySince: away?.since ?? null,
-    });
-    if (sessionId) this.changed();
-    return o;
+    }, confirmed ? 'open' : 'waiting');
+    if (sessionId) {
+      if (!confirmed) this.askConfirm(o, now);
+      this.changed();
+    }
+    return this.o.store.getOrder(o.id)!;
   }
 
-  /** The session start_session made for the order. */
-  attach(id: number, sessionId: string): void {
+  /** The session start_session made for the order; a proposed one is put to the person now that it has its session. */
+  attach(id: number, sessionId: string, now = Date.now()): void {
     this.o.store.setOrderSession(id, sessionId);
+    const o = this.o.store.getOrder(id);
+    if (o && proposed(o) && o.keepQuestion === null) this.askConfirm(o, now);
     this.changed();
+  }
+
+  /** Asks the person to confirm a proposed order, first in Waiting for you. */
+  private askConfirm(o: OrderInfo, now: number): QuestionInfo {
+    const title = (id: string) => this.o.store.getSession(id)?.title ?? id;
+    const k = confirmQuestion(o, this.o.userName, this.o.tierOf(o.managerId), title(o.managerId), title(o.sessionId));
+    const q = this.o.store.createQuestion({ sessionId: o.managerId, question: k.question, options: k.options, addressedTo: 'user', details: k.details });
+    this.o.store.setOrderStatus(o.id, 'waiting', null, now, ['waiting'], q.id);
+    this.o.publish({ type: 'question', question: q });
+    return q;
   }
 
   /** start_session failed: the order never was. */
@@ -352,11 +417,27 @@ export class Orders {
     return this.o.store.takenOnceOrders().map((id) => this.lost(id, 'Ledung restarted while it ran', now)).filter((q) => q !== null);
   }
 
-  /** The person's answer to a keep-it question: Keep puts it back in force, Drop ends it; anything else leaves it waiting. */
+  /**
+   * The person's answer to Ledung's question about an order. Confirm puts a proposed order in force, and its session is
+   * told; Keep puts a not-done one back; Cancel and Drop end it; anything else leaves it waiting. Only the person's own
+   * answer to the question the order waits on: never a manager's, never a forwarded one.
+   */
   answered(q: QuestionInfo, now = Date.now()): void {
     const id = q.details?.order?.orderId;
     if (id === undefined || q.answeredBy !== 'user' || q.forwardedFrom !== null) return;
+    if (this.o.store.getOrder(id)?.keepQuestion !== q.id) return;
     const a = (q.answer ?? '').trim();
+    if (q.details!.order!.confirm) {
+      const confirmed = picked(a, CONFIRM) && this.o.store.setOrderStatus(id, 'open', null, now, ['waiting'], null);
+      const cancelled = !confirmed && picked(a, CANCEL)
+        && this.o.store.setOrderStatus(id, 'dropped', `cancelled on ${this.o.userName}'s word`, now, ['waiting'], null);
+      const o = this.o.store.getOrder(id)!;
+      if (confirmed && o.sessionId && o.sessionId !== o.managerId) {
+        this.o.tell(o.sessionId, `Ledung: ${this.o.userName} confirmed order #${id} on the page at ${hhmm(now)}. It allows ${allowsText(o, 'session')}:\n\n${fenced(o.command)}`);
+      }
+      if (confirmed || cancelled) this.changed();
+      return;
+    }
     const changed = a.startsWith(KEEP) ? this.o.store.setOrderStatus(id, 'open', null, now, ['waiting'], null)
       : a.startsWith(DROP) ? this.o.store.setOrderStatus(id, 'dropped', `dropped on ${this.o.userName}'s word`, now, ['waiting'], null)
       : false;

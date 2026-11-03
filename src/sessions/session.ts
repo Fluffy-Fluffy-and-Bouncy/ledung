@@ -25,7 +25,7 @@ import {
 import { mergeAnswered, routePermission, sensitiveHookOutput, type SensitiveRules } from './sensitive.ts';
 import { promptTimeLine } from './elapsed.ts';
 import { settingsAction, wordsFor, type Word } from './word.ts';
-import { promptAwayLine, classify, decide as awayDecide, FLOOR_TIMEOUT_MS, formatLog, type Away } from './away.ts';
+import { promptAwayLine, classify, decide as awayDecide, FLOOR_TIMEOUT_MS, formatLog, orderedMergeFloors, type Away, type Floor } from './away.ts';
 import type { AwayInfo } from '../shared/protocol.ts';
 import { deskQuestion, questionText, type QuestionDetails } from '../shared/questions.ts';
 import { compactionUsage, contextAfterCompact, UsageRecorder, type SessionFacts } from '../usage/recorder.ts';
@@ -614,24 +614,34 @@ export class Session {
    * only when away mode allows "ordered"; otherwise it is held as before (asked, with away mode's reason) and the order
    * reads refused. Either way away_log records it. Settings actions keep their own rule. Null: as before.
    */
-  private onOrder(toolName: string, input: Record<string, unknown>, toolUseId: string | undefined): Record<string, unknown> | null {
+  private async onOrder(toolName: string, input: Record<string, unknown>, toolUseId: string | undefined): Promise<Record<string, unknown> | null> {
     if (!this.orders || settingsAction(toolName) || SETTINGS_CHANGE_TOOLS.includes(toolName)) return null;
     const o = this.orders.covering(this.id, toolName, input);
     if (!o) return null;
     const command = String(input.command);
     const away = this.away?.current() ?? null;
     const here = o.sessionId === this.id && o.sessionId !== o.managerId ? ` (run by its session "${this.store.getSession(this.id)?.title ?? this.id}")` : '';
-    const log = (allowed: boolean, reason: string) =>
-      this.away?.record(o.managerId, command, { kind: 'ordered', allowed, reason: `${reason}${here}`, pr: null, repo: null, floors: [] });
+    const log = (allowed: boolean, reason: string, merge: { pr: number | null; repo: string | null; floors: Floor[] } = { pr: null, repo: null, floors: [] }) =>
+      this.away?.record(o.managerId, command, { kind: 'ordered', allowed, reason: `${reason}${here}`, ...merge });
     if (away && o.awaySince === away.since && !away.allow.includes('ordered')) {
       const reason = `held for ${this.userName}: order #${o.id} was recorded while ${this.userName} was away, and away mode does not allow ordered commands`;
       log(false, reason);
       this.orders.refused(o.id, reason);
       return null;
     }
+    // While the person is away, an ordered merge still passes away mode's floors: the order replaces the ask, not the
+    // checks (Martin 2026-11-03, Ledung question #1290; review of PR #107, finding 3). Held, it is asked as before.
+    const floors = away ? await orderedMergeFloors(this.userName, command, (pr, repo, fields) => this.runner.pullRequestView(pr, repo, fields, FLOOR_TIMEOUT_MS)) : null;
+    const merge = floors ? { pr: floors.pr, repo: floors.repo, floors: floors.floors } : undefined;
+    if (floors && !floors.allowed) {
+      const reason = `${floors.reason} (order #${o.id})`;
+      log(false, reason, merge);
+      this.orders.refused(o.id, reason);
+      return null;
+    }
     // Taken atomically: a once-order runs once, whoever races for it.
     if (!this.orders.take(o)) return null;
-    if (away) log(true, `Allowed by order #${o.id}: ${this.userName}'s own words, "${o.words.replace(/\s+/g, ' ').trim()}"`);
+    if (away) log(true, `Allowed by order #${o.id}: ${this.userName}'s own words, "${o.words.replace(/\s+/g, ' ').trim()}"${floors ? `; PR #${floors.pr} ${floors.floors.map((f) => f.detail).join(', ')}` : ''}`, merge);
     if (toolUseId) this.orderedRuns.set(toolUseId, o.id);
     const why = orderNote(o, this.userName);
     this.record('event', { text: why });
@@ -840,7 +850,7 @@ export class Session {
           if (named) return named;
           const once = this.onceOnTap(toolName, toolInput, toolUseId);
           if (once) return once;
-          const ordered = this.onOrder(toolName, toolInput, toolUseId);
+          const ordered = await this.onOrder(toolName, toolInput, toolUseId);
           if (ordered) return ordered;
           return sensitiveHookOutput(toolName, toolInput, this.sensitiveRules, this.alwaysAsked);
         }] }],

@@ -350,15 +350,33 @@ export async function decide(a: AwayInfo, userName: string, command: string, dev
   if (p.kind === 'devShip') {
     return { kind: 'devShip', allowed: true, reason: `Allowed by away mode: ${userName} allowed dev ship, and this is the project's dev ship command`, pr: null, repo: null, floors: [] };
   }
-  const where = { pr: p.pr, repo: p.repo };
-  const view = await viewPr(p.pr, p.repo, PR_FLOOR_FIELDS);
-  if ('error' in view) {
-    return held(`PR #${p.pr} could not be read (${view.error})`, { ...where, floors: [{ floor: 'readable', ok: false, detail: view.error }] });
-  }
-  const floors = floorsOf(p.pr, view.json);
+  return mergeFloors(p.pr, p.repo, userName, viewPr);
+}
+
+/** A merge's floors, read from GitHub: allowed with what passed, or held with what failed. Fails closed. */
+async function mergeFloors(pr: number, repo: string | null, userName: string, viewPr: ViewPr): Promise<AwayDecision> {
+  const where = { pr, repo };
+  const held = (reason: string, floors: Floor[]): AwayDecision => ({ kind: 'merge', allowed: false, reason: `held for ${userName}: ${reason}`, ...where, floors });
+  const view = await viewPr(pr, repo, PR_FLOOR_FIELDS);
+  if ('error' in view) return held(`PR #${pr} could not be read (${view.error})`, [{ floor: 'readable', ok: false, detail: view.error }]);
+  const floors = floorsOf(pr, view.json);
   const failed = floors.filter((f) => !f.ok);
-  if (failed.length) return held(failed.map((f) => f.detail).join('; '), { ...where, floors });
-  return { kind: 'merge', allowed: true, reason: `Allowed by away mode: PR #${p.pr} ${floors.map((f) => f.detail).join(', ')}`, ...where, floors };
+  if (failed.length) return held(failed.map((f) => f.detail).join('; '), floors);
+  return { kind: 'merge', allowed: true, reason: `Allowed by away mode: PR #${pr} ${floors.map((f) => f.detail).join(', ')}`, ...where, floors };
+}
+
+/**
+ * An ordered command while the person is away (issue #105): a merge still has to pass the floors (open, mergeable, no
+ * check failing or running). The order replaces the ask, not the checks (Martin 2026-11-03, Ledung question #1290).
+ * Null: not a merge, nothing to check. A merge away mode can't read is held: a floor fails closed.
+ */
+export async function orderedMergeFloors(userName: string, command: string, viewPr: ViewPr): Promise<AwayDecision | null> {
+  if (!/\bgh\s+pr\s+merge\b/.test(command)) return null;
+  const p = classify(command);
+  if (p.kind !== 'merge') {
+    return { kind: 'merge', allowed: false, reason: `held for ${userName}: away mode can't check this merge's floors: ${('why' in p && p.why) || 'it is not a plain gh pr merge'}`, pr: null, repo: null, floors: [] };
+  }
+  return mergeFloors(p.pr, p.repo, userName, viewPr);
 }
 
 // ---------------------------------------------------------------- the state and the record

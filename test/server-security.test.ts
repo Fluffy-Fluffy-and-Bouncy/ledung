@@ -50,6 +50,9 @@ let sessions: SessionManager;
 const questionAbout: Record<string, number> = {};
 let refusalQuestion = 0;
 let keepQuestion = 0;
+/** Ledung's question to confirm a proposed order, and a manager's question carrying an order's exact command (#105). */
+let confirmQuestion = 0;
+let orderCommandQuestion = 0;
 let managerQuestion = 0;
 let paneStore: Store;
 /** The folders Settings' Open folder was asked to show (issue #414); nothing is opened for real. */
@@ -101,6 +104,14 @@ before(async () => {
   const kq = store.createQuestion({ sessionId: 's1', question: 'keep?', options: ['Keep it', 'Drop it'], addressedTo: 'user', details: { order: { orderId: 1 } } });
   store.withdrawQuestion(kq.id, 'test');
   keepQuestion = kq.id;
+  // A proposed order's confirm question, and an ask_user question carrying an order's exact command (Ledung question
+  // #1290 "a"): either answer puts an order in force.
+  const cq = store.createQuestion({ sessionId: 's1', question: 'confirm?', options: ['Confirm order', 'Cancel order'], addressedTo: 'user', details: { order: { orderId: 2, confirm: true } } });
+  store.withdrawQuestion(cq.id, 'test');
+  confirmQuestion = cq.id;
+  const oq = store.createQuestion({ sessionId: 's1', question: 'deploy?', options: ['Yes', 'No'], addressedTo: 'user', details: { orderCommand: { command: 'scripts/deploy.sh', match: 'exact', confirm: 'Yes' } } });
+  store.withdrawQuestion(oq.id, 'test');
+  orderCommandQuestion = oq.id;
   // A manager and a question it asked, no longer open (#104 review, finding F1).
   store.createSession({ id: 'm1', project: 'p', runner: 'local', title: 'lead', parentId: null, permissionMode: 'default', role: 'manager' });
   const mq = store.createQuestion({ sessionId: 'm1', question: 'merge #1?', options: null, addressedTo: 'user' });
@@ -651,6 +662,9 @@ test("answering Ledung's question about a refused call, whose Allow once lets th
 test("answering an order's keep-it question, whose Keep puts the order back in force, needs the live page (issue #105)", async () => {
   const answer = { answer: 'Keep it' };
   assert.equal((await change(`/api/questions/${keepQuestion}/answer`, answer)).status, 403);
+  // So do a proposed order's confirm and a question that carries an order's exact command (Ledung question #1290 "a").
+  assert.equal((await change(`/api/questions/${confirmQuestion}/answer`, { answer: 'Confirm order' })).status, 403);
+  assert.equal((await change(`/api/questions/${orderCommandQuestion}/answer`, { answer: 'Yes' })).status, 403);
   // Another question of the same ordinary session needs only the cookie, as before.
   const plain = await change(`/api/questions/${questionAbout['perm-plain']}/answer`, answer);
   assert.equal(plain.status, 400);

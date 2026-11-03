@@ -286,7 +286,9 @@ function Queue(p: {
   );
 
   // Orders not done when an away period ended (issue #105), first of all: "keep it?" (question #1278).
-  const keep = p.forYou.filter((i) => i.q.details?.order);
+  const keep = p.forYou.filter((i) => i.q.details?.order && !i.q.details.order.confirm);
+  // Proposed orders (Ledung question #1290 "a"): the person confirms the exact command before it is in force.
+  const confirm = p.forYou.filter((i) => i.q.details?.order?.confirm);
   // The orders themselves, in the projects shown.
   const orders = props.orders.filter((o) => filter.mode === 'all' ? !filter.hidden.includes(o.project) : o.project === filter.one);
   // Calls the auto mode classifier refused (issue #104), first in the list: a session waits on each now.
@@ -300,6 +302,7 @@ function Queue(p: {
           <p className="lede muted">Ordered by what each answer unblocks, and each answer takes you to the next.<span className="kbd-hint"> <kbd>Enter</kbd> opens the first question.</span></p>
           {!waiting && <div className="empty-box">Nothing is waiting for you{filter.mode === 'one' && filter.one ? ` in ${filter.one}` : ''}. New questions appear here as they are asked.</div>}
           {keep.length > 0 && <div className="group">{groupHead('Orders from your away time: keep them?', 'var(--danger)', keep.length)}{keep.map((i) => row(i, ++place))}</div>}
+          {confirm.length > 0 && <div className="group">{groupHead('Orders to confirm', 'var(--danger)', confirm.length)}{confirm.map((i) => row(i, ++place))}</div>}
           {orders.length > 0 && <div className="group">{groupHead('Orders', 'var(--accent)', orders.length)}{orders.map((o) => (
             <OrderCard key={o.id} order={o} userName={props.userName} sessionTitle={titleOf} onOpenSession={props.onOpenSession} run={props.run} />
           ))}</div>}
@@ -622,6 +625,13 @@ function QuestionPage({ ctx, item, list, onAnswered }: { ctx: DeskContext; item:
           <RefersTo q={q} userName={props.userName} nameOf={nameOf} tintOf={tintOf} onOpenConversation={(s, id) => props.onGoToConversation(id, s)} onOpenMessage={props.onGoToMessage} onOpenQuestion={(id) => props.questions.some((x) => x.id === id) ? () => props.onOpenQuestion(id) : null} />
 
           {v.issue && <section className="block"><h4>The issue</h4><div className="issue prose">{mdText(v.issue)}</div></section>}
+          {q.details?.orderCommand && (
+            <section className="block">
+              <h4>The order you confirm</h4>
+              <div className="muted">Answering "{q.details.orderCommand.confirm}" lets {q.details.orderCommand.match === 'exact' ? 'exactly this command' : 'commands of this pattern'} run without a prompt:</div>
+              <pre className="order-command">{q.details.orderCommand.command}</pre>
+            </section>
+          )}
           {v.evidence && <section className="block"><details className="ev"><summary>Evidence</summary><div className="prose">{mdText(v.evidence)}</div></details></section>}
 
           {q.status === 'answered' && (

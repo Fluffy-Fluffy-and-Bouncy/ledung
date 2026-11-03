@@ -7,10 +7,10 @@ import { z } from 'zod';
 import { PERMISSION_MODES, type AttachedSource, type PermissionMode, type QuestionInfo, type SessionRole } from '../shared/protocol.ts';
 import { failedSourcesNote, MAX_SOURCES, type SourceInput } from './sources.ts';
 import {
-  ACCEPTED, CHANGES_NEEDED, detailsProblem, hasDetails, MAX_REVIEW_EVIDENCE, optionAnswer, questionText, type Opinion, type QuestionDetails, type QuestionOption, type ReviewDetails,
+  ACCEPTED, CHANGES_NEEDED, detailsProblem, hasDetails, MAX_REVIEW_EVIDENCE, optionAnswer, questionText, type OrderCommandDetails, type Opinion, type QuestionDetails, type QuestionOption, type ReviewDetails,
 } from '../shared/questions.ts';
 import type { ShotInput } from './management.ts';
-import type { OrderSpec } from './orders.ts';
+import { commandProblem, type OrderSpec } from './orders.ts';
 import { SETTINGS_ACTIONS } from './word.ts';
 import { SETTINGS_PATCH, type SettingsPatch } from '../projects/settings-tools.ts';
 
@@ -218,10 +218,34 @@ export interface AskArgs {
   about_question?: number;
   about_request?: string;
   sources?: SourceInput[];
+  /** The exact command the question asks the person to confirm as an order, and the option that confirms it (issue #105). */
+  order_command?: { command: string; match?: 'exact' | 'pattern'; confirm: string };
+}
+
+/**
+ * The order command an ask_user question carries (issue #105, Martin 2026-11-03, Ledung question #1290 "a"): checked,
+ * with the answer its confirming option gives, so the person's pick of it confirms an order for exactly that command.
+ */
+function orderCommandDetails(a: AskArgs, objects: QuestionOption[] | undefined): OrderCommandDetails {
+  const c = a.order_command!;
+  const match = c.match ?? 'exact';
+  const bad = commandProblem(c.command ?? '', match);
+  if (bad) throw new Error(`order_command: ${bad} Nothing was asked.`);
+  const want = (c.confirm ?? '').trim();
+  const confirm = objects ? objects.find((o) => o.key === want) && optionAnswer(objects.find((o) => o.key === want)!)
+    : (a.options as string[] | undefined)?.find((o) => o.trim() === want)?.trim();
+  if (!confirm) throw new Error(`order_command.confirm is "${want}", which is not one of the options (give its key, or its label for plain options). Nothing was asked.`);
+  return { command: c.command.trim(), match, confirm };
+}
+
+/** What the question shows of its order command, after the asker's text, so the chat and the phone show it too. */
+function orderCommandText(c: OrderCommandDetails): string {
+  const fence = '`'.repeat(Math.max(2, ...(c.command.match(/`+/g) ?? []).map((s) => s.length)) + 1);
+  return `**Order for Ledung**: answering "${c.confirm}" confirms an order that lets ${c.match === 'exact' ? 'exactly this command' : 'commands of this pattern (`*` is any text; one plain command only)'} run without a prompt:\n\n${fence}\n${c.command}\n${fence}`;
 }
 
 /** What a review doesn't take besides its own sections: opinions and checks go in its notes, files in its evidence (docs/steps/pr-review.md). */
-const NOT_IN_A_REVIEW: (keyof AskArgs)[] = ['question', 'options', 'issue', 'evidence', 'opinions', 'recommended', 'why', 'reviewer', 'screenshots', 'about_request'];
+const NOT_IN_A_REVIEW: (keyof AskArgs)[] = ['question', 'options', 'issue', 'evidence', 'opinions', 'recommended', 'why', 'reviewer', 'screenshots', 'about_request', 'order_command'];
 
 /** A review's fields, checked: its sections can't be missing, so a review never arrives without its context. */
 function reviewDetails(a: AskArgs): QuestionDetails {
@@ -255,12 +279,14 @@ export function askedQuestion(a: AskArgs): { question: string; options: string[]
   const details: QuestionDetails = {
     title: a.title, issue: a.issue, evidence: a.evidence, options: objects, opinions: a.opinions?.length ? a.opinions : undefined,
     recommended: a.recommended, why: a.why, reviewer: a.reviewer, tier: a.tier, rank: a.rank, refs: a.refs,
+    orderCommand: a.order_command ? orderCommandDetails(a, objects) : undefined,
   };
   for (const k of Object.keys(details) as (keyof QuestionDetails)[]) if (details[k] === undefined) delete details[k];
   const problem = detailsProblem(details);
   if (problem) throw new Error(problem);
-  const question = questionText(a.question, details);
-  if (!question.trim()) throw new Error('Give the question, or at least issue.');
+  const text = questionText(a.question, details);
+  if (!text.trim()) throw new Error('Give the question, or at least issue.');
+  const question = details.orderCommand ? `${text}\n\n${orderCommandText(details.orderCommand)}` : text;
   return {
     question,
     options: objects ? objects.map(optionAnswer) : (a.options as string[] | undefined) ?? null,
@@ -464,12 +490,22 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
           ? {
             about_question: z.number().int().positive().optional().describe("The number of the question from one of your sessions that this is about; later pass the answer on with forward_answer."),
             about_request: z.string().min(8).optional().describe(`A permission request from one of your sessions to put to ${who}: Ledung writes the question with the exact request, your question text becomes your note under it, and ${who}'s answer decides the request.`),
+            order_command: z.object({
+              command: z.string().min(1).describe('The command as it will run: exactly, or (match "pattern") with * where any text may stand.'),
+              match: z.enum(['exact', 'pattern']).optional().describe('Default exact.'),
+              confirm: z.string().min(1).describe("The option whose pick confirms the order: its key, or its label for plain options."),
+            }).optional().describe(
+              `The exact command this question asks ${who} to confirm as an order. Ledung shows it on the question page; if ${who} picks the confirm option, ` +
+              'an order you then give with start_session or send_message, citing this question, is in force at once, for exactly this command. ' +
+              `Without it an answer only proposes an order, which ${who} must confirm on the page first.`,
+            ),
           }
           : {}),
       },
       async (args: AskArgs) => {
         if (args.about_request && !args.review) {
           return safely(() => {
+            if (args.order_command) throw new Error('order_command goes with a question of your own, not with about_request. Nothing was asked.');
             const q = h.ask(args.question ?? args.issue ?? '', null, args.about_question ?? null, args.about_request, { tier: args.tier, rank: args.rank, refs: args.refs });
             return `Question #${q.id} about request ${args.about_request} is recorded and has gone to ${h.asksWhom}. Ledung applies the answer to the request itself and tells you. End your turn now.`;
           });

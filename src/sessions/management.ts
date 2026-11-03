@@ -533,7 +533,7 @@ export class Management {
     }
     if (order) this.ctx.orders!.attach(order.id, s.id);
     const warning = this.ctx.profilesWarning?.(project);
-    return `Started session "${s.title}" (${s.id}) in ${project}${s.workDir ? `, working in ${s.workDir}` : ''}, profile "${s.profile ?? 'full'}". Ledung wakes you when it asks a question, ends, or finishes a turn with nothing running.${order ? ` ${orderRecorded(order)}` : ''}${warning ? ` Note: ${warning}` : ''}`;
+    return `Started session "${s.title}" (${s.id}) in ${project}${s.workDir ? `, working in ${s.workDir}` : ''}, profile "${s.profile ?? 'full'}". Ledung wakes you when it asks a question, ends, or finishes a turn with nothing running.${order ? ` ${orderRecorded(order, this.ctx.userName)}` : ''}${warning ? ` Note: ${warning}` : ''}`;
   }
 
   /** Checks and records an order (issue #105), or refuses it with the reason. */
@@ -610,7 +610,7 @@ export class Management {
     const sent = (await this.reach(id))
       ? `"${s.title}" had ended; it is resumed and gets your message once it is up.`
       : `Sent to "${s.title}". It arrives when the session is free.`;
-    return order ? `${sent} ${orderRecorded(order)}` : sent;
+    return order ? `${sent} ${orderRecorded(order, this.ctx.userName)}` : sent;
   }
 
   /**
