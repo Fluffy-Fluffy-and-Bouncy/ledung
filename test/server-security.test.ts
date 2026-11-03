@@ -2260,3 +2260,382 @@ test("two saves of a project's workflow from the same version: the first is save
   assert.match(String((two as PromiseRejectedResult).reason), /has changed since the page read the workflow/);
   assert.equal(fs.readFileSync(path.join(projectRoot, '.ledung', 'workflow', 'briefs', 'a.md'), 'utf8'), '# One');
 });
+
+// A project whose folder is also a shared workflow's (ledung#109): its flow is the one every project following that
+// workflow runs, so the builder must not save it from this project's page; #311's rule, "never into a shared workflow's
+// folder", holds by the back door too. The same folder, a link to it, and a workflow folder linked into the project's.
+test("a project whose folder is a shared workflow's, or links to it, shows that flow read-only and its save is refused; an ordinary project's save still works", async (t) => {
+  // The EXERCISED line goes to a data folder of the test's own, never the real one.
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-109-data-'));
+  const savedData = process.env.LEDUNG_DATA_DIR;
+  process.env.LEDUNG_DATA_DIR = data;
+  const shared = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-109-shared-'));
+  const linkToProject = path.join(os.tmpdir(), `ledung-109-link-${process.pid}`);
+  const before = sessions.currentConfig;
+  t.after(() => {
+    sessions.applyConfig(before, []);
+    if (savedData === undefined) delete process.env.LEDUNG_DATA_DIR;
+    else process.env.LEDUNG_DATA_DIR = savedData;
+    fs.rmSync(linkToProject, { recursive: true, force: true });
+    fs.rmSync(path.join(projectRoot, '.ledung'), { recursive: true, force: true });
+    removeTemp(shared);
+    removeTemp(data);
+  });
+  fs.rmSync(path.join(projectRoot, '.ledung'), { recursive: true, force: true });
+  const sharedFlow = JSON.stringify({ version: 1, title: 'Shared', blocks: [{ id: 'a', kind: 'work', title: 'A', runs: 'manager' }] });
+  fs.mkdirSync(path.join(shared, '.ledung', 'workflow'), { recursive: true });
+  fs.writeFileSync(path.join(shared, '.ledung', 'workflow', 'flow.json'), sharedFlow);
+  // Project p follows the first workflow (it names none), so this one.
+  const useWorkflow = (folder: string) => sessions.applyConfig({ ...before, workflows: [{ name: 'proc', folder, managerFile: 'lead.md', sessionFile: 'worker.md', projectConfig: 'LEAD.md' }] }, []);
+  const p = '/api/projects/p/flow';
+  const page = await livePage();
+  t.after(() => page.close());
+  const save = (b: unknown) => change(p, b, { 'x-ledung-page': page.key });
+  const view = async () => JSON.parse((await request({ path: p, headers: { cookie: COOKIE } })).body);
+  const own = path.join(projectRoot, '.ledung', 'workflow');
+  const flow = (title: string) => JSON.stringify({ version: 1, title, blocks: [{ id: 'a', kind: 'work', title: 'A', runs: 'manager' }] });
+
+  // An ordinary project that follows the workflow: its own folder is where Save goes, and the save is written there.
+  useWorkflow(shared);
+  const ordinary = await view();
+  assert.equal(ordinary.saveTo, own);
+  assert.equal(ordinary.readOnly, undefined);
+  assert.equal(ordinary.source.kind, 'workflow', 'it shows the shared flow until it has one of its own');
+  const ok = await save({ files: [{ path: 'flow.json', text: flow('Own'), base: null }] });
+  assert.equal(ok.status, 200, ok.body);
+  const ownVersion = JSON.parse(ok.body).versions['flow.json'];
+  assert.equal(fs.readFileSync(path.join(own, 'flow.json'), 'utf8'), flow('Own'));
+  assert.equal(fs.readFileSync(path.join(shared, '.ledung', 'workflow', 'flow.json'), 'utf8'), sharedFlow, 'the shared flow is untouched');
+
+  // The project's folder is the workflow's folder: by its own path, through a link (a junction on Windows) to it, and
+  // with the workflow's .ledung/workflow a link to the project's.
+  fs.symlinkSync(projectRoot, linkToProject, 'junction');
+  const flowLink = path.join(shared, '.ledung', 'workflow');
+  for (const [how, folder, setUp] of [
+    ['the same folder', projectRoot, () => {}],
+    ['a link to it', linkToProject, () => {}],
+    ["the workflow's flow folder linked to the project's", shared, () => {
+      fs.rmSync(flowLink, { recursive: true, force: true });
+      fs.symlinkSync(own, flowLink, 'junction');
+    }],
+  ] as const) {
+    setUp();
+    useWorkflow(folder);
+    // The back door first: a save straight to the route, with the version it replaces, is refused with the reason.
+    const refused = await save({ files: [{ path: 'flow.json', text: flow('Changed'), base: ownVersion }] });
+    assert.equal(refused.status, 400, `${how}: ${refused.body}`);
+    assert.match(errorOf(refused), /folder is the shared workflow "proc"'s folder/, how);
+    assert.equal(fs.readFileSync(path.join(own, 'flow.json'), 'utf8'), flow('Own'), `${how}: nothing was written`);
+    // The front door: the page is offered nowhere to save, and is told why.
+    const shown = await view();
+    assert.equal(shown.saveTo, null, how);
+    assert.match(shown.readOnly, /folder is the shared workflow "proc"'s folder/, how);
+    assert.equal(shown.source.kind, 'workflow', how);
+    assert.equal(shown.source.workflow, 'proc', how);
+    assert.equal(shown.flow.title, 'Own', `${how}: the flow in the folder is still shown`);
+  }
+  // And the fix ran where a log watcher looks for it.
+  assert.match(fs.readFileSync(path.join(data, 'exercised.log'), 'utf8'), /EXERCISED #109 /);
+});
+
+// The same before either side has a flow folder (review of PR #116): a workflow's repository with no drawn flow yet,
+// added as a project, is how #109 was found; its first Save must not create the flow every follower would then run.
+test("a project whose folder is a shared workflow's, before either has a flow folder: the first save is refused and creates nothing", async (t) => {
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-109-data-'));
+  const savedData = process.env.LEDUNG_DATA_DIR;
+  process.env.LEDUNG_DATA_DIR = data;
+  const shared = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-109-shared-'));
+  const linkToProject = path.join(os.tmpdir(), `ledung-109-link2-${process.pid}`);
+  const before = sessions.currentConfig;
+  t.after(() => {
+    sessions.applyConfig(before, []);
+    if (savedData === undefined) delete process.env.LEDUNG_DATA_DIR;
+    else process.env.LEDUNG_DATA_DIR = savedData;
+    fs.rmSync(linkToProject, { recursive: true, force: true });
+    fs.rmSync(path.join(projectRoot, '.ledung'), { recursive: true, force: true });
+    removeTemp(shared);
+    removeTemp(data);
+  });
+  fs.rmSync(path.join(projectRoot, '.ledung'), { recursive: true, force: true });
+  fs.symlinkSync(projectRoot, linkToProject, 'junction');
+  const useWorkflow = (folder: string) => sessions.applyConfig({ ...before, workflows: [{ name: 'proc', folder, managerFile: 'lead.md', sessionFile: 'worker.md', projectConfig: 'LEAD.md' }] }, []);
+  const p = '/api/projects/p/flow';
+  const page = await livePage();
+  t.after(() => page.close());
+  const save = (b: unknown) => change(p, b, { 'x-ledung-page': page.key });
+  const view = async () => JSON.parse((await request({ path: p, headers: { cookie: COOKIE } })).body);
+  const own = path.join(projectRoot, '.ledung', 'workflow');
+  const files = [{ path: 'flow.json', text: JSON.stringify({ version: 1, title: 'First', blocks: [{ id: 'a', kind: 'work', title: 'A', runs: 'manager' }] }), base: null }];
+
+  for (const [how, folder] of [['the same folder', projectRoot], ['a link to it', linkToProject]] as const) {
+    useWorkflow(folder);
+    const refused = await save({ files });
+    assert.equal(refused.status, 400, `${how}: ${refused.body}`);
+    assert.match(errorOf(refused), /folder is the shared workflow "proc"'s folder/, how);
+    assert.equal(fs.existsSync(path.join(projectRoot, '.ledung')), false, `${how}: no flow folder was made`);
+    const shown = await view();
+    assert.equal(shown.source, null, how);
+    assert.equal(shown.saveTo, null, how);
+    assert.match(shown.readOnly, /folder is the shared workflow "proc"'s folder/, how);
+  }
+
+  // The other way round (code review of PR #116): a workflow's folder linked into the project's, where the flow folder
+  // the link leads to isn't there yet. The project's first save would make it, and with it the workflow's live flow.
+  const sharedLinked = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-109-linked-'));
+  const sharedDangling = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-109-dangling-'));
+  t.after(() => {
+    removeTemp(sharedLinked);
+    removeTemp(sharedDangling);
+  });
+  fs.mkdirSync(path.join(projectRoot, '.ledung'));
+  fs.symlinkSync(path.join(projectRoot, '.ledung'), path.join(sharedLinked, '.ledung'), 'junction');
+  fs.mkdirSync(path.join(sharedDangling, '.ledung'));
+  fs.symlinkSync(own, path.join(sharedDangling, '.ledung', 'workflow'), 'junction');
+  for (const [how, folder] of [["the workflow's .ledung linked to the project's", sharedLinked], ["the workflow's flow folder linked to the project's, not made yet", sharedDangling]] as const) {
+    useWorkflow(folder);
+    const refused = await save({ files });
+    assert.equal(refused.status, 400, `${how}: ${refused.body}`);
+    assert.match(errorOf(refused), /folder is the shared workflow "proc"'s folder/, how);
+    assert.equal(fs.existsSync(own), false, `${how}: no flow folder was made`);
+    assert.equal((await view()).saveTo, null, how);
+  }
+
+  // The positive branch: following a workflow elsewhere, the same first save makes the project's own flow folder.
+  useWorkflow(shared);
+  const ok = await save({ files });
+  assert.equal(ok.status, 200, ok.body);
+  assert.equal(fs.existsSync(path.join(own, 'flow.json')), true, 'the probe sees a flow folder that was made');
+  assert.equal(fs.existsSync(path.join(shared, '.ledung')), false, 'nothing went into the shared folder');
+});
+
+// A shared workflow's flow folder linked to a folder inside the project's (review round 2 of PR #116): the project's
+// flows/flow.json or briefs/rules.md is then the workflow's live flow.json or rules.md, so its save must be refused too,
+// whether that inner folder exists yet or not.
+test("a project whose flow folder holds a shared workflow's, through a link to a folder inside it: its save is refused", async (t) => {
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-109-data-'));
+  const savedData = process.env.LEDUNG_DATA_DIR;
+  process.env.LEDUNG_DATA_DIR = data;
+  const shared = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-109-inner-'));
+  const before = sessions.currentConfig;
+  t.after(() => {
+    sessions.applyConfig(before, []);
+    if (savedData === undefined) delete process.env.LEDUNG_DATA_DIR;
+    else process.env.LEDUNG_DATA_DIR = savedData;
+    fs.rmSync(path.join(projectRoot, '.ledung'), { recursive: true, force: true });
+    removeTemp(shared);
+    removeTemp(data);
+  });
+  fs.rmSync(path.join(projectRoot, '.ledung'), { recursive: true, force: true });
+  const useWorkflow = (folder: string) => sessions.applyConfig({ ...before, workflows: [{ name: 'proc', folder, managerFile: 'lead.md', sessionFile: 'worker.md', projectConfig: 'LEAD.md' }] }, []);
+  const p = '/api/projects/p/flow';
+  const page = await livePage();
+  t.after(() => page.close());
+  const save = (b: unknown) => change(p, b, { 'x-ledung-page': page.key });
+  const own = path.join(projectRoot, '.ledung', 'workflow');
+  const flow = JSON.stringify({ version: 1, title: 'Inner', blocks: [{ id: 'a', kind: 'work', title: 'A', runs: 'manager' }] });
+  const sharedFlowFolder = path.join(shared, '.ledung', 'workflow');
+  fs.mkdirSync(path.join(shared, '.ledung'));
+
+  // The positive branch first: the shared flow folder is a folder of its own, and the project's save is written.
+  fs.mkdirSync(sharedFlowFolder);
+  useWorkflow(shared);
+  const ok = await save({ files: [{ path: 'flows/flow.json', text: flow, base: null }] });
+  assert.equal(ok.status, 200, ok.body);
+  assert.equal(fs.readFileSync(path.join(own, 'flows', 'flow.json'), 'utf8'), flow, 'the probe sees a file that was written');
+  fs.rmSync(path.join(own, 'flows'), { recursive: true, force: true });
+  fs.rmSync(sharedFlowFolder, { recursive: true, force: true });
+
+  for (const [how, inner, file, make] of [
+    ['linked to flows/, which is there', 'flows', 'flows/flow.json', true],
+    ['linked to flows/, not made yet', 'flows', 'flows/flow.json', false],
+    ['linked to briefs/, not made yet', 'briefs', 'briefs/rules.md', false],
+  ] as const) {
+    fs.rmSync(sharedFlowFolder, { recursive: true, force: true });
+    fs.rmSync(path.join(own, inner), { recursive: true, force: true });
+    if (make) fs.mkdirSync(path.join(own, inner), { recursive: true });
+    fs.symlinkSync(path.join(own, inner), sharedFlowFolder, 'junction');
+    useWorkflow(shared);
+    const refused = await save({ files: [{ path: file, text: file.endsWith('.json') ? flow : '# Rules', base: null }] });
+    assert.equal(refused.status, 400, `${how}: ${refused.body}`);
+    assert.match(errorOf(refused), /shared workflow "proc"/, how);
+    assert.equal(fs.existsSync(path.join(own, ...file.split('/'))), false, `${how}: nothing was written`);
+    const shown = JSON.parse((await request({ path: p, headers: { cookie: COOKIE } })).body);
+    assert.equal(shown.saveTo, null, how);
+    assert.match(shown.readOnly, /shared workflow "proc"/, how);
+  }
+});
+
+// A link inside a shared workflow's flow folder into the project's (review round 3 of PR #116; Martin, 2026-11-03 12:43,
+// Ledung question #1314): its briefs/ or flows/, or one file, linked to the project's makes the project's file the
+// workflow's too, so the project's save of that file is refused, whether the project's file or folder exists yet or not.
+test("a project whose flow files a shared workflow's flow folder links to from inside: the save of those files is refused", async (t) => {
+  const shared = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-109-links-'));
+  const before = sessions.currentConfig;
+  t.after(() => {
+    sessions.applyConfig(before, []);
+    fs.rmSync(path.join(projectRoot, '.ledung'), { recursive: true, force: true });
+    removeTemp(shared);
+  });
+  fs.rmSync(path.join(projectRoot, '.ledung'), { recursive: true, force: true });
+  sessions.applyConfig({ ...before, workflows: [{ name: 'proc', folder: shared, managerFile: 'lead.md', sessionFile: 'worker.md', projectConfig: 'LEAD.md' }] }, []);
+  const p = '/api/projects/p/flow';
+  const page = await livePage();
+  t.after(() => page.close());
+  const save = (b: unknown) => change(p, b, { 'x-ledung-page': page.key });
+  const own = path.join(projectRoot, '.ledung', 'workflow');
+  const flow = JSON.stringify({ version: 1, title: 'Links', blocks: [{ id: 'a', kind: 'work', title: 'A', runs: 'manager' }] });
+  const theirs = path.join(shared, '.ledung', 'workflow');
+  fs.mkdirSync(theirs, { recursive: true });
+  const textOf = (file: string) => (file.endsWith('.json') ? flow : '# Brief');
+
+  // The positive branch first: the shared folder's briefs/ and flows/ are folders of its own, and the project's save of
+  // the same names is written.
+  fs.mkdirSync(path.join(theirs, 'briefs'));
+  fs.mkdirSync(path.join(theirs, 'flows'));
+  const ok = await save({ files: [{ path: 'briefs/x.md', text: '# Brief', base: null }, { path: 'flows/extra.json', text: flow, base: null }] });
+  assert.equal(ok.status, 200, ok.body);
+  assert.equal(fs.readFileSync(path.join(own, 'briefs', 'x.md'), 'utf8'), '# Brief', 'the probe sees a file that was written');
+  assert.equal(fs.existsSync(path.join(theirs, 'briefs', 'x.md')), false, 'nothing went into the shared folder');
+
+  const cases: [string, string, () => void][] = [
+    ["the shared briefs/ linked to the project's, which is there", 'briefs/x.md', () => {
+      fs.mkdirSync(path.join(own, 'briefs'), { recursive: true });
+      fs.symlinkSync(path.join(own, 'briefs'), path.join(theirs, 'briefs'), 'junction');
+    }],
+    ["the shared flows/ linked to the project's, not made yet", 'flows/extra.json', () => {
+      fs.symlinkSync(path.join(own, 'flows'), path.join(theirs, 'flows'), 'junction');
+    }],
+    ["the shared overlays/ linked to the project's, with no project flow folder yet", 'overlays/rules.md', () => {
+      fs.rmSync(path.join(projectRoot, '.ledung'), { recursive: true, force: true });
+      fs.symlinkSync(path.join(own, 'overlays'), path.join(theirs, 'overlays'), 'junction');
+    }],
+  ];
+  // One file linked (a symlink, which only some accounts on Windows may make): the shared flow.json is the project's.
+  try {
+    fs.symlinkSync(path.join(shared, 'probe-target'), path.join(shared, 'probe-link'), 'file');
+    fs.rmSync(path.join(shared, 'probe-link'));
+    cases.push(["the shared flow.json linked to the project's, not made yet", 'flow.json', () => {
+      fs.symlinkSync(path.join(own, 'flow.json'), path.join(theirs, 'flow.json'), 'file');
+    }]);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EPERM') throw e;
+    t.diagnostic('file symlinks need another account here: the one-file case is left out');
+  }
+  for (const [how, file, link] of cases) {
+    fs.rmSync(path.join(own, 'briefs', 'x.md'), { force: true });
+    fs.rmSync(path.join(own, 'flows'), { recursive: true, force: true });
+    for (const f of ['briefs', 'flows', 'overlays', 'flow.json']) fs.rmSync(path.join(theirs, f), { recursive: true, force: true });
+    link();
+    const refused = await save({ files: [{ path: file, text: textOf(file), base: null }] });
+    assert.equal(refused.status, 400, `${how}: ${refused.body}`);
+    assert.match(errorOf(refused), /shared workflow "proc"/, how);
+    assert.equal(fs.existsSync(path.join(own, ...file.split('/'))), false, `${how}: nothing was written`);
+  }
+});
+
+// Review round 4 of PR #116 (Martin, 2026-11-03 13:00, Ledung question #1318): a shared flow may name a brief anywhere
+// in its folder, so a link on the way to one (docs/, a folder deep in briefs/) counts as much as briefs/ itself; and a
+// flow a save deletes is checked as a file it writes is, since the deletion would take away the workflow's live flow.
+test("a project whose flow files a shared flow's named briefs lead to, or a flow it deletes: the save is refused", async (t) => {
+  const shared = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-109-named-'));
+  const before = sessions.currentConfig;
+  t.after(() => {
+    sessions.applyConfig(before, []);
+    fs.rmSync(path.join(projectRoot, '.ledung'), { recursive: true, force: true });
+    removeTemp(shared);
+  });
+  fs.rmSync(path.join(projectRoot, '.ledung'), { recursive: true, force: true });
+  sessions.applyConfig({ ...before, workflows: [{ name: 'proc', folder: shared, managerFile: 'lead.md', sessionFile: 'worker.md', projectConfig: 'LEAD.md' }] }, []);
+  const p = '/api/projects/p/flow';
+  const page = await livePage();
+  t.after(() => page.close());
+  const save = (b: unknown) => change(p, b, { 'x-ledung-page': page.key });
+  const own = path.join(projectRoot, '.ledung', 'workflow');
+  const theirs = path.join(shared, '.ledung', 'workflow');
+  const naming = (brief: string) => JSON.stringify({ version: 1, title: 'Named', blocks: [{ id: 'a', kind: 'work', title: 'A', runs: 'manager', brief }] });
+  const reset = () => {
+    fs.rmSync(path.join(projectRoot, '.ledung'), { recursive: true, force: true });
+    fs.rmSync(theirs, { recursive: true, force: true });
+    fs.mkdirSync(path.join(own, 'briefs'), { recursive: true });
+    fs.mkdirSync(theirs, { recursive: true });
+  };
+
+  // Named by the shared flow.json at docs/x.md, and by a shared flows/side.json deep in briefs/: each folder on the way a
+  // real one first (the save is written), then a link to the project's briefs/ (refused, nothing written).
+  for (const [how, flowFile, brief, linkAt] of [
+    ['flow.json names docs/x.md', 'flow.json', 'docs/x.md', 'docs'],
+    ['flows/side.json names briefs/a/b/x.md', 'flows/side.json', 'briefs/a/b/x.md', 'briefs/a/b'],
+  ] as const) {
+    reset();
+    fs.mkdirSync(path.join(theirs, 'flows'));
+    fs.writeFileSync(path.join(theirs, ...flowFile.split('/')), naming(brief));
+    fs.mkdirSync(path.join(theirs, ...linkAt.split('/')), { recursive: true });
+    const ok = await save({ files: [{ path: 'briefs/x.md', text: '# Brief', base: null }] });
+    assert.equal(ok.status, 200, `${how}, a real folder: ${ok.body}`);
+    assert.equal(fs.readFileSync(path.join(own, 'briefs', 'x.md'), 'utf8'), '# Brief', `${how}: the probe sees a file that was written`);
+
+    fs.rmSync(path.join(own, 'briefs', 'x.md'));
+    fs.rmSync(path.join(theirs, ...linkAt.split('/')), { recursive: true });
+    fs.symlinkSync(path.join(own, 'briefs'), path.join(theirs, ...linkAt.split('/')), 'junction');
+    const refused = await save({ files: [{ path: 'briefs/x.md', text: '# Brief', base: null }] });
+    assert.equal(refused.status, 400, `${how}, a link: ${refused.body}`);
+    assert.match(errorOf(refused), /shared workflow "proc"/, how);
+    assert.equal(fs.existsSync(path.join(own, 'briefs', 'x.md')), false, `${how}: nothing was written`);
+  }
+
+  // A brief no flow names, only listed (test review round 5): the shared briefs/j.md is what Ledung's lister lists, so a
+  // link there into the project's briefs/ counts as much as a named one. A junction (on Windows its entry is not a
+  // folder, so the lister lists it) runs on every account; a file link only where file links can be made.
+  const forms: [string, () => void, () => void][] = [
+    ["briefs/j.md, listed, a junction to the project's briefs/",
+      () => fs.mkdirSync(path.join(theirs, 'briefs', 'j.md')),
+      () => fs.symlinkSync(path.join(own, 'briefs'), path.join(theirs, 'briefs', 'j.md'), 'junction')],
+  ];
+  try {
+    fs.symlinkSync(path.join(shared, 'probe-target'), path.join(shared, 'probe-link'), 'file');
+    fs.rmSync(path.join(shared, 'probe-link'));
+    forms.push(["briefs/j.md, listed, a file link to the project's briefs/x.md",
+      () => fs.writeFileSync(path.join(theirs, 'briefs', 'j.md'), '# Theirs'),
+      () => fs.symlinkSync(path.join(own, 'briefs', 'x.md'), path.join(theirs, 'briefs', 'j.md'), 'file')]);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EPERM') throw e;
+    t.diagnostic('file symlinks need another account here: the listed file-link case is left out');
+  }
+  for (const [how, real, link] of forms) {
+    reset();
+    fs.mkdirSync(path.join(theirs, 'briefs'));
+    real();
+    const ok = await save({ files: [{ path: 'briefs/x.md', text: '# Brief', base: null }] });
+    assert.equal(ok.status, 200, `${how}, a real one: ${ok.body}`);
+    assert.equal(fs.readFileSync(path.join(own, 'briefs', 'x.md'), 'utf8'), '# Brief', `${how}: the probe sees a file that was written`);
+
+    fs.rmSync(path.join(own, 'briefs', 'x.md'));
+    fs.rmSync(path.join(theirs, 'briefs', 'j.md'), { recursive: true });
+    link();
+    const refused = await save({ files: [{ path: 'briefs/x.md', text: '# Brief', base: null }] });
+    assert.equal(refused.status, 400, `${how}, a link: ${refused.body}`);
+    assert.match(errorOf(refused), /shared workflow "proc"/, how);
+    assert.equal(fs.existsSync(path.join(own, 'briefs', 'x.md')), false, `${how}: nothing was written`);
+  }
+
+  // A flow deleted (code review round 3 and test review round 4): with the shared flows/ a folder of its own the deletion
+  // goes through; with it linked to the project's flows/, the project's flows/extra.json is the workflow's, and stays.
+  const extra = JSON.stringify({ version: 1, title: 'Extra', blocks: [{ id: 'a', kind: 'work', title: 'A', runs: 'manager' }] });
+  const extraFile = path.join(own, 'flows', 'extra.json');
+  for (const linked of [false, true]) {
+    reset();
+    fs.mkdirSync(path.join(own, 'flows'));
+    fs.writeFileSync(extraFile, extra);
+    if (linked) fs.symlinkSync(path.join(own, 'flows'), path.join(theirs, 'flows'), 'junction');
+    else fs.mkdirSync(path.join(theirs, 'flows'));
+    const removed = await save({ files: [{ path: 'flows/extra.json', remove: true, base: crypto.createHash('sha256').update(extra, 'utf8').digest('hex').slice(0, 16) }] });
+    if (!linked) {
+      assert.equal(removed.status, 200, `the deletion, no link: ${removed.body}`);
+      assert.equal(fs.existsSync(extraFile), false, 'the probe sees a flow that was deleted');
+    } else {
+      assert.equal(removed.status, 400, `the deletion, linked: ${removed.body}`);
+      assert.match(errorOf(removed), /shared workflow "proc"/);
+      assert.equal(fs.readFileSync(extraFile, 'utf8'), extra, "the workflow's flow is still there");
+    }
+  }
+});

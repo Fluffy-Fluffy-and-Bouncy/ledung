@@ -242,6 +242,8 @@ export interface FlowView {
   versions: Record<string, string>;
   /** The folder the builder saves into: always the project's own, never a shared workflow's (#311). */
   saveTo: string | null;
+  /** Why there is nowhere to save, when the project's own folder is a shared workflow's (ledung#109). */
+  readOnly?: string;
   /**
    * The project's other flows (#447), by name; `flow`, `raw` and `problems` above are the default flow's (flow.json),
    * with the problems of what all share (the rules, the texts).
