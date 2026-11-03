@@ -1800,8 +1800,9 @@ export class LedungServer {
         // An answer to a question about a sensitive request decides that request (issue #51).
         const question = store.getQuestion(Number(id));
         const about = question?.aboutRequest;
-        // A sensitive one is signed for itself; else, to a manager, the page key alone (issue #192).
-        if (about && store.getPermission(about)?.sensitive) await this.requirePage(req, url);
+        // A sensitive one is signed for itself; else, to a manager, the page key alone (issue #192). Ledung's question
+        // about a refused call too: its Allow once lets that call through, past the sensitive list (issue #104, review finding 1).
+        if ((about && store.getPermission(about)?.sensitive) || question?.details?.refusal) await this.requirePage(req, url);
         else this.requirePageForManager(req, question?.sessionId);
         const body = await readJson(req);
         return manager.answerQuestion(Number(id), String(body.answer ?? ''), !this.guard.isPublic(req));

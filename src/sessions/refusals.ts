@@ -30,32 +30,45 @@ export function classifierReason(content: unknown): string | null {
   const text = typeof content === 'string'
     ? content
     : Array.isArray(content) ? content.map((b) => (b && typeof b === 'object' && typeof (b as { text?: unknown }).text === 'string' ? (b as { text: string }).text : '')).join('\n') : '';
-  const at = text.indexOf(CLASSIFIER_REFUSAL);
-  if (at < 0) return null;
-  const rest = text.slice(at + CLASSIFIER_REFUSAL.length);
-  // "Reason: <why>", then Claude Code's own advice to the model on later lines, which the person needs no copy of.
+  // Claude Code's refusal starts the result: a failing command whose output merely contains the sentence is no refusal
+  // (review of PR #106, finding 3).
+  const trimmed = text.trimStart();
+  if (!trimmed.startsWith(CLASSIFIER_REFUSAL)) return null;
+  const rest = trimmed.slice(CLASSIFIER_REFUSAL.length);
+  // One line (agent SDK 0.3.295): "Reason: <why>. If you have other tasks …" then its advice to the model, which the
+  // person needs no copy of. Cut where Claude Code's own screen cuts, else at the line's end.
   const m = /^\s*Reason:\s*([^\n]*)/.exec(rest);
-  return m?.[1]?.trim() || 'none given';
+  const line = m?.[1] ?? '';
+  const advice = line.indexOf(MODEL_ADVICE);
+  return (advice >= 0 ? line.slice(0, advice) : line).trim() || 'none given';
 }
 
-/** The part of a call that makes it the same call: everything but its description, which is the model's own label. */
-function callKey(input: Record<string, unknown>): string {
+/** Where Claude Code's advice to the model starts, right after the reason (its own screen cuts the reason here). */
+const MODEL_ADVICE = ". If you have other tasks that don't depend on this action";
+
+/** The tools whose top-level `description` is only the model's label for the call, never part of what it does. */
+const LABELLED_TOOLS = ['Bash', 'PowerShell'];
+
+/**
+ * The part of a call that makes it the same call: all of its input, except a shell command's top-level description.
+ * Any other tool's description can be its payload (an issue's text, say), so it counts (review of PR #106, finding 2).
+ */
+function callKey(toolName: string, input: Record<string, unknown>): string {
   const canonical = (v: unknown): unknown => {
     if (Array.isArray(v)) return v.map(canonical);
-    if (v && typeof v === 'object') {
-      return Object.fromEntries(Object.keys(v).sort().filter((k) => k !== 'description').map((k) => [k, canonical((v as Record<string, unknown>)[k])]));
-    }
+    if (v && typeof v === 'object') return Object.fromEntries(Object.keys(v).sort().map((k) => [k, canonical((v as Record<string, unknown>)[k])]));
     return typeof v === 'string' ? v.trim() : v;
   };
-  return JSON.stringify(canonical(input));
+  const { description: _label, ...rest } = input;
+  return JSON.stringify(canonical(LABELLED_TOOLS.includes(toolName) ? rest : input));
 }
 
 /**
- * Whether a call is exactly the one granted: the same tool and the same input, the description aside. No prefix, no
- * wildcard: a command with anything chained onto it (`;`, `&&`, a pipe) is another command.
+ * Whether a call is exactly the one granted: the same tool and the same input, a shell command's description aside. No
+ * prefix, no wildcard: a command with anything chained onto it (`;`, `&&`, a pipe) is another command.
  */
 export function sameCall(granted: { toolName: string; input: Record<string, unknown> }, toolName: string, input: Record<string, unknown>): boolean {
-  return granted.toolName === toolName && callKey(granted.input) === callKey(input);
+  return granted.toolName === toolName && callKey(granted.toolName, granted.input) === callKey(toolName, input);
 }
 
 /** The refused call a question is about, when Ledung raised it; null for any other question. */
