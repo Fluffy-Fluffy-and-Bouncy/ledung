@@ -14,6 +14,7 @@ import type { ComputerColour, ComputerInfo } from '../../src/shared/computers.ts
 import type { PaneFolderKey, PaneFolders, SessionChanges, TreeListing } from '../../src/shared/files-pane.ts';
 import type { LineComment } from '../../src/shared/line-comments.ts';
 import type { FlowFileWrite, FlowView } from '../../src/shared/flow.ts';
+import type { FlowRun } from '../../src/shared/flow-run.ts';
 import type { SkillChoices } from '../../src/shared/skills.ts';
 import type { SecretInfo, SecretLifetime } from '../../src/shared/secrets.ts';
 import type { SharedUsageView, UsagePublishView } from '../../src/shared/published-usage.ts';
@@ -298,6 +299,8 @@ export const api = {
   projectsFolder: () => call<{ path: string }>('GET', '/api/projects-folder'),
   /** A project's drawn workflow, its texts and the checks' problems (issue #310), read-only. */
   flow: (project: string) => call<FlowView>('GET', `/api/projects/${encodeURIComponent(project)}/flow`),
+  /** Its runs through its flows (workflow part 3c), the latest changed first. */
+  runs: (project: string) => call<FlowRun[]>('GET', `/api/projects/${encodeURIComponent(project)}/runs`),
   /** The builder saves (issue #311): into the project's own .ledung/workflow; the workflow as it then reads. */
   saveFlow: (project: string, files: FlowFileWrite[]) => call<FlowView>('POST', `/api/projects/${encodeURIComponent(project)}/flow`, { files }),
   machine: () => call<MachineInfo>('GET', '/api/machine'),

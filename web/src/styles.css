@@ -1726,3 +1726,29 @@ button.settings-menu-item.danger { color: var(--danger); }
 .flow-minimap { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 /* An error a page ran into (#447): its words, scrollable, not wider than the page. */
 .page-error-details pre { white-space: pre-wrap; word-break: break-word; max-height: 50vh; overflow: auto; font-size: 12px; }
+
+/* Runs on the workflow page (workflow part 3c): markers above a block with the runs in it, a counted pin's progress, the
+   chosen run's path, and the Runs list beside the rules. The markers sit above the block so the layout is unchanged. */
+.flow-run-markers { position: absolute; bottom: 100%; left: -1px; display: flex; gap: 3px; margin-bottom: 3px; max-width: calc(100% + 2px); }
+.flow-run-marker { font-size: 10px; line-height: 16px; padding: 0 6px; border-radius: 8px; background: var(--accent); color: var(--accent-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
+.flow-run-marker.waiting { background: var(--warn-bg); color: var(--text); border: 1px solid var(--warn-border); line-height: 14px; }
+.flow-run-marker.more { background: var(--panel); color: var(--muted); border: 1px solid var(--border); line-height: 14px; }
+.flow-pin.has-count { display: flex; justify-content: flex-end; gap: 0.35rem; }
+.flow-pin.has-count .flow-pin-word { flex: 0 1 auto; min-width: 0; }
+.flow-pin-count { flex: none; font-size: 10px; line-height: 14px; margin-top: 2px; padding: 0 5px; border-radius: 7px; background: var(--warn-bg); border: 1px solid var(--warn-border); color: var(--text); white-space: nowrap; }
+.flow-list-item .flow-pin-count { display: inline-block; margin: 2px 4px 0 0; }
+.flow-list-item .flow-block-top .flow-run-marker { margin-left: 0.4rem; display: inline-block; }
+.flow-block.on-path { box-shadow: 0 0 0 2px var(--ok); }
+.flow-block.on-path.here { box-shadow: 0 0 0 3px var(--accent); }
+.flow-list-item.on-path { border-left: 3px solid var(--ok); }
+.flow-list-item.on-path.here { border-left-color: var(--accent); }
+.flow-runs { border-bottom: 1px solid var(--border); }
+.flow-run-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.flow-run-head { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; text-align: left; font: inherit; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text); cursor: pointer; min-height: 44px; }
+.flow-run-head:hover { border-color: var(--accent); }
+.flow-run.chosen .flow-run-head { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.flow-run.state-ended .flow-run-title, .flow-run.state-stopped .flow-run-title { color: var(--muted); }
+.flow-run-title .chip { margin-left: 0.35rem; }
+.flow-run-history { margin: 6px 0 4px; padding-left: 1.3rem; font-size: 0.85rem; display: flex; flex-direction: column; gap: 3px; }
+.flow-run-note { white-space: pre-wrap; overflow-wrap: anywhere; }
+.run-line a { color: inherit; text-decoration: underline dotted; }

@@ -1493,6 +1493,9 @@ export class LedungServer {
       // The workflow page (issue #310): the project's flow, read-only and only from inside its folders (src/sessions/flow-files.ts).
       case 'GET projects/:id/flow':
         return manager.flowView(decodeURIComponent(id));
+      // Its runs through its flows (workflow part 3c), for the workflow page; the live connection sends changes.
+      case 'GET projects/:id/runs':
+        return manager.flowRunsOf(decodeURIComponent(id));
       // The builder saves (issue #311): only into the project's own .ledung/workflow, only the files the format knows,
       // each replacing the version the page read (src/sessions/flow-files.ts). A change like any other: the sign-in,
       // Host and Origin checks above, and through the public name an unlocked device. And the open page: what it

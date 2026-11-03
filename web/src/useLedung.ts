@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AccountChoices, AccountInfoView, ChatsInfo, AwayInfo, ConfigStatus, BoardStatus, GitHubBudget, LimitInfo, UsageStopInfo, SignInKind, SignInProblem, MachineInfo, Overview, PermissionInfo, ProjectInfo, QuestionInfo, NewComputerInfo, LinkPairingInfo, RemoteStatus, ServerEvent, SessionInfo, SourceOffer, StoredMessage } from '../../src/shared/protocol.ts';
 import type { Macro } from '../../src/shared/macros.ts';
+import type { FlowRun } from '../../src/shared/flow-run.ts';
 import type { ComputerInfo } from '../../src/shared/computers.ts';
 import { api, connectionHello, openConnection, setReconnect } from './api.ts';
 import { fetchNewer, PAGE, withNewer } from './catchUp.ts';
@@ -48,6 +49,8 @@ export function useLedung(openSessionId: string | null) {
   const [github, setGithub] = useState<GitHubBudget[]>([]);
   const [remote, setRemote] = useState<RemoteStatus | null>(null);
   const [chats, setChats] = useState<ChatsInfo | null>(null);
+  /** Runs through a project's flows as the live connection last sent them (workflow part 3c), by project. */
+  const [runs, setRuns] = useState<Record<string, FlowRun[]>>({});
   /** The computer tabs and whether this page came through the public name (issue #232). */
   const [computers, setComputers] = useState<ComputerInfo[]>([]);
   const [newComputers, setNewComputers] = useState<NewComputerInfo[]>([]);
@@ -184,6 +187,9 @@ export function useLedung(openSessionId: string | null) {
           case 'config':
             setConfigStatus(event.config);
             break;
+          case 'runs':
+            setRuns((r) => ({ ...r, [event.project]: event.runs }));
+            break;
           case 'projects':
             setProjects(event.projects);
             break;
@@ -270,5 +276,5 @@ export function useLedung(openSessionId: string | null) {
     };
   }, []);
 
-  return { connection, loaded, canRestart, hellos, updated, userName, source, questions, limits, usageStops, macros, signedOut, claudeProblem, claudeLooked, accountProblems, overview, machine, away, accounts, accountChoices, defaultIdentity, board, github, remote, computers, newComputers, linkPairings, throughPublicName, configStatus, chats, profiles, lockdownB, bangShell, sessions, projects, permissions, messages, hasEarlier, loadEarlier };
+  return { runs, connection, loaded, canRestart, hellos, updated, userName, source, questions, limits, usageStops, macros, signedOut, claudeProblem, claudeLooked, accountProblems, overview, machine, away, accounts, accountChoices, defaultIdentity, board, github, remote, computers, newComputers, linkPairings, throughPublicName, configStatus, chats, profiles, lockdownB, bangShell, sessions, projects, permissions, messages, hasEarlier, loadEarlier };
 }

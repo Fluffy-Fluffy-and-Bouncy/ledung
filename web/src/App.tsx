@@ -586,6 +586,7 @@ export function App() {
               <Suspense fallback={<div className="page-view"><p className="muted page-body">Loading the workflow page…</p></div>}>
                 <WorkflowView
                   project={openId.slice(3)}
+                  liveRuns={ledung.runs[openId.slice(3)]}
                   // The flow it shows is in the address (#447): each one opened is a step Back and Forward go through.
                   shownFlow={workflowFromHash(hash)?.flow ?? null}
                   onShowFlow={(name) => { location.hash = workflowHash(openId.slice(3), name); }}
@@ -1057,6 +1058,15 @@ export function SessionView(props: {
                 <button className="icon rename" title="Rename" aria-label={`Rename ${session.title}`} onClick={() => setRenaming(true)}>✎</button>
               </>}
           </h2>
+          {session.runBlock && session.project !== CHATS && (
+            // The run and block it serves (workflow part 3c), linked to the workflow page.
+            <div className="muted run-line">
+              Workflow:{' '}
+              <a href={workflowHash(session.project, session.runBlock.flow)} title="Show the run on the workflow page">
+                {session.runBlock.run}{session.runBlock.runTitle ? ` "${session.runBlock.runTitle}"` : ''} · {session.runBlock.blockTitle ?? session.runBlock.block}
+              </a>
+            </div>
+          )}
           {session.parentId && (
             <div className="muted started-by">
               Started by{' '}

@@ -2089,6 +2089,14 @@ test("a project's flow needs the sign-in and Ledung's own Host, is read-only, an
   const nope = await request({ path: '/api/projects/nope/flow', headers: { cookie: COOKIE } });
   assert.equal(nope.status, 400);
   assert.match(JSON.parse(nope.body).error, /no project named "nope"/);
+  // Its runs (workflow part 3c): read like the flow, behind the sign-in and the Host check.
+  const runs = '/api/projects/p/runs';
+  assert.equal((await request({ path: runs })).status, 401);
+  assert.equal((await request({ path: runs, headers: { host: 'evil.example:80', cookie: COOKIE } })).status, 403);
+  const listed = await request({ path: runs, headers: { cookie: COOKIE } });
+  assert.equal(listed.status, 200);
+  assert.deepEqual(JSON.parse(listed.body), []);
+  assert.equal((await request({ path: '/api/projects/nope/runs', headers: { cookie: COOKIE } })).status, 400);
 });
 
 // The builder saves (issue #311, part 2, design decision 4): a change like any other (sign-in, Host, Origin, and through

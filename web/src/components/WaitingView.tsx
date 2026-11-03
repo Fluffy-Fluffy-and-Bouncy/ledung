@@ -19,6 +19,7 @@ import { ReviewAnswer, ReviewEvidenceList, ReviewSections } from './ReviewView.t
 import { ScreenshotView, shotCount } from './ScreenshotView.tsx';
 import { usePlainTyping } from '../usePlainTyping.ts';
 import { Withdraw } from './Withdraw.tsx';
+import { RunLine } from './FlowRuns.tsx';
 import { NewComputerCard } from './RelaySettings.tsx';
 import { LinkPairingCard } from './LinkPairingCard.tsx';
 
@@ -397,6 +398,7 @@ function ReviewPage({ ctx, item, list, onAnswered }: { ctx: DeskContext; item: I
               {q.addressedTo !== 'user' && <span className="muted">· to manager "{titleOf(q.addressedTo)}"</span>}
             </div>
             <h3>{v.title}</h3>
+            {q.details?.run && <RunLine run={q.details.run} project={project} />}
             {v.refs.length > 0 && (
               <div className="refs">
                 {v.refs.map((r) => { const url = refLink(r); return url ? <a key={r} className="chip" href={url} target="_blank" rel="noreferrer noopener">{r}</a> : <span key={r} className="chip">{r}</span>; })}
@@ -591,6 +593,7 @@ function QuestionPage({ ctx, item, list, onAnswered }: { ctx: DeskContext; item:
               {!v.structured && <span className="muted touch-only">· asked with text and option labels only</span>}
             </div>
             <h3>{v.title}</h3>
+            {q.details?.run && <RunLine run={q.details.run} project={project} />}
             {v.refs.length > 0 && (
               <div className="refs">
                 {v.refs.map((r) => { const url = refLink(r); return url ? <a key={r} className="chip" href={url} target="_blank" rel="noreferrer noopener">{r}</a> : <span key={r} className="chip">{r}</span>; })}
