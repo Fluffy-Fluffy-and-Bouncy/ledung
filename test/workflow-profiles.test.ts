@@ -15,6 +15,7 @@ import { effectiveProfiles, parseWorkflowProfiles, readWorkflowProfiles } from '
 import { workflowInstructions, type ProjectWorkflow } from '../src/sessions/workflow.ts';
 import { openDatabase } from '../src/store/database.ts';
 import { Store } from '../src/store/store.ts';
+import { settingsOf, toApi, type Settings } from '../web/src/projects/projectSettings.ts';
 import { removeTemp } from './temp.ts';
 import { refuseRealSignInStores } from './signin-stores.ts';
 
@@ -320,6 +321,102 @@ test("Settings lists a profile's own MCP servers with what each runs or reaches,
     ]);
   } finally {
     cleanup();
+  }
+});
+
+/** What the page's Save sends for a project with these fields edited: the real form code, so no runner and no path (#96). */
+function pageBody(manager: SessionManager, name: string, edit: Partial<Settings>) {
+  const info = manager.projects().find((p) => p.name === name)!;
+  const body = toApi({ ...settingsOf(info), ...edit }, info);
+  assert.ok(!('runner' in body) && !('path' in body) && !('pathInContainer' in body), 'the page does not send where the project is');
+  return body as never;
+}
+
+/** A project p naming the workflow's profiles, as the one in the report did, and an account to change it to. */
+function projectOnWorkflowProfiles() {
+  const made = managerWith({}, WORKFLOW);
+  // Adding an account checks its sign-in at once: an answer of the test's own (#347).
+  made.manager.checkSignInWith = async () => ({ state: 'signed-in' }) as never;
+  made.manager.addAccount({ name: 'nappe' });
+  const p = made.manager.projects().find((x) => x.name === 'p')!;
+  made.manager.updateProject('p', { name: 'p', runner: 'local', path: p.path!, sensitive: p.sensitive, profiles: { manager: 'lead', session: 'slim' } });
+  return made;
+}
+
+test("a project naming a workflow's profile saves any change from the page, and renames with it (#96)", () => {
+  const { manager, cleanup } = projectOnWorkflowProfiles();
+  try {
+    const before = manager.projects().find((x) => x.name === 'p')!.path;
+    const saved = manager.updateProject('p', pageBody(manager, 'p', { account: 'nappe' }));
+    assert.equal(saved.account, 'nappe');
+    assert.deepEqual(saved.profiles, { manager: 'lead', session: 'slim' });
+    assert.equal(saved.path, before, 'it stays where it is');
+    const renamed = manager.renameProject('p', 'q', pageBody(manager, 'p', { model: 'haiku' }));
+    assert.deepEqual([renamed.name, renamed.account, renamed.model], ['q', 'nappe', 'haiku']);
+    assert.deepEqual(renamed.profiles, { manager: 'lead', session: 'slim' });
+  } finally {
+    cleanup();
+  }
+});
+
+test("a profile that truly does not exist is still refused on the page's save and rename, and changes nothing (#96)", () => {
+  const { manager, cleanup } = projectOnWorkflowProfiles();
+  try {
+    const refused = (e: Error) => e instanceof UserError && /no session profile named "nope"/.test(e.message) && /slim/.test(e.message);
+    assert.throws(() => manager.updateProject('p', pageBody(manager, 'p', { sessionProfile: 'nope' })), refused);
+    assert.throws(() => manager.renameProject('p', 'q', pageBody(manager, 'p', { managerProfile: 'nope' })), refused);
+    const p = manager.projects().find((x) => x.name === 'p')!;
+    assert.deepEqual(p.profiles, { manager: 'lead', session: 'slim' });
+    // The same probe takes a profile that is there, so the refusal above is about the name.
+    assert.equal(manager.updateProject('p', pageBody(manager, 'p', { sessionProfile: 'deploy' })).profiles.session, 'deploy');
+  } finally {
+    cleanup();
+  }
+});
+
+test("a page's save for a project that no longer exists gets the plain refusal, not one about its profiles (#96, review of PR #101)", () => {
+  const { manager, cleanup } = projectOnWorkflowProfiles();
+  try {
+    const body = pageBody(manager, 'p', { model: 'haiku' });
+    const gone = (e: Error) => e instanceof UserError && e.message === 'There is no project named "gone".';
+    assert.throws(() => manager.updateProject('gone', body), gone);
+    assert.throws(() => manager.renameProject('gone', 'q', body), gone);
+    assert.deepEqual(manager.projects().map((p) => p.name), ['p']);
+    // The same body saves on a project that is there, so the refusal above is about the name.
+    assert.equal(manager.updateProject('p', body).model, 'haiku');
+  } finally {
+    cleanup();
+  }
+});
+
+test("a project taken out of the workflow can't keep its profiles on the page's save (#96)", () => {
+  const { manager, cleanup } = projectOnWorkflowProfiles();
+  try {
+    assert.throws(() => manager.updateProject('p', pageBody(manager, 'p', { workflowUse: false })), /no session profile named "lead"/);
+    const out = manager.updateProject('p', pageBody(manager, 'p', { workflowUse: false, managerProfile: '', sessionProfile: '' }));
+    assert.equal(out.workflow?.use, false);
+  } finally {
+    cleanup();
+  }
+});
+
+test('a container project in the workflow saves from the page: where it is comes from the stored project (#96)', () => {
+  const docker = { name: 'c', runner: 'docker', container: 'box', user: 'dev', pathInContainer: '/work', workflow: { use: true }, profiles: { session: 'slim' } };
+  const { manager, cleanup } = managerWith({ projects: [docker] }, WORKFLOW);
+  try {
+    const saved = manager.updateProject('c', pageBody(manager, 'c', { model: 'haiku' }));
+    assert.equal(saved.model, 'haiku');
+    assert.equal(saved.profiles.session, 'slim');
+    assert.throws(() => manager.updateProject('c', pageBody(manager, 'c', { sessionProfile: 'nope' })), /no session profile named "nope"/);
+  } finally {
+    cleanup();
+  }
+  // Out of the workflow, a container's default, the workflow's profiles are not known to it.
+  const out = managerWith({ projects: [{ name: 'c', runner: 'docker', container: 'box', user: 'dev', pathInContainer: '/work' }] }, WORKFLOW);
+  try {
+    assert.throws(() => out.manager.updateProject('c', pageBody(out.manager, 'c', { sessionProfile: 'slim' })), /no session profile named "slim"/);
+  } finally {
+    out.cleanup();
   }
 });
 

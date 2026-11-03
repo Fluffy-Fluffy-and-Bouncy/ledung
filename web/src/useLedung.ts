@@ -1,7 +1,7 @@
 // The page's live view of Ledung: sessions, pending permissions and the open session's messages,
 // kept up to date over the live connection.
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AccountChoices, AccountInfoView, ChatsInfo, AwayInfo, ConfigStatus, BoardStatus, GitHubBudget, LimitInfo, UsageStopInfo, SignInProblem, MachineInfo, Overview, PermissionInfo, ProjectInfo, QuestionInfo, NewComputerInfo, LinkPairingInfo, RemoteStatus, ServerEvent, SessionInfo, SourceOffer, StoredMessage } from '../../src/shared/protocol.ts';
+import type { AccountChoices, AccountInfoView, ChatsInfo, AwayInfo, ConfigStatus, BoardStatus, GitHubBudget, LimitInfo, UsageStopInfo, SignInKind, SignInProblem, MachineInfo, Overview, PermissionInfo, ProjectInfo, QuestionInfo, NewComputerInfo, LinkPairingInfo, RemoteStatus, ServerEvent, SessionInfo, SourceOffer, StoredMessage } from '../../src/shared/protocol.ts';
 import type { Macro } from '../../src/shared/macros.ts';
 import type { ComputerInfo } from '../../src/shared/computers.ts';
 import { api, connectionHello, openConnection, setReconnect } from './api.ts';
@@ -42,7 +42,7 @@ export function useLedung(openSessionId: string | null) {
   const [profiles, setProfiles] = useState<string[]>(['full']);
   const [lockdownB, setLockdownB] = useState<string | null>(null);
   const [bangShell, setBangShell] = useState('Git Bash');
-  const [defaultIdentity, setDefaultIdentity] = useState<{ email: string | null; organization: string | null; plan: string | null; seenAt: number | null } | null>(null);
+  const [defaultIdentity, setDefaultIdentity] = useState<{ email: string | null; organization: string | null; plan: string | null; seenAt: number | null; signInKind?: SignInKind | null } | null>(null);
   const [board, setBoard] = useState<BoardStatus | null>(null);
   const [github, setGithub] = useState<GitHubBudget[]>([]);
   const [remote, setRemote] = useState<RemoteStatus | null>(null);

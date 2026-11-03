@@ -9,10 +9,17 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-03
+- Saving a project's settings no longer refuses a session profile that comes from its workflow, and a container project in a workflow saves instead of failing with a path error (#96)
+- The sidebar's new defaults: no status dot, compact step "Name + ship" and no "Archived (N)" entry, each changeable in Settings → Look; a browser that switched the dot or Archived off, or chose a compact step other than None, keeps its choice, and archived sessions are reached by switching Archived on (#95)
+- Long-lived tokens work for accounts: run `ledung account token <name>` in your own terminal, the command is shown with a copy button when you add an account and under each account, and Accounts now shows whether each is signed in with a token or `/login` (#85)
+
 ## 2026-11-02
 - New **workflow page**: a project's process drawn from `.ledung/workflow/` as blocks with outcome arrows ("Failed (3rd time)"), frames and a tab per flow, with each block's brief, the standing rules and any problems in the files; a list on a phone. Open it from the project's tab in Settings → Workflow, or its manager's ⚙. (Fluffy-Fluffy-and-Bouncy/Project-Ledung#310, Fluffy-Fluffy-and-Bouncy/Project-Ledung#318, Fluffy-Fluffy-and-Bouncy/Project-Ledung#446, Fluffy-Fluffy-and-Bouncy/Project-Ledung#447)
 - The workflow page's **Edit** draws and changes a workflow on a canvas (blocks, outcomes, sub-steps, frames, overlays, other flows) with the checks live, and **Save** writes the files into the project's own `.ledung/workflow`; a project without one starts empty or from a starter. (Fluffy-Fluffy-and-Bouncy/Project-Ledung#311, Fluffy-Fluffy-and-Bouncy/Project-Ledung#318, Fluffy-Fluffy-and-Bouncy/Project-Ledung#322, Fluffy-Fluffy-and-Bouncy/Project-Ledung#446, Fluffy-Fluffy-and-Bouncy/Project-Ledung#447)
 - A project's manager is told where its drawn workflow is, and its other flows by name. (Fluffy-Fluffy-and-Bouncy/Project-Ledung#310, Fluffy-Fluffy-and-Bouncy/Project-Ledung#447)
+- Open folder on an account now says in the page why it failed instead of doing nothing, and on Windows the folder window is no longer asked to open hidden (#83)
+- Ledung no longer fails to start on a Mac when the system can't say who the user is (#83)
 - A request whose address doesn't parse is now refused with a 400, also on the live connection, without an error in the log (Fluffy-Fluffy-and-Bouncy/Project-Ledung#467)
 - Started at sign-in on macOS or Linux, or from Ledung.app, Ledung now gets the same PATH as in your terminal, so Update Ledung, Ledung's GitHub features and the tools your sessions use work after a login too; a shell profile that hangs delays the start by about ten seconds instead of stopping it. Switch Start Ledung when I sign in off and on in Settings to get it (#464)
 - Settings → About has an update channel, Public or Dev: on Dev an npm-installed Ledung gets dev builds before they go to everyone, and Update & restart now checks npm and updates an npm install with one click (#461)

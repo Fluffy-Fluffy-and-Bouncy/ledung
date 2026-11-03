@@ -11,6 +11,7 @@ import { query, type Options, type PermissionResult, type Query, type SDKMessage
 import { connectHost, type ConnectionHandlers, type HostConnection } from '../host/client.ts';
 import type { Runner } from '../runners/runner.ts';
 import type { SignInContext } from '../accounts/signin.ts';
+import { LOGIN_ENV } from '../accounts/store.ts';
 import type { Store } from '../store/store.ts';
 import type { UsageStopInfo } from '../shared/protocol.ts';
 import { promptUsageLine, windowName } from '../usage/stops.ts';
@@ -202,13 +203,6 @@ export interface SessionOptions {
   /** The one pull request poll, in the session manager (issue #252); none: the branch's pull request isn't looked up. */
   pullRequests?: Pick<PullRequestPoller, 'watch' | 'forget'> | null;
 }
-
-/**
- * Logins Ledung's own environment may carry; a session with its own account never inherits them. Ledung's
- * CLAUDE_CONFIG_DIR is not one: an account is only the sign-in, and its sessions keep the Claude Code folder
- * every session has, with its conversations and skills (#342).
- */
-const LOGIN_ENV = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_SECURESTORAGE_CONFIG_DIR'];
 
 /** The environment for Claude Code: Ledung's, with the project's account login instead of any other,
  *  and the tool server limit raised so that Ledung's instructions arrive whole (issue #32). */
