@@ -69,6 +69,8 @@ export interface RunWorktree {
   branch: string;
   base: string;
   own: boolean;
+  /** Ignored files there once it was set up (review of 3f): any other ignored file keeps it at the end. */
+  ignored?: string[];
 }
 
 /** What a step does: where the outcome leads, or how the flow ends. */

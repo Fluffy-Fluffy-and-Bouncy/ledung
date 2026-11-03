@@ -90,7 +90,7 @@ async function engine(opts: { following?: boolean; flows?: Awaited<ReturnType<ty
     changed: (p) => changed.push(p),
     startSession: async (b) => {
       started.push(b);
-      const s = store.createSession({ id: `block-${++made}`, project: b.project, runner: 'local', title: b.title, parentId: b.coordinator, permissionMode: 'default', requestedModel: b.model ?? null, profile: b.profile ?? 'full' });
+      const s = store.createSession({ id: `block-${++made}`, project: b.project, runner: 'local', title: b.title, parentId: b.coordinator, permissionMode: 'default', requestedModel: b.model ?? null, profile: b.profile ?? 'full', workDir: b.cwd ?? null });
       // Between turns, as a real session is once it has done its step.
       store.updateSession(s.id, { runBlock: b.runBlock, status: 'idle' });
       return store.getSession(s.id)!;
@@ -116,6 +116,7 @@ async function engine(opts: { following?: boolean; flows?: Awaited<ReturnType<ty
     },
     worktreeHost: () => opts.host ?? null,
     worktreeSetup: () => opts.setup,
+    workingIn: (_p, folder) => store.listSessions().filter((x) => x.status !== 'ended' && x.workDir === folder).map((x) => x.title),
     tiers: () => ['Blocks a finished PR', 'Process'],
     userName: 'Simon',
     now: () => (clock += 1000),
@@ -740,6 +741,17 @@ test('part 3f: a worktree per run: made from the base, set up, kept out of git\'
   assert.deepEqual(await removeWorktree(host, made.worktree), { removed: true });
   assert.equal(fs.existsSync(made.worktree.path), false);
   assert.equal(git(dir, 'branch', '--list', 'run/run-7-142'), '');
+  // Review of 3f: a detached HEAD, or an ignored file it didn't have, keeps it; a base that isn't there is refused.
+  const d = await makeWorktree(host, { id: 'run-10', ref: null }, {}, undefined);
+  git(d.worktree.path, 'checkout', '-q', '--detach');
+  assert.match((await removeWorktree(host, d.worktree) as { kept: string }).kept, /HEAD is not on its branch run\/run-10/);
+  git(d.worktree.path, 'checkout', '-q', 'run/run-10');
+  fs.writeFileSync(path.join(dir, '.gitignore'), '.env\n');
+  git(dir, 'add', '.gitignore'); git(dir, 'commit', '-qm', 'ignore');
+  const e = await makeWorktree(host, { id: 'run-11', ref: null }, {}, undefined);
+  fs.writeFileSync(path.join(e.worktree.path, '.env'), 'SECRET=1');
+  assert.match((await removeWorktree(host, e.worktree) as { kept: string }).kept, /ignored files it didn't have when it was made \(\.env\)/);
+  await assert.rejects(makeWorktree(host, { id: 'run-12', ref: null }, { base: 'nope' }, undefined), /no branch or commit "nope"/);
   // A setup command that fails leaves the worktree, said; a branch name git refuses is refused.
   const failed = await makeWorktree(host, { id: 'run-8', ref: null }, {}, 'process.exit(3)');
   assert.match(failed.setupProblem!, /exit code 3/);
@@ -750,7 +762,7 @@ test('part 3f: a worktree per run: made from the base, set up, kept out of git\'
 
 test('part 3f: a run gets its worktree, its sessions work there, and it goes when the run ends safely', async () => {
   const dir = gitRepo();
-  const { runs, ports, started } = await engine({ flows: flowsOf3({ ...F3, limit: undefined, worktree: { remove: { on: ['Merged'] } } }), host: nodeShell(dir) });
+  const { runs, ports, started, store } = await engine({ flows: flowsOf3({ ...F3, limit: undefined, worktree: { remove: { on: ['Merged'] } } }), host: nodeShell(dir) });
   assert.match(await runs.start('manager-1', { title: 'One', ref: '#1' }), /Ledung made its worktree .*run-1 on branch run\/run-1, from main; its sessions work there\./);
   const wt = ports.runs.get('run-1')!.worktree!;
   assert.equal(started[0]!.cwd, wt.path);
@@ -764,10 +776,15 @@ test('part 3f: a run gets its worktree, its sessions work there, and it goes whe
   await runs.step('manager-1', { run: 'run-2', outcome: 'Done' });
   assert.match(await runs.step('manager-1', { run: 'run-2', outcome: 'Merged' }), /Its worktree .*run-2 is removed\./);
   assert.equal(ports.runs.get('run-2')!.worktree, null);
+  // A session still working in it: kept, whatever its tidying did (review of 3f).
+  await runs.start('manager-1', { title: 'Four', ref: '#4' });
+  await runs.step('manager-1', { run: 'run-3', outcome: 'Done' });
+  store.updateSession(store.listSessions().find((x) => x.title === 'Review: Four')!.id, { status: 'running' });
+  assert.match(await runs.step('manager-1', { run: 'run-3', outcome: 'Merged' }), /Its worktree .*run-3 is kept: "Review: Four" still works in it\./);
   // Merged with uncommitted work: kept, with why.
   await runs.start('manager-1', { title: 'Three', ref: '#3' });
-  fs.writeFileSync(path.join(ports.runs.get('run-3')!.worktree!.path, 'wip.txt'), 'x');
-  await runs.step('manager-1', { run: 'run-3', outcome: 'Done' });
-  assert.match(await runs.step('manager-1', { run: 'run-3', outcome: 'Merged' }), /Its worktree .*run-3 is kept: it has changes that are not committed \(1 file\)\. Deal with that, then remove it/);
+  fs.writeFileSync(path.join(ports.runs.get('run-4')!.worktree!.path, 'wip.txt'), 'x');
+  await runs.step('manager-1', { run: 'run-4', outcome: 'Done' });
+  assert.match(await runs.step('manager-1', { run: 'run-4', outcome: 'Merged' }), /Its worktree .*run-4 is kept: it has changes that are not committed \(1 file\)\. Deal with that, then remove it/);
   removeTemp(dir);
 });

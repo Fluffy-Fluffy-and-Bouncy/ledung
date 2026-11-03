@@ -324,6 +324,7 @@ export class SessionManager {
           : dockerWorktreeHost(config, (command, cwd) => new DockerRunner(config, 'worktree', cwd).shell(command, null, env()));
       },
       worktreeSetup: (name) => this.projectStore.get(name)?.config.worktreeSetup,
+      workingIn: (name, folder) => this.store.listSessions().filter((s) => s.project === name && s.status !== 'ended' && s.workDir === folder).map((s) => s.title),
       lastReply: (id) => lastReplyOf(this.store.listMessages(id, { limit: 200 })),
       ask: (a) => {
         const q = this.store.createQuestion({ sessionId: a.coordinator, question: a.question, options: a.options, addressedTo: 'user', details: a.details });
@@ -2336,7 +2337,8 @@ export class SessionManager {
    */
   private checkWorkDir(project: ProjectConfig, info: SessionInfo): void {
     if (!info.workDir) return;
-    const again = info.project === CHATS ? this.chatFolder(info.workDir) : this.workFolder(project, info.workDir);
+    // A run's session in its worktree, in a container too (review of 3f: its resume was refused).
+    const again = info.project === CHATS ? this.chatFolder(info.workDir) : this.workFolder(project, info.workDir, !!info.runBlock);
     if (again === null || path.relative(again, info.workDir) !== '') {
       throw new UserError(`The session's folder ${info.workDir} no longer leads to the same folder; start a new session.`);
     }

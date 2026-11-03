@@ -709,7 +709,9 @@ ${note}`);
     else if (context === 'compact') this.queueCompact(s, requester, undefined, text);
     else {
       this.store.addInbox(sessionId, `${CLEAR_SOURCE}:${CLEAR_SECONDS}:${requester}`, "Clear requested by Ledung's workflow before the session's next step.");
-      this.store.addInbox(sessionId, CLEAR_NOTE_SOURCE, `Your conversation was cleared by Ledung's workflow before your next step.\n\n${text}`);
+      this.store.addInbox(sessionId, CLEAR_NOTE_SOURCE, "Your conversation was cleared by Ledung's workflow before your next step, which follows.");
+      // The step on its own, after the note: a cancelled clear drops the note only, never the step (review of 3f).
+      this.store.addInbox(sessionId, 'ledung', text);
     }
     await this.reach(sessionId);
   }

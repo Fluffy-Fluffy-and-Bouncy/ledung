@@ -75,6 +75,8 @@ export interface FlowRunsPorts {
   worktreeHost(project: string): WorktreeHost | null;
   /** The project's setup command for a new worktree (its settings); none: nothing is run. */
   worktreeSetup(project: string): string | undefined;
+  /** Sessions not ended that work in this folder (review of 3f): a worktree is never removed under them. */
+  workingIn(project: string, folder: string): string[];
   /** The project's question tiers, in order. */
   tiers(project: string): string[];
   userName: string;
@@ -181,7 +183,8 @@ export class FlowRuns {
           throw new FlowRunError(`${runLabel(already)} is already under way for ${ref} (${this.stateLine(already, titleOf(already.at))}): report on it, or start another with again: true.`);
         }
       }
-      const full = flow.limit !== undefined && this.working(caller.project, name) >= flow.limit;
+      // Full, or others already in line: a new run never jumps the line (review of 3f).
+      const full = flow.limit !== undefined && (this.working(caller.project, name) >= flow.limit || this.p.runs.queued(caller.project).some((r) => r.flow === name && r.queue === 'flow'));
       const run = this.p.runs.create({ project: caller.project, title: args.title.trim(), ref, flow: name, at: first.id, coordinator: callerId, parent: null, now: this.now() });
       const started = `Started ${runLabel(run)} in the flow "${flows.titles.get(name)}".`;
       if (full) {
@@ -395,7 +398,8 @@ export class FlowRuns {
       const run = this.p.runs.get(q.id)!;
       if (run.state !== 'queued') continue;
       const flow = flows.flows.get(run.flow);
-      const block = flow?.blocks.find((b) => b.id === run.at);
+      // A run waiting to start goes to the flow's start as it is now, should its block have been renamed (review of 3f).
+      const block = flow?.blocks.find((b) => b.id === run.at) ?? (flow && run.queue === 'flow' ? startBlock(flow) : undefined);
       if (!flow || !block) continue;
       let text: string;
       try {
@@ -420,9 +424,16 @@ export class FlowRuns {
    */
   private async afterEnd(flows: ProjectFlows | null, run: FlowRun, ending: string): Promise<string> {
     const flow = flows?.flows.get(run.flow) ?? null;
-    const said = [await this.tidy(run, flow, ending), await this.dropWorktree(run, flow, ending)].filter(Boolean).join(' ');
-    await this.release(run.project, flows);
-    return said;
+    // Its Run flow blocks' runs stopped with it are tidied too, before its worktree, which they share (review of 3f).
+    for (const child of this.p.runs.children(run.id)) {
+      if (child.state === 'stopped') await this.tidy(child, flows?.flows.get(child.flow) ?? null, STOPPED_ENDING).catch(() => '');
+    }
+    const safely = (part: () => Promise<string>) => part().catch((e: Error) => `Ledung could not finish tidying: ${e.message}`);
+    try {
+      return [await safely(() => this.tidy(run, flow, ending)), await safely(() => this.dropWorktree(run, flow, ending))].filter(Boolean).join(' ');
+    } finally {
+      await this.release(run.project, flows).catch(() => {});
+    }
   }
 
   /** The flow's tidying of a run's sessions on this ending: archive (the default), stop or keep. */
@@ -438,12 +449,19 @@ export class FlowRuns {
     for (const id of ids) {
       const s = this.p.getSession(id);
       if (!s || s.archivedAt) continue;
-      if (s.status === 'running' || s.status === 'starting' || s.status === 'stopping') {
+      // Mid-turn, on a prompt or in line for a place, are all still working (review of 3f).
+      if (s.status === 'running' || s.status === 'starting' || s.status === 'stopping' || s.status === 'waiting' || s.status === 'queued') {
         working.push(`"${s.title}"`);
         continue;
       }
       if (s.status !== 'ended') await this.p.stopSession(id, `${run.id} ended.`).catch(() => {});
-      if (mode === 'archive') this.p.archiveSession(id, `Ledung (${run.id} ended)`);
+      // One that couldn't be stopped or archived stays as it is, said; the rest of the ending goes on (review of 3f).
+      try {
+        if (mode === 'archive' && this.p.getSession(id)?.status === 'ended') this.p.archiveSession(id, `Ledung (${run.id} ended)`);
+      } catch {
+        working.push(`"${s.title}"`);
+        continue;
+      }
       done.push(id);
     }
     if (!done.length && !working.length) return '';
@@ -459,6 +477,9 @@ export class FlowRuns {
     if (remove?.on && !remove.on.some((e) => endingKey(e) === endingKey(ending))) return `Its worktree ${wt.path} stays: the flow removes it only on ${remove.on.map((e) => `"${e}"`).join(', ')}.`;
     const host = this.p.worktreeHost(run.project);
     if (!host) return `Its worktree ${wt.path} stays: the project is not there.`;
+    // Never under a session still in it, whatever its tidying kept (review of 3f).
+    const inIt = this.p.workingIn(run.project, wt.path);
+    if (inIt.length) return `Its worktree ${wt.path} is kept: ${inIt.map((t) => `"${t}"`).join(', ')} still ${inIt.length === 1 ? 'works' : 'work'} in it. Stop ${inIt.length === 1 ? 'it' : 'them'}, then remove it (git worktree remove).`;
     const r = await removeWorktree(host, wt);
     if ('removed' in r) {
       this.p.runs.update(run.id, { worktree: null }, this.now());

@@ -14,8 +14,8 @@ import type { ShellSpawn } from '../runners/shell-run.ts';
 
 /** Where runs' worktrees go, inside the project folder (so its sessions may work there), kept out of git's view. */
 export const WORKTREES_FOLDER = '.ledung/worktrees';
-/** How long a project's setup command may take in a new worktree. */
-const SETUP_MS = 15 * 60_000;
+/** How long a project's setup command may take in a new worktree; it holds the project's runs meanwhile. */
+const SETUP_MS = 5 * 60_000;
 const GIT_MS = 120_000;
 
 /** How Ledung reaches a project's git and shell: on this computer, or inside its container. */
@@ -98,13 +98,25 @@ function setUp(host: WorktreeHost, command: string, cwd: string): Promise<string
     const keep = (d: Buffer) => { out = (out + d.toString()).slice(-4000); };
     child.stdout?.on('data', keep);
     child.stderr?.on('data', keep);
-    const timer = setTimeout(() => { child.kill(); resolve(`it was stopped after ${SETUP_MS / 60000} minutes.`); }, SETUP_MS);
+    // The whole tree, so nothing of it goes on in the worktree (review of 3f); a container's, through its own stop.
+    const stopAll = () => {
+      if (spec.endInside) void spec.endInside().catch(() => {});
+      if (process.platform === 'win32' && child.pid) spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
+      else child.kill();
+    };
+    const timer = setTimeout(() => { stopAll(); resolve(`it was stopped after ${SETUP_MS / 60000} minutes.`); }, SETUP_MS);
     child.on('error', (e) => { clearTimeout(timer); resolve(e.message); });
     child.on('close', (code) => {
       clearTimeout(timer);
       resolve(code === 0 ? null : `it ended with exit code ${code}: ${out.trim().split('\n').slice(-6).join('\n')}`);
     });
   });
+}
+
+/** The ignored files in a worktree, by their path there (folders as git lists them). */
+async function ignoredIn(host: WorktreeHost, where: string): Promise<string[]> {
+  const out = await host.git(['status', '--porcelain', '--ignored', '--untracked-files=all'], where).catch(() => '');
+  return out.split('\n').filter((l) => l.startsWith('!! ')).map((l) => l.slice(3).trim()).sort();
 }
 
 /**
@@ -115,12 +127,18 @@ function setUp(host: WorktreeHost, command: string, cwd: string): Promise<string
 export async function makeWorktree(host: WorktreeHost, run: { id: string; ref: string | null }, w: FlowWorktree, setup: string | undefined): Promise<{ worktree: RunWorktree; setupProblem: string | null }> {
   const branch = branchFor(w.branch, run);
   await host.git(['check-ref-format', '--branch', branch], host.root);
-  const base = w.base ?? ((await host.git(['rev-parse', '--abbrev-ref', 'HEAD'], host.root)).trim() || 'HEAD');
+  // A detached folder's base is its commit, so "merged" never means whatever it points at later (review of 3f).
+  const named = w.base ?? (await host.git(['rev-parse', '--abbrev-ref', 'HEAD'], host.root)).trim();
+  const base = !named || named === 'HEAD' ? (await host.git(['rev-parse', 'HEAD'], host.root)).trim() : named;
+  await host.git(['rev-parse', '--verify', '--quiet', '--end-of-options', `${base}^{commit}`], host.root).catch(() => { throw new Error(`there is no branch or commit "${base}" to start from.`); });
   const where = host.join(host.root, ...WORKTREES_FOLDER.split('/'), run.id);
-  await host.exclude(`/${WORKTREES_FOLDER}/`);
-  await host.git(['worktree', 'add', '-b', branch, where, base], host.root);
+  // Anchored where the project folder is in its repository, which may be a folder inside it (review of 3f).
+  const prefix = (await host.git(['rev-parse', '--show-prefix'], host.root)).trim();
+  await host.exclude(`/${prefix}${WORKTREES_FOLDER}/`);
+  await host.git(['worktree', 'add', '-b', branch, '--end-of-options', where, base], host.root);
   const setupProblem = setup?.trim() ? await setUp(host, setup, where) : null;
-  return { worktree: { path: where, branch, base, own: true }, setupProblem };
+  const ignored = await ignoredIn(host, where);
+  return { worktree: { path: where, branch, base, own: true, ...(ignored.length ? { ignored } : {}) }, setupProblem };
 }
 
 /**
@@ -129,8 +147,19 @@ export async function makeWorktree(host: WorktreeHost, run: { id: string; ref: s
  */
 export async function removeWorktree(host: WorktreeHost, wt: RunWorktree): Promise<{ removed: true } | { kept: string }> {
   try {
-    const dirty = (await host.git(['status', '--porcelain'], wt.path)).trim();
+    // Untracked files counted whatever the repository's settings say (review of 3f).
+    const dirty = (await host.git(['status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none'], wt.path)).trim();
     if (dirty) return { kept: `it has changes that are not committed (${dirty.split('\n').length} file${dirty.split('\n').length === 1 ? '' : 's'})` };
+    // Its HEAD must be its branch: commits on a detached HEAD, or a rebase or merge under way, would be lost (review of 3f).
+    const head = (await host.git(['symbolic-ref', '-q', 'HEAD'], wt.path).catch(() => '')).trim();
+    if (head !== `refs/heads/${wt.branch}`) return { kept: `its HEAD is not on its branch ${wt.branch} (${head ? head.replace('refs/heads/', '') : 'detached, or a rebase under way'})` };
+    for (const ref of ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD']) {
+      if (await host.git(['rev-parse', '-q', '--verify', ref], wt.path).then(() => true, () => false)) return { kept: `a ${ref.split('_')[0]!.toLowerCase().replace('cherry', 'cherry-pick')} is under way in it` };
+    }
+    // Ignored files beyond those it had once set up (an .env, notes, results): git would delete them silently.
+    const before = new Set(wt.ignored ?? []);
+    const extra = (await ignoredIn(host, wt.path)).filter((f) => !before.has(f));
+    if (extra.length) return { kept: `it has ignored files it didn't have when it was made (${extra.slice(0, 5).join(', ')}${extra.length > 5 ? ', …' : ''})` };
     const merged = await host.git(['merge-base', '--is-ancestor', wt.branch, wt.base], host.root).then(() => true, () => false);
     if (!merged) {
       const upstream = await host.git(['rev-parse', '--abbrev-ref', `${wt.branch}@{upstream}`], host.root).then((s) => s.trim(), () => '');
