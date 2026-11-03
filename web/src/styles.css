@@ -450,6 +450,17 @@ a.file-link { text-decoration-style: dotted; }
 .msg.assistant.tinted .msg-body { background: color-mix(in srgb, var(--nc) 5%, var(--panel)); }
 .msg.sub { opacity: 0.85; margin-left: 1.5rem; max-width: 880px; }
 .plain { white-space: pre-wrap; }
+/* The person's latest message sticks to the top while the replies scroll under it (issue #102). Its spot has no
+   height (the flex gap it adds is taken back), so the chat's place and the scroll to the end never move; the strip
+   spans the scroller's padding and is opaque, so nothing scrolling under it shows through. Sticky stops at the
+   scroller's padding, hence top -1rem: the strip meets its very top edge. */
+.pin-spot { position: sticky; top: -1rem; z-index: 2; height: 0; margin-bottom: -0.6rem; }
+.pinned-strip { margin: 0 -1rem; padding: 0.4rem 1rem 0.5rem; background: var(--bg); border-bottom: 1px solid var(--border); box-shadow: 0 4px 8px -6px rgb(0 0 0 / 0.5); }
+.msg.pinned { cursor: pointer; }
+.msg.pinned:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; }
+.pinned-text { max-height: 4.2em; line-height: 1.4; overflow: hidden; }
+.pinned-text.cut { mask-image: linear-gradient(to bottom, #000 50%, transparent); }
+@media (max-width: 760px) { .pinned-text { max-height: 2.8em; } }
 .event, .note, .divider { font-size: 0.85em; color: var(--muted); text-align: center; }
 .note.technical { text-align: left; }
 .note.decision.denied { color: var(--danger); text-align: left; }
