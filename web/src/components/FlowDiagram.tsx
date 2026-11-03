@@ -254,7 +254,7 @@ export function useMeasured(): [Record<string, { width: number; height: number }
 }
 
 /** Each kind's colour in the minimap, as the blocks' edges have them. */
-const MINIMAP_COLOUR: Record<string, string> = { work: 'var(--accent)', check: 'var(--s3)', person: 'var(--dot-waiting)', timer: 'var(--s7)', fork: 'var(--s5)', join: 'var(--s5)' };
+const MINIMAP_COLOUR: Record<string, string> = { work: 'var(--accent)', check: 'var(--s3)', person: 'var(--dot-waiting)', timer: 'var(--s7)', fork: 'var(--s5)', join: 'var(--s5)', wait: 'var(--s7)' };
 
 /** A large flow's map (#318), to find one's way round it; in the page's own colours, smaller on a phone. Frames (#446) as faint outlines. */
 export function FlowMiniMap({ small = false }: { small?: boolean }) {

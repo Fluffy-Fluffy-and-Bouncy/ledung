@@ -685,7 +685,10 @@ export function moveSubstep(draft: Draft, key: string, index: number, by: -1 | 1
 
 /** Takes a sub-step out; its brief stays in the folder. */
 export function deleteSubstep(draft: Draft, key: string, index: number): Draft {
-  return withSubsteps(draft, key, (subs, keys) => [subs.filter((_, i) => i !== index), keys.filter((_, i) => i !== index)]);
+  const next = withSubsteps(draft, key, (subs, keys) => [subs.filter((_, i) => i !== index), keys.filter((_, i) => i !== index)]);
+  // The last one gone, "run them at once" goes with it (part 3d, review): nothing is left to run at once.
+  const b = next.blocks.find((x) => x.key === key)?.block;
+  return b?.parallel && !b.substeps?.length ? setBlock(next, key, { parallel: undefined }) : next;
 }
 
 /** A new brief for a sub-step: briefs/<name>.md, started with its title. */

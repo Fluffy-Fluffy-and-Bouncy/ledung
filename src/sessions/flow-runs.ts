@@ -204,7 +204,7 @@ export class FlowRuns {
       const run = this.p.runs.get(id);
       if (!run || run.project !== caller.project) throw new FlowRunError(`There is no run "${id}" in your project.`);
       const counts = Object.entries(run.counts).flatMap(([b, words]) => Object.entries(words).map(([w, n]) => `${titleOf(run, b)}: "${w}" ×${n}`));
-      const sessions = Object.entries(run.sessions).map(([b, s]) => `${titleOf(run, b)}: ${s}`);
+      const sessions = Object.entries(run.sessions).map(([b, s]) => `${b === CALLER ? 'handed by its caller' : titleOf(run, b)}: ${s}`);
       return [
         `${runLabel(run)} in the flow "${flows?.titles.get(run.flow) ?? run.flow}", coordinated by ${this.who(run.coordinator)}: ${this.stateLine(run, titleOf(run, run.at))}.`,
         run.parent ? `Started by "${run.parent.block}" of ${run.parent.run}, which waits for it.` : '',
@@ -397,9 +397,12 @@ export class FlowRuns {
     const runBlock: RunBlock = { run: run.id, block: block.id, runTitle: run.title, blockTitle: block.title, flow: run.flow };
     // The session that ran the block it continues, or the one that started that chain (Fix continues Build); in a flow
     // handed its caller's session (part 3d), a new-session block continues that one.
+    // Only work goes on in the caller's session: a check starts its own, so no one reviews their own work across flows
+    // (review of 3d, as continueProblems holds within one flow).
+    const handed = block.kind === 'work' ? run.sessions[CALLER] : undefined;
     const own = block.runs === 'continue'
-      ? run.sessions[block.continues ?? ''] ?? run.sessions[sessionOf(flow, block.id) ?? ''] ?? run.sessions[CALLER]
-      : run.sessions[CALLER];
+      ? run.sessions[block.continues ?? ''] ?? run.sessions[sessionOf(flow, block.id) ?? ''] ?? handed
+      : handed;
     if (own && this.p.getSession(own)) {
       await this.p.continueSession(own, text, runBlock);
       this.p.runs.update(run.id, { sessions: { ...run.sessions, [block.id]: own } }, this.now());
@@ -418,7 +421,9 @@ export class FlowRuns {
     // The block's session from an earlier round has done its part: stopped, unless another block of the run still uses
     // it (a continued one), so a loop doesn't leave a session behind each round (review of 3b, finding 4).
     const earlier = run.sessions[block.id];
-    if (earlier && earlier !== s.id && !Object.entries(run.sessions).some(([b, id]) => b !== block.id && id === earlier)) {
+    // Nor one an open run of its Run flow blocks goes on in (the caller's session, review of 3d).
+    const inChildren = (id: string) => this.p.runs.children(run.id).some((c) => (c.state === 'running' || c.state === 'waiting') && Object.values(c.sessions).includes(id));
+    if (earlier && earlier !== s.id && !Object.entries(run.sessions).some(([b, id]) => b !== block.id && id === earlier) && !inChildren(earlier)) {
       await this.p.stopSession(earlier, `A new session took "${block.title}" of ${run.id}.`).catch(() => {});
     }
     this.p.runs.update(run.id, { sessions: { ...run.sessions, [block.id]: s.id } }, this.now());
@@ -472,7 +477,7 @@ export class FlowRuns {
     const first = startBlock(flow);
     const child = this.p.runs.create({ project: run.project, title: run.title, ref: run.ref, flow: name, at: first.id, coordinator: run.coordinator, parent: { run: run.id, block: block.id }, now: this.now() });
     // Part 3d: the session that ran the step before goes on in the called flow, whose session blocks continue it.
-    const caller = block.session === 'caller' ? this.callerSession(run) : undefined;
+    const caller = block.session === 'caller' ? this.callerSession(run, flows.flows.get(run.flow) ?? flow) : undefined;
     if (caller) this.p.runs.update(child.id, { sessions: { [CALLER]: caller } }, this.now());
     this.p.changed(run.project);
     const hands = block.session !== 'caller' ? '' : caller ? ` It goes on in the caller's session ${caller}.` : ' No session ran before it, so its session steps start their own.';
@@ -480,11 +485,14 @@ export class FlowRuns {
       `${child.id}: ${await this.arrive(flows, this.p.runs.get(child.id)!, flow, first, handoff)}`;
   }
 
-  /** The session that ran the latest step of a run that had one, or that its own caller handed it (part 3d). */
-  private callerSession(run: FlowRun): string | undefined {
+  /**
+   * The session that ran the latest work step of a run, or that its own caller handed it (part 3d): the long session
+   * whose phases the flows are, never a reviewer's (review of 3d).
+   */
+  private callerSession(run: FlowRun, flow: Flow): string | undefined {
     for (const h of [...run.history].reverse()) {
       const id = run.sessions[h.block];
-      if (id && this.p.getSession(id)) return id;
+      if (id && flow.blocks.find((b) => b.id === h.block)?.kind === 'work' && this.p.getSession(id)) return id;
     }
     const handed = run.sessions[CALLER];
     return handed && this.p.getSession(handed) ? handed : undefined;

@@ -464,3 +464,12 @@ test('part 3d: the builder keeps person, a wait, parallel and session as written
   const block = added.draft.blocks.find((b) => b.key === added.key)!.block;
   assert.deepEqual([block.kind, block.title, block.runs], ['wait', 'Wait', undefined]);
 });
+
+test('part 3d review: the last sub-step removed takes "run them at once" with it', () => {
+  const raw = JSON.stringify({ version: 1, blocks: [{ id: 'r', kind: 'check', title: 'Review', runs: 'new-session', parallel: true, substeps: [{ id: 'a', kind: 'check', title: 'A' }, { id: 'b', kind: 'check', title: 'B' }] }] });
+  const { draft } = draftFromView(viewOf(raw))!;
+  const key = draft.blocks[0]!.key;
+  const one = deleteSubstep(draft, key, 0);
+  assert.equal(one.blocks[0]!.block.parallel, true);
+  assert.equal(deleteSubstep(one, key, 0).blocks[0]!.block.parallel, undefined);
+});

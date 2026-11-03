@@ -531,12 +531,14 @@ test('part 3d: followed: a wait waits, sub-steps at once, the caller\'s session 
   await runs.step('manager-1', { run: 'run-1', outcome: 'Green' });
   // Parallel sub-steps: the review session starts them all at once and merges the results.
   assert.match(started.at(-1)!.task, /Start these subagents all at once, in parallel, and merge their results into one report:\n- Security \(check, when start\)\n- Speed \(check, when start\)/);
-  const reviewer = ports.runs.get('run-1')!.sessions.review!;
-  // The Run flow block hands the caller's session (the reviewer's, the latest) to Polish, whose Tidy continues it.
+  const builder = ports.runs.get('run-1')!.sessions.build!;
+  // The Run flow block hands the caller's session to Polish, whose Tidy continues it: the latest work step's (Build's),
+  // never the reviewer's (review of 3d).
   const polish = await runs.step('manager-1', { run: 'run-1', outcome: 'Approved' });
-  assert.match(polish, new RegExp(`It goes on in the caller's session ${reviewer}\\.\\n\\nrun-2: At "Tidy" \\(tidy\\): Ledung gave it to session "Review: Speed up the cart" \\(${reviewer}\\), the caller's session this flow was handed`));
-  assert.equal(continued.at(-1)!.id, reviewer);
-  assert.equal(ports.runs.get('run-2')!.sessions.tidy, reviewer);
+  assert.match(polish, new RegExp(`It goes on in the caller's session ${builder}\\.\\n\\nrun-2: At "Tidy" \\(tidy\\): Ledung gave it to session "Build: Speed up the cart" \\(${builder}\\), the caller's session this flow was handed`));
+  assert.equal(continued.at(-1)!.id, builder);
+  assert.equal(ports.runs.get('run-2')!.sessions.tidy, builder);
+  assert.match(await runs.status('manager-1', 'run-2'), new RegExp(`Sessions: handed by its caller: ${builder}; Tidy: ${builder}\\.`));
   const before = started.length;
   // Polish ends; the owner is asked, the question saying whose call it is.
   await runs.step('manager-1', { run: 'run-2', outcome: 'Polished' });
@@ -562,4 +564,35 @@ test('part 3c review: the page gets every open run and only the latest others', 
   assert.equal(page.length, 32);
   assert.deepEqual(page.filter((r) => r.state === 'running').map((r) => r.title).sort(), ['open 1', 'open 2']);
   assert.ok(page.some((r) => r.title === 'done 39') && !page.some((r) => r.title === 'done 0'));
+});
+
+test(`part 3d review: a check in a flow handed the caller's session starts its own; a session a child run uses is never stopped`, async () => {
+  const main = parseFlow(JSON.stringify({
+    version: 1, start: 'build',
+    blocks: [
+      { id: 'build', kind: 'work', title: 'Build', runs: 'new-session', outcomes: [{ word: 'Done', to: 'phase' }] },
+      { id: 'phase', kind: 'flow', title: 'Phase', flow: 'loop', session: 'caller', outcomes: [{ word: 'Ok', to: 'build' }] },
+    ],
+  })).flow!;
+  const loop = parseFlow(JSON.stringify({
+    version: 1,
+    blocks: [
+      { id: 'tidy', kind: 'work', title: 'Tidy', runs: 'new-session', outcomes: [{ word: 'Done', to: 'review' }] },
+      { id: 'review', kind: 'check', title: 'Review', runs: 'new-session', outcomes: [{ word: 'Ok', end: true }] },
+    ],
+  })).flow!;
+  const { runs, ports, started, stopped } = await engine({ flows: { folder: '/w', flows: new Map([['main', main], ['loop', loop]]), titles: new Map([['main', 'Main'], ['loop', 'Loop']]), text: async () => null } });
+  await runs.start('manager-1', { title: 'Cart' });
+  const builder = ports.runs.get('run-1')!.sessions.build!;
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Done' });
+  assert.equal(ports.runs.get('run-2')!.sessions.tidy, builder);
+  // The check in the called flow is a new session of its own, not the builder's.
+  await runs.step('manager-1', { run: 'run-2', outcome: 'Done' });
+  assert.equal(started.length, 2);
+  assert.notEqual(ports.runs.get('run-2')!.sessions.review, builder);
+  // The coordinator reports the Run flow block itself while the child is open, and Build is reached again: the
+  // builder's session, which the open child was handed, is not stopped.
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Ok' });
+  assert.equal(ports.runs.get('run-1')!.at, 'build');
+  assert.ok(!stopped.includes(builder));
 });
