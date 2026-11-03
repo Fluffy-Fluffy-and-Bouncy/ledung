@@ -66,10 +66,11 @@ A session started for a block is told which run and block it serves and the outc
 
 A manager gets tools to build and change its project's workflow, so a process described in chat (or ported from elsewhere) can be set up without the canvas:
 
-- **`flow_read(flow?)`**: the flows, briefs, rules, manager file and overlays, with the current problems.
 - **`flow_propose(changes, why)`**: new or changed flow files and texts. Ledung runs the builder's checks and **puts it to the person as a review**: what changes and why, before/after diagrams, the problems found. **Accepted** saves it through the builder's save path (only the project's own `.ledung/workflow`, the format's files, versions checked); **Changes needed** goes back with the note.
 
 A manager never changes the process it follows without the person's say, even when asked in words: it proposes, the person accepts. (The same rule as a manager loosening its own project settings.)
+
+**Keeping context small** (Simon, 2026-11-03): every tool's description is in a session's context on every turn, so part 3 adds as little as it can. The run tools (`flow_start`, `flow_step`, `flow_status`) and `flow_propose` have short descriptions and exist only in projects that have a workflow. There is no `flow_read`: the manager reads the files with its own file tools. **How to build a workflow** (the format, block kinds, outcomes and counts, sub-steps, Run flow, good briefs, examples) is a **skill shipped with Ledung**, "workflow building": only its one-line description is in context, and its text loads when a manager builds or changes a workflow. If Claude Code can't take a skill from Ledung, the fallback is a reference file the manager is pointed to and reads only then.
 
 ## Small format additions (from the three ports)
 
@@ -104,7 +105,7 @@ Later, not in part 3: conditions on outcomes, compound or free-interval timers, 
 | 3b | Blocks act: new-session and continue sessions started from the block, person blocks as questions/reviews moving the run, Run-flow child runs. | The same run gets its sessions started by Ledung and a review answered by the person moves it on. |
 | 3c | The page: markers, counts on pins, the Runs list, run/block in session headers and questions. | Screenshots at 1280 and 390 px with two runs in different blocks. |
 | 3d | The four format additions. | Each drawn, checked and followed in a test flow. |
-| 3e | A manager constructs workflows: `flow_read`, `flow_propose` with a review page (before/after diagrams), saved on Accept. | A manager asked to set up a three-block flow proposes it, the person accepts, and it shows on the workflow page. |
+| 3e | A manager constructs workflows: `flow_propose` with a review page (before/after diagrams), saved on Accept; the "workflow building" skill shipped with Ledung. | A manager asked to set up a three-block flow proposes it, the person accepts, and it shows on the workflow page. |
 
 ## How it is built
 
