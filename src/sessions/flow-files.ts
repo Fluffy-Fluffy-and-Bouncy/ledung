@@ -236,11 +236,21 @@ function wouldBe(p: string, links = 0): string | null {
   return up === null ? null : path.join(up, path.basename(p));
 }
 
+/** `inner` is `outer` or a folder inside it, letter case ignored where the file system ignores it (as sameFolder). */
+function sameOrInside(outer: string, inner: string, platform = process.platform): boolean {
+  if (sameFolder(outer, inner, platform)) return true;
+  const fold = (p: string) => (platform === 'win32' || platform === 'darwin' ? path.resolve(p).toLowerCase() : path.resolve(p));
+  const rel = path.relative(fold(outer), fold(inner));
+  // A name starting with ".." ("..x") is inside; ".." itself or "../…" is not.
+  return rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+}
+
 /**
- * The configured workflow whose flow folder (.ledung/workflow) the project's own is (ledung#109), through links and
- * junctions on either side, and whether or not it has been made yet: the same folder, a link to it, or a workflow
- * folder linked into the project's. Its flow is the one every project following that workflow runs, so the builder
- * must not save there from this project's page either.
+ * The configured workflow whose flow folder (.ledung/workflow) the project's own is, or holds (ledung#109), through
+ * links and junctions on either side, and whether or not it has been made yet: the same folder, a link to it, a
+ * workflow folder linked into the project's, or one linked to a folder inside the project's (flows/, briefs/: review
+ * round 2 of PR #116), whose files the project's save would then write. Its flow is the one every project following
+ * that workflow runs, so the builder must not save there from this project's page either.
  */
 export function sharedFolderOf(projectFolder: string, workflows: readonly WorkflowConfig[]): WorkflowConfig | undefined {
   const flowOf = (folder: string) => wouldBe(path.join(path.resolve(folder), ...FLOW_FOLDER.split('/')));
@@ -248,7 +258,7 @@ export function sharedFolderOf(projectFolder: string, workflows: readonly Workfl
   if (own === null) return undefined;
   return workflows.find((w) => {
     const theirs = flowOf(w.folder);
-    return theirs !== null && sameFolder(own, theirs);
+    return theirs !== null && sameOrInside(own, theirs);
   });
 }
 
