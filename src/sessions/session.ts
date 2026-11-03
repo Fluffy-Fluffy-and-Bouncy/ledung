@@ -1262,6 +1262,8 @@ export class Session {
     const q = this.store.getQuestion(id);
     if (!q || q.sessionId !== this.id) return `There is no question #${id} from this session.`;
     if (q.status !== 'open') return `Question #${id} is already ${q.status}.`;
+    // A person block's question moves its run when answered (workflow part 3b): the coordinator reports or stops instead.
+    if (q.details?.run) return `Question #${id} is "${q.details.run.blockTitle}" of ${q.details.run.run}, put to ${this.userName} by Ledung's workflow: it stays. Report the block's outcome with flow_step, or stop the run, and it is withdrawn.`;
     this.store.withdrawQuestion(id, reason);
     this.publish({ type: 'question', question: this.store.getQuestion(id)! });
     return `Question #${id} is withdrawn.`;

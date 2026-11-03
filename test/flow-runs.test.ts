@@ -70,6 +70,7 @@ async function engine(opts: { following?: boolean } = {}) {
   const continued: { id: string; text: string }[] = [];
   const replies = new Map<string, string>();
   const withdrawn: number[] = [];
+  const stopped: string[] = [];
   let made = 0;
   const ports: FlowRunsPorts = {
     runs: new RunStore(store.database),
@@ -96,6 +97,10 @@ async function engine(opts: { following?: boolean } = {}) {
       withdrawn.push(id);
       store.withdrawQuestion(id, reason);
     },
+    stopSession: async (id, reason) => {
+      stopped.push(id);
+      store.updateSession(id, { status: 'ended', endReason: reason });
+    },
     tiers: () => ['Blocks a finished PR', 'Process'],
     userName: 'Simon',
     now: () => (clock += 1000),
@@ -106,7 +111,7 @@ async function engine(opts: { following?: boolean } = {}) {
     await runs.onAnswered(store.getQuestion(id)!);
   };
   const runs = new FlowRuns(ports);
-  return { runs, ports, store, told, changed, started, continued, replies, withdrawn, answer };
+  return { runs, ports, store, told, changed, started, continued, replies, withdrawn, stopped, answer };
 }
 
 test('part 3a: a run started by the manager moves through the example flow, the 3rd "Changes requested" taking the counted outcome', async () => {
@@ -248,13 +253,13 @@ test('part 3b: blocks act: Build gets a new session with its settings, Fix conti
   // Build: a new session under the coordinator, with the block's model, its brief, sub-steps, the handoff and the words.
   assert.equal(started.length, 1);
   const build = started[0]!;
-  assert.deepEqual({ ...build, task: '' }, { project: 'shop', coordinator: 'manager-1', title: 'Build: Fix the cart total', task: '', model: 'opus', profile: undefined, runBlock: { run: 'run-1', block: 'build' } });
+  assert.deepEqual({ ...build, task: '' }, { project: 'shop', coordinator: 'manager-1', title: 'Build: Fix the cart total', task: '', model: 'opus', profile: undefined, runBlock: { run: 'run-1', block: 'build', runTitle: 'Fix the cart total', blockTitle: 'Build', flow: 'main' } });
   assert.match(build.task, /^You run "Build" \(block build\) of run-1 "Fix the cart total" \(#142\), in the flow "Ledung's own process"\. .*manager "Manager: shop" coordinates the run\./);
   assert.match(build.task, /The brief \(briefs\/builder\.md\):\n\n/);
   assert.match(build.task, /Start these subagents, in order:\n- Self-review \(check, when done, model sonnet, brief briefs\/reviewer\.md\): "No findings" → done, "Findings" → owner, "Findings" \(3rd time\) → report/);
   assert.match(build.task, /What "Issue" handed on:\n\nThe total adds VAT twice\./);
   assert.match(build.task, /end your report with how it went, one of: "PR opened"\./);
-  assert.deepEqual(store.getSession('block-1')!.runBlock, { run: 'run-1', block: 'build' });
+  assert.deepEqual(store.getSession('block-1')!.runBlock, { run: 'run-1', block: 'build', runTitle: 'Fix the cart total', blockTitle: 'Build', flow: 'main' });
   // The session's last reply is the handoff when the coordinator gives no note.
   replies.set('block-1', 'PR #143 is open.');
   await runs.step('manager-1', { run: 'run-1', outcome: 'PR opened' });
@@ -265,7 +270,7 @@ test('part 3b: blocks act: Build gets a new session with its settings, Fix conti
   assert.equal(continued.length, 1);
   assert.equal(continued[0]!.id, 'block-1');
   assert.match(continued[0]!.text, /^You run "Fix" \(block fix\) of run-1/);
-  assert.deepEqual(store.getSession('block-1')!.runBlock, { run: 'run-1', block: 'fix' });
+  assert.deepEqual(store.getSession('block-1')!.runBlock, { run: 'run-1', block: 'fix', runTitle: 'Fix the cart total', blockTitle: 'Fix', flow: 'main' });
   assert.equal(ports.runs.get('run-1')!.sessions.fix, 'block-1');
   // Back to Code review: a new-session block starts a session each time it is reached.
   await runs.step('manager-1', { run: 'run-1', outcome: 'Fixed' });
@@ -279,7 +284,7 @@ test('part 3b: blocks act: Build gets a new session with its settings, Fix conti
   assert.equal(q.addressedTo, 'user');
   assert.equal(q.sessionId, 'manager-1');
   assert.deepEqual(q.options, ['Go on', 'Fix again']);
-  assert.deepEqual(q.details!.run, { run: 'run-1', block: 'decide', runTitle: 'Fix the cart total', blockTitle: 'Person decides' });
+  assert.deepEqual(q.details!.run, { run: 'run-1', block: 'decide', runTitle: 'Fix the cart total', blockTitle: 'Person decides', flow: 'main' });
   assert.deepEqual(q.details!.refs, ['#142']);
   assert.equal(q.details!.tier, 'Blocks a finished PR');
   assert.equal(ports.runs.get('run-1')!.state, 'waiting');
@@ -362,7 +367,9 @@ test(`part 3b: the words a person's answer gives`, () => {
   assert.equal(answerWord(other, 'Changes needed: x'), 'Rejected');
   const question = { id: 'q', kind: 'person' as const, title: 'Q', ask: 'question' as const, outcomes: [{ word: 'Go on', to: 'a' }, { word: 'Go on later', to: 'b' }, { word: 'Fix again', to: 'c' }] };
   assert.equal(answerWord(question, 'go on.'), 'Go on');
-  assert.equal(answerWord(question, 'Go on later, after lunch'), 'Go on later');
+  // Only the word itself: more than that is the coordinator's to read (review of 3b).
+  assert.equal(answerWord(question, 'Go on later, after lunch'), null);
+  assert.equal(answerWord(question, 'go on later!'), 'Go on later');
   assert.equal(answerWord(question, 'Gone'), null);
   assert.equal(answerWord(question, 'Accepted.'), null);
 });
@@ -375,4 +382,74 @@ test(`part 3b: a session's last reply is its last text of its own, not a subagen
     m(3, { type: 'assistant', parent_tool_use_id: 'tool-1', message: { content: [{ type: 'text', text: 'A subagent.' }] } }),
   ] as never);
   assert.equal(reply, 'PR #143 is open.');
+});
+
+test('part 3b review: the answer is delivered at once, only in the run note; a withdrawn person question goes back to the coordinator', async () => {
+  const { runs, ports, store, answer, told } = await engine();
+  await runs.start('manager-1', { title: 'Logo', flow: 'asset' });
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Done' });
+  const q = ports.runs.get('run-1')!.question!;
+  store.answerQuestion(q, 'Accepted.', 'user');
+  const moving = runs.onAnswered(store.getQuestion(q)!);
+  // Before the run has moved, the plain answer is already out of the coordinator's way.
+  assert.deepEqual(store.undeliveredAnswers('manager-1'), []);
+  await moving;
+  assert.equal(ports.runs.get('run-1')!.state, 'ended');
+  // An answer none of the words is still said in full in the note, as it no longer arrives on its own.
+  await runs.start('manager-1', { title: 'Logo 2', flow: 'asset' });
+  await runs.step('manager-1', { run: 'run-2', outcome: 'Done' });
+  await answer(ports.runs.get('run-2')!.question!, 'Make it bluer first');
+  assert.match(told.at(-1)!.text, /The answer:\n\nMake it bluer first$/);
+  // Withdrawn on the page: the run is running again and its coordinator told.
+  await runs.step('manager-1', { run: 'run-2', outcome: 'Changes needed' });
+  await runs.step('manager-1', { run: 'run-2', outcome: 'Done' });
+  const again = store.getQuestion(ports.runs.get('run-2')!.question!)!;
+  store.withdrawQuestion(again.id, 'Withdrawn by Simon.');
+  runs.onWithdrawn(store.getQuestion(again.id)!);
+  assert.equal(ports.runs.get('run-2')!.state, 'running');
+  assert.equal(ports.runs.get('run-2')!.question, null);
+  assert.match(told.at(-1)!.text, /Simon withdrew question #\d+, "review" of run-2 "Logo 2": report that block's outcome yourself with flow_step/);
+});
+
+test('part 3b review: a session that could not start is said; a block reached again stops its earlier session', async () => {
+  const { runs, ports, stopped } = await engine();
+  const failing = ports.startSession;
+  ports.startSession = async () => { throw new Error('the session could not start: no Claude Code.'); };
+  await runs.start('manager-1', { title: 'One' });
+  assert.match(await runs.step('manager-1', { run: 'run-1', outcome: 'Ready' }), /At "Build" \(build\), but Ledung could not do it: the session could not start: no Claude Code\. Do the step yourself, or stop the run\./);
+  ports.startSession = failing;
+  await runs.start('manager-1', { title: 'Two' });
+  await runs.step('manager-1', { run: 'run-2', outcome: 'Ready' });
+  await runs.step('manager-1', { run: 'run-2', outcome: 'PR opened' });
+  const firstReview = ports.runs.get('run-2')!.sessions['code-review']!;
+  await runs.step('manager-1', { run: 'run-2', outcome: 'Changes requested' });
+  await runs.step('manager-1', { run: 'run-2', outcome: 'Fixed' });
+  // A new reviewer for the second round; the first one is stopped, and Build's session (continued by Fix) is not.
+  assert.deepEqual(stopped, [firstReview]);
+  assert.notEqual(ports.runs.get('run-2')!.sessions['code-review'], firstReview);
+});
+
+test('part 3b review: stopping a run stops its child runs; a child stopped leaves its parent said to be waiting', async () => {
+  const { runs, ports } = await engine();
+  await runs.start('manager-1', { title: 'Logo' });
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Needs an asset' });
+  assert.match(await runs.step('manager-1', { run: 'run-2', outcome: 'gave up', stop: true }), /run-1 "Logo" still waits at "asset" for it: report that block's outcome with flow_step, or stop it\./);
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Needs an asset', stop: true });
+  await runs.start('manager-1', { title: 'Logo 2' });
+  await runs.step('manager-1', { run: 'run-3', outcome: 'Needs an asset' });
+  await runs.step('manager-1', { run: 'run-3', outcome: 'dropped', stop: true });
+  assert.equal(ports.runs.get('run-4')!.state, 'stopped');
+  assert.equal(ports.runs.get('run-4')!.ending, 'run-3, which it ran for, was stopped');
+});
+
+test('part 3b review: a person block answered with its word alone passes on what it was handed', async () => {
+  const { runs, ports, replies, answer, told } = await engine();
+  await runs.start('manager-1', { title: 'Cart' });
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Ready' });
+  await runs.step('manager-1', { run: 'run-1', outcome: 'PR opened' });
+  replies.set(ports.runs.get('run-1')!.sessions['code-review']!, 'Approved: PR #143 reads well.');
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Approved' });
+  await answer(ports.runs.get('run-1')!.question!, 'Accepted.');
+  assert.equal(ports.runs.get('run-1')!.at, 'merge');
+  assert.match(told.at(-1)!.text, /At "Merge \+ release" \(merge\): your own step\.\n\n"Code review" handed on:\n\nApproved: PR #143 reads well\./);
 });

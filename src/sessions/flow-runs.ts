@@ -3,7 +3,7 @@
 // manager, else the session the person asked) reports how each block ended by the outcome's word; Ledung records and
 // counts it, takes the counted outcome on its Nth time and the plain one otherwise, moves the run and says what to do
 // at the next block. Ledung never picks the outcome from text (#1184), and the workflow guides: no locks (#1183).
-import type { QuestionInfo, SessionInfo, StoredMessage } from '../shared/protocol.ts';
+import type { QuestionInfo, RunBlock, SessionInfo, StoredMessage } from '../shared/protocol.ts';
 import { DEFAULT_FLOW, endingKey, flowFileOf, ordinal, type Flow, type FlowBlock } from '../shared/flow.ts';
 import { decideStep, outcomeList, runLabel, startBlock, type FlowRun, type RunStep } from '../shared/flow-run.ts';
 import { sessionOf } from '../shared/flow-check.ts';
@@ -28,7 +28,7 @@ export interface BlockSessionStart {
   task: string;
   model?: string;
   profile?: string;
-  runBlock: { run: string; block: string };
+  runBlock: RunBlock;
 }
 
 /** A person block's question or review (part 3b), asked of the person for the run's coordinator. */
@@ -55,7 +55,7 @@ export interface FlowRunsPorts {
   /** Starts a block's session (part 3b); throws with the reason. */
   startSession(s: BlockSessionStart): Promise<SessionInfo>;
   /** Hands a session the next block: in its inbox, resumed first if it ended; throws when it can't be. */
-  continueSession(id: string, text: string, runBlock: { run: string; block: string }): Promise<void>;
+  continueSession(id: string, text: string, runBlock: RunBlock): Promise<void>;
   /** A session's last reply, for the handoff to the next block; empty: none. */
   lastReply(id: string): string;
   /** Puts a person block to the person (part 3b): the question, stored and shown. */
@@ -64,6 +64,8 @@ export interface FlowRunsPorts {
   markDelivered(questionId: number): void;
   /** A person block's question no longer needed: the run moved or stopped without its answer. */
   withdraw(questionId: number, reason: string): void;
+  /** Stops a block's session that has done its part (an earlier round's). */
+  stopSession(id: string, reason: string): Promise<void>;
   /** The project's question tiers, in order. */
   tiers(project: string): string[];
   userName: string;
@@ -162,7 +164,7 @@ export class FlowRuns {
         project: caller.project, title: args.title.trim(), ref: args.ref?.trim() || null, flow: name, at: first.id, coordinator: callerId, parent: null, now: this.now(),
       });
       this.p.changed(caller.project);
-      return `Started ${runLabel(run)} in the flow "${flows.titles.get(name)}". ${await this.arrive(flows, run, flow, first, null, 0)}`;
+      return `Started ${runLabel(run)} in the flow "${flows.titles.get(name)}". ${await this.arrive(flows, run, flow, first, null)}`;
     });
   }
 
@@ -230,7 +232,7 @@ export class FlowRuns {
    * Records a step and moves the run on; what the coordinator does next. A run a Run flow block started hands its
    * ending to that block (part 3b), which then moves its own run.
    */
-  private async applyStep(flows: ProjectFlows, flow: Flow, run: FlowRun, block: FlowBlock, word: string, by: string, note: string | undefined, depth = 0): Promise<string> {
+  private async applyStep(flows: ProjectFlows, flow: Flow, run: FlowRun, block: FlowBlock, word: string, by: string, note: string | undefined): Promise<string> {
     let decision;
     try {
       decision = decideStep(flow, block.id, word, run.counts[block.id]);
@@ -251,36 +253,44 @@ export class FlowRuns {
     // Reported without the person's answer (the coordinator's word goes, the workflow guides): the question goes.
     if (run.question !== null) this.p.withdraw(run.question, `${by} reported "${said}" for "${block.title}" instead.`);
     const counted = decision.kind === 'move' && decision.outcome.times ? ` (its ${ordinal(decision.n)} time)` : '';
-    const handoff = this.handoff(run, block, note);
+    const handoff = this.handoff(run, flow, block, note);
     if (decision.kind === 'end') {
       const ended = this.p.runs.update(run.id, { at: null, atSince: this.now(), counts, history, state: 'ended', ending: decision.word, question: null }, this.now());
       this.p.changed(run.project);
       const done = `Recorded "${said}" for "${block.title}". ${runLabel(ended)} has ended: "${decision.word}".`;
-      return ended.parent ? `${done} ${await this.childEnded(flows, ended, handoff, depth)}` : done;
+      return ended.parent ? `${done} ${await this.childEnded(flows, ended, handoff)}` : done;
     }
     const next = flow.blocks.find((b) => b.id === decision.to)!;
     const moved = this.p.runs.update(run.id, { at: next.id, atSince: this.now(), counts, history, state: 'running', question: null }, this.now());
     this.p.changed(run.project);
-    return `Recorded "${said}" for "${block.title}"${counted}: ${runLabel(moved)} goes to "${next.title}". ${await this.arrive(flows, moved, flow, next, handoff, depth)}`;
+    return `Recorded "${said}" for "${block.title}"${counted}: ${runLabel(moved)} goes to "${next.title}". ${await this.arrive(flows, moved, flow, next, handoff)}`;
   }
 
-  /** What the step just done hands on: the coordinator's note, else the last reply of the session that ran it. */
-  private handoff(run: FlowRun, block: FlowBlock, note: string | undefined): Handoff {
+  /**
+   * What the step just done hands on: the coordinator's note, else the last reply of the session that ran it; a block
+   * with neither (a person's answered with its word alone, the manager's) passes on what it was handed itself (review of
+   * 3b, finding 8).
+   */
+  private handoff(run: FlowRun, flow: Flow, block: FlowBlock, note: string | undefined): Handoff {
     if (note?.trim()) return { from: block.title, text: short(note.trim(), HANDOFF_MAX) };
-    const session = run.sessions[block.id];
-    const reply = session ? this.p.lastReply(session).trim() : '';
-    return reply ? { from: block.title, text: short(reply, HANDOFF_MAX) } : null;
+    const reply = (id: string | undefined) => (id ? this.p.lastReply(id).trim() : '');
+    if (reply(run.sessions[block.id])) return { from: block.title, text: short(reply(run.sessions[block.id]), HANDOFF_MAX) };
+    const into = [...run.history].reverse().find((h) => h.to === block.id);
+    if (!into || into.block === block.id) return null;
+    const from = flow.blocks.find((b) => b.id === into.block)?.title ?? into.block;
+    const text = into.note ?? reply(run.sessions[into.block]);
+    return text ? { from, text: short(text, HANDOFF_MAX) } : null;
   }
 
   /** A child run ended (part 3b): its ending is the outcome of the Run flow block that waits for it. */
-  private async childEnded(flows: ProjectFlows, child: FlowRun, handoff: Handoff, depth: number): Promise<string> {
+  private async childEnded(flows: ProjectFlows, child: FlowRun, handoff: Handoff): Promise<string> {
     const parent = this.p.runs.get(child.parent!.run);
     if (!parent || parent.state !== 'waiting' || parent.at !== child.parent!.block) return `${child.parent!.run} no longer waits for it at "${child.parent!.block}".`;
     const flow = flows.flows.get(parent.flow);
     const block = flow?.blocks.find((b) => b.id === parent.at);
     if (!flow || !block) return `${runLabel(parent)} waits at "${parent.at}", which is no block of its flow any more: report its outcome yourself with flow_step, or stop it.`;
     try {
-      return `It was run by "${block.title}" of ${runLabel(parent)}: ${await this.applyStep(flows, flow, parent, block, child.ending!, `the flow "${flows.titles.get(child.flow) ?? child.flow}" (${child.id})`, handoff?.text, depth + 1)}`;
+      return `It was run by "${block.title}" of ${runLabel(parent)}: ${await this.applyStep(flows, flow, parent, block, child.ending!, `the flow "${flows.titles.get(child.flow) ?? child.flow}" (${child.id})`, handoff?.text)}`;
     } catch (e) {
       return `${runLabel(parent)} waits at "${block.title}" for it, but ${(e as Error).message} Report the outcome yourself with flow_step (run "${parent.id}").`;
     }
@@ -288,11 +298,18 @@ export class FlowRuns {
 
   private stopRun(run: FlowRun, why: string, by: string, flows: ProjectFlows | null): string {
     if (run.question !== null) this.p.withdraw(run.question, `The run was stopped: ${why}.`);
+    // A run's own Run flow blocks' runs stop with it; a parent waiting for this one is said (review of 3b, finding 5).
+    for (const child of this.p.runs.children(run.id)) if (child.state === 'running' || child.state === 'waiting') this.stopRun(child, `${run.id}, which it ran for, was stopped`, by, flows);
+    const parent = run.parent ? this.p.runs.get(run.parent.run) : undefined;
+    const waits = parent && parent.state === 'waiting' && parent.at === run.parent!.block
+      ? ` ${runLabel(parent)} still waits at "${parent.at}" for it: report that block's outcome with flow_step, or stop it.`
+      : '';
     const step: RunStep = { block: run.at ?? '', word: 'stopped', n: 1, to: null, by, at: this.now(), note: why.slice(0, NOTE_KEPT) };
     this.p.runs.update(run.id, { state: 'stopped', ending: why, history: [...run.history, step], question: null }, this.now());
     this.p.changed(run.project);
     const at = flows?.flows.get(run.flow)?.blocks.find((b) => b.id === run.at)?.title ?? run.at;
-    return `${runLabel(run)} is stopped${at ? ` at "${at}"` : ''}: ${why}.`;
+    if (waits && by === 'Ledung') this.p.tell(run.coordinator, `Ledung: ${runLabel(run)} was stopped (${why}).${waits}`);
+    return `${runLabel(run)} is stopped${at ? ` at "${at}"` : ''}: ${why}.${waits}`;
   }
 
   /** A project removed: its open runs stop, so a project added later under its name doesn't take them over (review of 3a). */
@@ -305,13 +322,13 @@ export class FlowRuns {
    * started with the block's settings, a continued one gets the step, a person is asked, a Run flow block starts its
    * flow; the manager's own step is said with its brief. The coordinator still reads each result and reports it.
    */
-  private async arrive(flows: ProjectFlows, run: FlowRun, flow: Flow, block: FlowBlock, handoff: Handoff, depth: number): Promise<string> {
+  private async arrive(flows: ProjectFlows, run: FlowRun, flow: Flow, block: FlowBlock, handoff: Handoff): Promise<string> {
     const at = `"${block.title}" (${block.id})`;
     const outs = `Its outcomes: ${outcomeList(flow, block, run.counts[block.id])}.`;
     const report = `Judge its result against them and report with flow_step (run "${run.id}", the outcome's word).`;
     try {
       if (block.kind === 'person') return await this.askPerson(flows, run, flow, block, handoff);
-      if (block.kind === 'flow') return await this.startChild(flows, run, block, handoff, depth);
+      if (block.kind === 'flow') return await this.startChild(flows, run, block, handoff);
       if (block.runs === 'new-session' || block.runs === 'continue') {
         const s = await this.blockSession(flows, run, flow, block, handoff);
         return `At ${at}: ${s}. Ledung tells you when it finishes a turn. ${outs} ${report}`;
@@ -357,7 +374,7 @@ export class FlowRuns {
   /** A new session for the block, or the session it continues, given the step; recorded on the run. */
   private async blockSession(flows: ProjectFlows, run: FlowRun, flow: Flow, block: FlowBlock, handoff: Handoff): Promise<string> {
     const text = await this.handoffText(flows, run, block, handoff);
-    const runBlock = { run: run.id, block: block.id };
+    const runBlock: RunBlock = { run: run.id, block: block.id, runTitle: run.title, blockTitle: block.title, flow: run.flow };
     // The session that ran the block it continues, or the one that started that chain (Fix continues Build).
     const own = block.runs === 'continue' ? run.sessions[block.continues ?? ''] ?? run.sessions[sessionOf(flow, block.id) ?? ''] : undefined;
     if (own && this.p.getSession(own)) {
@@ -372,6 +389,12 @@ export class FlowRuns {
       project: run.project, coordinator: run.coordinator, title: short(`${block.title}: ${run.title}`, 80), task: text,
       model: block.model ?? from.model, profile: block.profile ?? from.profile, runBlock,
     });
+    // The block's session from an earlier round has done its part: stopped, unless another block of the run still uses
+    // it (a continued one), so a loop doesn't leave a session behind each round (review of 3b, finding 4).
+    const earlier = run.sessions[block.id];
+    if (earlier && earlier !== s.id && !Object.entries(run.sessions).some(([b, id]) => b !== block.id && id === earlier)) {
+      await this.p.stopSession(earlier, `A new session took "${block.title}" of ${run.id}.`).catch(() => {});
+    }
     this.p.runs.update(run.id, { sessions: { ...run.sessions, [block.id]: s.id } }, this.now());
     this.p.changed(run.project);
     const settings = [s.requestedModel ? `model ${s.requestedModel}` : '', s.profile ? `profile ${s.profile}` : ''].filter(Boolean).join(', ');
@@ -384,7 +407,7 @@ export class FlowRuns {
     const words = [...new Map((block.outcomes ?? []).map((o) => [endingKey(o.word), o.word])).values()];
     const where = (block.outcomes ?? []).map((o) => `"${o.word}"${o.times ? ` (${ordinal(o.times)} time)` : ''} → ${o.end ? 'the flow ends' : titleOf(o.to)}`).join('; ') || 'the flow ends';
     const brief = await this.briefOf(flows, block);
-    const tag = { run: run.id, block: block.id, runTitle: run.title, blockTitle: block.title };
+    const tag = { run: run.id, block: block.id, runTitle: run.title, blockTitle: block.title, flow: run.flow };
     const refs = run.ref ? { refs: [run.ref] } : {};
     const title = short(`${block.title}: ${run.title}`, 200);
     const flowTitle = flows.titles.get(run.flow) ?? run.flow;
@@ -401,7 +424,7 @@ export class FlowRuns {
         title, tier: this.p.tiers(run.project)[0], ...refs, run: tag,
         issue: [`${run.title}${run.ref ? ` (${run.ref})` : ''} is at "${block.title}" in the flow "${flowTitle}". Your answer moves it: ${where}.`, handoff ? `"${handoff.from}" handed on:\n\n${handoff.text}` : '', brief].filter(Boolean).join('\n\n'),
       };
-    const q = this.p.ask({ coordinator: run.coordinator, question: questionText(undefined, details), options: block.ask === 'review' || words.length < 2 ? null : words.slice(0, 5), details });
+    const q = this.p.ask({ coordinator: run.coordinator, question: questionText(undefined, details), options: block.ask === 'review' || !words.length ? null : words.slice(0, 8), details });
     this.p.runs.update(run.id, { state: 'waiting', question: q.id }, this.now());
     this.p.changed(run.project);
     return `At "${block.title}" (${block.id}), a person's step: Ledung put it to ${this.p.userName} as ${block.ask === 'review' ? 'review' : 'question'} #${q.id}. ` +
@@ -409,17 +432,20 @@ export class FlowRuns {
   }
 
   /** A Run flow block (part 3b): a run of its own in the flow it names, which this one waits for. */
-  private async startChild(flows: ProjectFlows, run: FlowRun, block: FlowBlock, handoff: Handoff, depth: number): Promise<string> {
+  private async startChild(flows: ProjectFlows, run: FlowRun, block: FlowBlock, handoff: Handoff): Promise<string> {
     const name = block.flow ?? '';
     const flow = flows.flows.get(name);
     if (!flow) throw new Error(`the flow "${name}" it runs is not there.`);
+    // Counted up the parent chain, so a flow that runs itself one step at a time is held too (review of 3b, finding 6).
+    let depth = 0;
+    for (let r: FlowRun | undefined = run; r?.parent && depth <= NESTED_MAX; r = this.p.runs.get(r.parent.run)) depth++;
     if (depth >= NESTED_MAX) throw new Error(`runs started by Run flow blocks go at most ${NESTED_MAX} deep.`);
     this.p.runs.update(run.id, { state: 'waiting' }, this.now());
     const first = startBlock(flow);
     const child = this.p.runs.create({ project: run.project, title: run.title, ref: run.ref, flow: name, at: first.id, coordinator: run.coordinator, parent: { run: run.id, block: block.id }, now: this.now() });
     this.p.changed(run.project);
     return `At "${block.title}" (${block.id}): Ledung started ${child.id} in the flow "${flows.titles.get(name) ?? name}" for it, and ${run.id} waits; the way ${child.id} ends is "${block.title}"'s outcome.\n\n` +
-      `${child.id}: ${await this.arrive(flows, child, flow, first, handoff, depth + 1)}`;
+      `${child.id}: ${await this.arrive(flows, child, flow, first, handoff)}`;
   }
 
   // --- events ----------------------------------------------------------------------------------------
@@ -431,6 +457,9 @@ export class FlowRuns {
   onAnswered(q: QuestionInfo): Promise<void> {
     const run = q.answer === null ? undefined : this.p.runs.byQuestion(q.id);
     if (!run) return Promise.resolve();
+    // At once, before the run moves (which may start a session): the coordinator gets the answer in the run's note only,
+    // never also as a plain answer it might report again at the next block (review of 3b, finding 1).
+    this.p.markDelivered(q.id);
     return this.one(run.project, async () => {
       const now = this.p.runs.get(run.id)!;
       if (now.question !== q.id) return;
@@ -444,18 +473,28 @@ export class FlowRuns {
         if (!word) {
           this.p.runs.update(now.id, { question: null, state: 'running' }, this.now());
           this.p.changed(now.project);
-          this.p.tell(now.coordinator, `Ledung: ${this.p.userName} answered "${block.title}" of ${runLabel(now)} (question #${q.id}) with an answer that is none of its outcomes: read it and report the outcome with flow_step. Its outcomes: ${outcomeList(flow, block, now.counts[block.id])}.`);
+          this.p.tell(now.coordinator, `Ledung: ${this.p.userName} answered "${block.title}" of ${runLabel(now)} (question #${q.id}) with an answer that is none of its outcomes: read it and report the outcome with flow_step. Its outcomes: ${outcomeList(flow, block, now.counts[block.id])}.\n\nThe answer:\n\n${answer}`);
           return;
         }
         const note = answer.replace(/^(Accepted\.|Changes needed:)\s*/, '').trim();
         const moved = await this.applyStep(flows, flow, { ...now, question: null }, block, word, this.p.userName, note && endingKey(note) !== endingKey(word) ? note : undefined);
-        // The note below carries the answer, so it doesn't also arrive as a plain answer the coordinator might report again.
-        this.p.markDelivered(q.id);
         this.p.tell(now.coordinator, `Ledung: ${this.p.userName} answered "${block.title}" of ${runLabel(now)} (question #${q.id}): ${answer}\n\n${moved}`);
       } catch (e) {
-        this.p.tell(now.coordinator, `Ledung: ${this.p.userName} answered question #${q.id} of ${runLabel(now)}, but the run could not move: ${(e as Error).message} Report its outcome with flow_step, or stop it.`);
+        this.p.tell(now.coordinator, `Ledung: ${this.p.userName} answered question #${q.id} of ${runLabel(now)}, but the run could not move: ${(e as Error).message} Report its outcome with flow_step, or stop it.\n\nThe answer:\n\n${answer}`);
       }
     });
+  }
+
+  /**
+   * A person block's question withdrawn on the page (review of 3b, finding 3): the run is the coordinator's to move again,
+   * and it is told.
+   */
+  onWithdrawn(q: QuestionInfo): void {
+    const run = this.p.runs.byQuestion(q.id);
+    if (!run) return;
+    this.p.runs.update(run.id, { question: null, state: 'running' }, this.now());
+    this.p.changed(run.project);
+    this.p.tell(run.coordinator, `Ledung: ${this.p.userName} withdrew question #${q.id}, "${run.at}" of ${runLabel(run)}: report that block's outcome yourself with flow_step when you know it, or stop the run.`);
   }
 
   /**
@@ -475,7 +514,7 @@ export class FlowRuns {
 /**
  * The outcome word a person's answer gives (part 3b), or null: a review's verdict is the outcome of that word (or, if
  * the block has no such word, its first outcome for Accepted and its second for Changes needed), a question's answer
- * one of the block's words, or text starting with one. A block with no outcomes ends the flow whatever the answer.
+ * one of the block's words. A block with no outcomes ends the flow whatever the answer.
  */
 export function answerWord(block: FlowBlock, answer: string): string | null {
   if (!block.outcomes?.length) return 'done';
@@ -483,12 +522,9 @@ export function answerWord(block: FlowBlock, answer: string): string | null {
   const a = answer.trim();
   const verdict = a === ACCEPTED || /^Accepted\.\s/.test(a) ? 'accepted' : a.startsWith(CHANGES_NEEDED) ? 'changes needed' : null;
   if (verdict) return words.find((w) => endingKey(w) === verdict) ?? (block.ask === 'review' ? (verdict === 'accepted' ? words[0] : words[1]) ?? null : null);
+  // Only the word itself, as its button gives it: anything more is the coordinator's to read (#1184, review of 3b).
   const key = endingKey(a.replace(/[.!]+$/, ''));
-  const exact = words.find((w) => endingKey(w) === key);
-  if (exact) return exact;
-  // "Go on, it is fine": an answer that starts with one of the words, the longest such word.
-  const lead = words.filter((w) => key.startsWith(endingKey(w)) && /^[\s.,:;!-]/.test(key.slice(endingKey(w).length))).sort((x, y) => y.length - x.length);
-  return lead[0] ?? null;
+  return words.find((w) => endingKey(w) === key) ?? null;
 }
 
 /** A session's last reply as text, from its stored messages (oldest first): what a finished block hands on (part 3b). */

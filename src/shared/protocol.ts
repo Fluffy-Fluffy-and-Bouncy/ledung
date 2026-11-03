@@ -8,6 +8,18 @@ import type { SkillChoices, SkillInfo } from './skills.ts';
 import type { Macro } from './macros.ts';
 import type { SecretInfo } from './secrets.ts';
 
+/**
+ * The run and block a session serves (workflow part 3), with what its header shows: the run's and block's titles as they
+ * were then, and the flow, for the link to the workflow page.
+ */
+export interface RunBlock {
+  run: string;
+  block: string;
+  runTitle?: string;
+  blockTitle?: string;
+  flow?: string;
+}
+
 export type SessionStatus =
   /** The process is starting. */
   | 'starting'
@@ -165,7 +177,7 @@ export interface SessionInfo {
   /** Its elevated commands raise UAC on this PC's desktop (#213): the status line says so while one runs. */
   uac?: boolean;
   /** The run and block of the project's flow it was started or continued for (workflow part 3); null or left out: none. */
-  runBlock?: { run: string; block: string } | null;
+  runBlock?: RunBlock | null;
 }
 
 /**

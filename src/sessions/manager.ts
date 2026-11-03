@@ -89,6 +89,7 @@ import type { SecretInfo, SecretLifetime } from '../shared/secrets.ts';
 import { FlowRunError, FlowRuns, lastReplyOf } from './flow-runs.ts';
 import { RunStore } from './run-store.ts';
 import type { FlowRun } from '../shared/flow-run.ts';
+import type { RunBlock } from '../shared/protocol.ts';
 import type { RunHandlers } from './tools.ts';
 
 const LIMIT_KEY = 'max-working-sessions';
@@ -260,10 +261,18 @@ export class SessionManager {
       },
       changed: (project) => this.publish({ type: 'runs', project, runs: this.flowRuns.list(project) }),
       // Part 3b: a block's session is started under the run's coordinator with the block's settings, its step from Ledung.
-      startSession: (b) => this.start(b.project, b.task, {
-        parentId: b.coordinator, title: b.title, model: b.model, profile: b.profile, runBlock: b.runBlock,
-        intro: `Your step, from Ledung's workflow (run ${b.runBlock.run}, block ${b.runBlock.block}):`,
-      }),
+      startSession: async (b) => {
+        const s = await this.start(b.project, b.task, {
+          parentId: b.coordinator, title: b.title, model: b.model, profile: b.profile, runBlock: b.runBlock,
+          intro: `Your step, from Ledung's workflow (run ${b.runBlock.run}, block ${b.runBlock.block}):`,
+        });
+        // A start that failed ends the session rather than throwing (review of 3b, finding 2).
+        if (s.status === 'ended') throw new Error(`the session could not start: ${s.endReason ?? 'unknown reason'}.`);
+        return s;
+      },
+      stopSession: async (id, reason) => {
+        if (this.store.getSession(id)?.status !== 'ended') await this.stop(id, reason);
+      },
       continueSession: async (id, text, runBlock) => {
         this.store.updateSession(id, { runBlock });
         this.publish({ type: 'session', session: this.store.getSession(id)! });
@@ -1100,6 +1109,8 @@ export class SessionManager {
   withdrawQuestion(id: number): void {
     if (!this.store.withdrawQuestion(id, `Withdrawn by ${this.config.userName}.`)) throw new UserError('This question is no longer open.');
     this.publish({ type: 'question', question: this.store.getQuestion(id)! });
+    // A person block's question: its run goes back to its coordinator (workflow part 3b).
+    this.flowRuns.onWithdrawn(this.store.getQuestion(id)!);
   }
 
   projects(): ProjectInfo[] {
@@ -2167,7 +2178,7 @@ export class SessionManager {
     opts: {
       role?: SessionRole; parentId?: string; title?: string; permissionMode?: PermissionMode; model?: string; profile?: string; cwd?: string; here?: boolean;
       /** A block's session (workflow part 3b): the run and block it serves, and the heading of its task in place of the manager's. */
-      runBlock?: { run: string; block: string }; intro?: string;
+      runBlock?: RunBlock; intro?: string;
     } = {},
   ): Promise<SessionInfo> {
     const project = this.project(projectName);

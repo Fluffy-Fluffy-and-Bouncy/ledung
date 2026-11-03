@@ -116,6 +116,8 @@ export interface QuestionRun {
   blockTitle: string;
   /** Whose call it is, as the block names them (part 3d); none: the person using Ledung. */
   person?: string;
+  /** The flow it runs in, for the link to the workflow page (part 3c). */
+  flow?: string;
 }
 
 /** One option as the desk shows it. `answer` is the text the session gets when it is picked. */
