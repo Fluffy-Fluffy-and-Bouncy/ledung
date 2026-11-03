@@ -35,6 +35,9 @@ import { RelayAdmin } from './remote/admin.ts';
 import { connectVia } from './remote/linked.ts';
 import { computerList } from './shared/computers.ts';
 import { remoteSecretText } from './remote/secret.ts';
+import { Secrets } from './secrets/secrets.ts';
+import { osGuard, Vault } from './secrets/vault.ts';
+import { localSecretsDir } from './secrets/runtime.ts';
 
 /** Exit code that asks the launcher to start Ledung again (see scripts/release.ts, and src/cli.ts for the npm package). */
 const RESTART_CODE = 75;
@@ -71,10 +74,15 @@ async function main(): Promise<void> {
   const pollMs = boardConfig(config).pollSeconds * 1000;
   // Board attachments are kept in the data folder's board cache, never in a project folder.
   manager.attachBoards((repo) => new GitHubBackend({ repo, pollMs }), new GitHubRepos(), path.join(userDataDir(), 'board-cache'));
+  // Locked secrets (issue #468), read before any session is reattached, so its output is blanked from the first line.
+  const secrets = await Secrets.open(new Vault(path.join(userDataDir(), 'secrets.enc'), osGuard(userDataDir())), (line) => console.log(line));
+  manager.attachSecrets(secrets, localSecretsDir(userDataDir()));
 
   // Reconnect to sessions whose hosts survived the restart, then mark the rest as ended.
   const attached = await manager.attachRunningHosts();
   const leftover = store.markUnfinishedSessionsEnded('Ledung stopped before this session ended. Resume to continue.', attached);
+  // In the background: a container that doesn't answer never holds up the start.
+  void manager.cleanSecretsAtStart(attached).catch((e) => console.log(`Secrets: the clean-up at start failed: ${(e as Error).message}`));
   // Only now: an away period that ran out while Ledung was off tells the managers that are live (issue #328).
   manager.away.begin();
   // Whether Claude Code is signed in, so a first start says how to sign in before a session fails on it (issue #333).

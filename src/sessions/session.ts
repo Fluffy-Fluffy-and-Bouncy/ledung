@@ -46,6 +46,10 @@ import { airgapEnvironment, airgapSettings, airgapTempFolder, makeAirgapTempFold
 import { userDataDir } from '../platform/paths.ts';
 import { startShell, SHELL_TIMEOUT_MS, type ShellKind, type ShellRun } from '../runners/shell-run.ts';
 import { bashModeText } from './bang.ts';
+import type { SessionSecrets } from '../secrets/live.ts';
+import { localSecretsDir } from '../secrets/runtime.ts';
+import type { LaunchSecrets } from '../runners/runner.ts';
+import { SECRET_FOR_CLAUDE_START, SECRET_RULE, type SecretInfo } from '../shared/secrets.ts';
 import { conversationBefore } from './earlier.ts';
 import { attachSources, type SourceContext } from './sources.ts';
 import type { SessionRole, ShellBlock } from '../shared/protocol.ts';
@@ -202,6 +206,8 @@ export interface SessionOptions {
   airgap?: { network: string[]; folders: string[]; sandbox: boolean } | null;
   /** The one pull request poll, in the session manager (issue #252); none: the branch's pull request isn't looked up. */
   pullRequests?: Pick<PullRequestPoller, 'watch' | 'forget'> | null;
+  /** Its locked secrets (issue #468); none: no secrets reach it. */
+  secrets?: SessionSecrets | null;
 }
 
 /** The environment for Claude Code: Ledung's, with the project's account login instead of any other,
@@ -310,6 +316,11 @@ export class Session {
    */
   private shellResultsDue = 0;
   private shellResultsToSkip = 0;
+  /** Its locked secrets (issue #468), and what its launch gives the runner. */
+  private readonly secrets: SessionSecrets | null;
+  private launchSecrets: LaunchSecrets | undefined;
+  /** When the turn now under way (or the last one) began, for the "once" secrets' rule (issue #468). */
+  private turnBegan = 0;
 
   constructor(opts: SessionOptions) {
     this.id = opts.info.id;
@@ -321,6 +332,8 @@ export class Session {
     this.defaultModel = opts.defaultModel;
     this.resume = opts.resume;
     this.attachTo = opts.attachTo;
+    this.secrets = opts.secrets ?? null;
+    if (this.attachTo) this.secrets?.attached();
     // Mid-turn when Ledung restarted: that turn began before any stop it now sees, so it finishes (review 2 of #278, finding 3).
     if (opts.info.status === 'running' || opts.info.status === 'waiting') this.turnStartedAt = 0;
     this.userName = opts.userName;
@@ -648,7 +661,11 @@ export class Session {
     // Level B's own temp folder; a reattached session already runs with it.
     const tmp = this.airgap?.sandbox ? this.airgapTmp ?? airgapTempFolder(this.id) : null;
     // Ledung's data folder and the hosts' sockets are out of every session's reach (#104).
-    const boundary = boundarySettings({ dataDir: userDataDir(), ownLoginFolder: this.loginFolder() ?? process.env.CLAUDE_CONFIG_DIR ?? null });
+    // And every local session's file of locked secrets, to the file tools (review of #468, finding 3).
+    const boundary = boundarySettings({ dataDir: userDataDir(), ownLoginFolder: this.loginFolder() ?? process.env.CLAUDE_CONFIG_DIR ?? null, toolsDenied: [localSecretsDir(userDataDir())] });
+    // Its locked secrets (issue #468), written for this launch; a reattached process already has its env file.
+    const launched = this.secrets && !this.attachTo ? await this.secrets.launch(tmp) : null;
+    this.launchSecrets = launched?.secrets;
     return {
       ...profile,
       // And another project's locked folders, while one is (issue #109); none locked: unchanged. Level B's
@@ -661,7 +678,7 @@ export class Session {
       // Claude Code's own option beats the settings file's model, so the project's default is left out when the file names one.
       model: this.model ?? (this.fileSettings?.model === undefined ? this.defaultModel : undefined),
       // Level B keeps only what Claude Code and a shell need of Ledung's environment (issue #109).
-      env: claudeEnvironment(this.airgap ? airgapEnvironment(process.env, tmp) : process.env, this.account?.env, instructions(tools)),
+      env: { ...claudeEnvironment(this.airgap ? airgapEnvironment(process.env, tmp) : process.env, this.account?.env, instructions(tools)), ...launched?.env },
       resume: this.attachTo ? undefined : this.resume,
       // Always explicit: without it a session may pick a mode from its settings (spike finding 1).
       permissionMode: this.store.getSession(this.id)!.permissionMode,
@@ -677,7 +694,7 @@ export class Session {
       // The user's own Claude Code, or the SDK's copy when the config says "bundled" (issue #341).
       pathToClaudeCodeExecutable: this.programPath(),
       spawnClaudeCodeProcess: (o) => {
-        this.connection = connectHost(this.id, this.attachTo ? { attachTo: this.attachTo, fromSeq: this.store.hostSeq(this.id) } : { launch: this.runner.launchSpec(o) }, handlers);
+        this.connection = connectHost(this.id, this.attachTo ? { attachTo: this.attachTo, fromSeq: this.store.hostSeq(this.id) } : { launch: this.runner.launchSpec(o, this.launchSecrets) }, handlers);
         // Shaped like the process the SDK expects; see HostConnection.
         return this.connection as never;
       },
@@ -756,7 +773,9 @@ export class Session {
           const away = promptAwayLine(info, this.away?.current() ?? null, this.userName);
           // How much time has passed, not only what time it is (issue #265).
           const now = new Date();
-          const time = [promptTimeLine(now, this.lastPromptAt, info?.createdAt ?? null), context, usage, away].filter(Boolean).join('\n');
+          // A message with a locked secret carries the rule for it (issue #468).
+          const secret = prompt.includes(SECRET_FOR_CLAUDE_START) ? SECRET_RULE : '';
+          const time = [promptTimeLine(now, this.lastPromptAt, info?.createdAt ?? null), context, usage, away, secret].filter(Boolean).join('\n');
           this.lastPromptAt = now.getTime();
           return {
             hookSpecificOutput: {
@@ -875,6 +894,7 @@ export class Session {
     // Detaching for a restart: the session goes on in its host; leave everything as it is.
     if (this.detaching || this.stopping) return;
     this.endTurn();
+    void this.secretsEnded();
     this.endPermissions('The session ended.');
     this.endCompact({ kind: 'ended' });
     this.pullRequests?.forget(this.id);
@@ -943,7 +963,11 @@ export class Session {
       this.deliver();
     } else if (m.type === 'assistant' && status !== 'running' && this.pending.size === 0) {
       // A turn Claude Code started itself (a wake-up, a /loop) begins here.
-      this.turnStartedAt ??= Date.now();
+      if (this.turnStartedAt === null) {
+        this.turnStartedAt = Date.now();
+        // A turn begun this way is a turn for the "once" secrets' rule too (issue #468).
+        this.turnBegan = this.turnStartedAt;
+      }
       this.update({ status: 'running' });
     }
   }
@@ -1242,11 +1266,14 @@ export class Session {
     if (this.turnOpen) return;
     this.turnOpen = true;
     this.turnStartedAt = Date.now();
+    this.turnBegan = this.turnStartedAt;
     this.turnCommands = [];
     this.gate.started(this.id, trigger);
   }
 
   private endTurn(): void {
+    // The "once" secrets sent before this turn began had their turn (issue #468).
+    void this.secrets?.turnEnded(this.turnBegan).catch((e) => console.error(`Secrets of ${this.id}: ${(e as Error).message}`));
     if (!this.turnOpen) return;
     this.turnOpen = false;
     this.gate.ended(this.id, [...new Set(this.turnCommands)]);
@@ -1400,17 +1427,21 @@ export class Session {
     if (!this.q || this.stopping) throw new Error('The session is not running.');
     const info = this.store.getSession(this.id)!;
     // A chat starts as "New chat" (issue #211); either is named after the first message.
-    if (info.title === 'New session' || info.title === 'New chat') this.update({ title: text.replace(/\s+/g, ' ').trim().slice(0, 80) || info.title });
+    // Claude reads a locked secret's token as its name and variable, never the value (issue #468).
+    const sent = this.secrets?.forClaude(text) ?? { text, once: [] };
+    if (sent.once.length) void this.secrets?.sent(sent.once).catch((e) => console.error(`Secrets of ${this.id}: ${(e as Error).message}`));
+    const title = this.secrets?.blank(text) ?? text;
+    if (info.title === 'New session' || info.title === 'New chat') this.update({ title: title.replace(/\s+/g, ' ').trim().slice(0, 80) || info.title });
     this.record('user', here ? { text, here: true } : { text });
     this.lastActivity = Date.now();
     if (info.clearDue != null) this.cancelClear(`${this.userName} (wrote to the session)`);
     if (info.status === 'running' || info.status === 'waiting') {
       this.usage.startTurn('user');
       // Not pushInput: this joins the turn already running, whose resume guard must stay (review of #24).
-      this.input.push(text);
+      this.input.push(sent.text);
       return;
     }
-    this.store.setHeldMessages(this.id, [...this.store.heldMessages(this.id), text]);
+    this.store.setHeldMessages(this.id, [...this.store.heldMessages(this.id), sent.text]);
     this.deliver();
   }
 
@@ -1422,7 +1453,10 @@ export class Session {
   runShell(command: string, kind: ShellKind, timeoutMs = SHELL_TIMEOUT_MS): Promise<void> {
     if (!this.q || this.stopping || this.detaching) throw new Error('The session is not running.');
     if (this.shellRun) throw new Error('A "!" command is still running in this session; wait for it or stop it.');
-    const spec = this.runner.shell(command, kind, this.shellEnvironment());
+    // A locked secret's token is its variable there, and its value is in the environment (issue #468).
+    const powershell = this.runner.kind === 'local' && process.platform === 'win32' && kind === 'powershell';
+    const values = this.secrets?.env() ?? {};
+    const spec = this.runner.shell(this.secrets?.shellCommand(command, powershell) ?? command, kind, { ...this.shellEnvironment(), ...values }, Object.keys(values));
     const run = startShell(spec, { timeoutMs });
     this.shellRun = { command, startedAt: Date.now(), run };
     this.lastActivity = Date.now();
@@ -1441,7 +1475,9 @@ export class Session {
     this.record('shell', block);
     this.lastActivity = Date.now();
     if (toClaude) {
-      const text = bashModeText(command, r, timeoutMs);
+      // What it printed reaches Claude with any locked secret's value blanked, as it is stored (issue #468).
+      const blank = (t: string) => this.secrets?.blank(t) ?? t;
+      const text = bashModeText(command, { ...r, stdout: blank(r.stdout), stderr: blank(r.stderr) }, timeoutMs);
       const status = this.store.getSession(this.id)?.status;
       if (this.turnOpen || status === 'running' || status === 'waiting') this.shellAppends.push(text);
       else this.appendContext(text);
@@ -1600,11 +1636,28 @@ export class Session {
     this.q.close();
     await Promise.race([this.finished, new Promise((r) => setTimeout(r, 3000))]);
     this.endCompact({ kind: 'ended' });
+    await this.secretsEnded();
     this.record('event', { text: reason });
     this.backgroundTasks = 0;
     this.update({ status: 'ended', endedAt: Date.now(), endReason: reason });
     // Stopped only to start again with new settings (issue #109): nothing for its manager.
     if (!opts.restart) this.management.onEnded(this.id, reason, opts.quiet);
+  }
+
+  /** Its Claude Code ended: the secrets' plain-text files go, and its "once" secrets with them (issue #468). */
+  private async secretsEnded(): Promise<void> {
+    await this.secrets?.ended().catch((e) => console.error(`Secrets of ${this.id}: ${(e as Error).message}`));
+  }
+
+  /** Its secrets changed (issue #468): the running Claude Code's next command has them. */
+  secretsChanged(): Promise<void> {
+    return this.secrets?.refresh() ?? Promise.resolve();
+  }
+
+  /** The secrets this session may use, for the page: never a value. */
+  secretList(): SecretInfo[] {
+    const status = this.store.getSession(this.id)?.status;
+    return this.secrets?.list(!!this.q && !this.stopping && status !== 'ended') ?? [];
   }
 
   /** Lets go of the session without stopping it, for a Ledung restart. The host keeps it running. */

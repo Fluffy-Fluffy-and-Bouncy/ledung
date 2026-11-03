@@ -29,6 +29,7 @@ import { refuseRealSignInStores } from './signin-stores.ts';
 import { freePort } from './free-port.ts';
 import { stopRunning } from '../src/platform/background.ts';
 import { WAIT_MS } from './limits.ts';
+import { Secrets } from '../src/secrets/secrets.ts';
 
 // A port the system says is free right now; a random pick could hit a running Ledung's port.
 const PORT = await freePort();
@@ -1553,6 +1554,67 @@ test('through the public name each "!" command is signed with the passkey, for e
     assert.match(errorOf(await pubChange(run, body, d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign(run, body) })), /locked/);
   } finally {
     clockShift = 0;
+    d.page.close();
+  }
+});
+
+// Locked secrets (issue #468): a value goes into a session's commands, so locking one (and changing where it
+// reaches) has the "!" command's rules; the list is a read and never carries a value; removing is a plain change.
+test('locking a secret needs the sign-in, this host, Ledung\'s own origin and the live page; nothing that comes back holds the value', async () => {
+  sessions.attachSecrets(Secrets.memory(), path.join(os.tmpdir(), 'ledung-secrets-security-test'));
+  const lock = '/api/sessions/s1/secrets';
+  const value = 'hunter2-security-test';
+  const body = { name: 'db-password', value, lifetime: 'session' };
+  const json = { 'content-type': 'application/json' };
+  assert.equal((await request({ method: 'POST', path: lock, headers: { cookie: COOKIE, origin: ORIGIN, host: 'evil.example', ...json }, body: JSON.stringify(body) })).status, 403, 'another host');
+  assert.equal((await request({ method: 'POST', path: lock, headers: { origin: ORIGIN, ...json }, body: JSON.stringify(body) })).status, 401, 'no sign-in');
+  assert.equal((await request({ method: 'POST', path: lock, headers: { cookie: COOKIE, origin: 'http://evil.example', ...json }, body: JSON.stringify(body) })).status, 403, 'another origin');
+  const noPage = await change(lock, body);
+  assert.equal(noPage.status, 403, 'the cookie alone: a script that read the token locks nothing into a session');
+  assert.match(errorOf(noPage), /open page/);
+  assert.equal((await change(lock, body, { 'x-ledung-page': 'b'.repeat(64) })).status, 403, 'a made-up key');
+  const page = await livePage();
+  try {
+    const locked = await change(lock, body, { 'x-ledung-page': page.key });
+    assert.equal(locked.status, 200, locked.body);
+    assert.ok(!locked.body.includes(value));
+    const id = JSON.parse(locked.body).id as string;
+    // Renaming or a new lifetime: the same rules.
+    assert.equal((await change('/api/sessions/s1/secret-edit', { secret: id, lifetime: 'project' })).status, 403, 'edit: the cookie alone');
+    assert.equal((await change('/api/sessions/s1/secret-edit', { secret: id, name: 'db-pass' }, { 'x-ledung-page': page.key })).status, 200);
+    // The list: the sign-in and this host, and no value.
+    assert.equal((await request({ path: lock })).status, 401);
+    assert.equal((await request({ path: lock, headers: { cookie: COOKIE, host: 'evil.example' } })).status, 403);
+    const list = await request({ path: lock, headers: { cookie: COOKIE } });
+    assert.equal(list.status, 200);
+    assert.deepEqual(JSON.parse(list.body).map((s: { name: string }) => s.name), ['db-pass']);
+    assert.ok(!list.body.includes(value));
+    // Removing is always safe: the sign-in and the origin.
+    const remove = '/api/sessions/s1/secret-remove';
+    assert.equal((await request({ method: 'POST', path: remove, headers: { origin: ORIGIN, ...json }, body: JSON.stringify({ secret: id }) })).status, 401, 'remove: no sign-in');
+    assert.equal((await request({ method: 'POST', path: remove, headers: { cookie: COOKIE, origin: 'http://evil.example', ...json }, body: JSON.stringify({ secret: id }) })).status, 403, 'remove: another origin');
+    assert.equal((await change(remove, { secret: id })).status, 200);
+    assert.equal(JSON.parse((await request({ path: lock, headers: { cookie: COOKIE } })).body).length, 0);
+  } finally {
+    page.close();
+  }
+});
+
+test('through the public name each secret is locked with the passkey, for exactly that value, and a locked device is refused', async () => {
+  const d = await deviceWithPasskey('Secrets phone');
+  const lock = '/api/sessions/nope/secrets';
+  const body = JSON.stringify({ name: 'pw', value: 'from-the-phone-1', lifetime: 'once' });
+  try {
+    assert.match(errorOf(await pubChange(lock, body, d.cookie, d.withKey)), /locked/, 'locked');
+    assert.match(errorOf(await pubChange(lock, body, d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign(lock, body) })), /locked/, 'locked, even with a signature');
+    assert.equal((await pubChange('/api/device-unlock', '{}', d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign('/api/device-unlock', '{}') })).status, 200);
+    assert.match(errorOf(await pubChange(lock, body, d.cookie, d.withKey)), /needs your passkey/, 'unlocked is not enough');
+    const other = JSON.stringify({ name: 'pw', value: 'another-value-2', lifetime: 'project' });
+    assert.match(errorOf(await pubChange(lock, other, d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign(lock, body) })), /something else/, 'a signature for another value');
+    const passed = await pubChange(lock, body, d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign(lock, body) });
+    assert.equal(passed.status, 400, passed.body);
+    assert.match(errorOf(passed), /No such session/);
+  } finally {
     d.page.close();
   }
 });

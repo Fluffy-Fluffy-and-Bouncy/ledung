@@ -82,6 +82,10 @@ import type { ClaudeCodeView, ConfigStatus, ProfilesView, SkillListView, UsageSt
 import { effectiveProfiles, readWorkflowProfiles, type EffectiveProfiles } from './workflow-profiles.ts';
 import { SkillChoicesSetting, skillsFromFiles, type SkillChoices } from './skills.ts';
 import { exercisedLine } from '../platform/exercised.ts';
+import { SecretError, type Secrets, type SecretScope } from '../secrets/secrets.ts';
+import { cleanStaleRuntime, metaPlaceBook, SessionSecrets, type PlaceBook } from '../secrets/live.ts';
+import { DockerSecretRuntime, LocalSecretRuntime } from '../secrets/runtime.ts';
+import type { SecretInfo, SecretLifetime } from '../shared/secrets.ts';
 
 const LIMIT_KEY = 'max-working-sessions';
 /** Usage stops once set in Settings (issue #278), and the ones lifted by hand, by window; kept in meta, so no migration. */
@@ -159,6 +163,10 @@ export class SessionManager {
   readonly away: Away;
   /** The message boards between managers, one per repo the projects name (docs/steps/message-board.md, "Per project"). */
   boards: Boards | null = null;
+  /** Locked secrets (issue #468); null: none in this Ledung (tests that don't attach them). */
+  private secrets: Secrets | null = null;
+  private secretBook: PlaceBook | null = null;
+  private secretsDir = '';
   /** The one pull request poll for every live session (issue #252). */
   private readonly pullRequests: PullRequestPoller;
 
@@ -255,6 +263,88 @@ export class SessionManager {
     this.refreshStops();
   }
 
+  // --- Locked secrets (issue #468) -------------------------------------------------------------------
+
+  /** Gives sessions their locked secrets, and blanks the values in everything stored. localDir: local sessions' runtime files. */
+  attachSecrets(secrets: Secrets, localDir: string): void {
+    this.secrets = secrets;
+    this.secretsDir = localDir;
+    this.secretBook = metaPlaceBook({ get: (k) => this.store.getMeta(k), set: (k, v) => this.store.setMeta(k, v) });
+    this.store.setBlanker({ text: (s) => secrets.blank(s), deep: (d) => secrets.blankDeep(d) });
+    secrets.onChange = (change) => this.secretsChanged(change);
+  }
+
+  private sessionSecrets(project: ProjectConfig, info: SessionInfo): SessionSecrets | null {
+    if (!this.secrets || !this.secretBook) return null;
+    const runtime = project.runner === 'local'
+      ? new LocalSecretRuntime(this.secretsDir, info.id)
+      : new DockerSecretRuntime({ container: project.container, user: project.user || undefined }, info.id);
+    return new SessionSecrets({ secrets: this.secrets, scope: { sessionId: info.id, project: info.project }, runtime, book: this.secretBook });
+  }
+
+  private secretScope(id: string): SecretScope {
+    const info = this.store.getSession(id);
+    if (!info) throw new UserError('No such session.');
+    return { sessionId: id, project: info.project };
+  }
+
+  private async secretCall<T>(call: (secrets: Secrets) => Promise<T>): Promise<T> {
+    if (!this.secrets) throw new UserError('Locked secrets are not available in this Ledung.');
+    try {
+      return await call(this.secrets);
+    } catch (e) {
+      throw e instanceof SecretError ? new UserError(e.message) : e;
+    }
+  }
+
+  /** The secrets a session may use, for the page: never a value. */
+  secretList(id: string): SecretInfo[] {
+    const scope = this.secretScope(id);
+    return this.live.get(id)?.secretList() ?? this.secrets?.list(scope) ?? [];
+  }
+
+  /** Locks a value for a session (the page's 🔑); what the page sees of it. */
+  async addSecret(id: string, name: string, value: string, lifetime: SecretLifetime): Promise<SecretInfo> {
+    const added = await this.secretCall((s) => s.add(this.secretScope(id), name, value, lifetime));
+    return this.secretList(id).find((x) => x.id === added.id) ?? added;
+  }
+
+  async editSecret(id: string, secretId: string, edit: { name?: string; lifetime?: SecretLifetime }): Promise<SecretInfo> {
+    const edited = await this.secretCall((s) => s.edit(this.secretScope(id), secretId, edit));
+    return this.secretList(id).find((x) => x.id === edited.id) ?? edited;
+  }
+
+  async removeSecret(id: string, secretId: string): Promise<void> {
+    await this.secretCall((s) => s.remove(this.secretScope(id), secretId));
+  }
+
+  /** The running sessions a change reaches get it in their next command; the pages showing them are told. */
+  private secretsChanged(change: { sessionId: string } | { project: string }): void {
+    const ids = 'sessionId' in change
+      ? [change.sessionId]
+      : [...this.live.values()].filter((s) => s.info.project === change.project).map((s) => s.id);
+    for (const id of ids) {
+      void (this.live.get(id)?.secretsChanged() ?? Promise.resolve()).then(() => {
+        if (this.store.getSession(id)) this.publish({ type: 'secrets', sessionId: id, secrets: this.secretList(id) });
+      });
+    }
+  }
+
+  /**
+   * At Ledung's start, once the running sessions are reattached: the "once" secrets of sessions that ended had
+   * their turn, and every runtime file of a session no longer running goes (the manager's addition 1 on #1565).
+   */
+  async cleanSecretsAtStart(running: readonly string[]): Promise<void> {
+    if (!this.secrets || !this.secretBook) return;
+    await this.secrets.dropOnceExcept(new Set(running));
+    // Asked at each deletion, not a list from before: a session started meanwhile keeps its files (review of #468, finding 2).
+    const live = { has: (id: string) => running.includes(id) || this.live.has(id) };
+    const containers = this.projectStore.list().map((p) => p.config).filter((p) => p.runner === 'docker')
+      .map((p) => ({ container: p.container, user: p.user || undefined }));
+    const unique = [...new Map(containers.map((c) => [`${c.container}:${c.user ?? ''}`, c])).values()];
+    await cleanStaleRuntime({ book: this.secretBook, live, localDir: this.secretsDir, containers: unique, log: (line) => console.log(line) });
+  }
+
   // --- The message board (docs/steps/message-board.md) ----------------------------------------------
 
   /**
@@ -286,6 +376,9 @@ export class SessionManager {
         await this.resumeIfEnded(id);
         this.live.get(id)?.deliver();
       },
+      // A locked secret's value never reaches the board (issue #468).
+      blank: (text) => this.secrets?.blank(text) ?? text,
+      holdsSecret: (text) => this.secrets?.holdsValue(text) ?? false,
       sensitive: (project) => {
         const p = this.projectStore.get(project)?.config;
         return {
@@ -756,6 +849,7 @@ export class SessionManager {
       // The board tools, for a manager whose project has the board on (decision 9); looked at on every start and resume.
       board: launch.board ? this.boards : null,
       pullRequests: this.pullRequests,
+      secrets: this.sessionSecrets(project, info),
       // Looked at on every start and resume, so a config file written meanwhile is found (issue #21).
       workflow: withProfilesWarning(projectWorkflow(chosenWorkflow(workflowsOf(this.config), project), project), profiles.warning),
       // A manager is told where its project's flow is (issue #310), looked for on every start and resume too.
@@ -1633,6 +1727,8 @@ export class SessionManager {
     await Promise.all(running.map((s) => s.stop(`The project "${name}" was removed.`).catch(() => {})));
     for (const s of running) this.live.delete(s.id);
     this.projectStore.remove(name);
+    // Its secrets, the project's and its sessions', go with it (issue #468).
+    void this.secrets?.dropProject(name).catch((e) => console.error(`Secrets of ${name}: ${(e as Error).message}`));
     this.boards?.refresh();
     this.publishProjects();
     this.dispatch();
@@ -2102,6 +2198,8 @@ export class SessionManager {
     if (info.status !== 'ended') throw new UserError('Only an ended session can be archived. Stop it first.');
     if (info.archivedAt) return info;
     this.setArchived(id, Date.now(), `Archived by ${by}.`);
+    // Its secrets for this session go with it, but those kept until removed (issue #468).
+    void this.secrets?.endSession(id).catch((e) => console.error(`Secrets of ${id}: ${(e as Error).message}`));
     return this.store.getSession(id)!;
   }
 

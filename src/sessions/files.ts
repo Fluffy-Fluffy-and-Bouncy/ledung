@@ -2,6 +2,7 @@
 // inside the project folder: the page can be reachable from the local network without sign-in.
 import fs from 'node:fs';
 import path from 'node:path';
+import { SECRET_RUNTIME_PATTERN } from '../shared/secrets.ts';
 
 const MAX_BYTES = 2 * 1024 * 1024;
 
@@ -37,6 +38,8 @@ function resolveInside(root: string, link: string): { real: string; inside: stri
   if (!inside || inside.startsWith('..') || path.isAbsolute(inside)) {
     throw new FileError('Only files inside the project folder can be shown.');
   }
+  // A running session's file of locked secrets is never shown, wherever its folder is (issue #468).
+  if (SECRET_RUNTIME_PATTERN.test(real)) throw new FileError('Only files inside the project folder can be shown.');
   if (fs.statSync(real).isDirectory()) throw new FileError(`${inside} is a folder; only files can be shown.`);
   return { real, inside: inside.split(path.sep).join('/') };
 }

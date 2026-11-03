@@ -6,6 +6,7 @@ import type { Macro } from '../../src/shared/macros.ts';
 import type { ComputerInfo } from '../../src/shared/computers.ts';
 import { api, connectionHello, openConnection, setReconnect } from './api.ts';
 import { fetchNewer, PAGE, withNewer } from './catchUp.ts';
+import { secretsChanged } from './secretLock.ts';
 
 export type Connection = 'connecting' | 'open' | 'closed';
 
@@ -117,6 +118,10 @@ export function useLedung(openSessionId: string | null) {
       ws.onmessage = (e) => {
         const event = JSON.parse(e.data) as ServerEvent;
         switch (event.type) {
+          // A session's locked secrets (issue #468): to whatever shows them.
+          case 'secrets':
+            secretsChanged(event.sessionId, event.secrets);
+            break;
           case 'hello':
             // Reconnected to another release (after a restart): offer its page rather than reloading
             // under Simon's hands (decision of 2026-10-13).

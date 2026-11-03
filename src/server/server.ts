@@ -24,6 +24,7 @@ import { typicalCosts } from '../resources/typical.ts';
 import { BoardError } from '../board/types.ts';
 import type { ProjectConfig } from '../config.ts';
 import type { Overview, Priority, UsageFilter, UsagePeriod } from '../shared/protocol.ts';
+import type { SecretLifetime } from '../shared/secrets.ts';
 import { levelProblem, NO_LOCKDOWN } from '../projects/lockdown.ts';
 import { CertificateFiles } from './tunnel-tls.ts';
 import { readClientHello } from '../remote/clienthello.ts';
@@ -1115,6 +1116,16 @@ export class LedungServer {
   }
 
   /**
+   * requirePage for a request that puts something into a session's commands ("!" commands, locked secrets): through
+   * the public name the device must also be unlocked, since a signed request alone passes requireUnlocked.
+   */
+  private async requireSignedPage(req: IncomingMessage, url: URL): Promise<void> {
+    const device = this.guard.isPublic(req) ? this.guard.deviceOf(req) : null;
+    if (device && this.passkeys?.unlockedUntil(device.id) === null) throw new HttpError(403, device.credentialId ? DEVICE_LOCKED : NO_PASSKEY_LOCKED);
+    await this.requirePage(req, url);
+  }
+
+  /**
    * The page key alone (#104), with no signature per request: through the public name the device must still be
    * live, and requireUnlocked has already refused it unless unlocked (Martin, 2026-10-18 10:41, issue #192).
    * Returns the device through the public name, null locally.
@@ -1738,6 +1749,31 @@ export class LedungServer {
       }
       case 'POST sessions/:id/shell-stop':
         return manager.stopShell(id);
+      // Locked secrets (issue #468). The list is a read: names and lifetimes, never a value.
+      case 'GET sessions/:id/secrets':
+        return manager.secretList(id);
+      case 'POST sessions/:id/secrets': {
+        // A value for a session's commands, as a "!" command is one: the open page, and through the public name an
+        // unlocked device and a passkey signature for each one (the sensitive changes' rules, decision 2 of #212).
+        await this.requireSignedPage(req, url);
+        const body = await readJson(req);
+        return manager.addSecret(id, String(body.name ?? ''), typeof body.value === 'string' ? body.value : '', String(body.lifetime ?? '') as SecretLifetime);
+      }
+      case 'POST sessions/:id/secret-edit': {
+        // A new name or lifetime can take a value to the project's other sessions: the same rules as locking one.
+        await this.requireSignedPage(req, url);
+        const body = await readJson(req);
+        return manager.editSecret(id, String(body.secret ?? ''), {
+          name: typeof body.name === 'string' ? body.name : undefined,
+          lifetime: typeof body.lifetime === 'string' ? body.lifetime as SecretLifetime : undefined,
+        });
+      }
+      case 'POST sessions/:id/secret-remove': {
+        // Removing is always safe: the sign-in and Ledung's own origin, like every change.
+        const body = await readJson(req);
+        await manager.removeSecret(id, String(body.secret ?? ''));
+        return;
+      }
       case 'POST sessions/:id/permission-mode': {
         const body = await readJson(req);
         await manager.setPermissionMode(id, String(body.mode ?? ''));

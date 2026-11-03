@@ -1484,6 +1484,42 @@ button.settings-menu-item.danger { color: var(--danger); }
   .macro-list li > .macro-move { display: none; }
   .macro-up { display: inline-block; }
 }
+
+/* Locked secrets (issue #468): the 🔑 by a selection, the chips over the box, the chip's and the masked field's
+   panel, the 🔑 beside Send and the list in the session's ⚙ menu. */
+.composer .secret-key-float {
+  position: absolute; z-index: 3; width: 2rem; height: 2rem; padding: 0; border-radius: 999px;
+  border: 1px solid var(--nc); background: var(--panel); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35); font-size: 1rem; line-height: 1;
+}
+.composer .secret-chips {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; padding: 0.3rem 0.6rem;
+  background: var(--panel); border: 1px solid var(--border); border-bottom: none; border-radius: 8px 8px 0 0;
+}
+.composer .secret-chip {
+  display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.1rem 0.55rem; border-radius: 999px; font-size: 0.85em;
+  border: 1px solid color-mix(in srgb, var(--nc) 60%, var(--border)); background: color-mix(in srgb, var(--nc) 14%, var(--panel));
+}
+.composer .secret-chip.gone { text-decoration: line-through; opacity: 0.6; }
+.composer .secret-pop {
+  position: absolute; bottom: calc(100% + 0.3rem); left: 1rem; z-index: 21; width: 24rem; max-width: calc(100% - 2rem);
+  display: flex; flex-direction: column; gap: 0.45rem; padding: 0.6rem 0.7rem;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+}
+.composer .secret-pop-head { display: flex; flex-direction: column; gap: 0.15rem; }
+.composer .secret-pop-head .muted, .composer .secret-pop .small-note { font-size: 0.85em; }
+.composer .secret-field { display: flex; align-items: center; gap: 0.5rem; }
+.composer .secret-field > span { min-width: 3.5rem; color: var(--muted); }
+.composer .secret-field input, .composer .secret-field select { flex: 1; min-width: 0; }
+.composer .secret-pop-buttons { display: flex; justify-content: flex-end; gap: 0.4rem; }
+.composer-buttons .send-row { display: flex; gap: 0.3rem; }
+.composer-buttons .send-row .secret-key { padding: 0 0.45rem; }
+.session-menu .secrets-row { flex-direction: column; align-items: stretch; gap: 0.3rem; }
+.session-menu .secrets-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.35rem; }
+.session-menu .secrets-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; }
+.session-menu .secrets-list .secret-name { flex: 1 1 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-menu .secrets-list select { flex: 1; min-width: 0; }
+.session-menu .secrets-limits ul { margin: 0.3rem 0 0; padding-left: 1.1rem; font-size: 0.85em; }
+
 /* The workflow page (issue #310): the diagram in the page's own colours, light and dark. */
 .workflow-view { height: 100%; }
 .flow-problems { margin: 0.6rem 1rem 0; padding: 0.5rem 0.8rem; background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: 8px; font-size: 0.9em; }

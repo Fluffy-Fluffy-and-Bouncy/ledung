@@ -81,6 +81,10 @@ import { useComputerLink } from './useComputerLink.ts';
 import { useInstallApp } from './useInstallApp.ts';
 import { InstallNotice } from './components/InstallApp.tsx';
 import { ShortcutNotice } from './components/Shortcuts.tsx';
+import { caretPoint, MaskedSecret, SecretChips, SecretEditor, SelectionKey, SessionSecretsMenu } from './components/SecretLock.tsx';
+import { chipsFor, insertToken, lockInDraft, lockRange, renameToken } from './secretLock.ts';
+import { useSessionSecrets } from './useSessionSecrets.ts';
+import { suggestSecretName } from '../../src/shared/secrets.ts';
 import { errorText, isStalePageError } from './pageError.ts';
 import { guardFor, heldRecently, noteHeld, setLeaveGuard, workflowFromHash, workflowHash } from './flowNav.ts';
 
@@ -1308,6 +1312,7 @@ function SessionMenu(props: {
               {menu.includes('stop') && <button onClick={thenClose(() => void run(() => api.stop(session.id)))}>Stop</button>}
             </div>
           )}
+          <SecretsInMenu session={session} run={run} />
           {showsMcp(session) && <McpServers sessionId={session.id} />}
           {menu.includes('version') && (
             <div className="menu-row menu-info">
@@ -1369,6 +1374,12 @@ function McpServers({ sessionId }: { sessionId: string }) {
   );
 }
 
+/** Session ⚙ → Secrets (issue #468), read when the menu opens. */
+function SecretsInMenu({ session, run }: { session: SessionInfo; run: (action: () => Promise<unknown>) => Promise<void> }) {
+  const [secrets] = useSessionSecrets(session.id);
+  return <SessionSecretsMenu sessionId={session.id} secrets={secrets} running={session.status !== 'ended' && session.status !== 'stopping'} run={run} />;
+}
+
 function Composer({ session, tint, run, quoteInto, bangShell }: {
   session: SessionInfo;
   /** The shell a "!" command runs in on this computer (issue #212). */
@@ -1381,12 +1392,57 @@ function Composer({ session, tint, run, quoteInto, bangShell }: {
 }) {
   const typing = usePlainTyping();
   // The box's own text, kept per session in this browser (issues #73, #323).
-  const [text, setText] = useDraft(session.id);
+  const [text, setText, saveNow] = useDraft(session.id);
   // An ended session that can be resumed takes messages: sending resumes it (idle stop and archive).
   const resumable = session.status === 'ended' && !!session.claudeSessionId;
   const ended = (session.status === 'ended' && !resumable) || session.status === 'stopping';
   const stoppable = canInterrupt(session);
   const { box, area, style, grip } = useComposerHeight();
+  // Locked secrets (issue #468): the 🔑 by a selection, the chip being edited, the masked field by Send.
+  const [secrets] = useSessionSecrets(session.id);
+  const [selection, setSelection] = useState<{ start: number; end: number; left: number; top: number } | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [masked, setMasked] = useState<number | null>(null);
+  const running = session.status !== 'ended' && session.status !== 'stopping';
+  const noteSelection = useCallback(() => {
+    const a = area.current;
+    const range = a && !ended && document.activeElement === a ? lockRange(a.value, a.selectionStart, a.selectionEnd) : null;
+    if (!a || !range) return setSelection(null);
+    const p = caretPoint(a, range.end);
+    // Just under the selection's end, kept inside the box.
+    const left = a.offsetLeft + Math.min(Math.max(p.left, 4), a.clientWidth - 36);
+    const top = a.offsetTop + Math.min(Math.max(p.top + 2, 4), a.clientHeight - 30);
+    setSelection({ ...range, left, top });
+  }, [ended]);
+  useEffect(() => {
+    document.addEventListener('selectionchange', noteSelection);
+    return () => document.removeEventListener('selectionchange', noteSelection);
+  }, [noteSelection]);
+  const lockSelected = () => {
+    const a = area.current;
+    if (!a || !selection) return;
+    const current = a.value;
+    const value = current.slice(selection.start, selection.end);
+    const name = suggestSecretName(current.slice(0, selection.start), value, secrets.map((s) => s.name));
+    // Out of the box and the saved draft at once, before Ledung has answered.
+    const locked = lockInDraft(localStorage, session.id, current, selection, name);
+    saveNow(locked.text);
+    setSelection(null);
+    requestAnimationFrame(() => a.setSelectionRange(locked.caret, locked.caret));
+    void run(async () => {
+      try {
+        const info = await api.addSecret(session.id, { name, value, lifetime: 'session' });
+        setEditing(info.id);
+      } catch (e) {
+        // Not locked: the text goes back as it was typed.
+        setText((t) => t.split(`[🔑 ${name}]`).join(value));
+        throw e;
+      }
+    });
+  };
+  const chips = chipsFor(text, secrets);
+  const editingSecret = editing ? secrets.find((s) => s.id === editing) : undefined;
+  const showChips = !editingSecret && masked === null && (chips.known.length > 0 || chips.missing.length > 0);
   useEffect(() => {
     quoteInto.current = (quoted) => {
       setText((d) => (d.trim() ? `${d.trimEnd()}\n\n${quoted}` : quoted));
@@ -1440,8 +1496,30 @@ function Composer({ session, tint, run, quoteInto, bangShell }: {
   return (
     <div className={`composer${tint ? ' tinted' : ''}`} style={tint} ref={box}>
       {grip}
-      {(session.shell || ask || command) && (
+      {editingSecret && (
+        <SecretEditor
+          sessionId={session.id} secret={editingSecret} running={running} run={run}
+          onRenamed={(from, to) => saveNow(renameToken(area.current?.value ?? text, from, to))}
+          onRemoved={(name) => { saveNow(renameToken(area.current?.value ?? text, name, null)); setEditing(null); }}
+          onClose={() => { setEditing(null); area.current?.focus(); }}
+        />
+      )}
+      {masked !== null && !editingSecret && (
+        <MaskedSecret
+          sessionId={session.id} taken={secrets.map((s) => s.name)} run={run}
+          onLocked={(name) => {
+            const put = insertToken(area.current?.value ?? text, masked, name);
+            saveNow(put.text);
+            setMasked(null);
+            requestAnimationFrame(() => { area.current?.focus(); area.current?.setSelectionRange(put.caret, put.caret); });
+          }}
+          onClose={() => { setMasked(null); area.current?.focus(); }}
+        />
+      )}
+      {selection && <SelectionKey left={selection.left} top={selection.top} onLock={lockSelected} />}
+      {(session.shell || ask || command || showChips) && (
       <div className="bang-strips">
+      {showChips && <SecretChips known={chips.known} missing={chips.missing} onOpen={setEditing} />}
       {session.shell && (
         <div className="bang-running" role="status">
           <span>Running <code>!{session.shell.command}</code>…</span>
@@ -1468,6 +1546,8 @@ function Composer({ session, tint, run, quoteInto, bangShell }: {
           setText(e.target.value);
           setAsk(null);
         }}
+        onSelect={noteSelection}
+        onBlur={() => setSelection(null)}
         onKeyDown={(e) => {
           if (enterSends({ key: e.key, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, isComposing: e.nativeEvent.isComposing }, coarsePointer())) {
             e.preventDefault();
@@ -1487,7 +1567,16 @@ function Composer({ session, tint, run, quoteInto, bangShell }: {
         >
           STOP
         </button>
-        <button className="primary" disabled={ended || !text.trim() || (!!command && !!session.shell)} onClick={() => void send()}>{command ? 'Run' : 'Send'}</button>
+        <div className="send-row">
+          <button
+            className="secret-key"
+            title="Lock a secret: type or paste it into a masked field; Claude gets only its name"
+            aria-label="Lock a secret"
+            disabled={ended}
+            onClick={() => { setEditing(null); setMasked(masked === null ? area.current?.selectionStart ?? text.length : null); }}
+          >🔑</button>
+          <button className="primary" disabled={ended || !text.trim() || (!!command && !!session.shell)} onClick={() => void send()}>{command ? 'Run' : 'Send'}</button>
+        </div>
       </div>
     </div>
   );

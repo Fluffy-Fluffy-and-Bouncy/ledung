@@ -56,6 +56,11 @@ export function boundarySettings(o: {
   realpath?: (p: string) => string;
   /** Where the hosts' Unix sockets are; by default where this computer's hosts put them. */
   socketDir?: string;
+  /**
+   * Folders the file tools are refused too, but not the shell: the local sessions' files of locked secrets
+   * (issue #468), which a session's own shell sources, so no sandbox rule may wall them.
+   */
+  toolsDenied?: string[];
 }): { permissions: { deny: string[] }; sandbox?: { filesystem: { denyRead: string[] } } } {
   const platform = o.platform ?? process.platform;
   const realpath = o.realpath ?? realpathOrSame;
@@ -68,7 +73,8 @@ export function boundarySettings(o: {
   }
   // The same place by its real path too (on macOS /tmp is /private/tmp), so neither spelling gets through.
   const all = [...new Set(paths.flatMap((d) => [d, realParent(d, realpath, p)]))];
-  const deny = all.flatMap((d) => {
+  const toolsOnly = [...new Set((o.toolsDenied ?? []).flatMap((d) => [d, realParent(d, realpath, p)]))];
+  const deny = [...new Set([...all, ...toolsOnly])].flatMap((d) => {
     const r = rulePath(d, platform);
     return [`Read(${r})`, `Read(${r}/**)`, `Edit(${r})`, `Edit(${r}/**)`];
   });
