@@ -662,6 +662,14 @@ test("answering an order's keep-it question, whose Keep puts the order back in f
   assert.match(errorOf(passed), /no longer open/);
 });
 
+test('cancelling an order only takes a permission away: the cookie and the origin, as every change (issue #105)', async () => {
+  const noCookie = await request({ method: 'POST', path: '/api/orders/999/cancel', headers: { origin: ORIGIN, 'content-type': 'application/json' }, body: '{}' });
+  assert.equal(noCookie.status, 401);
+  const unknown = await change('/api/orders/999/cancel', {});
+  assert.equal(unknown.status, 400);
+  assert.match(errorOf(unknown), /no order #999/);
+});
+
 test('away mode, which lets sensitive merges through, needs the live page', async () => {
   assert.equal((await change('/api/away', { until: 'never' })).status, 403);
   const page = await livePage();

@@ -72,7 +72,8 @@ export interface ManagementContext {
   wake(sessionId: string): void;
   /** Starts an ended session again; what waits for it is delivered once it is up (idle stop and archive). */
   resume(sessionId: string): Promise<void>;
-  startSession(project: string, task: string, opts: { parentId: string; title?: string; permissionMode?: PermissionMode; model?: string; profile?: string; cwd?: string }): Promise<SessionInfo>;
+  /** `before`: what goes before the task's own header, an order's words (issue #105). */
+  startSession(project: string, task: string, opts: { parentId: string; title?: string; permissionMode?: PermissionMode; model?: string; profile?: string; cwd?: string; before?: string }): Promise<SessionInfo>;
   /** Why the project's workflow profiles file can't be used, or null (#298); the start_session reply says so. */
   profilesWarning?(project: string): string | null;
   /** reason: who stopped it, recorded as the session's end reason (issue #17). */
@@ -515,10 +516,13 @@ export class Management {
     if (!this.ctx.projectNames().includes(project)) throw new ManagementError(`Your project "${project}" has been removed.`);
     // An order is checked before the session starts, so a refused one starts nothing; it gets the session once there is one.
     const order = args.order ? this.recordOrder(managerId, null, args.order) : null;
-    const task = order ? `${orderPreamble(order, this.ctx.userName)}\n\n${args.task}` : args.task;
     let s: SessionInfo;
     try {
-      s = await this.ctx.startSession(project, task, { parentId: managerId, title: args.title, permissionMode: args.permissionMode, model: args.model, profile: args.profile, cwd: args.cwd });
+      // The words go before the task's header, so the session's task starts with them; the title stays the task's.
+      s = await this.ctx.startSession(project, args.task, {
+        parentId: managerId, title: args.title, permissionMode: args.permissionMode, model: args.model, profile: args.profile, cwd: args.cwd,
+        ...(order ? { before: orderPreamble(order, this.ctx.userName) } : {}),
+      });
     } catch (e) {
       if (order) this.ctx.orders!.discard(order.id);
       throw e;

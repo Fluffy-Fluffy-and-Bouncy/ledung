@@ -31,7 +31,8 @@ function setup() {
   const management = new Management({
     store, userName: 'Simon', publish, wake: () => {}, resume: async () => {},
     startSession: async (project, task, opts) => {
-      tasks.push(task);
+      // What the session gets, composed as SessionManager.start composes it; the task itself is kept for the title.
+      tasks.push(`${opts.before ? `${opts.before}\n\n` : ''}Your task, from your manager "Manager":\n\n${task}`);
       return store.createSession({ id: `w${++next}`, project, runner: 'local', title: `Worker ${next}`, parentId: opts.parentId, permissionMode: 'auto' });
     },
     stopSession: async () => {}, archiveSession: () => {}, projectNames: () => ['p'], decidePermission: () => true,

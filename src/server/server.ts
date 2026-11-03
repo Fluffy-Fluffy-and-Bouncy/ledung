@@ -1811,7 +1811,12 @@ export class LedungServer {
       }
       // Orders on record (issue #105): the person cancels one on the page. It only takes a permission away.
       case 'POST orders/:id/cancel':
-        return manager.orders.cancel(Number(id));
+        try {
+          return manager.orders.cancel(Number(id));
+        } catch (e) {
+          // No such order, or already finished: the person's mistake, not Ledung's.
+          throw new HttpError(400, (e as Error).message);
+        }
       case 'POST questions/:id/withdraw':
         manager.withdrawQuestion(Number(id));
         return;

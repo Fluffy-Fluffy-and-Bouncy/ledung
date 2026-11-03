@@ -215,7 +215,7 @@ export class SessionManager {
       wake: (id) => this.live.get(id)?.deliver(),
       resume: (id) => this.resumeIfEnded(id),
       archiveSession: (id, by) => void this.archive(id, by),
-      startSession: (project, task, opts) => this.start(project, task, { parentId: opts.parentId, title: opts.title, permissionMode: opts.permissionMode, model: opts.model, profile: opts.profile, cwd: opts.cwd }),
+      startSession: (project, task, opts) => this.start(project, task, { parentId: opts.parentId, title: opts.title, permissionMode: opts.permissionMode, model: opts.model, profile: opts.profile, cwd: opts.cwd, before: opts.before }),
       profilesWarning: (project) => this.profilesFor(this.project(project)).warning,
       stopSession: (id, reason) => this.stop(id, reason),
       projectNames: () => this.projectStore.list().map((p) => p.config.name),
@@ -2100,7 +2100,7 @@ export class SessionManager {
   async start(
     projectName: string,
     firstMessage?: string,
-    opts: { role?: SessionRole; parentId?: string; title?: string; permissionMode?: PermissionMode; model?: string; profile?: string; cwd?: string; here?: boolean } = {},
+    opts: { role?: SessionRole; parentId?: string; title?: string; permissionMode?: PermissionMode; model?: string; profile?: string; cwd?: string; here?: boolean; before?: string } = {},
   ): Promise<SessionInfo> {
     const project = this.project(projectName);
     // Managers work in the project folder, so the project keeps one place for its manager.
@@ -2153,7 +2153,8 @@ export class SessionManager {
         // Only while it is still "New session": a name the user gave it during start-up stays (#223, review of PR #224).
         if (!opts.title && this.store.getSession(info.id)?.title === 'New session') this.store.updateSession(info.id, { title: firstMessage.replace(/\s+/g, ' ').trim().slice(0, 80) });
         const manager = this.store.getSession(opts.parentId);
-        this.store.addInbox(info.id, `manager:${opts.parentId}`, `Your task, from your manager "${manager?.title ?? 'manager'}":\n\n${firstMessage}`);
+        // An order's words come first, before anything of the manager's (issue #105).
+        this.store.addInbox(info.id, `manager:${opts.parentId}`, `${opts.before ? `${opts.before}\n\n` : ''}Your task, from your manager "${manager?.title ?? 'manager'}":\n\n${firstMessage}`);
         session.deliver();
       } else {
         session.send(firstMessage, opts.here === true);
