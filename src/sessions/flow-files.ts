@@ -262,22 +262,27 @@ export function sharedFolderOf(projectFolder: string, workflows: readonly Workfl
   });
 }
 
+/** The flows besides the default one a folder's listing holds, as the page reads them (#447). */
+const flowFilesIn = (all: readonly string[]) => all.filter((f) => FLOW_IN_FOLDER.test(f) && f !== `${FLOWS_FOLDER}/${DEFAULT_FLOW}.json`).slice(0, FLOWS_MAX);
+
 /**
- * Where a configured workflow's flow folder leads, links inside it followed too (review round 3 of PR #116): the folder,
- * each file and folder the format names in it, and each entry of its briefs/, overlays/ and flows/, whether there yet or
- * a link to something not made yet.
+ * Where a configured workflow's flow folder leads, links inside it followed too (review rounds 3 and 4 of PR #116): the
+ * folder, each file and folder the format names in it, what Ledung's own lister lists there (its names and caps, so a
+ * save never resolves more than the page would read), and every text its flows name, at any path in the folder; each
+ * whether there yet or a link to something not made yet.
  */
-function sharedReach(folder: string): string[] {
+async function sharedReach(folder: string): Promise<string[]> {
   const root = path.join(path.resolve(folder), ...FLOW_FOLDER.split('/'));
-  const folders = [...FLOW_TEXT_FOLDERS, FLOWS_FOLDER];
-  const entries = folders.flatMap((sub) => {
-    try {
-      return fs.readdirSync(path.join(root, sub)).map((name) => path.join(root, sub, name));
-    } catch {
-      return [];
-    }
+  const listed = await localLister(folder, FLOW_FOLDER)();
+  const flowFiles = flowFilesIn(listed);
+  const read = await localReader(folder, FLOW_FOLDER)([FLOW_FILE, ...flowFiles]);
+  const named = [FLOW_FILE, ...flowFiles].flatMap((f) => {
+    const r = read.get(f);
+    const flow = r && 'text' in r ? parseFlow(r.text, f).flow : null;
+    return flow ? linkedTexts(flow) : [];
   });
-  return [root, ...[FLOW_FILE, RULES_FILE, MANAGER_FILE, ...folders].map((f) => path.join(root, f)), ...entries]
+  const names = new Set([FLOW_FILE, RULES_FILE, MANAGER_FILE, ...FLOW_TEXT_FOLDERS, FLOWS_FOLDER, ...listed, ...named]);
+  return [root, ...[...names].map((f) => path.join(root, ...f.split('/')))]
     .map((p) => wouldBe(p)).filter((p): p is string => p !== null);
 }
 
@@ -286,12 +291,12 @@ function sharedReach(folder: string): string[] {
  * reaches (review round 3 of PR #116): a link inside that folder (its briefs/, flows/, one file) into the project's makes
  * the project's file the workflow's too. Checked at each save, so the page's reads don't list every workflow's folder.
  */
-function refuseShared(projectFolder: string, files: readonly string[], workflows: readonly WorkflowConfig[]): void {
+async function refuseShared(projectFolder: string, files: readonly string[], workflows: readonly WorkflowConfig[]): Promise<void> {
   if (!workflows.length) return;
   const own = path.join(path.resolve(projectFolder), ...FLOW_FOLDER.split('/'));
   const targets = files.map((f) => [f, wouldBe(path.join(own, ...f.split('/')))] as const);
   for (const w of workflows) {
-    const reach = sharedReach(w.folder);
+    const reach = await sharedReach(w.folder);
     const hit = targets.find(([, t]) => t !== null && reach.some((r) => sameOrInside(r, t)));
     if (hit) throw new FileError(`${hit[0]} is also the shared workflow "${w.name}"'s file (a link in its folder leads here), so it is part of the flow every project following "${w.name}" runs: Ledung's builder doesn't save it. Change it in that workflow's own repository, by a reviewed change.`);
   }
@@ -322,7 +327,7 @@ export function flowPlaces(project: ProjectConfig, workflow: WorkflowConfig | un
       read: localReader(project.path, FLOW_FOLDER), list: localLister(project.path, FLOW_FOLDER),
       // Nothing it writes may be a file a shared workflow's folder links to (review round 3 of PR #116).
       write: async (files) => {
-        refuseShared(project.path, files.map((f) => f.path), workflows);
+        await refuseShared(project.path, files.map((f) => f.path), workflows);
         await write(files);
       },
     });
@@ -382,7 +387,7 @@ export async function readFlowView(project: string, places: FlowPlace[], profile
   let budget = FLOW_TEXTS_MAX_BYTES - Buffer.byteLength(found.text);
   // "main" is the default flow's name, flow.json's (#447): flows/main.json would be a second flow of that name.
   const reserved = `${FLOWS_FOLDER}/${DEFAULT_FLOW}.json`;
-  const flowFiles = all.filter((f) => FLOW_IN_FOLDER.test(f) && f !== reserved).slice(0, FLOWS_MAX);
+  const flowFiles = flowFilesIn(all);
   const flowReads = flowFiles.length ? await place.read(flowFiles, budget) : new Map<string, FileRead>();
   const flows: FlowEntry[] = flowFiles.map((file) => {
     const name = FLOW_IN_FOLDER.exec(file)![1]!;
