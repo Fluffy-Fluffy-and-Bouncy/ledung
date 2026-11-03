@@ -1,6 +1,6 @@
 # Workflow part 3: Ledung follows the flow — proposal
 
-Nov 3, 2026 · Proposed by Simon's manager; waiting for Simon's go-ahead.
+Nov 3, 2026 · Proposed by Simon's manager; Simon's answers of 2026-11-03 folded in (who starts a run, on by default, built privately first).
 
 **Done when:** a real piece of work on a throwaway project moves through a drawn flow from its first block to an ending, with its position shown live on the workflow page, each block's session started (or continued) the way the block says, person blocks put to the person as questions and reviews, and "the 3rd time" counted by Ledung; and a "Run flow" block runs another flow and takes its ending.
 
@@ -34,7 +34,7 @@ Runs live in Ledung's database (a new migration), per project, and are shown on 
 
 ## How a run moves
 
-The manager gets three tools (only when its project has a flow and following is on):
+The manager gets three tools (only when its project has a flow and following is on). **Any session** of the project gets `flow_start` too, for when the person asks it ("run this workflow on …"); a run is coordinated by whoever started it: usually the manager, else that session (Simon, 2026-11-03).
 
 - **`flow_start(title, ref?, flow?)`** starts a run at the flow's start block and returns what to do there.
 - **`flow_step(run, outcome)`** reports how the current block ended, by the outcome's word (the manager chooses it, reading the result). Ledung records it, counts it, picks the outcome (the counted one when this is its Nth time, else the plain one), moves the run and returns **what to do at the next block**.
@@ -60,7 +60,7 @@ A session started for a block is told which run and block it serves and the outc
 
 ## Turned on per project
 
-Following changes how the manager works, so it is a project setting, **Follow the workflow**, off by default; with it off, part 1–2 behaviour stays (the manager reads the flow as instructions). The manager's tools and instruction line appear only when it is on.
+**Follow the workflow** is a project setting, **on by default** (Simon, 2026-11-03: "Everyone needs a workflow"). It only acts in a project that has a flow; a project without `.ledung/workflow/` is unchanged. Switched off, part 1–2 behaviour stays (the manager reads the flow as instructions).
 
 ## Small format additions (from the three ports)
 
@@ -81,10 +81,10 @@ Later, not in part 3: conditions on outcomes, compound or free-interval timers, 
 
 ## Decisions for Simon
 
-1. **Who starts a run?** *Recommended:* the manager (`flow_start`) when work comes in, and a **Start** button on the workflow page for you. Alternative: only the manager.
+1. **Who starts a run?** *Decided 2026-11-03:* the manager usually, and any session when the person asks it to; no Start button.
 2. **Person blocks answered by you move the run by themselves?** *Recommended:* yes, the answer's word is the outcome, and the manager is told. Alternative: the manager reports it.
 3. **Sessions for "new session" blocks started by Ledung itself?** *Recommended:* yes, with the block's settings, so the manager can't get them wrong; the manager can still steer them. Alternative: Ledung tells the manager what to start.
-4. **Off by default per project?** *Recommended:* yes. Alternative: on wherever a flow exists.
+4. **On by default** (decided 2026-11-03), acting only where a flow exists; switchable per project.
 5. **The four format additions in part 3?** *Recommended:* yes. Alternative: part 3 without them, additions later.
 
 ## Parts
@@ -93,5 +93,9 @@ Later, not in part 3: conditions on outcomes, compound or free-interval timers, 
 |---|---|---|
 | 3a | Runs: database, `flow_start` / `flow_step` / `flow_status`, counts, history; the project switch; the manager's instruction line. | A run started by a manager moves through Ledung's example flow, the 3rd "Failed" taking the counted outcome. |
 | 3b | Blocks act: new-session and continue sessions started from the block, person blocks as questions/reviews moving the run, Run-flow child runs. | The same run gets its sessions started by Ledung and a review answered by the person moves it on. |
-| 3c | The page: markers, counts on pins, the Runs list, run/block in session headers and questions; Start button. | Screenshots at 1280 and 390 px with two runs in different blocks. |
+| 3c | The page: markers, counts on pins, the Runs list, run/block in session headers and questions. | Screenshots at 1280 and 390 px with two runs in different blocks. |
 | 3d | The four format additions. | Each drawn, checked and followed in a test flow. |
+
+## How it is built
+
+On branches kept local and backed up to the private repository only; nothing goes to the public repository or npm until Simon has tried it and says so (Simon, 2026-11-03). He tries it in a preview Ledung, or on his own Ledung from a locally packed build (`npm run pack`, installed over the dev build; back with `npm install -g ledung@dev`). Then it becomes a PR on the public repository and a dev build.
