@@ -111,10 +111,11 @@ test('a refusal becomes, at once, a question to the user at the top of Waiting f
   assert.equal(q.details!.tier, 'Blocks a finished PR', "the project's first tier");
   assert.equal(q.details!.rank, 0);
   assert.deepEqual(sent.map((p) => p.item), [`q${q.id}`], 'one push, for this question');
-  // In the list, ahead of an older question in a higher tier.
-  const older = { ...q, id: 1, askedAt: 0, details: { tier: 'Blocks a finished PR', rank: 0 }, question: 'Older' } as QuestionInfo;
+  // In the list, ahead of an older question in the same tier and rank, which the usual order
+  // (tier, rank, then oldest first) would put first. Distinct ids, so the order assert can fail.
+  const older = { ...q, id: q.id + 100, askedAt: 0, details: { tier: 'Blocks a finished PR', rank: 0 }, question: 'Older' } as QuestionInfo;
   const lists = waitingLists([older, q], () => 'p', () => ['Blocks a finished PR', 'Process'], () => true, ['Blocks a finished PR', 'Process']);
-  assert.deepEqual(lists.forYou.map((i) => i.q.id), [q.id, 1]);
+  assert.deepEqual(lists.forYou.map((i) => i.q.id), [q.id, older.id], 'the refusal first, then the older question');
   // The same call refused again while it waits: no second question, no second push.
   refuse('tu-2', 'gh pr merge 12 --merge');
   assert.equal(refusals().length, 1);
