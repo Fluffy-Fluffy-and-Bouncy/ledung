@@ -91,7 +91,7 @@ const orderSchema = z.object({
   until: z.enum(['once', 'done']).optional().describe('once (default): until it has run once without failing; done: until you mark it done with order_done.'),
   question: z.number().int().positive().optional().describe('The source: the number of your own question the person answered, on this computer, in the last two days.'),
   typed: z.object({
-    words: z.string().min(3).describe("The person's words, verbatim, as they typed them to you."),
+    words: z.string().min(3).describe("Words of the person's message, verbatim, as they typed them to you: they find the message. The order records and quotes the whole message, never a piece of it."),
     at: z.string().min(1).describe('When they typed them, as HH:MM (or an ISO date and time).'),
   }).optional().describe('Or the source: words the person typed to you on this computer in the last two days. Give exactly one of question or typed.'),
 }).describe(

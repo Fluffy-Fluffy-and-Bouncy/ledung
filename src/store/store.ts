@@ -781,9 +781,12 @@ export class Store {
     return r ? toOrder(r as Record<string, any>) : undefined;
   }
 
-  /** Orders that still let their command through (open or refused) in this session, as the manager or the target. */
+  /**
+   * Orders that still let their command through (open or refused) in this session, as the manager or the target. Only
+   * once the order has its session: one start_session is still starting allows nothing yet (review of PR #107, finding 5).
+   */
   ordersInForce(sessionId: string): OrderInfo[] {
-    return (this.db.prepare(`${ORDERS} WHERE o.status IN ('open', 'refused') AND (o.manager_id = ? OR o.session_id = ?) ORDER BY o.id`)
+    return (this.db.prepare(`${ORDERS} WHERE o.status IN ('open', 'refused') AND o.session_id IS NOT NULL AND (o.manager_id = ? OR o.session_id = ?) ORDER BY o.id`)
       .all(sessionId, sessionId) as Record<string, any>[]).map(toOrder);
   }
 
@@ -807,6 +810,17 @@ export class Store {
     const r = this.db.prepare(`UPDATE orders SET taken = CASE WHEN until = 'once' THEN 1 ELSE taken END, runs = runs + 1, last_run_at = ?
       WHERE id = ? AND status IN ('open', 'refused') AND (until = 'done' OR taken = 0)`).run(at, id);
     return Number(r.changes) === 1;
+  }
+
+  /** Whether a run of the order is under way (a once-order between its allow and its result). */
+  orderTaken(id: number): boolean {
+    const r = this.db.prepare('SELECT taken FROM orders WHERE id = ?').get(id) as { taken: number | bigint } | undefined;
+    return r !== undefined && Number(r.taken) === 1;
+  }
+
+  /** Once-orders in force whose run is under way: at a start, their results went to the Ledung that stopped. */
+  takenOnceOrders(): number[] {
+    return (this.db.prepare(`SELECT id FROM orders WHERE taken = 1 AND until = 'once' AND status IN ('open', 'refused') ORDER BY id`).all() as { id: number | bigint }[]).map((r) => Number(r.id));
   }
 
   /** The end of a run: a once-order that ran is done; one that failed is given back, with its error. */

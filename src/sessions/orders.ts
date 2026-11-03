@@ -34,7 +34,10 @@ export interface OrderSpec {
   until?: 'once' | 'done';
   /** The number of the manager's own question the person answered. */
   question?: number;
-  /** Or the person's typed words, as they typed them, with the time they typed them ("07:56" or an ISO time). */
+  /**
+   * Or words the person typed, as they typed them, with the time they typed them ("07:56" or an ISO time). They only
+   * find the message: the order records and quotes the whole message.
+   */
   typed?: { words: string; at: string };
 }
 
@@ -124,7 +127,9 @@ export function attest(store: Store, managerId: string, spec: Pick<OrderSpec, 'q
   if (!hit) {
     return { error: `Ledung can't attest this order: no message the person typed into you on this computer at ${t.at}, in the last two days, has those words.` };
   }
-  return { source: { kind: 'typed', messageId: hit.id }, words: t.words.trim(), wordsAt: hit.at };
+  // The whole message as Ledung has it, never the manager's piece of it: a piece can drop the "Do not" in front
+  // (review of PR #107, finding 2). The manager's words only find the message.
+  return { source: { kind: 'typed', messageId: hit.id }, words: (hit.data.text as string).trim(), wordsAt: hit.at };
 }
 
 /** What the order allows, in a sentence. */
@@ -163,10 +168,14 @@ export function orderNote(o: OrderInfo, userName: string): string {
   return `Ledung allowed this call under order #${o.id}: ${userName}'s own words, "${squash(o.words)}" (${sourceText(o)}). Nobody was asked.`;
 }
 
-/** The "keep it?" question at the end of an away period (issue #105, "After away"). */
-export function keepQuestion(o: OrderInfo, userName: string, tier: string | undefined): { question: string; options: string[]; details: QuestionDetails } {
-  const why = o.note ? ` The last ${o.status === 'refused' ? 'refusal' : 'problem'}: ${o.note}.` : o.runs === 0 ? ' It did not run.' : '';
-  const title = `Order #${o.id} was not done while you were away: keep it?`;
+/**
+ * The "keep it?" question: at the end of an away period (issue #105, "After away"), or for a once-order whose run never
+ * reported back (`lost`, review of PR #107 finding 4).
+ */
+export function keepQuestion(o: OrderInfo, userName: string, tier: string | undefined, lost?: string): { question: string; options: string[]; details: QuestionDetails } {
+  const why = lost ? ` Its run never reported back: ${lost}. It may have run.`
+    : o.note ? ` The last ${o.status === 'refused' ? 'refusal' : 'problem'}: ${o.note}.` : o.runs === 0 ? ' It did not run.' : '';
+  const title = lost ? `Order #${o.id}'s run never reported back: keep it?` : `Order #${o.id} was not done while you were away: keep it?`;
   const issue = [
     `Your order, in your own words (${sourceText(o)}):`,
     o.words.split('\n').map((l) => `> ${l}`).join('\n'),
@@ -309,15 +318,38 @@ export class Orders {
   settleAway(since: number, end: number, now = Date.now()): QuestionInfo[] {
     const asked: QuestionInfo[] = [];
     for (const o of this.o.store.ordersBetween(since, end)) {
-      if (!inForce(o)) continue;
-      const k = keepQuestion(o, this.o.userName, this.o.tierOf(o.managerId));
-      const q = this.o.store.createQuestion({ sessionId: o.managerId, question: k.question, options: k.options, addressedTo: 'user', details: k.details });
-      this.o.store.setOrderStatus(o.id, 'waiting', o.note, now, ['open', 'refused'], q.id);
-      this.o.publish({ type: 'question', question: q });
-      asked.push(q);
+      if (inForce(o)) asked.push(this.askKeep(o, o.note, now));
     }
     if (asked.length) this.changed();
     return asked;
+  }
+
+  /** Puts an order in force to waiting on the person's word, with a keep-it question first in Waiting for you. */
+  private askKeep(o: OrderInfo, note: string | null, now: number, lost?: string): QuestionInfo {
+    const k = keepQuestion(o, this.o.userName, this.o.tierOf(o.managerId), lost);
+    const q = this.o.store.createQuestion({ sessionId: o.managerId, question: k.question, options: k.options, addressedTo: 'user', details: k.details });
+    this.o.store.setOrderStatus(o.id, 'waiting', note, now, ['open', 'refused'], q.id);
+    this.o.publish({ type: 'question', question: q });
+    return q;
+  }
+
+  /**
+   * A once-order whose run never reported back (review of PR #107, finding 4): the session ended, or Ledung restarted,
+   * between the allow and the result. It stays taken, so it would read open and never run again; instead it waits on
+   * the person's word, with why. Not given back by itself: the run may have happened, and a deploy shouldn't run twice
+   * unasked.
+   */
+  lost(id: number, reason: string, now = Date.now()): QuestionInfo | null {
+    const o = this.o.store.getOrder(id);
+    if (!o || o.until !== 'once' || !inForce(o) || !this.o.store.orderTaken(id)) return null;
+    const q = this.askKeep(o, `its run never reported back: ${reason}`, now, reason);
+    this.changed();
+    return q;
+  }
+
+  /** At Ledung's start: a once-order still taken has lost its run, whose result went to the Ledung that stopped. */
+  recover(now = Date.now()): QuestionInfo[] {
+    return this.o.store.takenOnceOrders().map((id) => this.lost(id, 'Ledung restarted while it ran', now)).filter((q) => q !== null);
   }
 
   /** The person's answer to a keep-it question: Keep puts it back in force, Drop ends it; anything else leaves it waiting. */

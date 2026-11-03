@@ -28,12 +28,15 @@ function setup() {
   orders = new Orders({ store, userName: 'Simon', publish, tierOf: () => 'Blocks a finished PR', tell: (id, text) => told.push({ id, text }) });
   const tasks: string[] = [];
   let next = 0;
+  /** Set: the next start ends at once, as one with no Claude Code does. */
+  const starts = { end: false };
   const management = new Management({
     store, userName: 'Simon', publish, wake: () => {}, resume: async () => {},
     startSession: async (project, task, opts) => {
       // What the session gets, composed as SessionManager.start composes it; the task itself is kept for the title.
       tasks.push(`${opts.before ? `${opts.before}\n\n` : ''}Your task, from your manager "Manager":\n\n${task}`);
-      return store.createSession({ id: `w${++next}`, project, runner: 'local', title: `Worker ${next}`, parentId: opts.parentId, permissionMode: 'auto' });
+      const info = store.createSession({ id: `w${++next}`, project, runner: 'local', title: `Worker ${next}`, parentId: opts.parentId, permissionMode: 'auto' });
+      return starts.end ? { ...info, status: 'ended' as const, endReason: 'There is no Claude Code to start.' } : info;
     },
     stopSession: async () => {}, archiveSession: () => {}, projectNames: () => ['p'], decidePermission: () => true,
     machine: () => ({ at: 0, cpus: 8, cores: 1, memTotal: 16e9, memUsed: 8e9, docker: null, sessions: {}, working: 1, limit: 10, line: [] }),
@@ -80,10 +83,12 @@ function setup() {
       failed: async (toolUseId: string, error: string) => {
         await failure({ hook_event_name: 'PostToolUseFailure', tool_use_id: toolUseId, error } as never, toolUseId, signal);
       },
+      /** The session ended (both of its end paths call this), with whatever runs were under way. */
+      ended: () => (session as unknown as { orderRunsLost(): void }).orderRunsLost(),
     };
   };
   const goAway = (allow: AwayKind[]) => away.start('23:59', allow);
-  return { store, management, orders, away, published, told, tasks, answered, typed, hooksOf, goAway };
+  return { store, management, orders, away, published, told, tasks, starts, answered, typed, hooksOf, goAway };
 }
 
 test("start_session and send_message take an order on the person's own word; any other source is refused, with the reason", async () => {
@@ -99,6 +104,15 @@ test("start_session and send_message take an order on the person's own word; any
   await refused({ question: t.answered('Yes, publish', { at: Date.now() - 3 * 24 * HOUR }) }, /more than two days old/);
   const open = t.store.createQuestion({ sessionId: 'mgr', question: 'Publish?', options: null, addressedTo: 'user' });
   await refused({ question: open.id }, /has no answer/);
+  // Ledung's own questions about one call (test review F2): the person's "Allow once" to a refused call, a keep-it answer.
+  for (const details of [
+    { refusal: { toolName: 'Bash', input: { command: DEPLOY }, reason: 'r', toolUseId: 'r1' } },
+    { order: { orderId: 7 } },
+  ]) {
+    const lq = t.store.createQuestion({ sessionId: 'mgr', question: 'Ledung asks', options: ['Allow once', 'Deny'], addressedTo: 'user', details });
+    t.store.answerQuestion(lq.id, 'Allow once', 'user', null, true);
+    await refused({ question: lq.id }, /about a single request, not an order/);
+  }
   t.typed('publish the stats now', Date.now(), { here: false });
   await refused({ typed: { words: 'publish the stats now', at: new Date().toISOString() } }, /no message the person typed/);
   t.typed('publish the stats', Date.now(), { here: true, from: 'ledung' });
@@ -117,11 +131,34 @@ test("start_session and send_message take an order on the person's own word; any
   const at = Date.now() - 5 * 60_000;
   t.typed('Please deploy the stats tonight, then go to bed.', at);
   const hhmm = `${String(new Date(at).getHours()).padStart(2, '0')}:${String(new Date(at).getMinutes()).padStart(2, '0')}`;
+  // Each check that ties typed words to the person's message, refused beside the accepted order below (test review F1):
+  // words that aren't in the message; the right words at a minute they weren't typed; a message older than two days.
+  await refused({ typed: { words: 'deploy everything to production', at: hhmm } }, /no message the person typed/);
+  await refused({ typed: { words: 'deploy the stats tonight', at: new Date(at - 7 * 60_000).toISOString() } }, /no message the person typed/);
+  const old = Date.now() - 3 * 24 * HOUR;
+  t.typed('Publish the old stats, please.', old);
+  await refused({ typed: { words: 'Publish the old stats', at: new Date(old).toISOString() } }, /no message the person typed/);
+  assert.deepEqual(t.orders.list().map((o) => o.id), [1], 'none of them recorded');
   const sent = await t.management.sendMessage('mgr', 'w0', 'Deploy.', { command: DEPLOY, typed: { words: 'deploy the stats tonight', at: hhmm } });
   assert.match(sent, /Order #2 recorded \(typed on this computer/);
-  assert.ok(t.store.undeliveredInbox('w0')[0]!.text.startsWith('deploy the stats tonight\n\n— Simon'), 'the message starts with the words verbatim');
+  assert.ok(t.store.undeliveredInbox('w0')[0]!.text.startsWith('Please deploy the stats tonight, then go to bed.\n\n— Simon'), 'the message starts with the whole message verbatim');
   const page = t.orders.list();
-  assert.deepEqual(page.map((o) => [o.id, o.sessionId, o.project, o.words, o.status]), [[2, 'w0', 'p', 'deploy the stats tonight', 'open'], [1, 'w1', 'p', 'Yes, publish', 'open']]);
+  assert.deepEqual(page.map((o) => [o.id, o.sessionId, o.project, o.words, o.status]), [[2, 'w0', 'p', 'Please deploy the stats tonight, then go to bed.', 'open'], [1, 'w1', 'p', 'Yes, publish', 'open']]);
+});
+
+test("a typed order records and quotes the person's whole message, never the manager's piece of it", async () => {
+  // Review of PR #107, finding 2: a piece can drop the "Do not" in front of what the person said.
+  const t = setup();
+  const said = 'Do not deploy the stats to production yet.\nWait for my word.';
+  t.typed(said);
+  await t.management.startSession('mgr', { task: 'Deploy.', order: { command: DEPLOY, typed: { words: 'deploy the stats to production', at: new Date().toISOString() } } });
+  const o = t.store.getOrder(1)!;
+  assert.equal(o.words, said, 'the record holds the whole message');
+  assert.ok(t.tasks[0]!.startsWith(`${said}\n\n— Simon's own words (typed on this computer`), 'the task starts with the whole message');
+  assert.equal(t.orders.list()[0]!.words, said, 'the page shows the whole message');
+  const worker = await t.hooksOf('w1');
+  assert.equal(await worker.decide(DEPLOY, 'a'), 'allow');
+  assert.match((await worker.ran('a'))!, /Simon's own words, "Do not deploy the stats to production yet\. Wait for my word\." \(typed on this computer/, 'the note quotes the whole message');
 });
 
 test('a pattern must name its program plainly and can only cover one plain command', () => {
@@ -172,6 +209,33 @@ test('the ordered command runs without a prompt in the session and in its manage
   assert.ok(t.published.some((e) => e.type === 'orders' && e.orders[0]?.status === 'dropped'), 'the page hears of it');
 });
 
+test('start_session: a refused order starts no session; an order whose session could not start is discarded', async () => {
+  // Test review F3.
+  const t = setup();
+  await assert.rejects(t.management.startSession('mgr', { task: 'Deploy.', order: { command: DEPLOY, question: 999 } }), /not one of your own questions/);
+  assert.equal(t.tasks.length, 0, 'nothing started');
+  t.starts.end = true;
+  await assert.rejects(t.management.startSession('mgr', { task: 'Deploy.', order: { command: DEPLOY, question: t.answered('Yes, publish') } }), /could not start/);
+  assert.equal(t.tasks.length, 1, 'the start was tried');
+  assert.equal(t.store.getOrder(1), undefined, 'and its order discarded');
+  // The positive branch: a start that comes up keeps its order.
+  t.starts.end = false;
+  await t.management.startSession('mgr', { task: 'Deploy.', order: { command: DEPLOY, question: t.answered('Yes, publish') } });
+  assert.equal(t.store.getOrder(2)?.sessionId, 'w2');
+});
+
+test('an order allows nothing while its session is still starting, in the manager either', async () => {
+  // Review of PR #107, finding 5: start_session records the order before the session exists.
+  const t = setup();
+  const o = t.orders.record('mgr', null, { command: DEPLOY, question: t.answered('Yes, publish') }, null);
+  assert.ok(!('error' in o));
+  const manager = await t.hooksOf('mgr');
+  assert.equal(await manager.decide(DEPLOY, 'm1'), null, 'not yet: no session');
+  t.store.createSession({ id: 'w5', project: 'p', runner: 'local', title: 'Worker 5', parentId: 'mgr', permissionMode: 'auto' });
+  t.orders.attach(o.id, 'w5');
+  assert.equal(await manager.decide(DEPLOY, 'm2'), 'allow', 'once the session is there');
+});
+
 test('a once-order runs once: done after it ran; given back with its error when it failed', async () => {
   const t = setup();
   await t.management.startSession('mgr', { task: 'Deploy.', order: { command: DEPLOY, question: t.answered('Yes, publish') } });
@@ -185,6 +249,31 @@ test('a once-order runs once: done after it ran; given back with its error when 
   await worker.ran('c');
   assert.equal(t.store.getOrder(1)!.status, 'done');
   assert.equal(await worker.decide(DEPLOY, 'd'), null, 'done: used up');
+});
+
+test("a once-order whose run never reported back (a restart, the session's end) waits on the person's word, with why", async () => {
+  // Review of PR #107, finding 4: otherwise it stays taken, reads open, and never runs again.
+  const t = setup();
+  await t.management.startSession('mgr', { task: 'Deploy.', order: { command: DEPLOY, question: t.answered('Yes, publish') } });
+  await t.management.startSession('mgr', { task: 'Build.', order: { command: 'scripts/build.sh', question: t.answered('Yes, publish') } });
+  assert.deepEqual(t.orders.recover(), [], 'nothing under way, nothing asked');
+  const w1 = await t.hooksOf('w1');
+  assert.equal(await w1.decide(DEPLOY, 'a'), 'allow');
+  // Ledung restarts while it runs: the new Ledung asks.
+  const [q] = t.orders.recover();
+  assert.match(q!.question, /Order #1's run never reported back: keep it\?/);
+  assert.match(q!.question, /Its run never reported back: Ledung restarted while it ran\. It may have run\./);
+  assert.equal(t.store.getOrder(1)!.status, 'waiting');
+  assert.equal(await (await t.hooksOf('w1')).decide(DEPLOY, 'b'), null, 'waiting allows nothing');
+  t.store.answerQuestion(q!.id, KEEP, 'user', null, true);
+  t.orders.answered(t.store.getQuestion(q!.id)!);
+  assert.equal(await (await t.hooksOf('w1')).decide(DEPLOY, 'c'), 'allow', 'kept: it may run again');
+  // The session ends while its ordered run is under way.
+  const w2 = await t.hooksOf('w2');
+  assert.equal(await w2.decide('scripts/build.sh', 'd'), 'allow');
+  w2.ended();
+  assert.equal(t.store.getOrder(2)!.status, 'waiting');
+  assert.match(t.store.getOrder(2)!.note!, /the session ended before its run reported back/);
 });
 
 test('an until-done order holds until the manager marks it done', async () => {

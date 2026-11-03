@@ -647,6 +647,12 @@ export class Session {
     this.orders?.ran(id, ok, error);
   }
 
+  /** The session ended with ordered runs under way: their results never come (review of PR #107, finding 4). */
+  private orderRunsLost(): void {
+    for (const id of new Set(this.orderedRuns.values())) this.orders?.lost(id, 'the session ended before its run reported back');
+    this.orderedRuns.clear();
+  }
+
   /**
    * A tool result that is the auto mode classifier's refusal (issue #104): the user is asked at once, Allow once or
    * Deny, at the top of Waiting for you and with a push (every question addressed to the user pushes). Always the
@@ -1012,6 +1018,7 @@ export class Session {
     this.endTurn();
     void this.secretsEnded();
     this.endPermissions('The session ended.');
+    this.orderRunsLost();
     this.endCompact({ kind: 'ended' });
     this.pullRequests?.forget(this.id);
     const exit = this.connection?.exitInfo;
@@ -1757,6 +1764,8 @@ export class Session {
     this.q.close();
     await Promise.race([this.finished, new Promise((r) => setTimeout(r, 3000))]);
     this.endCompact({ kind: 'ended' });
+    // After Claude Code is gone: a result that could still come has had its chance.
+    this.orderRunsLost();
     await this.secretsEnded();
     this.record('event', { text: reason });
     this.backgroundTasks = 0;
