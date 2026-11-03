@@ -211,26 +211,45 @@ export interface ContainerFiles {
   write: WriteFlowFiles;
 }
 
-/** The folder with links resolved, or null when it isn't there. */
-function realFolder(folder: string): string | null {
+/** The most links one path is followed through before giving up on it (a loop). */
+const LINKS_MAX = 40;
+
+/**
+ * Where a path leads with every link on the way resolved, also when its end isn't there yet: the part that exists is
+ * resolved, a link whose target is missing is followed by what it says, and the rest is added back. Null: a loop.
+ * So a flow folder not made yet is compared where it would be made (code review of PR #116).
+ */
+function wouldBe(p: string, links = 0): string | null {
   try {
-    return fs.realpathSync.native(folder);
+    return fs.realpathSync.native(p);
   } catch {
-    return null;
+    // Missing, or a link to something missing: below.
   }
+  try {
+    if (fs.lstatSync(p).isSymbolicLink()) return links >= LINKS_MAX ? null : wouldBe(path.resolve(path.dirname(p), fs.readlinkSync(p)), links + 1);
+  } catch {
+    // Not there at all: its folder is resolved instead.
+  }
+  const parent = path.dirname(p);
+  if (parent === p) return p;
+  const up = wouldBe(parent, links);
+  return up === null ? null : path.join(up, path.basename(p));
 }
 
 /**
- * The configured workflow whose folder the project's own folder is (ledung#109), through links and junctions too: the
- * same folder, or a workflow folder (.ledung/workflow) that is the same on both sides. Its flow is the one every project
- * following that workflow runs, so the builder must not save there from this project's page either.
+ * The configured workflow whose flow folder (.ledung/workflow) the project's own is (ledung#109), through links and
+ * junctions on either side, and whether or not it has been made yet: the same folder, a link to it, or a workflow
+ * folder linked into the project's. Its flow is the one every project following that workflow runs, so the builder
+ * must not save there from this project's page either.
  */
 export function sharedFolderOf(projectFolder: string, workflows: readonly WorkflowConfig[]): WorkflowConfig | undefined {
-  const flowOf = (folder: string) => realFolder(path.join(folder, ...FLOW_FOLDER.split('/')));
-  const same = (a: string | null, b: string | null) => a !== null && b !== null && sameFolder(a, b);
-  const own = realFolder(projectFolder);
-  const ownFlow = flowOf(projectFolder);
-  return workflows.find((w) => same(own, realFolder(w.folder)) || same(ownFlow, flowOf(w.folder)));
+  const flowOf = (folder: string) => wouldBe(path.join(path.resolve(folder), ...FLOW_FOLDER.split('/')));
+  const own = flowOf(projectFolder);
+  if (own === null) return undefined;
+  return workflows.find((w) => {
+    const theirs = flowOf(w.folder);
+    return theirs !== null && sameFolder(own, theirs);
+  });
 }
 
 let sharedExercised = false;
