@@ -21,6 +21,7 @@ import type { AwayRecord } from '../sessions/away.ts';
 import { isAskUser, quietTexts, type TurnEntry } from '../shared/quiet-reply.ts';
 import { elevates, raisesUac } from '../shared/elevation.ts';
 import type { QuestionDetails } from '../shared/questions.ts';
+import type { OrderInfo, OrderStatus } from '../shared/orders.ts';
 import { trimForStorage } from './trim.ts';
 import { exercisedLine } from '../platform/exercised.ts';
 
@@ -754,4 +755,111 @@ export class Store {
       repo: r.repo ?? null, floors: JSON.parse(r.floors), allowed: r.allowed === 1 || r.allowed === 1n, reason: r.reason,
     }));
   }
+
+  // ------------------------------------------------------------ orders on record (issue #105)
+
+  /** `status`: open when the person confirmed the exact command, waiting (proposed) when they still must (issue #105). */
+  addOrder(o: Omit<OrderInfo, 'id' | 'project' | 'status' | 'statusAt' | 'note' | 'runs' | 'lastRunAt' | 'keepQuestion'>, status: 'open' | 'waiting'): OrderInfo {
+    const r = this.db.prepare(`INSERT INTO orders (manager_id, session_id, command, match, until, source_kind, source_ref, words, words_at, created_at, away_since, status, status_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`)
+      .get(o.managerId, o.sessionId || null, o.command, o.match, o.until, o.source.kind,
+        o.source.kind === 'question' ? o.source.questionId : o.source.messageId, o.words, o.wordsAt, o.createdAt, o.awaySince, status, o.createdAt) as { id: number };
+    return this.getOrder(Number(r.id))!;
+  }
+
+  /** The order a question's answer is the source of, if any: a question that confirmed a command backs one order. */
+  orderFromQuestion(questionId: number): number | undefined {
+    const r = this.db.prepare(`SELECT id FROM orders WHERE source_kind = 'question' AND source_ref = ? ORDER BY id LIMIT 1`).get(questionId) as { id: number | bigint } | undefined;
+    return r ? Number(r.id) : undefined;
+  }
+
+  /** The session an order went to, once start_session has made it. */
+  setOrderSession(id: number, sessionId: string): void {
+    this.db.prepare('UPDATE orders SET session_id = ? WHERE id = ?').run(sessionId, id);
+  }
+
+  /** An order whose session could not start: it never was. */
+  deleteOrder(id: number): void {
+    this.db.prepare('DELETE FROM orders WHERE id = ?').run(id);
+  }
+
+  getOrder(id: number): OrderInfo | undefined {
+    const r = this.db.prepare(`${ORDERS} WHERE o.id = ?`).get(id);
+    return r ? toOrder(r as Record<string, any>) : undefined;
+  }
+
+  /**
+   * Orders that still let their command through (open or refused) in this session, as the manager or the target. Only
+   * once the order has its session: one start_session is still starting allows nothing yet (review of PR #107, finding 5).
+   */
+  ordersInForce(sessionId: string): OrderInfo[] {
+    return (this.db.prepare(`${ORDERS} WHERE o.status IN ('open', 'refused') AND o.session_id IS NOT NULL AND (o.manager_id = ? OR o.session_id = ?) ORDER BY o.id`)
+      .all(sessionId, sessionId) as Record<string, any>[]).map(toOrder);
+  }
+
+  /** Every order not finished, and the finished ones since `since`: what the page shows. */
+  ordersForPage(since: number): OrderInfo[] {
+    return (this.db.prepare(`${ORDERS} WHERE o.session_id IS NOT NULL AND (o.status IN ('open', 'refused', 'waiting') OR o.status_at >= ?) ORDER BY o.id DESC LIMIT 200`)
+      .all(since) as Record<string, any>[]).map(toOrder);
+  }
+
+  /** The orders recorded or run between `from` and `to`: an away period's (issue #105, "After away"). */
+  ordersBetween(from: number, to: number): OrderInfo[] {
+    return (this.db.prepare(`${ORDERS} WHERE o.session_id IS NOT NULL AND ((o.created_at >= ? AND o.created_at <= ?) OR (o.last_run_at >= ? AND o.last_run_at <= ?)) ORDER BY o.id`)
+      .all(from, to, from, to) as Record<string, any>[]).map(toOrder);
+  }
+
+  /**
+   * Takes a run of an order, atomically, so two calls racing for a once-order can't both run: a once-order stays taken
+   * until its run ends (given back when it fails). False when it is no longer in force or already taken.
+   */
+  takeOrder(id: number, at: number): boolean {
+    const r = this.db.prepare(`UPDATE orders SET taken = CASE WHEN until = 'once' THEN 1 ELSE taken END, runs = runs + 1, last_run_at = ?
+      WHERE id = ? AND status IN ('open', 'refused') AND (until = 'done' OR taken = 0)`).run(at, id);
+    return Number(r.changes) === 1;
+  }
+
+  /** Whether a run of the order is under way (a once-order between its allow and its result). */
+  orderTaken(id: number): boolean {
+    const r = this.db.prepare('SELECT taken FROM orders WHERE id = ?').get(id) as { taken: number | bigint } | undefined;
+    return r !== undefined && Number(r.taken) === 1;
+  }
+
+  /** Once-orders in force whose run is under way: at a start, their results went to the Ledung that stopped. */
+  takenOnceOrders(): number[] {
+    return (this.db.prepare(`SELECT id FROM orders WHERE taken = 1 AND until = 'once' AND status IN ('open', 'refused') ORDER BY id`).all() as { id: number | bigint }[]).map((r) => Number(r.id));
+  }
+
+  /** The end of a run: a once-order that ran is done; one that failed is given back, with its error. */
+  orderRan(id: number, ok: boolean, error: string | null, at: number): void {
+    if (ok) {
+      this.db.prepare(`UPDATE orders SET status = CASE WHEN until = 'once' THEN 'done' ELSE 'open' END, status_at = ?, note = NULL WHERE id = ? AND status IN ('open', 'refused')`).run(at, id);
+    } else {
+      this.db.prepare(`UPDATE orders SET taken = 0, note = ? WHERE id = ? AND status IN ('open', 'refused')`).run(error, id);
+    }
+  }
+
+  /** A change of status, only from one of the statuses in `from`; true when it changed. Back to open gives a once-order its run back. */
+  setOrderStatus(id: number, status: OrderStatus, note: string | null, at: number, from: OrderStatus[], keepQuestion?: number | null): boolean {
+    const keep = keepQuestion !== undefined ? ', keep_question = ?' : '';
+    const r = this.db.prepare(`UPDATE orders SET status = ?, note = ?, status_at = ?${keep}${status === 'open' ? ', taken = 0' : ''}
+      WHERE id = ? AND status IN (${from.map(() => '?').join(', ')})`)
+      .run(status, note, at, ...(keepQuestion !== undefined ? [keepQuestion] : []), id, ...from);
+    return Number(r.changes) === 1;
+  }
+}
+
+/** Orders with their manager's project (issue #105): kept with the session, so renaming a project moves them too. */
+const ORDERS = `SELECT o.*, COALESCE(s.project, '') AS project FROM orders o LEFT JOIN sessions s ON s.id = o.manager_id`;
+
+/** An orders row as the core and the page see it (issue #105). */
+function toOrder(r: Record<string, any>): OrderInfo {
+  return {
+    id: Number(r.id), managerId: r.manager_id, sessionId: r.session_id ?? '', project: r.project, command: r.command,
+    match: r.match === 'pattern' ? 'pattern' : 'exact', until: r.until === 'done' ? 'done' : 'once',
+    source: r.source_kind === 'question' ? { kind: 'question', questionId: Number(r.source_ref) } : { kind: 'typed', messageId: Number(r.source_ref) },
+    words: r.words, wordsAt: Number(r.words_at), createdAt: Number(r.created_at), awaySince: r.away_since === null ? null : Number(r.away_since),
+    status: r.status as OrderStatus, statusAt: Number(r.status_at), note: r.note ?? null, runs: Number(r.runs),
+    lastRunAt: r.last_run_at === null ? null : Number(r.last_run_at), keepQuestion: r.keep_question === null ? null : Number(r.keep_question),
+  };
 }

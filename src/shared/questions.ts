@@ -1,6 +1,7 @@
 // Structured questions (issue #59): the optional fields ask_user takes besides its Markdown text, and how
 // the page's question desk shows any question, structured or plain. Modelled on the Master Question Desk.
 // Every question has a tier from its project's list, which starts as the five below (issue #96).
+import type { OrderQuestionDetails } from './orders.ts';
 
 /** An option of a structured question: its key ("a"), its text in Markdown (a **bold** start is its label), its cost. */
 export interface QuestionOption {
@@ -109,6 +110,24 @@ export interface QuestionDetails {
    * builds its details from the fields above only. Answered "Allow once", it lets that exact call through one time.
    */
   refusal?: RefusalDetails;
+  /**
+   * Raised by Ledung about an order (issue #105): a proposed order to confirm, or one not done, "keep it?". Never given
+   * by ask_user.
+   */
+  order?: OrderQuestionDetails;
+  /**
+   * The exact command an ask_user question puts to the person (issue #105, Martin 2026-11-03, Ledung question #1290 "a"):
+   * shown on the question page, and the person's pick of `confirm` confirms an order for exactly it.
+   */
+  orderCommand?: OrderCommandDetails;
+}
+
+/** A command an ask_user question asks the person to confirm as an order (issue #105). */
+export interface OrderCommandDetails {
+  command: string;
+  match: 'exact' | 'pattern';
+  /** The answer that confirms it: what Ledung's own Confirm order option gives, as the page sends it (one of CONFIRM_ANSWERS). */
+  confirm: string;
 }
 
 /** The refused call (issue #104): the tool, its input as the session sent it, the classifier's reason and the call's id. */

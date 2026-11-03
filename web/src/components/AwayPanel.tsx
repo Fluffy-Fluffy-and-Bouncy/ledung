@@ -7,7 +7,7 @@ import { useState } from 'react';
 import { AWAY_DEFAULT, AWAY_KINDS, type AwayInfo, type AwayKind } from '../../../src/shared/protocol.ts';
 import { api } from '../api.ts';
 
-const KIND_LABEL: Record<AwayKind, string> = { merge: 'merge', devShip: 'dev ship', computerControl: 'computer control' };
+const KIND_LABEL: Record<AwayKind, string> = { merge: 'merge', devShip: 'dev ship', ordered: 'ordered', computerControl: 'computer control' };
 
 const hhmm = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
 /** A time field's value is HH:MM whatever the locale writes. */

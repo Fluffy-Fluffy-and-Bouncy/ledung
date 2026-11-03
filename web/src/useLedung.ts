@@ -2,6 +2,7 @@
 // kept up to date over the live connection.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AccountChoices, AccountInfoView, ChatsInfo, AwayInfo, ConfigStatus, BoardStatus, GitHubBudget, LimitInfo, UsageStopInfo, SignInKind, SignInProblem, MachineInfo, Overview, PermissionInfo, ProjectInfo, QuestionInfo, NewComputerInfo, LinkPairingInfo, RemoteStatus, ServerEvent, SessionInfo, SourceOffer, StoredMessage } from '../../src/shared/protocol.ts';
+import type { OrderInfo } from '../../src/shared/orders.ts';
 import type { Macro } from '../../src/shared/macros.ts';
 import type { ComputerInfo } from '../../src/shared/computers.ts';
 import { api, connectionHello, openConnection, setReconnect } from './api.ts';
@@ -38,6 +39,7 @@ export function useLedung(openSessionId: string | null) {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [machine, setMachine] = useState<MachineInfo | null>(null);
   const [away, setAway] = useState<AwayInfo | null>(null);
+  const [orders, setOrders] = useState<OrderInfo[]>([]);
   const [accounts, setAccounts] = useState<AccountInfoView[]>([]);
   const [accountChoices, setAccountChoices] = useState<AccountChoices>({ chats: null, newProjects: null });
   const [profiles, setProfiles] = useState<string[]>(['full']);
@@ -138,6 +140,7 @@ export function useLedung(openSessionId: string | null) {
             setUsageStops(event.usageStops ?? []);
             setMacros(event.macros ?? []);
             setAway(event.away ?? null);
+            setOrders(event.orders ?? []);
             setSessions(event.sessions);
             setProjects(event.projects);
             setBoard(event.board ?? null);
@@ -223,6 +226,9 @@ export function useLedung(openSessionId: string | null) {
           case 'away':
             setAway(event.away);
             break;
+          case 'orders':
+            setOrders(event.orders);
+            break;
           case 'question':
             setQuestions((q) => ({ ...q, [event.question.id]: event.question }));
             break;
@@ -270,5 +276,5 @@ export function useLedung(openSessionId: string | null) {
     };
   }, []);
 
-  return { connection, loaded, canRestart, hellos, updated, userName, source, questions, limits, usageStops, macros, signedOut, claudeProblem, claudeLooked, accountProblems, overview, machine, away, accounts, accountChoices, defaultIdentity, board, github, remote, computers, newComputers, linkPairings, throughPublicName, configStatus, chats, profiles, lockdownB, bangShell, sessions, projects, permissions, messages, hasEarlier, loadEarlier };
+  return { connection, loaded, canRestart, hellos, updated, userName, source, questions, limits, usageStops, macros, signedOut, claudeProblem, claudeLooked, accountProblems, overview, machine, away, orders, accounts, accountChoices, defaultIdentity, board, github, remote, computers, newComputers, linkPairings, throughPublicName, configStatus, chats, profiles, lockdownB, bangShell, sessions, projects, permissions, messages, hasEarlier, loadEarlier };
 }
