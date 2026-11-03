@@ -87,6 +87,9 @@ const short = (text: string, n: number) => (text.length > n ? `${text.slice(0, n
 
 type Handoff = { from: string; text: string } | null;
 
+/** In a run's sessions, the session its Run flow block handed it (part 3d, `session: "caller"`). */
+const CALLER = '@caller';
+
 export class FlowRunError extends Error {}
 
 export class FlowRuns {
@@ -329,6 +332,7 @@ export class FlowRuns {
     try {
       if (block.kind === 'person') return await this.askPerson(flows, run, flow, block, handoff);
       if (block.kind === 'flow') return await this.startChild(flows, run, block, handoff);
+      if (block.kind === 'wait') return await this.waitAt(flows, run, flow, block, handoff);
       if (block.runs === 'new-session' || block.runs === 'continue') {
         const s = await this.blockSession(flows, run, flow, block, handoff);
         return `At ${at}: ${s}. Ledung tells you when it finishes a turn. ${outs} ${report}`;
@@ -340,6 +344,19 @@ export class FlowRuns {
     const subs = block.substeps?.length ? `\n\n${this.substepsLine(block)}` : '';
     const given = handoff ? `\n\n"${handoff.from}" handed on:\n\n${handoff.text}` : '';
     return `At ${at}: ${block.runs === 'manager' ? 'your own step' : 'a step for you to see through'}.${given}${brief ? `\n\n${brief}` : ''}${subs}\n\n${outs} ${report}`;
+  }
+
+  /**
+   * A wait (part 3d): the run waits on something outside the flow (a merge queue, CI, someone else's approval), shown
+   * as waiting with how long, until the coordinator reports how it came out.
+   */
+  private async waitAt(flows: ProjectFlows, run: FlowRun, flow: Flow, block: FlowBlock, handoff: Handoff): Promise<string> {
+    this.p.runs.update(run.id, { state: 'waiting' }, this.now());
+    this.p.changed(run.project);
+    const brief = await this.briefOf(flows, block);
+    const given = handoff ? `\n\n"${handoff.from}" handed on:\n\n${handoff.text}` : '';
+    return `At "${block.title}" (${block.id}), a wait: ${run.id} waits there (the workflow page shows how long) until you report how it came out.${given}${brief ? `\n\n${brief}` : ''}\n\n` +
+      `Its outcomes: ${outcomeList(flow, block, run.counts[block.id])}. Report with flow_step (run "${run.id}", the outcome's word) when it comes.`;
   }
 
   /** The block's brief as the one doing it reads it: its text, or where it is when it is long or can't be read. */
@@ -356,7 +373,10 @@ export class FlowRuns {
       const outs = (sub.outcomes ?? []).map((o) => `"${o.word}"${o.times ? ` (${ordinal(o.times)} time)` : ''} → ${o.to}`).join(', ');
       return `- ${sub.title} (${sub.kind}, when ${sub.when ?? 'done'}${sub.model ? `, model ${sub.model}` : ''}${sub.brief ? `, brief ${sub.brief}` : ''})${outs ? `: ${outs}` : ''}`;
     });
-    return `Start these subagents, in order:\n${subs.join('\n')}`;
+    // Part 3d: four reviewers at once, say; their results come back as one report.
+    return block.parallel
+      ? `Start these subagents all at once, in parallel, and merge their results into one report:\n${subs.join('\n')}`
+      : `Start these subagents, in order:\n${subs.join('\n')}`;
   }
 
   /** The step for a block's session: which run and block, the brief, the sub-steps, the handoff, the words to end with. */
@@ -375,13 +395,19 @@ export class FlowRuns {
   private async blockSession(flows: ProjectFlows, run: FlowRun, flow: Flow, block: FlowBlock, handoff: Handoff): Promise<string> {
     const text = await this.handoffText(flows, run, block, handoff);
     const runBlock: RunBlock = { run: run.id, block: block.id, runTitle: run.title, blockTitle: block.title, flow: run.flow };
-    // The session that ran the block it continues, or the one that started that chain (Fix continues Build).
-    const own = block.runs === 'continue' ? run.sessions[block.continues ?? ''] ?? run.sessions[sessionOf(flow, block.id) ?? ''] : undefined;
+    // The session that ran the block it continues, or the one that started that chain (Fix continues Build); in a flow
+    // handed its caller's session (part 3d), a new-session block continues that one.
+    const own = block.runs === 'continue'
+      ? run.sessions[block.continues ?? ''] ?? run.sessions[sessionOf(flow, block.id) ?? ''] ?? run.sessions[CALLER]
+      : run.sessions[CALLER];
     if (own && this.p.getSession(own)) {
       await this.p.continueSession(own, text, runBlock);
       this.p.runs.update(run.id, { sessions: { ...run.sessions, [block.id]: own } }, this.now());
       this.p.changed(run.project);
-      return `Ledung gave it to session "${this.p.getSession(own)?.title}" (${own}), which ran "${flow.blocks.find((b) => b.id === block.continues)?.title ?? block.continues}"`;
+      const which = block.runs === 'continue' && block.continues && run.sessions[block.continues] === own
+        ? `which ran "${flow.blocks.find((b) => b.id === block.continues)?.title ?? block.continues}"`
+        : own === run.sessions[CALLER] ? "the caller's session this flow was handed" : `which ran "${flow.blocks.find((b) => b.id === sessionOf(flow, block.id))?.title ?? block.continues}"`;
+      return `Ledung gave it to session "${this.p.getSession(own)?.title}" (${own}), ${which}`;
     }
     // A new session: the block's own, or one for a continued block whose session isn't there (said so).
     const from = block.runs === 'continue' ? flow.blocks.find((b) => b.id === sessionOf(flow, block.id)) ?? block : block;
@@ -407,7 +433,9 @@ export class FlowRuns {
     const words = [...new Map((block.outcomes ?? []).map((o) => [endingKey(o.word), o.word])).values()];
     const where = (block.outcomes ?? []).map((o) => `"${o.word}"${o.times ? ` (${ordinal(o.times)} time)` : ''} → ${o.end ? 'the flow ends' : titleOf(o.to)}`).join('; ') || 'the flow ends';
     const brief = await this.briefOf(flows, block);
-    const tag = { run: run.id, block: block.id, runTitle: run.title, blockTitle: block.title, flow: run.flow };
+    const tag = { run: run.id, block: block.id, runTitle: run.title, blockTitle: block.title, flow: run.flow, ...(block.person ? { person: block.person } : {}) };
+    // Part 3d: whose call it is; this computer's person is asked all the same.
+    const whose = block.person ? ` It is ${block.person}'s call.` : '';
     const refs = run.ref ? { refs: [run.ref] } : {};
     const title = short(`${block.title}: ${run.title}`, 200);
     const flowTitle = flows.titles.get(run.flow) ?? run.flow;
@@ -417,17 +445,17 @@ export class FlowRuns {
         review: {
           solving: `${run.title}${run.ref ? ` (${run.ref})` : ''}, in the flow "${flowTitle}".`,
           done: handoff ? `${handoff.from}: ${handoff.text}` : `See ${run.id}'s history on the workflow page.`,
-          notes: `Your answer moves ${run.id} by itself: ${where}.${brief ? `\n\n${brief}` : ''}`,
+          notes: `Your answer moves ${run.id} by itself: ${where}.${whose}${brief ? `\n\n${brief}` : ''}`,
         },
       }
       : {
         title, tier: this.p.tiers(run.project)[0], ...refs, run: tag,
-        issue: [`${run.title}${run.ref ? ` (${run.ref})` : ''} is at "${block.title}" in the flow "${flowTitle}". Your answer moves it: ${where}.`, handoff ? `"${handoff.from}" handed on:\n\n${handoff.text}` : '', brief].filter(Boolean).join('\n\n'),
+        issue: [`${run.title}${run.ref ? ` (${run.ref})` : ''} is at "${block.title}" in the flow "${flowTitle}". Your answer moves it: ${where}.${whose}`, handoff ? `"${handoff.from}" handed on:\n\n${handoff.text}` : '', brief].filter(Boolean).join('\n\n'),
       };
     const q = this.p.ask({ coordinator: run.coordinator, question: questionText(undefined, details), options: block.ask === 'review' || !words.length ? null : words.slice(0, 8), details });
     this.p.runs.update(run.id, { state: 'waiting', question: q.id }, this.now());
     this.p.changed(run.project);
-    return `At "${block.title}" (${block.id}), a person's step: Ledung put it to ${this.p.userName} as ${block.ask === 'review' ? 'review' : 'question'} #${q.id}. ` +
+    return `At "${block.title}" (${block.id}), a person's step: Ledung put it to ${this.p.userName} as ${block.ask === 'review' ? 'review' : 'question'} #${q.id}${block.person ? ` (${block.person}'s call)` : ''}. ` +
       `The answer moves the run by itself (${where}); you are told then, and need not report it.`;
   }
 
@@ -443,9 +471,23 @@ export class FlowRuns {
     this.p.runs.update(run.id, { state: 'waiting' }, this.now());
     const first = startBlock(flow);
     const child = this.p.runs.create({ project: run.project, title: run.title, ref: run.ref, flow: name, at: first.id, coordinator: run.coordinator, parent: { run: run.id, block: block.id }, now: this.now() });
+    // Part 3d: the session that ran the step before goes on in the called flow, whose session blocks continue it.
+    const caller = block.session === 'caller' ? this.callerSession(run) : undefined;
+    if (caller) this.p.runs.update(child.id, { sessions: { [CALLER]: caller } }, this.now());
     this.p.changed(run.project);
-    return `At "${block.title}" (${block.id}): Ledung started ${child.id} in the flow "${flows.titles.get(name) ?? name}" for it, and ${run.id} waits; the way ${child.id} ends is "${block.title}"'s outcome.\n\n` +
-      `${child.id}: ${await this.arrive(flows, child, flow, first, handoff)}`;
+    const hands = block.session !== 'caller' ? '' : caller ? ` It goes on in the caller's session ${caller}.` : ' No session ran before it, so its session steps start their own.';
+    return `At "${block.title}" (${block.id}): Ledung started ${child.id} in the flow "${flows.titles.get(name) ?? name}" for it, and ${run.id} waits; the way ${child.id} ends is "${block.title}"'s outcome.${hands}\n\n` +
+      `${child.id}: ${await this.arrive(flows, this.p.runs.get(child.id)!, flow, first, handoff)}`;
+  }
+
+  /** The session that ran the latest step of a run that had one, or that its own caller handed it (part 3d). */
+  private callerSession(run: FlowRun): string | undefined {
+    for (const h of [...run.history].reverse()) {
+      const id = run.sessions[h.block];
+      if (id && this.p.getSession(id)) return id;
+    }
+    const handed = run.sessions[CALLER];
+    return handed && this.p.getSession(handed) ? handed : undefined;
   }
 
   // --- events ----------------------------------------------------------------------------------------

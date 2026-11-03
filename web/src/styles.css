@@ -1575,6 +1575,8 @@ button.settings-menu-item.danger { color: var(--danger); }
 .kind-person { border-left-color: var(--dot-waiting); background: var(--warn-bg); }
 .kind-timer { border-left-color: var(--s7); }
 .kind-fork, .kind-join { border-left-color: var(--s5); }
+/* A wait (workflow part 3d): dashed, as it waits on something outside the flow. */
+.kind-wait { border-left-color: var(--s7); border-left-style: dashed; }
 /* A Run flow block (#447): a double edge, as a block that holds another flow. */
 .kind-flow { border-left: 4px double var(--s2); }
 .flow-block-runs { color: var(--s2); font-weight: 600; }

@@ -19,8 +19,12 @@ export const RULES_FILE = 'rules.md';
 /** Where the builder keeps the manager's standing procedures (#322); a flow may name another file in `manager`. */
 export const MANAGER_FILE = 'manager.md';
 
-/** `flow`: a Run flow block (#447), which starts another flow for a piece of work of its own and waits for its end. */
-export const BLOCK_KINDS = ['work', 'check', 'person', 'fork', 'join', 'timer', 'flow'] as const;
+/**
+ * `flow`: a Run flow block (#447), which starts another flow for a piece of work of its own and waits for its end.
+ * `wait` (workflow part 3d): the work waits on something outside (a merge queue, CI, someone else's approval) until the
+ * manager reports how it came out.
+ */
+export const BLOCK_KINDS = ['work', 'check', 'person', 'fork', 'join', 'timer', 'flow', 'wait'] as const;
 export type BlockKind = (typeof BLOCK_KINDS)[number];
 
 /**
@@ -101,6 +105,18 @@ export interface FlowBlock {
   outcomes?: FlowOutcome[];
   /** For a person block: a question (ask_user) or a review page. */
   ask?: 'question' | 'review';
+  /**
+   * For a person block (part 3d): whose call it is ("the owner", "a code owner"). Ledung still asks this computer's
+   * person; the name tells them whose decision they make.
+   */
+  person?: string;
+  /** Its sub-steps run at once, their results merged into one report (part 3d: four reviewers in parallel). */
+  parallel?: true;
+  /**
+   * For a Run flow block (part 3d): "caller" hands the session that ran the step before to the flow it runs, whose
+   * session blocks continue it instead of starting their own, so the phases of one long session can be flows.
+   */
+  session?: 'caller';
   /** For a timer block: on a count ("every 30 merges") or a clock ("daily"). */
   timer?: { every: number; of: string } | { clock: 'hourly' | 'daily' | 'weekly' };
   /** For a Run flow block (#447): the name of the flow it runs ("main" for the default one). */

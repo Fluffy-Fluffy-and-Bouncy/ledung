@@ -441,3 +441,26 @@ test('review of #1184: a sub-step\'s outcomes keep their own unknown fields when
   assert.equal(said.length, 2);
   assert.ok(said.every((m) => /the builder keeps it as it is\.$/.test(m)), said.join('\n'));
 });
+
+test('part 3d: the builder keeps person, a wait, parallel and session as written, and sets them in place', () => {
+  const raw = JSON.stringify({
+    version: 1,
+    blocks: [
+      { id: 'w', kind: 'wait', title: 'CI', outcomes: [{ word: 'Green', to: 'r' }] },
+      { id: 'r', kind: 'check', title: 'Review', runs: 'new-session', parallel: true, substeps: [{ id: 'a', kind: 'check', title: 'A' }, { id: 'b', kind: 'check', title: 'B' }], outcomes: [{ word: 'Ok', to: 'f' }] },
+      { id: 'f', kind: 'flow', title: 'Phase', flow: 'main', session: 'caller', outcomes: [{ word: 'Signed', to: 'p' }] },
+      { id: 'p', kind: 'person', title: 'Sign off', ask: 'question', person: 'the owner' },
+    ],
+  }, null, 2);
+  const { base, draft } = draftFromView(viewOf(raw))!;
+  assert.deepEqual(JSON.parse(flowText(base, draft)), JSON.parse(raw));
+  const key = (id: string) => draft.blocks.find((b) => b.block.id === id)!.key;
+  const changed = setBlock(setBlock(draft, key('p'), { person: 'a code owner' }), key('f'), { session: undefined });
+  const written = JSON.parse(flowText(base, changed));
+  assert.equal(written.blocks[3].person, 'a code owner');
+  assert.equal('session' in written.blocks[2], false);
+  // A new wait block is nobody's: no runs, nothing to start.
+  const added = addBlock(draft, 'wait');
+  const block = added.draft.blocks.find((b) => b.key === added.key)!.block;
+  assert.deepEqual([block.kind, block.title, block.runs], ['wait', 'Wait', undefined]);
+});

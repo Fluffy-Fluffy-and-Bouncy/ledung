@@ -10,6 +10,7 @@ import { parseProject } from '../src/config.ts';
 import { ProjectStore } from '../src/projects/store.ts';
 import { flowInstructions, flowPlaces, FOLLOW_LINE, readFlows } from '../src/sessions/flow-files.ts';
 import { decideStep, countBadge } from '../src/shared/flow-run.ts';
+import { checkFlow, checkFlowCalls, parseFlow } from '../src/shared/flow-check.ts';
 import { answerWord, FlowRuns, lastReplyOf, type BlockSessionStart, type FlowRunsPorts } from '../src/sessions/flow-runs.ts';
 import { RunStore, runNumber } from '../src/sessions/run-store.ts';
 import { ledungToolServer, type RunHandlers, type ToolHandlers } from '../src/sessions/tools.ts';
@@ -56,9 +57,9 @@ test('part 3a: a counted word with no plain one says the flow has nothing for th
 });
 
 /** A run engine on the example flow with a real database, a manager and one of its sessions. */
-async function engine(opts: { following?: boolean } = {}) {
+async function engine(opts: { following?: boolean; flows?: Awaited<ReturnType<typeof example>> } = {}) {
   const store = new Store(openDatabase(':memory:'));
-  const flows = await example();
+  const flows = opts.flows ?? await example();
   const told: { id: string; text: string }[] = [];
   const changed: string[] = [];
   const mk = (id: string, role: 'manager' | 'session', title: string) => store.createSession({ id, project: 'shop', runner: 'local', title, parentId: null, permissionMode: 'default', role });
@@ -452,4 +453,98 @@ test('part 3b review: a person block answered with its word alone passes on what
   await answer(ports.runs.get('run-1')!.question!, 'Accepted.');
   assert.equal(ports.runs.get('run-1')!.at, 'merge');
   assert.match(told.at(-1)!.text, /At "Merge \+ release" \(merge\): your own step\.\n\n"Code review" handed on:\n\nApproved: PR #143 reads well\./);
+});
+
+// --- Part 3d: the four format additions, each drawn (the format and its checks), checked and followed. -----------------
+
+/** A test flow with all four: a sign-off by the owner, a wait for CI, four reviewers at once, a phase in the caller's session. */
+const PHASES = {
+  version: 1, title: 'Phases', start: 'build',
+  blocks: [
+    { id: 'build', kind: 'work', title: 'Build', runs: 'new-session', model: 'sonnet', outcomes: [{ word: 'Pushed', to: 'ci' }] },
+    { id: 'ci', kind: 'wait', title: 'CI', brief: 'briefs/ci.md', outcomes: [{ word: 'Green', to: 'review' }, { word: 'Red', to: 'build' }, { word: 'Red', times: 3, to: 'owner' }] },
+    { id: 'review', kind: 'check', title: 'Review', runs: 'new-session', parallel: true, substeps: [
+      { id: 'sec', kind: 'check', title: 'Security', when: 'start' }, { id: 'perf', kind: 'check', title: 'Speed', when: 'start' },
+    ], outcomes: [{ word: 'Approved', to: 'polish' }] },
+    { id: 'polish', kind: 'flow', title: 'Polish', flow: 'polish', session: 'caller', outcomes: [{ word: 'Polished', to: 'owner' }] },
+    { id: 'owner', kind: 'person', title: 'Owner signs off', ask: 'question', person: 'the owner', outcomes: [{ word: 'Ship it', end: true }, { word: 'Not yet', to: 'build' }] },
+  ],
+};
+const POLISH = {
+  version: 1, title: 'Polish',
+  blocks: [{ id: 'tidy', kind: 'work', title: 'Tidy', runs: 'new-session', outcomes: [{ word: 'Polished', end: true }] }],
+};
+
+test('part 3d: the format: person, a wait block, parallel sub-steps and a Run flow block in the caller\'s session read and pass the checks', () => {
+  const parsed = parseFlow(JSON.stringify(PHASES));
+  assert.deepEqual(parsed.problems, []);
+  const flow = parsed.flow!;
+  assert.equal(flow.blocks[1]!.kind, 'wait');
+  assert.equal(flow.blocks[2]!.parallel, true);
+  assert.equal(flow.blocks[3]!.session, 'caller');
+  assert.equal(flow.blocks[4]!.person, 'the owner');
+  const problems = checkFlow(flow, () => true);
+  assert.deepEqual(problems.filter((p) => !p.hint), []);
+  const calls = checkFlowCalls(new Map([['main', flow], ['polish', parseFlow(JSON.stringify(POLISH)).flow!]]));
+  assert.deepEqual(calls.get('main'), []);
+});
+
+test('part 3d: the checks: each field only where it means something', () => {
+  const bad = parseFlow(JSON.stringify({
+    version: 1,
+    blocks: [
+      { id: 'a', kind: 'work', title: 'A', runs: 'manager', person: 'the owner', session: 'caller', parallel: true, outcomes: [{ word: 'Go', to: 'w' }] },
+      { id: 'w', kind: 'wait', title: 'W', runs: 'manager', model: 'opus', outcomes: [{ word: 'Done', to: 'f' }] },
+      { id: 'f', kind: 'flow', title: 'F', flow: 'main', parallel: true },
+      { id: 'one', kind: 'work', title: 'One', runs: 'manager', parallel: true, substeps: [{ id: 's', kind: 'check', title: 'S' }] },
+    ],
+  })).flow!;
+  const said = checkFlow(bad, () => true).map((p) => `${p.at}${p.hint ? ' (hint)' : ''}`);
+  for (const at of ['blocks.a.person', 'blocks.a.session', 'blocks.a.parallel', 'blocks.w.runs', 'blocks.w.model', 'blocks.f.parallel', 'blocks.one.parallel (hint)']) {
+    assert.ok(said.includes(at), `${at} in ${said.join(', ')}`);
+  }
+  // A field of the wrong shape is said and the flow doesn't read.
+  assert.match(parseFlow(JSON.stringify({ version: 1, blocks: [{ id: 'f', kind: 'flow', title: 'F', flow: 'x', session: 'own' }] })).problems[0]!.message, /is "caller"/);
+});
+
+async function phases() {
+  const main = parseFlow(JSON.stringify(PHASES)).flow!;
+  const polish = parseFlow(JSON.stringify(POLISH)).flow!;
+  return {
+    folder: '/work/.ledung/workflow', flows: new Map([['main', main], ['polish', polish]]), titles: new Map([['main', 'Phases'], ['polish', 'Polish']]),
+    text: async (f: string) => (f === 'briefs/ci.md' ? 'Wait for the CI run on the PR.' : null),
+  };
+}
+
+test('part 3d: followed: a wait waits, sub-steps at once, the caller\'s session goes on in the called flow, the owner\'s call is said', async () => {
+  const { runs, ports, store, started, continued, answer } = await engine({ flows: await phases() });
+  await runs.start('manager-1', { title: 'Speed up the cart' });
+  assert.equal(started[0]!.title, 'Build: Speed up the cart');
+  // The wait: the run waits there, with what it waits for, until the coordinator reports how it came out.
+  const waiting = await runs.step('manager-1', { run: 'run-1', outcome: 'Pushed', note: 'PR #7' });
+  assert.match(waiting, /At "CI" \(ci\), a wait: run-1 waits there \(the workflow page shows how long\) until you report how it came out\.\n\n"Build" handed on:\n\nPR #7\n\nThe brief \(briefs\/ci\.md\):\n\nWait for the CI run on the PR\./);
+  assert.equal(ports.runs.get('run-1')!.state, 'waiting');
+  // Counted at a wait like anywhere: red goes back to Build.
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Red' });
+  assert.equal(ports.runs.get('run-1')!.state, 'running');
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Pushed' });
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Green' });
+  // Parallel sub-steps: the review session starts them all at once and merges the results.
+  assert.match(started.at(-1)!.task, /Start these subagents all at once, in parallel, and merge their results into one report:\n- Security \(check, when start\)\n- Speed \(check, when start\)/);
+  const reviewer = ports.runs.get('run-1')!.sessions.review!;
+  // The Run flow block hands the caller's session (the reviewer's, the latest) to Polish, whose Tidy continues it.
+  const polish = await runs.step('manager-1', { run: 'run-1', outcome: 'Approved' });
+  assert.match(polish, new RegExp(`It goes on in the caller's session ${reviewer}\\.\\n\\nrun-2: At "Tidy" \\(tidy\\): Ledung gave it to session "Review: Speed up the cart" \\(${reviewer}\\), the caller's session this flow was handed`));
+  assert.equal(continued.at(-1)!.id, reviewer);
+  assert.equal(ports.runs.get('run-2')!.sessions.tidy, reviewer);
+  const before = started.length;
+  // Polish ends; the owner is asked, the question saying whose call it is.
+  await runs.step('manager-1', { run: 'run-2', outcome: 'Polished' });
+  assert.equal(started.length, before);
+  const q = store.getQuestion(ports.runs.get('run-1')!.question!)!;
+  assert.equal(q.details!.run!.person, 'the owner');
+  assert.match(q.details!.issue!, /It is the owner's call\./);
+  await answer(q.id, 'Ship it');
+  assert.equal(ports.runs.get('run-1')!.state, 'ended');
+  assert.equal(ports.runs.get('run-1')!.ending, 'Ship it');
 });

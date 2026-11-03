@@ -33,7 +33,7 @@ export interface FlowChoice {
 
 /** The palette's word for each kind, under its name. */
 const KIND_HINT: Record<BlockKind, string> = {
-  work: 'a step someone does', check: 'a yes or no', person: 'a person decides', fork: 'split into parallel work', join: 'wait for all of it', timer: 'starts on a count or clock', flow: 'another flow, its end the outcome',
+  work: 'a step someone does', check: 'a yes or no', person: 'a person decides', fork: 'split into parallel work', join: 'wait for all of it', timer: 'starts on a count or clock', flow: 'another flow, its end the outcome', wait: 'waits on CI, a queue, others',
 };
 /** The Runs as choices (#322), in the panel's words. */
 const RUNS_LABEL: Record<Runs, string> = { manager: 'the manager', person: 'a person', 'new-session': 'a new session', continue: "an earlier block's session" };
@@ -664,10 +664,12 @@ function BlockFields({ draft, entry, focus, naming, profiles, narrow, commit, on
         <select value={b.kind} onChange={(e) => {
           const kind = e.target.value as BlockKind;
           // A person block is a person's, and a fork or join nobody's (#322); work leaving a person's hands goes to a session.
-          const runs = kind === 'person' ? 'person' : kind === 'fork' || kind === 'join' || kind === 'flow' ? undefined : b.kind === 'person' && b.runs === 'person' ? 'new-session' : b.runs;
+          const runs = kind === 'person' ? 'person' : kind === 'fork' || kind === 'join' || kind === 'flow' || kind === 'wait' ? undefined : b.kind === 'person' && b.runs === 'person' ? 'new-session' : b.runs;
           // A Run flow block (#447) is done by its flow: nobody here runs it, with no brief, model or sub-steps.
-          const flowed = kind === 'flow' ? { flow: b.flow ?? choices[0]?.name, model: undefined, profile: undefined, brief: undefined, substeps: undefined } : { flow: undefined };
-          set({ kind, runs, ...(runs === 'continue' ? {} : { continues: undefined }), ...(kind === 'person' ? { ask: b.ask ?? 'question' } : { ask: undefined }), ...(kind === 'timer' ? { timer: b.timer ?? { clock: 'daily' } } : { timer: undefined }), ...flowed });
+          const flowed = kind === 'flow' ? { flow: b.flow ?? choices[0]?.name, model: undefined, profile: undefined, brief: undefined, substeps: undefined, parallel: undefined } : { flow: undefined, session: undefined };
+          // A wait (part 3d) waits on something outside: nobody here runs it or starts subagents.
+          const waited = kind === 'wait' ? { model: undefined, profile: undefined, substeps: undefined, parallel: undefined } : {};
+          set({ kind, runs, ...(runs === 'continue' ? {} : { continues: undefined }), ...(kind === 'person' ? { ask: b.ask ?? 'question' } : { ask: undefined }), ...(kind === 'timer' ? { timer: b.timer ?? { clock: 'daily' } } : { timer: undefined }), ...(kind === 'person' ? {} : { person: undefined }), ...flowed, ...waited });
         }}>
           {BLOCK_KINDS.map((k) => <option key={k} value={k}>{KIND_LABEL[k]}</option>)}
         </select>
@@ -681,6 +683,12 @@ function BlockFields({ draft, entry, focus, naming, profiles, narrow, commit, on
           </select>
         </Field>
       )}
+      {b.kind === 'person' && (
+        <Field label="Whose call" hint="Who decides, e.g. the owner or a code owner. Ledung still asks you; it tells you whose decision you make.">
+          <input {...typing} value={b.person ?? ''} placeholder="(yours)" maxLength={80} onChange={(e) => set({ person: optional(e.target.value) }, 'person')} />
+        </Field>
+      )}
+      {b.kind === 'wait' && <span className="muted flow-field-hint">The work waits here on something outside the flow (a merge queue, CI, someone else's approval) until the manager reports how it came out; the workflow page shows how long. The brief may say what it waits for.</span>}
       {b.kind === 'timer' && (
         <div className="flow-field-row">
           <Field label="Starts">
@@ -705,7 +713,7 @@ function BlockFields({ draft, entry, focus, naming, profiles, narrow, commit, on
         </div>
       )}
       {b.kind === 'flow' && <RunFlowFields draft={draft} entry={entry} choices={choices} commit={commit} onOpenFlow={onOpenFlow} />}
-      {b.kind !== 'fork' && b.kind !== 'join' && b.kind !== 'flow' && (
+      {b.kind !== 'fork' && b.kind !== 'join' && b.kind !== 'flow' && b.kind !== 'wait' && (
         <div className="flow-field-row">
           <Field label="Runs as">
             <select value={b.runs ?? ''} disabled={b.kind === 'person'} onChange={(e) => {
@@ -727,8 +735,8 @@ function BlockFields({ draft, entry, focus, naming, profiles, narrow, commit, on
           )}
         </div>
       )}
-      {b.kind !== 'fork' && b.kind !== 'join' && b.kind !== 'flow' && <span className="muted flow-field-hint">{b.runs === 'continue' ? 'The session that did that block takes this step too: it knows the work.' : 'Who does this step; its brief says how.'}</span>}
-      {b.kind !== 'flow' && <div className="flow-field-row">
+      {b.kind !== 'fork' && b.kind !== 'join' && b.kind !== 'flow' && b.kind !== 'wait' && <span className="muted flow-field-hint">{b.runs === 'continue' ? 'The session that did that block takes this step too: it knows the work.' : 'Who does this step; its brief says how.'}</span>}
+      {b.kind !== 'flow' && b.kind !== 'wait' && <div className="flow-field-row">
         <Field label="Model">
           <input {...typing} list="flow-models" value={b.model ?? ''} onChange={(e) => set({ model: optional(e.target.value) }, 'model')} />
         </Field>
@@ -802,6 +810,10 @@ function RunFlowFields({ draft, entry, choices, commit, onOpenFlow }: { draft: D
         </select>
       </Field>
       {!choices.length && <span className="muted flow-field-hint">This project has no other flow yet: add one with "+ Flow" by the tabs.</span>}
+      <label className="toggle">
+        <input type="checkbox" checked={b.session === 'caller'} onChange={(e) => commit(setBlock(draft, entry.key, { session: e.target.checked ? 'caller' : undefined }))} />
+        {' '}<span>Hands it the session before it <span className="muted">(its session steps continue that session instead of starting their own)</span></span>
+      </label>
       {runs && <span className="muted flow-field-hint">{runs.endings.length ? `"${runs.title}" ends with ${runs.endings.map((e) => `"${e}"`).join(', ')}.` : `"${runs.title}" has no end yet: every block of it leads on.`}</span>}
       <div className="flow-field-row flow-new-brief">
         {runs && <button className="small" onClick={() => onOpenFlow(runs.name)}>Open "{runs.title}"</button>}
@@ -931,11 +943,17 @@ function Substeps({ draft, entry, narrow, commit }: { draft: Draft; entry: Draft
   /** A sub-step's outcomes changed (#1185): none left takes the field out. */
   const setOuts = (i: number, outs: FlowSubstepOutcome[], group?: string) => set(i, { outcomes: outs.length ? outs : undefined }, group);
   const briefs = Object.keys(draft.texts).filter((f) => f.startsWith('briefs/')).sort();
-  const canStart = b.kind !== 'person' && b.kind !== 'fork' && b.kind !== 'join' && b.runs !== 'person';
+  const canStart = b.kind !== 'person' && b.kind !== 'fork' && b.kind !== 'join' && b.kind !== 'wait' && b.runs !== 'person';
   return (
     <fieldset className="flow-fieldset">
       <legend>Sub-steps</legend>
-      <span className="muted flow-field-hint">Subagents {b.runs === 'manager' ? 'the manager' : "this block's session"} starts, in this order; each returns to it. The block's outcome counts once those that run when it is done have passed.</span>
+      <span className="muted flow-field-hint">Subagents {b.runs === 'manager' ? 'the manager' : "this block's session"} starts, {b.parallel ? 'all at once' : 'in this order'}; each returns to it. The block's outcome counts once those that run when it is done have passed.</span>
+      {(subs.length > 1 || b.parallel) && (
+        <label className="toggle">
+          <input type="checkbox" checked={!!b.parallel} onChange={(e) => commit(setBlock(draft, key, { parallel: e.target.checked ? true : undefined }))} />
+          {' '}<span>Run them at once <span className="muted">(their results merged into one report, as four reviewers in parallel)</span></span>
+        </label>
+      )}
       {subs.map((s, i) => {
         const t = substepText(b, s);
         const text = s.brief ? draft.texts[s.brief] : undefined;

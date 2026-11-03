@@ -151,7 +151,7 @@ export function flowOf(draft: Draft): Flow {
 
 /** The fields of each part of the format, in the order a new one is written; nested parts with their own fields. */
 const TOP_FIELDS = ['version', 'title', 'start', 'manager'];
-const BLOCK_FIELDS = ['id', 'kind', 'title', 'flow', 'runs', 'continues', 'model', 'profile', 'brief', 'ask', 'timer', 'substeps', 'outcomes', 'at'];
+const BLOCK_FIELDS = ['id', 'kind', 'title', 'flow', 'session', 'runs', 'continues', 'model', 'profile', 'brief', 'ask', 'person', 'timer', 'parallel', 'substeps', 'outcomes', 'at'];
 const SUBSTEP_FIELDS = ['id', 'kind', 'title', 'brief', 'model', 'when', 'outcomes'];
 const OUTCOME_FIELDS = ['word', 'to', 'times', 'end'];
 const OVERLAY_FIELDS = ['id', 'title', 'file', 'blocks'];
@@ -369,7 +369,7 @@ export function idFrom(words: string, draft: Draft, except?: string): string {
   for (let n = 2; ; n++) if (!taken.has(`${stem}-${n}`)) return `${stem}-${n}`;
 }
 
-export const NEW_TITLE: Record<BlockKind, string> = { work: 'New step', check: 'New check', person: 'Person decides', fork: 'Fork', join: 'Join', timer: 'Timer', flow: 'Run flow' };
+export const NEW_TITLE: Record<BlockKind, string> = { work: 'New step', check: 'New check', person: 'Person decides', fork: 'Fork', join: 'Join', timer: 'Timer', flow: 'Run flow', wait: 'Wait' };
 
 /**
  * Where the layout draws each block, by the block itself: the layout draws a second block with an id already used

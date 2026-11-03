@@ -83,6 +83,10 @@ const Block = z.object({
   timer: Timer.optional(),
   /** A Run flow block's flow (#447), by name. */
   flow: Id.optional(),
+  /** Part 3d: whose call a person block is, sub-steps run at once, a Run flow block handing on the caller's session. */
+  person: Text(80).optional(),
+  parallel: z.literal(true, { message: 'is true (its sub-steps run at once) or left out' }).optional(),
+  session: z.literal('caller', { message: 'is "caller" (the flow it runs continues the session before it) or left out' }).optional(),
   at: z.object({ x: z.number().finite(), y: z.number().finite() }).optional(),
 });
 
@@ -290,6 +294,16 @@ export function checkFlow(flow: Flow, exists: (file: string) => boolean, profile
     if (b.kind === 'person' && !b.ask) add(at, `The person block "${b.title}" doesn't say what it asks: give "ask": "question" or "review".`);
     if (b.kind === 'person' && b.runs && b.runs !== 'person') add(`${at}.runs`, `A person block is a person's: take "runs" out, or make "${b.title}" a work or check block.`);
     if ((b.kind === 'fork' || b.kind === 'join') && b.runs) add(`${at}.runs`, `A ${b.kind} only splits or joins the work; nobody runs it: take "runs" out.`);
+    // Part 3d: a wait is on something outside; the manager reports how it came out.
+    if (b.kind === 'wait') {
+      for (const f of ['runs', 'continues', 'model', 'profile', 'substeps'] as const) {
+        if (b[f] !== undefined) add(`${at}.${f}`, `"${b.title}" waits on something outside the flow; nobody here runs it: take "${f}" out (its brief may say what it waits for).`);
+      }
+    }
+    if (b.person !== undefined && b.kind !== 'person') add(`${at}.person`, `"person" says whose call a person block is: take it out of "${b.title}", or make it a person block.`);
+    if (b.parallel && !b.substeps?.length) add(`${at}.parallel`, `"${b.title}" has no sub-steps to run at once: take "parallel" out, or add sub-steps.`);
+    else if (b.parallel && b.substeps!.length === 1) hint(`${at}.parallel`, `"${b.title}" has one sub-step, so "parallel" changes nothing.`);
+    if (b.session !== undefined && b.kind !== 'flow') add(`${at}.session`, `"session" is for a Run flow block, which hands its session to the flow it runs: take it out of "${b.title}".`);
     if (b.runs === 'continue' && b.continues === undefined) add(`${at}.continues`, `"${b.title}" continues a session: say whose with "continues", the id of an earlier block that runs as a session.`);
     if (b.continues !== undefined && b.runs !== 'continue') add(`${at}.continues`, '"continues" is for a block that runs as "continue": take it out, or set "runs": "continue".');
     // Sub-steps are subagents (#322): someone who can start one runs the block.
@@ -314,7 +328,7 @@ export function checkFlow(flow: Flow, exists: (file: string) => boolean, profile
     // A Run flow block (#447): the flow it runs does the step, so nobody here runs it and it has no brief.
     if (b.kind === 'flow') {
       if (b.flow === undefined) add(`${at}.flow`, `The Run flow block "${b.title}" doesn't say which flow it runs: give "flow", the name of one of the project's flows.`);
-      for (const f of ['runs', 'continues', 'model', 'profile', 'brief', 'substeps'] as const) {
+      for (const f of ['runs', 'continues', 'model', 'profile', 'brief', 'substeps', 'parallel'] as const) {
         if (b[f] !== undefined) add(`${at}.${f}`, `A Run flow block is done by the flow it runs: take "${f}" out of "${b.title}".`);
       }
     } else if (b.flow !== undefined) add(`${at}.flow`, `Only a Run flow block (kind "flow") runs a flow: take "flow" out, or make "${b.title}" one.`);
