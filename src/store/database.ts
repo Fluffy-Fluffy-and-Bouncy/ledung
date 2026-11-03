@@ -576,6 +576,33 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE questions ADD COLUMN sources TEXT;
   `,
+  // 41: orders on record (issue #105): the person's own words, checked by Ledung, allowing one command in a manager and
+  // the session it sent the order to. The statuses are the process's GOAL.md ones. No foreign keys: an order outlives
+  // a trimmed session as the record of what was allowed. Its project is its manager's, read with it, so a rename moves it. IF NOT EXISTS: a test winds a database back to 37 and starts it again.
+  `
+  CREATE TABLE IF NOT EXISTS orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    manager_id TEXT NOT NULL,
+    session_id TEXT,
+    command TEXT NOT NULL,
+    match TEXT NOT NULL,
+    until TEXT NOT NULL,
+    source_kind TEXT NOT NULL,
+    source_ref INTEGER NOT NULL,
+    words TEXT NOT NULL,
+    words_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    away_since INTEGER,
+    status TEXT NOT NULL,
+    status_at INTEGER NOT NULL,
+    note TEXT,
+    runs INTEGER NOT NULL DEFAULT 0,
+    taken INTEGER NOT NULL DEFAULT 0,
+    last_run_at INTEGER,
+    keep_question INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS orders_by_status ON orders (status, status_at);
+  `,
 ];
 
 export function databaseFile(dir = userDataDir()): string {

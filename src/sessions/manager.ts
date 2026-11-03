@@ -6,6 +6,7 @@ import { AccountError, AccountStore, DEFAULT_ACCOUNT, SIGN_IN_ENV, type AccountP
 import { removeSignIn } from '../accounts/signin-store.ts';
 import type { AccountChoices, AccountInfoView, AwayInfo, AwayKind, SignInProblem } from '../shared/protocol.ts';
 import { Away } from './away.ts';
+import { Orders } from './orders.ts';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -161,6 +162,8 @@ export class SessionManager {
   private readonly relaunching = new Set<string>();
   /** Away mode (issue #35): one state for the whole Ledung. */
   readonly away: Away;
+  /** Orders on record (issue #105): the person's word, allowing one command in a manager and the session it sent it to. */
+  readonly orders: Orders;
   /** The message boards between managers, one per repo the projects name (docs/steps/message-board.md, "Per project"). */
   boards: Boards | null = null;
   /** Locked secrets (issue #468); null: none in this Ledung (tests that don't attach them). */
@@ -184,7 +187,16 @@ export class SessionManager {
     this.accountsFromConfig();
     for (const a of this.accounts.list()) if (!config.claudeAccounts[a.name]) this.accounts.writeAbout(a.name);
     // When computer control or away mode ends, every manager hears it at once, an idle one too (issue #328).
-    this.away = new Away(store, publish, { userName: config.userName, notify: (text) => this.tellManagers(text) });
+    // When an away period ends, its orders that are not done ask whether they stay (issue #105).
+    this.away = new Away(store, publish, { userName: config.userName, notify: (text) => this.tellManagers(text), onEnded: (since, end) => void this.orders.settleAway(since, end) });
+    this.orders = new Orders({
+      store, userName: config.userName, publish,
+      tierOf: (managerId) => this.management.questionTiers(managerId)[0],
+      tell: (id, text) => {
+        this.store.addInbox(id, 'ledung', text);
+        this.live.get(id)?.deliver();
+      },
+    });
     this.pullRequests = new PullRequestPoller({
       show: (id, pr) => this.live.get(id)?.showPullRequest(pr),
       onBudget: (github) => this.publish({ type: 'github', github }),
@@ -198,6 +210,8 @@ export class SessionManager {
       store,
       userName: config.userName,
       publish,
+      orders: this.orders,
+      away: () => this.away.current(),
       wake: (id) => this.live.get(id)?.deliver(),
       resume: (id) => this.resumeIfEnded(id),
       archiveSession: (id, by) => void this.archive(id, by),
@@ -845,7 +859,7 @@ export class SessionManager {
       // A project the user opted in lets its manager's project tools run unasked (decision of 2026-10-14).
       projectToolsUnasked: project.projectToolsUnasked ?? false,
       userName: this.config.userName, management: this.management, grant: project.managerGrant, tickets: project.tickets, gate: this.gate,
-      away: this.away, devShip: project.devShipCommand ?? null,
+      away: this.away, devShip: project.devShipCommand ?? null, orders: this.orders,
       // The board tools, for a manager whose project has the board on (decision 9); looked at on every start and resume.
       board: launch.board ? this.boards : null,
       pullRequests: this.pullRequests,
@@ -1033,6 +1047,8 @@ export class SessionManager {
     this.publish({ type: 'question', question: q });
     // A question that went to a manager: tell the manager Simon answered it directly.
     this.management.onUserAnswered(q);
+    // A keep-it question about an order (issue #105): Keep puts it back in force, Drop ends it.
+    this.orders.answered(q);
     // A held first board post waits for this answer (decision 6). Awaited, so the note on how the post went
     // reaches the manager together with the answer, in one turn rather than two (step 3 live test).
     await this.boards?.onUserAnswered(q).catch((e) => console.error(`Board: ${(e as Error).message}`));

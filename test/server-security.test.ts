@@ -49,6 +49,7 @@ let boardCache: string;
 let sessions: SessionManager;
 const questionAbout: Record<string, number> = {};
 let refusalQuestion = 0;
+let keepQuestion = 0;
 let managerQuestion = 0;
 let paneStore: Store;
 /** The folders Settings' Open folder was asked to show (issue #414); nothing is opened for real. */
@@ -96,6 +97,10 @@ before(async () => {
   const rq = store.createQuestion({ sessionId: 's1', question: 'refused', options: ['Allow once', 'Deny'], addressedTo: 'user', details: { refusal: { toolName: 'Bash', input: { command: 'x' }, reason: 'r', toolUseId: 't' } } });
   store.withdrawQuestion(rq.id, 'test');
   refusalQuestion = rq.id;
+  // An order's keep-it question at the end of away, no longer open (issue #105): Keep puts the order back in force.
+  const kq = store.createQuestion({ sessionId: 's1', question: 'keep?', options: ['Keep it', 'Drop it'], addressedTo: 'user', details: { order: { orderId: 1 } } });
+  store.withdrawQuestion(kq.id, 'test');
+  keepQuestion = kq.id;
   // A manager and a question it asked, no longer open (#104 review, finding F1).
   store.createSession({ id: 'm1', project: 'p', runner: 'local', title: 'lead', parentId: null, permissionMode: 'default', role: 'manager' });
   const mq = store.createQuestion({ sessionId: 'm1', question: 'merge #1?', options: null, addressedTo: 'user' });
@@ -638,6 +643,20 @@ test("answering Ledung's question about a refused call, whose Allow once lets th
   assert.match(errorOf(plain), /no longer open/);
   const page = await livePage();
   const passed = await change(`/api/questions/${refusalQuestion}/answer`, answer, { 'x-ledung-page': page.key });
+  page.close();
+  assert.equal(passed.status, 400);
+  assert.match(errorOf(passed), /no longer open/);
+});
+
+test("answering an order's keep-it question, whose Keep puts the order back in force, needs the live page (issue #105)", async () => {
+  const answer = { answer: 'Keep it' };
+  assert.equal((await change(`/api/questions/${keepQuestion}/answer`, answer)).status, 403);
+  // Another question of the same ordinary session needs only the cookie, as before.
+  const plain = await change(`/api/questions/${questionAbout['perm-plain']}/answer`, answer);
+  assert.equal(plain.status, 400);
+  assert.match(errorOf(plain), /no longer open/);
+  const page = await livePage();
+  const passed = await change(`/api/questions/${keepQuestion}/answer`, answer, { 'x-ledung-page': page.key });
   page.close();
   assert.equal(passed.status, 400);
   assert.match(errorOf(passed), /no longer open/);

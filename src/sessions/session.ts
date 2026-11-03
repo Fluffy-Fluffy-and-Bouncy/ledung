@@ -55,6 +55,7 @@ import { attachSources, type SourceContext } from './sources.ts';
 import type { SessionRole, ShellBlock } from '../shared/protocol.ts';
 import { exercisedLine } from '../platform/exercised.ts';
 import { classifierReason, ONCE_ACTION, ONCE_GRANT_MS, onceGrant, refusalOf, refusalQuestion, sameCall } from './refusals.ts';
+import { orderNote, type Orders } from './orders.ts';
 
 /** The EXERCISED line of issue #369, once per run. */
 let sourcesExercised = false;
@@ -175,6 +176,8 @@ export interface SessionOptions {
   /** Away mode (issue #35), and the project's dev ship command it may let through. */
   away?: Away;
   devShip?: string | null;
+  /** Orders on record (issue #105): the person's word allows an ordered command here. */
+  orders?: Orders;
   gate: TurnGate;
   /** The project's Claude account: its name, and the login it puts in the environment (P3). */
   account?: { name: string; env: Record<string, string> } | null;
@@ -241,6 +244,9 @@ export class Session {
   private readonly alwaysAsked: readonly string[];
   private readonly ticketConfig: { pattern: string; url: string } | undefined;
   private readonly away: Away | undefined;
+  private readonly orders: Orders | null;
+  /** Calls let through by an order, by tool use id, so the end of the run is recorded on it (issue #105). */
+  private readonly orderedRuns = new Map<string, number>();
   private readonly devShip: string | null;
   private readonly pullRequests: SessionOptions['pullRequests'];
   /** Ends a clear's countdown (clear_session). */
@@ -349,6 +355,7 @@ export class Session {
     this.alwaysAsked = [...(opts.projectToolsUnasked ? [] : USER_APPROVED_TOOLS), ...SETTINGS_TOOLS];
     this.ticketConfig = opts.tickets;
     this.away = opts.away;
+    this.orders = opts.orders ?? null;
     this.devShip = opts.devShip ?? null;
     this.gate = opts.gate;
     this.account = opts.account ?? null;
@@ -381,7 +388,8 @@ export class Session {
       startSession: (args) => m.startSession(id, args),
       listSessions: () => m.listSessions(id),
       readSession: (sid, last) => m.readSession(id, sid, last),
-      sendMessage: (sid, text) => m.sendMessage(id, sid, text),
+      sendMessage: (sid, text, order) => m.sendMessage(id, sid, text, order),
+      orderDone: (order) => m.orderDone(id, order),
       stopSession: (sid) => m.stopSession(id, sid),
       clearSession: (sid, then, seconds) => m.clearSession(id, sid, then, seconds),
       compactSession: (sid, note, then) => m.compactSession(id, sid, note, then),
@@ -600,6 +608,46 @@ export class Session {
   }
 
   /**
+   * A command the person ordered (issue #105): an order in force for this session, as its manager or the session it
+   * went to, covers exactly this call. Allowed past the sensitive list and the classifier, as the merge on an answer
+   * is, with a note that quotes the words. While the person is away, an order recorded during the away period runs
+   * only when away mode allows "ordered"; otherwise it is held as before (asked, with away mode's reason) and the order
+   * reads refused. Either way away_log records it. Settings actions keep their own rule. Null: as before.
+   */
+  private onOrder(toolName: string, input: Record<string, unknown>, toolUseId: string | undefined): Record<string, unknown> | null {
+    if (!this.orders || settingsAction(toolName) || SETTINGS_CHANGE_TOOLS.includes(toolName)) return null;
+    const o = this.orders.covering(this.id, toolName, input);
+    if (!o) return null;
+    const command = String(input.command);
+    const away = this.away?.current() ?? null;
+    const here = o.sessionId === this.id && o.sessionId !== o.managerId ? ` (run by its session "${this.store.getSession(this.id)?.title ?? this.id}")` : '';
+    const log = (allowed: boolean, reason: string) =>
+      this.away?.record(o.managerId, command, { kind: 'ordered', allowed, reason: `${reason}${here}`, pr: null, repo: null, floors: [] });
+    if (away && o.awaySince === away.since && !away.allow.includes('ordered')) {
+      const reason = `held for ${this.userName}: order #${o.id} was recorded while ${this.userName} was away, and away mode does not allow ordered commands`;
+      log(false, reason);
+      this.orders.refused(o.id, reason);
+      return null;
+    }
+    // Taken atomically: a once-order runs once, whoever races for it.
+    if (!this.orders.take(o)) return null;
+    if (away) log(true, `Allowed by order #${o.id}: ${this.userName}'s own words, "${o.words.replace(/\s+/g, ' ').trim()}"`);
+    if (toolUseId) this.orderedRuns.set(toolUseId, o.id);
+    const why = orderNote(o, this.userName);
+    this.record('event', { text: why });
+    this.allowedBy.ordered(toolUseId, why);
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: why } };
+  }
+
+  /** How an ordered call ended (issue #105): a once-order that ran is done; one that failed may run again. */
+  private orderRunEnded(toolUseId: string | undefined, ok: boolean, error: string | null): void {
+    const id = toolUseId ? this.orderedRuns.get(toolUseId) : undefined;
+    if (id === undefined) return;
+    this.orderedRuns.delete(toolUseId!);
+    this.orders?.ran(id, ok, error);
+  }
+
+  /**
    * A tool result that is the auto mode classifier's refusal (issue #104): the user is asked at once, Allow once or
    * Deny, at the top of Waiting for you and with a push (every question addressed to the user pushes). Always the
    * user's, never a manager's, whoever started the session. Once per refused call; while one such question is open
@@ -786,15 +834,20 @@ export class Session {
           if (named) return named;
           const once = this.onceOnTap(toolName, toolInput, toolUseId);
           if (once) return once;
+          const ordered = this.onOrder(toolName, toolInput, toolUseId);
+          if (ordered) return ordered;
           return sensitiveHookOutput(toolName, toolInput, this.sensitiveRules, this.alwaysAsked);
         }] }],
         // After a call someone in Ledung allowed: say who, so the session never guesses. A call that
         // failed was allowed all the same, and without its note would read as allowed by the session's mode.
         PostToolUse: [{ hooks: [async (input) => {
+          this.orderRunEnded((input as { tool_use_id?: string }).tool_use_id, true, null);
           const note = this.allowedBy.take((input as { tool_use_id?: string }).tool_use_id);
           return note === undefined ? {} : { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: note } };
         }] }],
         PostToolUseFailure: [{ hooks: [async (input) => {
+          const failed = input as { tool_use_id?: string; error?: unknown };
+          this.orderRunEnded(failed.tool_use_id, false, typeof failed.error === 'string' ? failed.error : null);
           const note = this.allowedBy.take((input as { tool_use_id?: string }).tool_use_id);
           return note === undefined ? {} : { hookSpecificOutput: { hookEventName: 'PostToolUseFailure' as const, additionalContext: note } };
         }] }],
@@ -1405,7 +1458,7 @@ export class Session {
       this.beginTurn('manager');
       return;
     }
-    const { userText: deliveredText, context } = buildDelivery(this.userName, answers, inbox, (id) => this.management.title(id));
+    const { userText: deliveredText, context } = buildDelivery(this.userName, answers, inbox, (id) => this.management.title(id), (id) => this.store.getOrder(id));
     this.store.markDelivered(answers.map((a) => a.id));
     this.store.markInboxDelivered(inbox.map((i) => i.id));
     this.store.setHeldMessages(this.id, []);

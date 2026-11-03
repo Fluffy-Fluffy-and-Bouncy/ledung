@@ -6,6 +6,7 @@ import type { ComputerInfo } from './computers.ts';
 import type { SkillChoices, SkillInfo } from './skills.ts';
 import type { Macro } from './macros.ts';
 import type { SecretInfo } from './secrets.ts';
+import type { OrderInfo } from './orders.ts';
 
 export type SessionStatus =
   /** The process is starting. */
@@ -792,10 +793,11 @@ export interface TypicalCost {
  * What away mode lets a manager do without the user (issue #35). Computer control (issue #328) gates
  * nothing in Ledung: it tells managers they may take over this computer, for their own rules.
  */
-export type AwayKind = 'merge' | 'devShip' | 'computerControl';
-export const AWAY_KINDS: AwayKind[] = ['merge', 'devShip', 'computerControl'];
+export type AwayKind = 'merge' | 'devShip' | 'ordered' | 'computerControl';
+/** `ordered` (issue #105): an order recorded during the away period runs without a second ask. */
+export const AWAY_KINDS: AwayKind[] = ['merge', 'devShip', 'ordered', 'computerControl'];
 /** Allowed when the page names none: computer control only when asked for (Martin, 2026-10-27, question #813). */
-export const AWAY_DEFAULT: AwayKind[] = ['merge', 'devShip'];
+export const AWAY_DEFAULT: AwayKind[] = ['merge', 'devShip', 'ordered'];
 
 /** The user is away (issue #35): since and until are epoch ms. */
 export interface AwayInfo {
@@ -1202,6 +1204,8 @@ export type ServerEvent =
       usageStops?: UsageStopInfo[];
       /** Away mode, or null when the user is here (issue #35). */
       away: AwayInfo | null;
+      /** Orders on record (issue #105). */
+      orders?: OrderInfo[];
       /** The session profiles in the config, "full" first (#20). */
       profiles: string[];
       /** The message board for the chip; configured: false when there is none. */
@@ -1241,6 +1245,8 @@ export type ServerEvent =
   | { type: 'macros'; macros: Macro[] }
   | { type: 'machine'; machine: MachineInfo }
   | { type: 'away'; away: AwayInfo | null }
+  /** Orders on record (issue #105): every one not finished, and those finished in the last day. */
+  | { type: 'orders'; orders: OrderInfo[] }
   | { type: 'board'; board: BoardStatus }
   | { type: 'github'; github: GitHubBudget[] }
   | { type: 'remote'; remote: RemoteStatus | null }

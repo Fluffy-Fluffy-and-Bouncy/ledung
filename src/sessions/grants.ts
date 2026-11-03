@@ -101,6 +101,11 @@ export class AllowedNotes {
     }
   }
 
+  /** A command the person ordered (issue #105): `note` quotes their words and where they said them. */
+  ordered(toolUseID: string | undefined, note: string): void {
+    if (toolUseID) this.notes.set(toolUseID, note);
+  }
+
   /** The note for a finished call, once; undefined when nobody in Ledung allowed it. */
   take(toolUseID: string | undefined): string | undefined {
     if (!toolUseID) return undefined;

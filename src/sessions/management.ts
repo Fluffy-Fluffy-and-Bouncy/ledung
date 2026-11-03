@@ -5,7 +5,7 @@
 // questions. Nothing a session writes can reach another session as the user's words: forwardAnswer
 // copies the user's stored answer, never text the manager supplies (decision of 2026-10-10).
 import type { Store } from '../store/store.ts';
-import type { AttachedSource, CompactingInfo, MachineInfo, McpServerInfo,PermissionDecision, PermissionInfo, PermissionMode, Priority, ProjectInfo, QuestionInfo, QuestionShot, ServerEvent, ShotVerdict, SessionInfo } from '../shared/protocol.ts';
+import type { AttachedSource, AwayInfo, CompactingInfo, MachineInfo, McpServerInfo,PermissionDecision, PermissionInfo, PermissionMode, Priority, ProjectInfo, QuestionInfo, QuestionShot, ServerEvent, ShotVerdict, SessionInfo } from '../shared/protocol.ts';
 import { parseProject, type ProjectConfig, type WorkflowConfig } from '../config.ts';
 import type { NewProjectArgs, ProjectArgs } from './tools.ts';
 import { describeRule, ruleMatches, type GrantRule } from './grants.ts';
@@ -22,6 +22,8 @@ import type { ComputerInfo } from '../shared/computers.ts';
 import { USAGE_REPO, type UsagePublishChange, type UsagePublishView } from '../shared/published-usage.ts';
 import { stateFor } from './elapsed.ts';
 import { refusalAnswerText, refusalOf } from './refusals.ts';
+import { keepAnswerText, orderPreamble, orderRecorded, type Orders, type OrderSpec } from './orders.ts';
+import type { OrderInfo } from '../shared/orders.ts';
 
 /** What managers need of the linked computers (#245): who they are, and one call to one of them. */
 export interface LinkedPort {
@@ -128,6 +130,10 @@ export interface ManagementContext {
    * the reason otherwise. Left out in tests of other parts: a review with evidence is then refused.
    */
   evidenceFile?(sessionId: string, file: string): { file: string; kind: 'image' | 'text' };
+  /** Orders on record (issue #105); left out where none are kept (tests of other parts): an order is then refused. */
+  orders?: Orders;
+  /** Away mode now, so an order records the period it was given in (issue #105). */
+  away?(): AwayInfo | null;
 }
 
 /** A screenshot as ask_user takes it (issue #60). */
@@ -503,14 +509,41 @@ export class Management {
   }
 
   /** Always in the manager's own project, so its sessions use its account (decided 2026-10-11). */
-  async startSession(managerId: string, args: { task: string; title?: string; permissionMode?: PermissionMode; model?: string; profile?: string; cwd?: string }): Promise<string> {
+  async startSession(managerId: string, args: { task: string; title?: string; permissionMode?: PermissionMode; model?: string; profile?: string; cwd?: string; order?: OrderSpec }): Promise<string> {
     const manager = this.store.getSession(managerId)!;
     const project = manager.project;
     if (!this.ctx.projectNames().includes(project)) throw new ManagementError(`Your project "${project}" has been removed.`);
-    const s = await this.ctx.startSession(project, args.task, { parentId: managerId, title: args.title, permissionMode: args.permissionMode, model: args.model, profile: args.profile, cwd: args.cwd });
-    if (s.status === 'ended') throw new ManagementError(`The session could not start: ${s.endReason ?? 'unknown reason'}`);
+    // An order is checked before the session starts, so a refused one starts nothing; it gets the session once there is one.
+    const order = args.order ? this.recordOrder(managerId, null, args.order) : null;
+    const task = order ? `${orderPreamble(order, this.ctx.userName)}\n\n${args.task}` : args.task;
+    let s: SessionInfo;
+    try {
+      s = await this.ctx.startSession(project, task, { parentId: managerId, title: args.title, permissionMode: args.permissionMode, model: args.model, profile: args.profile, cwd: args.cwd });
+    } catch (e) {
+      if (order) this.ctx.orders!.discard(order.id);
+      throw e;
+    }
+    if (s.status === 'ended') {
+      if (order) this.ctx.orders!.discard(order.id);
+      throw new ManagementError(`The session could not start: ${s.endReason ?? 'unknown reason'}`);
+    }
+    if (order) this.ctx.orders!.attach(order.id, s.id);
     const warning = this.ctx.profilesWarning?.(project);
-    return `Started session "${s.title}" (${s.id}) in ${project}${s.workDir ? `, working in ${s.workDir}` : ''}, profile "${s.profile ?? 'full'}". Ledung wakes you when it asks a question, ends, or finishes a turn with nothing running.${warning ? ` Note: ${warning}` : ''}`;
+    return `Started session "${s.title}" (${s.id}) in ${project}${s.workDir ? `, working in ${s.workDir}` : ''}, profile "${s.profile ?? 'full'}". Ledung wakes you when it asks a question, ends, or finishes a turn with nothing running.${order ? ` ${orderRecorded(order)}` : ''}${warning ? ` Note: ${warning}` : ''}`;
+  }
+
+  /** Checks and records an order (issue #105), or refuses it with the reason. */
+  private recordOrder(managerId: string, sessionId: string | null, spec: OrderSpec): OrderInfo {
+    if (!this.ctx.orders) throw new ManagementError('Order refused: Ledung keeps no orders here.');
+    const o = this.ctx.orders.record(managerId, sessionId, spec, this.ctx.away?.() ?? null);
+    if ('error' in o) throw new ManagementError(o.error);
+    return o;
+  }
+
+  /** The manager marks one of its orders done (issue #105): it allows nothing more. */
+  orderDone(managerId: string, id: number): string {
+    if (!this.ctx.orders) throw new ManagementError('Ledung keeps no orders here.');
+    return this.ctx.orders.done(managerId, id);
   }
 
   /** Archived sessions are left out, with their count, so the list stays short. */
@@ -564,12 +597,16 @@ export class Management {
   }
 
   /** To an ended session too: it is resumed, then gets the message. */
-  async sendMessage(managerId: string, id: string, text: string): Promise<string> {
+  async sendMessage(managerId: string, id: string, text: string, orderSpec?: OrderSpec): Promise<string> {
     const s = this.ownSession(managerId, id);
-    this.store.addInbox(id, `manager:${managerId}`, `Message from your manager "${this.title(managerId)}":\n\n${text}`);
-    return (await this.reach(id))
+    // With an order (issue #105), the message starts with the person's words verbatim, before the manager's own.
+    const order = orderSpec ? this.recordOrder(managerId, id, orderSpec) : null;
+    const message = `Message from your manager "${this.title(managerId)}":\n\n${text}`;
+    this.store.addInbox(id, `manager:${managerId}`, order ? `${orderPreamble(order, this.ctx.userName)}\n\n${message}` : message);
+    const sent = (await this.reach(id))
       ? `"${s.title}" had ended; it is resumed and gets your message once it is up.`
       : `Sent to "${s.title}". It arrives when the session is free.`;
+    return order ? `${sent} ${orderRecorded(order)}` : sent;
   }
 
   /**
@@ -1608,6 +1645,7 @@ export function buildDelivery(
   answers: QuestionInfo[],
   inbox: { text: string }[],
   titleOf: (id: string) => string,
+  orderOf: (id: number) => OrderInfo | undefined = () => undefined,
 ): Delivery {
   const userParts: string[] = [];
   const context: string[] = [];
@@ -1615,6 +1653,11 @@ export function buildDelivery(
     // A refused call Ledung asked about (issue #104): the session didn't ask, so it is told what the answer means.
     if (refusalOf(q)) {
       userParts.push(refusalAnswerText(q, userName));
+      continue;
+    }
+    // A keep-it question about an order at the end of away (issue #105): Ledung asked it, so the manager is told what it means.
+    if (q.details?.order) {
+      userParts.push(keepAnswerText(q, orderOf(q.details.order.orderId), userName));
       continue;
     }
     if (q.answeredBy === 'user') {

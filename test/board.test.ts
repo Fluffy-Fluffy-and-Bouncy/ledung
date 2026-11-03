@@ -450,7 +450,7 @@ test('migration 26 keeps the board rows of a database from before, without a rep
       PRAGMA user_version = 25;`);
     before.close();
     const db = openDatabase(file);
-    assert.equal((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 40);
+    assert.equal((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 41);
     const r = rig({ db, setup: {} });
     assert.deepEqual(r.boards.adoptLegacy(parseConfig({ board: { repo: 'org/legacy', allow: ['alice'], frontDesk: 'Desk' } }).board), ['Desk']);
     const legacy = r.settings.repo('org/legacy');

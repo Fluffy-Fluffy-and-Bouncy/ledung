@@ -16,7 +16,7 @@ const KEY = 'away';
 /** How long a floor check may take (ask-martin's gate uses the same). */
 export const FLOOR_TIMEOUT_MS = 20_000;
 
-export const KIND_NAMES: Record<AwayKind, string> = { merge: 'merge', devShip: 'dev ship', computerControl: 'computer control' };
+export const KIND_NAMES: Record<AwayKind, string> = { merge: 'merge', devShip: 'dev ship', ordered: 'ordered', computerControl: 'computer control' };
 /** The kinds a sensitive call can be; computer control is none of them. */
 const gated = (allow: AwayKind[]) => allow.filter((k) => k !== 'computerControl');
 
@@ -390,6 +390,8 @@ interface Stored extends AwayInfo {
   changes?: Change[];
   /** The managers were told this period ran out with computer control on; told once, across restarts. */
   endNoted?: boolean;
+  /** The orders from this period were settled once it ended (issue #105); once, across restarts. */
+  ordersSettled?: boolean;
 }
 
 const STOP_DRIVING = 'Stop driving this computer now (mouse, keyboard, programs you started) and tell your sessions that do';
@@ -435,6 +437,8 @@ export interface AwayOptions {
   userName: string;
   /** Tells every manager (issue #328). */
   notify: (text: string) => void;
+  /** Once a period has ended (Back or its time), once, also right after a restart: its orders are settled (issue #105). */
+  onEnded?: (since: number, end: number) => void;
 }
 
 /** The away state, kept in the database so it survives a restart, and the record of decisions. */
@@ -455,6 +459,7 @@ export class Away {
    * and the rest marked ended: a note sent earlier woke no idle manager and reached dead ones (review 1 of #328).
    */
   begin(): void {
+    this.settle();
     this.schedule();
   }
 
@@ -500,6 +505,7 @@ export class Away {
     this.store.setMeta(KEY, JSON.stringify({ ...s, endedAt: now }));
     this.changed();
     this.notify((u) => backText(s, u, now));
+    this.settle(now);
   }
 
   /** The period's time has come: with computer control, every manager is told, once. */
@@ -509,7 +515,25 @@ export class Away {
       this.store.setMeta(KEY, JSON.stringify({ ...s, endNoted: true }));
       this.notify((u) => ranOutText(s, u));
     }
+    this.settle();
     this.changed();
+  }
+
+  /**
+   * The end of a period, once (issue #105, "After away"): after Back, at its time, or at the first start after it, so
+   * the orders from it are reported however it ended. Marked before the callback, so an error in it can't repeat it.
+   */
+  private settle(now = Date.now()): void {
+    const s = this.stored();
+    if (!s || s.ordersSettled || !this.opts?.onEnded) return;
+    const end = s.endedAt ?? (now >= s.until ? s.until : null);
+    if (end === null) return;
+    this.store.setMeta(KEY, JSON.stringify({ ...s, ordersSettled: true }));
+    try {
+      this.opts.onEnded(s.since, end);
+    } catch (e) {
+      console.error(`Away mode: settling the orders of the period that ended failed: ${(e as Error).message}`);
+    }
   }
 
   private changed(): void {

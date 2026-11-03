@@ -10,6 +10,7 @@ import {
   ACCEPTED, CHANGES_NEEDED, detailsProblem, hasDetails, MAX_REVIEW_EVIDENCE, optionAnswer, questionText, type Opinion, type QuestionDetails, type QuestionOption, type ReviewDetails,
 } from '../shared/questions.ts';
 import type { ShotInput } from './management.ts';
+import type { OrderSpec } from './orders.ts';
 import { SETTINGS_ACTIONS } from './word.ts';
 import { SETTINGS_PATCH, type SettingsPatch } from '../projects/settings-tools.ts';
 
@@ -19,7 +20,7 @@ const MANAGER_TOOLS = [
   'start_session', 'list_sessions', 'read_session', 'send_message', 'stop_session', 'archive_session', 'clear_session', 'compact_session',
   'answer_question', 'forward_answer', 'list_managers', 'message_manager',
   'decide_permission', 'list_permissions',
-  'machine_status', 'set_priority', 'pause_session', 'resume_session', 'list_projects', 'away_log',
+  'machine_status', 'set_priority', 'pause_session', 'resume_session', 'list_projects', 'away_log', 'order_done',
   'mcp_status', 'reconnect_mcp_server',
   // Reads what Settings shows, nothing secret (issue #263); the Settings actions themselves are SETTINGS_TOOLS.
   'settings_status',
@@ -80,12 +81,37 @@ export interface NewProjectArgs extends Omit<ProjectArgs, 'folder'> {
   task?: string;
 }
 
+/**
+ * An order on record (issue #105), for start_session and send_message: a command the person ordered, and where they
+ * said it. Ledung checks the words against its own record before anything is sent.
+ */
+const orderSchema = z.object({
+  command: z.string().min(1).describe('The command as it will run: exactly, or (match "pattern") with * where any text may stand.'),
+  match: z.enum(['exact', 'pattern']).optional().describe('Default exact. A pattern matches one plain command only, never a chained one.'),
+  until: z.enum(['once', 'done']).optional().describe('once (default): until it has run once without failing; done: until you mark it done with order_done.'),
+  question: z.number().int().positive().optional().describe('The source: the number of your own question the person answered, on this computer, in the last two days.'),
+  typed: z.object({
+    words: z.string().min(3).describe("The person's words, verbatim, as they typed them to you."),
+    at: z.string().min(1).describe('When they typed them, as HH:MM (or an ISO date and time).'),
+  }).optional().describe('Or the source: words the person typed to you on this computer in the last two days. Give exactly one of question or typed.'),
+}).describe(
+  "An order from the person, on record: Ledung checks the source against its own record (only the person's own words count), shows the order on the page where they can cancel it, " +
+  "starts the session's message with their words verbatim, and lets exactly this command run without a prompt in you and in that session. Never for anything the person did not order.",
+);
+
+/** The order as the handlers take it. */
+function orderSpec(o: z.infer<typeof orderSchema> | undefined): OrderSpec | undefined {
+  return o && { command: o.command, match: o.match, until: o.until, question: o.question, typed: o.typed };
+}
+
 /** The manager's tools, already bound to the manager they belong to. */
 export interface ManagerHandlers {
-  startSession(args: { task: string; title?: string; permissionMode?: PermissionMode; model?: string; profile?: string; cwd?: string }): Promise<string>;
+  startSession(args: { task: string; title?: string; permissionMode?: PermissionMode; model?: string; profile?: string; cwd?: string; order?: OrderSpec }): Promise<string>;
   listSessions(): string;
   readSession(id: string, last?: number): string;
-  sendMessage(id: string, text: string): Promise<string>;
+  sendMessage(id: string, text: string, order?: OrderSpec): Promise<string>;
+  /** Marks one of the manager's orders done (issue #105). */
+  orderDone(id: number): string;
   stopSession(id: string): Promise<string>;
   /** id omitted: the manager itself. */
   clearSession(id: string | undefined, then?: string, seconds?: number): Promise<string>;
@@ -510,7 +536,8 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
         cwd: z.string().min(1).optional().describe(
           "The folder the session works in: the project folder (the default), a folder inside it, or one under the project's extra folders (its settings), such as a git worktree. Claude Code treats it as the project folder. Kept when the session is resumed or cleared; the folder must exist (create worktrees yourself).",
         ),
-      }, async (a) => safely(() => m.startSession({ task: a.task, title: a.title, permissionMode: a.permission_mode, model: a.model, profile: a.profile, cwd: a.cwd }))) as never,
+        order: orderSchema.optional(),
+      }, async (a) => safely(() => m.startSession({ task: a.task, title: a.title, permissionMode: a.permission_mode, model: a.model, profile: a.profile, cwd: a.cwd, order: orderSpec(a.order) }))) as never,
       tool('list_sessions', 'List the sessions you started: status and how long they have been in it, and open questions.', {}, async () => safely(() => m.listSessions())) as never,
       tool('read_session', "Read the recent messages of one of your sessions.", {
         id,
@@ -519,7 +546,11 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
       tool('send_message', 'Send an instruction to one of your sessions. It arrives when the session is free; a session that has ended is resumed first.', {
         id,
         text: z.string().min(1),
-      }, async (a) => safely(() => m.sendMessage(a.id, a.text))) as never,
+        order: orderSchema.optional(),
+      }, async (a) => safely(() => m.sendMessage(a.id, a.text, orderSpec(a.order)))) as never,
+      tool('order_done', `Mark one of your orders done (an order you gave with start_session or send_message, "until": "done"): it allows nothing more. An order "until": "once" is done by itself once its command has run without failing.`, {
+        id: z.number().int().positive().describe('The order number, as Ledung gave it when the order was recorded.'),
+      }, async (a) => safely(() => m.orderDone(a.id))) as never,
       tool('stop_session', 'Stop one of your sessions.', { id }, async (a) => safely(() => m.stopSession(a.id))) as never,
       tool('clear_session', `Clear the conversation of one of your sessions, or your own, exactly as if ${who} typed /clear: the session keeps running with an empty context. When the session is free (your own: when this turn ends; what was already waiting for it arrives first), ${who} gets a countdown to cancel it; you are told if they do. Ledung never clears on its own; when to clear is your project's rule. Save what must survive (notes, handoff) before clearing.`, {
         id: z.string().min(8).optional().describe('The session id, as list_sessions shows it. Leave out to clear yourself.'),

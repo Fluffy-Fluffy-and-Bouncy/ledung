@@ -306,6 +306,8 @@ export const api = {
   liftUsageStop: (account: string, kind: string) => call('POST', '/api/usage-lift', { account, kind }),
   away: (until: string, allow: AwayKind[]) => call<AwayInfo>('POST', '/api/away', { until, allow }),
   back: () => call('DELETE', '/api/away'),
+  /** Orders on record (issue #105): cancelling one only takes a permission away. */
+  cancelOrder: (id: number) => call('POST', `/api/orders/${id}/cancel`, {}),
   setPriority: (sessionId: string, priority: Priority) => call('POST', `/api/sessions/${sessionId}/priority`, { priority }),
   setPaused: (sessionId: string, paused: boolean) => call('POST', `/api/sessions/${sessionId}/pause`, { paused }),
   cancelClear: (sessionId: string) => call('POST', `/api/sessions/${sessionId}/cancel-clear`, {}),

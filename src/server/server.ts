@@ -654,6 +654,7 @@ export class LedungServer {
       usageStops: manager.usageStopStates(),
       macros: manager.macros(),
       away: manager.away.current(),
+      orders: manager.orders.list(),
       profiles: manager.profileNames(),
       board: manager.boardStatus(),
       github: manager.githubBudget(),
@@ -1802,11 +1803,15 @@ export class LedungServer {
         const about = question?.aboutRequest;
         // A sensitive one is signed for itself; else, to a manager, the page key alone (issue #192). Ledung's question
         // about a refused call too: its Allow once lets that call through, past the sensitive list (issue #104, review finding 1).
-        if ((about && store.getPermission(about)?.sensitive) || question?.details?.refusal) await this.requirePage(req, url);
+        // A keep-it question about an order (issue #105) as well: Keep puts the person's order back in force.
+        if ((about && store.getPermission(about)?.sensitive) || question?.details?.refusal || question?.details?.order) await this.requirePage(req, url);
         else this.requirePageForManager(req, question?.sessionId);
         const body = await readJson(req);
         return manager.answerQuestion(Number(id), String(body.answer ?? ''), !this.guard.isPublic(req));
       }
+      // Orders on record (issue #105): the person cancels one on the page. It only takes a permission away.
+      case 'POST orders/:id/cancel':
+        return manager.orders.cancel(Number(id));
       case 'POST questions/:id/withdraw':
         manager.withdrawQuestion(Number(id));
         return;

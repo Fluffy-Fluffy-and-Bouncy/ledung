@@ -1,6 +1,7 @@
 // Structured questions (issue #59): the optional fields ask_user takes besides its Markdown text, and how
 // the page's question desk shows any question, structured or plain. Modelled on the Master Question Desk.
 // Every question has a tier from its project's list, which starts as the five below (issue #96).
+import type { OrderQuestionDetails } from './orders.ts';
 
 /** An option of a structured question: its key ("a"), its text in Markdown (a **bold** start is its label), its cost. */
 export interface QuestionOption {
@@ -109,6 +110,8 @@ export interface QuestionDetails {
    * builds its details from the fields above only. Answered "Allow once", it lets that exact call through one time.
    */
   refusal?: RefusalDetails;
+  /** Raised by Ledung at the end of an away period (issue #105): an order not done, "keep it?". Never given by ask_user. */
+  order?: OrderQuestionDetails;
 }
 
 /** The refused call (issue #104): the tool, its input as the session sent it, the classifier's reason and the call's id. */

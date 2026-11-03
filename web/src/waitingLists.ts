@@ -31,6 +31,9 @@ export function renameInFilter(store: FilterStore, from: string, to: string): vo
 
 export interface Item { q: QuestionInfo; v: DeskQuestion; project: string; tier: string | null }
 
+/** 2: an order's keep-it question (issue #105); 1: a refused call (issue #104); 0: any other. */
+const first = (i: Item) => (i.q.details?.order ? 2 : i.q.details?.refusal ? 1 : 0);
+
 export function waitingLists(
   questions: QuestionInfo[],
   projectOf: (sessionId: string) => string,
@@ -45,8 +48,9 @@ export function waitingLists(
   });
   const order = deskCompare(visibleTiers);
   const forYou = items.filter((i) => i.q.status === 'open' && i.q.addressedTo === 'user' && shown(i.project))
-    // A call the auto mode classifier refused comes first, whatever its tier (issue #104): a session waits on it now.
-    .sort((a, b) => Number(!!b.q.details?.refusal) - Number(!!a.q.details?.refusal)
+    // An order's keep-it question at the end of away first (issue #105), then a call the auto mode classifier refused
+    // (issue #104), whatever their tier: the page shows them in that order, so the keys' numbers agree.
+    .sort((a, b) => first(b) - first(a)
       || order({ tier: a.tier, rank: a.v.rank, askedAt: a.q.askedAt }, { tier: b.tier, rank: b.v.rank, askedAt: b.q.askedAt }));
   const done = items.filter((i) => i.q.status !== 'open' && shown(i.project))
     .sort((a, b) => (b.q.answeredAt ?? b.q.askedAt) - (a.q.answeredAt ?? a.q.askedAt)).slice(0, 30);
