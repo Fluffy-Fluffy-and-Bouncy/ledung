@@ -1,6 +1,6 @@
 # Workflow part 3: Ledung follows the flow — proposal
 
-Nov 3, 2026 · Proposed by Simon's manager; Simon's answers of 2026-11-03 folded in (who starts a run, on by default, built privately first).
+Nov 3, 2026 · Approved by Simon on 2026-11-03, with his answers folded in (who starts a run, on by default, built privately first, managers construct workflows, context kept small).
 
 **Done when:** a real piece of work on a throwaway project moves through a drawn flow from its first block to an ending, with its position shown live on the workflow page, each block's session started (or continued) the way the block says, person blocks put to the person as questions and reviews, and "the 3rd time" counted by Ledung; and a "Run flow" block runs another flow and takes its ending.
 
