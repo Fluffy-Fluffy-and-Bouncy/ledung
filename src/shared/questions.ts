@@ -104,6 +104,18 @@ export interface QuestionDetails {
   refs?: string[];
   /** A review instead of a question (docs/steps/pr-review.md): its sections, shown on a page of their own. */
   review?: ReviewDetails;
+  /** A person block of a run asked it (workflow part 3b): the answer moves the run; shown with the question. */
+  run?: QuestionRun;
+}
+
+/** The run and block a person block's question belongs to (workflow part 3b), with their titles as asked. */
+export interface QuestionRun {
+  run: string;
+  block: string;
+  runTitle: string;
+  blockTitle: string;
+  /** Whose call it is, as the block names them (part 3d); none: the person using Ledung. */
+  person?: string;
 }
 
 /** One option as the desk shows it. `answer` is the text the session gets when it is picked. */

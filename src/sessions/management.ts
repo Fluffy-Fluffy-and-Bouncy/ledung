@@ -70,6 +70,8 @@ export interface ManagementContext {
   /** Starts an ended session again; what waits for it is delivered once it is up (idle stop and archive). */
   resume(sessionId: string): Promise<void>;
   startSession(project: string, task: string, opts: { parentId: string; title?: string; permissionMode?: PermissionMode; model?: string; profile?: string; cwd?: string }): Promise<SessionInfo>;
+  /** A session finished a turn with nothing running: runs through a flow tell their coordinator (workflow part 3b). */
+  onRunSessionTurn?(sessionId: string, lastReply: string): void;
   /** Why the project's workflow profiles file can't be used, or null (#298); the start_session reply says so. */
   profilesWarning?(project: string): string | null;
   /** reason: who stopped it, recorded as the session's end reason (issue #17). */
@@ -269,6 +271,8 @@ export class Management {
    * running means the session is done or waits for someone, so the manager is woken (decided 2026-10-13).
    */
   onTurnFinished(sessionId: string, lastReply: string, pause: string | null = null): void {
+    // A block's session tells its run's coordinator too, when that is not its manager (workflow part 3b).
+    if (!pause) this.ctx.onRunSessionTurn?.(sessionId, lastReply);
     const manager = this.managerOf(sessionId);
     if (!manager) return;
     const source = `${TURN_NOTE_SOURCE}:${sessionId}`;

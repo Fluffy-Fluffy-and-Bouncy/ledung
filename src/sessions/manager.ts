@@ -86,7 +86,7 @@ import { SecretError, type Secrets, type SecretScope } from '../secrets/secrets.
 import { cleanStaleRuntime, metaPlaceBook, SessionSecrets, type PlaceBook } from '../secrets/live.ts';
 import { DockerSecretRuntime, LocalSecretRuntime } from '../secrets/runtime.ts';
 import type { SecretInfo, SecretLifetime } from '../shared/secrets.ts';
-import { FlowRunError, FlowRuns } from './flow-runs.ts';
+import { FlowRunError, FlowRuns, lastReplyOf } from './flow-runs.ts';
 import { RunStore } from './run-store.ts';
 import type { FlowRun } from '../shared/flow-run.ts';
 import type { RunHandlers } from './tools.ts';
@@ -226,6 +226,7 @@ export class SessionManager {
       addProject: (config) => this.addProject(this.withFirstWorkflow(config)),
       createProject: (opts) => this.createProject({ ...opts, settings: this.withFirstWorkflow(opts.settings) }),
       ensureManager: (project) => this.ensureManager(project),
+      onRunSessionTurn: (id, reply) => this.flowRuns.onSessionTurn(id, reply),
       // The page's own save, with its checks (issue #306); the tools decide what they may change and what is asked.
       projectSettings: {
         config: (name) => this.projectStore.get(name)?.config ?? null,
@@ -258,6 +259,29 @@ export class SessionManager {
         this.live.get(id)?.deliver();
       },
       changed: (project) => this.publish({ type: 'runs', project, runs: this.flowRuns.list(project) }),
+      // Part 3b: a block's session is started under the run's coordinator with the block's settings, its step from Ledung.
+      startSession: (b) => this.start(b.project, b.task, {
+        parentId: b.coordinator, title: b.title, model: b.model, profile: b.profile, runBlock: b.runBlock,
+        intro: `Your step, from Ledung's workflow (run ${b.runBlock.run}, block ${b.runBlock.block}):`,
+      }),
+      continueSession: async (id, text, runBlock) => {
+        this.store.updateSession(id, { runBlock });
+        this.publish({ type: 'session', session: this.store.getSession(id)! });
+        this.store.addInbox(id, 'ledung', `Your next step, from Ledung's workflow (run ${runBlock.run}, block ${runBlock.block}):\n\n${text}`);
+        await this.resumeIfEnded(id);
+        this.live.get(id)?.deliver();
+      },
+      lastReply: (id) => lastReplyOf(this.store.listMessages(id, { limit: 200 })),
+      ask: (a) => {
+        const q = this.store.createQuestion({ sessionId: a.coordinator, question: a.question, options: a.options, addressedTo: 'user', details: a.details });
+        this.publish({ type: 'question', question: q });
+        return q;
+      },
+      markDelivered: (id) => this.store.markDelivered([id]),
+      withdraw: (id, reason) => {
+        if (this.store.withdrawQuestion(id, reason)) this.publish({ type: 'question', question: this.store.getQuestion(id)! });
+      },
+      tiers: (project) => tiersOf(this.projectStore.get(project)?.config.questionTiers),
       userName: config.userName,
     });
     this.gate = {
@@ -1058,6 +1082,8 @@ export class SessionManager {
     this.publish({ type: 'question', question: q });
     // A question that went to a manager: tell the manager Simon answered it directly.
     this.management.onUserAnswered(q);
+    // A person block's answer moves its run (workflow part 3b).
+    await this.flowRuns.onAnswered(q).catch((e) => console.error(`Workflow: ${(e as Error).message}`));
     // A held first board post waits for this answer (decision 6). Awaited, so the note on how the post went
     // reaches the manager together with the answer, in one turn rather than two (step 3 live test).
     await this.boards?.onUserAnswered(q).catch((e) => console.error(`Board: ${(e as Error).message}`));
@@ -2138,7 +2164,11 @@ export class SessionManager {
   async start(
     projectName: string,
     firstMessage?: string,
-    opts: { role?: SessionRole; parentId?: string; title?: string; permissionMode?: PermissionMode; model?: string; profile?: string; cwd?: string; here?: boolean } = {},
+    opts: {
+      role?: SessionRole; parentId?: string; title?: string; permissionMode?: PermissionMode; model?: string; profile?: string; cwd?: string; here?: boolean;
+      /** A block's session (workflow part 3b): the run and block it serves, and the heading of its task in place of the manager's. */
+      runBlock?: { run: string; block: string }; intro?: string;
+    } = {},
   ): Promise<SessionInfo> {
     const project = this.project(projectName);
     // Managers work in the project folder, so the project keeps one place for its manager.
@@ -2176,7 +2206,8 @@ export class SessionManager {
       requestedModel: opts.model?.trim() || null, profile, workDir,
     });
     if (project.account) this.store.updateSession(info.id, { account: project.account });
-    this.publish({ type: 'session', session: info });
+    if (opts.runBlock) this.store.updateSession(info.id, { runBlock: opts.runBlock });
+    this.publish({ type: 'session', session: this.store.getSession(info.id)! });
     if (role === 'manager') {
       this.projectStore.setManager(project.name, info.id);
       this.publishProjects();
@@ -2191,7 +2222,7 @@ export class SessionManager {
         // Only while it is still "New session": a name the user gave it during start-up stays (#223, review of PR #224).
         if (!opts.title && this.store.getSession(info.id)?.title === 'New session') this.store.updateSession(info.id, { title: firstMessage.replace(/\s+/g, ' ').trim().slice(0, 80) });
         const manager = this.store.getSession(opts.parentId);
-        this.store.addInbox(info.id, `manager:${opts.parentId}`, `Your task, from your manager "${manager?.title ?? 'manager'}":\n\n${firstMessage}`);
+        this.store.addInbox(info.id, `manager:${opts.parentId}`, `${opts.intro ?? `Your task, from your manager "${manager?.title ?? 'manager'}":`}\n\n${firstMessage}`);
         session.deliver();
       } else {
         session.send(firstMessage, opts.here === true);

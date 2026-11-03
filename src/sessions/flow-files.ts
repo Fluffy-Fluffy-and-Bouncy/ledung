@@ -386,7 +386,7 @@ export async function saveFlowFiles(place: FlowPlace, given: unknown): Promise<v
  * A project's flows for following them (workflow part 3): flow.json and each flows/<name>.json that reads as a flow,
  * by name, without the texts the page needs; null when the project has no flow.json Ledung can read.
  */
-export async function readFlows(places: FlowPlace[]): Promise<{ folder: string; flows: Map<string, Flow>; titles: Map<string, string> } | null> {
+export async function readFlows(places: FlowPlace[]): Promise<{ folder: string; flows: Map<string, Flow>; titles: Map<string, string>; text(file: string): Promise<string | null> } | null> {
   const found = await findFlow(places);
   if (!found || !('text' in found)) return null;
   const main = parseFlow(found.text).flow;
@@ -400,7 +400,12 @@ export async function readFlows(places: FlowPlace[]): Promise<{ folder: string; 
     const flow = r && 'text' in r ? parseFlow(r.text, f).flow : null;
     if (flow) flows.set(FLOW_IN_FOLDER.exec(f)![1]!, flow);
   }
-  return { folder: found.place.folder, flows, titles: new Map([...flows].map(([n, f]) => [n, f.title?.trim() || n])) };
+  const place = found.place;
+  const text = async (file: string) => {
+    const r = (await place.read([file]).catch(() => null))?.get(file);
+    return r && 'text' in r ? r.text : null;
+  };
+  return { folder: place.folder, flows, titles: new Map([...flows].map(([n, f]) => [n, f.title?.trim() || n])), text };
 }
 
 /** The manager's line when Ledung follows the flow with it (workflow part 3); short, for #32's limit. */
