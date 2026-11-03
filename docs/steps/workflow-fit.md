@@ -107,7 +107,7 @@ If both hold, Ledung removes the worktree. If either fails, Ledung keeps it and 
 ```json
 "worktree": {
   "base": "main",
-  "branch": "run/{ref}",
+  "branch": "run/{id}-{ref}",
   "remove": { "on": ["Merged", "Rejected"] }
 }
 ```
@@ -131,11 +131,11 @@ If both hold, Ledung removes the worktree. If either fails, Ledung keeps it and 
 When a run ends, Ledung stops the run's sessions that are idle and archives them. The coordinator is told what was kept and why: a session that is still working, or a worktree the safety check kept.
 
 ```json
-"end": { "sessions": "archive" }
+"tidy": "archive"
 ```
 
 - **Choices:** `"archive"` (the default once 3f is in), `"stop"` or `"keep"`.
-- **Per ending:** it can be set per ending, as worktree removal can (`"on": [...]`).
+- **Per ending:** `{ "sessions": "archive", "on": ["Merged"] }`, as worktree removal can be.
 
 ### 4. No run started twice
 

@@ -112,11 +112,13 @@ const Frame = z.object({
 });
 
 /** Endings by name, for a worktree's removal or tidying (part 3f). */
-const Endings = z.array(Text(80)).min(1).max(30);
+const Endings = z.array(Text(80)).min(1, 'names at least one ending (left out: on every ending)').max(30);
+/** Never read by git as an option (review of 3f). */
+const GitName = Text(100).refine((s) => !s.startsWith('-'), { message: "can't start with \"-\"" });
 const Worktree = z.object({
   $comment: Comment,
-  base: Text(100).optional(),
-  branch: Text(100).optional(),
+  base: GitName.optional(),
+  branch: GitName.optional(),
   remove: z.union([z.literal('never'), z.object({ on: Endings.optional() })], { message: 'is "never" or { "on": ["Merged"] } (left out: on every ending)' }).optional(),
 });
 const Tidy = z.union([
@@ -190,6 +192,8 @@ const NOT_IN_SUBSTEP: Record<string, string> = {
  */
 function unknownFields(raw: unknown): FlowProblem[] {
   const problems: FlowProblem[] = [];
+  // Not an object at all ("null", a list): the schema says so; nothing here to look into (review of 3f).
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return problems;
   const look = (value: unknown, fields: string[], at: readonly PropertyKey[], said: Record<string, string> = {}) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return;
     for (const key of Object.keys(value)) {
@@ -205,7 +209,10 @@ function unknownFields(raw: unknown): FlowProblem[] {
     return Array.isArray(v) ? v : [];
   };
   look(raw, FIELDS.top, [], DROPPED_AT_TOP);
-  look((raw as Record<string, unknown> | null)?.worktree, FIELDS.worktree, ['worktree']);
+  const top = raw as Record<string, unknown>;
+  look(top.worktree, FIELDS.worktree, ['worktree']);
+  look((top.worktree as Record<string, unknown> | null)?.remove, ['on'], ['worktree', 'remove']);
+  look(top.tidy, ['sessions', 'on'], ['tidy']);
   list('blocks').forEach((b, i) => {
     look(b, FIELDS.block, ['blocks', i], DROPPED_IN_BLOCK);
     for (const part of ['at', 'timer'] as const) look((b as Record<string, unknown> | null)?.[part], FIELDS[part], ['blocks', i, part]);

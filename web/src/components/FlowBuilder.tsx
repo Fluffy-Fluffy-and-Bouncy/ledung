@@ -682,7 +682,7 @@ function BlockFields({ draft, entry, focus, naming, profiles, narrow, commit, on
           const flowed = kind === 'flow' ? { flow: b.flow ?? choices[0]?.name, model: undefined, profile: undefined, brief: undefined, substeps: undefined, parallel: undefined } : { flow: undefined, session: undefined };
           // A wait (part 3d) waits on something outside: nobody here runs it or starts subagents.
           const waited = kind === 'wait' ? { model: undefined, profile: undefined, substeps: undefined, parallel: undefined } : {};
-          set({ kind, runs, ...(runs === 'continue' ? {} : { continues: undefined }), ...(kind === 'person' ? { ask: b.ask ?? 'question' } : { ask: undefined }), ...(kind === 'timer' ? { timer: b.timer ?? { clock: 'daily' } } : { timer: undefined }), ...(kind === 'person' ? {} : { person: undefined }), ...flowed, ...waited });
+          set({ kind, runs, ...(runs === 'continue' ? {} : { continues: undefined, context: undefined }), ...(kind === 'person' ? { ask: b.ask ?? 'question' } : { ask: undefined }), ...(kind === 'timer' ? { timer: b.timer ?? { clock: 'daily' } } : { timer: undefined }), ...(kind === 'person' ? {} : { person: undefined }), ...flowed, ...waited });
         }}>
           {BLOCK_KINDS.map((k) => <option key={k} value={k}>{KIND_LABEL[k]}</option>)}
         </select>
@@ -1152,7 +1152,7 @@ function FollowFields({ draft, commit }: { draft: Draft; commit: (next: Draft, g
             <Field label="Branch"><input {...typing} className="mono" value={w.branch ?? ''} placeholder={DEFAULT_BRANCH} onChange={(e) => setWt({ branch: optional(e.target.value) }, 'wt-branch')} /></Field>
           </div>
           <Field label="Removed when the run ends" hint="Only if nothing is uncommitted and its branch is merged or pushed; otherwise Ledung keeps it and says why. The project's setup command (its settings, Workflow) runs in each new one.">
-            <select value={removeMode} onChange={(e) => setWt({ remove: e.target.value === 'never' ? 'never' : e.target.value === 'on' ? { on: endings.slice(0, 1) } : undefined })}>
+            <select value={removeMode} onChange={(e) => setWt({ remove: e.target.value === 'never' ? 'never' : e.target.value === 'on' ? { on: endings.length ? endings.slice(0, 1) : [STOPPED_ENDING] } : undefined })}>
               <option value="every">on every ending</option>
               <option value="on">only on these endings…</option>
               <option value="never">never</option>
@@ -1160,7 +1160,7 @@ function FollowFields({ draft, commit }: { draft: Draft; commit: (next: Draft, g
           </Field>
           {removeMode === 'on' && w.remove !== 'never' && (
             <Field label="Endings" hint={`Its endings: ${[...endings, STOPPED_ENDING].join(', ')}.`}>
-              <input {...typing} value={endingsText(w.remove?.on)} onChange={(e) => setWt({ remove: { on: endingsOf(e.target.value) } }, 'wt-on')} />
+              <input {...typing} value={endingsText(w.remove?.on)} onChange={(e) => { const on = endingsOf(e.target.value); setWt({ remove: on.length ? { on } : undefined }, 'wt-on'); }} />
             </Field>
           )}
         </>

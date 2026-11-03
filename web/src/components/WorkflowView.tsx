@@ -380,7 +380,7 @@ export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowF
           <span>{project} has its own copy of the shared workflow "{view.shared.workflow}", and it differs from it: {project} doesn't get changes made to "{view.shared.workflow}".</span>{' '}
           {backing
             ? <span className="flow-confirm-buttons">
-                <span>Remove {project}'s own flow.json and flows/ so it follows "{view.shared.workflow}" again? Its briefs and rules stay.</span>
+                <span>Remove {project}'s own copy (its flow.json, flows/, rules, manager.md, briefs and overlays) so it follows "{view.shared.workflow}" again? Git keeps what was committed.</span>
                 <button className="small deny" onClick={() => api.backToShared(project).then((v) => { setView(v); setBacking(false); setSaved(`${project} follows "${view.shared!.workflow}" again.`); }, (e: Error) => { setBacking(false); setError(e.message); })}>Back to shared</button>
                 <button className="small" onClick={() => setBacking(false)}>Keep its own</button>
               </span>

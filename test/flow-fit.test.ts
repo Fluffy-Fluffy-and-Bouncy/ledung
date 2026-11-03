@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { parseProject } from '../src/config.ts';
 import { parseFlow } from '../src/shared/flow-check.ts';
-import { backToShared, BOTH_LINE, flowPlaces, readFlowView, textVersion, workflowLines } from '../src/sessions/flow-files.ts';
+import { backToShared, BOTH_LINE, flowPlaces, readFlowView, saveFlowFiles, textVersion, workflowLines } from '../src/sessions/flow-files.ts';
 import type { FlowView } from '../src/shared/flow.ts';
 import { draftFromView, flowText, setBlock, setFollow } from '../web/src/flowEdit.ts';
 import { followLine } from '../web/src/flowRuns.ts';
@@ -39,6 +39,21 @@ test('part 3f: the builder writes the settings back as written, sets them, and t
   assert.equal('limit' in written.blocks[1], false);
   assert.equal(followLine(parseFlow(JSON.stringify({ ...JSON.parse(raw), tidy: undefined })).flow), '2 at once · a worktree per run · several runs per ref');
   assert.equal(followLine(parseFlow(JSON.stringify({ version: 1, blocks: [{ id: 'a', kind: 'work', title: 'A' }] })).flow), '');
+});
+
+test('part 3f: the checks look into worktree.remove and tidy, refuse a git name that reads as an option, and take "null"', () => {
+  const block = [{ id: 'a', kind: 'work', title: 'A' }];
+  const typo = parseFlow(JSON.stringify({ version: 1, blocks: block, worktree: { remove: { on: ['Done'], when: 'x' } }, tidy: { sessions: 'stop', onn: ['Done'] } }));
+  assert.ok(typo.flow);
+  assert.deepEqual(typo.problems.map((p) => p.at).sort(), ['tidy.onn', 'worktree.remove.when']);
+  for (const worktree of [{ base: '--orphan' }, { branch: '-run/{id}' }]) {
+    const p = parseFlow(JSON.stringify({ version: 1, blocks: block, worktree }));
+    assert.equal(p.flow, null);
+    assert.match(p.problems.map((x) => x.message).join(' '), /can't start with "-"/);
+  }
+  const none = parseFlow(JSON.stringify({ version: 1, blocks: block, worktree: { remove: { on: [] } } }));
+  assert.match(none.problems.map((x) => x.message).join(' '), /names at least one ending/);
+  for (const text of ['null', '[]', '3']) assert.equal(parseFlow(text).flow, null);
 });
 
 test('ledung#115: a manager with a written workflow and a drawn flow is told which says what', () => {
@@ -73,17 +88,33 @@ const FLOW = JSON.stringify({ version: 1, blocks: [{ id: 'a', kind: 'work', titl
 test("ledung#110: a project's own copy of a shared flow says whether it differs, and goes back to the shared one", async () => {
   const same = sharedAndProject({ 'flow.json': FLOW, 'rules.md': '# R' }, { 'flow.json': FLOW, 'rules.md': '# R' });
   assert.deepEqual((await readFlowView('shop', same.places())).shared, { workflow: 'team', differs: false });
-  const other = sharedAndProject({ 'flow.json': FLOW }, { 'flow.json': FLOW.replace('"A"', '"Changed"'), 'flows/extra.json': FLOW, 'briefs/x.md': '# X' });
+  // Re-indented, with its keys in another order, and CRLF texts: still the same (review of 3f).
+  const pretty = JSON.stringify({ blocks: JSON.parse(FLOW).blocks, version: 1 }, null, 2);
+  const alike = sharedAndProject({ 'flow.json': FLOW, 'briefs/a.md': '# A\n' }, { 'flow.json': pretty, 'briefs/a.md': '# A\r\n', 'notes.txt': 'mine' });
+  assert.deepEqual((await readFlowView('shop', alike.places())).shared, { workflow: 'team', differs: false });
+  // A brief or manager.md of its own differs.
+  const brief = sharedAndProject({ 'flow.json': FLOW, 'briefs/a.md': '# A' }, { 'flow.json': FLOW, 'briefs/a.md': '# A, changed' });
+  assert.deepEqual((await readFlowView('shop', brief.places())).shared, { workflow: 'team', differs: true });
+  const manager = sharedAndProject({ 'flow.json': FLOW }, { 'flow.json': FLOW, 'manager.md': '# Mine' });
+  assert.deepEqual((await readFlowView('shop', manager.places())).shared, { workflow: 'team', differs: true });
+  const other = sharedAndProject({ 'flow.json': FLOW }, { 'flow.json': FLOW.replace('"A"', '"Changed"'), 'flows/extra.json': FLOW, 'briefs/x.md': '# X', 'rules.md': '# R', 'notes.txt': 'mine' });
   const view = await readFlowView('shop', other.places());
   assert.deepEqual(view.shared, { workflow: 'team', differs: true });
   assert.equal(view.source?.kind, 'project');
-  // Back to shared: the project's flow.json and flows/ go; its briefs stay; the shared flow counts again.
-  assert.deepEqual((await backToShared(other.places())).sort(), ['flow.json', 'flows/extra.json']);
-  assert.equal(fs.existsSync(path.join(other.dir, '.ledung', 'workflow', 'briefs', 'x.md')), true);
+  // Back to shared: every file of the format goes (flow.json first); other files stay; the shared flow counts again.
+  const gone = await backToShared(other.places());
+  assert.equal(gone[0], 'flow.json');
+  assert.deepEqual(gone.sort(), ['briefs/x.md', 'flow.json', 'flows/extra.json', 'rules.md']);
+  assert.equal(fs.existsSync(path.join(other.dir, '.ledung', 'workflow', 'briefs', 'x.md')), false);
+  assert.equal(fs.existsSync(path.join(other.dir, '.ledung', 'workflow', 'notes.txt')), true);
   const back = await readFlowView('shop', other.places());
   assert.equal(back.source?.kind, 'workflow');
   assert.equal(back.shared, undefined);
   await assert.rejects(backToShared(other.places()), /no flow of its own/);
+  // And a copy can be made again: the page saves every file as new (base null), which a file left behind would refuse.
+  const own = other.places().find((p) => p.kind === 'project')!;
+  await saveFlowFiles(own, [{ path: 'briefs/x.md', text: '# X again', base: null }, { path: 'rules.md', text: '# R', base: null }, { path: 'flow.json', text: FLOW, base: null }]);
+  assert.equal((await readFlowView('shop', other.places())).source?.kind, 'project');
   // A project that follows no shared workflow has nothing to go back to.
   const alone = parseProject({ name: 'solo', runner: 'local', path: other.dir });
   await assert.rejects(backToShared(flowPlaces(alone, undefined)), /follows no shared workflow/);
