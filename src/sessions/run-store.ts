@@ -1,4 +1,4 @@
-// Runs in Ledung's database (migration 41, workflow part 3): per project, nothing written into the project's files.
+// Runs in Ledung's database (migrations 42 and 44, workflow parts 3 and 3f): per project, nothing written into the project's files.
 import type { DatabaseSync } from 'node:sqlite';
 import type { FlowRun, RunState, RunStep } from '../shared/flow-run.ts';
 

@@ -85,6 +85,7 @@ export function WorkflowPane({ session, liveRuns, connected, onClose }: {
         {view && (
           <RunsPanel runs={runs} chosen={chosenRun} onChoose={choose} flowTitle={(n) => flowTitle(n) ?? n} error={runsError} follow={followLine(flow)}
             onStart={(id) => api.startRun(project, id).then(() => null, (e: Error) => e.message)}
+            onStop={(id) => api.stopRun(project, id).then(() => null, (e: Error) => e.message)}
             blockTitle={(f, id) => flows.find((x) => x.name === f)?.flow?.blocks.find((b) => b.id === id)?.title ?? id} />
         )}
       </div>

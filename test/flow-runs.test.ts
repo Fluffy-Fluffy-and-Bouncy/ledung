@@ -328,6 +328,8 @@ test('part 3b: blocks act: Build gets a new session with its settings, Fix conti
   await runs.step('manager-1', { run: 'run-1', outcome: 'Accepted' });
   assert.deepEqual(withdrawn, [open]);
   assert.equal(store.getQuestion(open)!.status, 'withdrawn');
+  // No lock (#1183), but the person reads why their question went (final review of part 3, finding 5).
+  assert.match(store.getQuestion(open)!.withdrawnReason!, /manager "Manager: shop" reported "Accepted" for "Functional review" of run-1 instead of waiting for your answer/);
   assert.equal(ports.runs.get('run-1')!.at, 'merge');
 });
 
@@ -794,4 +796,54 @@ test('part 3f: a run gets its worktree, its sessions work there, and it goes whe
   await runs.step('manager-1', { run: 'run-4', outcome: 'Done' });
   assert.match(await runs.step('manager-1', { run: 'run-4', outcome: 'Merged' }), /Its worktree .*run-4 is kept: it has changes that are not committed \(1 file\)\. Deal with that, then remove it/);
   removeTemp(dir);
+});
+
+// The final review of part 3 (2026-11-04): a block's session starts no runs, a coordinator gone for good hands its run
+// to the manager, the person can stop a run, an answer that comes after the run moved still reaches the coordinator,
+// Start anyway refuses a block that is gone, and a run whose worktree git refuses is held, not run in the project folder.
+test('final review of part 3: who may start runs, who is told, and runs held rather than run elsewhere', async () => {
+  const e = await engine({ flows: flowsOf3({ ...F3, limit: undefined }) });
+  await e.runs.start('manager-1', { title: 'One', ref: '#1' });
+  await assert.rejects(e.runs.start('block-1', { title: 'More work' }), /a block's session starts no runs/);
+  // A run a plain session coordinates: archived, the run goes to the manager, which is told.
+  await e.runs.start('session-1', { title: 'Two', ref: '#2' });
+  assert.equal(e.ports.runs.get('run-2')!.coordinator, 'session-1');
+  e.store.updateSession('session-1', { archivedAt: Date.now() });
+  assert.match(await e.runs.stopByPerson('shop', 'run-2', 'Simon'), /run-2 "Two" \(#2\) is stopped at "Build": stopped by Simon from the Runs list\./);
+  assert.equal(e.ports.runs.get('run-2')!.state, 'stopped');
+  assert.equal(e.ports.runs.get('run-2')!.coordinator, 'manager-1');
+  assert.equal(e.told.at(-1)!.id, 'manager-1');
+  assert.match(e.told.at(-1)!.text, /^Ledung: run-2 "Two" \(#2\) was coordinated by "Helper", which is archived, so you coordinate it now\.\n\nLedung: run-2 "Two" \(#2\) is stopped/);
+  await assert.rejects(e.runs.stopByPerson('shop', 'run-2', 'Simon'), /been stopped already/);
+  // An answer that comes after the coordinator moved the run: still told, nothing recorded from it.
+  for (const outcome of ['Done', 'Changes', 'Fixed', 'Changes', 'Fixed', 'Changes']) await e.runs.step('manager-1', { run: 'run-1', outcome });
+  const q = e.ports.runs.get('run-1')!.question!;
+  assert.ok(q);
+  const stepped = e.runs.step('manager-1', { run: 'run-1', outcome: 'Fix' });
+  e.store.answerQuestion(q, 'Drop', 'user');
+  const answered = e.runs.onAnswered(e.store.getQuestion(q)!);
+  await stepped;
+  await answered;
+  assert.equal(e.ports.runs.get('run-1')!.at, 'fix');
+  assert.equal(e.told.at(-1)!.text, `Ledung: Simon answered question #${q} of run-1 "One" (#1), but the run had already moved on, so nothing was recorded from it. Read it, and act on it if it changes anything.\n\nThe answer:\n\nDrop`);
+});
+
+test('final review of part 3: Start anyway refuses a block that is gone; a worktree git refuses holds the run in line', async () => {
+  const flows = flowsOf3(F3);
+  const e = await engine({ flows });
+  for (const n of [1, 2]) await e.runs.start('manager-1', { title: `Issue ${n}`, ref: `#${n}` });
+  await e.runs.step('manager-1', { run: 'run-1', outcome: 'Done' });
+  await e.runs.step('manager-1', { run: 'run-2', outcome: 'Done' });
+  assert.equal(e.ports.runs.get('run-2')!.queue, 'block');
+  const flow = flows.flows.get('main')!;
+  flow.blocks = flow.blocks.map((b) => (b.id === 'review' ? { ...b, id: 'check' } : b));
+  await assert.rejects(e.runs.startAnyway('shop', 'run-2', 'Simon'), /waits before "review", which is no block of its flow any more/);
+  // git refuses the worktree: held in line at its start, no session started, said; Start anyway tries it again.
+  const refusing: WorktreeHost = { root: '/p', join: (...p) => path.join(...p), git: async () => { throw new Error('not a git repository'); }, exclude: async () => {}, shell: () => { throw new Error('no shell'); } };
+  const w = await engine({ flows: flowsOf3({ ...F3, limit: undefined, worktree: {} }), host: refusing });
+  assert.match(await w.runs.start('manager-1', { title: 'Three', ref: '#3' }), /Ledung could not make its worktree: not a git repository run-1 "Three" \(#3\) is held in line at its start, with no session started/);
+  assert.deepEqual([w.ports.runs.get('run-1')!.state, w.ports.runs.get('run-1')!.queue], ['queued', 'flow']);
+  assert.equal(w.started.length, 0);
+  await assert.rejects(w.runs.startAnyway('shop', 'run-1', 'Simon'), /could not make its worktree/);
+  assert.equal(w.started.length, 0);
 });

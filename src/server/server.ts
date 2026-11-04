@@ -1500,9 +1500,23 @@ export class LedungServer {
       // ledung#110 "Back to shared": the project's own flow.json and flows/ are removed. A change to what its manager
       // follows, so from the open page only, as the builder's save.
       case 'POST projects/:id/flow/:id':
+      {
         if (parts[3] !== 'back-to-shared') throw new HttpError(404, 'Not found.');
         this.requireOpenPage(req);
-        return manager.backToSharedFlow(decodeURIComponent(id));
+        // The versions the page read, as a save gives them: a file changed since is never removed unseen (final review, 6).
+        const body = await readJson(req);
+        const versions = body.versions;
+        if (!versions || typeof versions !== 'object' || Array.isArray(versions) || !Object.values(versions).every((v) => typeof v === 'string')) {
+          throw new HttpError(400, 'Send the versions of the files the page read.');
+        }
+        return manager.backToSharedFlow(decodeURIComponent(id), versions as Record<string, string>);
+      }
+      // A run stopped from the Runs list (final review of part 3, finding 3): the person's, from the open page.
+      case 'POST projects/:id/runs/:id/stop': {
+        this.requireOpenPage(req);
+        await manager.stopRunFromPage(decodeURIComponent(id), decodeURIComponent(parts[3] ?? ''));
+        return;
+      }
       // A queued run started past its limit (part 3f): the person's alone, from the open page, as it starts sessions.
       case 'POST projects/:id/runs/:id/start': {
         this.requireOpenPage(req);

@@ -101,8 +101,13 @@ test("ledung#110: a project's own copy of a shared flow says whether it differs,
   const view = await readFlowView('shop', other.places());
   assert.deepEqual(view.shared, { workflow: 'team', differs: true });
   assert.equal(view.source?.kind, 'project');
+  // Only the versions the page read: a brief changed since is never removed unseen (final review of part 3, 6).
+  fs.writeFileSync(path.join(other.dir, '.ledung', 'workflow', 'briefs', 'x.md'), '# X, changed since');
+  await assert.rejects(backToShared(other.places(), view.versions), /briefs\/x\.md has changed since the page read the workflow/);
+  assert.equal(fs.existsSync(path.join(other.dir, '.ledung', 'workflow', 'flow.json')), true, 'nothing was removed');
+  const reread = await readFlowView('shop', other.places());
   // Back to shared: every file of the format goes (flow.json first); other files stay; the shared flow counts again.
-  const gone = await backToShared(other.places());
+  const gone = await backToShared(other.places(), reread.versions);
   assert.equal(gone[0], 'flow.json');
   assert.deepEqual(gone.sort(), ['briefs/x.md', 'flow.json', 'flows/extra.json', 'rules.md']);
   assert.equal(fs.existsSync(path.join(other.dir, '.ledung', 'workflow', 'briefs', 'x.md')), false);
@@ -110,12 +115,12 @@ test("ledung#110: a project's own copy of a shared flow says whether it differs,
   const back = await readFlowView('shop', other.places());
   assert.equal(back.source?.kind, 'workflow');
   assert.equal(back.shared, undefined);
-  await assert.rejects(backToShared(other.places()), /no flow of its own/);
+  await assert.rejects(backToShared(other.places(), {}), /no flow of its own/);
   // And a copy can be made again: the page saves every file as new (base null), which a file left behind would refuse.
   const own = other.places().find((p) => p.kind === 'project')!;
   await saveFlowFiles(own, [{ path: 'briefs/x.md', text: '# X again', base: null }, { path: 'rules.md', text: '# R', base: null }, { path: 'flow.json', text: FLOW, base: null }]);
   assert.equal((await readFlowView('shop', other.places())).source?.kind, 'project');
   // A project that follows no shared workflow has nothing to go back to.
   const alone = parseProject({ name: 'solo', runner: 'local', path: other.dir });
-  await assert.rejects(backToShared(flowPlaces(alone, undefined)), /follows no shared workflow/);
+  await assert.rejects(backToShared(flowPlaces(alone, undefined), {}), /follows no shared workflow/);
 });

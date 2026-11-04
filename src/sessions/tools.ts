@@ -160,7 +160,8 @@ export interface ManagerHandlers {
  * follows it. Any session may start a run when the person asks it; whoever started one coordinates it.
  */
 export interface RunHandlers {
-  start(args: { title: string; ref?: string; flow?: string; again?: boolean }): Promise<string>;
+  /** None for a session Ledung started or continued for a block: it does its step, it starts no runs (final review, 2). */
+  start?(args: { title: string; ref?: string; flow?: string; again?: boolean }): Promise<string>;
   step(args: { run: string; outcome: string; note?: string; block?: string; stop?: boolean }): Promise<string>;
   status(run?: string): Promise<string>;
 }
@@ -593,14 +594,16 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
   const r = h.runs;
   if (r) {
     const run = z.string().min(1).max(20).describe('The run, e.g. "run-3".');
-    tools.push(
+    if (r.start) tools.push(
       // A manager routes work in; another session starts a run only when the person asks it (Simon, 2026-11-03).
       tool('flow_start', `Start a piece of work in your project's workflow (${h.role === 'manager' ? `when you route work in, or ${who} asks` : `only when ${who} asks you`} to run the workflow on something). Ledung tracks it through the flow and says what to do at its first block; you coordinate it.`, {
         title: z.string().min(1).max(120).describe('What the work is, e.g. "Fix the cart total".'),
         ref: z.string().min(1).max(60).optional().describe('An issue or PR, e.g. "#142".'),
         flow: z.string().min(1).max(120).optional().describe('A flow by name or title; default: the main one.'),
         again: z.boolean().optional().describe('Start it although a run for this ref is under way.'),
-      }, async (a) => safely(() => r.start(a))) as never,
+      }, async (a) => safely(() => r.start!(a))) as never,
+    );
+    tools.push(
       tool('flow_step', "Report how a run's current block ended, by the outcome's word as you read the result. Ledung counts it, takes the outcome (a counted one on its Nth time) and says what to do next.", {
         run,
         outcome: z.string().min(1).max(200).describe("The outcome's word, e.g. \"Approved\"; with stop, why."),

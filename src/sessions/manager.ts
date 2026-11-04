@@ -288,9 +288,18 @@ export class SessionManager {
         return config ? readFlows(this.flowPlacesOf(config)) : Promise.resolve(null);
       },
       following: (project) => this.projectStore.get(project)?.config.followFlow !== false,
+      // A coordinator that ended is resumed, as a continued block's session is (final review of part 3, finding 3).
       tell: (id, text) => {
         this.store.addInbox(id, 'ledung', text);
-        this.live.get(id)?.deliver();
+        void this.resumeIfEnded(id).then(() => this.live.get(id)?.deliver(), (e: Error) => {
+          // One that can't be resumed: its project's manager is told what it was told, so the run is not stranded.
+          const s = this.store.getSession(id);
+          const manager = s ? this.projectStore.get(s.project)?.managerId : null;
+          console.warn(`Workflow: could not resume ${id} to tell it: ${e.message}`);
+          if (!manager || manager === id) return;
+          this.store.addInbox(manager, 'ledung', `Ledung could not resume "${s!.title}" (${id}), which coordinates a run, to tell it this (${e.message}); you may coordinate its runs:\n\n${text}`);
+          void this.resumeIfEnded(manager).then(() => this.live.get(manager)?.deliver(), () => {});
+        });
       },
       changed: (project) => this.publish({ type: 'runs', project, runs: this.flowRuns.list(project) }),
       // Part 3b: a block's session is started under the run's coordinator with the block's settings, its step from Ledung.
@@ -326,11 +335,25 @@ export class SessionManager {
         const env = () => Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => e[1] !== undefined));
         return config.runner === 'local'
           ? localWorktreeHost(config.path, (command, cwd) => new LocalRunner(config, cwd, this.config.claudeExecutable).shell(command, this.config.windowsShell, env()))
-          : dockerWorktreeHost(config, (command, cwd) => new DockerRunner(config, 'worktree', cwd).shell(command, null, env()));
+          // Its own tag per setup, the run's folder in it, so two setups in one container never stop each other (final review, 6).
+          : dockerWorktreeHost(config, (command, cwd) => new DockerRunner(config, `worktree-${path.posix.basename(cwd)}-${randomUUID().slice(0, 8)}`, cwd).shell(command, null, env()));
       },
       worktreeSetup: (name) => this.projectStore.get(name)?.config.worktreeSetup,
       sessionsOf: (name, run) => this.store.listSessions().filter((s) => s.project === name && s.runBlock?.run === run).map((s) => s.id),
-      workingIn: (name, folder) => this.store.listSessions().filter((s) => s.project === name && s.status !== 'ended' && s.workDir === folder).map((s) => s.title),
+      // Real paths on both sides: a session's folder is its real path, a worktree's is under the configured one, which may
+      // go through a link (final review of part 3, finding 4).
+      workingIn: (name, folder) => {
+        const local = this.projectStore.get(name)?.config.runner === 'local';
+        const real = (p: string) => {
+          try {
+            return local ? fs.realpathSync.native(p) : p;
+          } catch {
+            return p;
+          }
+        };
+        const at = real(folder);
+        return this.store.listSessions().filter((s) => s.project === name && s.status !== 'ended' && s.workDir && real(s.workDir) === at).map((s) => s.title);
+      },
       lastReply: (id) => lastReplyOf(this.store.listMessages(id, { limit: 200 })),
       ask: (a) => {
         const q = this.store.createQuestion({ sessionId: a.coordinator, question: a.question, options: a.options, addressedTo: 'user', details: a.details });
@@ -1225,7 +1248,8 @@ export class SessionManager {
       }
     };
     return {
-      start: (a) => plain(() => this.flowRuns.start(sessionId, a)),
+      // A block's session does its step and starts no runs (final review of part 3, finding 2).
+      ...(this.store.getSession(sessionId)?.runBlock ? {} : { start: (a: Parameters<NonNullable<RunHandlers['start']>>[0]) => plain(() => this.flowRuns.start(sessionId, a)) }),
       step: (a) => plain(() => this.flowRuns.step(sessionId, a)),
       status: (run) => plain(() => this.flowRuns.status(sessionId, run)),
     };
@@ -1311,6 +1335,16 @@ export class SessionManager {
     } catch (e) {
       this.proposals.setState(p.id, 'failed');
       this.store.addInbox(p.manager, 'ledung', `Ledung: ${this.config.userName} accepted review #${q.id}, but the change could not be saved: ${(e as Error).message} Read the workflow files again and propose it anew.`);
+    }
+  }
+
+  /** The person stops a run from the Runs list (final review of part 3, finding 3). */
+  async stopRunFromPage(name: string, run: string): Promise<void> {
+    if (!this.projectStore.get(name)) throw new UserError(`There is no project named "${name}".`);
+    try {
+      await this.flowRuns.stopByPerson(name, run, this.config.userName);
+    } catch (e) {
+      throw e instanceof FlowRunError ? new UserError(e.message) : e;
     }
   }
 
@@ -1401,11 +1435,11 @@ export class SessionManager {
    * ledung#110 "Back to shared": the project's own flow.json and flows/ are removed, so the shared workflow it follows
    * counts again; then the workflow as it now reads. One save at a time per project, as the builder's.
    */
-  async backToSharedFlow(name: string): Promise<FlowView> {
+  async backToSharedFlow(name: string, versions: Record<string, string>): Promise<FlowView> {
     const project = this.projectStore.get(name)?.config;
     if (!project) throw new UserError(`There is no project named "${name}".`);
     const before = this.flowSaves.get(project.name) ?? Promise.resolve();
-    const going = before.then(() => backToShared(this.flowPlacesOf(project)));
+    const going = before.then(() => backToShared(this.flowPlacesOf(project), versions));
     this.flowSaves.set(project.name, going.then(() => {}, () => {}));
     try {
       const files = await going;

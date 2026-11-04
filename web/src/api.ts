@@ -305,7 +305,9 @@ export const api = {
   /** Its runs through its flows (workflow part 3c), the latest changed first. */
   runs: (project: string) => call<FlowRun[]>('GET', `/api/projects/${encodeURIComponent(project)}/runs`),
   /** ledung#110: takes away the project's own flow, so the shared workflow's counts again; the workflow as it then reads. */
-  backToShared: (project: string) => call<FlowView>('POST', `/api/projects/${encodeURIComponent(project)}/flow/back-to-shared`),
+  backToShared: (project: string, versions: Record<string, string>) => call<FlowView>('POST', `/api/projects/${encodeURIComponent(project)}/flow/back-to-shared`, { versions }),
+  /** The person stops a run from the Runs list. */
+  stopRun: (project: string, run: string) => call<void>('POST', `/api/projects/${encodeURIComponent(project)}/runs/${encodeURIComponent(run)}/stop`),
   /** Starts a queued run past its limit (part 3f). */
   startRun: (project: string, run: string) => call<void>('POST', `/api/projects/${encodeURIComponent(project)}/runs/${encodeURIComponent(run)}/start`),
   /** A manager's proposed workflow change (part 3e), for its review page. */

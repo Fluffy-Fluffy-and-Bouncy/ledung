@@ -26,7 +26,7 @@ function stateLine(r: FlowRun, blockTitle: (flow: string, id: string) => string,
 }
 
 /** The Runs list (part 3c): open ones first, then the latest ended; a run chosen shows its history and marks its path. */
-export function RunsPanel({ runs, chosen, onChoose, flowTitle, blockTitle, error, heading = true, follow, onStart }: {
+export function RunsPanel({ runs, chosen, onChoose, flowTitle, blockTitle, error, heading = true, follow, onStart, onStop }: {
   runs: readonly FlowRun[]; chosen: string | null; onChoose: (id: string | null) => void;
   flowTitle: (name: string) => string; blockTitle: (flow: string, id: string) => string;
   /** The runs could not be read: said, rather than shown as none. */
@@ -37,9 +37,13 @@ export function RunsPanel({ runs, chosen, onChoose, flowTitle, blockTitle, error
   follow?: string;
   /** "Start anyway" for a queued run (part 3f): the error, if it couldn't. */
   onStart?: (id: string) => Promise<string | null>;
+  /** Stop for a run under way (final review of part 3): the error, if it couldn't. */
+  onStop?: (id: string) => Promise<string | null>;
 }) {
   const [starting, setStarting] = useState<string | null>(null);
   const [startError, setStartError] = useState<{ id: string; text: string } | null>(null);
+  /** The run whose Stop is being confirmed, or being sent. */
+  const [stopping, setStopping] = useState<{ id: string; sent: boolean } | null>(null);
   // "Waiting for 5 min" goes on counting while the page is open (review of 3c).
   const [, tick] = useState(0);
   useEffect(() => {
@@ -77,14 +81,29 @@ export function RunsPanel({ runs, chosen, onChoose, flowTitle, blockTitle, error
               <span className="flow-run-title"><span className="mono">{r.id}</span> {r.title}{r.ref ? <span className="chip">{r.ref}</span> : null}</span>
               <span className="muted">{flowTitle(r.flow)} · {stateLine(r, blockTitle, runs)}{r.parent ? ` · for ${r.parent.run}` : ''}</span>
             </button>
-            {r.state === 'queued' && onStart && (
+            {open(r) && ((r.state === 'queued' && onStart) || (onStop && r.id === chosen)) && (
               <div className="flow-run-actions">
-                <button className="small" disabled={starting === r.id} title="Start it now, past the limit" onClick={async () => {
-                  setStarting(r.id);
-                  const problem = await onStart(r.id);
-                  setStarting(null);
-                  setStartError(problem ? { id: r.id, text: problem } : null);
-                }}>{starting === r.id ? 'Starting…' : 'Start anyway'}</button>
+                {r.state === 'queued' && onStart && (
+                  <button className="small" disabled={starting === r.id} title="Start it now, past the limit" onClick={async () => {
+                    setStarting(r.id);
+                    const problem = await onStart(r.id);
+                    setStarting(null);
+                    setStartError(problem ? { id: r.id, text: problem } : null);
+                  }}>{starting === r.id ? 'Starting…' : 'Start anyway'}</button>
+                )}
+                {/* Stop, asked once more: it stops its sessions' part in it and tidies as the flow says. */}
+                {onStop && r.id === chosen && (stopping?.id === r.id
+                  ? <>
+                    <span className="muted">Stop {r.id}? Its coordinator is told.</span>
+                    <button className="small deny" disabled={stopping.sent} onClick={async () => {
+                      setStopping({ id: r.id, sent: true });
+                      const problem = await onStop(r.id);
+                      setStopping(null);
+                      setStartError(problem ? { id: r.id, text: problem } : null);
+                    }}>{stopping.sent ? 'Stopping…' : 'Stop the run'}</button>
+                    <button className="small" disabled={stopping.sent} onClick={() => setStopping(null)}>Keep it</button>
+                  </>
+                  : <button className="small" title="Stop this run where it is" onClick={() => setStopping({ id: r.id, sent: false })}>Stop…</button>)}
                 {startError?.id === r.id && <span className="flow-problem-inline">{startError.text}</span>}
               </div>
             )}

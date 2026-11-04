@@ -842,6 +842,10 @@ const gateLoosening = (): [string, string, Record<string, unknown>][] => [
   ["a new project's grant", '/api/projects', { name: 'q', runner: 'local', path: path.join(projectRoot, 'nope'), managerGrant: 'may merge anything' }],
   ["a new project's unasked tools", '/api/projects', { name: 'q', runner: 'local', path: path.join(projectRoot, 'nope'), projectToolsUnasked: true }],
   ["a created project's dev ship command", '/api/projects-new', { parent: projectRoot, github: false, settings: { name: 'p', devShipCommand: '.*' } }],
+  // Part 3f: the command Ledung runs in each new worktree (final review of part 3, finding 1).
+  ['a worktree setup command', '/api/projects/p', plainSettings({ worktreeSetup: 'npm ci' })],
+  ["a new project's worktree setup command", '/api/projects', { name: 'q', runner: 'local', path: path.join(projectRoot, 'nope'), worktreeSetup: 'npm ci' }],
+  ["a created project's worktree setup command", '/api/projects-new', { parent: projectRoot, github: false, settings: { name: 'p', worktreeSetup: 'npm ci' } }],
 ];
 /** Past the check: saved, or refused by the manager afterwards (no such folder, the name taken), so nothing new is made. */
 const pastCheck = (name: string, res: { status: number; body: string }) => {
@@ -2659,11 +2663,22 @@ test("a project whose flow files a shared flow's named briefs lead to, or a flow
 
 // Part 3f and ledung#110: starting a queued run past its limit and taking a project back to its shared flow are the
 // person's, from the open page: the sign-in cookie and Origin alone are refused, before anything happens.
-test('start anyway and back to shared need the open page', async () => {
-  for (const p of ['/api/projects/p/runs/run-1/start', '/api/projects/p/flow/back-to-shared']) {
+test('start anyway, stop and back to shared need the open page', async () => {
+  for (const p of ['/api/projects/p/runs/run-1/start', '/api/projects/p/runs/run-1/stop', '/api/projects/p/flow/back-to-shared']) {
     assert.equal((await request({ method: 'POST', path: p, headers: { origin: ORIGIN } })).status, 401, p);
     const refused = await change(p, {});
     assert.equal(refused.status, 403, p);
     assert.match(errorOf(refused), /Only Ledung's open page can do this/);
   }
+});
+
+// The sidebar's Workflow row (2026-11-04; final review of part 3, finding 7): which projects have a flow is read behind
+// the sign-in and the Host check, like every other read.
+test('GET /api/workflows needs the sign-in and a known Host', async () => {
+  assert.equal((await request({ path: '/api/workflows' })).status, 401);
+  assert.equal((await request({ path: '/api/workflows', headers: { cookie: 'ledung_auth=' + 'b'.repeat(64) } })).status, 401);
+  assert.equal((await request({ path: '/api/workflows', headers: { host: 'evil.example:80', cookie: COOKIE } })).status, 403);
+  const res = await request({ path: '/api/workflows', headers: { cookie: COOKIE } });
+  assert.equal(res.status, 200, res.body);
+  assert.equal(typeof JSON.parse(res.body), 'object');
 });

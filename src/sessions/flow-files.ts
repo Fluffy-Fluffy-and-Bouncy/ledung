@@ -483,7 +483,7 @@ async function sharedDifference(places: FlowPlace[], place: FlowPlace, own: stri
  * workflow folder (flow.json, flows/, rules, manager.md, briefs and overlays), so the shared workflow's counts again and
  * a later copy is saved afresh (review of 3f: a brief left behind refused that save). Other files stay; git keeps what went.
  */
-export async function backToShared(places: FlowPlace[]): Promise<string[]> {
+export async function backToShared(places: FlowPlace[], versions: Record<string, string>): Promise<string[]> {
   const own = places.find((p) => p.kind === 'project' && p.write);
   const other = places.find((p) => p.kind === 'workflow');
   if (!own?.write || !other) throw new FileError("This project follows no shared workflow, or Ledung can't write into its folder.");
@@ -495,6 +495,15 @@ export async function backToShared(places: FlowPlace[]): Promise<string[]> {
   // rules.md by name, when it is there: the listing gives manager.md and the briefs and overlays only.
   const rules = (await own.read([RULES_FILE])).get(RULES_FILE);
   const files = [...new Set([FLOW_FILE, ...(rules && !('missing' in rules) ? [RULES_FILE] : []), ...(await own.list()).filter((f) => WRITABLE_FLOW_FILE.test(f))])];
+  // Only the versions the page showed: one changed or added since is never removed unseen (final review of part 3, 6).
+  const now = await own.read(files);
+  for (const f of files) {
+    const r = now.get(f);
+    const version = r && 'text' in r ? textVersion(r.text) : null;
+    if (version === null) throw new FileError(`${f} can't be read, so Ledung can't tell whether it is what the page showed: remove it by hand (git keeps it), then go back to the shared workflow. Nothing was removed.`);
+    if (versions[f] === undefined) throw new FileError(`${f} is not among what the page read (new since, or too large for the page): reload the workflow and look again, or remove it by hand (git keeps it). Nothing was removed.`);
+    if (versions[f] !== version) throw new FileError(`${f} has changed since the page read the workflow: reload the workflow and look again before going back to the shared one. Nothing was removed.`);
+  }
   await own.write(files.map((path) => ({ path, remove: true as const })));
   return files;
 }

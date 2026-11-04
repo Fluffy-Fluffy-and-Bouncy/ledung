@@ -309,8 +309,9 @@ export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowF
   };
   // "Start anyway" for a queued run (part 3f); the live connection brings the change.
   const startRun = (id: string) => api.startRun(project, id).then(() => null, (e: Error) => e.message);
+  const stopRun = (id: string) => api.stopRun(project, id).then(() => null, (e: Error) => e.message);
   const follow = followLine(flow);
-  const runsPanel = <RunsPanel runs={runs} chosen={chosenRun} onChoose={chooseRun} flowTitle={flowNameTitle} error={runsError} follow={follow} onStart={startRun} blockTitle={(f, id) => flows.find((x) => x.name === f)?.flow?.blocks.find((b) => b.id === id)?.title ?? id} />;
+  const runsPanel = <RunsPanel runs={runs} chosen={chosenRun} onChoose={chooseRun} flowTitle={flowNameTitle} error={runsError} follow={follow} onStart={startRun} onStop={stopRun} blockTitle={(f, id) => flows.find((x) => x.name === f)?.flow?.blocks.find((b) => b.id === id)?.title ?? id} />;
   const managerShown = manager && !!view?.flow?.manager;
   const showDiagram = !narrow || diagramOnPhone;
   const source = view?.source;
@@ -381,7 +382,7 @@ export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowF
           {backing
             ? <span className="flow-confirm-buttons">
                 <span>Remove {project}'s own copy (its flow.json, flows/, rules, manager.md, briefs and overlays) so it follows "{view.shared.workflow}" again? Git keeps what was committed.</span>
-                <button className="small deny" onClick={() => api.backToShared(project).then((v) => { setView(v); setBacking(false); setSaved(`${project} follows "${view.shared!.workflow}" again.`); }, (e: Error) => { setBacking(false); setError(e.message); })}>Back to shared</button>
+                <button className="small deny" onClick={() => api.backToShared(project, view.versions).then((v) => { setView(v); setBacking(false); setSaved(`${project} follows "${view.shared!.workflow}" again.`); }, (e: Error) => { setBacking(false); setError(e.message); })}>Back to shared</button>
                 <button className="small" onClick={() => setBacking(false)}>Keep its own</button>
               </span>
             : <button className="small" onClick={() => setBacking(true)}>Back to shared…</button>}
@@ -409,7 +410,7 @@ export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowF
             {narrow && runs.length > 0 && (
               <details className="flow-runs-fold" open={runs.some(openRun)}>
                 <summary>Runs ({runs.filter(openRun).length} under way)</summary>
-                <RunsPanel runs={runs} chosen={chosenRun} onChoose={chooseRun} flowTitle={flowNameTitle} error={runsError} heading={false} follow={follow} onStart={startRun} blockTitle={(f, id) => flows.find((x) => x.name === f)?.flow?.blocks.find((b) => b.id === id)?.title ?? id} />
+                <RunsPanel runs={runs} chosen={chosenRun} onChoose={chooseRun} flowTitle={flowNameTitle} error={runsError} heading={false} follow={follow} onStart={startRun} onStop={stopRun} blockTitle={(f, id) => flows.find((x) => x.name === f)?.flow?.blocks.find((b) => b.id === id)?.title ?? id} />
               </details>
             )}
             {narrow && (
