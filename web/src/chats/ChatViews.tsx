@@ -30,6 +30,10 @@ export function NewChatView({ chats, profiles, accounts, defaultAccount, run, on
   const [busy, setBusy] = useState(false);
   const shownFolder = folder ?? chats?.folder ?? '';
   const shownMode = mode || chats?.permissionMode || 'auto';
+  // A chosen account removed meanwhile goes back to Settings' choice rather than starting a refused chat.
+  useEffect(() => {
+    if (account && !accounts.some((a) => a.name === account)) setAccount(null);
+  }, [account, accounts]);
   const shownAccount = account ?? defaultAccount ?? '';
   const start = () => run(async () => {
     setBusy(true);

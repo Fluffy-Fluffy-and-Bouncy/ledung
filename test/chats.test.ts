@@ -466,8 +466,11 @@ test("New chat's own account (issue #119): Settings' choice when left out, any k
   assert.equal((live(chat.id) as unknown as { account: { name: string } | null }).account?.name, 'home');
   assert.equal(store.getSession(own.id)!.account, null);
   assert.equal((live(own.id) as unknown as { account: unknown }).account, null);
-  // An account removed since: the chat resumes on Settings' choice rather than failing on a name that is gone.
+  // Not removed under a running chat; removed since it ended, the chat resumes on Settings' choice rather than
+  // failing on a name that is gone.
   manager.signOutWith = async () => {};
+  store.updateSession(chat.id, { status: 'running' }); // as if Claude Code ran: it ends at once in these tests
+  assert.throws(() => manager.removeAccount('home'), /used by a running chat/);
   store.updateSession(chat.id, { status: 'ended' });
   await manager.removeAccount('home');
   await manager.resume(chat.id);

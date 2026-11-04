@@ -1498,6 +1498,9 @@ export class SessionManager {
     const choices = this.accountChoices();
     const chosen = [choices.chats === name && 'chats', choices.newProjects === name && 'new projects'].filter(Boolean);
     if (chosen.length) throw new UserError(`The account is chosen for ${chosen.join(' and ')}. Choose another one above first.`);
+    // A chat started on it from New chat (issue #119) would be signed out under its feet.
+    const chats = [...this.live.values()].filter((s) => s.info.project === CHATS && s.info.account === name && s.info.status !== 'ended').length;
+    if (chats) throw new UserError(`The account is used by ${chats === 1 ? 'a running chat' : `${chats} running chats`}. Stop ${chats === 1 ? 'it' : 'them'} first.`);
     // Signed out with Claude Code's own logout where its folders are, so no login is left behind: on macOS the
     // Keychain entry stays when a folder is only deleted (#342, Mac probe). The folders themselves stay. Its
     // folder on this computer, and every container its projects ran in (review of #342, I2). A folder that is
