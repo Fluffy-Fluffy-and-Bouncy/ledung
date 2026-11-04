@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AccountChoices, AccountInfoView, ChatsInfo, AwayInfo, ConfigStatus, BoardStatus, GitHubBudget, LimitInfo, UsageStopInfo, SignInKind, SignInProblem, MachineInfo, Overview, PermissionInfo, ProjectInfo, QuestionInfo, NewComputerInfo, LinkPairingInfo, RemoteStatus, ServerEvent, SessionInfo, SourceOffer, StoredMessage } from '../../src/shared/protocol.ts';
 import type { OrderInfo } from '../../src/shared/orders.ts';
 import type { Macro } from '../../src/shared/macros.ts';
+import type { FlowRun } from '../../src/shared/flow-run.ts';
 import type { ComputerInfo } from '../../src/shared/computers.ts';
 import { api, connectionHello, openConnection, setReconnect } from './api.ts';
 import { fetchNewer, PAGE, withNewer } from './catchUp.ts';
@@ -50,6 +51,10 @@ export function useLedung(openSessionId: string | null) {
   const [github, setGithub] = useState<GitHubBudget[]>([]);
   const [remote, setRemote] = useState<RemoteStatus | null>(null);
   const [chats, setChats] = useState<ChatsInfo | null>(null);
+  /** Runs through a project's flows as the live connection last sent them (workflow part 3c), by project. */
+  const [runs, setRuns] = useState<Record<string, FlowRun[]>>({});
+  /** Which projects have a workflow (a flow found, own or shared), for the sidebar's Workflow row (2026-11-04). */
+  const [workflows, setWorkflows] = useState<Record<string, boolean>>({});
   /** The computer tabs and whether this page came through the public name (issue #232). */
   const [computers, setComputers] = useState<ComputerInfo[]>([]);
   const [newComputers, setNewComputers] = useState<NewComputerInfo[]>([]);
@@ -125,6 +130,8 @@ export function useLedung(openSessionId: string | null) {
             secretsChanged(event.sessionId, event.secrets);
             break;
           case 'hello':
+            // What the live connection sent of runs before may be out of date; the page reads them again (review of 3c).
+            setRuns({});
             // Reconnected to another release (after a restart): offer its page rather than reloading
             // under Simon's hands (decision of 2026-10-13).
             if (buildRef.current === null) buildRef.current = event.build;
@@ -186,6 +193,14 @@ export function useLedung(openSessionId: string | null) {
             break;
           case 'config':
             setConfigStatus(event.config);
+            break;
+          case 'workflows':
+            refreshRef.current();
+            break;
+          case 'runs':
+            setRuns((r) => ({ ...r, [event.project]: event.runs }));
+            // Runs come only from a flow: the project has one, whatever was read before.
+            setWorkflows((w) => (w[event.project] ? w : { ...w, [event.project]: true }));
             break;
           case 'projects':
             setProjects(event.projects);
@@ -264,6 +279,39 @@ export function useLedung(openSessionId: string | null) {
     };
   }, [catchUp]);
 
+  // Which projects have a workflow, and their runs, for the sidebar's Workflow row: read on each hello (a reconnect
+  // cleared the runs), when the projects change, and when the page is shown again (a flow.json written by hand).
+  // A project's workflow setting counts as well as its name: following another shared workflow changes what it has.
+  const projectKeys = projects.map((p) => `${p.name}\t${JSON.stringify(p.workflow)}`).join('\n');
+  // An answer read before a reconnect is dropped: the runs it brings may be older than the live connection's (review).
+  const hellosRef = useRef(hellos);
+  hellosRef.current = hellos;
+  const lastRead = useRef(0);
+  const runsRef = useRef(runs);
+  runsRef.current = runs;
+  const refreshWorkflows = useCallback(() => {
+    const at = hellosRef.current;
+    lastRead.current = Date.now();
+    api.workflows().then((w) => {
+      if (hellosRef.current !== at) return;
+      // A project with runs has a flow, though its container was too slow to say so this time (second review).
+      setWorkflows(Object.fromEntries(Object.entries(w).map(([name, has]) => [name, has || !!runsRef.current[name]?.length])));
+      for (const [name, has] of Object.entries(w)) {
+        if (has) api.runs(name).then((list) => { if (hellosRef.current === at) setRuns((r) => (r[name] ? r : { ...r, [name]: list })); }, () => {});
+      }
+    }, () => {});
+  }, []);
+  const refreshRef = useRef(refreshWorkflows);
+  useEffect(() => {
+    if (hellos) refreshWorkflows();
+  }, [hellos, projectKeys, refreshWorkflows]);
+  useEffect(() => {
+    // Shown again: at most once a minute (a phone hides and shows its page often), for a flow.json written by hand.
+    const shown = () => { if (document.visibilityState === 'visible' && Date.now() - lastRead.current > 60_000) refreshWorkflows(); };
+    document.addEventListener('visibilitychange', shown);
+    return () => document.removeEventListener('visibilitychange', shown);
+  }, [refreshWorkflows]);
+
   // Usage per session for the session list and the Overview; refreshed every 20 s (step 5).
   useEffect(() => {
     let current = true;
@@ -276,5 +324,5 @@ export function useLedung(openSessionId: string | null) {
     };
   }, []);
 
-  return { connection, loaded, canRestart, hellos, updated, userName, source, questions, limits, usageStops, macros, signedOut, claudeProblem, claudeLooked, accountProblems, overview, machine, away, orders, accounts, accountChoices, defaultIdentity, board, github, remote, computers, newComputers, linkPairings, throughPublicName, configStatus, chats, profiles, lockdownB, bangShell, sessions, projects, permissions, messages, hasEarlier, loadEarlier };
+  return { runs, workflows, connection, loaded, canRestart, hellos, updated, userName, source, questions, limits, usageStops, macros, signedOut, claudeProblem, claudeLooked, accountProblems, overview, machine, away, orders, accounts, accountChoices, defaultIdentity, board, github, remote, computers, newComputers, linkPairings, throughPublicName, configStatus, chats, profiles, lockdownB, bangShell, sessions, projects, permissions, messages, hasEarlier, loadEarlier };
 }

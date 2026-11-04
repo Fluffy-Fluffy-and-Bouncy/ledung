@@ -19,6 +19,7 @@
   "files": [
     "dist/",
     "web/dist/",
+    "plugins/",
     "ledung.config.example.json",
     "CHANGELOG.md",
     "COMMERCIAL.md"

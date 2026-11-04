@@ -842,6 +842,10 @@ const gateLoosening = (): [string, string, Record<string, unknown>][] => [
   ["a new project's grant", '/api/projects', { name: 'q', runner: 'local', path: path.join(projectRoot, 'nope'), managerGrant: 'may merge anything' }],
   ["a new project's unasked tools", '/api/projects', { name: 'q', runner: 'local', path: path.join(projectRoot, 'nope'), projectToolsUnasked: true }],
   ["a created project's dev ship command", '/api/projects-new', { parent: projectRoot, github: false, settings: { name: 'p', devShipCommand: '.*' } }],
+  // Part 3f: the command Ledung runs in each new worktree (final review of part 3, finding 1).
+  ['a worktree setup command', '/api/projects/p', plainSettings({ worktreeSetup: 'npm ci' })],
+  ["a new project's worktree setup command", '/api/projects', { name: 'q', runner: 'local', path: path.join(projectRoot, 'nope'), worktreeSetup: 'npm ci' }],
+  ["a created project's worktree setup command", '/api/projects-new', { parent: projectRoot, github: false, settings: { name: 'p', worktreeSetup: 'npm ci' } }],
 ];
 /** Past the check: saved, or refused by the manager afterwards (no such folder, the name taken), so nothing new is made. */
 const pastCheck = (name: string, res: { status: number; body: string }) => {
@@ -2154,6 +2158,18 @@ test("a project's flow needs the sign-in and Ledung's own Host, is read-only, an
   const nope = await request({ path: '/api/projects/nope/flow', headers: { cookie: COOKIE } });
   assert.equal(nope.status, 400);
   assert.match(JSON.parse(nope.body).error, /no project named "nope"/);
+  // Its runs (workflow part 3c): read like the flow, behind the sign-in and the Host check.
+  const runs = '/api/projects/p/runs';
+  assert.equal((await request({ path: runs })).status, 401);
+  assert.equal((await request({ path: runs, headers: { host: 'evil.example:80', cookie: COOKIE } })).status, 403);
+  const listed = await request({ path: runs, headers: { cookie: COOKIE } });
+  assert.equal(listed.status, 200);
+  assert.deepEqual(JSON.parse(listed.body), []);
+  assert.equal((await request({ path: '/api/projects/nope/runs', headers: { cookie: COOKIE } })).status, 400);
+  // A proposed workflow change (part 3e), for its review page: the same checks.
+  assert.equal((await request({ path: '/api/projects/p/proposals/1' })).status, 401);
+  assert.equal((await request({ path: '/api/projects/p/proposals/1', headers: { host: 'evil.example:80', cookie: COOKIE } })).status, 403);
+  assert.equal((await request({ path: '/api/projects/p/proposals/1', headers: { cookie: COOKIE } })).status, 400);
 });
 
 // The builder saves (issue #311, part 2, design decision 4): a change like any other (sign-in, Host, Origin, and through
@@ -2643,4 +2659,26 @@ test("a project whose flow files a shared flow's named briefs lead to, or a flow
       assert.equal(fs.readFileSync(extraFile, 'utf8'), extra, "the workflow's flow is still there");
     }
   }
+});
+
+// Part 3f and ledung#110: starting a queued run past its limit and taking a project back to its shared flow are the
+// person's, from the open page: the sign-in cookie and Origin alone are refused, before anything happens.
+test('start anyway, stop and back to shared need the open page', async () => {
+  for (const p of ['/api/projects/p/runs/run-1/start', '/api/projects/p/runs/run-1/stop', '/api/projects/p/flow/back-to-shared']) {
+    assert.equal((await request({ method: 'POST', path: p, headers: { origin: ORIGIN } })).status, 401, p);
+    const refused = await change(p, {});
+    assert.equal(refused.status, 403, p);
+    assert.match(errorOf(refused), /Only Ledung's open page can do this/);
+  }
+});
+
+// The sidebar's Workflow row (2026-11-04; final review of part 3, finding 7): which projects have a flow is read behind
+// the sign-in and the Host check, like every other read.
+test('GET /api/workflows needs the sign-in and a known Host', async () => {
+  assert.equal((await request({ path: '/api/workflows' })).status, 401);
+  assert.equal((await request({ path: '/api/workflows', headers: { cookie: 'ledung_auth=' + 'b'.repeat(64) } })).status, 401);
+  assert.equal((await request({ path: '/api/workflows', headers: { host: 'evil.example:80', cookie: COOKIE } })).status, 403);
+  const res = await request({ path: '/api/workflows', headers: { cookie: COOKIE } });
+  assert.equal(res.status, 200, res.body);
+  assert.equal(typeof JSON.parse(res.body), 'object');
 });

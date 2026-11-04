@@ -1492,8 +1492,43 @@ export class LedungServer {
         });
       }
       // The workflow page (issue #310): the project's flow, read-only and only from inside its folders (src/sessions/flow-files.ts).
+      // The sidebar's Workflow row (2026-11-04): which projects have a flow. Read-only, behind the same checks.
+      case 'GET workflows':
+        return manager.workflowsPresent();
       case 'GET projects/:id/flow':
         return manager.flowView(decodeURIComponent(id));
+      // ledung#110 "Back to shared": the project's own flow.json and flows/ are removed. A change to what its manager
+      // follows, so from the open page only, as the builder's save.
+      case 'POST projects/:id/flow/:id':
+      {
+        if (parts[3] !== 'back-to-shared') throw new HttpError(404, 'Not found.');
+        this.requireOpenPage(req);
+        // The versions the page read, as a save gives them: a file changed since is never removed unseen (final review, 6).
+        const body = await readJson(req);
+        const versions = body.versions;
+        if (!versions || typeof versions !== 'object' || Array.isArray(versions) || !Object.values(versions).every((v) => typeof v === 'string')) {
+          throw new HttpError(400, 'Send the versions of the files the page read.');
+        }
+        return manager.backToSharedFlow(decodeURIComponent(id), versions as Record<string, string>);
+      }
+      // A run stopped from the Runs list (final review of part 3, finding 3): the person's, from the open page.
+      case 'POST projects/:id/runs/:id/stop': {
+        this.requireOpenPage(req);
+        await manager.stopRunFromPage(decodeURIComponent(id), decodeURIComponent(parts[3] ?? ''));
+        return;
+      }
+      // A queued run started past its limit (part 3f): the person's alone, from the open page, as it starts sessions.
+      case 'POST projects/:id/runs/:id/start': {
+        this.requireOpenPage(req);
+        await manager.startRunAnyway(decodeURIComponent(id), decodeURIComponent(parts[3] ?? ''));
+        return;
+      }
+      // A manager's proposed workflow change (part 3e), for its review page: read like the flow.
+      case 'GET projects/:id/proposals/:id':
+        return manager.flowProposal(decodeURIComponent(id), Number(parts[3]));
+      // Its runs through its flows (workflow part 3c), for the workflow page; the live connection sends changes.
+      case 'GET projects/:id/runs':
+        return manager.flowRunsOf(decodeURIComponent(id));
       // The builder saves (issue #311): only into the project's own .ledung/workflow, only the files the format knows,
       // each replacing the version the page read (src/sessions/flow-files.ts). A change like any other: the sign-in,
       // Host and Origin checks above, and through the public name an unlocked device. And the open page: what it

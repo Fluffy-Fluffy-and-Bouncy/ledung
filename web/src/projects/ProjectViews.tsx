@@ -145,6 +145,28 @@ function ToolSwitches(f: FieldProps) {
   );
 }
 
+/** The command run in each run's new worktree (part 3f), where the flow gives runs one. */
+function WorktreeSetupField(f: FieldProps) {
+  const typing = usePlainTyping();
+  return (
+    <label>
+      <span className="field-name">Worktree setup command</span>
+      <input {...typing} className="mono" value={f.value.worktreeSetup} placeholder="none" onChange={(e) => f.onChange({ ...f.value, worktreeSetup: e.target.value })} />
+      <span className="muted">Run in each run's new worktree when the flow gives runs one, as a "!" command would (installing, copying caches). It belongs to this project, not the workflow, which stays shareable.</span>
+    </label>
+  );
+}
+
+/** Ledung follows the drawn flow with the manager (workflow part 3): on by default, only where a flow exists. */
+function FollowFlowField(f: FieldProps) {
+  return (
+    <label className="toggle">
+      <input type="checkbox" checked={f.value.followFlow} onChange={(e) => f.onChange({ ...f.value, followFlow: e.target.checked })} />
+      {' '}<span><span className="field-name">Follow the workflow</span> <span className="muted">(where the project has a drawn flow, Ledung tracks each piece of work through it with the manager: where it is, the counts, the block's sessions)</span></span>
+    </label>
+  );
+}
+
 function DevShipField(f: FieldProps) {
   const typing = usePlainTyping();
   return (
@@ -792,6 +814,7 @@ export function ProjectSettingsView({ view, project, projects, run, onOpen, onRe
         <section>
           <h3>Workflow</h3>
           <p><button className="small" title="The project's process as a diagram, to see and edit (issue #310)" onClick={onWorkflow}>Show the drawn workflow</button></p>
+          <div className="form"><FollowFlowField {...f} /><WorktreeSetupField {...f} /></div>
           {workflow?.workflows.length
             ? <div className="form"><WorkflowFields {...f} workflow={workflow} container={container} /></div>
             : <p><span className="field-name">Workflow</span>: <span className="muted">{workflow ? 'none is configured in Ledung\'s config ("workflow" or "workflows").' : 'looking…'}</span></p>}

@@ -74,6 +74,8 @@ export interface ManagementContext {
   resume(sessionId: string): Promise<void>;
   /** `before`: what goes before the task's own header, an order's words (issue #105). */
   startSession(project: string, task: string, opts: { parentId: string; title?: string; permissionMode?: PermissionMode; model?: string; profile?: string; cwd?: string; before?: string }): Promise<SessionInfo>;
+  /** A session finished a turn with nothing running: runs through a flow tell their coordinator (workflow part 3b). */
+  onRunSessionTurn?(sessionId: string, lastReply: string): void;
   /** Why the project's workflow profiles file can't be used, or null (#298); the start_session reply says so. */
   profilesWarning?(project: string): string | null;
   /** reason: who stopped it, recorded as the session's end reason (issue #17). */
@@ -277,6 +279,8 @@ export class Management {
    * running means the session is done or waits for someone, so the manager is woken (decided 2026-10-13).
    */
   onTurnFinished(sessionId: string, lastReply: string, pause: string | null = null): void {
+    // A block's session tells its run's coordinator too, when that is not its manager (workflow part 3b).
+    if (!pause) this.ctx.onRunSessionTurn?.(sessionId, lastReply);
     const manager = this.managerOf(sessionId);
     if (!manager) return;
     const source = `${TURN_NOTE_SOURCE}:${sessionId}`;
@@ -691,6 +695,25 @@ ${note}`);
     return (await this.reach(s.id))
       ? `"${s.title}" had ended; it is resumed and compacted once it is up. You are told if the compact fails.`
       : `"${s.title}" is compacted when it is free${note ? ', then gets your message' : ''}. You are told if the compact fails.`;
+  }
+
+  /**
+   * A run's continued step with a fresh context first (workflow part 3f, `context` on the block): the session is compacted,
+   * or cleared with the person's usual countdown, and the step arrives after it as its note. One already waiting or under
+   * way: the step comes as it is. `requester`: the run's coordinator, told if a compact fails.
+   */
+  async freshStep(sessionId: string, requester: string, context: 'compact' | 'clear', text: string): Promise<void> {
+    const s = this.store.getSession(sessionId);
+    if (!s) throw new ManagementError('The session is gone.');
+    if (this.pendingClearOrCompact(sessionId)) this.store.addInbox(sessionId, 'ledung', text);
+    else if (context === 'compact') this.queueCompact(s, requester, undefined, text);
+    else {
+      this.store.addInbox(sessionId, `${CLEAR_SOURCE}:${CLEAR_SECONDS}:${requester}`, "Clear requested by Ledung's workflow before the session's next step.");
+      this.store.addInbox(sessionId, CLEAR_NOTE_SOURCE, "Your conversation was cleared by Ledung's workflow before your next step, which follows.");
+      // The step on its own, after the note: a cancelled clear drops the note only, never the step (review of 3f).
+      this.store.addInbox(sessionId, 'ledung', text);
+    }
+    await this.reach(sessionId);
   }
 
   /** compact_self: a session compacts itself after this turn. */

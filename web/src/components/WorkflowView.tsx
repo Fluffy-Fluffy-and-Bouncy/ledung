@@ -13,6 +13,9 @@ import { amendedBy, newDraft, single, workspaceFromView, type Workspace } from '
 import { ARROW_COLOUR, continueHandles, EDGE_TYPES, FlowMiniMap, FlowTabs, frameColour, frameNode, NODE_TYPES, useMeasured, useNarrow, useOpeningView, withLabelSpots, type BlockData } from './FlowDiagram.tsx';
 import { FlowBuilder } from './FlowBuilder.tsx';
 import { Markdown } from './Markdown.tsx';
+import type { FlowRun } from '../../../src/shared/flow-run.ts';
+import { RunsPanel } from './FlowRuns.tsx';
+import { blockRuns, followLine, openRun, pinCounts, runPath, type RunMarks } from '../flowRuns.ts';
 
 /** A block's title by its id, for "continues Build". */
 const titles = (flow: Flow) => (id: string) => flow.blocks.find((b) => b.id === id)?.title ?? id;
@@ -28,7 +31,13 @@ const flowTitles = (flows: readonly FlowEntry[]) => (name: string): string | und
   return f ? f.flow?.title ?? f.name : undefined;
 };
 
-function Diagram({ flow, layout, texts, selected, onSelect, narrow, flowTitle }: { flow: Flow; layout: FlowLayout; texts: Record<string, string>; selected: string | null; onSelect: (id: string) => void; narrow: boolean; flowTitle: (name: string) => string | undefined }) {
+export function Diagram({ flow, layout, texts, selected, onSelect, narrow, flowTitle, marks, fit = false, still = false }: {
+  flow: Flow; layout: FlowLayout; texts: Record<string, string>; selected: string | null; onSelect: (id: string) => void; narrow: boolean; flowTitle: (name: string) => string | undefined; marks: RunMarks;
+  /** Opened fitted whatever its size: a before and after side by side are read as shapes (part 3e). */
+  fit?: boolean;
+  /** Doesn't take a swipe or the wheel, so the page around it scrolls (a proposal's review on a phone, part 3e). */
+  still?: boolean;
+}) {
   const amended = amendedBy(flow.overlays);
   const [sizes, onMeasured] = useMeasured();
   const title = titles(flow);
@@ -38,7 +47,11 @@ function Diagram({ flow, layout, texts, selected, onSelect, narrow, flowTitle }:
     ...flow.frames.map((f, i) => frameNode(`frame:${i}`, f)),
     ...layout.blocks.map(({ block, x, y }): Node<BlockData> => ({
       id: block.id, type: 'block', position: { x, y }, ...(sizes[block.id] ? { measured: sizes[block.id] } : {}),
-      data: { block, hasBrief: !!block.brief && texts[block.brief] !== undefined, selected: block.id === selected, overlays: amended.get(block.id), runsFlow: flowLine(block, flowTitle), ...(block.continues ? { continuesTitle: title(block.continues) } : {}) },
+      data: {
+        block, hasBrief: !!block.brief && texts[block.brief] !== undefined, selected: block.id === selected, overlays: amended.get(block.id), runsFlow: flowLine(block, flowTitle), ...(block.continues ? { continuesTitle: title(block.continues) } : {}),
+        // The runs in it, its counted pins' progress and the chosen run's path (part 3c).
+        runs: marks.at.get(block.id), counts: marks.counts.get(block.id), path: marks.path.get(block.id),
+      },
     })),
   ];
   const drawn: Edge[] = layout.arrows.map((a) => {
@@ -62,7 +75,8 @@ function Diagram({ flow, layout, texts, selected, onSelect, narrow, flowTitle }:
   // A small flow opens fitted; a large one at a readable zoom from its start, with a map to find the rest (#318).
   const box = useRef<HTMLDivElement>(null);
   const startId = flow.start && layout.blocks.some((p) => p.block.id === flow.start) ? flow.start : layout.blocks[0]?.block.id;
-  const opening = useOpeningView(box, [...layout.blocks, ...flow.frames.map((f) => ({ ...f.at, ...f.size }))], layout.blocks.find((p) => p.block.id === startId));
+  const read = useOpeningView(box, [...layout.blocks, ...flow.frames.map((f) => ({ ...f.at, ...f.size }))], layout.blocks.find((p) => p.block.id === startId));
+  const opening = read && fit ? { fit: true as const } : read;
   return (
     <div className="flow-canvas" ref={box}>
       {opening && (
@@ -70,6 +84,7 @@ function Diagram({ flow, layout, texts, selected, onSelect, narrow, flowTitle }:
           nodes={nodes} edges={edges} nodeTypes={NODE_TYPES} edgeTypes={EDGE_TYPES} minZoom={0.2} maxZoom={2}
           {...(opening.fit ? { fitView: true, fitViewOptions: { padding: 0.15 } } : { defaultViewport: opening })}
           nodesDraggable={false} nodesConnectable={false} edgesFocusable={false} elementsSelectable={false}
+          {...(still ? { panOnDrag: false, zoomOnScroll: false, zoomOnPinch: false, preventScrolling: false } : {})}
           onNodeClick={(_, n) => n.type === 'block' && onSelect(n.id)} onNodesChange={onMeasured}
         >
           <Background gap={24} />
@@ -82,7 +97,7 @@ function Diagram({ flow, layout, texts, selected, onSelect, narrow, flowTitle }:
   );
 }
 
-function BlockList({ flow, layout, texts, onSelect, flowTitle }: { flow: Flow; layout: FlowLayout; texts: Record<string, string>; onSelect: (id: string) => void; flowTitle: (name: string) => string | undefined }) {
+function BlockList({ flow, layout, texts, onSelect, flowTitle, marks }: { flow: Flow; layout: FlowLayout; texts: Record<string, string>; onSelect: (id: string) => void; flowTitle: (name: string) => string | undefined; marks: RunMarks }) {
   const title = titles(flow);
   // A frame's title (#446) above the first of its blocks in the list, when the one before was in no frame or another.
   const frames = frameOf(layout.blocks, flow.frames);
@@ -95,8 +110,9 @@ function BlockList({ flow, layout, texts, onSelect, flowTitle }: { flow: Flow; l
           <li role="presentation" className={`flow-list-frame${frames.get(b.id)!.colour ? ' coloured' : ''}`} style={frameColour(frames.get(b.id)!)}>{frames.get(b.id)!.title}</li>
         )}
         <li>
-          <button className={`flow-list-item kind-${b.kind}`} onClick={() => onSelect(b.id)}>
-            <span className="flow-block-top"><span className="flow-kind">{KIND_LABEL[b.kind]}</span></span>
+          <button className={`flow-list-item kind-${b.kind}${marks.path.get(b.id) ? ` on-path ${marks.path.get(b.id)}` : ''}`} onClick={() => onSelect(b.id)}>
+            <span className="flow-block-top"><span className="flow-kind">{KIND_LABEL[b.kind]}</span>
+              {(marks.at.get(b.id) ?? []).map((r) => <span key={r.id} className={`flow-run-marker${r.waiting ? ' waiting' : ''}`} title={r.title}>● {r.label}</span>)}</span>
             <span className="flow-block-title">{b.title}</span>
             {actorLine(b, title) && <span className="flow-block-actor">{actorLine(b, title)}</span>}
             {flowLine(b, flowTitle) && <span className="flow-block-actor flow-block-runs">▸ {flowLine(b, flowTitle)}</span>}
@@ -105,6 +121,7 @@ function BlockList({ flow, layout, texts, onSelect, flowTitle }: { flow: Flow; l
               return <span key={`s${i}`} className="flow-list-substep">{t.head} · {t.detail}{t.outcomes ? ` · ${t.outcomes}` : ''}{t.note ? ` · ${t.note}` : ''}</span>;
             })}
             {arrowsFrom(layout, b.id).map((line, i) => <span key={i} className="flow-list-arrow">{line}</span>)}
+            {(marks.counts.get(b.id) ?? []).map((c, i) => c && <span key={`c${i}`} className="flow-pin-count">{c.full}</span>)}
             {b.brief && texts[b.brief] !== undefined && <span className="flow-block-brief">📄 {b.brief.split('/').pop()}</span>}
           </button>
         </li>
@@ -224,8 +241,12 @@ function notEditable(view: FlowView): string | null {
   return null;
 }
 
-export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowFlow, onRenamedFlow }: {
+export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowFlow, onRenamedFlow, liveRuns, connected = 0 }: {
   project: string; profiles: string[]; onSettings: () => void;
+  /** The project's runs as the live connection last sent them (part 3c); none yet: those read on opening. */
+  liveRuns?: FlowRun[];
+  /** The live connection's hellos: a reconnect reads the runs again (review of 3c). */
+  connected?: number;
   /**
    * The flow shown, from the address (#447): null for the default one. Showing another is a history entry
    * (`onShowFlow`), so Back steps through the flows viewed; a flow renamed in the builder replaces its entry.
@@ -244,6 +265,7 @@ export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowF
   // The builder (#311): open with the flows it edits (#447) and the one shown first.
   const [editing, setEditing] = useState<Workspace | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
+  const [backing, setBacking] = useState(false);
   // The flow shown (#447), by name; one that is gone shows the default one, and says so.
   const shownName = shownFlow ?? DEFAULT_FLOW;
   useEffect(() => {
@@ -251,6 +273,16 @@ export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowF
     api.flow(project).then((v) => live && setView(v), (e: Error) => live && setError(e.message));
     return () => { live = false; };
   }, [project]);
+  // Its runs (part 3c): read on opening, then as the live connection sends them; one chosen shows its path.
+  const [readRuns, setReadRuns] = useState<FlowRun[]>([]);
+  const [runsError, setRunsError] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    api.runs(project).then((r) => { if (live) { setReadRuns(r); setRunsError(null); } }, (e: Error) => live && setRunsError(e.message));
+    return () => { live = false; };
+  }, [project, connected]);
+  const runs = liveRuns ?? readRuns;
+  const [chosenRun, setChosenRun] = useState<string | null>(null);
   const flows = useMemo(() => (view ? flowsOf(view) : []), [view]);
   const shown = flows.find((f) => f.name === shownName) ?? flows[0];
   const flowTitle = useMemo(() => flowTitles(flows), [flows]);
@@ -260,10 +292,26 @@ export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowF
   };
   // Back or Forward to another flow: nothing of the one before stays chosen.
   useEffect(() => { select(null); }, [shownName]);
+  const flowNameTitle = (name: string) => flowTitle(name) ?? name;
   const unknown = view && shownFlow !== null && !flows.some((f) => f.name === shownFlow) ? shownFlow : null;
   const flow = shown?.flow ?? null;
   const layout = useMemo(() => (flow ? layoutFlow(flow) : null), [flow]);
   const block = flow?.blocks.find((b) => b.id === selected) ?? null;
+  const chosen = runs.find((r) => r.id === chosenRun) ?? null;
+  const marks = useMemo<RunMarks>(() => {
+    const name = shown?.name ?? DEFAULT_FLOW;
+    return { at: blockRuns(runs, name), counts: pinCounts(flow, runs, name, chosen), path: chosen && chosen.flow === name ? runPath(chosen) : new Map() };
+  }, [runs, chosen, flow, shown?.name]);
+  const chooseRun = (id: string | null) => {
+    setChosenRun(id);
+    const r = runs.find((x) => x.id === id);
+    if (r && r.flow !== shownName) onShowFlow(r.flow);
+  };
+  // "Start anyway" for a queued run (part 3f); the live connection brings the change.
+  const startRun = (id: string) => api.startRun(project, id).then(() => null, (e: Error) => e.message);
+  const stopRun = (id: string) => api.stopRun(project, id).then(() => null, (e: Error) => e.message);
+  const follow = followLine(flow);
+  const runsPanel = <RunsPanel runs={runs} chosen={chosenRun} onChoose={chooseRun} flowTitle={flowNameTitle} error={runsError} follow={follow} onStart={startRun} onStop={stopRun} blockTitle={(f, id) => flows.find((x) => x.name === f)?.flow?.blocks.find((b) => b.id === id)?.title ?? id} />;
   const managerShown = manager && !!view?.flow?.manager;
   const showDiagram = !narrow || diagramOnPhone;
   const source = view?.source;
@@ -327,6 +375,19 @@ export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowF
         </details>
       )}
       {view && view.source && cannot && <p className="muted flow-note">{cannot}</p>}
+      {view?.shared?.differs && (
+        // ledung#110: a project's own copy, which no longer gets the shared workflow's changes.
+        <div className="flow-note flow-shared-note" role="status">
+          <span>{project} has its own copy of the shared workflow "{view.shared.workflow}", and it differs from it: {project} doesn't get changes made to "{view.shared.workflow}".</span>{' '}
+          {backing
+            ? <span className="flow-confirm-buttons">
+                <span>Remove {project}'s own copy (its flow.json, flows/, rules, manager.md, briefs and overlays) so it follows "{view.shared.workflow}" again? Git keeps what was committed.</span>
+                <button className="small deny" onClick={() => api.backToShared(project, view.versions).then((v) => { setView(v); setBacking(false); setSaved(`${project} follows "${view.shared!.workflow}" again.`); }, (e: Error) => { setBacking(false); setError(e.message); })}>Back to shared</button>
+                <button className="small" onClick={() => setBacking(false)}>Keep its own</button>
+              </span>
+            : <button className="small" onClick={() => setBacking(true)}>Back to shared…</button>}
+        </div>
+      )}
       {view && !view.source && (
         <div className="page-body flow-empty">
           <p>{project} has no drawn workflow yet.</p>
@@ -345,6 +406,13 @@ export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowF
       {view && layout && (
         <div className={`flow-main${(block || managerShown) && narrow ? ' block-open' : ''}`}>
           <div className="flow-drawing">
+            {/* On a phone the Runs list comes before the blocks, so a run chosen marks a path that is in view (review of 3c). */}
+            {narrow && runs.length > 0 && (
+              <details className="flow-runs-fold" open={runs.some(openRun)}>
+                <summary>Runs ({runs.filter(openRun).length} under way)</summary>
+                <RunsPanel runs={runs} chosen={chosenRun} onChoose={chooseRun} flowTitle={flowNameTitle} error={runsError} heading={false} follow={follow} onStart={startRun} onStop={stopRun} blockTitle={(f, id) => flows.find((x) => x.name === f)?.flow?.blocks.find((b) => b.id === id)?.title ?? id} />
+              </details>
+            )}
             {narrow && (
               <div className="flow-switch" role="group" aria-label="Show as">
                 <button className={`small${showDiagram ? '' : ' on'}`} aria-pressed={!showDiagram} onClick={() => setDiagramOnPhone(false)}>List</button>
@@ -352,15 +420,18 @@ export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowF
               </div>
             )}
             {showDiagram
-              ? <Diagram key={`${view.project}:${shown?.name}`} flow={flow!} layout={layout} texts={view.texts} selected={selected} onSelect={choose} narrow={narrow} flowTitle={flowTitle} />
-              : <BlockList flow={flow!} layout={layout} texts={view.texts} onSelect={choose} flowTitle={flowTitle} />}
+              ? <Diagram key={`${view.project}:${shown?.name}`} flow={flow!} layout={layout} texts={view.texts} selected={selected} onSelect={choose} narrow={narrow} flowTitle={flowTitle} marks={marks} />
+              : <BlockList flow={flow!} layout={layout} texts={view.texts} onSelect={choose} flowTitle={flowTitle} marks={marks} />}
           </div>
           <aside className="flow-panel">
             {block
               ? <BlockPanel block={block} flow={flow!} layout={layout} texts={view.texts} onBlock={select} onClose={() => select(null)} flowTitle={flowTitle} onFlow={show} />
               : managerShown
                 ? <ManagerPanel flow={view.flow!} texts={view.texts} onClose={() => setManager(false)} />
-                : <Rules view={view} onManager={openManager} />}
+                : <>
+                  {!(narrow && runs.length > 0) && runsPanel}
+                  <Rules view={view} onManager={openManager} />
+                </>}
           </aside>
         </div>
       )}

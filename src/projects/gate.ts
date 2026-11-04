@@ -1,6 +1,6 @@
 // Project settings that loosen what reaches the user (issue #107). A change that removes a sensitive
 // pattern, gives the manager a new grant, lets its project tools run unasked, lets it change projects' settings (#306) or sets a new dev ship
-// command lets through what used to reach the user, so the server asks for the open page's key, like a
+// command or worktree setup command (part 3f) lets through what used to reach the user, so the server asks for the open page's key, like a
 // sensitive decision (#104). Every other setting, and every tightening, still needs only the cookie
 // (issue #107's Done bullet: "Other settings changes still work with the cookie").
 import type { ProjectConfig } from '../config.ts';
@@ -23,7 +23,10 @@ export function loosensGate(before: ProjectConfig | null, after: Record<string, 
   // A manager that may change projects' settings could change its own sensitive list (issue #306).
   if (after.projectSettingsTools === true && before?.projectSettingsTools !== true) return true;
   // Free text and a pattern: a changed one may say more than the old, so any new one counts.
-  return newText(after.managerGrant, before?.managerGrant) || newText(after.devShipCommand, before?.devShipCommand);
+  // The worktree setup command (part 3f) is run by Ledung itself at each run's start, past every prompt and pattern
+  // (final review of part 3, finding 1): a new or changed one is the user's alone, as a grant is.
+  return newText(after.managerGrant, before?.managerGrant) || newText(after.devShipCommand, before?.devShipCommand)
+    || newText(after.worktreeSetup, before?.worktreeSetup);
 }
 
 function newText(sent: unknown, had: string | undefined): boolean {

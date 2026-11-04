@@ -16,7 +16,8 @@ import { SETTINGS_ACTIONS } from './word.ts';
 import { SETTINGS_PATCH, type SettingsPatch } from '../projects/settings-tools.ts';
 
 export const LEDUNG_SERVER = 'ledung';
-const SESSION_TOOLS = ['ask_user', 'withdraw_question', 'compact_self', 'clear_self'];
+// The run tools (workflow part 3) only record and report; any session of a project that follows its flow has them.
+const SESSION_TOOLS = ['ask_user', 'withdraw_question', 'compact_self', 'clear_self', 'flow_start', 'flow_step', 'flow_status'];
 const MANAGER_TOOLS = [
   'start_session', 'list_sessions', 'read_session', 'send_message', 'stop_session', 'archive_session', 'clear_session', 'compact_session',
   'answer_question', 'forward_answer', 'list_managers', 'message_manager',
@@ -29,6 +30,8 @@ const MANAGER_TOOLS = [
   'project_settings',
   // The message board (docs/steps/message-board.md): never user-approved; the outgoing check guards posts (decision 6).
   'board_post', 'board_read', 'board_threads',
+  // A workflow change only proposed: the person accepts it in a review before anything is written (part 3e).
+  'flow_propose',
 ];
 /**
  * Manager tools that reach beyond the manager's own project: always the user's to approve, in every
@@ -152,6 +155,24 @@ export interface ManagerHandlers {
   usagePublish(args: { enabled?: boolean; repo?: string; allAccounts?: boolean; accounts?: Record<string, boolean> }): Promise<string>;
 }
 
+/**
+ * The run tools (workflow part 3, docs/steps/workflow-follow.md), bound to a session of a project that has a flow and
+ * follows it. Any session may start a run when the person asks it; whoever started one coordinates it.
+ */
+export interface RunHandlers {
+  /** None for a session Ledung started or continued for a block: it does its step, it starts no runs (final review, 2). */
+  start?(args: { title: string; ref?: string; flow?: string; again?: boolean }): Promise<string>;
+  step(args: { run: string; outcome: string; note?: string; block?: string; stop?: boolean }): Promise<string>;
+  status(run?: string): Promise<string>;
+}
+
+/** flow_propose (workflow part 3e), bound to a manager whose project follows its workflow. */
+export interface ProposeHandlers {
+  propose(changes: { file: string; text?: string; remove?: boolean }[], why: string): Promise<string>;
+  /** The "workflow building" guide, for a manager that has no skill for it (a container project's, #1577). */
+  guide?: () => string;
+}
+
 /** The board tools, bound to a manager whose project has the board on (docs/steps/message-board.md). */
 export interface BoardHandlers {
   post(args: { to?: string[]; thread?: string; title?: string; text: string; attachments?: string[] }): Promise<string>;
@@ -182,6 +203,10 @@ export interface ToolHandlers {
   manager?: ManagerHandlers;
   /** Managers only, and only when their project has the board on (decision 9). */
   board?: BoardHandlers;
+  /** Only in a project that has a flow and follows it (workflow part 3); short descriptions, as they are in every turn's context. */
+  runs?: RunHandlers;
+  /** Managers only, in a project that follows its workflow (part 3e). */
+  propose?: ProposeHandlers;
   /**
    * Its project is in lockdown level B (issue #109): a manager gets only the tools for its own sessions
    * and ask_user; nothing that reaches other managers, other projects or the board.
@@ -563,6 +588,50 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
         then: z.string().min(1).optional().describe('Also delivered after the clear, e.g. "Then continue with issue 12."'),
         countdown_seconds: z.number().int().min(10).max(600).optional().describe(`How long ${who} has to cancel it (default 30).`),
       }, async (a) => safely(() => own.clear(a.handoff_file, a.then, a.countdown_seconds))) as never,
+    );
+  }
+
+  const r = h.runs;
+  if (r) {
+    const run = z.string().min(1).max(20).describe('The run, e.g. "run-3".');
+    if (r.start) tools.push(
+      // A manager routes work in; another session starts a run only when the person asks it (Simon, 2026-11-03).
+      tool('flow_start', `Start a piece of work in your project's workflow (${h.role === 'manager' ? `when you route work in, or ${who} asks` : `only when ${who} asks you`} to run the workflow on something). Ledung tracks it through the flow and says what to do at its first block; you coordinate it.`, {
+        title: z.string().min(1).max(120).describe('What the work is, e.g. "Fix the cart total".'),
+        ref: z.string().min(1).max(60).optional().describe('An issue or PR, e.g. "#142".'),
+        flow: z.string().min(1).max(120).optional().describe('A flow by name or title; default: the main one.'),
+        again: z.boolean().optional().describe('Start it although a run for this ref is under way.'),
+      }, async (a) => safely(() => r.start!(a))) as never,
+    );
+    tools.push(
+      tool('flow_step', "Report how a run's current block ended, by the outcome's word as you read the result. Ledung counts it, takes the outcome (a counted one on its Nth time) and says what to do next.", {
+        run,
+        outcome: z.string().min(1).max(200).describe("The outcome's word, e.g. \"Approved\"; with stop, why."),
+        note: z.string().min(1).max(4000).optional().describe('What to hand on to the next step: the PR, the findings.'),
+        block: z.string().min(1).max(80).optional().describe('The block you report on; refused if the run has left it.'),
+        stop: z.boolean().optional().describe('Stop the run where it is.'),
+      }, async (a) => safely(() => r.step(a))) as never,
+      tool('flow_status', "Your project's runs: where each is, or one in full (counts, sessions, history).", {
+        run: run.optional(),
+      }, async (a) => safely(() => r.status(a.run))) as never,
+    );
+  }
+
+  const pr = h.propose;
+  if (h.role === 'manager' && pr) {
+    tools.push(
+      tool('flow_propose', `Propose new or changed workflow files (.ledung/workflow) to ${who}: Ledung checks them and asks ${who} in a review with before and after diagrams; Accepted saves them. Never change the workflow another way.${pr.guide ? ' Call it with no changes for the guide to the format.' : ''}`, {
+        changes: z.array(z.object({
+          file: z.string().min(1).max(200).describe('Its path in .ledung/workflow, e.g. "flow.json", "briefs/reviewer.md".'),
+          text: z.string().max(262144).optional().describe('The whole new text.'),
+          remove: z.boolean().optional().describe('Remove it (a flow in flows/ only).'),
+        })).max(300).optional(),
+        why: z.string().min(1).max(4000).optional().describe('Why, for the review.'),
+      }, async (a) => safely(() => {
+        if (!a.changes?.length && pr.guide) return pr.guide();
+        if (!a.why?.trim()) throw new Error(`Say why, for ${who}'s review.`);
+        return pr.propose(a.changes ?? [], a.why);
+      })) as never,
     );
   }
 

@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { boardConfig, parseProject, workflowsOf } from '../config.ts';
 import { checkFolder, chosenWorkflow, projectWorkflow, withProfilesWarning, type WorkflowCheck } from './workflow.ts';
-import { flowInstructions, flowPlaces, readFlowView, saveFlowFiles, type FlowPlace } from './flow-files.ts';
+import { backToShared, findFlow, flowInstructions, flowPlaces, readFlows, readFlowView, saveFlowFiles, type FlowPlace } from './flow-files.ts';
 import type { FlowView } from '../shared/flow.ts';
 import { remoteControlName } from './remote-control.ts';
 import { loosensGate } from '../projects/gate.ts';
@@ -21,7 +21,7 @@ import { matchSensitive } from './sensitive.ts';
 import { AIRGAP_PROFILE, isLocked, levelProblem, lockdownOf, opensUp, othersSettings, overlapProblem, projectFolders, within } from '../projects/lockdown.ts';
 import { LATER_SUGGESTIONS, withSuggestions } from '../shared/sensitive-suggestions.ts';
 import { isNameColour, parseNameColour } from '../shared/name-colours.ts';
-import { ledungTier, reviewAnswerProblem, tiersOf } from '../shared/questions.ts';
+import { ACCEPTED, ledungTier, questionText, reviewAnswerProblem, tiersOf, type QuestionDetails } from '../shared/questions.ts';
 import {
   BrowseError, createProjectFolder, defaultProjectsFolder, defaultRoots, isInside, listContainer, listContainers, listLocal,
   type ContainerInfo, type FolderListing,
@@ -87,6 +87,22 @@ import { SecretError, type Secrets, type SecretScope } from '../secrets/secrets.
 import { cleanStaleRuntime, metaPlaceBook, SessionSecrets, type PlaceBook } from '../secrets/live.ts';
 import { DockerSecretRuntime, LocalSecretRuntime } from '../secrets/runtime.ts';
 import type { SecretInfo, SecretLifetime } from '../shared/secrets.ts';
+import { FlowRunError, FlowRuns, lastReplyOf } from './flow-runs.ts';
+import { dockerWorktreeHost, localWorktreeHost } from './run-worktrees.ts';
+import { RunStore } from './run-store.ts';
+import type { FlowRun } from '../shared/flow-run.ts';
+import type { RunBlock } from '../shared/protocol.ts';
+import type { ProposeHandlers, RunHandlers } from './tools.ts';
+import { buildProposal, ProposalStore, proposalSummary, type ProposedChange } from './flow-propose.ts';
+import type { FlowProposal } from '../shared/flow-proposal.ts';
+
+/** Ledung's own plugin with the "workflow building" skill (part 3e, #1577), shipped beside src/ and web/. */
+export const WORKFLOW_PLUGIN = () => path.join(appDir(), 'plugins', 'ledung-workflow');
+/** The skill's text without its front matter: the guide flow_propose gives a manager that can't load the plugin. */
+export function workflowGuide(dir = WORKFLOW_PLUGIN()): string {
+  const text = fs.readFileSync(path.join(dir, 'skills', 'workflow-building', 'SKILL.md'), 'utf8');
+  return text.replace(/^---[\s\S]*?\n---\n+/, '');
+}
 
 const LIMIT_KEY = 'max-working-sessions';
 /** Usage stops once set in Settings (issue #278), and the ones lifted by hand, by window; kept in meta, so no migration. */
@@ -133,6 +149,11 @@ export function resumedState(info: SessionInfo): {
 let exercised425 = false;
 let exercised96 = false;
 
+/** How long the sidebar's read of which projects have a flow waits for one project (a container's docker exec). */
+const WORKFLOWS_READ_MS = 5000;
+/** How long one answer to it is shared by every page that asks. */
+const WORKFLOWS_FRESH_MS = 3000;
+
 export class SessionManager {
   private readonly live = new Map<string, Session>();
   /** Replaced when the config file changes (issue #353), so it is read when needed, never copied at start. */
@@ -142,6 +163,10 @@ export class SessionManager {
   private readonly store: Store;
   private readonly publish: (event: ServerEvent) => void;
   private readonly management: Management;
+  /** Runs through the projects' flows (workflow part 3). */
+  readonly flowRuns: FlowRuns;
+  /** Managers' proposed workflow changes (part 3e). */
+  private readonly proposals: ProposalStore;
   /** The linked computers (#245), set by the server whenever its public name changes. */
   private linked: LinkedPort | null = null;
   /** Settings' page-only actions for managers (#263), set by the server. */
@@ -234,6 +259,7 @@ export class SessionManager {
       addProject: (config) => this.addProject(this.withFirstWorkflow(config)),
       createProject: (opts) => this.createProject({ ...opts, settings: this.withFirstWorkflow(opts.settings) }),
       ensureManager: (project) => this.ensureManager(project),
+      onRunSessionTurn: (id, reply) => this.flowRuns.onSessionTurn(id, reply),
       // The page's own save, with its checks (issue #306); the tools decide what they may change and what is asked.
       projectSettings: {
         config: (name) => this.projectStore.get(name)?.config ?? null,
@@ -251,6 +277,95 @@ export class SessionManager {
         const ev = this.readEvidenceFile(id, file, true);
         return { file: ev.file, kind: ev.kind === 'text' ? 'text' : 'image' };
       },
+    });
+    this.proposals = new ProposalStore(store.database);
+    this.flowRuns = new FlowRuns({
+      runs: new RunStore(store.database),
+      getSession: (id) => this.store.getSession(id),
+      managerOf: (project) => this.projectStore.get(project)?.managerId ?? null,
+      flows: (project) => {
+        const config = this.projectStore.get(project)?.config;
+        return config ? readFlows(this.flowPlacesOf(config)) : Promise.resolve(null);
+      },
+      following: (project) => this.projectStore.get(project)?.config.followFlow !== false,
+      // A coordinator that ended is resumed, as a continued block's session is (final review of part 3, finding 3).
+      tell: (id, text) => {
+        this.store.addInbox(id, 'ledung', text);
+        void this.resumeIfEnded(id).then(() => this.live.get(id)?.deliver(), (e: Error) => {
+          // One that can't be resumed: its project's manager is told what it was told, so the run is not stranded.
+          const s = this.store.getSession(id);
+          const manager = s ? this.projectStore.get(s.project)?.managerId : null;
+          console.warn(`Workflow: could not resume ${id} to tell it: ${e.message}`);
+          if (!manager || manager === id) return;
+          this.store.addInbox(manager, 'ledung', `Ledung could not resume "${s!.title}" (${id}), which coordinates a run, to tell it this (${e.message}); you may coordinate its runs:\n\n${text}`);
+          void this.resumeIfEnded(manager).then(() => this.live.get(manager)?.deliver(), () => {});
+        });
+      },
+      changed: (project) => this.publish({ type: 'runs', project, runs: this.flowRuns.list(project) }),
+      // Part 3b: a block's session is started under the run's coordinator with the block's settings, its step from Ledung.
+      startSession: async (b) => {
+        const s = await this.start(b.project, b.task, {
+          parentId: b.coordinator, title: b.title, model: b.model, profile: b.profile, runBlock: b.runBlock, ...(b.cwd ? { cwd: b.cwd, runWorktree: true } : {}),
+          intro: `Your step, from Ledung's workflow (run ${b.runBlock.run}, block ${b.runBlock.block}):`,
+        });
+        // A start that failed ends the session rather than throwing (review of 3b, finding 2).
+        if (s.status === 'ended') throw new Error(`the session could not start: ${s.endReason ?? 'unknown reason'}.`);
+        return s;
+      },
+      stopSession: async (id, reason) => {
+        if (this.store.getSession(id)?.status !== 'ended') await this.stop(id, reason);
+      },
+      continueSession: async (id, text, runBlock, fresh) => {
+        this.store.updateSession(id, { runBlock });
+        this.publish({ type: 'session', session: this.store.getSession(id)! });
+        const step = `Your next step, from Ledung's workflow (run ${runBlock.run}, block ${runBlock.block}):\n\n${text}`;
+        // A fresh context first (part 3f): the step comes as the note after the compact or clear.
+        if (fresh) {
+          await this.management.freshStep(id, fresh.by, fresh.context, step);
+          return;
+        }
+        this.store.addInbox(id, 'ledung', step);
+        await this.resumeIfEnded(id);
+        this.live.get(id)?.deliver();
+      },
+      archiveSession: (id, by) => void this.archive(id, by),
+      worktreeHost: (name) => {
+        const config = this.projectStore.get(name)?.config;
+        if (!config) return null;
+        const env = () => Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => e[1] !== undefined));
+        return config.runner === 'local'
+          ? localWorktreeHost(config.path, (command, cwd) => new LocalRunner(config, cwd, this.config.claudeExecutable).shell(command, this.config.windowsShell, env()))
+          // Its own tag per setup, the run's folder in it, so two setups in one container never stop each other (final review, 6).
+          : dockerWorktreeHost(config, (command, cwd) => new DockerRunner(config, `worktree-${path.posix.basename(cwd)}-${randomUUID().slice(0, 8)}`, cwd).shell(command, null, env()));
+      },
+      worktreeSetup: (name) => this.projectStore.get(name)?.config.worktreeSetup,
+      sessionsOf: (name, run) => this.store.listSessions().filter((s) => s.project === name && s.runBlock?.run === run).map((s) => s.id),
+      // Real paths on both sides: a session's folder is its real path, a worktree's is under the configured one, which may
+      // go through a link (final review of part 3, finding 4).
+      workingIn: (name, folder) => {
+        const local = this.projectStore.get(name)?.config.runner === 'local';
+        const real = (p: string) => {
+          try {
+            return local ? fs.realpathSync.native(p) : p;
+          } catch {
+            return p;
+          }
+        };
+        const at = real(folder);
+        return this.store.listSessions().filter((s) => s.project === name && s.status !== 'ended' && s.workDir && real(s.workDir) === at).map((s) => s.title);
+      },
+      lastReply: (id) => lastReplyOf(this.store.listMessages(id, { limit: 200 })),
+      ask: (a) => {
+        const q = this.store.createQuestion({ sessionId: a.coordinator, question: a.question, options: a.options, addressedTo: 'user', details: a.details });
+        this.publish({ type: 'question', question: q });
+        return q;
+      },
+      markDelivered: (id) => this.store.markDelivered([id]),
+      withdraw: (id, reason) => {
+        if (this.store.withdrawQuestion(id, reason)) this.publish({ type: 'question', question: this.store.getQuestion(id)! });
+      },
+      tiers: (project) => tiersOf(this.projectStore.get(project)?.config.questionTiers),
+      userName: config.userName,
     });
     this.gate = {
       usageHold: (id) => this.usageHold(id),
@@ -866,8 +981,15 @@ export class SessionManager {
       secrets: this.sessionSecrets(project, info),
       // Looked at on every start and resume, so a config file written meanwhile is found (issue #21).
       workflow: withProfilesWarning(projectWorkflow(chosenWorkflow(workflowsOf(this.config), project), project), profiles.warning),
-      // A manager is told where its project's flow is (issue #310), looked for on every start and resume too.
-      flow: info.role === 'manager' && info.project !== CHATS ? () => flowInstructions(this.flowPlacesOf(project)) : undefined,
+      // A manager is told where its project's flow is (issue #310), looked for on every start and resume too; with the
+      // run tools' line when Ledung follows it (workflow part 3).
+      flow: info.role === 'manager' && info.project !== CHATS ? () => flowInstructions(this.flowPlacesOf(project), project.followFlow !== false) : undefined,
+      // The run tools only where there is a flow to follow (part 3, "keeping context small").
+      runs: info.project !== CHATS ? () => this.runHandlers(project, info.id) : undefined,
+      // A manager whose project follows its workflow builds and changes it by proposing (part 3e); with the "workflow
+      // building" skill as Ledung's own plugin where Claude Code runs on this computer, else the guide from the tool (#1577).
+      propose: info.role === 'manager' && info.project !== CHATS && project.followFlow !== false ? this.proposeHandlers(project, info.id) : null,
+      ledungPlugins: info.role === 'manager' && info.project !== CHATS && project.followFlow !== false && project.runner === 'local' ? [WORKFLOW_PLUGIN()] : [],
       remoteControl: launch.remoteControl,
       sensitive: {
         commandPatterns: [...this.config.sensitive.commandPatterns, ...project.sensitive.commandPatterns],
@@ -1047,6 +1169,10 @@ export class SessionManager {
     this.publish({ type: 'question', question: q });
     // A question that went to a manager: tell the manager Simon answered it directly.
     this.management.onUserAnswered(q);
+    // A proposed workflow change is saved on Accepted (part 3e), before the answer reaches the manager.
+    await this.settleProposal(q);
+    // A person block's answer moves its run (workflow part 3b).
+    await this.flowRuns.onAnswered(q).catch((e) => console.error(`Workflow: ${(e as Error).message}`));
     // A keep-it question about an order (issue #105): Keep puts it back in force, Drop ends it.
     this.orders.answered(q);
     // A held first board post waits for this answer (decision 6). Awaited, so the note on how the post went
@@ -1065,6 +1191,8 @@ export class SessionManager {
   withdrawQuestion(id: number): void {
     if (!this.store.withdrawQuestion(id, `Withdrawn by ${this.config.userName}.`)) throw new UserError('This question is no longer open.');
     this.publish({ type: 'question', question: this.store.getQuestion(id)! });
+    // A person block's question: its run goes back to its coordinator (workflow part 3b).
+    this.flowRuns.onWithdrawn(this.store.getQuestion(id)!);
   }
 
   projects(): ProjectInfo[] {
@@ -1104,6 +1232,170 @@ export class SessionManager {
     } : undefined, workflows);
   }
 
+  /**
+   * The run tools for one session (workflow part 3), or null when its project doesn't follow a flow: switched off, or no
+   * flow.json there. An error reaches the session as the tool's answer.
+   */
+  private async runHandlers(project: ProjectConfig, sessionId: string): Promise<RunHandlers | null> {
+    if (project.followFlow === false) return null;
+    // As the tools read it, so they are offered only when they can work (review of 3a).
+    if (!(await readFlows(this.flowPlacesOf(project)).catch(() => null))) return null;
+    const plain = async (fn: () => Promise<string>) => {
+      try {
+        return await fn();
+      } catch (e) {
+        throw e instanceof FlowRunError ? new Error(e.message) : e;
+      }
+    };
+    return {
+      // A block's session does its step and starts no runs (final review of part 3, finding 2).
+      ...(this.store.getSession(sessionId)?.runBlock ? {} : { start: (a: Parameters<NonNullable<RunHandlers['start']>>[0]) => plain(() => this.flowRuns.start(sessionId, a)) }),
+      step: (a) => plain(() => this.flowRuns.step(sessionId, a)),
+      status: (run) => plain(() => this.flowRuns.status(sessionId, run)),
+    };
+  }
+
+  /** flow_propose for one manager (part 3e): a container project's manager gets the guide from it too. */
+  private proposeHandlers(project: ProjectConfig, managerId: string): ProposeHandlers {
+    return {
+      propose: (changes, why) => this.proposeFlow(managerId, changes, why),
+      ...(project.runner === 'docker' ? { guide: () => workflowGuide() } : {}),
+    };
+  }
+
+  /**
+   * A manager's proposed workflow change (part 3e): checked as the builder checks a save, kept, and put to the person as
+   * a review with the flows before and after; nothing is written until it is accepted.
+   */
+  async proposeFlow(managerId: string, changes: ProposedChange[], why: string): Promise<string> {
+    const manager = this.store.getSession(managerId);
+    if (!manager || manager.role !== 'manager') throw new Error('Only a manager proposes workflow changes.');
+    const project = this.project(manager.project);
+    const view = await this.flowView(project.name);
+    let data;
+    try {
+      data = await buildProposal(view, changes, why, profileNames(this.profilesFor(project).profiles));
+    } catch (e) {
+      throw e instanceof FileError ? new Error(`${e.message} Nothing was proposed.`) : e;
+    }
+    const proposal = this.proposals.create(project.name, managerId, data);
+    const faults = data.problems.filter((p) => !p.hint);
+    const hints = data.problems.filter((p) => p.hint);
+    const listed = (list: typeof faults) => list.slice(0, 12).map((p) => `- ${p.at}: ${p.message}`).join('\n');
+    const tiers = tiersOf(project.questionTiers);
+    const details: QuestionDetails = {
+      title: `Workflow change: ${why.trim().split('\n')[0]!.slice(0, 160)}`,
+      tier: tiers.find((t) => /process/i.test(t)) ?? tiers[0],
+      flowProposal: proposal.id,
+      review: {
+        solving: why.trim(),
+        done: `${manager.title} proposes this change to ${project.name}'s workflow:\n\n${proposalSummary(data)}\n\nThe diagrams below show each flow before and after. Accepted saves it into the project's .ledung/workflow.`,
+        notes: faults.length
+          ? `The checks find ${faults.length === 1 ? 'one problem' : `${faults.length} problems`} in the workflow as it would be:\n\n${listed(faults)}`
+          : `The checks find no problems in the workflow as it would be.${hints.length ? ` Hints:\n\n${listed(hints)}` : ''}`,
+      },
+    };
+    const q = this.store.createQuestion({ sessionId: managerId, question: questionText(undefined, details), options: null, addressedTo: 'user', details });
+    this.proposals.setQuestion(proposal.id, q.id);
+    this.publish({ type: 'question', question: q });
+    return `Your change is put to ${this.config.userName} as review #${q.id}, with the flows before and after.${faults.length ? ` The checks find ${faults.length} problem${faults.length === 1 ? '' : 's'} (said in the review):\n${listed(faults)}\nIf they are real, propose again with them fixed and withdraw review #${q.id}.` : ''} ` +
+      'Accepted saves it; Changes needed comes back with the note. End your turn now.';
+  }
+
+  /** A proposal for the page's review (part 3e). */
+  flowProposal(name: string, id: number): FlowProposal {
+    const p = this.proposals.get(id);
+    if (!p || p.project !== name) throw new UserError('There is no such proposal in this project.');
+    const { manager: _, ...shown } = p;
+    return shown;
+  }
+
+  /**
+   * The person answered a proposal's review (part 3e): Accepted saves it through the builder's save (each file the
+   * version read when it was proposed), Changes needed declines it; the manager is told how the save went.
+   */
+  private async settleProposal(q: QuestionInfo): Promise<void> {
+    const p = q.details?.flowProposal ? this.proposals.get(q.details.flowProposal) : undefined;
+    // Only the review it was put as: the one link from an answer to a write (review of 3e).
+    if (!p || p.question !== q.id || p.state !== 'open' || q.answer === null) return;
+    const accepted = q.answer.trim() === ACCEPTED || q.answer.trim().startsWith(`${ACCEPTED}`);
+    if (!accepted) {
+      this.proposals.setState(p.id, 'declined');
+      return;
+    }
+    try {
+      // What the person saw checked must still be the workflow it is saved into (review of 3e): any file changed since,
+      // also one the proposal doesn't write (a flow it runs, a brief), and it is not saved.
+      const now = (await this.flowView(p.project)).versions;
+      const moved = [...new Set([...Object.keys(p.read ?? {}), ...Object.keys(now)])].filter((f) => (p.read ?? {})[f] !== now[f]);
+      if (moved.length) throw new Error(`the workflow changed since it was proposed (${moved.slice(0, 5).join(', ')}), so what was checked is not what would be saved.`);
+      await this.saveFlow(p.project, p.writes);
+      this.proposals.setState(p.id, 'saved');
+      this.store.addInbox(p.manager, 'ledung', `Ledung: ${this.config.userName} accepted review #${q.id}, and your workflow change is saved into ${p.project}'s .ledung/workflow (${p.writes.map((w) => w.path).join(', ')}). The workflow page shows it. Run tools added for a project that had no flow come with your next start.`);
+    } catch (e) {
+      this.proposals.setState(p.id, 'failed');
+      this.store.addInbox(p.manager, 'ledung', `Ledung: ${this.config.userName} accepted review #${q.id}, but the change could not be saved: ${(e as Error).message} Read the workflow files again and propose it anew.`);
+    }
+  }
+
+  /** The person stops a run from the Runs list (final review of part 3, finding 3). */
+  async stopRunFromPage(name: string, run: string): Promise<void> {
+    if (!this.projectStore.get(name)) throw new UserError(`There is no project named "${name}".`);
+    try {
+      await this.flowRuns.stopByPerson(name, run, this.config.userName);
+    } catch (e) {
+      throw e instanceof FlowRunError ? new UserError(e.message) : e;
+    }
+  }
+
+  /** The person starts a queued run past its limit (part 3f). */
+  async startRunAnyway(name: string, run: string): Promise<void> {
+    if (!this.projectStore.get(name)) throw new UserError(`There is no project named "${name}".`);
+    try {
+      await this.flowRuns.startAnyway(name, run, this.config.userName);
+    } catch (e) {
+      throw e instanceof FlowRunError ? new UserError(e.message) : e;
+    }
+  }
+
+  /**
+   * Which projects have a workflow, a flow found in their own folder or a shared workflow's (one that can't be read
+   * counts: its page says why), for the sidebar's Workflow row (Simon, 2026-11-04). Only flow.json is read.
+   */
+  workflowsPresent(): Promise<Record<string, boolean>> {
+    // One read at a time, and its answer shared for a few seconds: a save tells every open page at once, and each asks
+    // (second review of the row: a docker exec per container project per page).
+    const now = Date.now();
+    if (this.workflowsRead && now - this.workflowsRead.at < WORKFLOWS_FRESH_MS) return this.workflowsRead.answer;
+    const answer = this.readWorkflowsPresent();
+    this.workflowsRead = { at: now, answer };
+    answer.catch(() => { this.workflowsRead = null; });
+    return answer;
+  }
+
+  private workflowsRead: { at: number; answer: Promise<Record<string, boolean>> } | null = null;
+
+  private async readWorkflowsPresent(): Promise<Record<string, boolean>> {
+    const projects = this.projectStore.list().map((p) => p.config);
+    // A container's read that fails says "refused" for every file (review of the row): only a local refusal is a flow
+    // that is there but unreadable. A container slow to answer counts as none rather than holding every project's row.
+    const has = (p: ProjectConfig) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      return Promise.race([
+        findFlow(this.flowPlacesOf(p)).then((f) => f !== null && ('text' in f || p.runner === 'local' || f.place.kind === 'workflow'), () => false),
+        new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), WORKFLOWS_READ_MS); }),
+      ]).finally(() => clearTimeout(timer));
+    };
+    const found = await Promise.all(projects.map(has));
+    return Object.fromEntries(projects.map((p, i) => [p.name, found[i]!]));
+  }
+
+  /** A project's runs for the workflow page (part 3), the latest changed first. */
+  flowRunsOf(name: string): FlowRun[] {
+    if (!this.projectStore.get(name)) throw new UserError(`There is no project named "${name}".`);
+    return this.flowRuns.list(name);
+  }
+
   /** The workflow page (issue #310, part 1): a project's flow with its texts and the checks' problems, read-only. */
   async flowView(name: string): Promise<FlowView> {
     const project = this.projectStore.get(name)?.config;
@@ -1133,6 +1425,30 @@ export class SessionManager {
       throw e instanceof FileError ? new UserError(e.message) : e;
     }
     console.log(`Workflow: saved ${Array.isArray(files) ? files.length : 0} file(s) into ${own.folder} from the builder.`);
+    // Every open page's Workflow row: the project may have a flow now (2026-11-04).
+    this.workflowsRead = null;
+    this.publish({ type: 'workflows' });
+    return this.flowView(name);
+  }
+
+  /**
+   * ledung#110 "Back to shared": the project's own flow.json and flows/ are removed, so the shared workflow it follows
+   * counts again; then the workflow as it now reads. One save at a time per project, as the builder's.
+   */
+  async backToSharedFlow(name: string, versions: Record<string, string>): Promise<FlowView> {
+    const project = this.projectStore.get(name)?.config;
+    if (!project) throw new UserError(`There is no project named "${name}".`);
+    const before = this.flowSaves.get(project.name) ?? Promise.resolve();
+    const going = before.then(() => backToShared(this.flowPlacesOf(project), versions));
+    this.flowSaves.set(project.name, going.then(() => {}, () => {}));
+    try {
+      const files = await going;
+      console.log(`Workflow: ${name} went back to its shared workflow's flow; removed ${files.join(', ')}.`);
+    } catch (e) {
+      throw e instanceof FileError ? new UserError(e.message) : e;
+    }
+    this.workflowsRead = null;
+    this.publish({ type: 'workflows' });
     return this.flowView(name);
   }
 
@@ -1752,6 +2068,7 @@ export class SessionManager {
     await Promise.all(running.map((s) => s.stop(`The project "${name}" was removed.`).catch(() => {})));
     for (const s of running) this.live.delete(s.id);
     this.projectStore.remove(name);
+    this.flowRuns.stopProject(name, `the project "${name}" was removed`);
     // Its secrets, the project's and its sessions', go with it (issue #468).
     void this.secrets?.dropProject(name).catch((e) => console.error(`Secrets of ${name}: ${(e as Error).message}`));
     this.boards?.refresh();
@@ -2085,7 +2402,7 @@ export class SessionManager {
   }
 
   private runnerFor(project: ProjectConfig, info: SessionInfo): Runner {
-    return project.runner === 'local' ? new LocalRunner(project, info.workDir, this.config.claudeExecutable) : new DockerRunner(project, info.id);
+    return project.runner === 'local' ? new LocalRunner(project, info.workDir, this.config.claudeExecutable) : new DockerRunner(project, info.id, info.workDir);
   }
 
   /**
@@ -2093,8 +2410,11 @@ export class SessionManager {
    * extra folders, as a real path; null for the project folder (decision of 2026-10-14). Only local
    * projects: a container's folders would need their own checks inside the container.
    */
-  private workFolder(project: ProjectConfig, wanted: string | undefined): string | null {
+  private workFolder(project: ProjectConfig, wanted: string | undefined, runWorktree = false): string | null {
     if (wanted === undefined || !wanted.trim()) return null;
+    // A container session may work in its run's worktree, and only there (workflow part 3f): Ledung made it inside the
+    // project folder, so it is checked by its form; the runner checks it is there before every start.
+    if (project.runner !== 'local' && runWorktree && path.posix.relative(project.pathInContainer, wanted).match(/^\.ledung\/worktrees\/run-\d+$/)) return wanted;
     if (project.runner !== 'local') throw new UserError(`A working folder (cwd) is not available for container projects such as "${project.name}"; the session runs in the project folder.`);
     let folder: string | null;
     try {
@@ -2117,7 +2437,8 @@ export class SessionManager {
    */
   private checkWorkDir(project: ProjectConfig, info: SessionInfo): void {
     if (!info.workDir) return;
-    const again = info.project === CHATS ? this.chatFolder(info.workDir) : this.workFolder(project, info.workDir);
+    // A run's session in its worktree, in a container too (review of 3f: its resume was refused).
+    const again = info.project === CHATS ? this.chatFolder(info.workDir) : this.workFolder(project, info.workDir, !!info.runBlock);
     if (again === null || path.relative(again, info.workDir) !== '') {
       throw new UserError(`The session's folder ${info.workDir} no longer leads to the same folder; start a new session.`);
     }
@@ -2127,12 +2448,18 @@ export class SessionManager {
   async start(
     projectName: string,
     firstMessage?: string,
-    opts: { role?: SessionRole; parentId?: string; title?: string; permissionMode?: PermissionMode; model?: string; profile?: string; cwd?: string; here?: boolean; before?: string } = {},
+    opts: {
+      role?: SessionRole; parentId?: string; title?: string; permissionMode?: PermissionMode; model?: string; profile?: string; cwd?: string; here?: boolean; before?: string;
+      /** A block's session (workflow part 3b): the run and block it serves, and the heading of its task in place of the manager's. */
+      runBlock?: RunBlock; intro?: string;
+      /** `cwd` is its run's worktree (part 3f): allowed in a container project too. */
+      runWorktree?: boolean;
+    } = {},
   ): Promise<SessionInfo> {
     const project = this.project(projectName);
     // Managers work in the project folder, so the project keeps one place for its manager.
     if (opts.cwd !== undefined && opts.role === 'manager') throw new UserError('A manager always works in the project folder.');
-    const workDir = this.workFolder(project, opts.cwd);
+    const workDir = this.workFolder(project, opts.cwd, opts.runWorktree === true);
     if (project.account) {
       try {
         this.accounts.envFor(project.account);
@@ -2165,7 +2492,8 @@ export class SessionManager {
       requestedModel: opts.model?.trim() || null, profile, workDir,
     });
     if (project.account) this.store.updateSession(info.id, { account: project.account });
-    this.publish({ type: 'session', session: info });
+    if (opts.runBlock) this.store.updateSession(info.id, { runBlock: opts.runBlock });
+    this.publish({ type: 'session', session: this.store.getSession(info.id)! });
     if (role === 'manager') {
       this.projectStore.setManager(project.name, info.id);
       this.publishProjects();
@@ -2181,7 +2509,11 @@ export class SessionManager {
         if (!opts.title && this.store.getSession(info.id)?.title === 'New session') this.store.updateSession(info.id, { title: firstMessage.replace(/\s+/g, ' ').trim().slice(0, 80) });
         const manager = this.store.getSession(opts.parentId);
         // An order's words come first, before anything of the manager's (issue #105).
-        this.store.addInbox(info.id, `manager:${opts.parentId}`, `${opts.before ? `${opts.before}\n\n` : ''}Your task, from your manager "${manager?.title ?? 'manager'}":\n\n${firstMessage}`);
+        this.store.addInbox(info.id, `manager:${opts.parentId}`, `${opts.before ? `${opts.before}
+
+` : ''}${opts.intro ?? `Your task, from your manager "${manager?.title ?? 'manager'}":`}
+
+${firstMessage}`);
         session.deliver();
       } else {
         session.send(firstMessage, opts.here === true);
@@ -2653,6 +2985,8 @@ function projectInfo(p: StoredProject): ProjectInfo {
     questionTiers: tiersOf(c.questionTiers),
     extraFolders: c.runner === 'local' ? c.extraFolders ?? [] : [],
     workflow: c.workflow ?? null,
+    followFlow: c.followFlow !== false,
+    worktreeSetup: c.worktreeSetup ?? null,
     managerId: p.managerId,
     createdAt: p.createdAt,
     colours: p.colours,

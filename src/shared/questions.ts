@@ -105,6 +105,10 @@ export interface QuestionDetails {
   refs?: string[];
   /** A review instead of a question (docs/steps/pr-review.md): its sections, shown on a page of their own. */
   review?: ReviewDetails;
+  /** A person block of a run asked it (workflow part 3b): the answer moves the run; shown with the question. */
+  run?: QuestionRun;
+  /** A manager's proposed workflow change (part 3e), by its number: the review page shows it before and after. */
+  flowProposal?: number;
   /**
    * A call the auto mode classifier refused, raised by Ledung itself (issue #104): never given by ask_user, which
    * builds its details from the fields above only. Answered "Allow once", it lets that exact call through one time.
@@ -136,6 +140,18 @@ export interface RefusalDetails {
   input: Record<string, unknown>;
   reason: string;
   toolUseId: string;
+}
+
+/** The run and block a person block's question belongs to (workflow part 3b), with their titles as asked. */
+export interface QuestionRun {
+  run: string;
+  block: string;
+  runTitle: string;
+  blockTitle: string;
+  /** Whose call it is, as the block names them (part 3d); none: the person using Ledung. */
+  person?: string;
+  /** The flow it runs in, for the link to the workflow page (part 3c). */
+  flow?: string;
 }
 
 /** One option as the desk shows it. `answer` is the text the session gets when it is picked. */

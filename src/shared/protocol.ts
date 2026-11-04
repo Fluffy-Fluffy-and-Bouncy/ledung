@@ -1,5 +1,6 @@
 // Types shared by the core and the page. Only types here: the page imports this file too.
 
+import type { FlowRun } from './flow-run.ts';
 import type { QuestionDetails } from './questions.ts';
 import type { NameColour, ProjectColours } from './name-colours.ts';
 import type { ComputerInfo } from './computers.ts';
@@ -7,6 +8,18 @@ import type { SkillChoices, SkillInfo } from './skills.ts';
 import type { Macro } from './macros.ts';
 import type { SecretInfo } from './secrets.ts';
 import type { OrderInfo } from './orders.ts';
+
+/**
+ * The run and block a session serves (workflow part 3), with what its header shows: the run's and block's titles as they
+ * were then, and the flow, for the link to the workflow page.
+ */
+export interface RunBlock {
+  run: string;
+  block: string;
+  runTitle?: string;
+  blockTitle?: string;
+  flow?: string;
+}
 
 export type SessionStatus =
   /** The process is starting. */
@@ -164,6 +177,8 @@ export interface SessionInfo {
   statusSince?: number | null;
   /** Its elevated commands raise UAC on this PC's desktop (#213): the status line says so while one runs. */
   uac?: boolean;
+  /** The run and block of the project's flow it was started or continued for (workflow part 3); null or left out: none. */
+  runBlock?: RunBlock | null;
 }
 
 /**
@@ -333,6 +348,10 @@ export interface ProjectInfo {
   extraFolders: string[];
   /** Whether it follows a configured workflow (issue #21) and which by name (issue #132; none: the first); null: the default for its kind. */
   workflow: { use?: boolean; name?: string; projectConfig?: string } | null;
+  /** Ledung follows its flow (workflow part 3); on unless switched off. */
+  followFlow?: boolean;
+  /** Run in a run's new worktree (workflow part 3f); null: nothing. */
+  worktreeSetup?: string | null;
   /** Its one manager, once started. */
   managerId: string | null;
   createdAt: number;
@@ -1234,6 +1253,10 @@ export type ServerEvent =
       macros?: Macro[];
     }
   | { type: 'config'; config: ConfigStatus }
+  /** A project's runs through its flows changed (workflow part 3): all of them, the latest changed first. */
+  | { type: 'runs'; project: string; runs: FlowRun[] }
+  /** A project's flow was saved or taken away: the page reads again which projects have one (the sidebar's Workflow row). */
+  | { type: 'workflows' }
   | { type: 'chats'; chats: ChatsInfo }
   | { type: 'computers'; computers: ComputerInfo[] }
   | { type: 'session'; session: SessionInfo }

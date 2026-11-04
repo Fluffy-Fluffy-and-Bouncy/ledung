@@ -70,6 +70,7 @@ test('the staged package pins every dependency to the lockfile, through its pack
     fs.cpSync(path.join(appDir(), file), path.join(source, file));
   }
   fs.symlinkSync(path.join(appDir(), 'src'), path.join(source, 'src'), process.platform === 'win32' ? 'junction' : 'dir');
+  fs.cpSync(path.join(appDir(), 'plugins'), path.join(source, 'plugins'), { recursive: true });
   const stage = path.join(base, 'stage');
   await stagePackage(source, stage);
 

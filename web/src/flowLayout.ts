@@ -300,7 +300,7 @@ export function arrowsFrom(layout: FlowLayout, id: string): string[] {
 }
 
 export const KIND_LABEL: Record<FlowBlock['kind'], string> = {
-  work: 'Work', check: 'Check', person: 'Person', fork: 'Fork', join: 'Join', timer: 'Timer', flow: 'Run flow',
+  work: 'Work', check: 'Check', person: 'Person', fork: 'Fork', join: 'Join', timer: 'Timer', flow: 'Run flow', wait: 'Wait',
 };
 
 /** What a Run flow block runs, in words (#447): "runs Asset", by the flow's title when it is there. */
@@ -308,12 +308,18 @@ export function flowLine(b: FlowBlock, flowTitle?: (name: string) => string | un
   if (b.kind !== 'flow') return null;
   if (b.flow === undefined) return 'runs no flow yet';
   const title = flowTitle?.(b.flow);
-  return title === undefined ? `runs "${b.flow}" (not a flow here)` : `runs ${title}`;
+  // Part 3d: the flow it runs continues the session before it.
+  const caller = b.session === 'caller' ? ", in the caller's session" : '';
+  return title === undefined ? `runs "${b.flow}" (not a flow here)${caller}` : `runs ${title}${caller}`;
 }
 
 /** Who runs it and with what, in one line: "new session · opus · profile review" (#322). */
 export function actorLine(b: FlowBlock, titleOf?: (id: string) => string): string | null {
-  const parts = [runsText(b, titleOf), b.model, b.profile && `profile ${b.profile}`, b.ask && (b.ask === 'review' ? 'asks for a review' : 'asks a question'), timerText(b)].filter(Boolean);
+  // Part 3d: whose call a person block is, a wait, sub-steps run at once.
+  const parts = [
+    runsText(b, titleOf), b.model, b.profile && `profile ${b.profile}`, b.ask && (b.ask === 'review' ? 'asks for a review' : 'asks a question'),
+    b.person && `${b.person}'s call`, b.kind === 'wait' && 'waits on something outside', b.parallel && b.substeps?.length && 'sub-steps at once', timerText(b),
+  ].filter(Boolean);
   return parts.length ? parts.join(' · ') : null;
 }
 

@@ -8,7 +8,7 @@
 // A project may have several flows, and a Run flow block runs another (#447): checkFlowCalls checks them together.
 import { z } from 'zod';
 import { NAME_COLOURS } from './name-colours.ts';
-import { BLOCK_KINDS, DEFAULT_FLOW, drawnArrows, endingKey, flowEndings, FLOW_FILE, outcomeName, RUNS, runsSession, SUBSTEP_KINDS, SUBSTEP_TO, SUBSTEP_WHEN, type DrawnArrow, type Flow, type FlowBlock, type FlowProblem } from './flow.ts';
+import { STOPPED_ENDING, BLOCK_KINDS, DEFAULT_FLOW, drawnArrows, endingKey, flowEndings, FLOW_FILE, outcomeName, RUNS, runsSession, SUBSTEP_KINDS, SUBSTEP_TO, SUBSTEP_WHEN, type DrawnArrow, type Flow, type FlowBlock, type FlowProblem } from './flow.ts';
 
 const ID = /^[a-z0-9][a-z0-9-]{0,47}$/;
 const Id = z.string().regex(ID, 'is lower case letters, digits and "-" (at most 48), starting with a letter or digit');
@@ -83,6 +83,13 @@ const Block = z.object({
   timer: Timer.optional(),
   /** A Run flow block's flow (#447), by name. */
   flow: Id.optional(),
+  /** Part 3f: runs in the block at once; a continued session compacted or cleared first. */
+  limit: z.number().int().min(1).max(100).optional(),
+  context: z.enum(['compact', 'clear'], { message: 'is "compact" or "clear" (its session is made fresh before the step) or left out' }).optional(),
+  /** Part 3d: whose call a person block is, sub-steps run at once, a Run flow block handing on the caller's session. */
+  person: Text(80).optional(),
+  parallel: z.literal(true, { message: 'is true (its sub-steps run at once) or left out' }).optional(),
+  session: z.literal('caller', { message: 'is "caller" (the flow it runs continues the session before it) or left out' }).optional(),
   at: z.object({ x: z.number().finite(), y: z.number().finite() }).optional(),
 });
 
@@ -104,6 +111,21 @@ const Frame = z.object({
   size: z.object({ width: z.number().finite().min(40).max(100000), height: z.number().finite().min(40).max(100000) }),
 });
 
+/** Endings by name, for a worktree's removal or tidying (part 3f). */
+const Endings = z.array(Text(80)).min(1, 'names at least one ending (left out: on every ending)').max(30);
+/** Never read by git as an option (review of 3f). */
+const GitName = Text(100).refine((s) => !s.startsWith('-'), { message: "can't start with \"-\"" });
+const Worktree = z.object({
+  $comment: Comment,
+  base: GitName.optional(),
+  branch: GitName.optional(),
+  remove: z.union([z.literal('never'), z.object({ on: Endings.optional() })], { message: 'is "never" or { "on": ["Merged"] } (left out: on every ending)' }).optional(),
+});
+const Tidy = z.union([
+  z.enum(['archive', 'stop', 'keep']),
+  z.object({ sessions: z.enum(['archive', 'stop']), on: Endings.optional() }),
+], { message: 'is "archive", "stop" or "keep", or { "sessions": "archive", "on": ["Merged"] }' });
+
 const FlowFile = z.object({
   $comment: Comment,
   version: z.literal(1, { message: 'must be 1, the only version this Ledung knows' }),
@@ -113,6 +135,11 @@ const FlowFile = z.object({
   blocks: z.array(Block).min(1, 'a flow needs at least one block').max(200),
   overlays: z.array(Overlay).max(50).default([]),
   frames: z.array(Frame).max(100).default([]),
+  /** Part 3f: a worktree per run, runs at once, tidying at the end, one run per ref. */
+  worktree: Worktree.optional(),
+  limit: z.number().int().min(1).max(100).optional(),
+  tidy: Tidy.optional(),
+  oneRunPerRef: z.boolean().optional(),
 });
 
 /**
@@ -133,7 +160,7 @@ function where(raw: unknown, at: readonly PropertyKey[]): string {
 
 /** The fields each part of the file has; anything else is left out with a problem rather than refusing the file. */
 const FIELDS = {
-  top: Object.keys(FlowFile.shape), block: Object.keys(Block.shape), at: ['x', 'y'], timer: ['every', 'of', 'clock'],
+  top: Object.keys(FlowFile.shape), block: Object.keys(Block.shape), at: ['x', 'y'], timer: ['every', 'of', 'clock'], worktree: Object.keys(Worktree.shape),
   overlay: Object.keys(Overlay.shape), frame: Object.keys(Frame.shape), size: ['width', 'height'], substep: Object.keys(Substep.shape), outcome: Object.keys(Outcome.shape), substepOutcome: Object.keys(SubstepOutcome.shape),
 };
 
@@ -165,6 +192,8 @@ const NOT_IN_SUBSTEP: Record<string, string> = {
  */
 function unknownFields(raw: unknown): FlowProblem[] {
   const problems: FlowProblem[] = [];
+  // Not an object at all ("null", a list): the schema says so; nothing here to look into (review of 3f).
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return problems;
   const look = (value: unknown, fields: string[], at: readonly PropertyKey[], said: Record<string, string> = {}) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return;
     for (const key of Object.keys(value)) {
@@ -180,6 +209,10 @@ function unknownFields(raw: unknown): FlowProblem[] {
     return Array.isArray(v) ? v : [];
   };
   look(raw, FIELDS.top, [], DROPPED_AT_TOP);
+  const top = raw as Record<string, unknown>;
+  look(top.worktree, FIELDS.worktree, ['worktree']);
+  look((top.worktree as Record<string, unknown> | null)?.remove, ['on'], ['worktree', 'remove']);
+  look(top.tidy, ['sessions', 'on'], ['tidy']);
   list('blocks').forEach((b, i) => {
     look(b, FIELDS.block, ['blocks', i], DROPPED_IN_BLOCK);
     for (const part of ['at', 'timer'] as const) look((b as Record<string, unknown> | null)?.[part], FIELDS[part], ['blocks', i, part]);
@@ -290,6 +323,18 @@ export function checkFlow(flow: Flow, exists: (file: string) => boolean, profile
     if (b.kind === 'person' && !b.ask) add(at, `The person block "${b.title}" doesn't say what it asks: give "ask": "question" or "review".`);
     if (b.kind === 'person' && b.runs && b.runs !== 'person') add(`${at}.runs`, `A person block is a person's: take "runs" out, or make "${b.title}" a work or check block.`);
     if ((b.kind === 'fork' || b.kind === 'join') && b.runs) add(`${at}.runs`, `A ${b.kind} only splits or joins the work; nobody runs it: take "runs" out.`);
+    // Part 3d: a wait is on something outside; the manager reports how it came out.
+    if (b.kind === 'wait') {
+      for (const f of ['runs', 'continues', 'model', 'profile', 'substeps'] as const) {
+        if (b[f] !== undefined) add(`${at}.${f}`, `"${b.title}" waits on something outside the flow; nobody here runs it: take "${f}" out (its brief may say what it waits for).`);
+      }
+    }
+    if (b.person !== undefined && b.kind !== 'person') add(`${at}.person`, `"person" says whose call a person block is: take it out of "${b.title}", or make it a person block.`);
+    if (b.parallel && !b.substeps?.length) add(`${at}.parallel`, `"${b.title}" has no sub-steps to run at once: take "parallel" out, or add sub-steps.`);
+    else if (b.parallel && b.substeps!.length === 1) hint(`${at}.parallel`, `"${b.title}" has one sub-step, so "parallel" changes nothing.`);
+    // Part 3f: only a continued session has a context to make fresh.
+    if (b.context !== undefined && b.runs !== 'continue') add(`${at}.context`, `"context" makes a continued session fresh before its step: "${b.title}" doesn't continue one; take it out, or set "runs": "continue".`);
+    if (b.session !== undefined && b.kind !== 'flow') add(`${at}.session`, `"session" is for a Run flow block, which hands its session to the flow it runs: take it out of "${b.title}".`);
     if (b.runs === 'continue' && b.continues === undefined) add(`${at}.continues`, `"${b.title}" continues a session: say whose with "continues", the id of an earlier block that runs as a session.`);
     if (b.continues !== undefined && b.runs !== 'continue') add(`${at}.continues`, '"continues" is for a block that runs as "continue": take it out, or set "runs": "continue".');
     // Sub-steps are subagents (#322): someone who can start one runs the block.
@@ -314,7 +359,7 @@ export function checkFlow(flow: Flow, exists: (file: string) => boolean, profile
     // A Run flow block (#447): the flow it runs does the step, so nobody here runs it and it has no brief.
     if (b.kind === 'flow') {
       if (b.flow === undefined) add(`${at}.flow`, `The Run flow block "${b.title}" doesn't say which flow it runs: give "flow", the name of one of the project's flows.`);
-      for (const f of ['runs', 'continues', 'model', 'profile', 'brief', 'substeps'] as const) {
+      for (const f of ['runs', 'continues', 'model', 'profile', 'brief', 'substeps', 'parallel'] as const) {
         if (b[f] !== undefined) add(`${at}.${f}`, `A Run flow block is done by the flow it runs: take "${f}" out of "${b.title}".`);
       }
     } else if (b.flow !== undefined) add(`${at}.flow`, `Only a Run flow block (kind "flow") runs a flow: take "flow" out, or make "${b.title}" one.`);
@@ -339,6 +384,7 @@ export function checkFlow(flow: Flow, exists: (file: string) => boolean, profile
     frameIds.add(f.id);
   }
   if (flow.manager && !exists(flow.manager)) add('manager', `The manager's file ${flow.manager} is not in the workflow folder.`);
+  problems.push(...followProblems(flow));
 
   // Strings that name a place on this computer (the path fields are already refused by the schema).
   const scan = (value: unknown, at: string): void => {
@@ -363,6 +409,29 @@ export function checkFlow(flow: Flow, exists: (file: string) => boolean, profile
     add(`blocks.${loop[0]}`, `${titles.join(' → ')} can go round for ever: give an outcome in it a count ("times": where the 3rd one goes, say), or put a person block in it.`);
   }
   problems.push(...continueProblems(flow, arrows));
+  return problems;
+}
+
+/**
+ * Part 3f's settings (worktree, tidy): a branch pattern every run gets its own of, and endings that are the flow's.
+ */
+function followProblems(flow: Flow): FlowProblem[] {
+  const problems: FlowProblem[] = [];
+  const endings = new Set([...flowEndings(flow).map(endingKey), endingKey(STOPPED_ENDING)]);
+  const said = flowEndings(flow);
+  const unknown = (list: string[] | undefined, at: string) => {
+    for (const e of list ?? []) {
+      if (!endings.has(endingKey(e))) problems.push({ at, message: `"${e}" is not a way the flow ends: it ends with ${[...said, STOPPED_ENDING].map((x) => `"${x}"`).join(', ')}.` });
+    }
+  };
+  const w = flow.worktree;
+  if (w?.branch !== undefined) {
+    if (!w.branch.includes('{id}')) problems.push({ at: 'worktree.branch', message: `"${w.branch}" must have {id} in it, so every run gets a branch of its own.` });
+    if (!/^[A-Za-z0-9._/{}-]+$/.test(w.branch) || /\.\.|\/\/|^\/|\/$|\.lock(\/|$)/.test(w.branch)) problems.push({ at: 'worktree.branch', message: `"${w.branch}" is not a branch name git takes: letters, digits, ".", "_", "-" and "/" between parts, with {id} and {ref}.` });
+  }
+  if (w?.base !== undefined && !/^[A-Za-z0-9._/-]+$/.test(w.base)) problems.push({ at: 'worktree.base', message: `"${w.base}" is not a branch name.` });
+  if (w?.remove && w.remove !== 'never') unknown(w.remove.on, 'worktree.remove.on');
+  if (flow.tidy && typeof flow.tidy === 'object') unknown(flow.tidy.on, 'tidy.on');
   return problems;
 }
 

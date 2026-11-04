@@ -603,6 +603,55 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX IF NOT EXISTS orders_by_status ON orders (status, status_at);
   `,
+  // 42: runs, pieces of work going through a project's flow (workflow part 3, docs/steps/workflow-follow.md): where
+  // each is (at, since when), the count of each outcome's word per block, the session that ran each block, the run and
+  // block a child run's ending goes to, the history of its steps, its state and how it ended, who coordinates it, and
+  // the person block's open question. Counts, sessions and history are JSON (src/shared/flow-run.ts). And on a session,
+  // the run and block it was started or continued for, as JSON { run, block }, for its header; null: none.
+  `
+  CREATE TABLE flow_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project TEXT NOT NULL,
+    title TEXT NOT NULL,
+    ref TEXT,
+    flow TEXT NOT NULL,
+    at TEXT,
+    at_since INTEGER NOT NULL,
+    counts TEXT NOT NULL,
+    sessions TEXT NOT NULL,
+    parent_run INTEGER,
+    parent_block TEXT,
+    history TEXT NOT NULL,
+    state TEXT NOT NULL,
+    ending TEXT,
+    coordinator TEXT NOT NULL,
+    question INTEGER,
+    started_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX flow_runs_by_project ON flow_runs(project, updated_at);
+  ALTER TABLE sessions ADD COLUMN run_block TEXT;
+  `,
+  // 43: a manager's proposed workflow changes (workflow part 3e): the files it would write with the versions they replace,
+  // the flows before and after and the checks' problems, as JSON (src/sessions/flow-propose.ts); its review question,
+  // and whether it is open, saved, declined or failed. Kept apart from the question so the page's question list stays small.
+  `
+  CREATE TABLE flow_proposals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project TEXT NOT NULL,
+    manager TEXT NOT NULL,
+    question INTEGER,
+    data TEXT NOT NULL,
+    state TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  `,
+  // 44: a run's worktree (workflow part 3f, approved by Simon 2026-11-03, question #1593), as JSON RunWorktree, and what
+  // a queued run is in line for: its flow's limit or its block's. Null: none.
+  `
+  ALTER TABLE flow_runs ADD COLUMN worktree TEXT;
+  ALTER TABLE flow_runs ADD COLUMN queue TEXT;
+  `,
 ];
 
 export function databaseFile(dir = userDataDir()): string {

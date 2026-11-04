@@ -2,6 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { BOTH_LINE } from '../src/sessions/flow-files.ts';
 import os from 'node:os';
 import path from 'node:path';
 import { parseConfig, parseProject, type LocalProjectConfig } from '../src/config.ts';
@@ -157,7 +158,8 @@ test("the paragraph is part of the instructions Claude Code's tool server limit 
     assert.equal(await limitFor(w) - await limitFor(null), workflowInstructions(w, 'manager').length + 2);
     // The flow's line (issue #310) follows the workflow's, or stands alone, and the limit covers it too.
     const line = 'The process is drawn in x/flow.json.';
-    assert.equal(await limitFor(w, async () => line) - await limitFor(w), line.length + 1);
+    // With both, ledung#115's line says which says what.
+    assert.equal(await limitFor(w, async () => line) - await limitFor(w), line.length + 1 + BOTH_LINE.length + 1);
     assert.equal(await limitFor(null, async () => line) - await limitFor(null), line.length + 2);
     assert.equal(await limitFor(null, async () => null), await limitFor(null));
   } finally {

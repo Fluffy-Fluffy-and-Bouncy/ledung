@@ -108,6 +108,9 @@ export class ProjectStore {
       'UPDATE OR REPLACE board_deliveries SET project = ? WHERE project = ?',
       'UPDATE board_posts SET from_project = ? WHERE from_project = ?',
       'UPDATE board_outbox SET project = ? WHERE project = ?',
+      // Runs through its flows (workflow part 3).
+      'UPDATE flow_runs SET project = ? WHERE project = ?',
+      'UPDATE flow_proposals SET project = ? WHERE project = ?',
     ];
     this.db.exec('BEGIN');
     try {

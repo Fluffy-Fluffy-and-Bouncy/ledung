@@ -19,8 +19,12 @@ export const RULES_FILE = 'rules.md';
 /** Where the builder keeps the manager's standing procedures (#322); a flow may name another file in `manager`. */
 export const MANAGER_FILE = 'manager.md';
 
-/** `flow`: a Run flow block (#447), which starts another flow for a piece of work of its own and waits for its end. */
-export const BLOCK_KINDS = ['work', 'check', 'person', 'fork', 'join', 'timer', 'flow'] as const;
+/**
+ * `flow`: a Run flow block (#447), which starts another flow for a piece of work of its own and waits for its end.
+ * `wait` (workflow part 3d): the work waits on something outside (a merge queue, CI, someone else's approval) until the
+ * manager reports how it came out.
+ */
+export const BLOCK_KINDS = ['work', 'check', 'person', 'fork', 'join', 'timer', 'flow', 'wait'] as const;
 export type BlockKind = (typeof BLOCK_KINDS)[number];
 
 /**
@@ -33,7 +37,8 @@ export type Runs = (typeof RUNS)[number];
 /**
  * One way out of a block (#1184): when the result is `word` (as the manager reads it, not a string Ledung matches), the
  * work goes `to` that block; with `times`, only on that occurrence of the word for one piece of work, which Ledung
- * counts (part 3), the plain one taking the others ("Failed → Planner", "Failed, the 3rd time → Person").
+ * counts (part 3), the plain one taking the others ("Failed → Planner", "Failed, the 3rd time → Person"). Once the
+ * last counted one of a word is taken its count starts again, so the limit holds every time round (#318).
  */
 export interface FlowOutcome {
   word: string;
@@ -100,10 +105,26 @@ export interface FlowBlock {
   outcomes?: FlowOutcome[];
   /** For a person block: a question (ask_user) or a review page. */
   ask?: 'question' | 'review';
+  /**
+   * For a person block (part 3d): whose call it is ("the owner", "a code owner"). Ledung still asks this computer's
+   * person; the name tells them whose decision they make.
+   */
+  person?: string;
+  /** Its sub-steps run at once, their results merged into one report (part 3d: four reviewers in parallel). */
+  parallel?: true;
+  /**
+   * For a Run flow block (part 3d): "caller" hands the session that ran the step before to the flow it runs, whose
+   * session blocks continue it instead of starting their own, so the phases of one long session can be flows.
+   */
+  session?: 'caller';
   /** For a timer block: on a count ("every 30 merges") or a clock ("daily"). */
   timer?: { every: number; of: string } | { clock: 'hourly' | 'daily' | 'weekly' };
   /** For a Run flow block (#447): the name of the flow it runs ("main" for the default one). */
   flow?: string;
+  /** At most this many runs in the block at once; the others wait before it, in line (part 3f). None: no limit. */
+  limit?: number;
+  /** For a continued step (part 3f): its session is compacted, or cleared, before it gets the step. None: as it is. */
+  context?: 'compact' | 'clear';
   /** Where the canvas puts it (part 2); none: laid out automatically. */
   at?: { x: number; y: number };
 }
@@ -145,7 +166,35 @@ export interface Flow {
   overlays: FlowOverlay[];
   /** Comment frames round groups of blocks (#446); none: an empty list. */
   frames: FlowFrame[];
+  /** A git worktree per run, made when it starts and removed safely when it ends (part 3f). None: no worktree. */
+  worktree?: FlowWorktree;
+  /** At most this many runs of the flow at once; the others wait at its start, in line (part 3f). None: no limit. */
+  limit?: number;
+  /** What happens to a run's sessions when it ends (part 3f). None: they are archived. */
+  tidy?: FlowTidy;
+  /** false: a ref may have several open runs; none or true: flow_start refuses a second one (part 3f). */
+  oneRunPerRef?: boolean;
 }
+
+/**
+ * A run's worktree (part 3f, Simon 2026-11-03, question #1593): made from `base` (none: the branch the project folder
+ * is on) on `branch` (a pattern with {id}, and optionally {ref}; none: "run/{id}"); removed when the run ends, only
+ * if nothing is uncommitted and the branch is merged or pushed, on every ending, on those `on` names, or never.
+ */
+export interface FlowWorktree {
+  base?: string;
+  branch?: string;
+  remove?: 'never' | { on?: string[] };
+}
+
+/** "archive" (the default), "stop" or "keep" a run's sessions when it ends; `on`: only on those endings, else kept. */
+export type FlowTidy = 'archive' | 'stop' | 'keep' | { sessions: 'archive' | 'stop'; on?: string[] };
+
+/** Defaults of the part 3f settings, as the page and the skill show them. */
+export const DEFAULT_BRANCH = 'run/{id}';
+export const DEFAULT_TIDY = 'archive';
+/** The ending a run stopped by hand has, for `remove.on` and `tidy.on`. */
+export const STOPPED_ENDING = 'Stopped';
 
 /** "1st", "2nd", "3rd", "11th", "22nd". */
 export function ordinal(n: number): string {
@@ -242,6 +291,11 @@ export interface FlowView {
   versions: Record<string, string>;
   /** The folder the builder saves into: always the project's own, never a shared workflow's (#311). */
   saveTo: string | null;
+  /**
+   * ledung#110: the project has its own flow while following a shared workflow that has one too: that workflow's name,
+   * and whether the project's flow files (flow.json, flows/) or rules differ from it. None: not so.
+   */
+  shared?: { workflow: string; differs: boolean };
   /** Why there is nowhere to save, when the project's own folder is a shared workflow's (ledung#109). */
   readOnly?: string;
   /**

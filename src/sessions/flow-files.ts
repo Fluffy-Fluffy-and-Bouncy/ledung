@@ -429,11 +429,83 @@ export async function readFlowView(project: string, places: FlowPlace[], profile
   for (const [f, text] of Object.entries(texts)) versions[f] = textVersion(text);
   // The texts too: nothing in the folder may be tied to one computer (part 6).
   const paths = [...(ruleText === null ? [] : [machinePathIn(RULES_FILE, ruleText)]), ...linked.map((f) => (texts[f] === undefined ? null : machinePathIn(f, texts[f])))];
+  const shared = await sharedDifference(places, place, found.text, flows.filter((f) => f.file !== reserved), { ...texts, ...(ruleText === null ? {} : { [RULES_FILE]: ruleText }) });
   return {
+    ...(shared ? { shared } : {}),
     project, source, expected, flow: parsed.flow, rules: ruleText, texts,
     problems: [...parsed.problems, ...refused, ...checked, ...(calls.get(DEFAULT_FLOW) ?? []), ...paths.filter((p): p is FlowProblem => p !== null)],
     raw: found.text, versions, saveTo, flows, ...readOnly,
   };
+}
+
+/**
+ * ledung#110: a project's own flow beside the shared workflow's it follows: whether its flow files or rules differ from
+ * the shared ones. Null when the flow shown is not the project's own, or the shared workflow has no flow.
+ */
+async function sharedDifference(places: FlowPlace[], place: FlowPlace, own: string, flows: FlowEntry[], mine: Record<string, string>): Promise<{ workflow: string; differs: boolean } | null> {
+  if (place.kind !== 'project') return null;
+  const other = places.find((p) => p.kind === 'workflow' && p.workflow);
+  if (!other) return null;
+  const theirs = (await other.read([FLOW_FILE]).catch(() => null))?.get(FLOW_FILE);
+  if (!theirs || !('text' in theirs)) return null;
+  // The flows as the format reads them (flows/main.json left out, as for the project's own), and every text.
+  const reserved = `${FLOWS_FOLDER}/${DEFAULT_FLOW}.json`;
+  const all = await other.list().catch(() => [] as string[]);
+  const listed = all.filter((f) => FLOW_IN_FOLDER.test(f) && f !== reserved);
+  const isText = (f: string) => f !== FLOW_FILE && !FLOW_IN_FOLDER.test(f) && WRITABLE_FLOW_FILE.test(f);
+  // rules.md by name: the listing gives manager.md and the briefs and overlays only.
+  const theirTexts = [...new Set([RULES_FILE, ...all.filter(isText)])];
+  const read = await other.read([...listed, ...theirTexts]).catch(() => new Map<string, FileRead>());
+  const text = (f: string) => {
+    const r = read.get(f);
+    return r && 'text' in r ? r.text : null;
+  };
+  const same = (a: string | null, b: string | null) => (a ?? '').replace(/\r\n/g, '\n').trim() === (b ?? '').replace(/\r\n/g, '\n').trim();
+  // A flow re-indented, or with its keys written in another order, is the same flow (review of 3f).
+  const asJson = (t: string | null) => {
+    try {
+      // Keys sorted at every level: their order means nothing to the format.
+      return JSON.stringify(JSON.parse(t ?? ''), (_k, v: unknown) => (v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : v));
+    } catch {
+      return (t ?? '').replace(/\r\n/g, '\n').trim();
+    }
+  };
+  const sameFlow = (a: string | null, b: string | null) => asJson(a) === asJson(b);
+  const ownTexts = Object.keys(mine).filter(isText);
+  const differs = !sameFlow(own, theirs.text)
+    || listed.length !== flows.length || flows.some((f) => !listed.includes(f.file) || !sameFlow(f.raw, text(f.file)))
+    || theirTexts.filter((f) => text(f) !== null).length !== ownTexts.length || ownTexts.some((f) => !same(mine[f]!, text(f)));
+  return { workflow: other.workflow!, differs };
+}
+
+/**
+ * The project's own copy of a shared flow taken away (ledung#110, "Back to shared"): every file of the format in its
+ * workflow folder (flow.json, flows/, rules, manager.md, briefs and overlays), so the shared workflow's counts again and
+ * a later copy is saved afresh (review of 3f: a brief left behind refused that save). Other files stay; git keeps what went.
+ */
+export async function backToShared(places: FlowPlace[], versions: Record<string, string>): Promise<string[]> {
+  const own = places.find((p) => p.kind === 'project' && p.write);
+  const other = places.find((p) => p.kind === 'workflow');
+  if (!own?.write || !other) throw new FileError("This project follows no shared workflow, or Ledung can't write into its folder.");
+  const theirs = (await other.read([FLOW_FILE]))?.get(FLOW_FILE);
+  if (!theirs || !('text' in theirs)) throw new FileError("The shared workflow has no flow to go back to.");
+  const mine = (await own.read([FLOW_FILE])).get(FLOW_FILE);
+  if (!mine || !('text' in mine)) throw new FileError('This project has no flow of its own.');
+  // flow.json first, so the folder never has a flow whose briefs are gone.
+  // rules.md by name, when it is there: the listing gives manager.md and the briefs and overlays only.
+  const rules = (await own.read([RULES_FILE])).get(RULES_FILE);
+  const files = [...new Set([FLOW_FILE, ...(rules && !('missing' in rules) ? [RULES_FILE] : []), ...(await own.list()).filter((f) => WRITABLE_FLOW_FILE.test(f))])];
+  // Only the versions the page showed: one changed or added since is never removed unseen (final review of part 3, 6).
+  const now = await own.read(files);
+  for (const f of files) {
+    const r = now.get(f);
+    const version = r && 'text' in r ? textVersion(r.text) : null;
+    if (version === null) throw new FileError(`${f} can't be read, so Ledung can't tell whether it is what the page showed: remove it by hand (git keeps it), then go back to the shared workflow. Nothing was removed.`);
+    if (versions[f] === undefined) throw new FileError(`${f} is not among what the page read (new since, or too large for the page): reload the workflow and look again, or remove it by hand (git keeps it). Nothing was removed.`);
+    if (versions[f] !== version) throw new FileError(`${f} has changed since the page read the workflow: reload the workflow and look again before going back to the shared one. Nothing was removed.`);
+  }
+  await own.write(files.map((path) => ({ path, remove: true as const })));
+  return files;
 }
 
 /**
@@ -501,13 +573,50 @@ export async function saveFlowFiles(place: FlowPlace, given: unknown): Promise<v
 }
 
 /**
+ * A project's flows for following them (workflow part 3): flow.json and each flows/<name>.json that reads as a flow,
+ * by name, without the texts the page needs; null when the project has no flow.json Ledung can read.
+ */
+export async function readFlows(places: FlowPlace[]): Promise<{ folder: string; flows: Map<string, Flow>; titles: Map<string, string>; text(file: string): Promise<string | null> } | null> {
+  const found = await findFlow(places);
+  if (!found || !('text' in found)) return null;
+  const main = parseFlow(found.text).flow;
+  if (!main) return null;
+  const flows = new Map<string, Flow>([[DEFAULT_FLOW, main]]);
+  const reserved = `${FLOWS_FOLDER}/${DEFAULT_FLOW}.json`;
+  const files = (await found.place.list().catch(() => [])).filter((f) => FLOW_IN_FOLDER.test(f) && f !== reserved).slice(0, FLOWS_MAX);
+  const read = files.length ? await found.place.read(files) : new Map<string, FileRead>();
+  for (const f of files) {
+    const r = read.get(f);
+    const flow = r && 'text' in r ? parseFlow(r.text, f).flow : null;
+    if (flow) flows.set(FLOW_IN_FOLDER.exec(f)![1]!, flow);
+  }
+  const place = found.place;
+  const text = async (file: string) => {
+    const r = (await place.read([file]).catch(() => null))?.get(file);
+    return r && 'text' in r ? r.text : null;
+  };
+  return { folder: place.folder, flows, titles: new Map([...flows].map(([n, f]) => [n, f.title?.trim() || n])), text };
+}
+
+/** ledung#115: a manager told both a written workflow and a drawn flow is told which says what. */
+export const BOTH_LINE = 'Where both say something: the flow says what happens next and who does it; the written workflow files say how.';
+
+/** The written workflow's line and the drawn flow's, and #115's line when there are both. */
+export function workflowLines(written: string | null, flow: string | null): string | undefined {
+  return [written, flow, written && flow ? BOTH_LINE : null].filter(Boolean).join(' ') || undefined;
+}
+
+/** The manager's line when Ledung follows the flow with it (workflow part 3); short, for #32's limit. */
+export const FOLLOW_LINE = "Ledung follows it with you: start each piece of work with flow_start and report how each block ended with flow_step (the outcome's word); Ledung counts the outcomes, moves the work and says what to do next.";
+
+/**
  * What a manager is told about its project's flow (issue #310, part 1), after the workflow's own lines; short, since
  * the instructions are near Claude Code's limit (#32). The manager routes the work by reading results against the
  * outcomes; Ledung counts them (part 3, #1184). The manager's file, its standing procedures between steps, when
  * the flow has one, in a few words more (#322); the project's other flows by name, when it has some (#447). Null: the
- * project has no flow Ledung can read.
+ * project has no flow Ledung can read. `following`: Ledung follows the flow with the manager (part 3), said in a line more.
  */
-export async function flowInstructions(places: FlowPlace[]): Promise<string | null> {
+export async function flowInstructions(places: FlowPlace[], following = false): Promise<string | null> {
   const found = await findFlow(places).catch(() => null);
   if (!found || !('text' in found)) return null;
   const sep = found.place.folder.includes('\\') ? '\\' : '/';
@@ -525,5 +634,5 @@ export async function flowInstructions(places: FlowPlace[]): Promise<string | nu
   const flows = others.length
     ? ` Other flows, in ${FLOWS_FOLDER}${sep}<name>.json: ${others.slice(0, FLOWS_NAMED).join(', ')}${more}. Each piece of work runs in one flow, ${FLOW_FILE}'s unless you or the person pick another; a "Run flow" block starts its flow as a piece of work of its own, and the word that flow ends with is the block's outcome.`
     : '';
-  return `The process is drawn in ${found.place.folder}${sep}${FLOW_FILE} (blocks, who acts, where a person decides; Ledung's workflow page shows it), with the briefs it links and any standing rules (${RULES_FILE}) beside it: read them and follow the flow: judge each result against its block's outcomes, which say where the work goes next.${named ? ` Your standing procedures between steps: ${named} there.` : ''}${flows}`;
+  return `The process is drawn in ${found.place.folder}${sep}${FLOW_FILE} (blocks, who acts, where a person decides; Ledung's workflow page shows it), with the briefs it links and any standing rules (${RULES_FILE}) beside it: read them and follow the flow: judge each result against its block's outcomes, which say where the work goes next.${named ? ` Your standing procedures between steps: ${named} there.` : ''}${flows}${following ? ` ${FOLLOW_LINE}` : ''}`;
 }

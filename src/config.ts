@@ -270,6 +270,10 @@ const LocalProject = z.object({
   /** Its question tiers in order, for ask_user and Waiting for you (issues #59, #96); none or empty: the five standard ones. */
   questionTiers: z.array(z.string().min(1).max(80)).optional(),
   workflow: ProjectWorkflowSetting,
+  /** Ledung follows the project's flow with its manager (workflow part 3): runs, counts, block sessions; none: on (Simon, 2026-11-03). */
+  followFlow: z.boolean().optional(),
+  /** Run in a run's new worktree (workflow part 3f), as a "!" command would: copying caches, installing; none: nothing. */
+  worktreeSetup: z.string().min(1).max(2000).optional(),
   /** The Claude account its manager and sessions use; none: whatever Claude Code is logged in as. */
   account: z.string().min(1).optional(),
   /** The session profile its manager and its sessions start with (#20); none: the config's default. */
@@ -308,6 +312,10 @@ const DockerProject = z.object({
   /** Its question tiers in order, for ask_user and Waiting for you (issues #59, #96); none or empty: the five standard ones. */
   questionTiers: z.array(z.string().min(1).max(80)).optional(),
   workflow: ProjectWorkflowSetting,
+  /** Ledung follows the project's flow with its manager (workflow part 3): runs, counts, block sessions; none: on (Simon, 2026-11-03). */
+  followFlow: z.boolean().optional(),
+  /** Run in a run's new worktree (workflow part 3f), as a "!" command would: copying caches, installing; none: nothing. */
+  worktreeSetup: z.string().min(1).max(2000).optional(),
   account: z.string().min(1).optional(),
   profiles: RoleProfilesSetting.optional(),
   skills: SkillChoicesSetting.optional(),

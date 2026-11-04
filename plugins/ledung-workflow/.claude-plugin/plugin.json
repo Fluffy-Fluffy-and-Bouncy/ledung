@@ -1,0 +1,6 @@
+{
+  "name": "ledung-workflow",
+  "version": "1.0.0",
+  "description": "Ledung's guide to building a project's workflow: the flow format, block kinds, outcomes and counts, sub-steps, Run flow blocks, good briefs, and proposing a change with flow_propose.",
+  "author": { "name": "Ledung" }
+}

@@ -114,10 +114,13 @@ test("the package is stamped with the build's version, not the clone's, and the 
     fs.cpSync(path.join(appDir(), file), path.join(source, file));
   }
   fs.symlinkSync(path.join(appDir(), 'src'), path.join(source, 'src'), process.platform === 'win32' ? 'junction' : 'dir');
+  fs.cpSync(path.join(appDir(), 'plugins'), path.join(source, 'plugins'), { recursive: true });
   const before = fs.readFileSync(path.join(source, 'package.json'), 'utf8');
   const stage = path.join(base, 'stage');
   await stagePackage(source, stage, '1.4.0');
   assert.equal(JSON.parse(fs.readFileSync(path.join(stage, 'package.json'), 'utf8')).version, '1.4.0');
+  // Ledung's own plugin, the "workflow building" skill, goes with it (workflow part 3e).
+  assert.ok(fs.existsSync(path.join(stage, 'plugins', 'ledung-workflow', 'skills', 'workflow-building', 'SKILL.md')));
   const shrinkwrap = JSON.parse(fs.readFileSync(path.join(stage, 'npm-shrinkwrap.json'), 'utf8'));
   assert.equal(shrinkwrap.version, '1.4.0');
   assert.equal(shrinkwrap.packages[''].version, '1.4.0');

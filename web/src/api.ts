@@ -14,6 +14,8 @@ import type { ComputerColour, ComputerInfo } from '../../src/shared/computers.ts
 import type { PaneFolderKey, PaneFolders, SessionChanges, TreeListing } from '../../src/shared/files-pane.ts';
 import type { LineComment } from '../../src/shared/line-comments.ts';
 import type { FlowFileWrite, FlowView } from '../../src/shared/flow.ts';
+import type { FlowRun } from '../../src/shared/flow-run.ts';
+import type { FlowProposal } from '../../src/shared/flow-proposal.ts';
 import type { SkillChoices } from '../../src/shared/skills.ts';
 import type { SecretInfo, SecretLifetime } from '../../src/shared/secrets.ts';
 import type { SharedUsageView, UsagePublishView } from '../../src/shared/published-usage.ts';
@@ -298,6 +300,18 @@ export const api = {
   projectsFolder: () => call<{ path: string }>('GET', '/api/projects-folder'),
   /** A project's drawn workflow, its texts and the checks' problems (issue #310), read-only. */
   flow: (project: string) => call<FlowView>('GET', `/api/projects/${encodeURIComponent(project)}/flow`),
+  /** Which projects have a workflow, own or shared, by name (the sidebar's Workflow row). */
+  workflows: () => call<Record<string, boolean>>('GET', '/api/workflows'),
+  /** Its runs through its flows (workflow part 3c), the latest changed first. */
+  runs: (project: string) => call<FlowRun[]>('GET', `/api/projects/${encodeURIComponent(project)}/runs`),
+  /** ledung#110: takes away the project's own flow, so the shared workflow's counts again; the workflow as it then reads. */
+  backToShared: (project: string, versions: Record<string, string>) => call<FlowView>('POST', `/api/projects/${encodeURIComponent(project)}/flow/back-to-shared`, { versions }),
+  /** The person stops a run from the Runs list. */
+  stopRun: (project: string, run: string) => call<void>('POST', `/api/projects/${encodeURIComponent(project)}/runs/${encodeURIComponent(run)}/stop`),
+  /** Starts a queued run past its limit (part 3f). */
+  startRun: (project: string, run: string) => call<void>('POST', `/api/projects/${encodeURIComponent(project)}/runs/${encodeURIComponent(run)}/start`),
+  /** A manager's proposed workflow change (part 3e), for its review page. */
+  proposal: (project: string, id: number) => call<FlowProposal>('GET', `/api/projects/${encodeURIComponent(project)}/proposals/${id}`),
   /** The builder saves (issue #311): into the project's own .ledung/workflow; the workflow as it then reads. */
   saveFlow: (project: string, files: FlowFileWrite[]) => call<FlowView>('POST', `/api/projects/${encodeURIComponent(project)}/flow`, { files }),
   machine: () => call<MachineInfo>('GET', '/api/machine'),
