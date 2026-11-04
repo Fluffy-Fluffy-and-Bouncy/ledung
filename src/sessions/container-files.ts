@@ -19,6 +19,12 @@ export type ContainerRun = { code: number | null; stdout: Buffer; stderr: string
 /** What a container project's files are read with: its exec, and the rules that hold besides its folder. */
 export interface ContainerAccess {
   exec: ContainerExec;
+  /**
+   * The project folder in the container: the wall. The session's folder (its run worktree) must resolve inside it.
+   * Another project that names the same container by another name (its id, an alias) or bind-mounts a locked local
+   * folder into it is not known here (security review of #122, finding 8): lockdown names containers by their name.
+   */
+  project: string;
   /** The container's name, for the messages. */
   container: string;
   /** Other locked projects' folders in this same container (issue #109): never read or listed from here. */
@@ -48,43 +54,61 @@ export function containerFailure(container: string, stderr: string, timedOut: bo
 }
 
 /**
- * The read script: $1 the project folder, $2 the file (relative to it, or absolute in the container), $3 the most it
- * may have, then the locked folders. Prints one status word, or "ok", the real root and the real path, each ended by
- * a NUL, and then at most $3 bytes of the file, from a descriptor whose own path is checked again where /proc shows it,
- * so a folder on the way swapped for a link after the check is caught.
+ * What every script starts with: `real`, readlink -f that fails for a path with a newline in it (command substitution
+ * would drop a trailing one and so name another file; security review of #122, finding 5), and the check that the
+ * session's folder ($2) is the project folder ($1) or inside it, so a run worktree the session swapped for a link to
+ * elsewhere can't move the root (finding 1). Sets pr, the project folder, and root, the session's folder.
+ */
+const PRELUDE = [
+  "nl='",
+  "'",
+  'real() { _r=$(readlink -f -- "$1" && echo x) || return 1; case "$_r" in *x) ;; *) return 1;; esac; _r=${_r%?x}; [ -n "$_r" ] || return 1; case "$_r" in *"$nl"*) return 1;; esac; printf %s "$_r"; }',
+  'inside() { case "$1" in "$2"|"${2%/}"/*) return 0;; esac; return 1; }',
+  'pr=$(real "$1") || { echo noroot; exit 0; }; root=$(real "$2") || { echo noroot; exit 0; }',
+  'inside "$root" "$pr" || { echo outside; exit 0; }',
+  '[ -d "$root" ] || { echo noroot; exit 0; }',
+];
+
+/**
+ * The read script: $1 the project folder, $2 the session's folder in it, $3 the file (relative to it, or absolute in the
+ * container), $4 the most it may have, then the locked folders. Prints one status word, or "ok", the real root and the
+ * real path, each ended by a NUL, and then the file, at most one byte more than $4 (so a file grown since its size was
+ * checked is refused), from a descriptor whose own path is checked again where /proc shows it, so a folder on the way
+ * swapped for a link after the check is caught. The size check fails closed (finding 6).
  */
 export const READ_SCRIPT = [
-  'root=$(readlink -f -- "$1") || { echo noroot; exit 0; }; [ -d "$root" ] || { echo noroot; exit 0; }',
-  'case "$2" in /*) p=$2;; *) p="$root/$2";; esac',
+  ...PRELUDE,
+  'case "$3" in /*) p=$3;; *) p="$root/$3";; esac',
   '[ -e "$p" ] || { echo missing; exit 0; }',
-  'r=$(readlink -f -- "$p") || { echo missing; exit 0; }',
+  'r=$(real "$p") || { echo outside; exit 0; }',
   'case "$r" in "${root%/}"/*) ;; *) echo outside; exit 0;; esac',
-  'max=$3; shift 3',
-  'for l in "$@"; do lr=$(readlink -f -- "$l") || continue; case "$r" in "$lr"|"${lr%/}"/*) echo locked; exit 0;; esac; done',
+  'max=$4; shift 4',
+  'for l in "$@"; do lr=$(real "$l") || continue; inside "$r" "$lr" && { echo locked; exit 0; }; done',
   '[ -d "$r" ] && { echo folder; exit 0; }',
   '{ [ -f "$r" ] && [ -r "$r" ]; } || { echo unreadable; exit 0; }',
-  'n=$(wc -c < "$r") || { echo unreadable; exit 0; }',
-  '[ "$n" -gt "$max" ] && { echo "large $n"; exit 0; }',
+  `n=$(wc -c < "$r" | tr -d ' ')`,
+  '[ "$n" -le "$max" ] 2>/dev/null || { echo "large $n"; exit 0; }',
   'exec 3< "$r" || { echo unreadable; exit 0; }',
   'if o=$(readlink -f "/proc/$$/fd/3" 2>/dev/null) && [ -n "$o" ] && [ "$o" != "$r" ]; then echo outside; exit 0; fi',
   `printf 'ok\\n%s\\0%s\\0' "$root" "$r"`,
-  'head -c "$max" <&3',
+  'head -c "$((max + 1))" <&3',
 ].join('\n');
 
 /**
- * The listing script: $1 the project folder, $2 the folder in it ("" for itself), $3 the most entries, then the locked
- * folders. Prints one status word, or "ok", the real root and the real folder, then per entry its kind (d or f), size,
- * name and real target, each ended by a NUL; a link that leads outside the project folder or into a locked one is left
- * out, and "more" ends a folder cut at $3. The glob leaves out dot-names, which are not listed anyway.
+ * The listing script: $1 the project folder, $2 the session's folder in it, $3 the folder in that ("" for itself), $4 the
+ * most entries, then the locked folders. Prints one status word, or "ok", the real root and the real folder, then per
+ * entry its kind (d or f), size, name and real target, each ended by a NUL; a link that leads outside the folder or into
+ * a locked one is left out (its size never read), and "more" ends a folder cut at $4. The glob leaves out dot-names,
+ * which are not listed anyway.
  */
 export const LIST_SCRIPT = [
-  'root=$(readlink -f -- "$1") || { echo noroot; exit 0; }; [ -d "$root" ] || { echo noroot; exit 0; }',
-  'case "$2" in "") p=$root;; /*) p=$2;; *) p="$root/$2";; esac',
+  ...PRELUDE,
+  'case "$3" in "") p=$root;; /*) p=$3;; *) p="$root/$3";; esac',
   '[ -e "$p" ] || { echo missing; exit 0; }',
-  'r=$(readlink -f -- "$p") || { echo missing; exit 0; }',
-  'case "$r" in "$root"|"${root%/}"/*) ;; *) echo outside; exit 0;; esac',
-  'max=$3; shift 3',
-  'locked() { x=$1; shift; for l in "$@"; do lr=$(readlink -f -- "$l") || continue; case "$x" in "$lr"|"${lr%/}"/*) return 0;; esac; done; return 1; }',
+  'r=$(real "$p") || { echo outside; exit 0; }',
+  'inside "$r" "$root" || { echo outside; exit 0; }',
+  'max=$4; shift 4',
+  'locked() { x=$1; shift; for l in "$@"; do lr=$(real "$l") || continue; inside "$x" "$lr" && return 0; done; return 1; }',
   'locked "$r" "$@" && { echo locked; exit 0; }',
   '[ -d "$r" ] || { echo notfolder; exit 0; }',
   `printf 'ok\\n%s\\0%s\\0' "$root" "$r"`,
@@ -92,7 +116,7 @@ export const LIST_SCRIPT = [
   'for f in "${r%/}"/*; do',
   '  [ -e "$f" ] || continue',
   `  i=$((i + 1)); [ "$i" -gt "$max" ] && { printf 'more\\0'; break; }`,
-  '  t=$(readlink -f -- "$f") || continue',
+  '  t=$(real "$f") || continue',
   '  case "$t" in "${root%/}"/*) ;; *) continue;; esac',
   '  locked "$t" "$@" && continue',
   `  if [ -d "$t" ]; then printf 'd\\0\\0%s\\0%s\\0' "\${f##*/}" "$t"`,
@@ -101,8 +125,20 @@ export const LIST_SCRIPT = [
   'done',
 ].join('\n');
 
-/** git in the container's folder, with Ledung's hardening (src/sessions/git-read.ts) and the null device it has. */
-export const GIT_SCRIPT = 'cd -- "$1" || exit 128; shift; GIT_OPTIONAL_LOCKS=0 GIT_PAGER=cat GIT_TERMINAL_PROMPT=0 exec git "$@"';
+/**
+ * git in the session's folder in the container: $1 the project folder, $2 the session's folder, $3 how many locked
+ * folders follow, then them, then git's arguments. Refused (exit 128) when the folder is outside the project folder or
+ * inside a locked one (finding 2), with Ledung's hardening (src/sessions/git-read.ts), the null device the container
+ * has, and no GIT_* setting from the container's environment, as gitEnv does here (finding 4).
+ */
+export const GIT_SCRIPT = [
+  ...PRELUDE.map((l) => l.replace(/echo (noroot|outside); exit 0/g, 'echo "the session\'s folder is not inside the project folder" >&2; exit 128')),
+  'n=$3; shift 3',
+  'while [ "$n" -gt 0 ]; do lr=$(real "$1") && inside "$root" "$lr" && { echo "the folder is in a locked project\'s folder" >&2; exit 128; }; shift; n=$((n - 1)); done',
+  'cd -- "$root" || exit 128',
+  "for v in $(env | sed -n 's/^\\(GIT_[A-Za-z0-9_]*\\)=.*/\\1/p'); do unset \"$v\"; done",
+  'GIT_OPTIONAL_LOCKS=0 GIT_PAGER=cat GIT_TERMINAL_PROMPT=0 exec git "$@"',
+].join('\n');
 export const CONTAINER_GIT_HARDENING: readonly string[] = [
   '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-c', 'diff.external=', '-c', 'core.pager=cat', '-c', 'core.quotePath=false', '-c', 'protocol.allow=never',
 ];
@@ -171,7 +207,7 @@ function statusOf(access: ContainerAccess, run: ContainerRun, timeoutMs: number)
  */
 export async function readContainerBytes(access: ContainerAccess, root: string, link: string, maxBytes: number, name: (inside: string) => string | null): Promise<{ path: string; bytes: Buffer }> {
   const wanted = wantedPath(link);
-  const run = await access.exec(READ_SCRIPT, [root, wanted, String(Math.floor(maxBytes)), ...access.locked], { maxBytes: maxBytes + 64 * 1024, timeoutMs: READ_TIMEOUT_MS });
+  const run = await access.exec(READ_SCRIPT, [access.project, root, wanted, String(Math.floor(maxBytes)), ...access.locked], { maxBytes: maxBytes + 64 * 1024, timeoutMs: READ_TIMEOUT_MS });
   const { status, rest } = statusOf(access, run, READ_TIMEOUT_MS);
   switch (status.split(' ')[0]) {
     case 'ok': break;
@@ -179,6 +215,7 @@ export async function readContainerBytes(access: ContainerAccess, root: string, 
     case 'missing': throw new FileError(`There is no file ${wanted} in the project.`);
     case 'outside': throw new FileError('Only files inside the project folder can be shown.');
     case 'locked': throw new FileError("That file is in a locked project's folder.");
+    case 'unreadable': throw new FileError(`${wanted} is not a file that can be read.`);
     case 'folder': throw new FileError(`${wanted} is a folder; only files can be shown.`);
     case 'large': throw new FileError(`${wanted} is too large to show (${Math.round(Number(status.split(' ')[1]) / 1024)} KB; the limit is ${Math.round(maxBytes / 1024)} KB).`);
     default: throw new FileError(`${wanted} can't be read in the container.`);
@@ -213,7 +250,7 @@ export async function readContainerImage(access: ContainerAccess, root: string, 
 export async function listContainerFolder(access: ContainerAccess, root: string, rel: string): Promise<TreeListing> {
   const wanted = rel.replace(/\\/g, '/').replace(/\/+$/g, '');
   if (/[\0\n\r]/.test(wanted)) throw new FileError('That is not a folder name.');
-  const run = await access.exec(LIST_SCRIPT, [root, wanted, String(TREE_MAX_ENTRIES), ...access.locked], { maxBytes: 4 * 1024 * 1024, timeoutMs: LIST_TIMEOUT_MS });
+  const run = await access.exec(LIST_SCRIPT, [access.project, root, wanted, String(TREE_MAX_ENTRIES), ...access.locked], { maxBytes: 4 * 1024 * 1024, timeoutMs: LIST_TIMEOUT_MS });
   const { status, rest } = statusOf(access, run, LIST_TIMEOUT_MS);
   switch (status) {
     case 'ok': break;
@@ -259,12 +296,24 @@ export async function listContainerFolder(access: ContainerAccess, root: string,
 /** git in the container's folder, as gitRead does it here: hardened, capped, timed; docker's own failure as a FileError. */
 export async function containerGit(access: ContainerAccess, folder: string, args: readonly string[], opts: { input?: string; maxBytes?: number; timeoutMs?: number } = {}): Promise<GitRead> {
   const timeoutMs = opts.timeoutMs ?? 15000;
-  const run = await access.exec(GIT_SCRIPT, [folder, ...CONTAINER_GIT_HARDENING, ...args], { input: opts.input, maxBytes: opts.maxBytes ?? GIT_READ_MAX_BYTES, timeoutMs });
+  const run = await access.exec(GIT_SCRIPT, [access.project, folder, String(access.locked.length), ...access.locked, ...CONTAINER_GIT_HARDENING, ...args], { input: opts.input, maxBytes: opts.maxBytes ?? GIT_READ_MAX_BYTES, timeoutMs });
   if ('failed' in run) throw new FileError(run.failed);
   if (run.code !== 0 && /error response from daemon|no such container|docker daemon|error during connect/i.test(run.stderr)) {
     throw new FileError(containerFailure(access.container, run.stderr, false, timeoutMs));
   }
+  // GIT_SCRIPT's own refusals.
+  const refused = /^(the session's folder is not inside the project folder|the folder is in a locked project's folder)$/m.exec(run.stderr);
+  if (run.code === 128 && refused) throw new FileError(`Changes can't be shown: ${refused[1]}.`);
   return { code: run.code, stdout: run.stdout.toString('utf8'), stderr: run.stderr, truncated: run.truncated };
+}
+
+/**
+ * What the Changes tab leaves out of a container session's diff in `folder` (security review of #122, finding 2): files
+ * in another locked project's folder, files a sensitive path pattern names and the secrets files, as the viewer does.
+ */
+export function diffHidden(access: ContainerAccess, folder: string): (file: string) => boolean {
+  const locked = access.locked.map((l) => path.posix.relative(folder, l)).filter((rel) => rel && !rel.startsWith('..') && !path.posix.isAbsolute(rel));
+  return (file) => locked.some((l) => file === l || file.startsWith(`${l}/`)) || ruleProblem(access, path.posix.join(folder, file), file) !== null;
 }
 
 /** Marks what .gitignore leaves out, by asking git in the container's folder; outside a repository nothing is marked. */
@@ -286,6 +335,26 @@ async function markIgnored(access: ContainerAccess, folder: string, entries: Tre
 export const CONTAINER_FILE_PREFIX = 'container:';
 const COPY_REF = /^container:([0-9a-f]{32})\/(.+)$/;
 
+/** Removes the project's copies no question names (`named`: their hashes) that were kept before `before`. */
+export function pruneCopies(dir: string, project: string, named: ReadonlySet<string>, before: number): void {
+  const folder = copyFolder(dir, project);
+  let names: string[];
+  try {
+    names = fs.readdirSync(folder);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (named.has(name)) continue;
+    const file = path.join(folder, name);
+    try {
+      if (fs.statSync(file).mtimeMs < before) fs.rmSync(file, { force: true });
+    } catch {
+      // Gone meanwhile.
+    }
+  }
+}
+
 /** Where a project's kept copies are: one folder per project, by a hash of its name, so no name can leave it. */
 function copyFolder(dir: string, project: string): string {
   return path.join(dir, crypto.createHash('sha256').update(project).digest('hex').slice(0, 16));
@@ -301,6 +370,10 @@ export function keepCopy(dir: string, project: string, inside: string, bytes: Bu
     const tmp = `${file}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, bytes);
     fs.renameSync(tmp, file);
+  } else {
+    // Kept again: not pruned as an old copy no question names yet (pruneCopies).
+    const now = new Date();
+    fs.utimesSync(file, now, now);
   }
   return `${CONTAINER_FILE_PREFIX}${hash}/${inside}`;
 }

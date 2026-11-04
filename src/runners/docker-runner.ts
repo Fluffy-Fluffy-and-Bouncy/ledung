@@ -233,7 +233,10 @@ export class DockerRunner implements Runner {
     const user = this.project.user ? ['-u', this.project.user] : [];
     const container = this.project.container;
     return async (script, args, opts) => {
-      const r = await runCappedBytes('docker', ['exec', '-i', ...user, container, 'sh', '-c', script, 'sh', ...args], opts);
+      // Inside the container too, where it has `timeout`: a time limit here ends only the docker client (security review
+      // of #122, finding 7). At most a few at once per container, so page requests can't pile up processes in it.
+      const seconds = String(Math.max(1, Math.ceil(opts.timeoutMs / 1000)));
+      const r = await inTurn(container, () => runCappedBytes('docker', ['exec', '-i', ...user, container, 'sh', '-c', TIMED_SCRIPT, 'sh', seconds, script, ...args], opts));
       if (r.timedOut) return { failed: containerFailure(container, '', true, opts.timeoutMs) };
       if (r.code === null && !r.truncated) return { failed: containerFailure(container, r.stderr, false, opts.timeoutMs) };
       // docker exec's own errors exit with 125-127 or say "Error response from daemon"; the scripts' own exit codes are lower.
@@ -305,6 +308,27 @@ export class DockerRunner implements Runner {
     const args = ['exec', ...user, '-w', this.cwd, ...envFlags, '-e', `LEDUNG_TAG=${tag}`, this.project.container, 'sh', '-c', script, 'sh', command];
     const stop = { kind: 'docker' as const, container: this.project.container, user: this.project.user, tag };
     return { command: 'docker', args, env, shellName: `the container ${this.project.container}`, endInside: async () => void await stopInContainer(stop) };
+  }
+}
+
+/** fileExec's wrapper: $1 the seconds, $2 the script, then its arguments; under `timeout` where the container has it. */
+export const TIMED_SCRIPT = 't=$1; s=$2; shift 2; if command -v timeout >/dev/null 2>&1; then exec timeout -s KILL "$t" sh -c "$s" sh "$@"; else exec sh -c "$s" sh "$@"; fi';
+
+/** At most FILE_READS_AT_ONCE container file reads at once per container; the rest wait their turn. */
+const FILE_READS_AT_ONCE = 4;
+const fileReads = new Map<string, { running: number; waiting: (() => void)[] }>();
+async function inTurn<T>(container: string, run: () => Promise<T>): Promise<T> {
+  const q = fileReads.get(container) ?? { running: 0, waiting: [] };
+  fileReads.set(container, q);
+  if (q.running >= FILE_READS_AT_ONCE) await new Promise<void>((resolve) => q.waiting.push(resolve));
+  q.running++;
+  try {
+    return await run();
+  } finally {
+    q.running--;
+    const next = q.waiting.shift();
+    if (next) next();
+    else if (!q.running) fileReads.delete(container);
   }
 }
 

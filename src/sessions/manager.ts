@@ -57,7 +57,7 @@ import { listTree, type TreeListing } from './tree.ts';
 import type { PaneFolderKey, PaneFolders } from '../shared/files-pane.ts';
 import { sessionChanges, type SessionChanges } from './changes.ts';
 import {
-  CONTAINER_FILE_PREFIX, CONTAINER_IMAGE_MAX_BYTES, containerGit, keepCopy, listContainerFolder, readContainerBytes, readContainerImage, readContainerText, readCopy,
+  CONTAINER_FILE_PREFIX, CONTAINER_IMAGE_MAX_BYTES, containerGit, diffHidden, keepCopy, listContainerFolder, pruneCopies, readContainerBytes, readContainerImage, readContainerText, readCopy,
   type ContainerAccess, type ContainerExec,
 } from './container-files.ts';
 import { checkLineComments, formatLineComments, lineCommentsMessage, openReviewFor, reviewAnswerWithComments } from '../shared/line-comments.ts';
@@ -2649,7 +2649,7 @@ ${firstMessage}`);
       .filter((p): p is DockerProjectConfig => p.name !== project.name && p.runner === 'docker' && p.container === project.container && isLocked(p))
       .map((p) => p.pathInContainer);
     return {
-      exec: this.containerExecFor(project), container: project.container, locked,
+      exec: this.containerExecFor(project), container: project.container, project: project.pathInContainer, locked,
       pathPatterns: [...this.config.sensitive.pathPatterns, ...project.sensitive.pathPatterns],
     };
   }
@@ -2685,6 +2685,7 @@ ${firstMessage}`);
     if (project.runner !== 'docker') return files.map((f) => f.file);
     const access = this.containerAccess(project);
     const root = info.workDir ?? project.pathInContainer;
+    this.pruneContainerCopies(info.project);
     const kept: string[] = [];
     const count = { shot: 0, evidence: 0 };
     for (const f of files) {
@@ -2700,14 +2701,32 @@ ${firstMessage}`);
     return kept;
   }
 
+  /**
+   * Copies no question names, kept over a day, go (security review of #122, finding 3): those of an ask that was then
+   * refused, or one asked again with other files. At most once an hour per project.
+   */
+  private prunedCopies = new Map<string, number>();
+  private pruneContainerCopies(project: string): void {
+    const now = Date.now();
+    if (now - (this.prunedCopies.get(project) ?? 0) < 60 * 60 * 1000) return;
+    this.prunedCopies.set(project, now);
+    try {
+      pruneCopies(this.containerCopiesDir(), project, this.store.containerCopyRefs(), now - 24 * 60 * 60 * 1000);
+    } catch (e) {
+      console.error(`Container file copies of ${project}: ${(e as Error).message}`);
+    }
+  }
+
   private async keepContainerFile(access: ContainerAccess, root: string, project: string, f: { file: string; as: 'shot' | 'evidence' }): Promise<string> {
     if (f.file.startsWith(BOARD_FILE_PREFIX) || f.file.startsWith(CONTAINER_FILE_PREFIX)) return f.file;
     if (f.as === 'shot') {
       const image = await readContainerImage(access, root, f.file, CONTAINER_IMAGE_MAX_BYTES);
       return keepCopy(this.containerCopiesDir(), project, image.path, image.bytes);
     }
-    // Evidence: the kinds and limits of an attachment (src/board/attachments.ts), by the real file's name and first bytes.
-    const ev = await readContainerBytes(access, root, f.file, EVIDENCE_IMAGE_MAX_BYTES, (inside) => (/\.(png|jpe?g|md|txt|log)$/i.test(inside) ? null : `${inside} can't be attached: only PNG and JPEG images and .txt, .log or .md text files.`));
+    // Evidence: the kinds and limits of an attachment (src/board/attachments.ts), by the real file's name and first bytes;
+    // a text file named as one is read only up to its own limit.
+    const max = /\.(md|txt|log)$/i.test(f.file) ? EVIDENCE_TEXT_MAX_BYTES : EVIDENCE_IMAGE_MAX_BYTES;
+    const ev = await readContainerBytes(access, root, f.file, max, (inside) => (/\.(png|jpe?g|md|txt|log)$/i.test(inside) ? null : `${inside} is not a PNG or JPEG image or a .txt, .log or .md text file.`));
     const kind = bytesKind(ev.bytes, ev.path);
     if (!kind) throw new FileError(/\.(png|jpe?g)$/i.test(ev.path) ? `${ev.path} is not really a ${/\.png$/i.test(ev.path) ? 'PNG' : 'JPEG'} image.` : `${ev.path} is not a text file.`);
     if (kind === 'text' && ev.bytes.length > EVIDENCE_TEXT_MAX_BYTES) throw new FileError(`${ev.path} is too large (${Math.round(ev.bytes.length / 1024)} KB; a text file is at most 512 KB).`);
@@ -2794,7 +2813,7 @@ ${firstMessage}`);
     if (project.runner === 'docker') {
       // git runs in the container, hardened as here (src/sessions/container-files.ts); docker's failure is said plainly.
       const access = this.containerAccess(project);
-      return this.fromContainer(() => sessionChanges(own, { git: (args, o) => containerGit(access, own, args, o) }));
+      return this.fromContainer(() => sessionChanges(own, { hidden: diffHidden(access, own), git: (args, o) => containerGit(access, own, args, o) }));
     }
     // A chat may run in the home folder: its diff drops what its viewer would not show.
     const hidden = info.project === CHATS ? (p: string) => p.split('/').some((s) => s.startsWith('.') || s.startsWith('$')) : undefined;
