@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-04
+- In the sidebar, everything of a project (its Workflow row, its manager, its sessions) and of Chats sits one step in under its name, along a faint line down from its ▾, so it reads as the project's. (no issue)
 - A project with a workflow has a Workflow row in the sidebar, under its name and above its manager, saying how many runs are going and how many wait for you; it opens the workflow page. A chat in such a project has a Workflow button next to Files: a small diagram with the runs and the Runs list beside the chat (full screen on a phone), its own run and step marked, and a link to the full page. (no issue)
 
 ## 2026-11-03

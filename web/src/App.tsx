@@ -888,6 +888,9 @@ function Sidebar(props: {
                     </span>
                   )}
                 </div>
+                {/* Everything of the project one step in under its name, along a guide line from its ▾ (Simon, 2026-11-04:
+                    the manager row sat left of the project's, so it didn't read as the project's). */}
+                <div className="project-rows">
                 {g.project && choosing === g.name && (
                   <div className="start-row">
                     <select aria-label={`Profile for a new session in ${g.name}`} value={chosen} onChange={(e) => setChosen(e.target.value)}
@@ -925,6 +928,7 @@ function Sidebar(props: {
                     Archived ({g.archived})
                   </button>
                 )}
+                </div>
               </LockdownFrame>
             </div>
             {projectMarker?.after === g.name && marker}

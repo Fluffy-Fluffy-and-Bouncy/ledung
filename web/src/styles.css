@@ -110,6 +110,7 @@ a.ctab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .sidebar-resizer.horizontal { height: 12px; margin: -6px 0; cursor: row-resize; }
 .sidebar-resizer:hover, .sidebar-resizer:focus-visible, .sidebar-resizer:active { background: color-mix(in srgb, var(--accent) 60%, transparent); outline: none; }
 .session-list { flex: 1; overflow-y: auto; padding: 0.4rem; }
+.session-list { --tree-line: color-mix(in srgb, var(--muted) 30%, transparent); }
 .session-item {
   display: flex;
   align-items: center;
@@ -764,6 +765,18 @@ table.calls td { white-space: nowrap; }
 .project-name.open:has(.project-name-stack) { text-decoration: none; }
 .project-name.open .project-name-text { text-decoration: underline; }
 .project-actions { display: flex; gap: 0.25rem; flex-shrink: 0; }
+/* A project's rows one step in under its name, along a faint guide line down from its ▾ (2026-11-04). The line sits
+   under the ▾'s middle (the row's padding, less the ▾'s pull to the left, plus half its width); the rows start right of
+   it, so none starts left of the ▾. A phone takes a smaller step, so long names keep their room. */
+.project-rows { --tree-at: 0.95rem; margin-left: var(--tree-at); padding-left: 0.3rem; border-left: 1px solid var(--tree-line); }
+.project-rows:empty { display: none; }
+.project-rows .start-row { padding-left: 0.3rem; }
+/* In line with the session titles (their padding and 1px border); the line ends at its text. */
+.project-rows .archived-link { padding-left: calc(1.15rem + 1px); padding-bottom: 0.2rem; }
+.session-list[data-compact="4"] .project-rows .archived-link { padding-left: calc(1.1rem + 1px); }
+@media (max-width: 760px) {
+  .project-rows { padding-left: 0.15rem; }
+}
 /* Folding a project, or the sessions under a session (issue #149) */
 .fold-caret { flex-shrink: 0; background: none; border: none; padding: 0.2rem 0.1rem; margin-left: -0.35rem; width: 1.1rem; color: var(--muted); cursor: pointer; font-size: 0.85em; line-height: 1; }
 .fold-caret:hover { color: var(--text); }
