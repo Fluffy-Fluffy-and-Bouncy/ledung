@@ -103,7 +103,7 @@ export function AccountsSettings(props: { accounts: AccountInfoView[]; choices: 
         </p>
 
         <div className="form">
-          <label>Account for chats <span className="muted">(new chats run on it; a running chat keeps its account until it restarts)</span>
+          <label>Account for chats <span className="muted">(New chat starts on it unless you choose another there; a chat keeps its account when resumed)</span>
             {choice('chats')}
           </label>
           <label>Account for new projects <span className="muted">(chosen for you in Add project)</span>

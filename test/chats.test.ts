@@ -426,11 +426,11 @@ test('the account for chats and for new projects (issue #283): chosen in Setting
   assert.deepEqual(manager.accountChoices(), { chats: null, newProjects: null });
   assert.equal(store.getSession(chat.id)!.account, 'max20');
   assert.equal((await manager.startChat({})).account, null);
-  // Until it restarts: resumed, it takes the chats' choice now, default (review of #287).
+  // Resumed, it keeps the account it started on (issue #119), not the chats' choice changed since.
   store.updateSession(chat.id, { claudeSessionId: 'abc', status: 'ended' });
   await manager.resume(chat.id);
-  assert.equal(store.getSession(chat.id)!.account, null);
-  assert.equal((live(chat.id) as unknown as { account: unknown }).account, null, 'Claude Code gets the computer\'s own login');
+  assert.equal(store.getSession(chat.id)!.account, 'max20');
+  assert.equal((live(chat.id) as unknown as { account: { name: string } | null }).account?.name, 'max20', 'Claude Code gets that account\'s sign-in again');
   // A refused half of a choice leaves the other unsaved too.
   assert.throws(() => manager.setAccountChoices({ chats: 'max20', newProjects: 'nope' }), /no account named "nope"/);
   assert.deepEqual(manager.accountChoices(), { chats: null, newProjects: null });
@@ -439,4 +439,40 @@ test('the account for chats and for new projects (issue #283): chosen in Setting
   manager.signOutWith = async (p) => void signedOut.push(p.folder);
   await manager.removeAccount('max20');
   assert.deepEqual(signedOut, [account.configDir]);
+});
+
+test("New chat's own account (issue #119): Settings' choice when left out, any known one or the computer's own login, kept on resume", async () => {
+  const { manager, store, live } = ledung();
+  manager.checkSignInWith = async () => ({ state: 'in', method: 'claude.ai', detail: null, checkedAt: 0 });
+  manager.addAccount({ name: 'work', kind: 'folder' });
+  manager.addAccount({ name: 'home', kind: 'folder' });
+  manager.setAccountChoices({ chats: 'work' });
+  assert.equal((await manager.startChat({})).account, 'work', "left out: Settings' Account for chats");
+  assert.equal((await manager.startChat({ account: 'home' })).account, 'home');
+  assert.equal((await manager.startChat({ account: 'default' })).account, null, "the computer's own login");
+  assert.equal((await manager.startChat({ account: '' })).account, null);
+  const before = store.listSessions().length;
+  await assert.rejects(manager.startChat({ account: 'nope' }), /no account named "nope"/);
+  await assert.rejects(manager.startChat({ account: 42 }), /chosen by its name/);
+  assert.equal(store.listSessions().length, before, 'a refused account starts nothing');
+  // Resumed on its own account; on the computer's own login too, though Settings' choice is another.
+  const chat = await manager.startChat({ account: 'home' });
+  const own = await manager.startChat({ account: 'default' });
+  for (const c of [chat, own]) {
+    store.updateSession(c.id, { claudeSessionId: `id-${c.id}`, status: 'ended' });
+    await manager.resume(c.id);
+  }
+  assert.equal(store.getSession(chat.id)!.account, 'home');
+  assert.equal((live(chat.id) as unknown as { account: { name: string } | null }).account?.name, 'home');
+  assert.equal(store.getSession(own.id)!.account, null);
+  assert.equal((live(own.id) as unknown as { account: unknown }).account, null);
+  // Not removed under a running chat; removed since it ended, the chat resumes on Settings' choice rather than
+  // failing on a name that is gone.
+  manager.signOutWith = async () => {};
+  store.updateSession(chat.id, { status: 'running' }); // as if Claude Code ran: it ends at once in these tests
+  assert.throws(() => manager.removeAccount('home'), /used by a running chat/);
+  store.updateSession(chat.id, { status: 'ended' });
+  await manager.removeAccount('home');
+  await manager.resume(chat.id);
+  assert.equal(store.getSession(chat.id)!.account, 'work');
 });

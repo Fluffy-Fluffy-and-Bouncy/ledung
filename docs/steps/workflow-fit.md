@@ -1,6 +1,6 @@
 # Workflows that fit: what Ledung does, and what stays prose
 
-Nov 3, 2026 · **Approved (Simon, 2026-11-03, #1593)**: "a — All five, plus #115 and #110". Simon asked: "make the workflow format and builder compatible with different workflows". This document says where each part of a real process belongs, and part 3f below is what was built from it.
+Nov 3, 2026 · **Approved (Simon, 2026-11-03, #1593)**: "a — All five, plus #115 and #110". **Approved for public (Simon, 2026-11-04, review #1605)**, with the rest of part 3. Simon asked: "make the workflow format and builder compatible with different workflows". This document says where each part of a real process belongs, and part 3f below is what was built from it.
 
 ## The principle
 

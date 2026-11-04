@@ -1557,6 +1557,11 @@ test("chats' settings: taking a pattern out needs the live page, adding one the 
   const past = await change('/api/chats-new', JSON.parse(start));
   assert.equal(past.status, 400, 'past the guard, refused by the folder check');
   assert.match(errorOf(past), /does not exist/);
+  // New chat's account (issue #119): a name it knows, refused before anything starts; never a token in the answer.
+  const unknown = await change('/api/chats-new', { account: 'no-such-account' });
+  assert.equal(unknown.status, 400);
+  assert.match(errorOf(unknown), /no account named "no-such-account"/);
+  assert.match(errorOf(await change('/api/chats-new', { account: { token: 'x' } })), /chosen by its name/);
   // A chat is never started through the project route.
   assert.match(errorOf(await change('/api/sessions', { project: CHATS })), /no project named/);
 });
