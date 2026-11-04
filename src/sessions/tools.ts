@@ -198,6 +198,11 @@ export interface ToolHandlers {
   ask(question: string, options: string[] | null, aboutQuestion: number | null, aboutRequest?: string | null, details?: QuestionDetails | null, shots?: ShotInput[], sources?: AttachedSource[] | null): QuestionInfo;
   /** ask_user's sources, fetched now (issue #369); one that can't be fetched comes back saying why. */
   attach?(sources: SourceInput[]): Promise<AttachedSource[]>;
+  /**
+   * A container project's screenshots and evidence, read from the container and kept in Ledung before ask checks them
+   * (issue #122): the names to ask with, in the same order; a bad one throws with the reason. Left out: as given.
+   */
+  keepFiles?(files: { file: string; as: 'shot' | 'evidence' }[]): Promise<string[]>;
   /** Returns a message for the session: done, or why not. */
   withdraw(id: number, reason: string): string;
   manager?: ManagerHandlers;
@@ -548,8 +553,18 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
         }
         return safely(async () => {
           const asked = askedQuestion(args);
+          const evidence = asked.details?.review?.evidence ?? [];
+          let shots = args.screenshots;
+          if (h.keepFiles && (evidence.length || shots?.length)) {
+            const kept = await h.keepFiles([
+              ...evidence.map((e) => ({ file: e.file, as: 'evidence' as const })),
+              ...(shots ?? []).map((s) => ({ file: s.file.trim().replace(/\\/g, '/'), as: 'shot' as const })),
+            ]);
+            evidence.forEach((e, i) => { e.file = kept[i]!; });
+            shots = shots?.map((s, i) => ({ ...s, file: kept[evidence.length + i]! }));
+          }
           const sources = args.sources?.length && h.attach ? await h.attach(args.sources) : null;
-          const q = h.ask(asked.question, asked.options, args.about_question ?? null, null, asked.details, args.screenshots, sources);
+          const q = h.ask(asked.question, asked.options, args.about_question ?? null, null, asked.details, shots, sources);
           const unattached = failedSourcesNote(q.sources);
           if (asked.details?.review) {
             const n = q.details?.review?.evidence?.length ?? 0;

@@ -217,30 +217,30 @@ test('a chat resumes in the folder it started in, checked again', async () => {
 test('the file viewer shows a chat its own folder only, and nothing in a dot-folder or dot-file', async () => {
   const { manager } = ledung();
   const chat = await manager.startChat({});
-  assert.equal(manager.readFile(chat.id, 'notes/todo.md').content, '# todo');
-  assert.throws(() => manager.readFile(chat.id, '.ssh/id_ed25519'), /hidden/);
-  assert.throws(() => manager.readFile(chat.id, path.join(home, '.ssh', 'id_ed25519')), /hidden/);
-  assert.throws(() => manager.readFile(chat.id, '.bashrc'), /hidden/);
-  assert.throws(() => manager.readFile(chat.id, 'escape/x.txt'), /inside the/);
-  assert.throws(() => manager.readFile(chat.id, '../outside/x.txt'), /inside the/);
+  assert.equal((await manager.readFile(chat.id, 'notes/todo.md')).content, '# todo');
+  await assert.rejects(() => manager.readFile(chat.id, '.ssh/id_ed25519'), /hidden/);
+  await assert.rejects(() => manager.readFile(chat.id, path.join(home, '.ssh', 'id_ed25519')), /hidden/);
+  await assert.rejects(() => manager.readFile(chat.id, '.bashrc'), /hidden/);
+  await assert.rejects(() => manager.readFile(chat.id, 'escape/x.txt'), /inside the/);
+  await assert.rejects(() => manager.readFile(chat.id, '../outside/x.txt'), /inside the/);
   // Started inside a dot-folder: its plain-named files are still hidden.
   const inSsh = await manager.startChat({ folder: '.ssh' });
-  assert.throws(() => manager.readFile(inSsh.id, 'id_ed25519'), /hidden/);
+  await assert.rejects(() => manager.readFile(inSsh.id, 'id_ed25519'), /hidden/);
   // AppData (any case) and Library under the home folder, and Ledung's own data folder, also through a link (question #317).
-  assert.throws(() => manager.readFile(chat.id, 'AppData/Roaming/token.txt'), /not shown/);
+  await assert.rejects(() => manager.readFile(chat.id, 'AppData/Roaming/token.txt'), /not shown/);
   // On a case-insensitive filesystem (Windows, and macOS's APFS default) the lowercase path is AppData itself
   // and is refused; elsewhere it names nothing.
   const caseInsensitive = fs.existsSync(path.join(home, 'appdata'));
-  assert.throws(() => manager.readFile(chat.id, 'appdata/Roaming/token.txt'), caseInsensitive ? /not shown/ : /no file/);
-  assert.throws(() => manager.readFile(chat.id, 'Library/cookies.txt'), /not shown/);
+  await assert.rejects(() => manager.readFile(chat.id, 'appdata/Roaming/token.txt'), caseInsensitive ? /not shown/ : /no file/);
+  await assert.rejects(() => manager.readFile(chat.id, 'Library/cookies.txt'), /not shown/);
   const inAppData = await manager.startChat({ folder: 'AppData/Roaming' });
-  assert.throws(() => manager.readFile(inAppData.id, 'token.txt'), /not shown/, 'a chat started inside it');
+  await assert.rejects(() => manager.readFile(inAppData.id, 'token.txt'), /not shown/, 'a chat started inside it');
   fs.writeFileSync(path.join(process.env.LEDUNG_DATA_DIR!, 'auth-token'), 'secret');
   fs.symlinkSync(process.env.LEDUNG_DATA_DIR!, path.join(home, 'notes', 'data-link'), 'junction');
-  assert.throws(() => manager.readFile(chat.id, 'notes/data-link/auth-token'), /not shown/, "Ledung's data folder through a link");
+  await assert.rejects(() => manager.readFile(chat.id, 'notes/data-link/auth-token'), /not shown/, "Ledung's data folder through a link");
   // A project's session is unchanged: its dot-folders are shown as before.
   const session = await manager.start('open');
-  assert.equal(manager.readFile(session.id, '.github/ci.yml').content, 'on: push');
+  assert.equal((await manager.readFile(session.id, '.github/ci.yml')).content, 'on: push');
 });
 
 // The Files pane (issue #225) gives a chat the viewer's chat rules above (question #317), through the manager.

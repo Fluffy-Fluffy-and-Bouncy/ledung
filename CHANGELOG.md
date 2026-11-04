@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-04
+- A container project's files can be shown, read-only, from inside its project folder in the container: PNG and JPEG images and .md, .txt and .log files open from chat links, the Files pane lists the folder and shows the session's changes, and ask_user screenshots and review evidence work there too, kept in Ledung when asked so the question still shows them with the container stopped. A stopped container is said plainly. (#122)
 - **Ledung follows the workflow**: where a project has a drawn workflow, its manager starts each piece of work as a run and reports how each step ended; Ledung keeps where every run is, counts each outcome (the 3rd "Changes requested" goes where the flow says) and says what to do next. On by default, switchable in the project's Workflow settings. (no issue)
 - A workflow can give each piece of work its own git worktree, made when it starts and removed at its end only when nothing is lost, run at most so many pieces at once (the rest wait in line, with Start anyway in the Runs list), and make a continued step's session fresh first; when a piece of work ends its sessions are archived, and a second one for the same issue is refused unless asked again. Each is a setting in the builder. (no issue)
 - A manager with both a written workflow and a drawn one is told which says what: the drawn flow what happens next and who does it, the written files how. (#115)

@@ -788,6 +788,7 @@ export class Session {
       workflow: workflowLines(this.workflow ? workflowInstructions(this.workflow, role) : null, this.flow ? await this.flow().catch(() => null) : null),
       ask: (question, options, about, aboutRequest, details, shots, sources) => this.ask(question, options, about, aboutRequest, details, shots, sources),
       attach: (sources) => attachSources(sources, this.sourceContext()),
+      keepFiles: (files) => this.management.keepFiles(this.id, files),
       withdraw: (id, reason) => this.withdraw(id, reason),
       manager: role === 'manager' ? this.managerHandlers() : undefined,
       board: role === 'manager' ? this.boardHandlers() : undefined,

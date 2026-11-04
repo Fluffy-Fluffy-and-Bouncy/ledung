@@ -21,6 +21,8 @@ import { containerEnvFilePart } from '../secrets/runtime.ts';
 import type { FileRead } from '../sessions/flow-files.ts';
 import { FLOW_IN_FOLDER, FLOW_TEXT_FILE } from '../shared/flow.ts';
 import { FileError } from '../sessions/files.ts';
+import { containerFailure, type ContainerExec } from '../sessions/container-files.ts';
+import { runCappedBytes } from '../sessions/git-read.ts';
 
 const run = promisify(execFile);
 
@@ -220,6 +222,26 @@ export class DockerRunner implements Runner {
       if ('remove' in f) await this.exec(WRITE_FLOW_SCRIPT, 15000, ['remove', this.cwd, f.path]).catch(fail);
       else await this.execInput(WRITE_FLOW_SCRIPT, ['write', this.cwd, f.path], f.text, 30000).catch(fail);
     }
+  }
+
+  /**
+   * How the project's files are read (issue #122): one `docker exec -i` of a fixed script with the values as its
+   * arguments, as the project's user, with a time limit and a cap on what it may print. Docker's own failure (the
+   * container stopped or missing, Docker not running) comes back as `failed`, in plain words.
+   */
+  fileExec(): ContainerExec {
+    const user = this.project.user ? ['-u', this.project.user] : [];
+    const container = this.project.container;
+    return async (script, args, opts) => {
+      const r = await runCappedBytes('docker', ['exec', '-i', ...user, container, 'sh', '-c', script, 'sh', ...args], opts);
+      if (r.timedOut) return { failed: containerFailure(container, '', true, opts.timeoutMs) };
+      if (r.code === null && !r.truncated) return { failed: containerFailure(container, r.stderr, false, opts.timeoutMs) };
+      // docker exec's own errors exit with 125-127 or say "Error response from daemon"; the scripts' own exit codes are lower.
+      if (r.code !== 0 && ((r.code! >= 125 && r.code! <= 127) || /error response from daemon|docker daemon|error during connect/i.test(r.stderr))) {
+        return { failed: containerFailure(container, r.stderr, false, opts.timeoutMs) };
+      }
+      return r;
+    };
   }
 
   /** `docker exec -i`, `input` on its stdin. */

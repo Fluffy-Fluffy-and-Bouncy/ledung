@@ -2,6 +2,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
@@ -30,6 +31,8 @@ import { freePort } from './free-port.ts';
 import { stopRunning } from '../src/platform/background.ts';
 import { WAIT_MS } from './limits.ts';
 import { Secrets } from '../src/secrets/secrets.ts';
+import { runCappedBytes } from '../src/sessions/git-read.ts';
+import { containerFailure } from '../src/sessions/container-files.ts';
 
 // A port the system says is free right now; a random pick could hit a running Ledung's port.
 const PORT = await freePort();
@@ -2681,4 +2684,89 @@ test('GET /api/workflows needs the sign-in and a known Host', async () => {
   const res = await request({ path: '/api/workflows', headers: { cookie: COOKIE } });
   assert.equal(res.status, 200, res.body);
   assert.equal(typeof JSON.parse(res.body), 'object');
+});
+
+// A container project's files (issue #122): through a fake runner that runs the container's scripts in a local sh
+// (as test/files.test.ts does), behind the sign-in, inside the project folder, only the approved types, a locked
+// project's folder in the same container shut, and the copies kept for questions only to their own project.
+const hasSh = spawnSync('sh', ['-c', 'readlink -f . && head -c 1 /dev/null'], { windowsHide: true }).status === 0;
+test("a container project's files: signed in, inside its folder, the approved types, a locked project's folder shut, copies per project", { skip: !hasSh && 'no sh with readlink here' }, async (t) => {
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-ct-sec-')));
+  const posix = (p: string) => (process.platform === 'win32' ? p.replace(/^([A-Za-z]):/, (_, d: string) => `/${d.toLowerCase()}`) : p).replaceAll('\\', '/');
+  const app = path.join(dir, 'app');
+  fs.mkdirSync(path.join(app, 'locked'), { recursive: true });
+  fs.writeFileSync(path.join(app, 'notes.md'), '# In the container\n');
+  fs.writeFileSync(path.join(app, 'shot.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 7]));
+  fs.writeFileSync(path.join(app, 'main.ts'), 'export {};\n');
+  fs.writeFileSync(path.join(app, 'big.txt'), 'x'.repeat(3 * 1024 * 1024));
+  fs.writeFileSync(path.join(app, 'locked', 'plan.md'), '# locked\n');
+  fs.writeFileSync(path.join(dir, 'outside.md'), '# outside\n');
+  const before = { exec: sessions.containerExecFor, copies: sessions.containerCopiesDir };
+  sessions.containerExecFor = () => (script, args, opts) => runCappedBytes('sh', ['-c', script, 'sh', ...args], opts);
+  sessions.containerCopiesDir = () => path.join(dir, 'copies');
+  const added: string[] = [];
+  const add = async (body: Record<string, unknown>) => {
+    const res = await change('/api/projects', body);
+    assert.equal(res.status, 200, res.body);
+    added.push(String(body.name));
+  };
+  const get = (p: string) => request({ path: p, headers: { cookie: COOKIE } });
+  try {
+    await add({ name: 'ct', runner: 'docker', container: 'ledung-test-ct', pathInContainer: posix(app) });
+    await add({ name: 'ct-other', runner: 'docker', container: 'ledung-test-ct2', pathInContainer: posix(app) });
+    paneStore.createSession({ id: 'ct1', project: 'ct', runner: 'docker', title: 't', parentId: null, permissionMode: 'default', role: 'session' });
+    paneStore.createSession({ id: 'ct2', project: 'ct-other', runner: 'docker', title: 't', parentId: null, permissionMode: 'default', role: 'session' });
+
+    assert.equal((await request({ path: '/api/sessions/ct1/file?path=notes.md' })).status, 401);
+    assert.equal(JSON.parse((await get('/api/sessions/ct1/file?path=notes.md')).body).content, '# In the container\n');
+    const image = await get('/api/sessions/ct1/image?path=shot.png');
+    assert.equal(image.status, 200);
+    assert.equal(image.headers['content-type'], 'image/png');
+    assert.deepEqual(JSON.parse((await get('/api/sessions/ct1/folders')).body).folders.map((f: { path: string }) => f.path), [posix(app)]);
+    assert.deepEqual(JSON.parse((await get('/api/sessions/ct1/tree?in=session')).body).entries.map((e: { name: string }) => e.name), ['locked', 'big.txt', 'main.ts', 'notes.md', 'shot.png']);
+    for (const [bad, why] of [['../outside.md', /inside the project/], [encodeURIComponent(`${posix(dir)}/outside.md`), /inside the project/], ['main.ts', /only \.md/], ['big.txt', /too large/]] as const) {
+      const res = await get(`/api/sessions/ct1/file?path=${bad}`);
+      assert.equal(res.status, 400, bad);
+      assert.match(errorOf(res), why, bad);
+    }
+    assert.equal((await get('/api/sessions/ct1/image?path=notes.md')).status, 400, 'a text file is no image');
+    try {
+      fs.symlinkSync(path.join(dir, 'outside.md'), path.join(app, 'out.md'));
+      assert.match(errorOf(await get('/api/sessions/ct1/file?path=out.md')), /inside the project/, 'a link out');
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EPERM') throw e;
+      t.diagnostic('this machine does not allow file links: the link case was not run');
+    }
+
+    // Another project, locked, in the same container: its folder inside this one stays shut (issue #109).
+    await add({ name: 'ct-locked', runner: 'docker', container: 'ledung-test-ct', pathInContainer: `${posix(app)}/locked`, lockdown: { level: 'A' } });
+    assert.match(errorOf(await get('/api/sessions/ct1/file?path=locked/plan.md')), /locked project/);
+    assert.equal((await get('/api/sessions/ct1/tree?in=session&path=locked')).status, 400);
+    assert.ok(!JSON.parse((await get('/api/sessions/ct1/tree?in=session')).body).entries.some((e: { name: string }) => e.name === 'locked'));
+
+    // A screenshot kept when asked: shown by its name to its own project's sessions, never to another project's.
+    const keep = (sessions as unknown as { keepContainerFiles(id: string, f: { file: string; as: 'shot' | 'evidence' }[]): Promise<string[]> }).keepContainerFiles.bind(sessions);
+    const [shot, notes] = await keep('ct1', [{ file: 'shot.png', as: 'shot' }, { file: 'notes.md', as: 'evidence' }]);
+    assert.match(shot!, /^container:[0-9a-f]{32}\/shot\.png$/);
+    assert.match(notes!, /^container:[0-9a-f]{32}\/notes\.md$/);
+    await assert.rejects(keep('ct1', [{ file: 'notes.md', as: 'shot' }]), /Screenshot 1 \(notes\.md\) can't be attached: notes\.md is not a PNG or JPEG image\. Nothing was asked\./);
+    await assert.rejects(keep('ct1', [{ file: 'locked/plan.md', as: 'evidence' }]), /locked project/);
+    fs.writeFileSync(path.join(app, 'shot.png'), 'changed since');
+    assert.equal((await get(`/api/sessions/ct1/image?path=${encodeURIComponent(shot!)}`)).status, 200, 'the copy, not the file now');
+    assert.equal((await get(`/api/sessions/ct2/image?path=${encodeURIComponent(shot!)}`)).status, 400, "another project's session");
+    assert.equal((await get(`/api/sessions/s1/image?path=${encodeURIComponent(shot!)}`)).status, 400, 'a local project');
+    assert.equal((await request({ path: `/api/sessions/ct1/image?path=${encodeURIComponent(shot!)}` })).status, 401);
+
+    // A stopped container is said plainly.
+    sessions.containerExecFor = () => async (_s, _a, opts) => ({ failed: containerFailure('ledung-test-ct', 'Error response from daemon: container x is not running', false, opts.timeoutMs) });
+    assert.match(errorOf(await get('/api/sessions/ct1/file?path=notes.md')), /The container "ledung-test-ct" is not running/);
+    assert.equal((await get(`/api/sessions/ct1/image?path=${encodeURIComponent(shot!)}`)).status, 200, 'a kept copy without the container');
+  } finally {
+    sessions.containerExecFor = before.exec;
+    sessions.containerCopiesDir = before.copies;
+    const page = await livePage();
+    for (const name of added.reverse()) await change(`/api/projects/${name}/remove`, {}, { 'x-ledung-page': page.key });
+    page.close();
+    removeTemp(dir);
+  }
 });
