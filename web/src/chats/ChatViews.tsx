@@ -1,8 +1,8 @@
-// Chats in the page (issue #211): New chat, which asks for a folder and optionally a model, profile and
-// permission mode and nothing about a project; and the chats' tab in Settings (#366), with their name colour (#222) and
+// Chats in the page (issue #211): New chat, which asks for a folder and optionally a model, profile, account (#119)
+// and permission mode and nothing about a project; and the chats' tab in Settings (#366), with their name colour (#222) and
 // own sensitive list.
 import { Fragment, useEffect, useState } from 'react';
-import { PERMISSION_MODES, type ChatsInfo, type PermissionMode } from '../../../src/shared/protocol.ts';
+import { PERMISSION_MODES, type AccountInfoView, type ChatsInfo, type PermissionMode } from '../../../src/shared/protocol.ts';
 import { api } from '../api.ts';
 import { FolderBrowser, SensitiveList } from '../projects/ProjectViews.tsx';
 import { ChatsColourPicker } from '../components/ProjectName.tsx';
@@ -16,21 +16,27 @@ type Run = (action: () => Promise<unknown>) => Promise<void>;
 
 const MODE_LABEL: Record<PermissionMode, string> = { default: 'Ask', acceptEdits: 'Accept edits', auto: 'Auto', plan: 'Plan' };
 
-export function NewChatView({ chats, profiles, run, onStarted }: { chats: ChatsInfo | null; profiles: string[]; run: Run; onStarted: (id: string) => void }) {
+export function NewChatView({ chats, profiles, accounts, defaultAccount, run, onStarted }: {
+  chats: ChatsInfo | null; profiles: string[]; accounts: AccountInfoView[]; defaultAccount: string | null; run: Run; onStarted: (id: string) => void;
+}) {
   const typing = usePlainTyping();
   const [folder, setFolder] = useState<string | null>(null);
   const [browsing, setBrowsing] = useState(false);
   const [model, setModel] = useState('');
   const [profile, setProfile] = useState('');
   const [mode, setMode] = useState<PermissionMode | ''>('');
+  // null: Settings' "Account for chats", followed while untouched; "": the computer's own login (issue #119).
+  const [account, setAccount] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const shownFolder = folder ?? chats?.folder ?? '';
   const shownMode = mode || chats?.permissionMode || 'auto';
+  const shownAccount = account ?? defaultAccount ?? '';
   const start = () => run(async () => {
     setBusy(true);
     try {
       const chat = await api.startChat({
         ...(folder ? { folder } : {}), ...(model.trim() ? { model: model.trim() } : {}), ...(profile ? { profile } : {}), ...(mode ? { permissionMode: mode } : {}),
+        ...(account !== null ? { account: account || 'default' } : {}),
       });
       onStarted(chat.id);
     } finally {
@@ -56,6 +62,15 @@ export function NewChatView({ chats, profiles, run, onStarted }: { chats: ChatsI
               <select value={profile} onChange={(e) => setProfile(e.target.value)}>
                 <option value="">full: your whole setup</option>
                 {profiles.filter((n) => n !== 'full').map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </label>
+          )}
+          {accounts.length > 0 && (
+            <label>
+              Account <span className="muted">(the Claude login it runs on; it keeps it when resumed)</span>
+              <select value={shownAccount} onChange={(e) => setAccount(e.target.value)}>
+                <option value="">this computer's own login</option>
+                {accounts.map((a) => <option key={a.name} value={a.name}>{a.name}{a.email ? ` (${a.email})` : ''}</option>)}
               </select>
             </label>
           )}
