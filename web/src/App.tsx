@@ -572,7 +572,7 @@ export function App() {
               {settingsBody}
             </SettingsFrame>
           ) : openId === 'chat' ? (
-            <NewChatView chats={ledung.chats} profiles={ledung.profiles} run={run} onStarted={open} />
+            <NewChatView chats={ledung.chats} profiles={ledung.profiles} accounts={ledung.accounts} defaultAccount={ledung.accountChoices.chats} run={run} onStarted={open} />
           ) : openId?.startsWith('a:') ? (
             <ArchivedView
               key={openId}

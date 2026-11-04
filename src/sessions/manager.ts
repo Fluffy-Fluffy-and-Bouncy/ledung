@@ -1326,7 +1326,8 @@ export class SessionManager {
     if (!account) return [];
     const projects = this.projectStore.list().map((p) => p.config).filter((c) => c.account === name);
     const choices = this.accountChoices();
-    const local = !projects.length || projects.some((c) => c.runner === 'local') || choices.chats === name || choices.newProjects === name;
+    const local = !projects.length || projects.some((c) => c.runner === 'local') || choices.chats === name || choices.newProjects === name
+      || [...this.live.values()].some((s) => s.info.project === CHATS && s.info.account === name && s.info.status !== 'ended');
     const places: LoginPlace[] = local ? [{ kind: 'local', folder: account.configDir }] : [];
     const seen = new Set<string>();
     for (const c of projects) {
@@ -1427,7 +1428,8 @@ export class SessionManager {
   signedOut(): SignInProblem[] {
     const choices = this.accountChoices();
     const defaultUsed = choices.chats === null || choices.newProjects === null
-      || this.projectStore.list().some((p) => p.config.runner === 'local' && !p.config.account);
+      || this.projectStore.list().some((p) => p.config.runner === 'local' && !p.config.account)
+      || [...this.live.values()].some((s) => s.info.project === CHATS && !s.info.account && s.info.status !== 'ended');
     const names = [...(defaultUsed ? [DEFAULT_ACCOUNT] : []), ...this.accounts.list().map((a) => a.name)];
     return names.filter((n) => this.signIns.get(n)?.state === 'out').map((n) => ({ account: n, help: this.signInHelpFor(n) }));
   }
@@ -1496,6 +1498,9 @@ export class SessionManager {
     const choices = this.accountChoices();
     const chosen = [choices.chats === name && 'chats', choices.newProjects === name && 'new projects'].filter(Boolean);
     if (chosen.length) throw new UserError(`The account is chosen for ${chosen.join(' and ')}. Choose another one above first.`);
+    // A chat started on it from New chat (issue #119) would be signed out under its feet.
+    const chats = [...this.live.values()].filter((s) => s.info.project === CHATS && s.info.account === name && s.info.status !== 'ended').length;
+    if (chats) throw new UserError(`The account is used by ${chats === 1 ? 'a running chat' : `${chats} running chats`}. Stop ${chats === 1 ? 'it' : 'them'} first.`);
     // Signed out with Claude Code's own logout where its folders are, so no login is left behind: on macOS the
     // Keychain entry stays when a folder is only deleted (#342, Mac probe). The folders themselves stay. Its
     // folder on this computer, and every container its projects ran in (review of #342, I2). A folder that is
@@ -1823,14 +1828,14 @@ export class SessionManager {
     return project;
   }
 
-  /** The settings a session runs with: its project's, or a chat's (issue #211). */
+  /** The settings a session runs with: its project's, or a chat's (issue #211) on its own account (issue #119). */
   private configOf(info: SessionInfo): ProjectConfig {
-    return info.project === CHATS ? this.chatConfig(info.workDir ?? this.chats().folder) : this.project(info.project);
+    return info.project === CHATS ? this.chatConfig(info.workDir ?? this.chats().folder, info.account) : this.project(info.project);
   }
 
   /** configOf, or null for a session whose project is gone. */
   private configOrNull(info: SessionInfo): ProjectConfig | null {
-    return info.project === CHATS ? this.chatConfig(info.workDir ?? this.chats().folder) : this.projectStore.get(info.project)?.config ?? null;
+    return info.project === CHATS ? this.chatConfig(info.workDir ?? this.chats().folder, info.account) : this.projectStore.get(info.project)?.config ?? null;
   }
 
   // --- Skills (#300) ---------------------------------------------------------------------------------
@@ -1980,14 +1985,19 @@ export class SessionManager {
   }
 
   /**
-   * What a chat runs with, as a local project in its own folder: no workflow, grant or board; the account
-   * chosen for chats (issue #283), read again at every start and resume; the config's chats patterns and the
-   * chats list from Settings (Ledung adds the global ones, as for a project).
+   * What a chat runs with, as a local project in its own folder: no workflow, grant or board; its own account
+   * (issue #119; null: the computer's own login), kept on resume, or the one chosen for chats (issue #283) when
+   * none is given or the chat's has been removed since; the config's chats patterns and the chats list from
+   * Settings (Ledung adds the global ones, as for a project).
    */
-  private chatConfig(workDir: string): LocalProjectConfig {
+  private chatConfig(workDir: string, own?: string | null): LocalProjectConfig {
+    const account = own === undefined || (own !== null && !this.accounts.get(own)) ? this.accountChoices().chats : own;
+    return this.chatConfigOn(workDir, account);
+  }
+
+  private chatConfigOn(workDir: string, account: string | null): LocalProjectConfig {
     const own = this.chatsSensitive();
     const seeds = this.config.chats.sensitive;
-    const account = this.accountChoices().chats;
     return {
       name: CHATS, runner: 'local', path: workDir, workflow: { use: false }, permissionMode: this.config.chats.permissionMode,
       ...(account ? { account } : {}),
@@ -2028,18 +2038,21 @@ export class SessionManager {
    * Starts a chat (issue #211): a session with no project, manager or workflow, in a folder of the user's
    * choosing; its questions and prompts go to the user. Defaults (Martin 18:19, question #297): Auto, the
    * computer's own login, Claude Code's own model, the full profile; Remote Control is for managers only.
+   * The account is New chat's choice (issue #119): a name, or "default" for the computer's own login; left
+   * out, the one chosen for chats in Settings.
    */
-  async startChat(opts: { folder?: string; model?: string; profile?: string; permissionMode?: PermissionMode; text?: string } = {}): Promise<SessionInfo> {
+  async startChat(opts: { folder?: string; model?: string; profile?: string; permissionMode?: PermissionMode; account?: unknown; text?: string } = {}): Promise<SessionInfo> {
     if (opts.permissionMode !== undefined && !PERMISSION_MODES.includes(opts.permissionMode)) throw new UserError(`Unknown permission mode "${opts.permissionMode}".`);
+    const account = this.chatAccount(opts.account);
     const workDir = this.chatFolder(opts.folder);
     let profile: string;
     try {
       // The full profile unless one is chosen: the config's defaults are for project sessions.
-      profile = chooseProfile(opts.profile, 'session', undefined, {}, this.profilesFor(this.chatConfig(workDir)).profiles);
+      profile = chooseProfile(opts.profile, 'session', undefined, {}, this.profilesFor(this.chatConfigOn(workDir, account)).profiles);
     } catch (e) {
       throw new UserError((e as Error).message);
     }
-    const project = this.chatConfig(workDir);
+    const project = this.chatConfigOn(workDir, account);
     if (project.account) {
       try {
         this.accounts.envFor(project.account);
@@ -2059,6 +2072,16 @@ export class SessionManager {
     await session.start();
     if (opts.text?.trim() && this.store.getSession(info.id)?.status !== 'ended') session.send(opts.text);
     return session.info;
+  }
+
+  /** New chat's account (issue #119): a known one by name, "default" or "" for the computer's own login, left out for Settings' choice. */
+  private chatAccount(wanted: unknown): string | null {
+    if (wanted === undefined || wanted === null) return this.accountChoices().chats;
+    if (typeof wanted !== 'string') throw new UserError('An account is chosen by its name.');
+    const name = wanted.trim();
+    if (!name || name === DEFAULT_ACCOUNT) return null;
+    if (!this.accounts.get(name)) throw new UserError(`There is no account named "${name}".`);
+    return name;
   }
 
   private runnerFor(project: ProjectConfig, info: SessionInfo): Runner {

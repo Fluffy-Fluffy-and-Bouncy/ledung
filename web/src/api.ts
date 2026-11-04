@@ -188,7 +188,7 @@ export const api = {
     call<StoredMessage[]>('GET', `/api/sessions/${sessionId}/messages?limit=500&after=${afterId}`),
   start: (project: string, profile?: string) => call<SessionInfo>('POST', '/api/sessions', { project, role: 'session', ...(profile ? { profile } : {}) }),
   /** A chat (issue #211): left out, the chats' default folder and mode, Claude Code's model and the full profile. */
-  startChat: (opts: { folder?: string; model?: string; profile?: string; permissionMode?: PermissionMode }) => call<SessionInfo>('POST', '/api/chats-new', opts),
+  startChat: (opts: { folder?: string; model?: string; profile?: string; permissionMode?: PermissionMode; account?: string }) => call<SessionInfo>('POST', '/api/chats-new', opts),
   updateChats: (sensitive: ChatsInfo['sensitive']) => call<ChatsInfo>('POST', '/api/chats', { sensitive }),
   setChatsColour: (colour: ChatsInfo['colour']) => call<ChatsInfo>('POST', '/api/chats-colour', { colour }),
   /** A computer tab's name or colour (issue #240); null: the config's again. */

@@ -1725,6 +1725,8 @@ export class LedungServer {
         return manager.startChat({
           folder: text(body.folder), model: text(body.model), profile: text(body.profile), text: text(body.text),
           permissionMode: text(body.permissionMode) as PermissionMode | undefined,
+          // New chat's account (issue #119): checked against the known ones by name, never a token.
+          account: body.account,
         });
       }
       case 'POST sessions/:id/messages': {
