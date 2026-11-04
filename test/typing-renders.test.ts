@@ -107,7 +107,7 @@ const long = (i: number) => `Message ${i}.\n\n${'A long paragraph with **bold**,
 
 function ledung(messages: unknown[]) {
   return {
-    sessions: [session()], projects: [{ name: 'demo', colours: null }], chats: null, machine: null, overview: null, board: null, away: null,
+    sessions: [session()], projects: [{ name: 'demo', colours: null }], workflows: {}, runs: {}, chats: null, machine: null, overview: null, board: null, away: null,
     questions: {}, permissions: {}, messages, hasEarlier: false, loadEarlier: async () => {}, userName: 'Simon', bangShell: 'bash',
   };
 }

@@ -300,6 +300,8 @@ export const api = {
   projectsFolder: () => call<{ path: string }>('GET', '/api/projects-folder'),
   /** A project's drawn workflow, its texts and the checks' problems (issue #310), read-only. */
   flow: (project: string) => call<FlowView>('GET', `/api/projects/${encodeURIComponent(project)}/flow`),
+  /** Which projects have a workflow, own or shared, by name (the sidebar's Workflow row). */
+  workflows: () => call<Record<string, boolean>>('GET', '/api/workflows'),
   /** Its runs through its flows (workflow part 3c), the latest changed first. */
   runs: (project: string) => call<FlowRun[]>('GET', `/api/projects/${encodeURIComponent(project)}/runs`),
   /** ledung#110: takes away the project's own flow, so the shared workflow's counts again; the workflow as it then reads. */

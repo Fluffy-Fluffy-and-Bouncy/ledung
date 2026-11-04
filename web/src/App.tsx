@@ -1,5 +1,5 @@
 import { Component, Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
-import { CHATS, PERMISSION_MODES, PRIORITIES, projectLabel, type AwayInfo, type BoardStatus, type ChatsInfo, type GitHubBudget, type CompactingInfo, type MachineInfo, type McpServerInfo, type PermissionMode, type Priority, type ProjectInfo, type RemoteControlInfo, type SessionInfo } from '../../src/shared/protocol.ts';
+import { CHATS, PERMISSION_MODES, PRIORITIES, projectLabel, type AwayInfo, type BoardStatus, type ChatsInfo, type GitHubBudget, type CompactingInfo, type MachineInfo, type McpServerInfo, type PermissionMode, type Priority, type ProjectInfo, type QuestionInfo, type RemoteControlInfo, type SessionInfo } from '../../src/shared/protocol.ts';
 import { AddProjectView, ProjectSettingsView, ProjectStartView } from './projects/ProjectViews.tsx';
 import { ChatsSettingsView, NewChatView } from './chats/ChatViews.tsx';
 import { api } from './api.ts';
@@ -56,6 +56,8 @@ import { contextShare } from './usage/SessionsTab.tsx';
 import { SessionUsagePanel } from './usage/SessionUsage.tsx';
 import { UsageView } from './usage/UsageView.tsx';
 import type { Overview } from '../../src/shared/protocol.ts';
+import type { FlowRun } from '../../src/shared/flow-run.ts';
+import { workflowRow } from './flowRuns.ts';
 import { bangAsk, bangCommand, bangHint } from '../../src/shared/bang.ts';
 import { SidebarResizer } from './components/SidebarResizer.tsx';
 import { useComposerHeight } from './components/ComposerResizer.tsx';
@@ -127,6 +129,8 @@ const isSessionId = (id: string | null) => !!id && !VIEWS.includes(id) && !id.in
 
 // The workflow page draws with React Flow (issue #310): loaded when first opened, so the page everyone loads stays as small.
 const WorkflowView = lazy(() => import('./components/WorkflowView.tsx').then((m) => ({ default: m.WorkflowView })));
+// The Workflow pane beside a chat (2026-11-04) draws with it too.
+const WorkflowPane = lazy(() => import('./components/WorkflowPane.tsx').then((m) => ({ default: m.WorkflowPane })));
 
 /**
  * A page loaded on demand that fails to load: a page left open across Restart Ledung asks for a part the new release
@@ -525,6 +529,9 @@ export function App() {
           onStart={(project, profile) => run(async () => open((await api.start(project, profile)).id))}
           connection={ledung.connection}
           board={ledung.board}
+          workflows={ledung.workflows}
+          runs={ledung.runs}
+          questions={ledung.questions}
         />
         {!noSidebar && <SidebarResizer />}
         <main className="main">
@@ -662,6 +669,10 @@ function Sidebar(props: {
   onStart: (project: string, profile?: string) => void;
   connection: Connection;
   board: BoardStatus | null;
+  /** Which projects have a workflow, their runs and the open questions, for each one's Workflow row (2026-11-04). */
+  workflows: Record<string, boolean>;
+  runs: Record<string, FlowRun[]>;
+  questions: Record<number, QuestionInfo>;
 }) {
   // A tree per project: the project, its manager with the sessions it runs, then sessions started
   // outside the manager (and earlier managers). Sessions of removed projects come last. Projects and
@@ -888,6 +899,17 @@ function Sidebar(props: {
                     <button className="small" onClick={() => setChoosing(null)}>Cancel</button>
                   </div>
                 )}
+                {g.project && props.workflows[g.name] && !g.isFolded && (() => {
+                  // The workflow's own row (Simon, 2026-11-04): under the project's name, above its manager, with what is going on.
+                  const row = workflowRow(props.runs[g.name] ?? [], (id) => props.questions[id]?.status === 'open');
+                  return (
+                    <div className="session-row">
+                      <button className={`session-item workflow-row${props.openId === `wf:${g.name}` ? ' open' : ''}`} title={row.title} onClick={() => props.onOpen(`wf:${g.name}`)}>
+                        <span className="session-text"><span className="session-title">{row.text}</span></span>
+                      </button>
+                    </div>
+                  );
+                })()}
                 {(() => {
                   const at = markerIn(g.view.rows);
                   return g.view.rows.map((r) => (
@@ -974,8 +996,12 @@ export function SessionView(props: {
   /** The Files pane (issue #225, a test feature), and the file opened from it with the folder it is in. */
   const [pane, setPane] = useState(false);
   const [paneFile, setPaneFile] = useState<{ stack: string[]; folder: PaneFolderKey } | null>(null);
+  /** The Workflow pane (2026-11-04): one pane at a time beside the chat, so it and Files close each other. */
+  const [flowPane, setFlowPane] = useState(false);
+  const hasWorkflow = session.project !== CHATS && !!ledung.workflows[session.project];
   const openFile = useCallback((path: string) => {
     setShowUsage(false);
+    setFlowPane(false);
     setPane(false);
     setPaneFile(null);
     setFiles((stack) => [...stack, path]);
@@ -985,7 +1011,15 @@ export function SessionView(props: {
     setShowUsage(false);
     setFiles([]);
     setPaneFile(null);
+    setFlowPane(false);
     setPane((v) => !v);
+  };
+  const toggleFlowPane = () => {
+    setShowUsage(false);
+    setFiles([]);
+    setPaneFile(null);
+    setPane(false);
+    setFlowPane((v) => !v);
   };
   const ended = session.status === 'ended';
   const controls = sessionControls(session);
@@ -1102,7 +1136,10 @@ export function SessionView(props: {
           </div>
         </div>
         <SessionMenu
-          before={<button className={`small files-toggle${pane ? ' on' : ''}`} aria-pressed={pane} title="This session's files and what it changed (a test feature)" onClick={togglePane}>Files</button>}
+          before={<>
+            {hasWorkflow && <button className={`small files-toggle${flowPane && hasWorkflow ? ' on' : ''}`} aria-pressed={flowPane && hasWorkflow} title={`${session.project}'s workflow and its runs${session.runBlock ? `, this session's marked` : ''}`} onClick={toggleFlowPane}>Workflow</button>}
+            <button className={`small files-toggle${pane ? ' on' : ''}`} aria-pressed={pane} title="This session's files and what it changed (a test feature)" onClick={togglePane}>Files</button>
+          </>}
           session={session}
           project={ledung.projects.find((p) => p.name === session.project) ?? null}
           away={ledung.away}
@@ -1111,7 +1148,7 @@ export function SessionView(props: {
           onToggleTechnical={toggleTechnical}
           usage={ledung.overview?.sessions[session.id]?.total ?? null}
           showUsage={showUsage}
-          onToggleUsage={() => { setFiles([]); setPane(false); setPaneFile(null); setShowUsage((v) => !v); }}
+          onToggleUsage={() => { setFiles([]); setPane(false); setFlowPane(false); setPaneFile(null); setShowUsage((v) => !v); }}
           onOpenWorkflow={() => props.onOpenWorkflow(session.project)}
         />
         {controls.header.length > 0 && (
@@ -1184,6 +1221,13 @@ export function SessionView(props: {
             onOpenQuestion={props.onOpenQuestion}
             onClose={() => setPane(false)}
           />
+        )}
+        {flowPane && hasWorkflow && (
+          <LoadFailed>
+            <Suspense fallback={<aside className="file-panel workflow-pane"><p className="muted page-body">Loading the workflow…</p></aside>}>
+              <WorkflowPane session={session} liveRuns={ledung.runs[session.project]} connected={ledung.hellos} onClose={() => setFlowPane(false)} />
+            </Suspense>
+          </LoadFailed>
         )}
         {pane && paneFile && (
           <FileViewer

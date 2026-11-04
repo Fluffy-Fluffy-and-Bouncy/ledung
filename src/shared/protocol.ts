@@ -1255,6 +1255,8 @@ export type ServerEvent =
   | { type: 'config'; config: ConfigStatus }
   /** A project's runs through its flows changed (workflow part 3): all of them, the latest changed first. */
   | { type: 'runs'; project: string; runs: FlowRun[] }
+  /** A project's flow was saved or taken away: the page reads again which projects have one (the sidebar's Workflow row). */
+  | { type: 'workflows' }
   | { type: 'chats'; chats: ChatsInfo }
   | { type: 'computers'; computers: ComputerInfo[] }
   | { type: 'session'; session: SessionInfo }

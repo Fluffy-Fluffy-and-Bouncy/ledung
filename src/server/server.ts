@@ -1492,6 +1492,9 @@ export class LedungServer {
         });
       }
       // The workflow page (issue #310): the project's flow, read-only and only from inside its folders (src/sessions/flow-files.ts).
+      // The sidebar's Workflow row (2026-11-04): which projects have a flow. Read-only, behind the same checks.
+      case 'GET workflows':
+        return manager.workflowsPresent();
       case 'GET projects/:id/flow':
         return manager.flowView(decodeURIComponent(id));
       // ledung#110 "Back to shared": the project's own flow.json and flows/ are removed. A change to what its manager

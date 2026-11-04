@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-04
+- A project with a workflow has a Workflow row in the sidebar, under its name and above its manager, saying how many runs are going and how many wait for you; it opens the workflow page. A chat in such a project has a Workflow button next to Files: a small diagram with the runs and the Runs list beside the chat (full screen on a phone), its own run and step marked, and a link to the full page. (no issue)
+
 ## 2026-11-03
 - A workflow can give each piece of work its own git worktree, made when it starts and removed at its end only when nothing is lost, run at most so many pieces at once (the rest wait in line, with Start anyway in the Runs list), and make a continued step's session fresh first; when a piece of work ends its sessions are archived, and a second one for the same issue is refused unless asked again. Each is a setting in the builder. (no issue)
 - A manager with both a written workflow and a drawn one is told which says what: the drawn flow what happens next and who does it, the written files how. (#115)
