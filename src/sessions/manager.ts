@@ -151,6 +151,8 @@ let exercised96 = false;
 
 /** How long the sidebar's read of which projects have a flow waits for one project (a container's docker exec). */
 const WORKFLOWS_READ_MS = 5000;
+/** How long one answer to it is shared by every page that asks. */
+const WORKFLOWS_FRESH_MS = 3000;
 
 export class SessionManager {
   private readonly live = new Map<string, Session>();
@@ -1326,14 +1328,30 @@ export class SessionManager {
    * Which projects have a workflow, a flow found in their own folder or a shared workflow's (one that can't be read
    * counts: its page says why), for the sidebar's Workflow row (Simon, 2026-11-04). Only flow.json is read.
    */
-  async workflowsPresent(): Promise<Record<string, boolean>> {
+  workflowsPresent(): Promise<Record<string, boolean>> {
+    // One read at a time, and its answer shared for a few seconds: a save tells every open page at once, and each asks
+    // (second review of the row: a docker exec per container project per page).
+    const now = Date.now();
+    if (this.workflowsRead && now - this.workflowsRead.at < WORKFLOWS_FRESH_MS) return this.workflowsRead.answer;
+    const answer = this.readWorkflowsPresent();
+    this.workflowsRead = { at: now, answer };
+    answer.catch(() => { this.workflowsRead = null; });
+    return answer;
+  }
+
+  private workflowsRead: { at: number; answer: Promise<Record<string, boolean>> } | null = null;
+
+  private async readWorkflowsPresent(): Promise<Record<string, boolean>> {
     const projects = this.projectStore.list().map((p) => p.config);
     // A container's read that fails says "refused" for every file (review of the row): only a local refusal is a flow
     // that is there but unreadable. A container slow to answer counts as none rather than holding every project's row.
-    const has = (p: ProjectConfig) => Promise.race([
-      findFlow(this.flowPlacesOf(p)).then((f) => f !== null && ('text' in f || p.runner === 'local' || f.place.kind === 'workflow'), () => false),
-      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), WORKFLOWS_READ_MS).unref()),
-    ]);
+    const has = (p: ProjectConfig) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      return Promise.race([
+        findFlow(this.flowPlacesOf(p)).then((f) => f !== null && ('text' in f || p.runner === 'local' || f.place.kind === 'workflow'), () => false),
+        new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), WORKFLOWS_READ_MS); }),
+      ]).finally(() => clearTimeout(timer));
+    };
     const found = await Promise.all(projects.map(has));
     return Object.fromEntries(projects.map((p, i) => [p.name, found[i]!]));
   }
@@ -1374,6 +1392,7 @@ export class SessionManager {
     }
     console.log(`Workflow: saved ${Array.isArray(files) ? files.length : 0} file(s) into ${own.folder} from the builder.`);
     // Every open page's Workflow row: the project may have a flow now (2026-11-04).
+    this.workflowsRead = null;
     this.publish({ type: 'workflows' });
     return this.flowView(name);
   }
@@ -1394,6 +1413,7 @@ export class SessionManager {
     } catch (e) {
       throw e instanceof FileError ? new UserError(e.message) : e;
     }
+    this.workflowsRead = null;
     this.publish({ type: 'workflows' });
     return this.flowView(name);
   }

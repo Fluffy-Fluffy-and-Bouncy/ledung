@@ -287,12 +287,15 @@ export function useLedung(openSessionId: string | null) {
   const hellosRef = useRef(hellos);
   hellosRef.current = hellos;
   const lastRead = useRef(0);
+  const runsRef = useRef(runs);
+  runsRef.current = runs;
   const refreshWorkflows = useCallback(() => {
     const at = hellosRef.current;
     lastRead.current = Date.now();
     api.workflows().then((w) => {
       if (hellosRef.current !== at) return;
-      setWorkflows(w);
+      // A project with runs has a flow, though its container was too slow to say so this time (second review).
+      setWorkflows(Object.fromEntries(Object.entries(w).map(([name, has]) => [name, has || !!runsRef.current[name]?.length])));
       for (const [name, has] of Object.entries(w)) {
         if (has) api.runs(name).then((list) => { if (hellosRef.current === at) setRuns((r) => (r[name] ? r : { ...r, [name]: list })); }, () => {});
       }
