@@ -448,10 +448,20 @@ export async function orderedMergeFloors(userName: string, command: string, view
 }
 
 /**
- * How a record starts when Claude Code's auto mode classifier refused a merge away mode allowed (issue #133): it is
- * logged, not asked, and away_log calls it refused rather than held, since away mode held nothing.
+ * How a record starts when Claude Code's auto mode classifier refused a merge away mode allows, for want of a review
+ * (issue #133): it is logged, not asked, and away_log calls it refused rather than held.
  */
 export const CLASSIFIER_REFUSED = "refused by Claude Code's auto mode classifier";
+
+/**
+ * The classifier's reason for the one refusal away mode answers itself (issue #133): the person allowed unreviewed
+ * merges while away. Any other reason (prompt injection, a target the person never named) is asked as before
+ * (issue #145).
+ */
+const MERGE_WITHOUT_REVIEW = '[Merge Without Review]';
+
+/** Whether the classifier refused for want of a review, and for nothing else: its reason starts with that tag. */
+export const mergeWithoutReview = (reason: string): boolean => reason.trimStart().startsWith(MERGE_WITHOUT_REVIEW);
 
 // ---------------------------------------------------------------- the state and the record
 

@@ -26,7 +26,7 @@ import {
 import { mergeAnswered, routePermission, sensitiveHookOutput, type SensitiveRules } from './sensitive.ts';
 import { promptTimeLine } from './elapsed.ts';
 import { settingsAction, wordsFor, type Word } from './word.ts';
-import { promptAwayLine, classify, CLASSIFIER_REFUSED, decide as awayDecide, FLOOR_TIMEOUT_MS, formatLog, orderedMergeFloors, type Away, type AwayDecision, type Floor, type ViewPr } from './away.ts';
+import { promptAwayLine, classify, CLASSIFIER_REFUSED, decide as awayDecide, KIND_NAMES, mergeWithoutReview, FLOOR_TIMEOUT_MS, formatLog, orderedMergeFloors, type Away, type AwayDecision, type Floor, type ViewPr } from './away.ts';
 import type { AwayInfo } from '../shared/protocol.ts';
 import { deskQuestion, questionText, type QuestionDetails } from '../shared/questions.ts';
 import { compactionUsage, contextAfterCompact, UsageRecorder, type SessionFacts } from '../usage/recorder.ts';
@@ -69,6 +69,10 @@ let nudgesExercised = false;
 let awayMergeExercised = false;
 /** The EXERCISED line of issues #143 and #144, once per run. */
 let pinnedMergeExercised = false;
+/** The EXERCISED line of issue #145, once per run. */
+let otherRefusalExercised = false;
+/** The EXERCISED line of issue #146, once per run. */
+let kindDroppedExercised = false;
 
 /**
  * A call's input with an allowed merge's command pinned (issues #143, #144); unchanged for anything else. Every path
@@ -657,10 +661,11 @@ export class Session {
    * (issue #104): exactly that call, once, within a day of the answer. An `allow` here gets past the classifier, as
    * mergeOnAnswer's does. Settings actions keep their own rule (settingsOnWord). Null: as before.
    */
-  private onceOnTap(toolName: string, input: Record<string, unknown>, toolUseId: string | undefined): Record<string, unknown> | null {
+  private onceOnTap(toolName: string, input: Record<string, unknown>, toolUseId: string | undefined, agentId: unknown): Record<string, unknown> | null {
     if (settingsAction(toolName) || SETTINGS_CHANGE_TOOLS.includes(toolName)) return null;
     const now = Date.now();
-    const q = onceGrant(this.store.answeredSince(this.id, now - ONCE_GRANT_MS), this.id, toolName, input, now);
+    // A subagent's identical call does not use up the session's own Allow once, nor the other way round (issue #146).
+    const q = onceGrant(this.store.answeredSince(this.id, now - ONCE_GRANT_MS), this.id, toolName, input, now, !!agentId);
     // Used up atomically, so two calls racing for one grant can't both run.
     if (!q || !this.store.useWord(this.id, `q${q.id}`, ONCE_ACTION)) return null;
     const why = `${this.userName} allowed this exact call once, at ${new Date(q.answeredAt!).toLocaleTimeString()}, in their answer to question #${q.id}`;
@@ -776,12 +781,24 @@ export class Session {
     };
   }
 
-  /** Away mode's decision on a command (issue #35), held when Back was pressed while the floors were checked. */
+  /**
+   * Away mode's decision on a command (issue #35), held when Back was pressed while the floors were checked, or when
+   * away mode stopped allowing its kind meanwhile: the floor read can take about 20 s (issue #146).
+   */
   private async awayDecision(away: AwayInfo, command: string, toolUseId: string | undefined): Promise<AwayDecision> {
     const decision = await awayDecide(away, this.userName, command, this.devShip, this.floorReader(toolUseId));
-    if (decision.allowed && !this.away?.current()) {
+    if (!decision.allowed) return decision;
+    const now = this.away?.current();
+    if (!now) {
       decision.allowed = false;
       decision.reason = `held for ${this.userName}: ${this.userName} came back`;
+    } else if (decision.kind === 'other' || !now.allow.includes(decision.kind)) {
+      decision.allowed = false;
+      decision.reason = `held for ${this.userName}: away mode stopped allowing ${decision.kind === 'other' ? 'it' : KIND_NAMES[decision.kind]} while its floors were checked`;
+      if (!kindDroppedExercised) {
+        kindDroppedExercised = true;
+        exercisedLine('EXERCISED #146 an away decision held because away mode stopped allowing its kind during the floor read');
+      }
     }
     return decision;
   }
@@ -806,18 +823,18 @@ export class Session {
    * user's, never a manager's, whoever started the session. Once per refused call; while one such question is open
    * for the same call, a repeat of it is only noted.
    */
-  private raiseRefusal(toolUseId: string, reason: string): void {
+  private raiseRefusal(toolUseId: string, reason: string, byAgent = false): void {
     const call = this.toolCalls.get(toolUseId);
     if (!call) return;
     const mine = this.store.listQuestions(500, false).filter((q) => q.sessionId === this.id && refusalOf(q));
     if (mine.some((q) => refusalOf(q)!.toolUseId === toolUseId)) return;
-    const open = mine.find((q) => q.status === 'open' && sameCall(refusalOf(q)!, call.toolName, call.input));
+    const open = mine.find((q) => q.status === 'open' && sameCall(refusalOf(q)!, call.toolName, call.input) && (refusalOf(q)!.byAgent ?? false) === byAgent);
     if (open) {
       this.record('event', { text: `The auto mode classifier refused the same call again; it still waits for ${this.userName} as question #${open.id}.` });
       return;
     }
     const info = this.store.getSession(this.id)!;
-    const asked = refusalQuestion({ ...call, reason, toolUseId }, { title: info.title, project: info.project }, this.management.questionTiers(this.id)[0]);
+    const asked = refusalQuestion({ ...call, reason, toolUseId, ...(byAgent ? { byAgent } : {}) }, { title: info.title, project: info.project }, this.management.questionTiers(this.id)[0]);
     const q = this.store.createQuestion({ sessionId: this.id, question: asked.question, options: asked.options, addressedTo: 'user', details: asked.details });
     this.record('event', { text: `The auto mode classifier refused a ${call.toolName} call; Ledung asked ${this.userName} (question #${q.id}).` });
     this.record('question', { questionId: q.id });
@@ -828,21 +845,33 @@ export class Session {
    * The refused call, when it is a manager's own plain `gh pr merge` while away mode allows merge (issue #133): then
    * awayRefusal decides whether it is asked. Null: asked at once, as every other refusal. A subagent's refusal (its
    * result carries the Task call's id as parent) is not the manager's own: asked as before (review of PR #141, 1a).
+   * Only a refusal for want of a review: what the person allowed while away is unreviewed merges, not merges the
+   * classifier refused for anything else, such as prompt injection, which is asked as before (issue #145).
    */
-  private awayMergeRefused(toolUseId: string, parent: string | null | undefined): { away: AwayInfo; command: string } | null {
+  private awayMergeRefused(toolUseId: string, reason: string, parent: string | null | undefined): { away: AwayInfo; command: string } | null {
     if (parent) return null;
     const call = this.toolCalls.get(toolUseId);
     const command = call?.toolName === 'Bash' ? call.input.command : undefined;
     if (typeof command !== 'string') return null;
     const away = this.away?.current();
     if (!away?.allow.includes('merge') || this.store.getSession(this.id)?.role !== 'manager') return null;
-    return classify(command, this.devShip).kind === 'merge' ? { away, command } : null;
+    if (classify(command, this.devShip).kind !== 'merge') return null;
+    if (!mergeWithoutReview(reason)) {
+      if (!otherRefusalExercised) {
+        otherRefusalExercised = true;
+        exercisedLine('EXERCISED #145 an away merge the classifier refused for another reason than [Merge Without Review], asked of the person');
+      }
+      return null;
+    }
+    return { away, command };
   }
 
   /**
-   * A merge the classifier refused while away mode allows merge (issue #133): with its floors met it is not a question
-   * to the person, who allowed merges while away ("You're allowed to merge while I'm away, STOP asking about this",
-   * 2026-11-05). It goes in the away log, for the morning report, and in the chat. Floors not met: asked as before.
+   * A merge the classifier refused for want of a review while away mode allows merge (issue #133): with its floors met
+   * it is not a question to the person, who allowed merges while away ("You're allowed to merge while I'm away, STOP
+   * asking about this", 2026-11-05). It goes in the away log, for the morning report, and in the chat. Floors not met:
+   * asked as before. The record says the floors were met when it was refused, not that away mode allowed it: the hook
+   * may have held it at call time (issue #145).
    */
   private async awayRefusal(toolUseId: string, reason: string, { away, command }: { away: AwayInfo; command: string }): Promise<void> {
     if (this.awayRefusals.has(toolUseId)) return;
@@ -856,7 +885,7 @@ export class Session {
       return;
     }
     const floors = decision.floors.map((f) => f.detail).join(', ');
-    const why = `${CLASSIFIER_REFUSED} (${reason}), though away mode allows it: PR #${decision.pr} ${floors}. Not asked of ${this.userName}; in the away log for the morning report`;
+    const why = `${CLASSIFIER_REFUSED} (${reason}); floors met when refused: PR #${decision.pr} ${floors}. Not asked of ${this.userName}; in the away log for the morning report`;
     this.away?.record(this.id, command, { ...decision, allowed: false, reason: why });
     this.record('event', { text: `Away merge ${why}.` });
   }
@@ -874,14 +903,15 @@ export class Session {
       if (m.type === 'user' && b.type === 'tool_result' && b.is_error === true && b.tool_use_id) {
         const reason = classifierReason(b.content);
         if (reason === null) continue;
-        const away = this.awayMergeRefused(b.tool_use_id, (m as { parent_tool_use_id?: string | null }).parent_tool_use_id);
+        const parent = (m as { parent_tool_use_id?: string | null }).parent_tool_use_id;
+        const away = this.awayMergeRefused(b.tool_use_id, reason, parent);
         if (away) {
           const id = b.tool_use_id;
           void this.awayRefusal(id, reason, away).catch((e) => {
             console.error(`Away mode: a refused merge could not be checked: ${(e as Error).message}`);
             this.raiseRefusal(id, reason);
           });
-        } else this.raiseRefusal(b.tool_use_id, reason);
+        } else this.raiseRefusal(b.tool_use_id, reason, !!parent);
       }
     }
   }
@@ -1042,7 +1072,7 @@ export class Session {
           if (merge) return merge;
           const named = this.settingsOnWord(toolName, toolInput, toolUseId);
           if (named) return named;
-          const once = this.onceOnTap(toolName, toolInput, toolUseId);
+          const once = this.onceOnTap(toolName, toolInput, toolUseId, (input as { agent_id?: string }).agent_id);
           if (once) return once;
           const ordered = await this.onOrder(toolName, toolInput, toolUseId);
           if (ordered) return ordered;

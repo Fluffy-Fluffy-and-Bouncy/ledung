@@ -145,6 +145,11 @@ export interface RefusalDetails {
   input: Record<string, unknown>;
   reason: string;
   toolUseId: string;
+  /**
+   * The call was a subagent's, not the session's own (issue #146): its Allow once covers only a subagent's retry, and
+   * the session's own Allow once never a subagent's identical call. Absent on questions raised before: the session's own.
+   */
+  byAgent?: boolean;
 }
 
 /** The run and block a person block's question belongs to (workflow part 3b), with their titles as asked. */
