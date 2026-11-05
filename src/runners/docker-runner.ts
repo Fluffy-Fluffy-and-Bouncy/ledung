@@ -21,7 +21,7 @@ import { containerEnvFilePart } from '../secrets/runtime.ts';
 import type { FileRead } from '../sessions/flow-files.ts';
 import { FLOW_IN_FOLDER, FLOW_TEXT_FILE } from '../shared/flow.ts';
 import { FileError } from '../sessions/files.ts';
-import { containerFailure, type ContainerExec } from '../sessions/container-files.ts';
+import { containerFailure, REAL_FN, type ContainerExec } from '../sessions/container-files.ts';
 import { runCappedBytes } from '../sessions/git-read.ts';
 
 const run = promisify(execFile);
@@ -335,16 +335,19 @@ async function inTurn<T>(container: string, run: () => Promise<T>): Promise<T> {
 /**
  * The script readInsideProject runs: $1 the mark, $2 the project folder, $3 the most one file may have, $4 the most
  * all may have, then the files. Each gets a line "<mark> <index> <status>", "ok" followed by its text: only a file
- * whose real path is inside the folder's real path, a plain file within the limits, with no NUL byte in its first
- * 8 KB (its start is as long with the NUL bytes taken out as with them).
+ * whose real path is inside the folder's real path (a real path with a newline in it counts as outside, issue #131), a
+ * plain file within the limits, with no NUL byte in its first 8 KB (its start is as long with the NUL bytes taken out
+ * as with them).
  */
 export const INSIDE_PROJECT_SCRIPT = [
   'mark=$1; root=$(readlink -f -- "$2") || { echo "$mark - unreachable"; exit 0; }; max=$3; left=$4; shift 4; i=0',
+  // The container viewer's real: a name ending in a newline can't stand for the one without it (issue #131).
+  ...REAL_FN,
   'for f in "$@"; do',
   '  p="$root/$f"',
   '  if [ ! -e "$p" ] && [ ! -L "$p" ]; then echo "$mark $i missing"',
   '  else',
-  '    r=$(readlink -f -- "$p")',
+  '    r=$(real "$p") || r=',
   '    case "$r" in',
   '      "$root"/*)',
   '        if [ ! -f "$r" ] || [ ! -r "$r" ]; then echo "$mark $i refused is not a file that can be read"',
@@ -384,6 +387,7 @@ export const LIST_FLOW_SCRIPT = [
  */
 export const WRITE_FLOW_SCRIPT = [
   'mode=$1; root=$(readlink -f -- "$2") || { echo "the project folder is not in the container"; exit 3; }; shift 2',
+  ...REAL_FN,
   'for f in "$@"; do',
   // Without a trailing slash, so a project at / makes no "//" that readlink -f would not give back below.
   '  d=${root%/}; rest=".ledung/workflow/$f"',
@@ -404,7 +408,7 @@ export const WRITE_FLOW_SCRIPT = [
   '    if [ -e "$t" ] || [ -L "$t" ]; then echo "$f could not be written: $t is in the way"; exit 3; fi',
   '    if (set -C; cat > "$t"); then :; else rm -f -- "$t"; echo "$f could not be written"; exit 3; fi',
   // Checked again just before the rename: a folder on the way swapped for a link meanwhile (security review of PR #89, finding 4).
-  `    if [ "$(readlink -f -- "$d")" != "$d" ]; then rm -f -- "$t"; echo "$f: a folder on the way became a link, or could not be checked; the builder writes only into the project's own .ledung/workflow folder"; exit 3; fi`,
+  `    if [ "$(real "$d")" != "$d" ]; then rm -f -- "$t"; echo "$f: a folder on the way became a link, or could not be checked; the builder writes only into the project's own .ledung/workflow folder"; exit 3; fi`,
   `    if [ -L "$p" ] || [ -d "$p" ]; then rm -f -- "$t"; echo "$f became a link or a folder; the builder writes only into the project's own .ledung/workflow folder"; exit 3; fi`,
   '    mv -f -- "$t" "$p" || { rm -f -- "$t"; echo "$f could not be written"; exit 3; }',
   '  fi',
