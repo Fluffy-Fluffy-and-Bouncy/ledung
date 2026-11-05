@@ -400,6 +400,64 @@ test("a container's workflow writer script refuses a file that is a link, and a 
   });
 });
 
+// Issue #131: in the workflow scripts, a name ending in a newline never stands for the name without it. Command
+// substitution drops trailing newlines, so a plain $(readlink -f …) turns "notes.md⏎" into "notes.md", another file.
+const newlineNames = process.platform !== 'win32' && spawnSync('sh', ['-c', 'readlink -n -f .'], { windowsHide: true }).status === 0;
+test("a container's workflow read script refuses a link to a name ending in a newline, and doesn't read the one without it", { skip: !newlineNames && 'needs a newline in a file name and sh with readlink -n' }, async () => {
+  const { INSIDE_PROJECT_SCRIPT, splitMarked } = await import('../src/runners/docker-runner.ts');
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(base, 'nl-read-box-')));
+  const folder = path.join(project, '.ledung', 'workflow');
+  fs.mkdirSync(folder, { recursive: true });
+  fs.writeFileSync(path.join(folder, 'notes.md\n'), '# the newline one\n');
+  fs.writeFileSync(path.join(folder, 'notes.md'), '# the other one\n');
+  fs.symlinkSync(path.join(folder, 'notes.md\n'), path.join(folder, 'manager.md'));
+  const files = ['.ledung/workflow/manager.md', '.ledung/workflow/notes.md'];
+  const run = spawnSync('sh', ['-c', INSIDE_PROJECT_SCRIPT, 'sh', 'MARK', project, '1000', '10000', ...files], { encoding: 'utf8', windowsHide: true });
+  assert.equal(run.status, 0, run.stderr);
+  const got = splitMarked(run.stdout, files, 'MARK');
+  // The file without the newline reads by its own name, so the script can read it: the link just may not stand for it.
+  assert.deepEqual(got.get('.ledung/workflow/notes.md'), { text: '# the other one\n' });
+  assert.deepEqual(got.get('.ledung/workflow/manager.md'), { refused: '.ledung/workflow/manager.md leads outside the project folder.' });
+});
+
+test("a container's workflow writer script refuses a folder swapped for a link to its name with a newline before the rename", { skip: !newlineNames && 'needs a newline in a file name and sh with readlink -n' }, async () => {
+  const { WRITE_FLOW_SCRIPT } = await import('../src/runners/docker-runner.ts');
+  const fresh = fs.realpathSync(fs.mkdtempSync(path.join(base, 'nl-swap-box-')));
+  const workflow = path.join(fresh, '.ledung', 'workflow');
+  fs.mkdirSync(path.join(workflow, 'briefs\n'), { recursive: true });
+  // As in the swap test above: the briefs folder the script makes is swapped, right after, for a link to "briefs⏎".
+  const front = 'mkdir() { command mkdir "$@" || return; case "$2" in */.ledung/workflow/briefs) command mv -- "$2" "$2-old" && command ln -s -- "$SWAP_TO" "$2";; esac; }\n';
+  const env = { ...process.env, SWAP_TO: path.join(workflow, 'briefs\n') };
+  const swapped = spawnSync('sh', ['-c', front + WRITE_FLOW_SCRIPT, 'sh', 'write', fresh, 'briefs/a.md'], { input: 'CHANGED', encoding: 'utf8', windowsHide: true, env });
+  assert.ok(fs.lstatSync(path.join(workflow, 'briefs')).isSymbolicLink() && fs.existsSync(path.join(workflow, 'briefs-old')), `the swap ran: ${swapped.stdout}${swapped.stderr}`);
+  assert.equal(swapped.status, 3, swapped.stdout + swapped.stderr);
+  assert.match(swapped.stdout, /became a link/);
+  assert.deepEqual(fs.readdirSync(path.join(workflow, 'briefs\n')), [], 'nothing left in the folder with the newline');
+});
+
+// The read script's last check, that the open descriptor's path (/proc/$$/fd/3, Linux and Git Bash) is still the
+// checked one (review of PR #132, Minor finding). No /proc on a Mac, so the line itself runs with a link in its
+// place: "outside" when the link names anything but the checked file, nothing when it names that file.
+test("a container's read script: the open file's path, checked again, doesn't drop a trailing newline", { skip: !newlineNames && 'needs a newline in a file name and sh with readlink -n' }, async () => {
+  const { READ_SCRIPT } = await import('../src/sessions/container-files.ts');
+  const line = READ_SCRIPT.split('\n').find((l) => l.includes('/proc/$$/fd/3') && !l.startsWith('//'));
+  assert.ok(line, 'the read script checks the open descriptor');
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(base, 'nl-fd-')));
+  fs.writeFileSync(path.join(dir, 'nl.md'), 'a');
+  fs.writeFileSync(path.join(dir, 'nl.md\n'), 'b');
+  fs.writeFileSync(path.join(dir, 'other.md'), 'c');
+  const fd = (target: string) => {
+    const l = path.join(dir, `fd-${target.replace('\n', 'NL')}`);
+    fs.symlinkSync(path.join(dir, target), l);
+    const run = spawnSync('sh', ['-c', `r=$1; ${line!.replace('/proc/$$/fd/3', '$2')}; echo same`, 'sh', path.join(dir, 'nl.md'), l], { encoding: 'utf8', windowsHide: true });
+    assert.equal(run.status, 0, run.stderr);
+    return run.stdout.trim();
+  };
+  assert.equal(fd('nl.md'), 'same');
+  assert.equal(fd('other.md'), 'outside');
+  assert.equal(fd('nl.md\n'), 'outside');
+});
+
 // --- A container project's files (issue #122) ------------------------------------------------------------
 // The scripts run by a real sh here, as `docker exec … sh -c` runs them in the container: the same fake runner
 // test/server-security.test.ts uses. The folder by its long real name, so Git Bash's /proc agrees with readlink.
