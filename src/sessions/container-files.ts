@@ -62,10 +62,13 @@ export function containerFailure(container: string, stderr: string, timedOut: bo
  * session's folder ($2) is the project folder ($1) or inside it, so a run worktree the session swapped for a link to
  * elsewhere can't move the root (finding 1). Sets pr, the project folder, and root, the session's folder.
  */
-const PRELUDE = [
+export const REAL_FN = [
   "nl='",
   "'",
   'real() { _r=$(readlink -n -f -- "$1" && echo x) || return 1; case "$_r" in *x) ;; *) return 1;; esac; _r=${_r%x}; [ -n "$_r" ] || return 1; case "$_r" in *"$nl"*) return 1;; esac; printf %s "$_r"; }',
+];
+const PRELUDE = [
+  ...REAL_FN,
   'inside() { case "$1" in "$2"|"${2%/}"/*) return 0;; esac; return 1; }',
   'pr=$(real "$1") || { echo noroot; exit 0; }; root=$(real "$2") || { echo noroot; exit 0; }',
   'inside "$root" "$pr" || { echo outside; exit 0; }',
@@ -92,7 +95,9 @@ export const READ_SCRIPT = [
   `n=$(wc -c < "$r" | tr -d ' ')`,
   '[ "$n" -le "$max" ] 2>/dev/null || { echo "large $n"; exit 0; }',
   'exec 3< "$r" || { echo unreadable; exit 0; }',
-  'if o=$(readlink -f "/proc/$$/fd/3" 2>/dev/null) && [ -n "$o" ] && [ "$o" != "$r" ]; then echo outside; exit 0; fi',
+  // The x kept on both sides: a name ending in a newline isn't cut to $r (review of PR #132, issue #131). No answer, or
+  // no /proc (macOS), skips the check as before; $r has no newline (real refused it), so equality is exact.
+  'if o=$(readlink -n -f "/proc/$$/fd/3" 2>/dev/null && echo x) && [ "$o" != x ] && [ "$o" != "${r}x" ]; then echo outside; exit 0; fi',
   `printf 'ok\\n%s\\0%s\\0' "$root" "$r"`,
   'head -c "$((max + 1))" <&3',
 ].join('\n');
