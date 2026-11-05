@@ -70,6 +70,7 @@ Keep what is drawn: leave each block's `at` (its place on the canvas) and the `f
 | `flow` | Run flow blocks: the flow it runs (`"main"` for flow.json) |
 | `session` | Run flow blocks: `"caller"` hands the latest work step's session to the flow it runs |
 | `timer` | timer blocks: `{ "every": 30, "of": "merges" }` or `{ "clock": "daily" }` |
+| `guard` | timer blocks: `{ "minHours": 24, "when": "Triage holds more than five" }`, one or both: at most every so many hours, only when the condition holds. Ledung doesn't run timers yet: you keep the guard |
 
 What each kind is for:
 

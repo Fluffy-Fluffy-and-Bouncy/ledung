@@ -37,6 +37,9 @@ test('arrows say their outcome, the count as part of its name (#1184); the list 
   assert.equal(actorLine(example.blocks.find((b) => b.id === 'issue')!), 'manager');
   assert.equal(actorLine(example.blocks.find((b) => b.id === 'functional-review')!), 'person · asks for a review');
   assert.equal(actorLine({ id: 't', kind: 'timer', title: 'T', timer: { every: 30, of: 'merges' } }), 'every 30 merges');
+  // #114: its guard is on the block too.
+  assert.equal(actorLine({ id: 't', kind: 'timer', title: 'T', timer: { clock: 'daily' }, guard: { minHours: 48, when: 'Triage holds more than five' } }), 'daily, at most every 48 h, only when Triage holds more than five');
+  assert.equal(actorLine({ id: 't', kind: 'timer', title: 'T', timer: { every: 30, of: 'merges' }, guard: { minHours: 24 } }), 'every 30 merges, at most every 24 h');
 });
 
 test('arrows to blocks that are not there are left out of the drawing; the checks report them', () => {

@@ -30,6 +30,15 @@ const Timer = z.union([
   z.object({ every: z.number().int().min(1).max(100000), of: Text(40) }),
   z.object({ clock: z.enum(['hourly', 'daily', 'weekly']) }),
 ], { message: 'is { "every": 30, "of": "merges" } or { "clock": "daily" } (hourly, daily or weekly)' });
+/** The hours between a clock timer's starts, against which a guard's minHours is read (#114). */
+const CLOCK_HOURS = { hourly: 1, daily: 24, weekly: 168 } as const;
+
+/** A timer's guard (#114): at most every so many hours (a year at most), only when a condition holds; one or both. */
+const Guard = z.object({
+  $comment: Comment,
+  minHours: z.number().int().min(1, 'is a whole number of hours, at least 1').max(8760, 'is at most 8760 (a year)').optional(),
+  when: Text(200).optional(),
+}).refine((g) => g.minHours !== undefined || g.when !== undefined, { message: 'says at least one: { "minHours": 24 } or { "when": "Triage holds more than five" }' });
 
 /** "The 3rd time": on which occurrence of its word, for one piece of work, an outcome is taken (#1184). */
 const Times = z.number().int().min(1).max(100);
@@ -81,6 +90,7 @@ const Block = z.object({
   outcomes: z.array(Outcome).max(50).optional(),
   ask: z.enum(['question', 'review'], { message: 'is "question" (ask_user) or "review" (a review page)' }).optional(),
   timer: Timer.optional(),
+  guard: Guard.optional(),
   /** A Run flow block's flow (#447), by name. */
   flow: Id.optional(),
   /** Part 3f: runs in the block at once; a continued session compacted or cleared first. */
@@ -160,7 +170,7 @@ function where(raw: unknown, at: readonly PropertyKey[]): string {
 
 /** The fields each part of the file has; anything else is left out with a problem rather than refusing the file. */
 const FIELDS = {
-  top: Object.keys(FlowFile.shape), block: Object.keys(Block.shape), at: ['x', 'y'], timer: ['every', 'of', 'clock'], worktree: Object.keys(Worktree.shape),
+  top: Object.keys(FlowFile.shape), block: Object.keys(Block.shape), at: ['x', 'y'], timer: ['every', 'of', 'clock'], guard: ['$comment', 'minHours', 'when'], worktree: Object.keys(Worktree.shape),
   overlay: Object.keys(Overlay.shape), frame: Object.keys(Frame.shape), size: ['width', 'height'], substep: Object.keys(Substep.shape), outcome: Object.keys(Outcome.shape), substepOutcome: Object.keys(SubstepOutcome.shape),
 };
 
@@ -215,7 +225,7 @@ function unknownFields(raw: unknown): FlowProblem[] {
   look(top.tidy, ['sessions', 'on'], ['tidy']);
   list('blocks').forEach((b, i) => {
     look(b, FIELDS.block, ['blocks', i], DROPPED_IN_BLOCK);
-    for (const part of ['at', 'timer'] as const) look((b as Record<string, unknown> | null)?.[part], FIELDS[part], ['blocks', i, part]);
+    for (const part of ['at', 'timer', 'guard'] as const) look((b as Record<string, unknown> | null)?.[part], FIELDS[part], ['blocks', i, part]);
     items(b, 'outcomes').forEach((o, j) => look(o, FIELDS.outcome, ['blocks', i, 'outcomes', j]));
     items(b, 'substeps').forEach((sub, j) => {
       look(sub, FIELDS.substep, ['blocks', i, 'substeps', j], NOT_IN_SUBSTEP);
@@ -365,6 +375,10 @@ export function checkFlow(flow: Flow, exists: (file: string) => boolean, profile
     } else if (b.flow !== undefined) add(`${at}.flow`, `Only a Run flow block (kind "flow") runs a flow: take "flow" out, or make "${b.title}" one.`);
     if (b.kind === 'timer' && !b.timer) add(at, `The timer block "${b.title}" doesn't say when it starts: give "timer", e.g. { "every": 30, "of": "merges" } or { "clock": "daily" }.`);
     if (b.kind !== 'timer' && b.timer) add(`${at}.timer`, 'Only a timer block has "timer".');
+    // #114: a guard holds a timer back, so only a timer has one; one no longer than the clock's own gap holds nothing.
+    if (b.kind !== 'timer' && b.guard) add(`${at}.guard`, `Only a timer block has "guard": take it out of "${b.title}", or make it a timer block.`);
+    const clock = b.kind === 'timer' && b.timer && 'clock' in b.timer ? b.timer.clock : undefined;
+    if (clock && b.guard?.minHours !== undefined && b.guard.minHours <= CLOCK_HOURS[clock]) hint(`${at}.guard.minHours`, `"${b.title}" starts ${clock}, so "at most every ${b.guard.minHours} h" holds nothing back.`);
     if (b.brief && !exists(b.brief)) add(`${at}.brief`, `The brief ${b.brief} is not in the workflow folder.`);
     // By name, as the config and the workflow's profiles file give them (#298): the flow carries no profiles of its own.
     if (b.profile && profiles && !profiles.includes(b.profile)) add(`${at}.profile`, `There is no session profile "${b.profile}" for this project (${profiles.length ? `there are: ${profiles.join(', ')}` : 'it has none'}).`);

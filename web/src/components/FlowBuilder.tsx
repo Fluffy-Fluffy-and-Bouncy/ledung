@@ -688,7 +688,7 @@ function BlockFields({ draft, entry, focus, naming, profiles, narrow, commit, on
           const flowed = kind === 'flow' ? { flow: b.flow ?? choices[0]?.name, model: undefined, profile: undefined, brief: undefined, substeps: undefined, parallel: undefined } : { flow: undefined, session: undefined };
           // A wait (part 3d) waits on something outside: nobody here runs it or starts subagents.
           const waited = kind === 'wait' ? { model: undefined, profile: undefined, substeps: undefined, parallel: undefined } : {};
-          set({ kind, runs, ...(runs === 'continue' ? {} : { continues: undefined, context: undefined }), ...(kind === 'person' ? { ask: b.ask ?? 'question' } : { ask: undefined }), ...(kind === 'timer' ? { timer: b.timer ?? { clock: 'daily' } } : { timer: undefined }), ...(kind === 'person' ? {} : { person: undefined }), ...flowed, ...waited });
+          set({ kind, runs, ...(runs === 'continue' ? {} : { continues: undefined, context: undefined }), ...(kind === 'person' ? { ask: b.ask ?? 'question' } : { ask: undefined }), ...(kind === 'timer' ? { timer: b.timer ?? { clock: 'daily' } } : { timer: undefined, guard: undefined }), ...(kind === 'person' ? {} : { person: undefined }), ...flowed, ...waited });
         }}>
           {BLOCK_KINDS.map((k) => <option key={k} value={k}>{KIND_LABEL[k]}</option>)}
         </select>
@@ -731,6 +731,7 @@ function BlockFields({ draft, entry, focus, naming, profiles, narrow, commit, on
           )}
         </div>
       )}
+      {b.kind === 'timer' && <TimerGuard guard={b.guard} onChange={(guard) => set({ guard }, 'guard')} />}
       {b.kind === 'flow' && <RunFlowFields draft={draft} entry={entry} choices={choices} commit={commit} onOpenFlow={onOpenFlow} />}
       {b.kind !== 'fork' && b.kind !== 'join' && b.kind !== 'flow' && b.kind !== 'wait' && (
         <div className="flow-field-row">
@@ -887,6 +888,26 @@ const WHEN_LABEL: Record<(typeof SUBSTEP_WHEN)[number], string> = { done: "when 
 function withTimes<T extends { times?: number }>(o: T, times: number | undefined): T {
   const { times: _, ...rest } = o;
   return (times === undefined ? rest : { ...rest, times }) as T;
+}
+
+/** A timer's guard (#114): at most every so many hours, only when a condition holds; both emptied take it out. */
+function TimerGuard({ guard, onChange }: { guard?: FlowBlock['guard']; onChange: (guard: FlowBlock['guard']) => void }) {
+  const typing = usePlainTyping();
+  const change = (patch: Partial<NonNullable<FlowBlock['guard']>>) => {
+    const next = { ...guard, ...patch };
+    onChange(next.minHours === undefined && next.when === undefined ? undefined : next);
+  };
+  return (
+    <>
+      <Field label="At most every (hours)" hint="Empty: whenever it comes round.">
+        <input type="number" min={1} max={8760} value={guard?.minHours ?? ''} placeholder="–"
+          onChange={(e) => change({ minHours: e.target.value === '' ? undefined : Math.min(8760, Math.max(1, Math.floor(Number(e.target.value)) || 1)) })} />
+      </Field>
+      <Field label="Only when" hint="The manager reads it; Ledung doesn't run timers yet.">
+        <input {...typing} value={guard?.when ?? ''} placeholder="(always)" maxLength={200} onChange={(e) => change({ when: optional(e.target.value) })} />
+      </Field>
+    </>
+  );
 }
 
 /** The small optional "× N" of an outcome: on which occurrence of its word it is taken (#1184). */

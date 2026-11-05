@@ -325,7 +325,10 @@ export function actorLine(b: FlowBlock, titleOf?: (id: string) => string): strin
 
 function timerText(b: FlowBlock): string | null {
   if (!b.timer) return null;
-  return 'clock' in b.timer ? b.timer.clock : `every ${b.timer.every} ${b.timer.of}`;
+  const when = 'clock' in b.timer ? b.timer.clock : `every ${b.timer.every} ${b.timer.of}`;
+  // #114: its guard, as the manager keeps it.
+  const g = b.guard;
+  return [when, g?.minHours !== undefined && `at most every ${g.minHours} h`, g?.when && `only when ${g.when}`].filter(Boolean).join(', ');
 }
 
 /** The least zoom a diagram opens at: below it a block's words are too small to read (#318, a 29-block flow). */
