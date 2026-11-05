@@ -1,5 +1,5 @@
 // The workflow's start-reading list (Project-Ledung#469): the list's shape (its $about in the workflow), which
-// modules a process config switches on, the order things are named in, a broken list told once, and Ledung's own
+// modules a process config switches on, the order things are named in, a broken list told at every start, and Ledung's own
 // SessionStart hook that prints it after every startup, clear, compact and resume.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -113,9 +113,8 @@ test('the printed text names the files in order, prints a print file, and skips 
     fs.writeFileSync(listFile, JSON.stringify(LIST));
     const sr: StartReading = { file: listFile, folder: W, projectFolder: project, projectConfig: path.join(project, 'docs/CONFIG.md'), local: true };
     const read = (f: string) => fs.promises.readFile(f, 'utf8').catch(() => null);
-    const out = await sessionStartText(sr, { role: 'manager', title: 'Manager: P' }, null, read);
-    assert.equal(out.told, null);
-    assert.equal(out.text, [
+    const out = await sessionStartText(sr, { role: 'manager', title: 'Manager: P' }, read);
+    assert.equal(out, [
       "The workflow's start-reading list: read these in full before anything else, in this order.",
       `1. ${path.join(W, 'process/lead.md')}`,
       `2. ${path.join(W, 'modules/alpha/LEAD.md')} (MODULE_ALPHA is on)`,
@@ -127,8 +126,8 @@ test('the printed text names the files in order, prints a print file, and skips 
     ].join('\n'));
     // Positive branch of "missing is skipped": once it exists, it is named.
     fs.writeFileSync(path.join(project, 'notes/missing.md'), 'here now');
-    const later = await sessionStartText(sr, { role: 'manager', title: 'Manager: P' }, null, read);
-    assert.match(later.text!, new RegExp(`5\\. ${path.join(project, 'notes/missing.md').replace(/[\\.]/g, '\\$&')}\\n`));
+    const later = await sessionStartText(sr, { role: 'manager', title: 'Manager: P' }, read);
+    assert.match(later!, new RegExp(`5\\. ${path.join(project, 'notes/missing.md').replace(/[\\.]/g, '\\$&')}\\n`));
   } finally {
     removeTemp(dir);
   }
@@ -148,40 +147,35 @@ test('a bad list says what is wrong with it', () => {
   assert.equal(problem(LIST), '');
 });
 
-test('a broken list is told at the start once, again when it changes, and afresh after a fix; only a manager is asked to report it', async () => {
+test('a broken list is told at every start until it is fixed; only a manager is asked to report it', async () => {
+  // Martin, 2026-11-06 00:11, Ledung question #1498: "a — At every start". A start is a fresh context.
   let text: string | null = null;
   const read = (f: string) => parseStartReading(f, text);
   const sr: StartReading = { file: '/w/list.json', ...where };
   const none = async () => null;
   const manager = { role: 'manager' as const, title: 'Manager' };
-  const first = await sessionStartText(sr, manager, null, none, read);
-  assert.equal(first.text, "The workflow's start-reading list /w/list.json was not found. No start-reading list is shown until it is fixed. Tell whoever you ask (ask_user) once.");
-  const again = await sessionStartText(sr, manager, first.told, none, read);
-  assert.equal(again.text, null, 'not at every clear');
+  const notice = "The workflow's start-reading list /w/list.json was not found. No start-reading list is shown until it is fixed. Tell whoever you ask (ask_user) once.";
+  assert.equal(await sessionStartText(sr, manager, none, read), notice);
+  assert.equal(await sessionStartText(sr, manager, none, read), notice, 'again at the next start');
   text = '{ nope';
-  const changed = await sessionStartText(sr, manager, again.told, none, read);
-  assert.match(changed.text!, /is not valid JSON/);
+  assert.match((await sessionStartText(sr, manager, none, read))!, /is not valid JSON/);
   text = JSON.stringify(LIST);
-  const fixed = await sessionStartText(sr, manager, changed.told, none, read);
-  assert.equal(fixed.told, null);
-  assert.match(fixed.text!, /^The workflow's start-reading list: read these/);
-  text = null;
-  assert.match((await sessionStartText(sr, manager, fixed.told, none, read)).text!, /was not found/, 'broken again after a fix: told afresh');
-  const worker = await sessionStartText(sr, { role: 'session', title: 'fix-1' }, null, none, read);
-  assert.ok(worker.text!.endsWith('No start-reading list is shown until it is fixed.'), 'a worker is told, but not asked to report it');
+  assert.match((await sessionStartText(sr, manager, none, read))!, /^The workflow's start-reading list: read these/, 'fixed: the list');
+  const worker = await sessionStartText(sr, { role: 'session', title: 'fix-1' }, none, (f) => parseStartReading(f, null));
+  assert.ok(worker!.endsWith('No start-reading list is shown until it is fixed.'), 'a worker is told, but not asked to report it');
 });
 
 test('with no list, or none for this role, nothing is added; a project file that fails to read is skipped, never thrown', async () => {
   const boom = () => { throw new Error('nothing should be read'); };
-  assert.deepEqual(await sessionStartText(undefined, { role: 'manager', title: 'M' }, null, boom, boom), { text: null, told: null });
+  assert.equal(await sessionStartText(undefined, { role: 'manager', title: 'M' }, boom, boom), null);
   const onlyManager = (f: string) => parseStartReading(f, JSON.stringify({ version: 1, manager: { read: ['lead.md'] } }));
   const sr: StartReading = { file: '/w/l.json', ...where };
-  assert.equal((await sessionStartText(sr, { role: 'session', title: 'fix-1' }, null, boom, onlyManager)).text, null, 'no session list');
-  assert.match((await sessionStartText(sr, { role: 'manager', title: 'M' }, null, boom, onlyManager)).text!, /1\. .*lead\.md$/, 'the manager gets its own');
+  assert.equal(await sessionStartText(sr, { role: 'session', title: 'fix-1' }, boom, onlyManager), null, 'no session list');
+  assert.match((await sessionStartText(sr, { role: 'manager', title: 'M' }, boom, onlyManager))!, /1\. .*lead\.md$/, 'the manager gets its own');
   const failing = async () => { throw new Error('container gone'); };
   const withFiles = (f: string) => parseStartReading(f, JSON.stringify({ version: 1, manager: { read: ['lead.md'], modules: [{ key: 'MODULE_ALPHA', is: 'on', read: 'a.md' }], projectFiles: [{ path: 'GOAL.md', print: true }] } }));
-  const out = await sessionStartText(sr, { role: 'manager', title: 'M' }, null, failing, withFiles);
-  assert.equal(out.text, `The workflow's start-reading list: read these in full before anything else, in this order.\n1. ${path.join(W, 'lead.md')}`);
+  const out = await sessionStartText(sr, { role: 'manager', title: 'M' }, failing, withFiles);
+  assert.equal(out, `The workflow's start-reading list: read these in full before anything else, in this order.\n1. ${path.join(W, 'lead.md')}`);
 });
 
 test("the config takes a workflow's startReadingFile, and the project's workflow carries it with its folders", () => {
@@ -271,8 +265,18 @@ test("every session gets Ledung's SessionStart hook; it adds the list when the w
 
     assert.equal(await startText(base, 'clear'), null, 'a workflow without a list: nothing extra');
     assert.equal(await startText(null, 'clear'), null, 'no workflow: nothing extra');
-    // A list that can't be read never fails the start: it is told, as text.
-    assert.match((await startText({ ...base, startReading: { ...sr, file: path.join(dir, 'gone.json') } }, 'startup'))!, /was not found/);
+    // A list that can't be read never fails the start: it is told, as text, and at every start of the same session
+    // (Martin, 2026-11-06 00:11, Ledung question #1498), since each start is a fresh context.
+    const broken = new Session({
+      info, store, publish: () => {}, userName: 'Simon', management, workflow: { ...base, startReading: { ...sr, file: path.join(dir, 'gone.json') } },
+      runner: { cwd: dir, currentBranch: async () => null } as never,
+      gate: { mayStart: () => true, started: () => {}, ended: () => {} },
+    });
+    const brokenHook = (await broken.claudeOptions({ onLine: () => {}, onStderr: () => {} })).hooks!.SessionStart![0]!.hooks[0]!;
+    for (const source of ['clear', 'compact', 'clear']) {
+      const out = await brokenHook({ hook_event_name: 'SessionStart', source } as never, undefined, { signal: new AbortController().signal });
+      assert.match((out as { hookSpecificOutput?: { additionalContext?: string } }).hookSpecificOutput?.additionalContext ?? '', /gone\.json was not found\. No start-reading list is shown until it is fixed\./, `told again at ${source}`);
+    }
   } finally {
     removeTemp(dir);
   }

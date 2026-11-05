@@ -167,20 +167,20 @@ export function readStartReadingFile(file: string): StartReadingRead {
 }
 
 /**
- * The SessionStart hook's text for a session, and the problem it has now been told of. A broken list is told the
- * first time it is seen and again when it changes, as workflow-nudges does; once the list is fine, a later problem
- * is told afresh. `readProject` reads a file as the session sees it (null when missing); it never throws here.
+ * The SessionStart hook's text for a session, or null for nothing to add. A broken list is told at every start
+ * until it is fixed, not once per session as nudges are: a start is a fresh context, so a notice told before it is
+ * gone (Martin, 2026-11-06 00:11, Ledung question #1498, "a — At every start"). `readProject` reads a file as the
+ * session sees it (null when missing); it never throws here.
  */
 export async function sessionStartText(
   sr: StartReading | undefined,
   s: { role: SessionRole; title: string } | undefined,
-  told: string | null,
   readProject: (file: string) => Promise<string | null>,
   read: (file: string) => StartReadingRead = readStartReadingFile,
-): Promise<{ text: string | null; told: string | null }> {
-  if (!sr || !s) return { text: null, told };
+): Promise<string | null> {
+  if (!sr || !s) return null;
   const r = read(sr.file);
-  if (r.problem !== null) return { text: r.problem === told ? null : startReadingProblemLine(r.problem, s.role), told: r.problem };
+  if (r.problem !== null) return startReadingProblemLine(r.problem, s.role);
   const safeRead = (f: string) => readProject(f).catch(() => null);
   const own = s.role === 'manager' ? r.list.manager : r.list.session;
   const needsConfig = !!own && (own.modules.length > 0 || (s.role === 'session' && !!r.list.session?.byTitlePrefix.some((b) => b.when.length > 0)));
@@ -189,5 +189,5 @@ export async function sessionStartText(
   // Project files are looked at: a missing one is skipped without a word, a printed one goes in as it is.
   const texts = new Map<string, string | null>();
   for (const i of items) if (i.project) texts.set(i.file, await safeRead(i.file));
-  return { text: startReadingText(items, texts), told: null };
+  return startReadingText(items, texts);
 }
