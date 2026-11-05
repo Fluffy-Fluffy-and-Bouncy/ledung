@@ -7,7 +7,7 @@ import type { QuestionInfo, RunBlock, SessionInfo, StoredMessage } from '../shar
 import { DEFAULT_FLOW, DEFAULT_TIDY, endingKey, flowFileOf, ordinal, STOPPED_ENDING, type Flow, type FlowBlock } from '../shared/flow.ts';
 import { makeWorktree, removeWorktree, type WorktreeHost } from './run-worktrees.ts';
 import { decideStep, OPEN_STATES, outcomeList, runLabel, startBlock, type FlowRun, type RunStep } from '../shared/flow-run.ts';
-import { sessionOf } from '../shared/flow-check.ts';
+import { inFolder, sessionOf } from '../shared/flow-check.ts';
 import { ACCEPTED, CHANGES_NEEDED, questionText, type QuestionDetails } from '../shared/questions.ts';
 import type { RunStore } from './run-store.ts';
 
@@ -643,9 +643,12 @@ export class FlowRuns {
   private async briefOf(flows: ProjectFlows, block: FlowBlock): Promise<string> {
     if (!block.brief) return '';
     const text = await flows.text(block.brief).catch(() => null);
+    // A "folder:" brief is in the folder the workflow folder is in (ledung#111).
+    const rest = inFolder(block.brief);
+    const where = rest === null ? `${block.brief} in ${flows.folder}` : `${rest} in ${flows.folder.replace(/[\\/]\.ledung[\\/]workflow$/, '')}`;
     return text !== null && text.length <= BRIEF_INLINE
       ? `The brief (${block.brief}):\n\n${text.trim()}`
-      : `The brief: read ${block.brief} in ${flows.folder}.`;
+      : `The brief: read ${where}.`;
   }
 
   private substepsLine(block: FlowBlock): string {

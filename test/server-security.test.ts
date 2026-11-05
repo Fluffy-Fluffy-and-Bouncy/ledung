@@ -2685,6 +2685,25 @@ test("a project whose flow files a shared flow's named briefs lead to, or a flow
     assert.equal(fs.existsSync(path.join(own, 'briefs', 'x.md')), false, `${how}: nothing was written`);
   }
 
+  // ledung#111: a "folder:" brief is in the workflow's own folder, beside .ledung/workflow, so a link on the way to it
+  // there (process/) counts as much: a real folder first (the save is written), then a link to the project's briefs/.
+  reset();
+  const process111 = path.join(shared, 'process');
+  t.after(() => fs.rmSync(process111, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(theirs, 'flow.json'), naming('folder:process/x.md'));
+  fs.mkdirSync(process111);
+  const ok111 = await save({ files: [{ path: 'briefs/x.md', text: '# Brief', base: null }] });
+  assert.equal(ok111.status, 200, `folder:process/x.md, a real folder: ${ok111.body}`);
+  assert.equal(fs.readFileSync(path.join(own, 'briefs', 'x.md'), 'utf8'), '# Brief', 'folder:process/x.md: the probe sees a file that was written');
+  fs.rmSync(path.join(own, 'briefs', 'x.md'));
+  fs.rmSync(process111, { recursive: true });
+  fs.symlinkSync(path.join(own, 'briefs'), process111, 'junction');
+  const refused111 = await save({ files: [{ path: 'briefs/x.md', text: '# Brief', base: null }] });
+  assert.equal(refused111.status, 400, `folder:process/x.md, a link: ${refused111.body}`);
+  assert.match(errorOf(refused111), /shared workflow "proc"/, 'folder:process/x.md');
+  assert.equal(fs.existsSync(path.join(own, 'briefs', 'x.md')), false, 'folder:process/x.md: nothing was written');
+  fs.rmSync(process111, { recursive: true, force: true });
+
   // A brief no flow names, only listed (test review round 5): the shared briefs/j.md is what Ledung's lister lists, so a
   // link there into the project's briefs/ counts as much as a named one. A junction (on Windows its entry is not a
   // folder, so the lister lists it) runs on every account; a file link only where file links can be made.

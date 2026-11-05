@@ -236,6 +236,55 @@ test("a workflow's files (issue #310) keep the viewer's rules: inside the folder
   assert.match(((await read(['out.md'])).get('out.md') as { refused: string }).refused, /inside the project folder/);
 });
 
+// ledung#111: a brief may be in the folder a shared workflow's .ledung/workflow is in ("folder:process/briefs/x.md"),
+// read with the same rules: inside that folder, links resolved, the text limit; a path out of it is still refused.
+test('ledung#111: a "folder:" brief is read from the shared workflow\'s own folder, never from outside it', async (t) => {
+  const { flowPlaces, localReader, readFlowView } = await import('../src/sessions/flow-files.ts');
+  const { parseFlow } = await import('../src/shared/flow-check.ts');
+  const { parseProject } = await import('../src/config.ts');
+  const shared = fs.mkdtempSync(path.join(base, 'shared-'));
+  const project = fs.mkdtempSync(path.join(base, 'follower-'));
+  fs.mkdirSync(path.join(shared, '.ledung', 'workflow'), { recursive: true });
+  fs.mkdirSync(path.join(shared, 'process', 'briefs'), { recursive: true });
+  fs.writeFileSync(path.join(shared, 'process', 'briefs', 'review.md'), '# Review');
+  fs.writeFileSync(path.join(shared, 'process', 'briefs', 'big.md'), 'x'.repeat(256 * 1024 + 1));
+  const block = (id: string, brief: string) => ({ id, kind: 'check', title: id, runs: 'new-session', brief, outcomes: [{ word: 'Done', end: true }] });
+  fs.writeFileSync(path.join(shared, '.ledung', 'workflow', 'flow.json'), JSON.stringify({
+    version: 1, blocks: [block('review', 'folder:process/briefs/review.md'), block('gone', 'folder:process/briefs/gone.md'), block('big', 'folder:process/briefs/big.md')],
+  }));
+  const workflow = { name: 'team', folder: shared, managerFile: 'm.md', sessionFile: 's.md', projectConfig: 'p.json' };
+  const places = flowPlaces(parseProject({ name: 'shop', runner: 'local', path: project, workflow: { name: 'team' } }), workflow);
+  const view = await readFlowView('shop', places);
+  assert.equal(view.source?.kind, 'workflow');
+  // The page has its text under the brief's own name, so a block click opens it.
+  assert.equal(view.texts['folder:process/briefs/review.md'], '# Review');
+  const problems = view.problems.map((p) => `${p.at}: ${p.message}`);
+  assert.ok(!problems.some((p) => p.includes('review.md')), problems.join('\n'));
+  assert.ok(problems.some((p) => p === 'blocks.gone.brief: The brief process/briefs/gone.md is not in the folder the workflow folder is in.'), 'a missing one is said, where it was looked for');
+  assert.ok(problems.some((p) => p.startsWith('folder:process/briefs/big.md:') && /too large/.test(p)), 'the text limit holds');
+  // Out of the folder: refused by the format, and by the reader as well.
+  const bad = (brief: string) => parseFlow(JSON.stringify({ version: 1, blocks: [block('a', brief)] })).problems.filter((p) => p.at === 'blocks.a.brief');
+  for (const brief of ['folder:../secret.md', 'folder:/etc/x.md', 'folder:C:/x.md', 'folder:process\\x.md', 'folder:folder:x.md', '../../process/briefs/review.md']) {
+    assert.equal(bad(brief).length, 1, brief);
+  }
+  assert.equal(bad('folder:process/briefs/review.md').length, 0, 'the folder form is a brief');
+  assert.equal(bad('briefs/review.md').length, 0, 'and so is a path in the workflow folder');
+  fs.writeFileSync(path.join(base, 'secret.md'), 'outside');
+  const read = localReader(shared, '.ledung/workflow');
+  const outside = `folder:${path.join(base, 'secret.md')}`;
+  const got = await read(['folder:../secret.md', outside, 'folder:process/briefs/review.md']);
+  assert.match((got.get('folder:../secret.md') as { refused: string }).refused, /inside the project folder/);
+  assert.match((got.get(outside) as { refused: string }).refused, /inside the project folder/);
+  assert.deepEqual(got.get('folder:process/briefs/review.md'), { text: '# Review' });
+  try {
+    fs.symlinkSync(path.join(base, 'secret.md'), path.join(shared, 'process', 'briefs', 'out.md'));
+  } catch {
+    t.skip('this machine does not allow links');
+    return;
+  }
+  assert.match(((await read(['folder:process/briefs/out.md'])).get('folder:process/briefs/out.md') as { refused: string }).refused, /inside the project folder/);
+});
+
 // The builder's writer (issue #311): only into the project's own .ledung/workflow, never through a link, folders made
 // as needed, every file checked before any is written, each written whole.
 test("the workflow writer (issue #311) writes inside the project's own workflow folder only, never through a link", async (t) => {
@@ -351,6 +400,52 @@ test("a container's workflow read script reads only inside the project: a link o
   });
 });
 
+// ledung#111 in a container project: a "folder:" brief is asked for in the project folder in the container, not in
+// .ledung/workflow, and the container's own script still refuses what leads out (test review of PR #136, finding 1).
+test('ledung#111: a container project reads a "folder:" brief from its project folder; "..", a link out and one to a name ending in a newline are refused', async (t) => {
+  if (spawnSync('sh', ['-c', 'readlink -f .'], { windowsHide: true }).status !== 0) {
+    t.skip('no sh with readlink here');
+    return;
+  }
+  const { INSIDE_PROJECT_SCRIPT, splitMarked } = await import('../src/runners/docker-runner.ts');
+  const { flowPlaces } = await import('../src/sessions/flow-files.ts');
+  const { parseProject } = await import('../src/config.ts');
+  // The container's project folder, here on this computer; read with the very script docker exec runs.
+  const box = fs.mkdtempSync(path.join(base, 'box-111-')).replaceAll('\\', '/');
+  const outside = fs.mkdtempSync(path.join(base, 'box-111-outside-'));
+  fs.mkdirSync(path.join(box, '.ledung', 'workflow'), { recursive: true });
+  fs.mkdirSync(path.join(box, 'process', 'briefs'), { recursive: true });
+  fs.writeFileSync(path.join(box, 'process', 'briefs', 'review.md'), '# Review in the box');
+  // What "folder:../secret.md" would reach: there, so a refusal is not a file merely missing.
+  fs.writeFileSync(path.join(base, 'secret.md'), 'SECRET-OUTSIDE');
+  fs.writeFileSync(path.join(outside, 'x.md'), 'SECRET-OUTSIDE');
+  const asked: string[][] = [];
+  const read = async (files: string[], maxBytes: number, budget: number) => {
+    asked.push(files);
+    const run = spawnSync('sh', ['-c', INSIDE_PROJECT_SCRIPT, 'sh', 'MARK', box, String(maxBytes), String(budget), ...files], { encoding: 'utf8', windowsHide: true });
+    assert.equal(run.status, 0, run.stderr);
+    assert.ok(!run.stdout.includes('SECRET-OUTSIDE'), 'the text outside is never printed');
+    return splitMarked(run.stdout, files, 'MARK');
+  };
+  const project = parseProject({ name: 'c', runner: 'docker', container: 'box', pathInContainer: '/work' });
+  const [place] = flowPlaces(project, undefined, { read, list: async () => [], write: async () => {} });
+  const wanted = ['folder:process/briefs/review.md', 'folder:../secret.md'];
+  let linked = true;
+  try {
+    fs.symlinkSync(path.join(outside, 'x.md'), path.join(box, 'process', 'briefs', 'out.md'));
+    fs.writeFileSync(path.join(outside, 'nl.md\n'), 'SECRET-OUTSIDE');
+    fs.symlinkSync(path.join(outside, 'nl.md\n'), path.join(box, 'process', 'briefs', 'nl.md'));
+    wanted.push('folder:process/briefs/out.md', 'folder:process/briefs/nl.md');
+  } catch {
+    linked = false;
+  }
+  const got = await place!.read(wanted);
+  assert.deepEqual(asked[0]!.slice(0, 2), ['process/briefs/review.md', '../secret.md'], 'asked in the project folder, not in .ledung/workflow');
+  assert.deepEqual(got.get('folder:process/briefs/review.md'), { text: '# Review in the box' });
+  for (const f of wanted.slice(1)) assert.match((got.get(f) as { refused: string }).refused, /leads outside the project folder/, f);
+  if (!linked) t.diagnostic('this machine does not allow links: the two link cases are left out');
+});
+
 // The container's write script, by a real sh (security review of PR #89, findings 3 and 4): a file that is a link is
 // refused, and so is a folder swapped for a link after the first check, just before the rename. The swap is made by
 // a readlink put in front of the real one, when the script checks the folder again.
@@ -418,6 +513,34 @@ test("a container's workflow read script refuses a link to a name ending in a ne
   // The file without the newline reads by its own name, so the script can read it: the link just may not stand for it.
   assert.deepEqual(got.get('.ledung/workflow/notes.md'), { text: '# the other one\n' });
   assert.deepEqual(got.get('.ledung/workflow/manager.md'), { refused: '.ledung/workflow/manager.md leads outside the project folder.' });
+});
+
+// ledung#111, review of PR #136 round 2: a "folder:" brief reaches the whole project folder, so a link to "name.md⏎"
+// inside it, with "name.md" there too, must be refused rather than read as "name.md".
+test('ledung#111: a container "folder:" brief that is a link to a name ending in a newline inside the project is refused, not read as the name without it', { skip: !newlineNames && 'needs a newline in a file name and sh with readlink -n' }, async () => {
+  const { INSIDE_PROJECT_SCRIPT, splitMarked } = await import('../src/runners/docker-runner.ts');
+  const { flowPlaces } = await import('../src/sessions/flow-files.ts');
+  const { parseProject } = await import('../src/config.ts');
+  const box = fs.realpathSync(fs.mkdtempSync(path.join(base, 'nl-folder-box-')));
+  const briefs = path.join(box, 'process', 'briefs');
+  fs.mkdirSync(path.join(box, '.ledung', 'workflow'), { recursive: true });
+  fs.mkdirSync(briefs, { recursive: true });
+  fs.writeFileSync(path.join(briefs, 'name.md\n'), '# the newline one\n');
+  fs.writeFileSync(path.join(briefs, 'name.md'), '# the other one\n');
+  fs.symlinkSync(path.join(briefs, 'name.md\n'), path.join(briefs, 'nl.md'));
+  const read = async (files: string[], maxBytes: number, budget: number) => {
+    const run = spawnSync('sh', ['-c', INSIDE_PROJECT_SCRIPT, 'sh', 'MARK', box, String(maxBytes), String(budget), ...files], { encoding: 'utf8', windowsHide: true });
+    assert.equal(run.status, 0, run.stderr);
+    return splitMarked(run.stdout, files, 'MARK');
+  };
+  const project = parseProject({ name: 'c', runner: 'docker', container: 'box', pathInContainer: '/work' });
+  const [place] = flowPlaces(project, undefined, { read, list: async () => [], write: async () => {} });
+  const got = await place!.read(['folder:process/briefs/nl.md', 'folder:process/briefs/name.md']);
+  // The positive branch: the file without the newline reads by its own name, through the same reader.
+  assert.deepEqual(got.get('folder:process/briefs/name.md'), { text: '# the other one\n' });
+  const nl = got.get('folder:process/briefs/nl.md');
+  assert.ok(nl && 'refused' in nl, `refused, not read: ${JSON.stringify(nl)}`);
+  assert.match(nl.refused, /leads outside the project folder/);
 });
 
 test("a container's workflow writer script refuses a folder swapped for a link to its name with a newline before the rename", { skip: !newlineNames && 'needs a newline in a file name and sh with readlink -n' }, async () => {

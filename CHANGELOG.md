@@ -11,6 +11,7 @@ is nothing user-facing in it).
 
 ## 2026-11-05
 - A workflow's `flow.json` can say who made it, `"author": "Name (login)"`; the workflow page shows it under the flow's title, a shared workflow's too, and the builder keeps it. (#117)
+- A workflow block's brief can be a file beside the workflow folder, in the shared workflow's own folder, written `folder:process/briefs/review.md`, so a shared process needn't copy its briefs; it is read with the same rules (only inside that folder) and shown read-only on a block click. (#111)
 - Away mode with merge allowed: a manager's own plain `gh pr merge` whose checks pass (open, mergeable, no check failing or running) now goes through without Claude Code's auto mode refusing it; one refused anyway is put in the away log for the morning report instead of asking you. (#133)
 - Workflow pages in a container project: a link to a file whose name ends in a line break is refused as outside the project folder, never read as the file without it; the workflow builder and the container file viewer's last check catch the same trick. (#131)
 - A session's info bar always shows the macros ＋, also before you have any macros; its menu's "Edit macros…" goes to Settings → Macros. (#126)

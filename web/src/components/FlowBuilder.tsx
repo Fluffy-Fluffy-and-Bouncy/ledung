@@ -11,6 +11,7 @@ import { api } from '../api.ts';
 import { usePlainTyping } from '../usePlainTyping.ts';
 import { BLOCK_KINDS, DEFAULT_BRANCH, DEFAULT_FLOW, DEFAULT_TIDY, STOPPED_ENDING, FLOW_FILE, flowEndings, flowFileOf, MANAGER_FILE, outcomeName, runsSession, SUBSTEP_TO, SUBSTEP_WHEN, WRITABLE_FLOW_FILE, type BlockKind, type FlowBlock, type FlowProblem, type FlowSubstep, type FlowSubstepOutcome, type FlowView, type FlowWorktree, type Runs, type SubstepTo } from '../../../src/shared/flow.ts';
 import { NAME_COLOURS, type NameColour } from '../../../src/shared/name-colours.ts';
+import { inFolder } from '../../../src/shared/flow-check.ts';
 import { actorLine, BLOCK_HEIGHT, BLOCK_WIDTH, blockSize, flowLine, KIND_LABEL, layoutFlow, outcomeHandles, substepText, substepToText, type PlacedKind, type Point } from '../flowLayout.ts';
 import { addBlock, addEndings, addFlow, addFrame, addOutcome, addOverlay, addSubstep, amendedBy, arrange, boxRound, connect, deleteBlocks, deleteFlow, deleteFrame, deleteOutcome, deleteOverlay, deleteSubstep, flowNameProblem, flowOf, frameMembers, framesInside, moveBlock, moveFrame, moveSubstep, newBrief, newManagerFile, newOverlayFile, newSubstepBrief, outcomeKeys, PALETTE, pinned, renameFlow, setBlock, setFollow, setFlowTitle, setFrame, setManager, setOutcome, setOverlay, setSubstep, substepKeys, toggleAmends, wireOutcome, withDraft, workspaceBlocksSaving, workspaceProblems, workspaceWrites, type Draft, type DraftFlow, type Workspace } from '../flowEdit.ts';
 import { setLeaveGuard } from '../flowNav.ts';
@@ -805,7 +806,7 @@ function BlockFields({ draft, entry, focus, naming, profiles, narrow, commit, on
         </div>
         {briefProblem && <p className="flow-problem-inline">{briefProblem}</p>}
         {b.brief && briefText !== undefined && (
-          <Field label={`Its text (${b.brief})`} hint={WRITABLE_FLOW_FILE.test(b.brief) ? 'Markdown: what counts as done here, what to look for.' : 'In a sub-folder: the builder edits briefs in briefs/ only.'}>
+          <Field label={`Its text (${b.brief})`} hint={WRITABLE_FLOW_FILE.test(b.brief) ? 'Markdown: what counts as done here, what to look for.' : inFolder(b.brief) !== null ? "Beside .ledung/workflow, in the folder it is in: read-only here." : 'In a sub-folder: the builder edits briefs in briefs/ only.'}>
             <textarea {...typing} className="mono" rows={narrow ? 8 : 12} value={briefText} readOnly={!WRITABLE_FLOW_FILE.test(b.brief)}
               onChange={(e) => commit({ ...draft, texts: { ...draft.texts, [b.brief!]: e.target.value } }, `brief:${b.brief}`)} />
           </Field>

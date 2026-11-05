@@ -16,7 +16,7 @@ import { DEFAULT_FLOW, FLOW_FILE, FLOW_FOLDER, FLOW_IN_FOLDER, FLOW_TEXT_FOLDERS
 import { FileError, readProjectBytes } from './files.ts';
 import { sameFolder } from '../accounts/store.ts';
 import { exercisedLine } from '../platform/exercised.ts';
-import { checkFlow, checkFlowCalls, machinePathIn, parseFlow, personGatedFlows } from '../shared/flow-check.ts';
+import { checkFlow, checkFlowCalls, inFolder, machinePathIn, parseFlow, personGatedFlows } from '../shared/flow-check.ts';
 import { projectWorkflow } from './workflow.ts';
 
 /** flow.json, rules.md and every brief: big enough for long judgement, small enough for one answer to the page. */
@@ -74,13 +74,19 @@ const withoutBom = (text: string) => text.replace(/^﻿/, '');
 /** A text's version as the page sees it: short, and the same for the same text wherever it was read (#311). */
 export const textVersion = (text: string) => crypto.createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 16);
 
-/** Reads files inside `root` with the file viewer's rules, each under `sub` ("" or a folder inside root). */
+/** Where a flow file is under the folder the workflow folder `sub` is in: there, or at its "folder:" path (ledung#111). */
+const underRoot = (sub: string, f: string) => inFolder(f) ?? (sub ? `${sub}/${f}` : f);
+
+/**
+ * Reads files inside `root` with the file viewer's rules, each under `sub` ("" or a folder inside root), a "folder:"
+ * brief under `root` itself (ledung#111): inside it all the same, links resolved.
+ */
 export function localReader(root: string, sub: string): ReadFlowFiles {
   return async (files, budget = FLOW_TEXTS_MAX_BYTES) => {
     let left = budget;
     return new Map(files.map((f): [string, FileRead] => {
       try {
-        const { bytes } = readProjectBytes(root, sub ? `${sub}/${f}` : f, FLOW_TEXT_MAX_BYTES);
+        const { bytes } = readProjectBytes(root, underRoot(sub, f), FLOW_TEXT_MAX_BYTES);
         if (bytes.subarray(0, 8192).includes(0)) return [f, { refused: `${f} is not a text file.` }];
         if (bytes.length > left) return [f, { refused: `${f} is past the ${FLOW_TEXTS_MAX_BYTES / 1048576} MB the workflow's texts may have together.` }];
         left -= bytes.length;
@@ -282,7 +288,8 @@ async function sharedReach(folder: string): Promise<string[]> {
     return flow ? linkedTexts(flow) : [];
   });
   const names = new Set([FLOW_FILE, RULES_FILE, MANAGER_FILE, ...FLOW_TEXT_FOLDERS, FLOWS_FOLDER, ...listed, ...named]);
-  return [root, ...[...names].map((f) => path.join(root, ...f.split('/')))]
+  // A "folder:" brief is in the workflow's folder itself (ledung#111).
+  return [root, ...[...names].map((f) => path.join(path.resolve(folder), ...underRoot(FLOW_FOLDER, f).split('/')))]
     .map((p) => wouldBe(p)).filter((p): p is string => p !== null);
 }
 
@@ -336,8 +343,8 @@ export function flowPlaces(project: ProjectConfig, workflow: WorkflowConfig | un
       kind: 'project',
       folder: path.posix.join(project.pathInContainer, FLOW_FOLDER),
       read: async (files, budget = FLOW_TEXTS_MAX_BYTES) => {
-        const m = await container.read(files.map((f) => `${FLOW_FOLDER}/${f}`), FLOW_TEXT_MAX_BYTES, budget);
-        return new Map(files.map((f) => [f, m.get(`${FLOW_FOLDER}/${f}`) ?? { missing: true }]));
+        const m = await container.read(files.map((f) => underRoot(FLOW_FOLDER, f)), FLOW_TEXT_MAX_BYTES, budget);
+        return new Map(files.map((f) => [f, m.get(underRoot(FLOW_FOLDER, f)) ?? { missing: true }]));
       },
       list: container.list,
       write: container.write,
