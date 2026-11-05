@@ -1,6 +1,7 @@
 // A session's macros in its info bar, right-aligned (issue #410, placement B, Martin 2026-10-29 in Ledung question
 // #425). The chips that fit are shown; the rest, and the keybind-only macros, are in the menu behind the last chip:
-// "+N", or "＋" with only "Edit macros…" in it.
+// "+N", or "＋" with only "Edit macros…" in it. The ＋ shows with no macros too, as the way to make the first one
+// (issue #126, Martin 2026-11-05).
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { keyLabel, type Macro } from '../../../src/shared/macros.ts';
 
@@ -49,7 +50,6 @@ export function MacroChips(props: { macros: Macro[]; onUse: (m: Macro, other: bo
     };
   }, [open]);
 
-  if (!props.macros.length) return null;
   const rest = [...chips.slice(fit), ...keyOnly];
   const use = (m: Macro, other: boolean) => {
     setOpen(false);
