@@ -242,11 +242,12 @@ test("every session gets Ledung's SessionStart hook; it adds the list when the w
     }
     // A launch's own startup SessionStart never reaches the SDK's hook (loopback), so its first prompt carries the
     // list, and only the first; once a SessionStart did reach the hook, no prompt carries it.
-    const prompts = async (workflow: ProjectWorkflow | null, startFirst: boolean) => {
+    const prompts = async (workflow: ProjectWorkflow | null, startFirst: boolean, attachTo?: string) => {
       const session = new Session({
         info, store, publish: () => {}, userName: 'Simon', management, workflow,
         runner: { cwd: dir, currentBranch: async () => null } as never,
         gate: { mayStart: () => true, started: () => {}, ended: () => {} },
+        ...(attachTo ? { attachTo } : {}),
       });
       const options = await session.claudeOptions({ onLine: () => {}, onStderr: () => {} });
       const signal = { signal: new AbortController().signal };
@@ -262,6 +263,11 @@ test("every session gets Ledung's SessionStart hook; it adds the list when the w
     const [afterHook] = await prompts({ ...base, startReading: sr }, true);
     assert.doesNotMatch(afterHook!, /start-reading list/, 'a SessionStart that reached the hook already said it');
     assert.doesNotMatch((await prompts(null, false))[0]!, /start-reading list/, 'no workflow: the first prompt as before');
+    // A session that kept running in its host while Ledung restarted (Restart Ledung after a release) already has the
+    // list: reattached, its next prompt does not get it again. The first-prompt assert above is the positive branch.
+    const [reattached] = await prompts({ ...base, startReading: sr }, false, 'pipe-of-a-running-host');
+    assert.doesNotMatch(reattached!, /start-reading list/, 'a reattached session is not given the list again');
+    assert.match(reattached!, /^Current local time: /);
 
     assert.equal(await startText(base, 'clear'), null, 'a workflow without a list: nothing extra');
     assert.equal(await startText(null, 'clear'), null, 'no workflow: nothing extra');
@@ -269,5 +275,53 @@ test("every session gets Ledung's SessionStart hook; it adds the list when the w
     assert.match((await startText({ ...base, startReading: { ...sr, file: path.join(dir, 'gone.json') } }, 'startup'))!, /was not found/);
   } finally {
     removeTemp(dir);
+  }
+});
+
+test("a container project's list: its folder in the container, project files joined with / and read through the container", () => {
+  // The workflow's folder is on this computer, so its files keep this computer's paths; the project's are the container's.
+  const docker = parseProject({ name: 'c', runner: 'docker', container: 'box', pathInContainer: '/work', workflow: { use: true } });
+  const config = parseConfig({ workflow: { folder: W, managerFile: 'lead.md', sessionFile: 'worker.md', projectConfig: 'docs/CONFIG.md', startReadingFile: 'list.json' } });
+  const sr = projectWorkflow(config.workflow, docker)!.startReading!;
+  assert.deepEqual(sr, { file: path.resolve(W, 'list.json'), folder: W, projectFolder: '/work', projectConfig: '/work/docs/CONFIG.md', local: false });
+  const items = startItems(list(), { role: 'manager', title: 'M' }, sr, configValues(CONFIG));
+  assert.deepEqual(items.map((i) => i.file), [
+    path.join(W, 'process/lead.md'), path.join(W, 'modules/alpha/LEAD.md'), path.join(W, 'modules/team/LEAD.md'),
+    '/work/docs/CONFIG.md', '/work/notes/missing.md', '/work/notes/GOAL.md',
+  ]);
+});
+
+test("a container session reads the project's files through its runner, by the path from where the runner stands", async () => {
+  const store = new Store(openDatabase(':memory:'));
+  const info = store.createSession({ id: 'c1', project: 'c', runner: 'docker', title: 'fix-2', parentId: null, permissionMode: 'default' });
+  const asked: string[] = [];
+  // The session runs in a worktree below the project folder, so the goal file is three folders up from where it stands.
+  const runner = {
+    cwd: '/work/.claude/worktrees/fix-2', currentBranch: async () => null,
+    readProjectFile: async (rel: string) => { asked.push(rel); return rel === '../../../GOAL.md' ? 'The container goal.' : null; },
+  };
+  const listDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-start-reading-'));
+  try {
+    fs.writeFileSync(path.join(listDir, 'list.json'), JSON.stringify({ version: 1, session: { read: ['worker.md'], projectFiles: [{ path: 'GOAL.md', print: true }] } }));
+    const sr: StartReading = { file: path.join(listDir, 'list.json'), folder: listDir, projectFolder: '/work', projectConfig: '/work/CFG.md', local: false };
+    const session = new Session({
+      info, store, publish: () => {}, userName: 'Simon',
+      management: { managerOf: () => null, questionTiers: () => [] } as never,
+      workflow: { rulesFile: () => path.join(listDir, 'worker.md'), projectConfig: '/work/CFG.md', configExists: null, startReading: sr },
+      runner: runner as never,
+      gate: { mayStart: () => true, started: () => {}, ended: () => {} },
+    });
+    const options = await session.claudeOptions({ onLine: () => {}, onStderr: () => {} });
+    const out = await options.hooks!.SessionStart![0]!.hooks[0]!({ hook_event_name: 'SessionStart', source: 'clear' } as never, undefined, { signal: new AbortController().signal });
+    assert.deepEqual(asked, ['../../../GOAL.md']);
+    assert.equal((out as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext, [
+      "The workflow's start-reading list: read these in full before anything else, in this order.",
+      `1. ${path.join(listDir, 'worker.md')}`,
+      '2. /work/GOAL.md, as it stands now:',
+      'The container goal.',
+      '(end of GOAL.md)',
+    ].join('\n'));
+  } finally {
+    removeTemp(listDir);
   }
 });
