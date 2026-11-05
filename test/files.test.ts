@@ -515,6 +515,34 @@ test("a container's workflow read script refuses a link to a name ending in a ne
   assert.deepEqual(got.get('.ledung/workflow/manager.md'), { refused: '.ledung/workflow/manager.md leads outside the project folder.' });
 });
 
+// ledung#111, review of PR #136 round 2: a "folder:" brief reaches the whole project folder, so a link to "name.md⏎"
+// inside it, with "name.md" there too, must be refused rather than read as "name.md".
+test('ledung#111: a container "folder:" brief that is a link to a name ending in a newline inside the project is refused, not read as the name without it', { skip: !newlineNames && 'needs a newline in a file name and sh with readlink -n' }, async () => {
+  const { INSIDE_PROJECT_SCRIPT, splitMarked } = await import('../src/runners/docker-runner.ts');
+  const { flowPlaces } = await import('../src/sessions/flow-files.ts');
+  const { parseProject } = await import('../src/config.ts');
+  const box = fs.realpathSync(fs.mkdtempSync(path.join(base, 'nl-folder-box-')));
+  const briefs = path.join(box, 'process', 'briefs');
+  fs.mkdirSync(path.join(box, '.ledung', 'workflow'), { recursive: true });
+  fs.mkdirSync(briefs, { recursive: true });
+  fs.writeFileSync(path.join(briefs, 'name.md\n'), '# the newline one\n');
+  fs.writeFileSync(path.join(briefs, 'name.md'), '# the other one\n');
+  fs.symlinkSync(path.join(briefs, 'name.md\n'), path.join(briefs, 'nl.md'));
+  const read = async (files: string[], maxBytes: number, budget: number) => {
+    const run = spawnSync('sh', ['-c', INSIDE_PROJECT_SCRIPT, 'sh', 'MARK', box, String(maxBytes), String(budget), ...files], { encoding: 'utf8', windowsHide: true });
+    assert.equal(run.status, 0, run.stderr);
+    return splitMarked(run.stdout, files, 'MARK');
+  };
+  const project = parseProject({ name: 'c', runner: 'docker', container: 'box', pathInContainer: '/work' });
+  const [place] = flowPlaces(project, undefined, { read, list: async () => [], write: async () => {} });
+  const got = await place!.read(['folder:process/briefs/nl.md', 'folder:process/briefs/name.md']);
+  // The positive branch: the file without the newline reads by its own name, through the same reader.
+  assert.deepEqual(got.get('folder:process/briefs/name.md'), { text: '# the other one\n' });
+  const nl = got.get('folder:process/briefs/nl.md');
+  assert.ok(nl && 'refused' in nl, `refused, not read: ${JSON.stringify(nl)}`);
+  assert.match(nl.refused, /leads outside the project folder/);
+});
+
 test("a container's workflow writer script refuses a folder swapped for a link to its name with a newline before the rename", { skip: !newlineNames && 'needs a newline in a file name and sh with readlink -n' }, async () => {
   const { WRITE_FLOW_SCRIPT } = await import('../src/runners/docker-runner.ts');
   const fresh = fs.realpathSync(fs.mkdtempSync(path.join(base, 'nl-swap-box-')));
