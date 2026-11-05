@@ -22,6 +22,18 @@ const SAFE_PATH = /^(?![\s\S]*(?:^|\/)\.{1,2}(?:\/|$))[A-Za-z0-9_. -]+(?:\/[A-Za
 const MarkdownPath = z.string().max(200).regex(SAFE_PATH, 'is a path inside the workflow folder, such as briefs/review.md: no absolute path, "..", "\\" or drive')
   .refine((p) => /\.md$/i.test(p), 'is a markdown file (.md)');
 
+/**
+ * ledung#111: a brief may name a file in the folder the workflow folder is in, "folder:process/briefs/review.md": a
+ * shared workflow's own folder (or the project's), so a process whose briefs live beside its .ledung/workflow needn't
+ * copy them. The same rules as SAFE_PATH after the prefix, and the readers keep it inside that folder.
+ */
+export const FOLDER_PREFIX = 'folder:';
+/** A brief's path in the folder the workflow folder is in, for "folder:…"; null for a path in the workflow folder. */
+export const inFolder = (p: string): string | null => (p.startsWith(FOLDER_PREFIX) ? p.slice(FOLDER_PREFIX.length) : null);
+const BriefPath = z.string().max(200)
+  .refine((p) => SAFE_PATH.test(inFolder(p) ?? p), `is a path inside the workflow folder, such as briefs/review.md, or inside the folder it is in, such as ${FOLDER_PREFIX}process/briefs/review.md: no absolute path, "..", "\\" or drive`)
+  .refine((p) => /\.md$/i.test(p), 'is a markdown file (.md)');
+
 // Not trimmed: the builder (part 2) writes back what it read, so a value stays as it was written (review of #310).
 const Text = (max: number) => z.string().max(max).refine((t) => t.trim().length > 0, 'is empty');
 const Comment = z.string().optional();
@@ -61,7 +73,7 @@ const Substep = z.object({
   id: Id,
   kind: z.enum(SUBSTEP_KINDS, { message: 'is "work" or "check": a subagent\'s piece of work, or its check of the block\'s work' }),
   title: Text(80),
-  brief: MarkdownPath.optional(),
+  brief: BriefPath.optional(),
   model: Text(80).optional(),
   when: z.enum(SUBSTEP_WHEN, { message: 'is "start", "done" (when the block\'s own work is done) or "brief" (where the brief says)' }).optional(),
   outcomes: z.array(SubstepOutcome).max(20).optional(),
@@ -76,7 +88,7 @@ const Block = z.object({
   continues: Id.optional(),
   model: Text(80).optional(),
   profile: Text(48).optional(),
-  brief: MarkdownPath.optional(),
+  brief: BriefPath.optional(),
   substeps: z.array(Substep).max(20).optional(),
   outcomes: z.array(Outcome).max(50).optional(),
   ask: z.enum(['question', 'review'], { message: 'is "question" (ask_user) or "review" (a review page)' }).optional(),

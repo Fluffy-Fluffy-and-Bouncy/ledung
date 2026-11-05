@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-05
+- A workflow block's brief can be a file beside the workflow folder, in the shared workflow's own folder, written `folder:process/briefs/review.md`, so a shared process needn't copy its briefs; it is read with the same rules (only inside that folder) and shown read-only on a block click. (#111)
 - Selecting a block in a workflow diagram lights up its arrows: where it leads in the accent colour, above the rest, with those outcomes' words and the blocks they lead to marked; the arrows into it more faintly; the rest dimmed. A click on empty space or Esc clears it. On the workflow page, in the builder, in the Workflow pane and in a proposal's before and after; on a phone the diagram now stays above the block's details. (#124)
 
 ## 2026-11-04

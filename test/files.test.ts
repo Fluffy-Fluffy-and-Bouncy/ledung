@@ -236,6 +236,55 @@ test("a workflow's files (issue #310) keep the viewer's rules: inside the folder
   assert.match(((await read(['out.md'])).get('out.md') as { refused: string }).refused, /inside the project folder/);
 });
 
+// ledung#111: a brief may be in the folder a shared workflow's .ledung/workflow is in ("folder:process/briefs/x.md"),
+// read with the same rules: inside that folder, links resolved, the text limit; a path out of it is still refused.
+test('ledung#111: a "folder:" brief is read from the shared workflow\'s own folder, never from outside it', async (t) => {
+  const { flowPlaces, localReader, readFlowView } = await import('../src/sessions/flow-files.ts');
+  const { parseFlow } = await import('../src/shared/flow-check.ts');
+  const { parseProject } = await import('../src/config.ts');
+  const shared = fs.mkdtempSync(path.join(base, 'shared-'));
+  const project = fs.mkdtempSync(path.join(base, 'follower-'));
+  fs.mkdirSync(path.join(shared, '.ledung', 'workflow'), { recursive: true });
+  fs.mkdirSync(path.join(shared, 'process', 'briefs'), { recursive: true });
+  fs.writeFileSync(path.join(shared, 'process', 'briefs', 'review.md'), '# Review');
+  fs.writeFileSync(path.join(shared, 'process', 'briefs', 'big.md'), 'x'.repeat(256 * 1024 + 1));
+  const block = (id: string, brief: string) => ({ id, kind: 'check', title: id, runs: 'new-session', brief, outcomes: [{ word: 'Done', end: true }] });
+  fs.writeFileSync(path.join(shared, '.ledung', 'workflow', 'flow.json'), JSON.stringify({
+    version: 1, blocks: [block('review', 'folder:process/briefs/review.md'), block('gone', 'folder:process/briefs/gone.md'), block('big', 'folder:process/briefs/big.md')],
+  }));
+  const workflow = { name: 'team', folder: shared, managerFile: 'm.md', sessionFile: 's.md', projectConfig: 'p.json' };
+  const places = flowPlaces(parseProject({ name: 'shop', runner: 'local', path: project, workflow: { name: 'team' } }), workflow);
+  const view = await readFlowView('shop', places);
+  assert.equal(view.source?.kind, 'workflow');
+  // The page has its text under the brief's own name, so a block click opens it.
+  assert.equal(view.texts['folder:process/briefs/review.md'], '# Review');
+  const problems = view.problems.map((p) => `${p.at}: ${p.message}`);
+  assert.ok(!problems.some((p) => p.includes('review.md')), problems.join('\n'));
+  assert.ok(problems.some((p) => p.startsWith('blocks.gone.brief:') && /not in the workflow folder/.test(p)), 'a missing one is said');
+  assert.ok(problems.some((p) => p.startsWith('folder:process/briefs/big.md:') && /too large/.test(p)), 'the text limit holds');
+  // Out of the folder: refused by the format, and by the reader as well.
+  const bad = (brief: string) => parseFlow(JSON.stringify({ version: 1, blocks: [block('a', brief)] })).problems.filter((p) => p.at === 'blocks.a.brief');
+  for (const brief of ['folder:../secret.md', 'folder:/etc/x.md', 'folder:C:/x.md', 'folder:process\\x.md', 'folder:folder:x.md', '../../process/briefs/review.md']) {
+    assert.equal(bad(brief).length, 1, brief);
+  }
+  assert.equal(bad('folder:process/briefs/review.md').length, 0, 'the folder form is a brief');
+  assert.equal(bad('briefs/review.md').length, 0, 'and so is a path in the workflow folder');
+  fs.writeFileSync(path.join(base, 'secret.md'), 'outside');
+  const read = localReader(shared, '.ledung/workflow');
+  const outside = `folder:${path.join(base, 'secret.md')}`;
+  const got = await read(['folder:../secret.md', outside, 'folder:process/briefs/review.md']);
+  assert.match((got.get('folder:../secret.md') as { refused: string }).refused, /inside the project folder/);
+  assert.match((got.get(outside) as { refused: string }).refused, /inside the project folder/);
+  assert.deepEqual(got.get('folder:process/briefs/review.md'), { text: '# Review' });
+  try {
+    fs.symlinkSync(path.join(base, 'secret.md'), path.join(shared, 'process', 'briefs', 'out.md'));
+  } catch {
+    t.skip('this machine does not allow links');
+    return;
+  }
+  assert.match(((await read(['folder:process/briefs/out.md'])).get('folder:process/briefs/out.md') as { refused: string }).refused, /inside the project folder/);
+});
+
 // The builder's writer (issue #311): only into the project's own .ledung/workflow, never through a link, folders made
 // as needed, every file checked before any is written, each written whole.
 test("the workflow writer (issue #311) writes inside the project's own workflow folder only, never through a link", async (t) => {
