@@ -298,6 +298,9 @@ test('an Allow once from the refusal alarm is delivered only to the session whos
 // `gh pr merge <its link> --match-head-commit <the head read>` with the options sent: a link names its repository and
 // host, so neither the shell's folder nor GH_REPO can point gh at another PR, and gh refuses a moved head.
 
+/** A folder link: a junction on Windows, which needs no privilege there and realpath resolves like a symlink. */
+const LINK = process.platform === 'win32' ? 'junction' : 'dir';
+
 /** A project folder with a nested clone in it, and a folder outside it. */
 function folders() {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-143-')));
@@ -351,6 +354,49 @@ test("#143: a merge GitHub answers for with another repository's link than the o
   // The positive branch: the link of the repository it names.
   assert.equal((await t.mgr.hook('gh pr merge 6 -R o/r --merge', 'b')).decision, 'allow');
   t.away.stop();
+});
+
+test("#143, #144: GitHub's answer without the PR's link or head commit holds the merge: it fails closed (PR #147 test review, Minor 1)", async () => {
+  // pinned() fills in a link and head only where the answer gives none, so null here reaches the decision as missing.
+  const t = setup({ gh: (pr) => JSON.stringify({ ...JSON.parse(NO_CHECKS), ...(pr === 7 ? { headRefOid: null } : pr === 8 ? { url: null } : {}) }) });
+  t.away.start(later(), ['merge']);
+  assert.equal((await t.mgr.hook('gh pr merge 7 -R o/r --merge', 'no-head')).decision, 'ask', 'no head: held');
+  assert.match(t.away.log('mgr').records.at(-1)!.reason, /GitHub did not give PR #7's head commit/);
+  assert.equal((await t.mgr.hook('gh pr merge 8 -R o/r --merge', 'no-url')).decision, 'ask', 'no link: held');
+  assert.match(t.away.log('mgr').records.at(-1)!.reason, /GitHub did not give PR #8's link/);
+  // The positive branch: an answer with both.
+  const both = await t.mgr.hook('gh pr merge 9 -R o/r --merge', 'both');
+  assert.equal(both.decision, 'allow');
+  assert.equal(both.updatedInput?.command, `gh pr merge https://github.com/o/r/pull/9 --match-head-commit ${HEAD} --merge`);
+  t.away.stop();
+});
+
+// The shell folder is judged as it really is on disk (PR #147 test review, Minor 2): folders() gives real paths, so
+// these two reach it through links, as /var and /private/var on macOS, or a link inside the project.
+test('#143: a project folder reached through a link, the shell in its real path: inside, read there and allowed', async () => {
+  const f = folders();
+  const viaLink = path.join(path.dirname(f.project), 'project-link');
+  fs.symlinkSync(f.project, viaLink, LINK);
+  const t = setup({ cwd: viaLink, gh: byFolder(f.vendor) });
+  t.away.start(later(), ['merge']);
+  const real = await t.mgr.hook('gh pr merge 12 --squash', 'real', { cwd: f.vendor });
+  assert.equal(real.decision, 'allow');
+  assert.equal(real.updatedInput?.command, `gh pr merge https://github.com/v/lib/pull/12 --match-head-commit ${HEAD} --squash`);
+  t.away.stop();
+  f.done();
+});
+
+test('#143: a link inside the project folder that leads out of it is outside: held, GitHub not asked', async () => {
+  const f = folders();
+  const outLink = path.join(f.project, 'out');
+  fs.symlinkSync(f.outside, outLink, LINK);
+  const t = setup({ cwd: f.project, gh: byFolder(f.vendor) });
+  t.away.start(later(), ['merge']);
+  assert.equal((await t.mgr.hook('gh pr merge 12 --squash', 'out', { cwd: outLink })).decision, 'ask', 'a link out: held');
+  assert.equal(t.viewed.length, 0, 'GitHub not asked');
+  assert.match(t.away.log('mgr').records.at(-1)!.reason, /the shell is outside the project folder/);
+  t.away.stop();
+  f.done();
 });
 
 test('#144: an away merge runs only at the head its floors were read at; a sent --match-head-commit of another commit is held', async () => {
