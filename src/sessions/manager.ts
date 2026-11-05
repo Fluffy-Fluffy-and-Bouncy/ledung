@@ -7,6 +7,7 @@ import { removeSignIn } from '../accounts/signin-store.ts';
 import type { AccountChoices, AccountInfoView, AwayInfo, AwayKind, SignInProblem } from '../shared/protocol.ts';
 import { Away } from './away.ts';
 import { Orders } from './orders.ts';
+import { ChatImageError, type ChatImages } from './chat-images.ts';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -199,6 +200,8 @@ export class SessionManager {
   private secrets: Secrets | null = null;
   private secretBook: PlaceBook | null = null;
   private secretsDir = '';
+  /** Images sent with the person's messages (issue #128); null: none in this Ledung (tests that don't attach them). */
+  private chatImages: ChatImages | null = null;
   /** The one pull request poll for every live session (issue #252). */
   private readonly pullRequests: PullRequestPoller;
 
@@ -397,6 +400,38 @@ export class SessionManager {
     });
     // A stop reached before a restart still holds, and its reset still lifts it (issue #278).
     this.refreshStops();
+  }
+
+  // --- Images in the message box (issue #128) --------------------------------------------------------
+
+  /** Where pasted, dropped and picked images are kept: the data folder's "chat-images" (src/main.ts), a temp folder in tests. */
+  attachChatImages(images: ChatImages): void {
+    this.chatImages = images;
+  }
+
+  private images(): ChatImages {
+    if (!this.chatImages) throw new UserError('Images are not available in this Ledung.');
+    return this.chatImages;
+  }
+
+  /** Keeps an image the person is about to send to this session; only the page's own message box uploads them. */
+  uploadImage(sessionId: string, bytes: Buffer): { id: string } {
+    if (!this.store.getSession(sessionId)) throw new UserError('No such session.');
+    try {
+      return { id: this.images().save(sessionId, bytes).id };
+    } catch (e) {
+      throw e instanceof ChatImageError ? new UserError(e.message) : e;
+    }
+  }
+
+  /** An image sent to this session, for its history. */
+  readChatImage(sessionId: string, id: string): { type: string; bytes: Buffer } {
+    if (!this.store.getSession(sessionId)) throw new UserError('No such session.');
+    try {
+      return this.images().read(sessionId, id);
+    } catch (e) {
+      throw e instanceof ChatImageError ? new UserError(e.message) : e;
+    }
   }
 
   // --- Locked secrets (issue #468) -------------------------------------------------------------------
@@ -991,6 +1026,8 @@ export class SessionManager {
       board: launch.board ? this.boards : null,
       pullRequests: this.pullRequests,
       secrets: this.sessionSecrets(project, info),
+      // The person's images, read when their message goes in (issue #128).
+      images: this.chatImages,
       // Looked at on every start and resume, so a config file written meanwhile is found (issue #21).
       workflow: withProfilesWarning(projectWorkflow(chosenWorkflow(workflowsOf(this.config), project), project), profiles.warning),
       // A manager is told where its project's flow is (issue #310), looked for on every start and resume too; with the
@@ -2881,10 +2918,22 @@ ${firstMessage}`);
    * Simon's message; an ended session is resumed first and gets it once it is up. `here`: typed on this computer,
    * not through the public name, so it can name a manager's Settings action (issue #263).
    */
-  async send(id: string, text: string, here = false): Promise<void> {
-    if (!text.trim()) throw new UserError('The message is empty.');
+  /** images: names of images uploaded to this session (issue #128); only the person's own messages from the page carry them. */
+  async send(id: string, text: string, here = false, images?: unknown): Promise<void> {
+    let names: string[] = [];
+    if (images !== undefined && images !== null) {
+      if (!this.store.getSession(id)) throw new UserError('No such session.');
+      try {
+        names = this.images().check(id, images);
+      } catch (e) {
+        throw e instanceof ChatImageError ? new UserError(e.message) : e;
+      }
+    }
+    if (!text.trim() && !names.length) throw new UserError('The message is empty.');
+    // A command (/clear, /compact…) is run from text alone; with images it would be neither (security review of #128).
+    if (names.length && text.trimStart().startsWith('/')) throw new UserError('A command starting with "/" can\'t carry images; send them in a message of their own.');
     await this.resumeIfEnded(id);
-    this.liveSession(id).send(text, here);
+    this.liveSession(id).send(text, here, names);
   }
 
   /** Resumes the session if it has ended (or isn't live); a resume already under way is waited for. */

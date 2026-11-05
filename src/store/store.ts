@@ -126,6 +126,12 @@ function toQuestion(r: Row): QuestionInfo {
 
 let originalExercised = false;
 
+/** A message of Simon's waiting for a free place: its text, or its text with the names of its images (issue #128). */
+export type HeldMessage = string | { text: string; images: string[] };
+
+export const heldText = (m: HeldMessage): string => (typeof m === 'string' ? m : m.text);
+export const heldImageNames = (m: HeldMessage): string[] => (typeof m === 'string' ? [] : m.images);
+
 export interface InboxItem {
   id: number;
   sessionId: string;
@@ -261,13 +267,25 @@ export class Store {
   }
 
   /** Simon's messages that wait for a free place (step 6), oldest first. */
-  heldMessages(id: string): string[] {
+  heldMessages(id: string): HeldMessage[] {
     const r = this.db.prepare('SELECT held FROM sessions WHERE id = ?').get(id) as { held: string | null } | undefined;
     return r?.held ? JSON.parse(r.held) : [];
   }
 
-  setHeldMessages(id: string, texts: string[]): void {
+  setHeldMessages(id: string, texts: HeldMessage[]): void {
     this.db.prepare('UPDATE sessions SET held = ? WHERE id = ?').run(texts.length ? this.json(texts) : null, id);
+  }
+
+  /** The images a session's messages name, sent or held (issue #128): the ones its folder keeps. */
+  sentImageNames(id: string): Set<string> {
+    const names = new Set<string>();
+    const rows = this.db.prepare(`SELECT data FROM messages WHERE session_id = ? AND kind = 'user' AND data LIKE '%"images"%'`).all(id) as { data: string }[];
+    for (const r of rows) {
+      const images = (JSON.parse(r.data) as { images?: unknown }).images;
+      if (Array.isArray(images)) for (const n of images) if (typeof n === 'string') names.add(n);
+    }
+    for (const m of this.heldMessages(id)) for (const n of heldImageNames(m)) names.add(n);
+    return names;
   }
 
   /** Sessions the database still thinks are running, e.g. after Ledung was stopped abruptly. */
