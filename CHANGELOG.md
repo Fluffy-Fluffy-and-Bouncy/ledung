@@ -11,6 +11,7 @@ is nothing user-facing in it).
 
 ## 2026-11-05
 - A timer block in a workflow can carry a guard: at most every so many hours, and only when a condition holds that the manager reads ("Triage holds more than five"). Set in the builder, shown on the block, and checked with the flow. Ledung doesn't run timers itself yet. (#114)
+- Away mode with merge allowed: a manager's own plain `gh pr merge` whose checks pass (open, mergeable, no check failing or running) now goes through without Claude Code's auto mode refusing it; one refused anyway is put in the away log for the morning report instead of asking you. (#133)
 - Workflow pages in a container project: a link to a file whose name ends in a line break is refused as outside the project folder, never read as the file without it; the workflow builder and the container file viewer's last check catch the same trick. (#131)
 - A session's info bar always shows the macros ＋, also before you have any macros; its menu's "Edit macros…" goes to Settings → Macros. (#126)
 - Container files: a link to a file whose name ends in a line break is refused as outside the project folder wherever the check runs, and never opens the file of the same name without it (on macOS's own tools it could). (#127)
