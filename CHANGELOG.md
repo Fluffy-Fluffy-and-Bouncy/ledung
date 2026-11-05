@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-05
+- Away mode with merge allowed: a manager's own plain `gh pr merge` whose checks pass (open, mergeable, no check failing or running) now goes through without Claude Code's auto mode refusing it; one refused anyway is put in the away log for the morning report instead of asking you. (#133)
 - Container files: a link to a file whose name ends in a line break is refused as outside the project folder wherever the check runs, and never opens the file of the same name without it (on macOS's own tools it could). (#127)
 - Images in the chat: paste them into the message box (Ctrl+V, e.g. a Win+Shift+S screenshot), drop them on it or pick them with 📎 (a photo on a phone). Each shows as a thumbnail with ✕ until sent; several per message, with or without text. PNG, JPEG, GIF and WebP only, large ones scaled down to fit Claude's limit. Claude gets them with the message, also when it waits in line, and the history shows them after a restart; a click opens one full size. Images aren't checked for secrets. (#128)
 - Selecting a block in a workflow diagram lights up its arrows: where it leads in the accent colour, above the rest, with those outcomes' words and the blocks they lead to marked; the arrows into it more faintly; the rest dimmed. A click on empty space or Esc clears it. On the workflow page, in the builder, in the Workflow pane and in a proposal's before and after; on a phone the diagram now stays above the block's details. (#124)

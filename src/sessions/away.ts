@@ -379,6 +379,12 @@ export async function orderedMergeFloors(userName: string, command: string, view
   return mergeFloors(p.pr, p.repo, userName, viewPr);
 }
 
+/**
+ * How a record starts when Claude Code's auto mode classifier refused a merge away mode allowed (issue #133): it is
+ * logged, not asked, and away_log calls it refused rather than held, since away mode held nothing.
+ */
+export const CLASSIFIER_REFUSED = "refused by Claude Code's auto mode classifier";
+
 // ---------------------------------------------------------------- the state and the record
 
 export interface AwayRecord {
@@ -602,7 +608,7 @@ export function formatLog(log: { since: number | null; records: AwayRecord[] }, 
   const since = new Date(log.since).toString();
   if (!log.records.length) return `${head}\nNo sensitive call of yours was decided by away mode since ${since}.`;
   const lines = log.records.map((r) => [
-    `- ${new Date(r.at).toString()}: ${r.allowed ? 'ALLOWED' : 'HELD'} · ${r.kind === 'other' ? 'other' : KIND_NAMES[r.kind as AwayKind]}${r.pr !== null ? ` · PR #${r.pr}${r.repo ? ` (${r.repo})` : ''}` : ''}`,
+    `- ${new Date(r.at).toString()}: ${r.allowed ? 'ALLOWED' : r.reason.startsWith(CLASSIFIER_REFUSED) ? 'REFUSED BY THE CLASSIFIER' : 'HELD'} · ${r.kind === 'other' ? 'other' : KIND_NAMES[r.kind as AwayKind]}${r.pr !== null ? ` · PR #${r.pr}${r.repo ? ` (${r.repo})` : ''}` : ''}`,
     `  command: ${r.command}`,
     ...(r.floors.length ? [`  floors: ${r.floors.map((f) => `${f.ok ? 'pass' : 'FAIL'} ${f.detail}`).join('; ')}`] : []),
     `  ${r.reason}`,

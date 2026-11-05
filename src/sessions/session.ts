@@ -25,7 +25,7 @@ import {
 import { mergeAnswered, routePermission, sensitiveHookOutput, type SensitiveRules } from './sensitive.ts';
 import { promptTimeLine } from './elapsed.ts';
 import { settingsAction, wordsFor, type Word } from './word.ts';
-import { promptAwayLine, classify, decide as awayDecide, FLOOR_TIMEOUT_MS, formatLog, orderedMergeFloors, type Away, type Floor } from './away.ts';
+import { promptAwayLine, classify, CLASSIFIER_REFUSED, decide as awayDecide, FLOOR_TIMEOUT_MS, formatLog, orderedMergeFloors, type Away, type AwayDecision, type Floor } from './away.ts';
 import type { AwayInfo } from '../shared/protocol.ts';
 import { deskQuestion, questionText, type QuestionDetails } from '../shared/questions.ts';
 import { compactionUsage, contextAfterCompact, UsageRecorder, type SessionFacts } from '../usage/recorder.ts';
@@ -64,6 +64,8 @@ import { heldImageNames, heldText } from '../store/store.ts';
 let sourcesExercised = false;
 /** The EXERCISED line of issue #405, once per run. */
 let nudgesExercised = false;
+/** The EXERCISED line of issue #133, once per run. */
+let awayMergeExercised = false;
 
 /** The limit on working sessions (step 6), as a session sees it. */
 export interface TurnGate {
@@ -276,6 +278,13 @@ export class Session {
   private readonly allowedBy = new AllowedNotes();
   /** The latest tool calls by id, so a refusal in a tool result can be shown with its exact input (issue #104). */
   private readonly toolCalls = new Map<string, { toolName: string; input: Record<string, unknown> }>();
+  /**
+   * Away mode's decisions on merges taken in the PreToolUse hook (issue #133), by tool use id: onPermission uses a held
+   * one rather than asking GitHub and recording it again, and a refusal that comes anyway reads the floors from it.
+   */
+  private readonly awayDecided = new Map<string, AwayDecision>();
+  /** Refused merges already put in the away log instead of asked (issue #133): a replayed refusal adds nothing. */
+  private readonly awayRefusals = new Set<string>();
   /** Context to attach to a delivered message, by its exact text, picked up by the UserPromptSubmit hook. */
   private readonly contextFor = new Map<string, string>();
   private readonly usage = new UsageRecorder();
@@ -671,6 +680,57 @@ export class Session {
     return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: why } };
   }
 
+  /**
+   * A manager's own plain `gh pr merge` while away mode allows merge (issue #133), decided here, ahead of Claude Code's
+   * auto mode classifier. Ledung's "ask" for a sensitive call goes through the classifier first in auto mode, which
+   * refused away merges whose floors held ([Merge Without Review], 2026-11-05) before away mode was asked; an "allow"
+   * here is not sent to the classifier (Claude Code 2.1.316: "Hook approved tool use for …, bypassing permission
+   * prompt"), as the merges on an Allow once showed. Floors that pass: allowed, noted and recorded as onPermission does.
+   * Held: a sensitive merge goes on to the prompt as before, with this decision kept for onPermission; any other is
+   * left to Claude Code as before, unrecorded. A subagent's call is not the manager's own. Null: not such a call.
+   */
+  private async awayMergeHook(toolName: string, input: Record<string, unknown>, toolUseId: string | undefined, agentId: unknown): Promise<Record<string, unknown> | null> {
+    if (toolName !== 'Bash' || typeof input.command !== 'string' || agentId) return null;
+    const away = this.away?.current();
+    if (!away?.allow.includes('merge') || this.store.getSession(this.id)?.role !== 'manager') return null;
+    // Exactly one plain merge: no chain, no --admin or --auto, nothing computed (away.ts, classify).
+    if (classify(input.command, this.devShip).kind !== 'merge') return null;
+    const decision = await this.awayDecision(away, input.command);
+    if (!decision.allowed) {
+      if (!('hookSpecificOutput' in sensitiveHookOutput(toolName, input, this.sensitiveRules, this.alwaysAsked))) return null;
+      this.away?.record(this.id, input.command, decision);
+      this.keepAwayDecision(toolUseId, decision);
+      return null;
+    }
+    this.away?.record(this.id, input.command, decision);
+    this.keepAwayDecision(toolUseId, decision);
+    this.record('event', { text: decision.reason });
+    this.allowedBy.away(toolUseId, decision.reason);
+    if (!awayMergeExercised) {
+      awayMergeExercised = true;
+      exercisedLine('EXERCISED #133 an away merge allowed in the PreToolUse hook, ahead of the auto mode classifier');
+    }
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: decision.reason } };
+  }
+
+  private keepAwayDecision(toolUseId: string | undefined, decision: AwayDecision): void {
+    if (!toolUseId) return;
+    this.awayDecided.set(toolUseId, decision);
+    // A refusal or a prompt comes right after its call: the latest few hundred are plenty.
+    if (this.awayDecided.size > 300) this.awayDecided.delete(this.awayDecided.keys().next().value!);
+  }
+
+  /** Away mode's decision on a command (issue #35), held when Back was pressed while the floors were checked. */
+  private async awayDecision(away: AwayInfo, command: string): Promise<AwayDecision> {
+    const decision = await awayDecide(away, this.userName, command, this.devShip,
+      (pr, repo, fields) => this.runner.pullRequestView(pr, repo, fields, FLOOR_TIMEOUT_MS));
+    if (decision.allowed && !this.away?.current()) {
+      decision.allowed = false;
+      decision.reason = `held for ${this.userName}: ${this.userName} came back`;
+    }
+    return decision;
+  }
+
   /** How an ordered call ended (issue #105): a once-order that ran is done; one that failed may run again. */
   private orderRunEnded(toolUseId: string | undefined, ok: boolean, error: string | null): void {
     const id = toolUseId ? this.orderedRuns.get(toolUseId) : undefined;
@@ -709,6 +769,41 @@ export class Session {
     this.publish({ type: 'question', question: q });
   }
 
+  /**
+   * The refused call, when it is a manager's own plain `gh pr merge` while away mode allows merge (issue #133): then
+   * awayRefusal decides whether it is asked. Null: asked at once, as every other refusal.
+   */
+  private awayMergeRefused(toolUseId: string): { away: AwayInfo; command: string } | null {
+    const call = this.toolCalls.get(toolUseId);
+    const command = call?.toolName === 'Bash' ? call.input.command : undefined;
+    if (typeof command !== 'string') return null;
+    const away = this.away?.current();
+    if (!away?.allow.includes('merge') || this.store.getSession(this.id)?.role !== 'manager') return null;
+    return classify(command, this.devShip).kind === 'merge' ? { away, command } : null;
+  }
+
+  /**
+   * A merge the classifier refused while away mode allows merge (issue #133): with its floors met it is not a question
+   * to the person, who allowed merges while away ("You're allowed to merge while I'm away, STOP asking about this",
+   * 2026-11-05). It goes in the away log, for the morning report, and in the chat. Floors not met: asked as before.
+   */
+  private async awayRefusal(toolUseId: string, reason: string, { away, command }: { away: AwayInfo; command: string }): Promise<void> {
+    if (this.awayRefusals.has(toolUseId)) return;
+    this.awayRefusals.add(toolUseId);
+    // The hook's decision when it made one (a refusal comes seconds after it); otherwise the floors now.
+    const kept = this.awayDecided.get(toolUseId);
+    const decision = kept?.allowed ? kept : await this.awayDecision(away, command);
+    if (!decision.allowed) {
+      this.awayRefusals.delete(toolUseId);
+      this.raiseRefusal(toolUseId, reason);
+      return;
+    }
+    const floors = decision.floors.map((f) => f.detail).join(', ');
+    const why = `${CLASSIFIER_REFUSED} (${reason}), though away mode allows it: PR #${decision.pr} ${floors}. Not asked of ${this.userName}; in the away log for the morning report`;
+    this.away?.record(this.id, command, { ...decision, allowed: false, reason: why });
+    this.record('event', { text: `Away merge ${why}.` });
+  }
+
   /** The tool calls in an assistant message, kept for raiseRefusal; refusals in a user message's tool results. */
   private watchRefusals(m: SDKMessage): void {
     const content = (m.type === 'assistant' || m.type === 'user') && Array.isArray(m.message.content) ? m.message.content as unknown[] : [];
@@ -721,7 +816,15 @@ export class Session {
       // Only an error result: a successful one that merely shows the words (a grep of this file) is no refusal.
       if (m.type === 'user' && b.type === 'tool_result' && b.is_error === true && b.tool_use_id) {
         const reason = classifierReason(b.content);
-        if (reason !== null) this.raiseRefusal(b.tool_use_id, reason);
+        if (reason === null) continue;
+        const away = this.awayMergeRefused(b.tool_use_id);
+        if (away) {
+          const id = b.tool_use_id;
+          void this.awayRefusal(id, reason, away).catch((e) => {
+            console.error(`Away mode: a refused merge could not be checked: ${(e as Error).message}`);
+            this.raiseRefusal(id, reason);
+          });
+        } else this.raiseRefusal(b.tool_use_id, reason);
       }
     }
   }
@@ -880,6 +983,8 @@ export class Session {
           if (once) return once;
           const ordered = await this.onOrder(toolName, toolInput, toolUseId);
           if (ordered) return ordered;
+          const awayMerge = await this.awayMergeHook(toolName, toolInput, toolUseId, (input as { agent_id?: string }).agent_id);
+          if (awayMerge) return awayMerge;
           return sensitiveHookOutput(toolName, toolInput, this.sensitiveRules, this.alwaysAsked);
         }] }],
         // After a call someone in Ledung allowed: say who, so the session never guesses. A call that
@@ -1245,15 +1350,15 @@ export class Session {
     sensitive: { rule: string },
     fromSession: { managerId: string; title: string } | null,
   ): Promise<PermissionResult> {
-    const decision = await awayDecide(away, this.userName, command, this.devShip,
-      (pr, repo, fields) => this.runner.pullRequestView(pr, repo, fields, FLOOR_TIMEOUT_MS));
-    // Back may have been pressed while the floors were checked.
-    if (decision.allowed && !this.away?.current()) {
-      decision.allowed = false;
-      decision.reason = `held for ${this.userName}: ${this.userName} came back`;
+    // A merge the PreToolUse hook already decided and recorded (issue #133): not asked of GitHub, nor recorded, twice.
+    // Only a held one: one the hook allowed is judged again here, in case Back was pressed since.
+    const kept = !fromSession && opts.toolUseID ? this.awayDecided.get(opts.toolUseID) : undefined;
+    const held = kept && !kept.allowed ? kept : undefined;
+    const decision = held ?? await this.awayDecision(away, command);
+    if (!held) {
+      if (fromSession) this.away?.record(fromSession.managerId, command, { ...decision, reason: `${decision.reason} (run by its session "${fromSession.title}")` });
+      else this.away?.record(this.id, command, decision);
     }
-    if (fromSession) this.away?.record(fromSession.managerId, command, { ...decision, reason: `${decision.reason} (run by its session "${fromSession.title}")` });
-    else this.away?.record(this.id, command, decision);
     if (decision.allowed) {
       this.record('event', { text: decision.reason });
       this.allowedBy.away(opts.toolUseID, decision.reason);
