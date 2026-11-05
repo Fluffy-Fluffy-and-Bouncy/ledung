@@ -5,6 +5,7 @@ import { BaseEdge, EdgeLabelRenderer, getSmoothStepPath, Handle, MiniMap, NodeRe
 import { DEFAULT_FLOW, FLOW_FILE, outcomeName, type FlowBlock, type FlowFrame } from '../../../src/shared/flow.ts';
 import { NAME_COLOURS } from '../../../src/shared/name-colours.ts';
 import { NARROW_QUERY } from '../sidebarSize.ts';
+export { lightArrows } from '../flowLight.ts';
 import { actorLine, blockSize, briefName, KIND_LABEL, labelSpots, openingView, pinnedRoute, roundedPath, SIDE_HANDLE_Y, substepText, type Box, type Point } from '../flowLayout.ts';
 
 export function useNarrow(): boolean {
@@ -39,6 +40,10 @@ export type BlockData = {
   counts?: ({ short: string; full: string } | null)[];
   /** On the chosen run's path (part 3c); `here`: where it is now. */
   path?: 'passed' | 'here';
+  /** A block selected (#124): the pins whose arrows are lit, on the selected block itself. */
+  litPins?: number[];
+  /** A block selected (#124): one its arrows lead to, outlined; or one with nothing to do with it, dimmed. */
+  lit?: 'target' | 'dimmed';
 };
 
 /** The side handles, by the title: arrows going back come in there, and a continued session leaves and comes in there. */
@@ -57,7 +62,7 @@ function BlockNode({ data }: NodeProps<Node<BlockData>>) {
   const size = blockSize(b);
   const outs = b.outcomes ?? [];
   return (
-    <div className={`flow-block kind-${b.kind}${data.selected ? ' selected' : ''}${data.problem ? ' has-problem' : ''}${data.marked ? ' marked' : ''}${data.path ? ` on-path ${data.path}` : ''}`} style={{ width: size.width, minHeight: size.height }} title={data.hasBrief ? 'Open its brief' : 'Show this block'}>
+    <div className={`flow-block kind-${b.kind}${data.selected ? ' selected' : ''}${data.problem ? ' has-problem' : ''}${data.marked ? ' marked' : ''}${data.path ? ` on-path ${data.path}` : ''}${data.lit ? ` lit-${data.lit}` : ''}`} style={{ width: size.width, minHeight: size.height }} title={data.hasBrief ? 'Open its brief' : 'Show this block'}>
       {!!data.runs?.length && (
         // Above the block, so a block with runs in it is laid out as one without (part 3c).
         <div className="flow-run-markers" role="group" aria-label={`${data.runs.length === 1 ? 'One run' : `${data.runs.length} runs`} here`}>
@@ -105,7 +110,7 @@ function BlockNode({ data }: NodeProps<Node<BlockData>>) {
             const name = o.word.trim() ? outcomeName(o) : '(its word?)';
             // One that ends the flow (#447) has no arrow: "■ end" where its dot would be; dragging it to a block still leads it there.
             return (
-              <li key={j} className={`flow-pin${o.to === undefined && !o.end ? ' loose' : ''}${o.end ? ' ends' : ''}${o.times ? ' counted' : ''}${data.counts?.[j] ? ' has-count' : ''}${data.focusOutcome === j ? ' chosen' : ''}`} title={o.end ? `${name}: ends the flow` : o.to === undefined ? `${name}: leads nowhere yet; drag its dot to a block` : name}>
+              <li key={j} className={`flow-pin${o.to === undefined && !o.end ? ' loose' : ''}${o.end ? ' ends' : ''}${o.times ? ' counted' : ''}${data.counts?.[j] ? ' has-count' : ''}${data.focusOutcome === j ? ' chosen' : ''}${data.litPins?.includes(j) ? ' lit' : ''}`} title={o.end ? `${name}: ends the flow` : o.to === undefined ? `${name}: leads nowhere yet; drag its dot to a block` : name}>
                 <span className="flow-pin-word">{name}</span>
                 {data.counts?.[j] && <span className="flow-pin-count" title={`${data.counts[j]!.full}: how far a run has counted this outcome's word`}>{data.counts[j]!.short}</span>}
                 {o.end && <span className="flow-pin-end">■ end</span>}
@@ -212,6 +217,20 @@ export function withLabelSpots(nodes: readonly Node[], edges: Edge[]): Edge[] {
     id: e.id, source: e.source, target: e.target, sourceHandle: e.sourceHandle, targetHandle: e.targetHandle, text: textOf(e), pins: pins.get(e.source) ?? 0,
   })));
   return edges.map((e) => (spots.has(e.id) ? { ...e, data: { ...e.data, labelAt: spots.get(e.id) } } : e));
+}
+
+/** Esc clears a diagram's selected block (#124), unless typing in a field. */
+export function useEscapeClears(on: boolean, clear: (() => void) | undefined): void {
+  useEffect(() => {
+    if (!on || !clear) return;
+    const key = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (e.key !== 'Escape' || e.defaultPrevented || t?.closest('input, textarea, select, [contenteditable="true"]')) return;
+      clear();
+    };
+    window.addEventListener('keydown', key);
+    return () => window.removeEventListener('keydown', key);
+  }, [on, clear]);
 }
 
 /** The arrow's colour, for its head, which React Flow draws outside the arrow's own element. */

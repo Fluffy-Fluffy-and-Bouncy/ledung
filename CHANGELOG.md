@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-05
+- Selecting a block in a workflow diagram lights up its arrows: where it leads in the accent colour, above the rest, with those outcomes' words and the blocks they lead to marked; the arrows into it more faintly; the rest dimmed. A click on empty space or Esc clears it. On the workflow page, in the builder, in the Workflow pane and in a proposal's before and after; on a phone the diagram now stays above the block's details. (#124)
+
 ## 2026-11-04
 - A container project's files can be shown, read-only, from inside its project folder in the container: PNG and JPEG images and .md, .txt and .log files open from chat links, the Files pane lists the folder and shows the session's changes, and ask_user screenshots and review evidence work there too, kept in Ledung when asked so the question still shows them with the container stopped. A stopped container is said plainly. (#122)
 - **Ledung follows the workflow**: where a project has a drawn workflow, its manager starts each piece of work as a run and reports how each step ended; Ledung keeps where every run is, counts each outcome (the 3rd "Changes requested" goes where the flow says) and says what to do next. On by default, switchable in the project's Workflow settings. (no issue)
