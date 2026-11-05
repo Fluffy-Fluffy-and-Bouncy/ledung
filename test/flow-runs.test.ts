@@ -847,3 +847,10 @@ test('final review of part 3: Start anyway refuses a block that is gone; a workt
   await assert.rejects(w.runs.startAnyway('shop', 'run-1', 'Simon'), /could not make its worktree/);
   assert.equal(w.started.length, 0);
 });
+
+test('ledung#111: a "folder:" brief too long to give is pointed at in the folder the workflow folder is in', async () => {
+  const flow = parseFlow(JSON.stringify({ version: 1, blocks: [{ id: 'plan', kind: 'work', title: 'Plan', runs: 'manager', brief: 'folder:process/briefs/plan.md', outcomes: [{ word: 'Done', end: true }] }] })).flow!;
+  const flows = { folder: '/team/.ledung/workflow', flows: new Map([['main', flow]]), titles: new Map([['main', 'Team']]), text: async () => 'x'.repeat(7000) };
+  const { runs } = await engine({ flows });
+  assert.match(await runs.start('manager-1', { title: 'Port it' }), /The brief: read process\/briefs\/plan\.md in \/team\./);
+});
