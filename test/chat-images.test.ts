@@ -50,6 +50,31 @@ test('an image is kept with its own random name and read back only by it, only f
   removeTemp(dir);
 });
 
+test('at start, images a day old that no message names go; named ones and fresh ones stay', () => {
+  const dir = tmp();
+  const images = new ChatImages(dir);
+  const named = images.save('s1', PNG).id;
+  images.save('s1', PNG);
+  const fresh = images.save('s2', JPEG).id;
+  fs.writeFileSync(path.join(dir, 's1', 'notes.txt'), 'not ours');
+  const day = 24 * 60 * 60 * 1000;
+  assert.equal(images.sweep(() => new Set(), day), 0, 'nothing is a day old yet');
+  assert.deepEqual(fs.readdirSync(path.join(dir, 's2')), [fresh]);
+  assert.equal(images.sweep((s) => new Set(s === 's1' ? [named] : []), day, Date.now() + day + 1000), 2, "s1's unsent one and s2's");
+  assert.deepEqual(fs.readdirSync(path.join(dir, 's1')).sort(), [named, 'notes.txt'].sort());
+  assert.deepEqual(fs.readdirSync(path.join(dir, 's2')), []);
+  removeTemp(dir);
+});
+
+test('the store names the images of sent and held messages', () => {
+  const store = new Store(openDatabase(':memory:'));
+  store.createSession({ id: 's1', project: 'p', runner: 'local', title: 't', parentId: null, permissionMode: 'default', role: 'session' });
+  store.addMessage('s1', 'user', { text: 'a', images: ['a.png'] });
+  store.addMessage('s1', 'user', { text: 'b' });
+  store.setHeldMessages('s1', ['old', { text: 'c', images: ['c.png'] }]);
+  assert.deepEqual([...store.sentImageNames('s1')].sort(), ['a.png', 'c.png']);
+});
+
 async function session(images: ChatImages, mayStart: () => boolean) {
   const store = new Store(openDatabase(':memory:'));
   const info = store.createSession({ id: 's1', project: 'p', runner: 'local', title: 'Worker', parentId: null, permissionMode: 'default', role: 'session' });
@@ -104,5 +129,10 @@ test('during a turn a message with an image joins it at once, an image alone too
   assert.deepEqual(((await sent.next()).value as SDKUserMessage).message.content, [
     { type: 'image', source: { type: 'base64', media_type: 'image/gif', data: GIF.toString('base64') } },
   ]);
+  // An image-only message whose image is gone says so instead of being empty.
+  const gone = images.save('s1', PNG).id;
+  fs.rmSync(path.join(dir, 's1', gone));
+  s.send('', false, [gone]);
+  assert.equal(((await sent.next()).value as SDKUserMessage).message.content, '[Simon sent an image that is no longer there.]');
   removeTemp(dir);
 });

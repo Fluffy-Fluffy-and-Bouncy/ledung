@@ -21,18 +21,25 @@ export function imageFiles(list: FileList | null | undefined): File[] {
   return [...(list ?? [])].filter((f) => f.type.startsWith('image/'));
 }
 
-function load(file: Blob): Promise<HTMLImageElement> {
+/**
+ * The image as a data: URL, for its thumbnail and for drawing it: the page's pictures may come only from Ledung itself
+ * and data: URLs (src/server/security.ts), not blob: URLs.
+ */
+export function dataUrl(file: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error('The image could not be read.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function load(file: Blob): Promise<HTMLImageElement> {
+  const url = await dataUrl(file);
+  return new Promise((resolve, reject) => {
     const img = new Image();
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      resolve(img);
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error('The image could not be read.'));
-    };
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('The image could not be read.'));
     img.src = url;
   });
 }

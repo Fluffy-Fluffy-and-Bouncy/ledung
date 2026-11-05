@@ -96,6 +96,36 @@ export class ChatImages {
     return ids as string[];
   }
 
+  /**
+   * Removes images no message names, uploaded at least `olderThanMs` ago: sent with nothing (the page closed, the send
+   * refused). Run at start, when no upload is under way. Returns how many went.
+   */
+  sweep(named: (sessionId: string) => Set<string>, olderThanMs: number, now = Date.now()): number {
+    let removed = 0;
+    let sessions: string[];
+    try {
+      sessions = fs.readdirSync(this.dir).filter((s) => SESSION_ID.test(s));
+    } catch {
+      return 0;
+    }
+    for (const sessionId of sessions) {
+      const folder = path.join(this.dir, sessionId);
+      const keep = named(sessionId);
+      for (const id of fs.readdirSync(folder)) {
+        if (!isChatImageId(id) || keep.has(id)) continue;
+        const file = path.join(folder, id);
+        try {
+          if (now - fs.statSync(file).mtimeMs < olderThanMs) continue;
+          fs.rmSync(file);
+          removed++;
+        } catch (e) {
+          console.error(`Image ${id} of session ${sessionId}: ${(e as Error).message}`);
+        }
+      }
+    }
+    return removed;
+  }
+
   /** The images as the user message's blocks for Claude Code; one that has gone missing is left out. */
   blocks(sessionId: string, ids: string[]): ImageBlock[] {
     const blocks: ImageBlock[] = [];

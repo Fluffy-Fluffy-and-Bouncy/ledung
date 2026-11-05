@@ -361,6 +361,11 @@ test('images for a message (issue #128): uploaded with the sign-in and Ledung\'s
   // Too large: refused by its declared length before it is read, and by what arrives.
   const big = Buffer.concat([png, Buffer.alloc(MAX_CHAT_IMAGE_BYTES)]);
   assert.equal((await upload(good, big)).status, 413);
+  // With no length given (chunked), what arrives is counted.
+  const chunked = await request({ method: 'POST', path: '/api/sessions/s1/images', headers: good, body: big }).catch((e: Error) => ({ status: 0, error: e.message }));
+  assert.ok(chunked.status === 413 || chunked.status === 0, `refused while it arrives: ${JSON.stringify(chunked).slice(0, 200)}`);
+  const kept = path.join(chatImagesDir, 's1');
+  assert.equal(fs.existsSync(kept) ? fs.readdirSync(kept).length : 0, 0, 'nothing kept of what was refused');
   assert.throws(() => new ChatImages(chatImagesDir).save('s1', big), /too large/);
   assert.equal((await request({ method: 'POST', path: '/api/sessions/nope/images', headers: good, body: png })).status, 400, 'no such session');
 
@@ -1070,7 +1075,7 @@ test("a review's evidence takes a board attachment from a manager's own project'
 
 // Issue #160, docs/steps/relay.md steps 3-5: the public name a relay delivers to 127.0.0.1. Only a live paired
 // device signs in there, and what needs the page key there also needs that device's passkey for that very request.
-const pub = (opts: { method?: string; path: string; headers?: Record<string, string>; body?: string }) =>
+const pub = (opts: { method?: string; path: string; headers?: Record<string, string>; body?: string | Buffer }) =>
   request({ ...opts, headers: { host: PUBLIC, ...opts.headers } });
 
 /** Pairs a device the way a phone does: a code from Settings here, the form on the public name. */
@@ -1686,6 +1691,19 @@ test('through the public name each "!" command is signed with the passkey, for e
     assert.match(errorOf(await pubChange(run, body, d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign(run, body) })), /locked/);
   } finally {
     clockShift = 0;
+    d.page.close();
+  }
+});
+
+test('through the public name an image for a message needs the device unlocked, like any change (issue #128)', async () => {
+  const d = await deviceWithPasskey();
+  const png = fs.readFileSync(path.join(projectRoot, 'a.png'));
+  const upload = () => pub({ method: 'POST', path: '/api/sessions/s1/images', headers: { cookie: d.cookie, origin: PUBLIC_ORIGIN, 'content-type': 'image/png', ...d.withKey }, body: png });
+  try {
+    assert.match(errorOf(await upload()), /locked/);
+    assert.equal((await pubChange('/api/device-unlock', '{}', d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign('/api/device-unlock', '{}') })).status, 200);
+    assert.equal((await upload()).status, 200);
+  } finally {
     d.page.close();
   }
 });

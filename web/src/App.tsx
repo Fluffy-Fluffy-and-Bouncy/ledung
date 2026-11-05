@@ -3,7 +3,7 @@ import { CHATS, PERMISSION_MODES, PRIORITIES, projectLabel, type AwayInfo, type 
 import { AddProjectView, ProjectSettingsView, ProjectStartView } from './projects/ProjectViews.tsx';
 import { ChatsSettingsView, NewChatView } from './chats/ChatViews.tsx';
 import { api } from './api.ts';
-import { CHAT_IMAGE_TYPES, imageFiles, MAX_CHAT_IMAGES, prepareImage, SECRETS_HINT } from './chatImages.ts';
+import { CHAT_IMAGE_TYPES, dataUrl, imageFiles, MAX_CHAT_IMAGES, prepareImage, SECRETS_HINT } from './chatImages.ts';
 import { MessageList, formatTime } from './components/MessageList.tsx';
 import { WorkingIndicator } from './components/WorkingIndicator.tsx';
 import { SailingShip, shipMode } from './components/SailingShip.tsx';
@@ -1532,14 +1532,12 @@ function Composer({ session, tint, run, quoteInto, bangShell }: {
     });
   };
   // Images pasted, dropped or picked for the next message (issue #128), already scaled down to fit.
-  const [images, setImages] = useState<{ key: number; blob: Blob; url: string }[]>([]);
+  const [images, setImages] = useState<{ key: number; blob: Blob; url: string; id?: string }[]>([]);
   const [dragging, setDragging] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
   const imageKey = useRef(0);
-  useEffect(() => () => setImages((list) => {
-    for (const i of list) URL.revokeObjectURL(i.url);
-    return [];
-  }), [session.id]);
+  // They belong to the message being written to this session, not to the next session opened.
+  useEffect(() => setImages([]), [session.id]);
   const addImages = (files: File[]) => void run(async () => {
     const room = MAX_CHAT_IMAGES - images.length;
     if (files.length > room) throw new Error(`At most ${MAX_CHAT_IMAGES} images per message.`);
@@ -1548,17 +1546,15 @@ function Composer({ session, tint, run, quoteInto, bangShell }: {
     for (const file of files) {
       try {
         const blob = await prepareImage(file);
-        setImages((list) => [...list, { key: ++imageKey.current, blob, url: URL.createObjectURL(blob) }]);
+        const url = await dataUrl(blob);
+        setImages((list) => (list.length < MAX_CHAT_IMAGES ? [...list, { key: ++imageKey.current, blob, url }] : list));
       } catch (e) {
         refused.push((e as Error).message);
       }
     }
     if (refused.length) throw new Error(refused.join(' '));
   });
-  const removeImage = (key: number) => setImages((list) => list.filter((i) => {
-    if (i.key === key) URL.revokeObjectURL(i.url);
-    return i.key !== key;
-  }));
+  const removeImage = (key: number) => setImages((list) => list.filter((i) => i.key !== key));
   const send = async () => {
     const t = text;
     const sending = images;
@@ -1577,11 +1573,10 @@ function Composer({ session, tint, run, quoteInto, bangShell }: {
     setImages([]);
     await run(async () => {
       try {
-        // Uploaded one by one, then the message names them; Ledung checks each again.
-        const names: string[] = [];
-        for (const i of sending) names.push((await api.uploadImage(session.id, i.blob)).id);
-        await api.send(session.id, t, names);
-        for (const i of sending) URL.revokeObjectURL(i.url);
+        // Uploaded one by one, then the message names them; Ledung checks each again. One already uploaded keeps its
+        // name, so sending again after a refusal doesn't upload it twice.
+        for (const i of sending) i.id ??= (await api.uploadImage(session.id, i.blob)).id;
+        await api.send(session.id, t, sending.map((i) => i.id!));
       } catch (e) {
         setText(t);
         setImages(sending);

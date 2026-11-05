@@ -1524,7 +1524,8 @@ export class Session {
           : 'ledung';
     this.usage.startTurn(trigger);
     if (context) this.contextFor.set(userText, context);
-    this.pushInput(userText, this.imageBlocks(heldImages));
+    const input = this.withImages(userText, heldImages);
+    this.pushInput(input.text, input.images);
     this.lastActivity = Date.now();
     this.update({ status: 'running', queuedAt: null });
     this.beginTurn(trigger);
@@ -1556,9 +1557,13 @@ export class Session {
     this.input.push(text, {}, images);
   }
 
-  /** The person's images as blocks for Claude Code, read from the data folder (issue #128). */
-  private imageBlocks(names: string[]): ImageBlock[] {
-    return names.length && this.images ? this.images.blocks(this.id, names) : [];
+  /**
+   * The text and the person's images as blocks for Claude Code, read from the data folder (issue #128). An image-only
+   * message whose images are gone says so, rather than an empty message (security review of #128, finding 4).
+   */
+  private withImages(text: string, names: string[]): { text: string; images: ImageBlock[] } {
+    const images = names.length && this.images ? this.images.blocks(this.id, names) : [];
+    return { text: names.length && !images.length && !text.trim() ? `[${this.userName} sent an image that is no longer there.]` : text, images };
   }
 
   /** True while the clear's countdown runs: starts it the first time, and wakes deliver() when it is up. */
@@ -1615,7 +1620,8 @@ export class Session {
     if (info.status === 'running' || info.status === 'waiting') {
       this.usage.startTurn('user');
       // Not pushInput: this joins the turn already running, whose resume guard must stay (review of #24).
-      this.input.push(sent.text, {}, this.imageBlocks(images));
+      const input = this.withImages(sent.text, images);
+      this.input.push(input.text, {}, input.images);
       return;
     }
     this.store.setHeldMessages(this.id, [...this.store.heldMessages(this.id), images.length ? { text: sent.text, images } : sent.text]);

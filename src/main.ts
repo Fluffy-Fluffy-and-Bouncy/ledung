@@ -76,7 +76,10 @@ async function main(): Promise<void> {
   // Board attachments are kept in the data folder's board cache, never in a project folder.
   manager.attachBoards((repo) => new GitHubBackend({ repo, pollMs }), new GitHubRepos(), path.join(userDataDir(), 'board-cache'));
   // Images sent with the person's messages (issue #128), in the data folder so the history shows them after a restart.
-  manager.attachChatImages(new ChatImages(chatImagesDir()));
+  // Those uploaded a day ago or more that no message names were never sent: they go (the security review of #128).
+  const chatImages = new ChatImages(chatImagesDir());
+  chatImages.sweep((id) => store.sentImageNames(id), 24 * 60 * 60 * 1000);
+  manager.attachChatImages(chatImages);
   // Locked secrets (issue #468), read before any session is reattached, so its output is blanked from the first line.
   const secrets = await Secrets.open(new Vault(path.join(userDataDir(), 'secrets.enc'), osGuard(userDataDir())), (line) => console.log(line));
   manager.attachSecrets(secrets, localSecretsDir(userDataDir()));

@@ -1778,7 +1778,8 @@ export class LedungServer {
         return;
       }
       // An image for the message box's next message (issue #128): the bytes alone, one per request, checked again by
-      // their first bytes and size in the manager. Never SVG or anything else a browser could run.
+      // their first bytes and size in the manager. Never SVG or anything else a browser could run. Through the public name
+      // it needs the unlocked device, never a signature: one would be checked over the first MB only and refused.
       case 'POST sessions/:id/images': {
         this.requirePageForManager(req, id);
         const type = String(req.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase();

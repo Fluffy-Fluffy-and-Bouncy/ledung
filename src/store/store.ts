@@ -276,6 +276,18 @@ export class Store {
     this.db.prepare('UPDATE sessions SET held = ? WHERE id = ?').run(texts.length ? this.json(texts) : null, id);
   }
 
+  /** The images a session's messages name, sent or held (issue #128): the ones its folder keeps. */
+  sentImageNames(id: string): Set<string> {
+    const names = new Set<string>();
+    const rows = this.db.prepare(`SELECT data FROM messages WHERE session_id = ? AND kind = 'user' AND data LIKE '%"images"%'`).all(id) as { data: string }[];
+    for (const r of rows) {
+      const images = (JSON.parse(r.data) as { images?: unknown }).images;
+      if (Array.isArray(images)) for (const n of images) if (typeof n === 'string') names.add(n);
+    }
+    for (const m of this.heldMessages(id)) for (const n of heldImageNames(m)) names.add(n);
+    return names;
+  }
+
   /** Sessions the database still thinks are running, e.g. after Ledung was stopped abruptly. */
   markUnfinishedSessionsEnded(reason: string, except: string[] = []): number {
     const now = Date.now();

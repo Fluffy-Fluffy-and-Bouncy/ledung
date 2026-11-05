@@ -2930,6 +2930,8 @@ ${firstMessage}`);
       }
     }
     if (!text.trim() && !names.length) throw new UserError('The message is empty.');
+    // A command (/clear, /compact…) is run from text alone; with images it would be neither (security review of #128).
+    if (names.length && text.trimStart().startsWith('/')) throw new UserError('A command starting with "/" can\'t carry images; send them in a message of their own.');
     await this.resumeIfEnded(id);
     this.liveSession(id).send(text, here, names);
   }
