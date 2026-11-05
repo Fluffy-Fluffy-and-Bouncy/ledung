@@ -1563,6 +1563,8 @@ button.settings-menu-item.danger { color: var(--danger); }
 
 /* The workflow page (issue #310): the diagram in the page's own colours, light and dark. */
 .workflow-view { height: 100%; }
+/* A flow's credit line (#117), under its title; not .muted, which a phone's header folds away, so it travels there too. */
+.flow-author { color: var(--muted); font-size: 0.85em; overflow-wrap: anywhere; }
 .flow-problems { margin: 0.6rem 1rem 0; padding: 0.5rem 0.8rem; background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: 8px; font-size: 0.9em; }
 .flow-problems ul { margin: 0.3rem 0 0; padding-left: 1.2rem; }
 .flow-problems code, .flow-problem-inline code { font-size: 0.9em; }

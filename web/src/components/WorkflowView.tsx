@@ -356,6 +356,7 @@ export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowF
   return (
     <div className="page-view workflow-view">
       <header className="session-head"><div className="session-head-text"><h2>{project}: workflow{flow?.title ? ` · ${flow.title}` : ''}</h2>
+        {flow?.author && <div className="flow-author">by {flow.author}</div>}
         {source && <div className="muted mono">{source.kind === 'project' ? "From the project's folder: " : `From the shared workflow "${source.workflow}": `}{source.folder}</div>}</div>
         <div className="session-corner">
           {view?.flow && !cannot && <button className="small" onClick={edit} title={narrow ? "Change the blocks' words and the rules; drawing is for a computer" : 'Draw and change the workflow'}>Edit</button>}
