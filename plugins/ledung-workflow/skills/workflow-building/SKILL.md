@@ -29,6 +29,7 @@ Read the current files first with your own file tools (`.ledung/workflow/flow.js
 {
   "version": 1,
   "title": "Code change",
+  "author": "Name (login)",
   "start": "issue",
   "manager": "manager.md",
   "blocks": [ ... ],
@@ -37,7 +38,7 @@ Read the current files first with your own file tools (`.ledung/workflow/flow.js
 }
 ```
 
-`start` is where work enters (default: the first block). `overlays` and `frames` may be left out.
+`start` is where work enters (default: the first block). `author` is an optional credit line shown under the title (keep one that is there). `overlays` and `frames` may be left out.
 
 **How Ledung follows it** (settings on the flow; only the last two are on by default):
 

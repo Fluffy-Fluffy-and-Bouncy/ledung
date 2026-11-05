@@ -147,6 +147,8 @@ const FlowFile = z.object({
   $comment: Comment,
   version: z.literal(1, { message: 'must be 1, the only version this Ledung knows' }),
   title: Text(120).optional(),
+  /** A line of credit, shown only (#117): no proof of authorship. */
+  author: Text(120).optional(),
   start: Id.optional(),
   manager: MarkdownPath.optional(),
   blocks: z.array(Block).min(1, 'a flow needs at least one block').max(200),
@@ -412,6 +414,7 @@ export function checkFlow(flow: Flow, exists: (file: string) => boolean, profile
   };
   for (const b of flow.blocks) scan({ ...b, id: undefined }, `blocks.${b.id}`);
   if (flow.title) scan(flow.title, 'title');
+  if (flow.author) scan(flow.author, 'author');
   flow.overlays.forEach((o) => scan(o.title, `overlays.${o.id}.title`));
   flow.frames.forEach((f) => scan(f.title, `frames.${f.id}.title`));
 

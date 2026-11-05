@@ -100,6 +100,7 @@ A shared workflow folder keeps its flow in the same layout, `<shared folder>/.le
 {
   "version": 1,
   "title": "…",
+  "author": "…",
   "start": "issue",
   "manager": "manager.md",
   "blocks": [
@@ -187,7 +188,7 @@ A shared workflow folder keeps its flow in the same layout, `<shared folder>/.le
   rules.md  manager.md  briefs/  overlays/     shared by all of them
 ```
 
-- A flow's **name** is its file's name without `.json` (as a block's id: lower case, digits, "-", at most 48); the default flow's is `main`, so `flows/main.json` is refused as a problem. Its **title** (`title`) is what the page shows; with none, its name.
+- A flow's **name** is its file's name without `.json` (as a block's id: lower case, digits, "-", at most 48); the default flow's is `main`, so `flows/main.json` is refused as a problem. Its **title** (`title`) is what the page shows; with none, its name. An optional **author** line (`author`, at most 120 characters, e.g. `"Name (login)"`; #117) is shown under the title on the workflow page, a shared workflow's too, and the builder keeps it: a credit line only, no proof of authorship.
 - A project with one `flow.json` is a project with one flow, as before: nothing is converted, and nothing changes in its files until a second flow is added. A `flows/` folder with no `flow.json` beside it counts for nothing (the project has no flow until it has a default one), so a project or a shared workflow is still found by its `flow.json` alone.
 - Shared: the rules, the briefs and overlay texts (every flow's blocks pick from the same `briefs/`), and the **manager's file**, named by the default flow only (`manager` in another flow is a problem: one manager, one file). **Overlays** stay in the flow whose blocks they amend; their texts are shared like briefs, so one text may amend blocks in two flows by being named in each.
 - A shared workflow folder may carry `flows/` too; a project's own `flow.json` still wins over it, and with it the project's own `flows/`. Saving a shared workflow's flows makes a copy of all of them.
