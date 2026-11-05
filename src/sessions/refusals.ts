@@ -86,15 +86,17 @@ export function allowsOnce(answer: string | null): boolean {
 /**
  * The person's Allow once that covers this call, if any: a refusal question of this session, answered Allow once by
  * the person themself (not passed on by a manager, which forward_answer does), within the last day, for exactly this
- * call. Whether it is still unused is the store's to say (words_used), so the caller uses it up atomically.
+ * call from the same caller (the session itself, or a subagent of it). Whether it is still unused is the store's to say (words_used), so the caller uses it up atomically.
  */
 export function onceGrant(
-  questions: readonly QuestionInfo[], sessionId: string, toolName: string, input: Record<string, unknown>, now: number,
+  questions: readonly QuestionInfo[], sessionId: string, toolName: string, input: Record<string, unknown>, now: number, byAgent = false,
 ): QuestionInfo | null {
   return questions.find((q) => {
     const r = refusalOf(q);
     return !!r && q.sessionId === sessionId && q.status === 'answered' && q.answeredBy === 'user' && q.forwardedFrom === null
-      && allowsOnce(q.answer) && (q.answeredAt ?? 0) > now - ONCE_GRANT_MS && sameCall(r, toolName, input);
+      && allowsOnce(q.answer) && (q.answeredAt ?? 0) > now - ONCE_GRANT_MS && sameCall(r, toolName, input)
+      // The session's own grant is not a subagent's, nor the other way round (issue #146).
+      && (r.byAgent ?? false) === byAgent;
   }) ?? null;
 }
 

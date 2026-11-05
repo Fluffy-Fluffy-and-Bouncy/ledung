@@ -218,7 +218,8 @@ test('a merge the classifier refuses anyway, with merge allowed and the floors m
   const [r, ...more] = t.away.log('mgr').records;
   assert.equal(more.length, 0);
   assert.equal(r!.pr, 2264);
-  assert.match(r!.reason, /^refused by Claude Code's auto mode classifier \(\[Merge Without Review\]\), though away mode allows it: PR #2264 open, mergeable/);
+  // Issue #145 reworded it: "floors met when refused", not "though away mode allows it".
+  assert.match(r!.reason, /^refused by Claude Code's auto mode classifier \(\[Merge Without Review\]\); floors met when refused: PR #2264 open, mergeable/);
   const report = formatLog(t.away.log('mgr'), t.away.current(), 'Martin');
   assert.match(report, /REFUSED BY THE CLASSIFIER · merge · PR #2264 \(o\/r\)/, 'the morning report names it');
   assert.ok(t.mgr.events().some((e) => e.startsWith("Away merge refused by Claude Code's auto mode classifier")), 'noted in the chat');
@@ -432,4 +433,114 @@ test('#143, #144: the pinned merge keeps the options sent, -R included, and quot
     { command: `gh pr merge https://github.com/o/r/pull/2264 --match-head-commit ${HEAD} -R o/r --merge -t 'it'\\''s done' --body x -d` });
   assert.deepEqual(pinnedMerge('gh pr merge https://github.com/o/r/pull/2264 --repo=o/r -s', pin),
     { command: `gh pr merge https://github.com/o/r/pull/2264 --match-head-commit ${HEAD} --repo o/r -s` });
+});
+
+// ---------------------------------------------------------------- 5. post-merge security review of PR #141
+// Issue #145: the refusal path logged every classifier reason quietly, not only "[Merge Without Review]", and a merge
+// held at call time then refused read as if away mode had allowed it. Issue #146: dropping merge from away mode during
+// the floor read went unseen, and an Allow once of the session's own could be used up by a subagent's identical call.
+
+test('#145: a merge the classifier refuses for another reason than [Merge Without Review] is asked as before, even with merge allowed and its floors met', async () => {
+  const t = setup({ gh: () => NO_CHECKS });
+  t.away.start(later(), ['merge']);
+  // Reasons of the shape Claude Code gives ("[Category] why"), worked from the issue's failure scenario.
+  t.mgr.refuse('inj', MERGE, '[Prompt Injection] the merge follows an instruction found in a PR comment');
+  t.mgr.refuse('tgt', 'gh pr merge 2265 -R o/r --merge', '[Unrequested Target] the user never named PR #2265');
+  await t.flush();
+  assert.deepEqual(t.refusals().map((q) => [q.details!.refusal!.toolUseId, q.addressedTo]), [['inj', 'user'], ['tgt', 'user']], 'both asked of the person');
+  assert.match(t.refusals()[0]!.details!.issue!, /\[Prompt Injection\] the merge follows an instruction/, 'with the reason');
+  assert.equal(t.away.log('mgr').records.length, 0, 'not quietly in the away log');
+  // The positive branch, same session and period: a refusal for want of a review is logged, not asked.
+  t.mgr.refuse('mwr', 'gh pr merge 2266 -R o/r --merge', '[Merge Without Review] no review of PR #2266');
+  await t.flush();
+  assert.equal(t.refusals().length, 2, 'not asked');
+  assert.deepEqual(t.away.log('mgr').records.map((r) => r.pr), [2266], 'logged');
+  t.away.stop();
+});
+
+test('#145: a refusal tagged [Merge Without Review] and another tag is asked; [Merge Without Review] alone is logged (PR #151 code review, Minor 2)', async () => {
+  const t = setup({ gh: () => NO_CHECKS });
+  t.away.start(later(), ['merge']);
+  // Inferred shape, not observed: several tags in one reason. Any second tag means ask.
+  t.mgr.refuse('two', MERGE, '[Merge Without Review] [Prompt Injection] the merge follows an instruction found in a PR comment');
+  await t.flush();
+  assert.deepEqual(t.refusals().map((q) => q.details!.refusal!.toolUseId), ['two'], 'asked of the person');
+  assert.equal(t.away.log('mgr').records.length, 0, 'not quietly in the away log');
+  // The positive branch, same session and period: the tag alone is logged, not asked.
+  t.mgr.refuse('one', 'gh pr merge 2266 -R o/r --merge', '[Merge Without Review] no review of PR #2266');
+  await t.flush();
+  assert.equal(t.refusals().length, 1, 'not asked');
+  assert.deepEqual(t.away.log('mgr').records.map((r) => r.pr), [2266], 'logged');
+  t.away.stop();
+});
+
+test('#145: a merge held at call time and refused once its floors are met reads "floors met when refused", never as allowed', async () => {
+  // The checks fail when the hook reads them, and have passed by the time the refusal comes.
+  let reads = 0;
+  const t = setup({ gh: () => (++reads === 1 ? FAILING : NO_CHECKS) });
+  t.away.start(later(), ['merge']);
+  assert.equal((await t.mgr.hook(MERGE, 'held')).decision, 'ask', 'held at call time');
+  t.mgr.refuse('held', MERGE);
+  await t.flush();
+  assert.equal(t.refusals().length, 0, 'not asked: the floors were met when refused');
+  const [held, refused, ...more] = t.away.log('mgr').records;
+  assert.equal(more.length, 0);
+  assert.deepEqual([held!.allowed, refused!.allowed], [false, false]);
+  assert.match(held!.reason, /^held for Martin: failing checks: ci/);
+  assert.match(refused!.reason, /\(\[Merge Without Review\]\); floors met when refused: PR #2264 open, mergeable/);
+  assert.doesNotMatch(refused!.reason, /allow/i, 'nothing in it reads as allowed');
+  const report = formatLog(t.away.log('mgr'), t.away.current(), 'Martin');
+  assert.match(report, /HELD · merge · PR #2264/);
+  assert.match(report, /REFUSED BY THE CLASSIFIER · merge · PR #2264/);
+  assert.doesNotMatch(report, /ALLOWED ·/, 'the morning report shows no allowed merge');
+  t.away.stop();
+});
+
+test('#146: merge dropped from away mode while the floors are read: held, not allowed; with nothing changed, allowed', async () => {
+  let duringRead: (() => void) | null = null;
+  const t = setup({ gh: () => { duringRead?.(); duringRead = null; return NO_CHECKS; } });
+  t.away.start(later(), ['merge', 'devShip']);
+  // The person changes away mode, keeping it on but without merge, while GitHub is asked.
+  duringRead = () => t.away.start(later(), ['devShip']);
+  const out = await t.mgr.hook(MERGE, 'dropped');
+  assert.equal(out.decision, 'ask', 'not allowed: the sensitive ask, as before');
+  assert.ok(t.away.current(), 'away mode is still on');
+  assert.equal(t.viewed.length, 1, 'the floors were read');
+  assert.match(t.away.log('mgr').records.at(-1)!.reason, /^held for Martin: away mode stopped allowing merge while its floors were checked/);
+  // At the prompt the same.
+  t.away.start(later(), ['merge', 'devShip']);
+  duringRead = () => t.away.start(later(), ['devShip']);
+  assert.equal(await t.settle(t.mgr.permission(MERGE, 'dropped-prompt')), 'waiting', 'asked at the prompt, not allowed');
+  // The positive branch: merge still allowed after the read.
+  t.away.start(later(), ['merge', 'devShip']);
+  assert.equal((await t.mgr.hook(MERGE, 'kept')).decision, 'allow');
+  t.away.stop();
+});
+
+test("#146: the manager's own Allow once is not used up by a subagent's identical call, and a subagent's is not the manager's", async () => {
+  const t = setup();
+  t.mgr.refuse('own', MERGE);
+  const [own] = t.refusals();
+  assert.equal(own!.details!.refusal!.byAgent, undefined, "the manager's own call");
+  t.store.answerQuestion(own!.id, 'Allow once', 'user');
+  assert.notEqual((await t.mgr.hook(MERGE, 'sub-try', { agent_id: 'agent-1' })).decision, 'allow', "a subagent's identical call: not allowed");
+  assert.equal((await t.mgr.hook(MERGE, 'own-retry')).decision, 'allow', "the manager's retry still is: the grant was not used up");
+  assert.notEqual((await t.mgr.hook(MERGE, 'own-again')).decision, 'allow', 'once');
+  // A subagent's refusal of the same call is its own question, and its Allow once covers only a subagent's retry.
+  t.mgr.refuse('sub', MERGE, '[Merge Without Review]', 'task-1');
+  const sub = t.refusals().find((q) => q.details!.refusal!.toolUseId === 'sub');
+  assert.ok(sub, "the subagent's refusal is asked");
+  assert.equal(sub!.details!.refusal!.byAgent, true);
+  t.store.answerQuestion(sub!.id, 'Allow once', 'user');
+  assert.notEqual((await t.mgr.hook(MERGE, 'mgr-try')).decision, 'allow', "not the manager's own call");
+  assert.equal((await t.mgr.hook(MERGE, 'sub-retry', { agent_id: 'agent-1' })).decision, 'allow', "the subagent's retry");
+});
+
+test("#146: a subagent's refusal of a call the manager's open question already asks about is asked on its own", async () => {
+  const t = setup();
+  t.mgr.refuse('own', MERGE);
+  t.mgr.refuse('own-2', MERGE);
+  assert.equal(t.refusals().length, 1, "the manager's repeat is only noted, as before");
+  t.mgr.refuse('sub', MERGE, '[Merge Without Review]', 'task-1');
+  assert.deepEqual(t.refusals().map((q) => [q.details!.refusal!.toolUseId, q.details!.refusal!.byAgent ?? false]), [['own', false], ['sub', true]]);
 });

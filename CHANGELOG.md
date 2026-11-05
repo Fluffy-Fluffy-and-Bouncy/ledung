@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-05
+- Away mode: only a merge auto mode refused as "[Merge Without Review]" goes quietly to the away log; refused for any other reason, it is asked of you as before, and the log says its checks passed when refused rather than that away mode allowed it. Taking merge off away mode while a merge's checks are read now holds that merge, and an "Allow once" answer covers only the session's own calls, or only its subagents', whichever was refused. (#145, #146)
 - Away merges run exactly the pull request whose checks passed, at the commit they were checked at: Ledung runs the merge by the PR's link and refuses it if the branch moved since. A merge without a repository named is checked in the folder the session is in (a nested clone's own PR there), and held for you when that folder is outside the project. (#143, #144)
 - A timer block in a workflow can carry a guard: at most every so many hours, and only when a condition holds that the manager reads ("Triage holds more than five"). Set in the builder, shown on the block, and checked with the flow. Ledung doesn't run timers itself yet. (#114)
 - A workflow's `flow.json` can say who made it, `"author": "Name (login)"`; the workflow page shows it under the flow's title, a shared workflow's too, and the builder keeps it. (#117)
