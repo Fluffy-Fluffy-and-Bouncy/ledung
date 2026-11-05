@@ -1,7 +1,7 @@
 // A manager's proposed workflow change on its review page (workflow part 3e): each flow that changes drawn before and
 // after with the workflow page's own diagram, the texts that change, and what the checks find. Loaded only for such a
 // review, so the diagram library stays out of the page's first load.
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api.ts';
 import type { FlowProposal, ProposalFlow } from '../../../src/shared/flow-proposal.ts';
 import type { Flow } from '../../../src/shared/flow.ts';
@@ -23,12 +23,15 @@ function Side({ label, side, other, narrow, titles }: { label: string; side: Pro
   // The blocks that change are outlined on both sides; briefs are named, not read, so none shows as missing.
   const marks = useMemo(() => ({ ...NO_MARKS, path: new Map([...changedBlocks(side?.flow ?? null, other?.flow ?? null)].map((id) => [id, 'here' as const])) }), [side, other]);
   const texts = useMemo(() => Object.fromEntries((side?.flow?.blocks ?? []).flatMap((b) => (b.brief ? [[b.brief, '']] : []))), [side]);
+  // A block clicked lights its arrows (#124); a click on empty space or Esc clears it.
+  const [selected, setSelected] = useState<string | null>(null);
+  const clear = useCallback(() => setSelected(null), []);
   return (
     <div className="proposal-side">
       <h5>{label}</h5>
       {!side ? <p className="muted">{label === 'Before' ? 'A new flow.' : 'Removed.'}</p>
         : !side.flow || !layout ? <p className="flow-problem-inline">{side.file} doesn't read as a flow.</p>
-        : <Diagram flow={side.flow} layout={layout} texts={texts} selected={null} onSelect={() => {}} narrow={narrow} flowTitle={(n) => titles[n]} marks={marks} fit still={narrow} />}
+        : <Diagram flow={side.flow} layout={layout} texts={texts} selected={selected} onSelect={setSelected} onClear={clear} narrow={narrow} flowTitle={(n) => titles[n]} marks={marks} fit still={narrow} />}
     </div>
   );
 }

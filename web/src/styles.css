@@ -1823,3 +1823,16 @@ button.settings-menu-item.danger { color: var(--danger); }
 .workflow-pane .flow-runs { border-bottom: none; }
 /* The session's own block in the Workflow pane, apart from its run's path, which uses the outline. */
 .workflow-pane .flow-block.selected { box-shadow: 0 0 0 3px var(--accent); background: color-mix(in srgb, var(--accent) 16%, var(--panel)); }
+
+/* A selected block's arrows lit (#124): its outgoing ones in the accent, thicker and above the rest, their pins' words
+   marked and the blocks they lead to outlined (a shadow, apart from a run's path, which is an outline); its incoming
+   ones lit more faintly; everything else dimmed a little. */
+.react-flow__edge.lit-out .react-flow__edge-path { stroke: var(--accent); stroke-width: 3; opacity: 1; }
+.react-flow__edge.lit-in .react-flow__edge-path { stroke: color-mix(in srgb, var(--accent) 35%, var(--muted)); stroke-width: 2; opacity: 0.8; }
+.react-flow__edge.flow-dimmed { opacity: 0.3; }
+.react-flow__node.flow-dimmed { opacity: 0.5; }
+.flow-block.lit-dimmed { opacity: 0.5; }
+.flow-block.lit-target { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 60%, transparent); }
+.flow-pin.lit .flow-pin-word { color: var(--accent); font-weight: 600; }
+.flow-pin.lit .react-flow__handle.h-pin { background: var(--accent); }
+.flow-block.lit-dimmed, .react-flow__edge.flow-dimmed, .react-flow__edge.lit-out .react-flow__edge-path { transition: opacity 0.12s ease, stroke-width 0.12s ease; }

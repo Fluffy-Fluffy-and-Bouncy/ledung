@@ -2,7 +2,7 @@
 // diagram with the runs' markers and the Runs list; in a run's session, its run is chosen (its path marked) and its
 // block selected. "Open full page" goes to the workflow page, where the blocks' briefs, the rules and the builder are.
 // One pane at a time beside a chat: Files has tabs of its own, and a session's files and its workflow are read apart.
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api.ts';
 import { DEFAULT_FLOW, type FlowView } from '../../../src/shared/flow.ts';
 import type { FlowRun } from '../../../src/shared/flow-run.ts';
@@ -56,7 +56,11 @@ export function WorkflowPane({ session, liveRuns, connected, onClose }: {
     return { at: blockRuns(runs, name), counts: pinCounts(flow, runs, name, chosen), path: chosen && chosen.flow === name ? runPath(chosen) : new Map() };
   }, [runs, chosen, flow, shown?.name]);
   // Its own block, in its own run's flow.
+  // Its own block marked as it was; one clicked lights its arrows (#124), until a click on empty space or Esc.
   const selected = own && own.flow === (shown?.name ?? DEFAULT_FLOW) ? own.block : null;
+  const [picked, setPicked] = useState<string | null>(null);
+  useEffect(() => setPicked(null), [session.id, shown?.name]);
+  const clear = useCallback(() => setPicked(null), []);
   const choose = (id: string | null) => {
     setChosenRun(id);
     const r = runs.find((x) => x.id === id);
@@ -79,7 +83,7 @@ export function WorkflowPane({ session, liveRuns, connected, onClose }: {
         {flows.length > 1 && <FlowTabs flows={flows.map((f) => ({ name: f.name, title: f.flow?.title ?? f.name, bad: 0 }))} shown={shown?.name ?? DEFAULT_FLOW} onShow={setShownName} />}
         {view && flow && layout && (
           <div className="workflow-pane-diagram">
-            <Diagram key={`${project}:${shown?.name}`} flow={flow} layout={layout} texts={view.texts} selected={selected} onSelect={() => {}} narrow={narrow} flowTitle={flowTitle} marks={marks} fit />
+            <Diagram key={`${project}:${shown?.name}`} flow={flow} layout={layout} texts={view.texts} selected={selected} lit={picked} onSelect={setPicked} onClear={clear} narrow={narrow} flowTitle={flowTitle} marks={marks} fit />
           </div>
         )}
         {view && (

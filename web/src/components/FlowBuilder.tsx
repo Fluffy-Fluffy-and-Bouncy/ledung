@@ -14,7 +14,7 @@ import { NAME_COLOURS, type NameColour } from '../../../src/shared/name-colours.
 import { actorLine, BLOCK_HEIGHT, BLOCK_WIDTH, blockSize, flowLine, KIND_LABEL, layoutFlow, outcomeHandles, substepText, substepToText, type PlacedKind, type Point } from '../flowLayout.ts';
 import { addBlock, addEndings, addFlow, addFrame, addOutcome, addOverlay, addSubstep, amendedBy, arrange, boxRound, connect, deleteBlocks, deleteFlow, deleteFrame, deleteOutcome, deleteOverlay, deleteSubstep, flowNameProblem, flowOf, frameMembers, framesInside, moveBlock, moveFrame, moveSubstep, newBrief, newManagerFile, newOverlayFile, newSubstepBrief, outcomeKeys, PALETTE, pinned, renameFlow, setBlock, setFollow, setFlowTitle, setFrame, setManager, setOutcome, setOverlay, setSubstep, substepKeys, toggleAmends, wireOutcome, withDraft, workspaceBlocksSaving, workspaceProblems, workspaceWrites, type Draft, type DraftFlow, type Workspace } from '../flowEdit.ts';
 import { setLeaveGuard } from '../flowNav.ts';
-import { ARROW_COLOUR, continueHandles, EDGE_TYPES, FlowMiniMap, FlowTabs, frameColour, frameNode, NODE_TYPES, useMeasured, useOpeningView, withLabelSpots, type BlockData } from './FlowDiagram.tsx';
+import { ARROW_COLOUR, continueHandles, EDGE_TYPES, FlowMiniMap, FlowTabs, frameColour, frameNode, lightArrows, NODE_TYPES, useMeasured, useOpeningView, withLabelSpots, type BlockData } from './FlowDiagram.tsx';
 
 /**
  * What the panel shows: a block, an overlay (#318), the manager's file (#322) or a comment frame (#446); none: the
@@ -171,8 +171,8 @@ export function FlowBuilder({ project, view, initial, shown, onShowFlow, onRenam
   };
 
   // Undo, redo and delete from the keyboard, except while typing in a field.
-  const keys = useRef({ undo, redo, removeSelected });
-  keys.current = { undo, redo, removeSelected: () => !confirm && removeSelected() };
+  const keys = useRef({ undo, redo, removeSelected, clear: () => {} });
+  keys.current = { undo, redo, removeSelected: () => !confirm && removeSelected(), clear: () => !confirm && setSelection(null) };
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
@@ -189,6 +189,9 @@ export function FlowBuilder({ project, view, initial, shown, onShowFlow, onRenam
         keys.current.redo();
       } else if ((e.key === 'Delete' || e.key === 'Backspace') && onCanvas) {
         keys.current.removeSelected();
+      } else if (e.key === 'Escape' && onCanvas && !e.defaultPrevented) {
+        // Esc clears the selection and its lit arrows (#124), as a click on empty canvas does.
+        keys.current.clear();
       }
     };
     window.addEventListener('keydown', on);
@@ -481,7 +484,10 @@ function Canvas({ draft, selection, problems, commit, onSelect, onFrame, choices
     }),
   ].filter((e): e is Edge => e !== null);
   // The arrows' words (a continued session's) clear of the others' and of the blocks and their pins (#1184, #446).
-  const edges = withLabelSpots(nodes, drawn);
+  // A selected block's arrows lit (#124), on top of the panel that edits it.
+  // The outcome in focus in the panel is the one lit, as its arrow is the one chosen.
+  const focused = selection?.kind === 'block' ? draft.blocks.find((b) => b.key === selection.key) : undefined;
+  const lit = lightArrows(nodes, withLabelSpots(nodes, drawn), focused ? focused.key : null, focused ? focusOf(focused) : undefined);
 
   /**
    * A frame's drag (#446): its blocks and the frames inside it, as it held them when the drag began, move with it;
@@ -576,7 +582,7 @@ function Canvas({ draft, selection, problems, commit, onSelect, onFrame, choices
     <div className="flow-canvas" ref={box} onDragOver={(e) => { if (e.dataTransfer.types.includes(DRAG_TYPE)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } }} onDrop={onDrop}>
       {!draft.blocks.length && <div className="flow-canvas-empty muted">Drag a block here from the left, or click one there.</div>}
       {opening && <ReactFlow
-        nodes={nodes} edges={edges} nodeTypes={NODE_TYPES} edgeTypes={EDGE_TYPES} minZoom={0.2} maxZoom={2}
+        nodes={lit.nodes} edges={lit.edges} nodeTypes={NODE_TYPES} edgeTypes={EDGE_TYPES} minZoom={0.2} maxZoom={2}
         {...(opening.fit ? { fitView: true, fitViewOptions: { padding: 0.2 } } : { defaultViewport: opening })}
         nodesDraggable nodesConnectable elementsSelectable={false} edgesFocusable={false} deleteKeyCode={null} connectionRadius={40}
         isValidConnection={(c) => c.source !== c.target && !c.source.startsWith('frame:') && !c.target.startsWith('frame:')}
