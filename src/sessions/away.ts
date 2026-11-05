@@ -460,8 +460,12 @@ export const CLASSIFIER_REFUSED = "refused by Claude Code's auto mode classifier
  */
 const MERGE_WITHOUT_REVIEW = '[Merge Without Review]';
 
-/** Whether the classifier refused for want of a review, and for nothing else: its reason starts with that tag. */
-export const mergeWithoutReview = (reason: string): boolean => reason.trimStart().startsWith(MERGE_WITHOUT_REVIEW);
+/**
+ * Whether the classifier refused for want of a review, and for nothing else: its reason starts with that tag and has
+ * no other bracketed tag, so "[Merge Without Review] [Prompt Injection] …" is asked (PR #151 code review, Minor 2).
+ */
+export const mergeWithoutReview = (reason: string): boolean =>
+  reason.trimStart().startsWith(MERGE_WITHOUT_REVIEW) && (reason.match(/\[[^\]\n]*\]/g) ?? []).length === 1;
 
 // ---------------------------------------------------------------- the state and the record
 

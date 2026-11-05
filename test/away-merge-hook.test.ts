@@ -458,6 +458,22 @@ test('#145: a merge the classifier refuses for another reason than [Merge Withou
   t.away.stop();
 });
 
+test('#145: a refusal tagged [Merge Without Review] and another tag is asked; [Merge Without Review] alone is logged (PR #151 code review, Minor 2)', async () => {
+  const t = setup({ gh: () => NO_CHECKS });
+  t.away.start(later(), ['merge']);
+  // Inferred shape, not observed: several tags in one reason. Any second tag means ask.
+  t.mgr.refuse('two', MERGE, '[Merge Without Review] [Prompt Injection] the merge follows an instruction found in a PR comment');
+  await t.flush();
+  assert.deepEqual(t.refusals().map((q) => q.details!.refusal!.toolUseId), ['two'], 'asked of the person');
+  assert.equal(t.away.log('mgr').records.length, 0, 'not quietly in the away log');
+  // The positive branch, same session and period: the tag alone is logged, not asked.
+  t.mgr.refuse('one', 'gh pr merge 2266 -R o/r --merge', '[Merge Without Review] no review of PR #2266');
+  await t.flush();
+  assert.equal(t.refusals().length, 1, 'not asked');
+  assert.deepEqual(t.away.log('mgr').records.map((r) => r.pr), [2266], 'logged');
+  t.away.stop();
+});
+
 test('#145: a merge held at call time and refused once its floors are met reads "floors met when refused", never as allowed', async () => {
   // The checks fail when the hook reads them, and have passed by the time the refusal comes.
   let reads = 0;
