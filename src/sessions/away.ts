@@ -366,9 +366,11 @@ export function pinOf(pr: number, repo: string | null, json: string): { url: str
 const shellWord = (w: string) => (/^[\w./:=@%+,-]+$/.test(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`);
 
 /**
- * The merge that runs (issues #143, #144): `gh pr merge <link> --match-head-commit <head>` and the options sent, less
- * -R (the link names the repository). Only for a command classify called a merge. An own --match-head-commit for
- * another commit: why it can't run, since the floors were read at this one.
+ * The merge that runs (issues #143, #144): `gh pr merge <link> --match-head-commit <head>` and the options sent, -R
+ * included. pinOf has checked -R names the link's repository, and gh takes the repository from the link; but gh
+ * deletes a local branch on --delete-branch only without -R, so dropping it would delete one the merge as sent never
+ * touched (PR #147 code review, Important 1). Only for a command classify called a merge. An own --match-head-commit
+ * for another commit: why it can't run, since the floors were read at this one.
  */
 export function pinnedMerge(command: string, pin: { url: string; head: string }): { command: string } | { why: string } {
   const w = words(command);
@@ -383,7 +385,7 @@ export function pinnedMerge(command: string, pin: { url: string; head: string })
       if (flag === '--match-head-commit' && value.toLowerCase() !== pin.head.toLowerCase()) {
         return { why: `its --match-head-commit ${value} is not the head its floors were read at (${pin.head})` };
       }
-      if (flag !== '-R' && flag !== '--repo' && flag !== '--match-head-commit') kept.push(flag, value);
+      if (flag !== '--match-head-commit') kept.push(flag, value);
       continue;
     }
     // Anything else not an option is the pull request itself, a number or a link: replaced by the link GitHub gave.

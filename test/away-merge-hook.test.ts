@@ -341,7 +341,7 @@ test('#143: a bare merge with the shell outside the project folder is held and G
   const named = await t.mgr.hook('gh pr merge 12 -R o/r --squash', 'named', { cwd: f.outside });
   assert.equal(named.decision, 'allow');
   assert.deepEqual([t.viewed[0]![0], t.viewed[0]![1], t.viewed[0]![4]], [12, 'o/r', undefined]);
-  assert.equal(named.updatedInput?.command, `gh pr merge https://github.com/o/r/pull/12 --match-head-commit ${HEAD} --squash`);
+  assert.equal(named.updatedInput?.command, `gh pr merge https://github.com/o/r/pull/12 --match-head-commit ${HEAD} -R o/r --squash`);
   t.away.stop();
   f.done();
 });
@@ -367,7 +367,7 @@ test("#143, #144: GitHub's answer without the PR's link or head commit holds the
   // The positive branch: an answer with both.
   const both = await t.mgr.hook('gh pr merge 9 -R o/r --merge', 'both');
   assert.equal(both.decision, 'allow');
-  assert.equal(both.updatedInput?.command, `gh pr merge https://github.com/o/r/pull/9 --match-head-commit ${HEAD} --merge`);
+  assert.equal(both.updatedInput?.command, `gh pr merge https://github.com/o/r/pull/9 --match-head-commit ${HEAD} -R o/r --merge`);
   t.away.stop();
 });
 
@@ -404,14 +404,14 @@ test('#144: an away merge runs only at the head its floors were read at; a sent 
   t.away.start(later(), ['merge']);
   const out = await t.mgr.hook(MERGE, 'pin');
   assert.equal(out.decision, 'allow');
-  assert.equal(out.updatedInput?.command, `gh pr merge https://github.com/o/r/pull/2264 --match-head-commit ${HEAD} --merge`);
+  assert.equal(out.updatedInput?.command, `gh pr merge https://github.com/o/r/pull/2264 --match-head-commit ${HEAD} -R o/r --merge`);
   const OTHER = '1111111111111111111111111111111111111111';
   assert.equal((await t.mgr.hook(`${MERGE} --match-head-commit ${OTHER}`, 'other')).decision, 'ask', 'another head: held');
   assert.match(t.away.log('mgr').records.at(-1)!.reason, /its --match-head-commit 1{40} is not the head its floors were read at/);
   // The positive branch: the head read, sent along, is kept once.
   const same = await t.mgr.hook(`${MERGE} --match-head-commit=${HEAD}`, 'same');
   assert.equal(same.decision, 'allow');
-  assert.equal(same.updatedInput?.command, `gh pr merge https://github.com/o/r/pull/2264 --match-head-commit ${HEAD} --merge`);
+  assert.equal(same.updatedInput?.command, `gh pr merge https://github.com/o/r/pull/2264 --match-head-commit ${HEAD} -R o/r --merge`);
   t.away.stop();
 });
 
@@ -420,15 +420,16 @@ test('#143, #144: a merge away mode allows at the prompt, not in the hook, runs 
   t.away.start(later(), ['merge']);
   const result = await t.mgr.permission(MERGE, 'prompt-1');
   assert.equal(result.behavior, 'allow');
-  assert.deepEqual(result.updatedInput, { command: `gh pr merge https://github.com/o/r/pull/2264 --match-head-commit ${HEAD} --merge`, description: 'Merge' });
+  assert.deepEqual(result.updatedInput, { command: `gh pr merge https://github.com/o/r/pull/2264 --match-head-commit ${HEAD} -R o/r --merge`, description: 'Merge' });
   t.away.stop();
 });
 
-test('#143, #144: the pinned merge keeps the options sent, drops -R and quotes what the shell must see as one word', () => {
+test('#143, #144: the pinned merge keeps the options sent, -R included, and quotes what the shell must see as one word', () => {
   const pin = { url: 'https://github.com/o/r/pull/2264', head: HEAD };
-  // Worked by hand from gh's options: -R goes (the link names the repository), the rest stay in order.
+  // Worked by hand from gh's options: all stay in order, -R too (without it gh would also delete a same-named local
+  // branch on --delete-branch: PR #147 code review, Important 1).
   assert.deepEqual(pinnedMerge(`gh pr merge 2264 -R o/r --merge -t "it's done" --body=x -d`, pin),
-    { command: `gh pr merge https://github.com/o/r/pull/2264 --match-head-commit ${HEAD} --merge -t 'it'\\''s done' --body x -d` });
+    { command: `gh pr merge https://github.com/o/r/pull/2264 --match-head-commit ${HEAD} -R o/r --merge -t 'it'\\''s done' --body x -d` });
   assert.deepEqual(pinnedMerge('gh pr merge https://github.com/o/r/pull/2264 --repo=o/r -s', pin),
-    { command: `gh pr merge https://github.com/o/r/pull/2264 --match-head-commit ${HEAD} -s` });
+    { command: `gh pr merge https://github.com/o/r/pull/2264 --match-head-commit ${HEAD} --repo o/r -s` });
 });

@@ -265,7 +265,7 @@ test("while away, a manager's merge with every floor passing runs with no prompt
   t.away.start(later(), ['merge', 'devShip']);
   const result = await t.settle(t.ask('gh pr merge 31 -R o/r'));
   // What runs is pinned to the PR read and its head (issues #143, #144).
-  assert.deepEqual(result, { behavior: 'allow', updatedInput: { command: `gh pr merge https://github.com/o/r/pull/31 --match-head-commit ${HEAD}` } });
+  assert.deepEqual(result, { behavior: 'allow', updatedInput: { command: `gh pr merge https://github.com/o/r/pull/31 --match-head-commit ${HEAD} -R o/r` } });
   assert.equal(t.store.pendingPermissions().length, 0, 'no prompt');
   assert.equal(t.viewed.length, 1);
   const log = t.away.log('mgr').records;
