@@ -33,6 +33,7 @@ import { WAIT_MS } from './limits.ts';
 import { Secrets } from '../src/secrets/secrets.ts';
 import { runCappedBytes } from '../src/sessions/git-read.ts';
 import { containerFailure } from '../src/sessions/container-files.ts';
+import { ChatImages, MAX_CHAT_IMAGE_BYTES } from '../src/sessions/chat-images.ts';
 
 // A port the system says is free right now; a random pick could hit a running Ledung's port.
 const PORT = await freePort();
@@ -49,6 +50,7 @@ let webRoot: string;
 let projectRoot: string;
 // The board cache (board attachments) and the manager, for the board attachment route.
 let boardCache: string;
+let chatImagesDir: string;
 let sessions: SessionManager;
 const questionAbout: Record<string, number> = {};
 let refusalQuestion = 0;
@@ -87,6 +89,9 @@ before(async () => {
   fs.writeFileSync(path.join(projectRoot, 'a.svg'), '<svg/>');
   fs.writeFileSync(path.join(path.dirname(projectRoot), 'ledung-secret.png'), 'x');
   const manager = refuseRealSignInStores(new SessionManager(parseConfig({ port: PORT, projects: [{ name: 'p', runner: 'local', path: projectRoot }], board: { repo: 'org/board' }, browseRoots: [os.homedir(), os.tmpdir()] }) /* the temp folder is outside the home on macOS and Linux (#233) */, store, () => {}));
+  // Images sent with messages (issue #128), in a temp folder, never the real data folder.
+  chatImagesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-chat-images-'));
+  manager.attachChatImages(new ChatImages(chatImagesDir));
   boardCache = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-board-cache-'));
   manager.attachBoards(() => new FakeBackend(new FakeBoard(), 'me'), directory, boardCache);
   sessions = manager;
@@ -160,9 +165,10 @@ after(async () => {
   removeTemp(shortcutDir);
   removeTemp(projectRoot);
   fs.rmSync(path.join(path.dirname(projectRoot), 'ledung-secret.png'), { force: true });
+  removeTemp(chatImagesDir);
 });
 
-function request(opts: { method?: string; path: string; headers?: Record<string, string>; body?: string }) {
+function request(opts: { method?: string; path: string; headers?: Record<string, string>; body?: string | Buffer }) {
   return new Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }>((resolve, reject) => {
     const req = http.request(
       { host: '127.0.0.1', port: PORT, method: opts.method ?? 'GET', path: opts.path, headers: { host: `127.0.0.1:${PORT}`, ...opts.headers } },
@@ -334,6 +340,60 @@ test('project images need the sign-in and this host, and are served as PNG or JP
     assert.match(res.headers['content-type'] ?? '', /json/);
   }
   assert.equal((await request({ path: '/api/sessions/nope/image?path=a.png', headers: { cookie: COOKIE } })).status, 400);
+});
+
+test('images for a message (issue #128): uploaded with the sign-in and Ledung\'s own origin, PNG, JPEG, GIF or WebP only, within the size', async () => {
+  const png = fs.readFileSync(path.join(projectRoot, 'a.png'));
+  const upload = (headers: Record<string, string>, body: Buffer = png) =>
+    request({ method: 'POST', path: '/api/sessions/s1/images', headers: { 'content-length': String(body.length), ...headers }, body });
+  const good = { cookie: COOKIE, origin: ORIGIN, 'content-type': 'image/png' };
+  assert.equal((await upload({ origin: ORIGIN, 'content-type': 'image/png' })).status, 401);
+  assert.equal((await upload({ cookie: COOKIE, 'content-type': 'image/png' })).status, 403, 'no Origin');
+  assert.equal((await upload({ ...good, origin: 'http://evil.example' })).status, 403, 'another origin');
+  assert.equal((await upload({ ...good, host: 'evil.example:80' })).status, 403, 'another host');
+  // SVG is refused by its type and by its bytes; so is anything that isn't one of the four.
+  assert.equal((await upload({ ...good, 'content-type': 'image/svg+xml' }, Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'))).status, 415);
+  assert.equal((await upload({ ...good, 'content-type': 'text/html' }, Buffer.from('<html></html>'))).status, 415);
+  const svgAsPng = await upload(good, Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'));
+  assert.equal(svgAsPng.status, 400);
+  assert.match(JSON.parse(svgAsPng.body).error, /PNG, JPEG, GIF and WebP/);
+  assert.equal((await upload(good, Buffer.alloc(0))).status, 400, 'empty');
+  // Too large: refused by its declared length before it is read, and by what arrives.
+  const big = Buffer.concat([png, Buffer.alloc(MAX_CHAT_IMAGE_BYTES)]);
+  assert.equal((await upload(good, big)).status, 413);
+  assert.throws(() => new ChatImages(chatImagesDir).save('s1', big), /too large/);
+  assert.equal((await request({ method: 'POST', path: '/api/sessions/nope/images', headers: good, body: png })).status, 400, 'no such session');
+
+  const ok = await upload(good);
+  assert.equal(ok.status, 200);
+  const { id } = JSON.parse(ok.body) as { id: string };
+  assert.match(id, /^[0-9a-f]{32}\.png$/);
+  // Served only to a signed-in page on this host, as an image that is never sniffed as anything else.
+  const url = `/api/sessions/s1/sent-images/${id}`;
+  assert.equal((await request({ path: url })).status, 401);
+  assert.equal((await request({ path: url, headers: { host: 'evil.example:80', cookie: COOKIE } })).status, 403);
+  const shown = await request({ path: url, headers: { cookie: COOKIE } });
+  assert.equal(shown.status, 200);
+  assert.equal(shown.headers['content-type'], 'image/png');
+  assert.equal(shown.headers['x-content-type-options'], 'nosniff');
+  // Only Ledung's own names, and only of that session: never a path.
+  for (const bad of [encodeURIComponent('../s1/' + id), encodeURIComponent('..\\x.png'), 'a.svg', '0'.repeat(32) + '.png', '0'.repeat(32) + '.svg']) {
+    const res = await request({ path: `/api/sessions/s1/sent-images/${bad}`, headers: { cookie: COOKIE } });
+    assert.equal(res.status, 400, bad);
+    assert.match(res.headers['content-type'] ?? '', /json/);
+  }
+  assert.equal((await request({ path: `/api/sessions/s2/sent-images/${id}`, headers: { cookie: COOKIE } })).status, 400, 'another session');
+  // ".." as the session is taken out by the URL itself, which leaves no such route.
+  assert.equal((await request({ path: `/api/sessions/%2e%2e/sent-images/${id}`, headers: { cookie: COOKIE } })).status, 404);
+  assert.equal((await request({ path: `/api/sessions/${encodeURIComponent('s1/..')}/sent-images/${id}`, headers: { cookie: COOKIE } })).status, 400);
+  // A message names only this session's images, and no more than ten.
+  const send = (images: unknown) => request({ method: 'POST', path: '/api/sessions/s2/messages', headers: { cookie: COOKIE, origin: ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify({ text: 'hi', images }) });
+  assert.equal((await send([id])).status, 400, "s1's image named in s2");
+  assert.equal((await send(['../../ledung.db'])).status, 400);
+  assert.equal((await send('x')).status, 400);
+  assert.equal((await send(Array(11).fill(id))).status, 400);
+  // A manager's images need the open page, like its messages (#104 review, finding F1).
+  assert.equal((await request({ method: 'POST', path: '/api/sessions/m1/images', headers: good, body: png })).status, 403);
 });
 
 test("a session with its own folder reads files only from that folder, behind the same sign-in", async () => {

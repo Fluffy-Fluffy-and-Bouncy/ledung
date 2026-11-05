@@ -3,6 +3,7 @@ import { CHATS, PERMISSION_MODES, PRIORITIES, projectLabel, type AwayInfo, type 
 import { AddProjectView, ProjectSettingsView, ProjectStartView } from './projects/ProjectViews.tsx';
 import { ChatsSettingsView, NewChatView } from './chats/ChatViews.tsx';
 import { api } from './api.ts';
+import { CHAT_IMAGE_TYPES, imageFiles, MAX_CHAT_IMAGES, prepareImage, SECRETS_HINT } from './chatImages.ts';
 import { MessageList, formatTime } from './components/MessageList.tsx';
 import { WorkingIndicator } from './components/WorkingIndicator.tsx';
 import { SailingShip, shipMode } from './components/SailingShip.tsx';
@@ -1530,11 +1531,39 @@ function Composer({ session, tint, run, quoteInto, bangShell }: {
       }
     });
   };
+  // Images pasted, dropped or picked for the next message (issue #128), already scaled down to fit.
+  const [images, setImages] = useState<{ key: number; blob: Blob; url: string }[]>([]);
+  const [dragging, setDragging] = useState(false);
+  const picker = useRef<HTMLInputElement>(null);
+  const imageKey = useRef(0);
+  useEffect(() => () => setImages((list) => {
+    for (const i of list) URL.revokeObjectURL(i.url);
+    return [];
+  }), [session.id]);
+  const addImages = (files: File[]) => void run(async () => {
+    const room = MAX_CHAT_IMAGES - images.length;
+    if (files.length > room) throw new Error(`At most ${MAX_CHAT_IMAGES} images per message.`);
+    // Each that can be sent is added; what can't is said, together, after.
+    const refused: string[] = [];
+    for (const file of files) {
+      try {
+        const blob = await prepareImage(file);
+        setImages((list) => [...list, { key: ++imageKey.current, blob, url: URL.createObjectURL(blob) }]);
+      } catch (e) {
+        refused.push((e as Error).message);
+      }
+    }
+    if (refused.length) throw new Error(refused.join(' '));
+  });
+  const removeImage = (key: number) => setImages((list) => list.filter((i) => {
+    if (i.key === key) URL.revokeObjectURL(i.url);
+    return i.key !== key;
+  }));
   const send = async () => {
     const t = text;
-    if (!t.trim()) return;
+    const sending = images;
     // "!cmd" runs in the session's folder; its output goes to Claude as context (issue #212).
-    if (command) {
+    if (command && !sending.length) {
       await run(async () => {
         const check = await api.shellCheck(session.id, command);
         if (check.refused) throw new Error(check.refused);
@@ -1543,18 +1572,39 @@ function Composer({ session, tint, run, quoteInto, bangShell }: {
       });
       return;
     }
+    if (!t.trim() && !sending.length) return;
     setText('');
+    setImages([]);
     await run(async () => {
       try {
-        await api.send(session.id, t);
+        // Uploaded one by one, then the message names them; Ledung checks each again.
+        const names: string[] = [];
+        for (const i of sending) names.push((await api.uploadImage(session.id, i.blob)).id);
+        await api.send(session.id, t, names);
+        for (const i of sending) URL.revokeObjectURL(i.url);
       } catch (e) {
         setText(t);
+        setImages(sending);
         throw e;
       }
     });
   };
   return (
-    <div className={`composer${tint ? ' tinted' : ''}`} style={tint} ref={box}>
+    <div
+      className={`composer${tint ? ' tinted' : ''}${dragging ? ' dropping' : ''}`} style={tint} ref={box}
+      onDragOver={(e) => {
+        if (ended || ![...e.dataTransfer.types].includes('Files')) return;
+        e.preventDefault();
+        setDragging(true);
+      }}
+      onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false); }}
+      onDrop={(e) => {
+        setDragging(false);
+        if (ended || !e.dataTransfer.files.length) return;
+        e.preventDefault();
+        addImages([...e.dataTransfer.files]);
+      }}
+    >
       {grip}
       {editingSecret && (
         <SecretEditor
@@ -1577,7 +1627,7 @@ function Composer({ session, tint, run, quoteInto, bangShell }: {
         />
       )}
       {selection && <SelectionKey left={selection.left} top={selection.top} onLock={lockSelected} />}
-      {(session.shell || ask || command || showChips) && (
+      {(session.shell || ask || command || showChips || images.length > 0) && (
       <div className="bang-strips">
       {showChips && <SecretChips known={chips.known} missing={chips.missing} onOpen={setEditing} />}
       {session.shell && (
@@ -1594,6 +1644,17 @@ function Composer({ session, tint, run, quoteInto, bangShell }: {
         </div>
       )}
       {command && !ask && <div className="bang-hint muted">{bangHint(bangShell, session.runner)}</div>}
+      {images.length > 0 && (
+        <div className="composer-images">
+          {images.map((i, n) => (
+            <span key={i.key} className="composer-image">
+              <img src={i.url} alt={`Image ${n + 1}`} />
+              <button className="composer-image-remove" title="Remove this image" aria-label={`Remove image ${n + 1}`} onClick={() => removeImage(i.key)}>✕</button>
+            </span>
+          ))}
+          <span className="composer-images-hint muted">{SECRETS_HINT}</span>
+        </div>
+      )}
       </div>
       )}
       <textarea {...typing}
@@ -1608,6 +1669,13 @@ function Composer({ session, tint, run, quoteInto, bangShell }: {
         }}
         onSelect={noteSelection}
         onBlur={() => setSelection(null)}
+        onPaste={(e) => {
+          // A pasted image (a Win+Shift+S screenshot) is added above the box; text pastes as usual (issue #128).
+          const found = imageFiles(e.clipboardData.files);
+          if (!found.length) return;
+          e.preventDefault();
+          addImages(found);
+        }}
         onKeyDown={(e) => {
           if (enterSends({ key: e.key, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, isComposing: e.nativeEvent.isComposing }, coarsePointer())) {
             e.preventDefault();
@@ -1635,7 +1703,26 @@ function Composer({ session, tint, run, quoteInto, bangShell }: {
             disabled={ended}
             onClick={() => { setEditing(null); setMasked(masked === null ? area.current?.selectionStart ?? text.length : null); }}
           >🔑</button>
-          <button className="primary" disabled={ended || !text.trim() || (!!command && !!session.shell)} onClick={() => void send()}>{command ? 'Run' : 'Send'}</button>
+          <button
+            className="attach-image"
+            title="Add images: PNG, JPEG, GIF or WebP (or paste or drop them on the box)"
+            aria-label="Add images"
+            disabled={ended}
+            onClick={() => picker.current?.click()}
+          >📎</button>
+          <input
+            ref={picker} type="file" hidden multiple accept={CHAT_IMAGE_TYPES.join(',')}
+            onChange={(e) => {
+              const files = [...(e.target.files ?? [])];
+              e.target.value = '';
+              if (files.length) addImages(files);
+            }}
+          />
+          <button
+            className="primary"
+            disabled={ended || (!text.trim() && !images.length) || (!!command && !images.length && !!session.shell)}
+            onClick={() => void send()}
+          >{command && !images.length ? 'Run' : 'Send'}</button>
         </div>
       </div>
     </div>

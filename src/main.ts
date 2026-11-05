@@ -13,7 +13,8 @@ import { openBrowser } from './platform/open-browser.ts';
 import { exercisedLine } from './platform/exercised.ts';
 import { lanNames } from './platform/network.ts';
 import { iconFiles, launchTarget, Shortcuts } from './platform/shortcuts.ts';
-import { appDir, appVersion, envSetting, PACKAGED, remoteDir, userDataDir } from './platform/paths.ts';
+import { appDir, appVersion, chatImagesDir, envSetting, PACKAGED, remoteDir, userDataDir } from './platform/paths.ts';
+import { ChatImages } from './sessions/chat-images.ts';
 import { loadOrCreateToken } from './server/security.ts';
 import { LedungServer } from './server/server.ts';
 import { ANTHROPIC_NOTICE } from './server/source.ts';
@@ -74,6 +75,8 @@ async function main(): Promise<void> {
   const pollMs = boardConfig(config).pollSeconds * 1000;
   // Board attachments are kept in the data folder's board cache, never in a project folder.
   manager.attachBoards((repo) => new GitHubBackend({ repo, pollMs }), new GitHubRepos(), path.join(userDataDir(), 'board-cache'));
+  // Images sent with the person's messages (issue #128), in the data folder so the history shows them after a restart.
+  manager.attachChatImages(new ChatImages(chatImagesDir()));
   // Locked secrets (issue #468), read before any session is reattached, so its output is blanked from the first line.
   const secrets = await Secrets.open(new Vault(path.join(userDataDir(), 'secrets.enc'), osGuard(userDataDir())), (line) => console.log(line));
   manager.attachSecrets(secrets, localSecretsDir(userDataDir()));

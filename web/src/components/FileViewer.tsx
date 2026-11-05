@@ -7,6 +7,7 @@ import type { ProjectFileView } from '../../../src/shared/protocol.ts';
 import { api } from '../api.ts';
 import { CopyButton, Markdown } from './Markdown.tsx';
 import { isImagePath, ProjectImage } from './ProjectImage.tsx';
+import { SENT_IMAGE_PREFIX } from '../chatImages.ts';
 
 /** The folder part of a project-relative path ("docs/steps/a.md" → "docs/steps"). */
 export function dirOf(path: string): string {
@@ -64,7 +65,7 @@ export function FileViewer(props: {
     <aside className="file-panel" aria-label="File">
       <header className="file-head">
         {(props.stack.length > 1 || props.backToPane) && <button className="small" onClick={props.onBack}>{props.backToPane && props.stack.length === 1 ? '‹ Files' : 'Back'}</button>}
-        <span className="file-path" title={(!image && file?.path) || link}>{(!image && file?.path) || link}</span>
+        <span className="file-path" title={(!image && file?.path) || link}>{(!image && file?.path) || (link.startsWith(SENT_IMAGE_PREFIX) ? 'Image you sent' : link)}</span>
         {image && <button className="small" onClick={() => setFull(!full)}>{full ? 'Fit to panel' : 'Full size'}</button>}
         {!image && file && <CopyButton text={file.content} label="Copy all" />}
         <button className="small" onClick={props.onClose} aria-label="Close">Close</button>

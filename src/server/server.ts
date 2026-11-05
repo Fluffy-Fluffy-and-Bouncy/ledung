@@ -67,9 +67,12 @@ let exercised463 = false;
 /** Why linking refuses through the public name (#245 step 1: on the computer itself only). */
 const LINKED_HERE = 'Computers are linked and unlinked';
 import type { CertificateStatus, LinkPairingInfo, NewComputerInfo, SourceOffer } from '../shared/protocol.ts';
+import { MAX_CHAT_IMAGE_BYTES } from '../sessions/chat-images.ts';
 import { computerFrames, computerList, editComputer, knownComputers, readComputerEdits, withEdits, type ComputerInfo, type ComputerSetting } from '../shared/computers.ts';
 
 const MAX_BODY = 1024 * 1024;
+/** What the message box may upload (issue #128); the manager checks the bytes themselves. */
+const CHAT_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 /** A workflow's texts may have 4 MB together (src/sessions/flow-files.ts); JSON's escapes take some more (#311). */
 const FLOW_SAVE_MAX_BODY = 6 * 1024 * 1024;
 const NOT_PAIRED = 'This device is not paired with Ledung. Pair it from Settings → Phones in Ledung on the computer.';
@@ -791,9 +794,12 @@ export class LedungServer {
       const image = req.method === 'GET' ? /^\/api\/sessions\/([^/]+)\/image$/.exec(url.pathname) : null;
       // A board attachment's image (board attachments): from the board cache, never a project folder.
       const boardImage = req.method === 'GET' && url.pathname === '/api/board-attachment';
-      if (image || boardImage) {
+      // An image the person sent with a message (issue #128): from the data folder, by Ledung's own name for it.
+      const sentImage = req.method === 'GET' ? /^\/api\/sessions\/([^/]+)\/sent-images\/([^/]+)$/.exec(url.pathname) : null;
+      if (image || boardImage || sentImage) {
         const found = image
           ? await this.opts.manager.readImage(decodeURIComponent(image[1]!), url.searchParams.get('path') ?? '', paneFolder(url))
+          : sentImage ? this.opts.manager.readChatImage(decodeURIComponent(sentImage[1]!), decodeURIComponent(sentImage[2]!))
           : this.opts.manager.readBoardImage(url.searchParams.get('file') ?? '');
         res.writeHead(200, { ...this.headersFor(res), 'Content-Type': found.type, 'Content-Length': found.bytes.length });
         res.end(found.bytes);
@@ -1768,8 +1774,17 @@ export class LedungServer {
         this.requirePageForManager(req, id);
         const body = await readJson(req);
         // Typed here, not through the public name: it can name a manager's Settings action (issue #263, Martin's b on question #447).
-        await manager.send(id, String(body.text ?? ''), !this.guard.isPublic(req));
+        await manager.send(id, String(body.text ?? ''), !this.guard.isPublic(req), body.images);
         return;
+      }
+      // An image for the message box's next message (issue #128): the bytes alone, one per request, checked again by
+      // their first bytes and size in the manager. Never SVG or anything else a browser could run.
+      case 'POST sessions/:id/images': {
+        this.requirePageForManager(req, id);
+        const type = String(req.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase();
+        if (!CHAT_IMAGE_TYPES.includes(type)) throw new HttpError(415, 'Only PNG, JPEG, GIF and WebP images can be sent.');
+        if (Number(req.headers['content-length'] ?? 0) > MAX_CHAT_IMAGE_BYTES) throw new HttpError(413, 'The image is too large.');
+        return manager.uploadImage(id, await readBody(req, MAX_CHAT_IMAGE_BYTES));
       }
       // A "!" command from the message box (issue #212). People only: no tool reaches these routes.
       case 'GET sessions/:id/shell-check':
