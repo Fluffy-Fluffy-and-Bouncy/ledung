@@ -55,14 +55,17 @@ export function containerFailure(container: string, stderr: string, timedOut: bo
 
 /**
  * What every script starts with: `real`, readlink -f that fails for a path with a newline in it (command substitution
- * would drop a trailing one and so name another file; security review of #122, finding 5), and the check that the
+ * would drop a trailing one and so name another file; security review of #122, finding 5). It prints with -n, no
+ * closing newline of its own: macOS's readlink leaves that newline out when the name already ends in one, so cutting
+ * one off took the name's own and named the file without it (issue #127); GNU, busybox, toybox and macOS all have -n,
+ * and a readlink without it fails here, which refuses. Then the check that the
  * session's folder ($2) is the project folder ($1) or inside it, so a run worktree the session swapped for a link to
  * elsewhere can't move the root (finding 1). Sets pr, the project folder, and root, the session's folder.
  */
 const PRELUDE = [
   "nl='",
   "'",
-  'real() { _r=$(readlink -f -- "$1" && echo x) || return 1; case "$_r" in *x) ;; *) return 1;; esac; _r=${_r%?x}; [ -n "$_r" ] || return 1; case "$_r" in *"$nl"*) return 1;; esac; printf %s "$_r"; }',
+  'real() { _r=$(readlink -n -f -- "$1" && echo x) || return 1; case "$_r" in *x) ;; *) return 1;; esac; _r=${_r%x}; [ -n "$_r" ] || return 1; case "$_r" in *"$nl"*) return 1;; esac; printf %s "$_r"; }',
   'inside() { case "$1" in "$2"|"${2%/}"/*) return 0;; esac; return 1; }',
   'pr=$(real "$1") || { echo noroot; exit 0; }; root=$(real "$2") || { echo noroot; exit 0; }',
   'inside "$root" "$pr" || { echo outside; exit 0; }',

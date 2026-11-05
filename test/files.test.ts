@@ -573,9 +573,16 @@ test("a container's changes leave out a locked project's folder, sensitive paths
 });
 
 test("a link whose target ends in a newline can't stand for the file without it", { skip: (!hasSh || process.platform === 'win32') && 'needs a newline in a file name' }, async () => {
+  // The refusal is "outside" on every system: the link's real path can't be written without its newline, so it is not a
+  // path inside the project folder. "Not a file that can be read" (what macOS gave before issue #127) meant the
+  // newline had been cut off and the file without it looked up, which is the file that must not stand in for it.
   const { access, readContainerText } = await containerFiles();
   fs.writeFileSync(path.join(ctDir, 'nl.md\n'), '# the newline one\n');
   fs.symlinkSync(path.join(ctDir, 'nl.md\n'), path.join(ctDir, 'nl-link.md'));
+  await assert.rejects(readContainerText(access(), ctRoot, 'nl-link.md'), /inside the project folder/);
+  // With the file without the newline there too, the link still doesn't read it, though that file itself reads.
+  fs.writeFileSync(path.join(ctDir, 'nl.md'), '# the other one\n');
+  assert.equal((await readContainerText(access(), ctRoot, 'nl.md')).content, '# the other one\n');
   await assert.rejects(readContainerText(access(), ctRoot, 'nl-link.md'), /inside the project folder/);
 });
 
