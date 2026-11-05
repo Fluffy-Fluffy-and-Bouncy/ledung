@@ -15,9 +15,10 @@ import { QuestionCard } from './QuestionCard.tsx';
 import { toolSummary } from './ToolPreview.tsx';
 import { distanceFromBottom, isStuck, restoredScrollTop } from '../scrollAnchor.ts';
 import { insertByTime, lastOwnMessage, shownWoven, wovenQuestions } from '../conversation.ts';
+import { SENT_IMAGE_PREFIX, sentImageUrl } from '../chatImages.ts';
 
 type Item =
-  | { key: string; at: number; type: 'user'; text: string; byLedung: boolean; context: string | null }
+  | { key: string; at: number; type: 'user'; text: string; byLedung: boolean; context: string | null; images: string[] }
   | { key: string; at: number; type: 'question'; questionId: number }
   | { key: string; at: number; type: 'assistant'; text: string; sub: boolean; quiet?: boolean; anchor?: number }
   | { key: string; at: number; type: 'event'; text: string }
@@ -51,7 +52,11 @@ function toItems(messages: StoredMessage[]): Item[] {
   const tools = new Map<string, Extract<Item, { type: 'tool' }>>();
   for (const m of messages) {
     const base = { at: m.at };
-    if (m.kind === 'user') items.push({ ...base, key: `${m.id}`, type: 'user', text: m.data.text, byLedung: m.data.from === 'ledung' || !!m.data.answerTo, context: m.data.context ?? null });
+    if (m.kind === 'user') {
+      // The person's images sent with it (issue #128), by Ledung's names for them.
+      const images = Array.isArray(m.data.images) ? (m.data.images as unknown[]).filter((n): n is string => typeof n === 'string') : [];
+      items.push({ ...base, key: `${m.id}`, type: 'user', text: m.data.text, byLedung: m.data.from === 'ledung' || !!m.data.answerTo, context: m.data.context ?? null, images });
+    }
     else if (m.kind === 'question') items.push({ ...base, key: `${m.id}`, type: 'question', questionId: m.data.questionId });
     else if (m.kind === 'event') items.push({ ...base, key: `${m.id}`, type: 'event', text: m.data.text });
     else if (m.kind === 'shell') items.push({ ...base, key: `${m.id}`, type: 'shell', block: m.data });
@@ -302,6 +307,18 @@ function PinnedMessage(props: { text: string; at: number; userName: string; onSh
   );
 }
 
+/** An image the person sent (issue #128): a thumbnail that opens in the file viewer; one no longer there says so. */
+function SentImage({ sessionId, name, n, onOpen }: { sessionId: string; name: string; n: number; onOpen?: (path: string) => void }) {
+  const [gone, setGone] = useState(false);
+  if (gone) return <span className="msg-image-gone muted">[image {n} is no longer there]</span>;
+  return (
+    <img
+      src={sentImageUrl(sessionId, name)} alt={`Image ${n}`} loading="lazy" title="Open the image"
+      onClick={() => onOpen?.(`${SENT_IMAGE_PREFIX}${name}`)} onError={() => setGone(true)}
+    />
+  );
+}
+
 interface ItemProps {
   item: Item;
   showTechnical: boolean;
@@ -330,7 +347,8 @@ function sameFields(a: object | undefined, b: object | undefined): boolean {
   const x = a as Record<string, unknown>, y = b as Record<string, unknown>;
   const keys = Object.keys(x);
   return keys.length === Object.keys(y).length
-    && keys.every((k) => x[k] === y[k] || (k === 'result' && sameFields(x[k] as object | undefined, y[k] as object | undefined)));
+    && keys.every((k) => x[k] === y[k] || (k === 'result' && sameFields(x[k] as object | undefined, y[k] as object | undefined))
+      || (k === 'images' && String(x[k]) === String(y[k])));
 }
 
 /**
@@ -378,13 +396,18 @@ const MessageItem = memo(function MessageItem(props: ItemProps) {
         );
       }
       return (
-        <div className={`msg ${text ? 'user' : 'delivery'}${item.byLedung ? ' answer' : ''}`}>
+        <div className={`msg ${text || item.images.length ? 'user' : 'delivery'}${item.byLedung ? ' answer' : ''}`}>
           <div className="msg-meta">
             <span className="who">{item.byLedung ? 'Delivered by Ledung' : props.userName}</span>
             {time}
-            {quote(item.byLedung ? 'Ledung' : props.userName, body)}
+            {body && quote(item.byLedung ? 'Ledung' : props.userName, body)}
           </div>
-          <div className="msg-body plain">{body}</div>
+          {(body || !item.images.length) && <div className="msg-body plain">{body}</div>}
+          {item.images.length > 0 && sessionId && (
+            <div className="msg-images">
+              {item.images.map((name, n) => <SentImage key={name} sessionId={sessionId} name={name} n={n + 1} onOpen={props.onOpenFile} />)}
+            </div>
+          )}
           {item.context && text && (
             <details className="delivered-context">
               <summary>Attached context (not from {props.userName})</summary>

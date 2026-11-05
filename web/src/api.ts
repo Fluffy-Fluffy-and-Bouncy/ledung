@@ -138,14 +138,15 @@ function liveKey(): Promise<string | null> {
 /** The words a refusal carries, read from a copy so the answer can still be read. */
 const errorOf = async (res: Response): Promise<string | undefined> => ((await res.clone().json().catch(() => ({}))) as { error?: string }).error;
 
-async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+/** `raw`: bytes sent as they are, with their own type (an image for the message box, issue #128), instead of JSON. */
+async function call<T>(method: string, path: string, body?: unknown, raw?: Blob): Promise<T> {
   // The exact text sent, once: through the public name a passkey signs its hash (#160).
-  const text = body === undefined ? undefined : JSON.stringify(body);
+  const text = raw || body === undefined ? undefined : JSON.stringify(body);
   const send = (key: string | null, passkey?: string) => {
-    const headers: Record<string, string> = text === undefined ? {} : { 'Content-Type': 'application/json' };
+    const headers: Record<string, string> = raw ? { 'Content-Type': raw.type } : text === undefined ? {} : { 'Content-Type': 'application/json' };
     if (key) headers['X-Ledung-Page'] = key;
     if (passkey) headers['X-Ledung-Passkey'] = passkey;
-    return fetch(path, { method, credentials: 'same-origin', headers, body: text });
+    return fetch(path, { method, credentials: 'same-origin', headers, body: raw ?? text });
   };
   const change = method !== 'GET';
   let key = change ? await liveKey() : null;
@@ -195,7 +196,10 @@ export const api = {
   setChatsColour: (colour: ChatsInfo['colour']) => call<ChatsInfo>('POST', '/api/chats-colour', { colour }),
   /** A computer tab's name or colour (issue #240); null: the config's again. */
   editComputer: (id: string, edit: { name?: string | null; colour?: ComputerColour | null }) => call<ComputerInfo[]>('POST', '/api/computers', { id, ...edit }),
-  send: (sessionId: string, text: string) => call('POST', `/api/sessions/${sessionId}/messages`, { text }),
+  /** images: names from uploadImage (issue #128). */
+  send: (sessionId: string, text: string, images?: string[]) => call('POST', `/api/sessions/${sessionId}/messages`, images?.length ? { text, images } : { text }),
+  /** An image for the next message, scaled down already (issue #128); its name goes with send. */
+  uploadImage: (sessionId: string, image: Blob) => call<{ id: string }>('POST', `/api/sessions/${sessionId}/images`, undefined, image),
   /** A "!" command (issue #212): whether it is refused here, and the sensitive rule it matches, before it runs. */
   shellCheck: (sessionId: string, command: string) =>
     call<{ rule: string | null; refused: string | null }>('GET', `/api/sessions/${sessionId}/shell-check?command=${encodeURIComponent(command)}`),

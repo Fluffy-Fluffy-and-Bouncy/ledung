@@ -57,6 +57,8 @@ import type { SessionRole, ShellBlock } from '../shared/protocol.ts';
 import { exercisedLine } from '../platform/exercised.ts';
 import { classifierReason, ONCE_ACTION, ONCE_GRANT_MS, onceGrant, refusalOf, refusalQuestion, sameCall } from './refusals.ts';
 import { orderNote, type Orders } from './orders.ts';
+import type { ChatImages, ImageBlock } from './chat-images.ts';
+import { heldImageNames, heldText } from '../store/store.ts';
 
 /** The EXERCISED line of issue #369, once per run. */
 let sourcesExercised = false;
@@ -97,8 +99,10 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
   private wake: (() => void) | null = null;
   private closed = false;
 
-  push(text: string, opts: { shouldQuery?: false } = {}): void {
-    this.queue.push({ type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null, ...opts });
+  /** images: the person's, before the text, as the Messages API takes them (issue #128). */
+  push(text: string, opts: { shouldQuery?: false } = {}, images: ImageBlock[] = []): void {
+    const content = images.length ? [...images, ...(text ? [{ type: 'text' as const, text }] : [])] : text;
+    this.queue.push({ type: 'user', message: { role: 'user', content }, parent_tool_use_id: null, ...opts });
     this.wake?.();
   }
 
@@ -219,6 +223,8 @@ export interface SessionOptions {
   pullRequests?: Pick<PullRequestPoller, 'watch' | 'forget'> | null;
   /** Its locked secrets (issue #468); none: no secrets reach it. */
   secrets?: SessionSecrets | null;
+  /** The person's images sent with their messages (issue #128); none: messages carry no images. */
+  images?: ChatImages | null;
 }
 
 /** The environment for Claude Code: Ledung's, with the project's account login instead of any other,
@@ -338,6 +344,8 @@ export class Session {
   /** Its locked secrets (issue #468), and what its launch gives the runner. */
   private readonly secrets: SessionSecrets | null;
   private launchSecrets: LaunchSecrets | undefined;
+  /** The person's images sent with their messages (issue #128). */
+  private readonly images: ChatImages | null;
   /** When the turn now under way (or the last one) began, for the "once" secrets' rule (issue #468). */
   private turnBegan = 0;
 
@@ -352,6 +360,7 @@ export class Session {
     this.resume = opts.resume;
     this.attachTo = opts.attachTo;
     this.secrets = opts.secrets ?? null;
+    this.images = opts.images ?? null;
     if (this.attachTo) this.secrets?.attached();
     // Mid-turn when Ledung restarted: that turn began before any stop it now sees, so it finishes (review 2 of #278, finding 3).
     if (opts.info.status === 'running' || opts.info.status === 'waiting') this.turnStartedAt = 0;
@@ -1459,7 +1468,10 @@ export class Session {
     const clearAt = waiting.findIndex((i) => isClear(i.source) || isCompact(i.source));
     const compacting = clearAt === 0 && isCompact(waiting[0]!.source);
     const clearing = clearAt === 0 && !compacting;
-    const held = clearAt >= 0 ? [] : this.store.heldMessages(this.id);
+    const heldEntries = clearAt >= 0 ? [] : this.store.heldMessages(this.id);
+    const held = heldEntries.map(heldText);
+    // A held message keeps its images (issue #128): they go in with it.
+    const heldImages = heldEntries.flatMap(heldImageNames);
     const answers = clearAt >= 0 ? [] : this.store.undeliveredAnswers(this.id);
     const inbox = clearAt >= 0 ? waiting.slice(0, clearAt) : waiting;
     if (!held.length && !answers.length && !inbox.length && !clearing && !compacting) {
@@ -1512,7 +1524,8 @@ export class Session {
           : 'ledung';
     this.usage.startTurn(trigger);
     if (context) this.contextFor.set(userText, context);
-    this.pushInput(userText);
+    const input = this.withImages(userText, heldImages);
+    this.pushInput(input.text, input.images);
     this.lastActivity = Date.now();
     this.update({ status: 'running', queuedAt: null });
     this.beginTurn(trigger);
@@ -1539,9 +1552,18 @@ export class Session {
    * Starts a turn's input. A slash command (/clear) ends with a zero-turn result and nothing said before
    * it: that result is its end, not the empty one on resume, so it must not wait for another (#24).
    */
-  private pushInput(text: string): void {
+  private pushInput(text: string, images: ImageBlock[] = []): void {
     if (text.startsWith('/')) this.awaitingResumeResult = false;
-    this.input.push(text);
+    this.input.push(text, {}, images);
+  }
+
+  /**
+   * The text and the person's images as blocks for Claude Code, read from the data folder (issue #128). An image-only
+   * message whose images are gone says so, rather than an empty message (security review of #128, finding 4).
+   */
+  private withImages(text: string, names: string[]): { text: string; images: ImageBlock[] } {
+    const images = names.length && this.images ? this.images.blocks(this.id, names) : [];
+    return { text: names.length && !images.length && !text.trim() ? `[${this.userName} sent an image that is no longer there.]` : text, images };
   }
 
   /** True while the clear's countdown runs: starts it the first time, and wakes deliver() when it is up. */
@@ -1582,7 +1604,8 @@ export class Session {
    * waits for a free place like everything else (step 6), shown in the history right away.
    */
   /** here: typed on this computer (issue #263), kept with the message for settingsOnWord. */
-  send(text: string, here = false): void {
+  /** images: names of the person's images uploaded for this message (issue #128), checked by the manager. */
+  send(text: string, here = false, images: string[] = []): void {
     if (!this.q || this.stopping) throw new Error('The session is not running.');
     const info = this.store.getSession(this.id)!;
     // A chat starts as "New chat" (issue #211); either is named after the first message.
@@ -1591,16 +1614,17 @@ export class Session {
     if (sent.once.length) void this.secrets?.sent(sent.once).catch((e) => console.error(`Secrets of ${this.id}: ${(e as Error).message}`));
     const title = this.secrets?.blank(text) ?? text;
     if (info.title === 'New session' || info.title === 'New chat') this.update({ title: title.replace(/\s+/g, ' ').trim().slice(0, 80) || info.title });
-    this.record('user', here ? { text, here: true } : { text });
+    this.record('user', { text, ...(here ? { here: true } : {}), ...(images.length ? { images } : {}) });
     this.lastActivity = Date.now();
     if (info.clearDue != null) this.cancelClear(`${this.userName} (wrote to the session)`);
     if (info.status === 'running' || info.status === 'waiting') {
       this.usage.startTurn('user');
       // Not pushInput: this joins the turn already running, whose resume guard must stay (review of #24).
-      this.input.push(sent.text);
+      const input = this.withImages(sent.text, images);
+      this.input.push(input.text, {}, input.images);
       return;
     }
-    this.store.setHeldMessages(this.id, [...this.store.heldMessages(this.id), sent.text]);
+    this.store.setHeldMessages(this.id, [...this.store.heldMessages(this.id), images.length ? { text: sent.text, images } : sent.text]);
     this.deliver();
   }
 
