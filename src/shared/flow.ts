@@ -155,6 +155,8 @@ export interface FlowFrame {
 export interface Flow {
   version: 1;
   title?: string;
+  /** Who made it, as they want the credit (#117): shown with its title, on a shared workflow too. None: no line. */
+  author?: string;
   /** Where work enters; none: the first block. Timer blocks start on their own. */
   start?: string;
   /**
