@@ -2,6 +2,7 @@
 // fields; its evidence files checked when asked; the answer always in one of two forms.
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -13,6 +14,7 @@ import { SessionManager } from '../src/sessions/manager.ts';
 import { Session } from '../src/sessions/session.ts';
 import { askedQuestion, LEDUNG_SERVER, ledungToolServer, type ToolHandlers } from '../src/sessions/tools.ts';
 import { deskQuestion, reviewAnswer, reviewAnswerProblem, type QuestionDetails } from '../src/shared/questions.ts';
+import { runCappedBytes } from '../src/sessions/git-read.ts';
 import { removeTemp } from './temp.ts';
 import { refuseRealSignInStores } from './signin-stores.ts';
 
@@ -200,4 +202,46 @@ test("the page reads a review's text files through the review only, checked agai
   } finally {
     fs.writeFileSync(path.join(root, 'test-output.log'), 'tests 412 passed\n');
   }
+});
+
+// A container project (issue #122): the same chain, its files read through a fake runner that runs the container's
+// scripts in a local sh, kept in Ledung when asked, and shown from the copies later, with the container gone too.
+const hasSh = spawnSync('sh', ['-c', 'readlink -f . && head -c 1 /dev/null'], { windowsHide: true }).status === 0;
+test('through the real chain in a container project: evidence and screenshots are kept when asked and shown from the copies', { skip: !hasSh && 'no sh with readlink here' }, async () => {
+  const long = fs.realpathSync.native(root);
+  const posix = (process.platform === 'win32' ? long.replace(/^([A-Za-z]):/, (_, d: string) => `/${d.toLowerCase()}`) : long).replaceAll('\\', '/');
+  const store = new Store(openDatabase(':memory:'));
+  const manager = refuseRealSignInStores(new SessionManager(parseConfig({ userName: 'Simon', projects: [{ name: 'ct', runner: 'docker', container: 'test-ct', pathInContainer: posix }] }), store, () => {}));
+  let up = true;
+  manager.containerExecFor = () => (script, args, opts) => (up ? runCappedBytes('sh', ['-c', script, 'sh', ...args], opts) : Promise.resolve({ failed: 'The container "test-ct" is not running.' }));
+  manager.containerCopiesDir = () => path.join(base, 'copies');
+  const info = store.createSession({ id: 'cmgr', project: 'ct', runner: 'docker', title: 'Manager', parentId: null, permissionMode: 'default', role: 'manager' });
+  const management = (manager as unknown as { management: Management }).management;
+  const session = new Session({
+    info, store, publish: () => {}, userName: 'Simon', management,
+    runner: { cwd: posix, currentBranch: async () => null } as never,
+    gate: { mayStart: () => true, started: () => {}, ended: () => {} },
+  });
+  const ask = await askTool(session);
+  const bad = await ask.handler({ ...REVIEW, review: { ...REVIEW.review, evidence: [REVIEW.review.evidence[0], { file: '.env', caption: 'x' }] } }, {});
+  assert.equal(bad.isError, true);
+  assert.match(bad.content[0]!.text, /^Evidence 2 \(\.env\) can't be attached: .*Nothing was asked\.$/);
+  assert.equal(store.listQuestions().length, 0, 'nothing was asked');
+
+  const good = await ask.handler(REVIEW, {});
+  assert.equal(good.isError, undefined, good.content[0]!.text);
+  const [q] = store.listQuestions();
+  const evidence = q!.details!.review!.evidence!;
+  assert.match(evidence[0]!.file, /^container:[0-9a-f]{32}\/shots\/empty-chat\.png$/);
+  assert.deepEqual(evidence.map((e) => e.kind), ['image', 'text']);
+  assert.ok(q!.question.includes('- Test run (`test-output.log`)'), 'the text names the file by its path');
+  const shot = await ask.handler({ question: 'Right?', tier: 'Process', screenshots: [{ file: 'shots/empty-chat.png', look_for: 'the empty chat' }] }, {});
+  assert.equal(shot.isError, undefined, shot.content[0]!.text);
+  const shotRef = store.listQuestions().at(-1)!.shots![0]!.path;
+  assert.match(shotRef, /^container:[0-9a-f]{32}\/shots\/empty-chat\.png$/);
+
+  up = false;
+  assert.deepEqual(manager.readEvidenceText(q!.id, 1), { file: evidence[1]!.file, content: 'tests 412 passed\n' });
+  assert.deepEqual((await manager.readImage('cmgr', shotRef)).bytes, PNG);
+  await assert.rejects(manager.readFile('cmgr', 'test-output.log'), /is not running/);
 });

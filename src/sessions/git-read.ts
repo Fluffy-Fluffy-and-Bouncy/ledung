@@ -42,16 +42,28 @@ export interface GitRead {
 
 /** Runs `git <hardening> <args>` in `cwd`, never through a shell, and gives what it printed, cut at `maxBytes`. */
 export function gitRead(cwd: string, args: readonly string[], opts: { input?: string; maxBytes?: number; timeoutMs?: number } = {}): Promise<GitRead> {
+  return runCapped('git', [...GIT_HARDENING, ...args], { ...opts, cwd, env: gitEnv() });
+}
+
+/**
+ * Runs `command` without a shell, with a time limit and a cap on what it may print: gitRead's way, also for
+ * `docker exec` into a container project (issue #122). `stdout` as bytes, for an image.
+ */
+export function runCappedBytes(command: string, args: readonly string[], opts: { cwd?: string; env?: NodeJS.ProcessEnv; input?: string; maxBytes?: number; timeoutMs?: number } = {}): Promise<Omit<GitRead, 'stdout'> & { stdout: Buffer; timedOut: boolean }> {
   const max = opts.maxBytes ?? GIT_READ_MAX_BYTES;
   return new Promise((resolve) => {
-    const child = spawn('git', [...GIT_HARDENING, ...args], {
-      cwd, env: gitEnv(), shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
+    const child = spawn(command, [...args], {
+      cwd: opts.cwd, env: opts.env ?? process.env, shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
     });
     const out: Buffer[] = [];
     let size = 0;
     let truncated = false;
+    let timedOut = false;
     let stderr = '';
-    const timer = setTimeout(() => child.kill(), opts.timeoutMs ?? 15000);
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, opts.timeoutMs ?? 15000);
     child.stdout.on('data', (chunk: Buffer) => {
       if (truncated) return;
       const room = max - size;
@@ -68,13 +80,19 @@ export function gitRead(cwd: string, args: readonly string[], opts: { input?: st
     child.stderr.on('data', (c: Buffer) => { if (stderr.length < 4000) stderr += c.toString('utf8'); });
     child.on('error', (e) => {
       clearTimeout(timer);
-      resolve({ code: null, stdout: '', stderr: e.message, truncated: false });
+      resolve({ code: null, stdout: Buffer.alloc(0), stderr: e.message, truncated: false, timedOut });
     });
     child.on('close', (code) => {
       clearTimeout(timer);
-      resolve({ code, stdout: Buffer.concat(out).toString('utf8'), stderr, truncated });
+      resolve({ code, stdout: Buffer.concat(out), stderr, truncated, timedOut });
     });
     child.stdin.on('error', () => {});
     child.stdin.end(opts.input ?? '');
   });
+}
+
+/** runCappedBytes with its output as text. */
+export async function runCapped(command: string, args: readonly string[], opts: Parameters<typeof runCappedBytes>[2] = {}): Promise<GitRead> {
+  const r = await runCappedBytes(command, args, opts);
+  return { code: r.code, stdout: r.stdout.toString('utf8'), stderr: r.stderr, truncated: r.truncated };
 }

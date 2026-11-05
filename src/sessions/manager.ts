@@ -1,6 +1,6 @@
 // Keeps the live sessions, starts and resumes them, and routes Simon's input to them.
 import { randomUUID } from 'node:crypto';
-import type { LedungConfig, LocalProjectConfig, ProjectConfig, SettingName } from '../config.ts';
+import type { DockerProjectConfig, LedungConfig, LocalProjectConfig, ProjectConfig, SettingName } from '../config.ts';
 import { ProjectStore, type StoredProject } from '../projects/store.ts';
 import { AccountError, AccountStore, DEFAULT_ACCOUNT, SIGN_IN_ENV, type AccountPlace } from '../accounts/store.ts';
 import { removeSignIn } from '../accounts/signin-store.ts';
@@ -56,6 +56,10 @@ import { FileError, handoffProblem, hiddenProblem, readProjectFile, readProjectI
 import { listTree, type TreeListing } from './tree.ts';
 import type { PaneFolderKey, PaneFolders } from '../shared/files-pane.ts';
 import { sessionChanges, type SessionChanges } from './changes.ts';
+import {
+  CONTAINER_FILE_PREFIX, CONTAINER_IMAGE_MAX_BYTES, containerGit, diffHidden, keepCopy, listContainerFolder, pruneCopies, readContainerBytes, readContainerImage, readContainerText, readCopy,
+  type ContainerAccess, type ContainerExec,
+} from './container-files.ts';
 import { checkLineComments, formatLineComments, lineCommentsMessage, openReviewFor, reviewAnswerWithComments } from '../shared/line-comments.ts';
 import { Management, type LinkedMessage, type LinkedPort, type SettingsPort } from './management.ts';
 import { findTickets } from '../usage/links.ts';
@@ -70,7 +74,7 @@ import { validateSensitive } from './sensitive.ts';
 import { idleReason, idleStopBlocker } from './idle.ts';
 import { chooseProfile, FULL_PROFILE, pluginIdsIn, profileByName, profileNames, type Profile } from './profiles.ts';
 import { Boards } from '../board/boards.ts';
-import { BOARD_FILE_PREFIX, readEvidence } from '../board/attachments.ts';
+import { BOARD_FILE_PREFIX, bytesKind, MAX_IMAGE_BYTES as EVIDENCE_IMAGE_MAX_BYTES, MAX_TEXT_BYTES as EVIDENCE_TEXT_MAX_BYTES, readEvidence } from '../board/attachments.ts';
 import type { RepoDirectory } from '../board/repos.ts';
 import { BoardStore } from '../board/store.ts';
 import { BoardError, type BoardBackend } from '../board/types.ts';
@@ -272,7 +276,10 @@ export class SessionManager {
       handoffProblem: (id, file) => this.handoffProblem(id, file),
       // The file viewer's own image rules, so a shot that is attached can also be shown (issue #60).
       // A manager's board attachment ("board:...") is from its project's board cache instead.
-      shotPath: (id, file) => file.startsWith(BOARD_FILE_PREFIX) ? this.readBoardShot(id, file) : this.readImage(id, file).path,
+      // A container project's file is a copy Ledung kept when the question was asked (keepContainerFiles, issue #122).
+      shotPath: (id, file) => file.startsWith(BOARD_FILE_PREFIX) ? this.readBoardShot(id, file)
+        : file.startsWith(CONTAINER_FILE_PREFIX) ? (this.readContainerCopy(id, file, ['png', 'jpeg']), file) : this.readImageHere(id, file).path,
+      keepContainerFiles: (id, files) => this.keepContainerFiles(id, files),
       evidenceFile: (id, file) => {
         const ev = this.readEvidenceFile(id, file, true);
         return { file: ev.file, kind: ev.kind === 'text' ? 'text' : 'image' };
@@ -547,6 +554,11 @@ export class SessionManager {
    * (ownBoard) and from any board in use here when the page shows it, as board images are.
    */
   private readEvidenceFile(sessionId: string, file: string, ownBoard: boolean): { file: string; kind: 'png' | 'jpeg' | 'text'; bytes: Buffer } {
+    if (file.startsWith(CONTAINER_FILE_PREFIX)) {
+      const copy = this.readContainerCopy(sessionId, file, ['png', 'jpeg', 'text']);
+      if (copy.kind === 'text' && copy.bytes.length > EVIDENCE_TEXT_MAX_BYTES) throw new UserError(`${copy.path} is too large.`);
+      return { file, kind: copy.kind, bytes: copy.bytes };
+    }
     if (!file.startsWith(BOARD_FILE_PREFIX)) {
       const ev = this.readFrom(sessionId, file, readEvidence);
       return { file: ev.path, kind: ev.kind, bytes: ev.bytes };
@@ -2595,25 +2607,139 @@ ${firstMessage}`);
   /**
    * A file from the session's folder (its project folder, or its own), read-only (the page's file viewer). The
    * Files pane (issue #225) names which of its folders with `folder`; left out, links resolve as in the chat.
+   * A container project's is read in its container (issue #122).
    */
-  readFile(sessionId: string, link: string, folder?: PaneFolderKey): ProjectFile {
+  async readFile(sessionId: string, link: string, folder?: PaneFolderKey): Promise<ProjectFile> {
+    const { project, root } = this.paneRoot(sessionId, folder);
+    if (project.runner === 'docker') return this.fromContainer(() => readContainerText(this.containerAccess(project), root, link));
     return this.readFrom(sessionId, link, readProjectFile, folder);
   }
 
-  /** A PNG or JPEG from the session's project folder, read-only, for the file viewer. */
-  readImage(sessionId: string, link: string, folder?: PaneFolderKey): ProjectImage {
+  /**
+   * A PNG or JPEG from the session's project folder, read-only, for the file viewer; from its container for a
+   * container project. A copy Ledung kept for a question ("container:...") is read from the copies.
+   */
+  async readImage(sessionId: string, link: string, folder?: PaneFolderKey): Promise<ProjectImage> {
+    if (link.startsWith(CONTAINER_FILE_PREFIX)) {
+      const copy = this.readContainerCopy(sessionId, link, ['png', 'jpeg']);
+      return { path: copy.path, type: copy.kind === 'png' ? 'image/png' : 'image/jpeg', bytes: copy.bytes };
+    }
+    const { project, root } = this.paneRoot(sessionId, folder);
+    if (project.runner === 'docker') return this.fromContainer(() => readContainerImage(this.containerAccess(project), root, link));
+    return this.readImageHere(sessionId, link, folder);
+  }
+
+  private readImageHere(sessionId: string, link: string, folder?: PaneFolderKey): ProjectImage {
     return this.readFrom(sessionId, link, readProjectImage, folder);
+  }
+
+  // --- A container project's files (issue #122) --------------------------------------------------------
+
+  /** How a container project's files are read; tests put a fake in its place. */
+  containerExecFor: (project: DockerProjectConfig) => ContainerExec = (project) => new DockerRunner(project, 'files').fileExec();
+  /** Where the copies of container files for questions are kept. */
+  containerCopiesDir = (): string => path.join(userDataDir(), 'container-files');
+
+  /**
+   * The project's exec and the rules besides its folder: every other locked project's folder in the same container
+   * stays shut (lockdown, issue #109), and the sensitive path patterns (the config's and the project's) are not shown.
+   */
+  private containerAccess(project: DockerProjectConfig): ContainerAccess {
+    const locked = this.projectStore.list().map((p) => p.config)
+      .filter((p): p is DockerProjectConfig => p.name !== project.name && p.runner === 'docker' && p.container === project.container && isLocked(p))
+      .map((p) => p.pathInContainer);
+    return {
+      exec: this.containerExecFor(project), container: project.container, project: project.pathInContainer, locked,
+      pathPatterns: [...this.config.sensitive.pathPatterns, ...project.sensitive.pathPatterns],
+    };
+  }
+
+  private async fromContainer<T>(read: () => Promise<T>): Promise<T> {
+    try {
+      return await read();
+    } catch (e) {
+      throw e instanceof FileError ? new UserError(e.message) : e;
+    }
+  }
+
+  /** A copy kept for one of the session's project's questions, by the name the question stores. */
+  private readContainerCopy(sessionId: string, ref: string, kinds: readonly ('png' | 'jpeg' | 'text')[]): { path: string; kind: 'png' | 'jpeg' | 'text'; bytes: Buffer } {
+    const info = this.store.getSession(sessionId);
+    if (!info) throw new UserError('No such session.');
+    try {
+      return readCopy(this.containerCopiesDir(), info.project, ref, kinds);
+    } catch (e) {
+      throw e instanceof FileError ? new UserError(e.message) : e;
+    }
+  }
+
+  /**
+   * ask_user's screenshots and a review's evidence from a container project: read from the container now, with the
+   * file viewer's rules and the attachment limits, and kept in Ledung, so the question's page shows them later with
+   * the container stopped too. Each comes back as the name the question stores; a local project's come back as given.
+   */
+  private async keepContainerFiles(sessionId: string, files: { file: string; as: 'shot' | 'evidence' }[]): Promise<string[]> {
+    const info = this.store.getSession(sessionId);
+    if (!info) throw new UserError('No such session.');
+    const project = this.configOf(info);
+    if (project.runner !== 'docker') return files.map((f) => f.file);
+    const access = this.containerAccess(project);
+    const root = info.workDir ?? project.pathInContainer;
+    this.pruneContainerCopies(info.project);
+    const kept: string[] = [];
+    const count = { shot: 0, evidence: 0 };
+    for (const f of files) {
+      const n = ++count[f.as];
+      try {
+        kept.push(await this.keepContainerFile(access, root, info.project, f));
+      } catch (e) {
+        if (!(e instanceof FileError)) throw e;
+        // As ask's own checks say it (management.ts), so the session can fix it.
+        throw new UserError(`${f.as === 'shot' ? 'Screenshot' : 'Evidence'} ${n} (${f.file}) can't be attached: ${e.message} Nothing was asked.`);
+      }
+    }
+    return kept;
+  }
+
+  /**
+   * Copies no question names, kept over a day, go (security review of #122, finding 3): those of an ask that was then
+   * refused, or one asked again with other files. At most once an hour per project.
+   */
+  private prunedCopies = new Map<string, number>();
+  private pruneContainerCopies(project: string): void {
+    const now = Date.now();
+    if (now - (this.prunedCopies.get(project) ?? 0) < 60 * 60 * 1000) return;
+    this.prunedCopies.set(project, now);
+    try {
+      pruneCopies(this.containerCopiesDir(), project, this.store.containerCopyRefs(), now - 24 * 60 * 60 * 1000);
+    } catch (e) {
+      console.error(`Container file copies of ${project}: ${(e as Error).message}`);
+    }
+  }
+
+  private async keepContainerFile(access: ContainerAccess, root: string, project: string, f: { file: string; as: 'shot' | 'evidence' }): Promise<string> {
+    if (f.file.startsWith(BOARD_FILE_PREFIX) || f.file.startsWith(CONTAINER_FILE_PREFIX)) return f.file;
+    if (f.as === 'shot') {
+      const image = await readContainerImage(access, root, f.file, CONTAINER_IMAGE_MAX_BYTES);
+      return keepCopy(this.containerCopiesDir(), project, image.path, image.bytes);
+    }
+    // Evidence: the kinds and limits of an attachment (src/board/attachments.ts), by the real file's name and first bytes;
+    // a text file named as one is read only up to its own limit.
+    const max = /\.(md|txt|log)$/i.test(f.file) ? EVIDENCE_TEXT_MAX_BYTES : EVIDENCE_IMAGE_MAX_BYTES;
+    const ev = await readContainerBytes(access, root, f.file, max, (inside) => (/\.(png|jpe?g|md|txt|log)$/i.test(inside) ? null : `${inside} is not a PNG or JPEG image or a .txt, .log or .md text file.`));
+    const kind = bytesKind(ev.bytes, ev.path);
+    if (!kind) throw new FileError(/\.(png|jpe?g)$/i.test(ev.path) ? `${ev.path} is not really a ${/\.png$/i.test(ev.path) ? 'PNG' : 'JPEG'} image.` : `${ev.path} is not a text file.`);
+    if (kind === 'text' && ev.bytes.length > EVIDENCE_TEXT_MAX_BYTES) throw new FileError(`${ev.path} is too large (${Math.round(ev.bytes.length / 1024)} KB; a text file is at most 512 KB).`);
+    return keepCopy(this.containerCopiesDir(), project, ev.path, ev.bytes);
   }
 
   // --- The Files pane (issue #225, a test feature) --------------------------------------------------
 
-  /** A session, its local project and the folder it works in, or why the pane has nothing to show. */
-  private paneSession(sessionId: string): { info: SessionInfo; project: LocalProjectConfig } {
+  /** A session and its project. */
+  private paneSession(sessionId: string): { info: SessionInfo; project: ProjectConfig } {
     const info = this.store.getSession(sessionId);
     if (!info) throw new UserError('No such session.');
-    const project = this.configOf(info);
-    if (project.runner !== 'local') throw new UserError('Showing files from a container project is not available yet.');
-    return { info, project };
+    return { info, project: this.configOf(info) };
   }
 
   /**
@@ -2621,7 +2747,9 @@ ${firstMessage}`);
    * folder the project allows (start_session's rules); else its own folder or the project folder. Ledung
    * starts a worker in the project folder and the worker moves itself, so only the session knows (#225).
    */
-  private sessionFolder(info: SessionInfo, project: LocalProjectConfig): string {
+  private sessionFolder(info: SessionInfo, project: ProjectConfig): string {
+    // A container session works in the project folder or the run's worktree Ledung gave it (workflow part 3f).
+    if (project.runner === 'docker') return info.workDir ?? project.pathInContainer;
     const start = info.workDir ?? project.path;
     if (info.project === CHATS) return start;
     const call = this.store.lastToolCall(info.id, ['EnterWorktree', 'ExitWorktree']);
@@ -2648,22 +2776,25 @@ ${firstMessage}`);
     const own = this.sessionFolder(info, project);
     const folders: PaneFolders['folders'] = [{ key: 'session', path: own, label: info.project === CHATS ? "This chat's folder" : "This session's folder" }];
     const same = (a: string, b: string) => { try { return path.relative(fs.realpathSync(a), fs.realpathSync(b)) === ''; } catch { return a === b; } };
-    if (info.project !== CHATS && !same(own, project.path)) {
+    const projectFolder = project.runner === 'docker' ? project.pathInContainer : project.path;
+    if (info.project !== CHATS && (project.runner === 'docker' ? path.posix.relative(own, projectFolder) !== '' : !same(own, projectFolder))) {
       folders[0]!.label = "This session's worktree";
-      folders.push({ key: 'project', path: project.path, label: 'Project folder' });
+      folders.push({ key: 'project', path: projectFolder, label: 'Project folder' });
     }
     return { folders };
   }
 
-  private paneRoot(sessionId: string, folder: PaneFolderKey | undefined): { info: SessionInfo; root: string } {
+  private paneRoot(sessionId: string, folder: PaneFolderKey | undefined): { info: SessionInfo; project: ProjectConfig; root: string } {
     const { info, project } = this.paneSession(sessionId);
-    if (folder === 'project' && info.project !== CHATS) return { info, root: project.path };
-    return { info, root: folder === 'session' ? this.sessionFolder(info, project) : info.workDir ?? project.path };
+    const projectFolder = project.runner === 'docker' ? project.pathInContainer : project.path;
+    if (folder === 'project' && info.project !== CHATS) return { info, project, root: projectFolder };
+    return { info, project, root: folder === 'session' ? this.sessionFolder(info, project) : info.workDir ?? projectFolder };
   }
 
   /** One folder of the tree, with the viewer's rules (src/sessions/tree.ts). */
   async listFolder(sessionId: string, folder: PaneFolderKey, rel: string): Promise<TreeListing> {
-    const { info, root } = this.paneRoot(sessionId, folder);
+    const { info, project, root } = this.paneRoot(sessionId, folder);
+    if (project.runner === 'docker') return this.fromContainer(() => listContainerFolder(this.containerAccess(project), root, rel));
     try {
       // A chat's folder can be anywhere under the browse roots, so it gets the viewer's chat rules (#211, question
       // #317); a project's own folder may itself sit under AppData, as the viewer allows.
@@ -2679,6 +2810,11 @@ ${firstMessage}`);
   async changes(sessionId: string): Promise<SessionChanges> {
     const { info, project } = this.paneSession(sessionId);
     const own = this.sessionFolder(info, project);
+    if (project.runner === 'docker') {
+      // git runs in the container, hardened as here (src/sessions/container-files.ts); docker's failure is said plainly.
+      const access = this.containerAccess(project);
+      return this.fromContainer(() => sessionChanges(own, { hidden: diffHidden(access, own), git: (args, o) => containerGit(access, own, args, o) }));
+    }
     // A chat may run in the home folder: its diff drops what its viewer would not show.
     const hidden = info.project === CHATS ? (p: string) => p.split('/').some((s) => s.startsWith('.') || s.startsWith('$')) : undefined;
     return sessionChanges(own, { hidden });
@@ -2715,7 +2851,9 @@ ${firstMessage}`);
   }
 
   private readFrom<T>(sessionId: string, link: string, read: (root: string, link: string) => T, folder?: PaneFolderKey): T {
-    const { info, root } = this.paneRoot(sessionId, folder);
+    const { info, project, root } = this.paneRoot(sessionId, folder);
+    // A container's files are read in the container (readFile, readImage, keepContainerFiles); not from this computer's disk.
+    if (project.runner !== 'local') throw new UserError('Attaching files from a container project here is not available yet.');
     try {
       if (info.project === CHATS) {
         // Also Windows' AppData, macOS's Library and Ledung's own data folder, wherever it is (Martin, question #317).

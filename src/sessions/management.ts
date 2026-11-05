@@ -133,6 +133,11 @@ export interface ManagementContext {
    * the reason otherwise. Left out in tests of other parts: a review with evidence is then refused.
    */
   evidenceFile?(sessionId: string, file: string): { file: string; kind: 'image' | 'text' };
+  /**
+   * A container project's screenshots and evidence, read from its container and kept in Ledung (issue #122): the names
+   * the question stores, in order; a local project's as given. Left out in tests of other parts: as given.
+   */
+  keepContainerFiles?(sessionId: string, files: { file: string; as: 'shot' | 'evidence' }[]): Promise<string[]>;
   /** Orders on record (issue #105); left out where none are kept (tests of other parts): an order is then refused. */
   orders?: Orders;
   /** Away mode now, so an order records the period it was given in (issue #105). */
@@ -469,6 +474,11 @@ export class Management {
         opinions: (s.opinions ?? []).filter((o) => o.text.trim()).map((o) => ({ who: o.who.trim() || 'Someone', text: o.text.trim(), verdict: o.verdict ?? null })),
       };
     });
+  }
+
+  /** ask_user's container files, kept before they are checked (keepContainerFiles). */
+  keepFiles(sessionId: string, files: { file: string; as: 'shot' | 'evidence' }[]): Promise<string[]> {
+    return this.ctx.keepContainerFiles ? this.ctx.keepContainerFiles(sessionId, files) : Promise.resolve(files.map((f) => f.file));
   }
 
   /**

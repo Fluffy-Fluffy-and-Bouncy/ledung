@@ -399,3 +399,193 @@ test("a container's workflow writer script refuses a file that is a link, and a 
     assert.deepEqual(fs.readdirSync(away), [], 'nothing left through the link');
   });
 });
+
+// --- A container project's files (issue #122) ------------------------------------------------------------
+// The scripts run by a real sh here, as `docker exec … sh -c` runs them in the container: the same fake runner
+// test/server-security.test.ts uses. The folder by its long real name, so Git Bash's /proc agrees with readlink.
+const hasSh = spawnSync('sh', ['-c', 'readlink -f . && head -c 1 /dev/null'], { windowsHide: true }).status === 0;
+const ctBase = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-ctfiles-')));
+after(() => removeTemp(ctBase));
+const ctDir = path.join(ctBase, 'project');
+// The path as the container's sh sees it: POSIX, so /c/... under Git Bash.
+const posix = (p: string) => (process.platform === 'win32' ? p.replace(/^([A-Za-z]):/, (_, d: string) => `/${d.toLowerCase()}`) : p).replaceAll('\\', '/');
+const ctRoot = posix(ctDir);
+const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+const SECRETS_NAME = 'ledung-1234abcd-0000-0000-0000-000000000000.env.txt';
+fs.mkdirSync(path.join(ctDir, 'shots'), { recursive: true });
+fs.mkdirSync(path.join(ctDir, '.hidden'), { recursive: true });
+fs.mkdirSync(path.join(ctDir, 'node_modules'), { recursive: true });
+fs.mkdirSync(path.join(ctDir, 'locked'), { recursive: true });
+fs.writeFileSync(path.join(ctDir, 'shots', 'home.png'), PNG_BYTES);
+fs.writeFileSync(path.join(ctDir, 'shots', 'fake.png'), 'not a png');
+fs.writeFileSync(path.join(ctDir, 'notes.md'), '# Notes\n');
+fs.writeFileSync(path.join(ctDir, 'run.log'), 'ok\n');
+fs.writeFileSync(path.join(ctDir, 'main.ts'), 'export {};\n');
+fs.writeFileSync(path.join(ctDir, '.env'), 'TOKEN=x\n');
+fs.writeFileSync(path.join(ctDir, 'big.txt'), 'x'.repeat(3 * 1024 * 1024));
+fs.writeFileSync(path.join(ctDir, 'deploy-keys.txt'), 'secret\n');
+fs.writeFileSync(path.join(ctDir, SECRETS_NAME), 'x\n');
+fs.writeFileSync(path.join(ctDir, 'locked', 'plan.md'), '# locked\n');
+fs.writeFileSync(path.join(ctBase, 'outside.md'), '# outside\n');
+
+async function containerFiles() {
+  const cf = await import('../src/sessions/container-files.ts');
+  const { runCappedBytes } = await import('../src/sessions/git-read.ts');
+  const access = (over: Partial<import('../src/sessions/container-files.ts').ContainerAccess> = {}): import('../src/sessions/container-files.ts').ContainerAccess => ({
+    container: 'test-ct', project: ctRoot, locked: [], pathPatterns: [],
+    exec: (script, args, opts) => runCappedBytes('sh', ['-c', script, 'sh', ...args], opts),
+    ...over,
+  });
+  return { ...cf, access };
+}
+
+test("a container's file viewer: .md, .txt and .log text and PNG or JPEG images, inside the project folder only", { skip: !hasSh && 'no sh with readlink here' }, async () => {
+  const { access, readContainerText, readContainerImage } = await containerFiles();
+  assert.deepEqual(await readContainerText(access(), ctRoot, 'notes.md'), { path: 'notes.md', kind: 'markdown', content: '# Notes\n' });
+  assert.equal((await readContainerText(access(), ctRoot, 'run.log#end')).kind, 'text');
+  assert.equal((await readContainerText(access(), ctRoot, `${ctRoot}/notes.md`)).path, 'notes.md', 'absolute inside the folder');
+  assert.equal((await readContainerText(access(), ctRoot, 'shots%2F..%2Fnotes.md')).path, 'notes.md', 'encoded');
+  const image = await readContainerImage(access(), ctRoot, 'shots/home.png');
+  assert.equal(image.type, 'image/png');
+  assert.deepEqual(image.bytes, PNG_BYTES);
+});
+
+test("a container's files: a path that leads out, the wrong type, too large or a folder is refused", { skip: !hasSh && 'no sh with readlink here' }, async (t) => {
+  const { access, readContainerText, readContainerImage, readContainerBytes } = await containerFiles();
+  const a = access();
+  await assert.rejects(readContainerText(a, ctRoot, '../outside.md'), /inside the project folder/);
+  await assert.rejects(readContainerText(a, ctRoot, `${posix(ctBase)}/outside.md`), /inside the project folder/);
+  await assert.rejects(readContainerText(a, ctRoot, '..%2Foutside.md'), /inside the project folder/);
+  await assert.rejects(readContainerText(a, ctRoot, 'main.ts'), /only \.md, \.txt and \.log/);
+  await assert.rejects(readContainerText(a, ctRoot, '.env'), /only \.md, \.txt and \.log/);
+  await assert.rejects(readContainerImage(a, ctRoot, 'notes.md'), /not a PNG or JPEG/);
+  await assert.rejects(readContainerImage(a, ctRoot, 'shots/fake.png'), /not really a PNG/);
+  await assert.rejects(readContainerText(a, ctRoot, 'big.txt'), /too large/);
+  await assert.rejects(readContainerBytes(a, ctRoot, 'notes.md', 4, () => null), /too large/, 'checked before it is read');
+  await assert.rejects(readContainerText(a, ctRoot, 'shots'), /is a folder/);
+  await assert.rejects(readContainerText(a, ctRoot, 'nope.md'), /no file nope\.md/);
+  await assert.rejects(readContainerText(a, ctRoot, 'a\nb.md'), /not a file name/);
+  // A link: judged by where it leads, so out of the folder is refused and x.png to notes.md is notes.md.
+  try {
+    fs.symlinkSync(path.join(ctBase, 'outside.md'), path.join(ctDir, 'out.md'));
+    fs.symlinkSync(path.join(ctDir, 'notes.md'), path.join(ctDir, 'shots', 'renamed.png'));
+  } catch {
+    t.diagnostic('this machine does not allow file links: the link cases were not run');
+    return;
+  }
+  await assert.rejects(readContainerText(a, ctRoot, 'out.md'), /inside the project folder/);
+  await assert.rejects(readContainerImage(a, ctRoot, 'shots/renamed.png'), /notes\.md is not a PNG or JPEG/);
+  fs.rmSync(path.join(ctDir, 'out.md'));
+  fs.rmSync(path.join(ctDir, 'shots', 'renamed.png'));
+});
+
+test("a container's files: another locked project's folder, sensitive paths and the secrets files are never shown", { skip: !hasSh && 'no sh with readlink here' }, async () => {
+  const { access, readContainerText, listContainerFolder } = await containerFiles();
+  const locked = access({ locked: [`${ctRoot}/locked`] });
+  assert.equal((await readContainerText(access(), ctRoot, 'locked/plan.md')).path, 'locked/plan.md', 'open while not locked');
+  await assert.rejects(readContainerText(locked, ctRoot, 'locked/plan.md'), /locked project/);
+  await assert.rejects(listContainerFolder(locked, ctRoot, 'locked'), /locked project/);
+  assert.ok(!(await listContainerFolder(locked, ctRoot, '')).entries.some((e) => e.name === 'locked'), 'left out of the tree');
+  const sensitive = access({ pathPatterns: ['deploy-keys'] });
+  await assert.rejects(readContainerText(sensitive, ctRoot, 'deploy-keys.txt'), /sensitive path pattern/);
+  assert.ok(!(await listContainerFolder(sensitive, ctRoot, '')).entries.some((e) => e.name === 'deploy-keys.txt'));
+  await assert.rejects(readContainerText(access(), ctRoot, SECRETS_NAME), /inside the project folder/);
+  assert.ok(!(await listContainerFolder(access(), ctRoot, '')).entries.some((e) => e.name === SECRETS_NAME));
+});
+
+test("a container's Files pane tree: hidden names, links out and the secrets files left out, node_modules greyed", { skip: !hasSh && 'no sh with readlink here' }, async () => {
+  const { access, listContainerFolder } = await containerFiles();
+  const top = await listContainerFolder(access(), ctRoot, '');
+  assert.deepEqual(top.entries.map((e) => e.name), ['locked', 'node_modules', 'shots', 'big.txt', 'deploy-keys.txt', 'main.ts', 'notes.md', 'run.log']);
+  assert.equal(top.entries.find((e) => e.name === 'node_modules')!.skipped, 'heavy');
+  assert.equal(top.entries.find((e) => e.name === 'notes.md')!.size, 8);
+  assert.deepEqual((await listContainerFolder(access(), ctRoot, 'shots')).entries.map((e) => e.path), ['shots/fake.png', 'shots/home.png']);
+  await assert.rejects(listContainerFolder(access(), ctRoot, '.hidden'), /Hidden folders/);
+  await assert.rejects(listContainerFolder(access(), ctRoot, '..'), /inside the session's folder/);
+  await assert.rejects(listContainerFolder(access(), ctRoot, 'notes.md'), /is a file/);
+});
+
+test("a container that can't be reached is said plainly, and every call has a time limit", async () => {
+  const { access, readContainerText, listContainerFolder, containerFailure } = await containerFiles();
+  const seen: number[] = [];
+  const down = access({ exec: async (_s, _a, opts) => { seen.push(opts.timeoutMs); return { failed: containerFailure('test-ct', 'Error response from daemon: container abc is not running', false, opts.timeoutMs) }; } });
+  await assert.rejects(readContainerText(down, '/work', 'notes.md'), /The container "test-ct" is not running/);
+  await assert.rejects(listContainerFolder(down, '/work', ''), /is not running/);
+  assert.ok(seen.length === 2 && seen.every((ms) => ms > 0 && ms <= 30000), 'a time limit on each');
+  assert.match(containerFailure('x', 'Error: No such container: x', false, 1000), /was not found/);
+  assert.match(containerFailure('x', '', true, 15000), /no answer within 15 s/);
+  assert.match(containerFailure('x', 'error during connect: open //./pipe/docker_engine', false, 1000), /Docker is not running/);
+});
+
+test('a container file kept for a question: served by its hash, only to its own project, never once changed', async () => {
+  const { keepCopy, readCopy } = await import('../src/sessions/container-files.ts');
+  const dir = path.join(ctBase, 'copies');
+  const ref = keepCopy(dir, 'ct', 'shots/home.png', PNG_BYTES);
+  assert.match(ref, /^container:[0-9a-f]{32}\/shots\/home\.png$/);
+  assert.deepEqual(readCopy(dir, 'ct', ref, ['png', 'jpeg']).bytes, PNG_BYTES);
+  assert.throws(() => readCopy(dir, 'other', ref, ['png', 'jpeg']), /no copy/, "another project's");
+  assert.throws(() => readCopy(dir, 'ct', ref.replace('home.png', 'home.md'), ['text']), /not a PNG or JPEG image or a \.txt/);
+  assert.throws(() => readCopy(dir, 'ct', 'container:../../x/a.png', ['png']), /not a file Ledung kept/);
+  const file = path.join(dir, fs.readdirSync(dir)[0]!, ref.slice('container:'.length, 'container:'.length + 32));
+  fs.writeFileSync(file, Buffer.concat([PNG_BYTES, Buffer.from([9])]));
+  assert.throws(() => readCopy(dir, 'ct', ref, ['png']), /has changed/);
+});
+
+test('copies no question names go once they are old; named or recent ones stay', async () => {
+  const { keepCopy, pruneCopies } = await import('../src/sessions/container-files.ts');
+  const dir = path.join(ctBase, 'prune');
+  const hashOf = (ref: string) => ref.slice('container:'.length, 'container:'.length + 32);
+  const named = keepCopy(dir, 'ct', 'a.md', Buffer.from('named'));
+  const old = keepCopy(dir, 'ct', 'b.md', Buffer.from('old'));
+  const fresh = keepCopy(dir, 'ct', 'c.md', Buffer.from('fresh'));
+  const folder = path.join(dir, fs.readdirSync(dir)[0]!);
+  const past = new Date(Date.now() - 2 * 86400000);
+  for (const ref of [named, old]) fs.utimesSync(path.join(folder, hashOf(ref)), past, past);
+  pruneCopies(dir, 'ct', new Set([hashOf(named)]), Date.now() - 86400000);
+  assert.deepEqual(fs.readdirSync(folder).sort(), [hashOf(named), hashOf(fresh)].sort());
+});
+
+// Security review of #122: the run worktree swapped for a link out of the project folder (finding 1), git in a locked
+// folder or outside (finding 2), a name with a newline standing for another file (finding 5), and the time limit
+// inside the container (finding 7).
+test("a container session's folder that leads out of the project folder is refused, for reads, the tree and git", { skip: !hasSh && 'no sh with readlink here' }, async (t) => {
+  const { access, readContainerText, listContainerFolder, containerGit } = await containerFiles();
+  const worktrees = path.join(ctDir, '.ledung', 'worktrees');
+  fs.mkdirSync(worktrees, { recursive: true });
+  try {
+    fs.symlinkSync(ctBase, path.join(worktrees, 'run-1'), 'junction');
+  } catch {
+    t.diagnostic('this machine does not allow links: not run');
+    return;
+  }
+  const run1 = `${ctRoot}/.ledung/worktrees/run-1`;
+  await assert.rejects(readContainerText(access(), run1, 'outside.md'), /inside the project folder/);
+  await assert.rejects(listContainerFolder(access(), run1, ''), /inside the session's folder/);
+  await assert.rejects(containerGit(access(), run1, ['status']), /not inside the project folder/);
+  await assert.rejects(containerGit(access({ locked: [`${ctRoot}/locked`] }), `${ctRoot}/locked`, ['status']), /locked project's folder/);
+  fs.rmSync(path.join(worktrees, 'run-1'));
+});
+
+test("a container's changes leave out a locked project's folder, sensitive paths and the secrets files", async () => {
+  const { access, diffHidden } = await containerFiles();
+  const hidden = diffHidden(access({ locked: ['/work/app/locked', '/elsewhere'], pathPatterns: ['deploy-keys'] }), '/work/app');
+  assert.deepEqual(['src/a.ts', 'locked/plan.md', 'lockedness.md', 'config/deploy-keys.txt', SECRETS_NAME].map(hidden), [false, true, false, true, true]);
+});
+
+test("a link whose target ends in a newline can't stand for the file without it", { skip: (!hasSh || process.platform === 'win32') && 'needs a newline in a file name' }, async () => {
+  const { access, readContainerText } = await containerFiles();
+  fs.writeFileSync(path.join(ctDir, 'nl.md\n'), '# the newline one\n');
+  fs.symlinkSync(path.join(ctDir, 'nl.md\n'), path.join(ctDir, 'nl-link.md'));
+  await assert.rejects(readContainerText(access(), ctRoot, 'nl-link.md'), /inside the project folder/);
+});
+
+test("the container's time limit wrapper runs the script with its arguments, and stops it inside at the limit", { skip: !hasSh && 'no sh here' }, async () => {
+  const { TIMED_SCRIPT } = await import('../src/runners/docker-runner.ts');
+  const ok = spawnSync('sh', ['-c', TIMED_SCRIPT, 'sh', '5', 'printf "%s|%s" "$1" "$2"', 'a b', '$(c)'], { encoding: 'utf8', windowsHide: true });
+  assert.equal(ok.stdout, 'a b|$(c)');
+  if (spawnSync('sh', ['-c', 'command -v timeout'], { windowsHide: true }).status !== 0) return;
+  const started = Date.now();
+  const slow = spawnSync('sh', ['-c', TIMED_SCRIPT, 'sh', '1', 'sleep 20'], { encoding: 'utf8', windowsHide: true });
+  assert.notEqual(slow.status, 0);
+  assert.ok(Date.now() - started < 10000, 'ended by the limit');
+});

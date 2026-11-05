@@ -3,7 +3,7 @@
 // large, text files folded to their first lines), and one overall answer: Accept, or Changes needed.
 import { useEffect, useRef, useState } from 'react';
 import type { QuestionInfo } from '../../../src/shared/protocol.ts';
-import { ACCEPTED, CHANGES_NEEDED, reviewAnswer, type ReviewDetails, type ReviewEvidence } from '../../../src/shared/questions.ts';
+import { ACCEPTED, CHANGES_NEEDED, reviewAnswer, shownFile, type ReviewDetails, type ReviewEvidence } from '../../../src/shared/questions.ts';
 import { api } from '../api.ts';
 import { Markdown } from './Markdown.tsx';
 import { formatTime } from './MessageList.tsx';
@@ -110,7 +110,7 @@ function TextEvidence({ q, n, ev }: { q: QuestionInfo; n: number; ev: ReviewEvid
     <div className="rev-text">
       <div className="rev-text-head">
         <span className="rev-text-caption">{ev.caption}</span>
-        <span className="chip mono">{ev.file.replace(/^board:[^/]+\/[^/]+\//, 'board: ')}</span>
+        <span className="chip mono">{shownFile(ev.file).replace(/^board:[^/]+\/[^/]+\//, 'board: ')}</span>
         {text !== null && <span className="muted">{lines.length} line{lines.length === 1 ? '' : 's'}</span>}
       </div>
       {problem ? <p className="error">{problem}</p> : text === null ? <p className="muted">Loading…</p> : (

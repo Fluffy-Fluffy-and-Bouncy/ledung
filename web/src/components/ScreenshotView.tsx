@@ -5,7 +5,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { projectLabel, type QuestionInfo, type QuestionShot, type ShotVerdict } from '../../../src/shared/protocol.ts';
 import { OPINION_WORDS, shotAnswer, VERDICT_LABEL, VERDICTS } from '../../../src/shared/shots.ts';
-import type { DeskOption } from '../../../src/shared/questions.ts';
+import { shownFile, type DeskOption } from '../../../src/shared/questions.ts';
 import { api } from '../api.ts';
 import { afterVerdict, isSendKey, sendStep, sendsVerdicts } from '../deskNav.ts';
 import { carriedFrom, emptyDraft, fillGaps, shotDrafts as drafts, verdictCount, type ShotDraft as Draft } from '../shotDrafts.ts';
@@ -260,7 +260,7 @@ export function ScreenshotView(props: {
         {/* On a narrow screen the image and a verdict bar under it stay at the top while the slip scrolls (issue #177). */}
         <div className="shot-top" ref={top}>
           <div className="stage">
-            <ProjectImage key={`${q.id}:${index}`} sessionId={q.sessionId} path={shot.path} alt={`${shot.group} ${shot.path}`} />
+            <ProjectImage key={`${q.id}:${index}`} sessionId={q.sessionId} path={shot.path} alt={`${shot.group} ${shownFile(shot.path)}`} />
             {order.length > 1 && (
               <>
                 <button className="nav l" onClick={() => go(k - 1)} aria-label="Previous screenshot">‹</button>
@@ -329,7 +329,7 @@ export function ScreenshotView(props: {
         <div className="meta">
           <span className="chip">{k + 1} / {order.length}</span>
           {shot.facts.map((f) => <span key={f} className="chip">{f}</span>)}
-          <span className="chip mono">{shot.path}</span>
+          <span className="chip mono">{shownFile(shot.path)}</span>
         </div>
         <div className="sblk"><span className="lbl">Look for</span><p>{shot.lookFor}</p></div>
         {shot.doneWhen && <div className="sblk"><span className="lbl">Judge against (the done-condition)</span><p>{shot.doneWhen}</p></div>}

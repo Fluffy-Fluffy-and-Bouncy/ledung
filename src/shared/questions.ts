@@ -64,6 +64,11 @@ export interface ReviewDetails {
   evidence?: ReviewEvidence[];
 }
 
+/** A stored screenshot or evidence file as people read it: a container file's kept copy (issue #122) by its path in the project. */
+export function shownFile(file: string): string {
+  return file.replace(/^container:[0-9a-f]{32}\//, '');
+}
+
 /** At most this many evidence files per review. */
 export const MAX_REVIEW_EVIDENCE = 10;
 
@@ -228,7 +233,7 @@ export function questionText(question: string | undefined, d: QuestionDetails): 
     if (d.title) parts.push(`**Review: ${d.title}**`);
     parts.push(`**What we were solving**\n\n${r.solving}`, `**What was done**\n\n${r.done}`);
     if (r.notes) parts.push(`**Notes**\n\n${r.notes}`);
-    if (r.evidence?.length) parts.push(`**Evidence**\n\n${r.evidence.map((e) => `- ${e.caption} (\`${e.file.replace(/`/g, "'")}\`)`).join('\n')}`);
+    if (r.evidence?.length) parts.push(`**Evidence**\n\n${r.evidence.map((e) => `- ${e.caption} (\`${shownFile(e.file).replace(/`/g, "'")}\`)`).join('\n')}`);
     parts.push(`Answered "${ACCEPTED}" or "${CHANGES_NEEDED} …" on the review page.`);
     return parts.join('\n\n');
   }

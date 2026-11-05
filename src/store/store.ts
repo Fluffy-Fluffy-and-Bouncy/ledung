@@ -615,6 +615,14 @@ export class Store {
       .all(sessionId, since).map((r) => toQuestion({ ...(r as Row), earlier: null, sources: null }));
   }
 
+  /** The hashes of the container file copies any question names (issue #122): its screenshots or review evidence. */
+  containerCopyRefs(): Set<string> {
+    const rows = this.db.prepare(`SELECT details, shots FROM questions WHERE details LIKE '%container:%' OR shots LIKE '%container:%'`).all() as { details: string | null; shots: string | null }[];
+    const refs = new Set<string>();
+    for (const r of rows) for (const m of `${r.details ?? ''} ${r.shots ?? ''}`.matchAll(/container:([0-9a-f]{32})\//g)) refs.add(m[1]!);
+    return refs;
+  }
+
   /**
    * Open questions (oldest first), then the `recent` most recently closed ones. `refs` false leaves out the original,
    * the kept conversation and the attached sources, for Ledung's own reads that never show them and run on every

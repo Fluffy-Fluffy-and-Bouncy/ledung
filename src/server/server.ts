@@ -793,7 +793,7 @@ export class LedungServer {
       const boardImage = req.method === 'GET' && url.pathname === '/api/board-attachment';
       if (image || boardImage) {
         const found = image
-          ? this.opts.manager.readImage(decodeURIComponent(image[1]!), url.searchParams.get('path') ?? '', paneFolder(url))
+          ? await this.opts.manager.readImage(decodeURIComponent(image[1]!), url.searchParams.get('path') ?? '', paneFolder(url))
           : this.opts.manager.readBoardImage(url.searchParams.get('file') ?? '');
         res.writeHead(200, { ...this.headersFor(res), 'Content-Type': found.type, 'Content-Length': found.bytes.length });
         res.end(found.bytes);

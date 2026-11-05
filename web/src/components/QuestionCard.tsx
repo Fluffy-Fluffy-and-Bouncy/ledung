@@ -2,6 +2,7 @@
 // Shown in the chat and in the "Waiting for you" list; both stay in sync through the live connection.
 import { useState } from 'react';
 import { projectLabel, type QuestionInfo } from '../../../src/shared/protocol.ts';
+import { shownFile } from '../../../src/shared/questions.ts';
 import { api } from '../api.ts';
 import { Markdown } from './Markdown.tsx';
 import { formatTime } from './MessageList.tsx';
@@ -54,7 +55,7 @@ export function QuestionCard(props: {
     : <a className="button-link" href={`#/waiting/q/${q.id}`}>{judgeText}</a>);
   const thumbs = q.shots?.length ? (
     <div className="chat-thumbs">
-      {q.shots.map((s, i) => <img key={i} src={imageUrl(q.sessionId, s.path)} alt={s.path} title={`${s.group} · ${s.path}`} />)}
+      {q.shots.map((s, i) => <img key={i} src={imageUrl(q.sessionId, s.path)} alt={shownFile(s.path)} title={`${s.group} · ${shownFile(s.path)}`} />)}
     </div>
   ) : null;
 

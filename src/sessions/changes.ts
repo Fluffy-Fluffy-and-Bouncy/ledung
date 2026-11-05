@@ -2,7 +2,7 @@
 // HEAD against where it left main, parsed into files, hunks and numbered lines so the page can anchor a line
 // comment. Read-only, through gitRead's hardening, and only in the session's own folder (--relative).
 import type { DiffFile, DiffHunk, SessionChanges } from '../shared/files-pane.ts';
-import { gitRead } from './git-read.ts';
+import { gitRead as gitReadHere, type GitRead } from './git-read.ts';
 
 export type { DiffFile, SessionChanges };
 
@@ -13,9 +13,13 @@ const line1 = (s: string) => s.split('\n')[0]!.trim();
 
 /**
  * The session's changes in `folder`: `git diff <merge-base with main> HEAD`. `hidden` drops files the viewer
- * would not show (a chat's dot-names).
+ * would not show (a chat's dot-names). `git` runs it elsewhere: in a container project's container (issue #122).
  */
-export async function sessionChanges(folder: string, opts: { hidden?: (path: string) => boolean; maxBytes?: number } = {}): Promise<SessionChanges> {
+export async function sessionChanges(
+  folder: string,
+  opts: { hidden?: (path: string) => boolean; maxBytes?: number; git?: (args: readonly string[], opts: { maxBytes?: number }) => Promise<GitRead> } = {},
+): Promise<SessionChanges> {
+  const gitRead = (_folder: string, args: readonly string[], o: { maxBytes?: number } = {}) => (opts.git ? opts.git(args, o) : gitReadHere(folder, args, o));
   const empty = (problem: string, rest: Partial<SessionChanges> = {}): SessionChanges => ({
     base: null, baseCommit: null, head: null, branch: null, files: [], truncated: false, problem, ...rest,
   });
