@@ -38,6 +38,16 @@ export function remoteDir(): string {
   return dir;
 }
 
+/**
+ * Images the person sent with their messages (issue #128), one folder per session, so the history can show them after
+ * a restart. Private to this user, as remoteDir().
+ */
+export function chatImagesDir(): string {
+  const dir = path.join(userDataDir(), 'chat-images');
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
+}
+
 // This file is src/platform/paths.ts in a clone or a release, and part of dist/main.js or
 // dist/host.js in the npm package, where the code is bundled into plain JavaScript (#105: Node does
 // not strip types under node_modules).
