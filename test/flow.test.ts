@@ -171,6 +171,38 @@ test('every person block says what it asks; only person and timer blocks have as
   assert.match(messages, /blocks\.x\.timer: Only a timer block/);
 });
 
+test('a timer may carry a guard: at most every N hours, only when a condition holds; only a timer has one (#114)', () => {
+  // The issue's examples: a metrics pass at most daily; a steward pass when Triage holds more than five.
+  const timer = (more: Record<string, unknown>) => block('t', { kind: 'timer', timer: { every: 10, of: 'merges' }, outcomes: [out('a')], ...more });
+  const guarded = flowOf({ version: 1, blocks: [block('a'), timer({ guard: { minHours: 24, when: 'Triage holds more than five' } })] });
+  assert.deepEqual(guarded.blocks[1]!.guard, { minHours: 24, when: 'Triage holds more than five' });
+  assert.deepEqual(checkFlow(guarded, () => true), []);
+  assert.deepEqual(flowOf({ version: 1, blocks: [block('a'), timer({ guard: { when: 'Triage holds more than five' } })] }).blocks[1]!.guard, { when: 'Triage holds more than five' });
+  // A guard on another kind of block is a problem, as "timer" is.
+  const misplaced = checkFlow(flowOf({ version: 1, blocks: [block('a', { guard: { minHours: 24 } })] }), () => true);
+  assert.deepEqual(misplaced.map((p) => [p.at, p.hint ?? false]), [['blocks.a.guard', false]]);
+  assert.match(misplaced[0]!.message, /Only a timer block has "guard"/);
+  // An empty guard, or hours that are not whole and between 1 and a year, are refused by the format.
+  const refused = (guard: unknown) => parseFlow(JSON.stringify({ version: 1, blocks: [block('a'), timer({ guard })] }));
+  for (const guard of [{}, { minHours: 0 }, { minHours: 1.5 }, { minHours: 8761 }, { when: ' ' }]) {
+    const parsed = refused(guard);
+    assert.equal(parsed.flow, null, JSON.stringify(guard));
+    assert.match(parsed.problems[0]!.at, /^blocks\.t\.guard/, JSON.stringify(guard));
+  }
+  assert.match(refused({}).problems[0]!.message, /at least one/);
+  assert.ok(refused({ minHours: 8760 }).flow, 'a year is the most');
+  // A field the guard doesn't know is said and left out.
+  const typo = parseFlow(JSON.stringify({ version: 1, blocks: [block('a'), timer({ guard: { minHours: 24, unless: 'x' } })] }));
+  assert.deepEqual(typo.problems.map((p) => p.at), ['blocks.t.guard.unless']);
+  // On a clock: no longer than the clock's own gap holds nothing back, a hint; a longer one is fine.
+  const onClock = (clock: string, minHours: number) => checkFlow(flowOf({ version: 1, blocks: [block('a'), timer({ timer: { clock }, guard: { minHours } })] }), () => true);
+  assert.deepEqual(onClock('daily', 24).map((p) => [p.at, p.hint]), [['blocks.t.guard.minHours', true]]);
+  assert.match(onClock('daily', 24)[0]!.message, /starts daily, so "at most every 24 h" holds nothing back/);
+  assert.deepEqual(onClock('hourly', 1).map((p) => p.at), ['blocks.t.guard.minHours']);
+  assert.deepEqual(onClock('daily', 25), []);
+  assert.deepEqual(onClock('weekly', 336), []);
+});
+
 test('every linked brief and overlay file exists; outcomes lead to blocks that are there; ids are unique', () => {
   const problems = checkFlow(flowOf({
     version: 1, start: 'nope',

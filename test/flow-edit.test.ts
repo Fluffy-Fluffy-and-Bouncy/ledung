@@ -473,3 +473,28 @@ test('part 3d review: the last sub-step removed takes "run them at once" with it
   assert.equal(one.blocks[0]!.block.parallel, true);
   assert.equal(deleteSubstep(one, key, 0).blocks[0]!.block.parallel, undefined);
 });
+
+test('#114 review: a timer guard set, changed or emptied in the builder is written to flow.json; a kind change takes it out', () => {
+  const guardOf = (text: string, id: string) => (JSON.parse(text).blocks as { id: string; guard?: unknown }[]).find((b) => b.id === id)!.guard;
+  // A new timer block: the guard set in its fields is saved, and read back as it was set.
+  const started = newDraft(false, null);
+  const added = addBlock(started.draft, 'timer');
+  const set = setBlock(added.draft, added.key, { guard: { minHours: 48, when: 'Triage holds more than five' } });
+  const id = set.blocks.find((b) => b.key === added.key)!.block.id;
+  const savedNew = flowText(started.base, set);
+  assert.deepEqual(guardOf(savedNew, id), { minHours: 48, when: 'Triage holds more than five' });
+  assert.deepEqual(parseFlow(savedNew).flow!.blocks.find((b) => b.id === id)!.guard, { minHours: 48, when: 'Triage holds more than five' });
+  // A timer read with a guard: a changed hour count is saved, the condition and a hand-written $comment kept.
+  const raw = JSON.stringify({ version: 1, blocks: [{ id: 'a', kind: 'work', title: 'A' }, { id: 't', kind: 'timer', title: 'T', timer: { clock: 'daily' }, guard: { $comment: 'why', minHours: 48, when: 'Triage holds more than five' }, outcomes: [{ word: 'Start', to: 'a' }] }] }, null, 2);
+  const { base, draft } = draftFromView(viewOf(raw))!;
+  const t = draft.blocks.find((b) => b.block.id === 't')!.key;
+  assert.deepEqual(guardOf(flowText(base, draft), 't'), { $comment: 'why', minHours: 48, when: 'Triage holds more than five' }, 'unchanged, it is written as read');
+  const edited = setBlock(draft, t, { guard: { minHours: 72, when: 'Triage holds more than five' } });
+  assert.deepEqual(guardOf(flowText(base, edited), 't'), { $comment: 'why', minHours: 72, when: 'Triage holds more than five' });
+  // Both fields emptied: the builder sets no guard, and the file has none.
+  assert.equal(guardOf(flowText(base, setBlock(draft, t, { guard: undefined })), 't'), undefined);
+  // Made a work block, as the builder's kind field does: no guard left for the checks to refuse.
+  const work = flowText(base, setBlock(draft, t, { kind: 'work', timer: undefined, guard: undefined }));
+  assert.equal(guardOf(work, 't'), undefined);
+  assert.equal(parseFlow(work).problems.some((p) => /guard/.test(p.at)), false);
+});

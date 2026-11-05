@@ -11,6 +11,7 @@ is nothing user-facing in it).
 
 ## 2026-11-05
 - Away merges run exactly the pull request whose checks passed, at the commit they were checked at: Ledung runs the merge by the PR's link and refuses it if the branch moved since. A merge without a repository named is checked in the folder the session is in (a nested clone's own PR there), and held for you when that folder is outside the project. (#143, #144)
+- A timer block in a workflow can carry a guard: at most every so many hours, and only when a condition holds that the manager reads ("Triage holds more than five"). Set in the builder, shown on the block, and checked with the flow. Ledung doesn't run timers itself yet. (#114)
 - A workflow's `flow.json` can say who made it, `"author": "Name (login)"`; the workflow page shows it under the flow's title, a shared workflow's too, and the builder keeps it. (#117)
 - A workflow block's brief can be a file beside the workflow folder, in the shared workflow's own folder, written `folder:process/briefs/review.md`, so a shared process needn't copy its briefs; it is read with the same rules (only inside that folder) and shown read-only on a block click. (#111)
 - Away mode with merge allowed: a manager's own plain `gh pr merge` whose checks pass (open, mergeable, no check failing or running) now goes through without Claude Code's auto mode refusing it; one refused anyway is put in the away log for the morning report instead of asking you. (#133)

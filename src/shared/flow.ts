@@ -119,6 +119,11 @@ export interface FlowBlock {
   session?: 'caller';
   /** For a timer block: on a count ("every 30 merges") or a clock ("daily"). */
   timer?: { every: number; of: string } | { clock: 'hourly' | 'daily' | 'weekly' };
+  /**
+   * For a timer block (#114): it starts at most once every `minHours` hours, and only `when` its condition holds, as
+   * the manager reads it ("Triage holds more than five"). Ledung doesn't run timers yet, so the manager keeps both.
+   */
+  guard?: { minHours?: number; when?: string };
   /** For a Run flow block (#447): the name of the flow it runs ("main" for the default one). */
   flow?: string;
   /** At most this many runs in the block at once; the others wait before it, in line (part 3f). None: no limit. */
