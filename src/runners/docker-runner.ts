@@ -262,10 +262,10 @@ export class DockerRunner implements Runner {
     });
   }
 
-  async pullRequestView(pr: number, repo: string | null, fields: string, timeoutMs: number): Promise<{ json: string } | { error: string }> {
+  async pullRequestView(pr: number, repo: string | null, fields: string, timeoutMs: number, cwd?: string): Promise<{ json: string } | { error: string }> {
     const q = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`;
     try {
-      const { stdout } = await this.exec(`cd ${q(this.cwd)} && gh pr view ${Number(pr)}${repo ? ` -R ${q(repo)}` : ''} --json ${q(fields)}`, timeoutMs);
+      const { stdout } = await this.exec(`cd ${q(cwd ?? this.cwd)} && gh pr view ${Number(pr)}${repo ? ` -R ${q(repo)}` : ''} --json ${q(fields)}`, timeoutMs);
       return { json: stdout };
     } catch (e) {
       return { error: failureReason(e, timeoutMs) };

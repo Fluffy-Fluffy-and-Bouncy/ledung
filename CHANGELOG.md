@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-05
+- Away merges run exactly the pull request whose checks passed, at the commit they were checked at: Ledung runs the merge by the PR's link and refuses it if the branch moved since. A merge without a repository named is checked in the folder the session is in (a nested clone's own PR there), and held for you when that folder is outside the project. (#143, #144)
 - Away mode with merge allowed: a manager's own plain `gh pr merge` whose checks pass (open, mergeable, no check failing or running) now goes through without Claude Code's auto mode refusing it; one refused anyway is put in the away log for the morning report instead of asking you. (#133)
 - Workflow pages in a container project: a link to a file whose name ends in a line break is refused as outside the project folder, never read as the file without it; the workflow builder and the container file viewer's last check catch the same trick. (#131)
 - A session's info bar always shows the macros ＋, also before you have any macros; its menu's "Edit macros…" goes to Settings → Macros. (#126)

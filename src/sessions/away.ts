@@ -325,12 +325,72 @@ export interface AwayDecision {
   pr: number | null;
   repo: string | null;
   floors: Floor[];
+  /**
+   * An allowed merge: the command that runs instead of the one sent, pinned to the PR whose floors were read and to
+   * the head they were read at (issues #143, #144). Wherever the shell stands and whatever GH_REPO says, gh merges
+   * that PR, and only while its head is that commit.
+   */
+  command?: string;
 }
 
 /** `gh pr view <n> [-R repo] --json <fields>` where the session runs: its output, or why there is none. */
 export type ViewPr = (pr: number, repo: string | null, fields: string) => Promise<{ json: string } | { error: string }>;
 
-export const PR_FLOOR_FIELDS = 'state,mergeable,statusCheckRollup';
+export const PR_FLOOR_FIELDS = 'state,mergeable,statusCheckRollup,url,headRefOid';
+
+/**
+ * The PR the floors were read for, from the same answer: its link and its head commit (issues #143, #144). A missing
+ * field, or a link to another PR or repository than the merge named: why it can't be pinned, and the merge is held.
+ */
+export function pinOf(pr: number, repo: string | null, json: string): { url: string; head: string } | { why: string } {
+  let v: { url?: unknown; headRefOid?: unknown };
+  try {
+    v = JSON.parse(json);
+  } catch {
+    return { why: `PR #${pr}: GitHub's answer could not be read` };
+  }
+  const url = typeof v.url === 'string' ? /^https:\/\/([\w.-]+)\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)$/.exec(v.url) : null;
+  if (!url || Number(url[3]) !== pr) return { why: `GitHub did not give PR #${pr}'s link` };
+  if (repo) {
+    // -R takes [HOST/]OWNER/REPO; a link names its host. Either way, the PR read must be the one named.
+    const named = repo.toLowerCase().split('/');
+    const read = [url[1]!, ...url[2]!.split('/')].map((x) => x.toLowerCase());
+    if (named.join('/') !== read.slice(-named.length).join('/')) return { why: `PR #${pr} was read in ${url[1]}/${url[2]}, not in ${repo}` };
+  }
+  const head = typeof v.headRefOid === 'string' && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(v.headRefOid) ? v.headRefOid : null;
+  if (!head) return { why: `GitHub did not give PR #${pr}'s head commit` };
+  return { url: url[0], head };
+}
+
+/** A word as the shell must see it: plain, or in single quotes. */
+const shellWord = (w: string) => (/^[\w./:=@%+,-]+$/.test(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`);
+
+/**
+ * The merge that runs (issues #143, #144): `gh pr merge <link> --match-head-commit <head>` and the options sent, less
+ * -R (the link names the repository). Only for a command classify called a merge. An own --match-head-commit for
+ * another commit: why it can't run, since the floors were read at this one.
+ */
+export function pinnedMerge(command: string, pin: { url: string; head: string }): { command: string } | { why: string } {
+  const w = words(command);
+  if (!Array.isArray(w)) return { why: w.why };
+  const kept: string[] = [];
+  for (let i = 3; i < w.length; i++) {
+    const a = w[i]!;
+    const eq = a.startsWith('--') ? a.indexOf('=') : -1;
+    const flag = eq > 0 ? a.slice(0, eq) : a;
+    if (WITH_VALUE.has(flag)) {
+      const value = eq > 0 ? a.slice(eq + 1) : w[++i] ?? '';
+      if (flag === '--match-head-commit' && value.toLowerCase() !== pin.head.toLowerCase()) {
+        return { why: `its --match-head-commit ${value} is not the head its floors were read at (${pin.head})` };
+      }
+      if (flag !== '-R' && flag !== '--repo' && flag !== '--match-head-commit') kept.push(flag, value);
+      continue;
+    }
+    // Anything else not an option is the pull request itself, a number or a link: replaced by the link GitHub gave.
+    if (a.startsWith('-')) kept.push(a);
+  }
+  return { command: ['gh', 'pr', 'merge', pin.url, '--match-head-commit', pin.head, ...kept].map(shellWord).join(' ') };
+}
 
 /**
  * What away mode says about a manager's sensitive Bash call, or about a dev ship (or what looks like one)
@@ -350,11 +410,14 @@ export async function decide(a: AwayInfo, userName: string, command: string, dev
   if (p.kind === 'devShip') {
     return { kind: 'devShip', allowed: true, reason: `Allowed by away mode: ${userName} allowed dev ship, and this is the project's dev ship command`, pr: null, repo: null, floors: [] };
   }
-  return mergeFloors(p.pr, p.repo, userName, viewPr);
+  return mergeFloors(command, p.pr, p.repo, userName, viewPr);
 }
 
-/** A merge's floors, read from GitHub: allowed with what passed, or held with what failed. Fails closed. */
-async function mergeFloors(pr: number, repo: string | null, userName: string, viewPr: ViewPr): Promise<AwayDecision> {
+/**
+ * A merge's floors, read from GitHub: allowed with what passed and the merge pinned to that PR and head (issues #143,
+ * #144), or held with what failed. Fails closed.
+ */
+async function mergeFloors(command: string, pr: number, repo: string | null, userName: string, viewPr: ViewPr): Promise<AwayDecision> {
   const where = { pr, repo };
   const held = (reason: string, floors: Floor[]): AwayDecision => ({ kind: 'merge', allowed: false, reason: `held for ${userName}: ${reason}`, ...where, floors });
   const view = await viewPr(pr, repo, PR_FLOOR_FIELDS);
@@ -362,7 +425,10 @@ async function mergeFloors(pr: number, repo: string | null, userName: string, vi
   const floors = floorsOf(pr, view.json);
   const failed = floors.filter((f) => !f.ok);
   if (failed.length) return held(failed.map((f) => f.detail).join('; '), floors);
-  return { kind: 'merge', allowed: true, reason: `Allowed by away mode: PR #${pr} ${floors.map((f) => f.detail).join(', ')}`, ...where, floors };
+  const pin = pinOf(pr, repo, view.json);
+  const run = 'why' in pin ? pin : pinnedMerge(command, pin);
+  if ('why' in run) return held(run.why, [...floors, { floor: 'pinned', ok: false, detail: run.why }]);
+  return { kind: 'merge', allowed: true, reason: `Allowed by away mode: PR #${pr} ${floors.map((f) => f.detail).join(', ')}`, ...where, floors, command: run.command };
 }
 
 /**
@@ -376,7 +442,7 @@ export async function orderedMergeFloors(userName: string, command: string, view
   if (p.kind !== 'merge') {
     return { kind: 'merge', allowed: false, reason: `held for ${userName}: away mode can't check this merge's floors: ${('why' in p && p.why) || 'it is not a plain gh pr merge'}`, pr: null, repo: null, floors: [] };
   }
-  return mergeFloors(p.pr, p.repo, userName, viewPr);
+  return mergeFloors(command, p.pr, p.repo, userName, viewPr);
 }
 
 /**

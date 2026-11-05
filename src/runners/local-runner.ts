@@ -105,10 +105,10 @@ export class LocalRunner implements Runner {
     return fs.promises.readFile(path.join(this.cwd, relative), 'utf8').catch(() => null);
   }
 
-  async pullRequestView(pr: number, repo: string | null, fields: string, timeoutMs: number): Promise<{ json: string } | { error: string }> {
+  async pullRequestView(pr: number, repo: string | null, fields: string, timeoutMs: number, cwd?: string): Promise<{ json: string } | { error: string }> {
     try {
       const args = ['pr', 'view', String(pr), ...(repo ? ['-R', repo] : []), '--json', fields];
-      const { stdout } = await promisify(execFile)('gh', args, { cwd: this.cwd, windowsHide: true, timeout: timeoutMs });
+      const { stdout } = await promisify(execFile)('gh', args, { cwd: cwd ?? this.cwd, windowsHide: true, timeout: timeoutMs });
       return { json: stdout };
     } catch (e) {
       return { error: failureReason(e, timeoutMs) };

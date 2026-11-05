@@ -98,6 +98,11 @@ function setup() {
         const out = await pre({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command, description: 'Run it', ...extra } } as never, toolUseId, signal) as { hookSpecificOutput?: { permissionDecision?: string } };
         return out.hookSpecificOutput?.permissionDecision === 'allow' ? 'allow' : null;
       },
+      /** The input Claude Code runs instead of the one sent, when the hook gives one (issues #143, #144). */
+      updated: async (command: string, toolUseId: string) => {
+        const out = await pre({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command, description: 'Run it' } } as never, toolUseId, signal) as { hookSpecificOutput?: { updatedInput?: Record<string, unknown> } };
+        return out.hookSpecificOutput?.updatedInput;
+      },
       /** The call ended well: the note after it. */
       ran: async (toolUseId: string) => {
         const out = await post({ hook_event_name: 'PostToolUse', tool_use_id: toolUseId } as never, toolUseId, signal) as { hookSpecificOutput?: { additionalContext?: string } };
@@ -513,12 +518,30 @@ test("an ask_user answer confirms only when its question showed that exact comma
   assert.ok(t.confirmQ(4));
 });
 
+test('#143, #144: an ordered merge checked while away runs pinned to the PR read and its head; one ordered while present runs as sent', async () => {
+  const MERGE = 'gh pr merge 9 --squash';
+  const HEAD = '9f8e7d6c5b4a39281706f5e4d3c2b1a098765432';
+  const green = JSON.stringify({ state: 'OPEN', mergeable: 'MERGEABLE', statusCheckRollup: [], url: 'https://github.com/o/r/pull/9', headRefOid: HEAD });
+  const t = setup();
+  t.goAway(['ordered']);
+  t.github.json = green;
+  await t.management.startSession('mgr', { task: 'Merge.', order: { command: MERGE, question: t.agreed(MERGE) } });
+  assert.deepEqual(await (await t.hooksOf('w1')).updated(MERGE, 'a'), { command: `gh pr merge https://github.com/o/r/pull/9 --match-head-commit ${HEAD} --squash`, description: 'Run it' });
+  // Present: no floors are read, and the order runs exactly as the person agreed it.
+  const here = setup();
+  here.github.json = green;
+  await here.management.startSession('mgr', { task: 'Merge.', order: { command: MERGE, question: here.agreed(MERGE) } });
+  assert.equal(await (await here.hooksOf('w1')).updated(MERGE, 'h'), undefined);
+  t.away.stop();
+});
+
 test('while the person is away, an ordered merge still passes the floors: the order replaces the ask, not the checks', async () => {
   // Spec-gap 3 of the review of PR #107; Martin 2026-11-03, Ledung question #1290 (no note on the floors: they apply).
   const MERGE = 'gh pr merge 9 --squash';
   const ADMIN = 'gh pr merge 5 --admin';
   const failing = JSON.stringify({ state: 'OPEN', mergeable: 'MERGEABLE', statusCheckRollup: [{ name: 'check', status: 'COMPLETED', conclusion: 'FAILURE' }] });
-  const green = JSON.stringify({ state: 'OPEN', mergeable: 'MERGEABLE', statusCheckRollup: [{ name: 'check', status: 'COMPLETED', conclusion: 'SUCCESS' }] });
+  // With the link and head the floors ask for since issues #143 and #144.
+  const green = JSON.stringify({ state: 'OPEN', mergeable: 'MERGEABLE', statusCheckRollup: [{ name: 'check', status: 'COMPLETED', conclusion: 'SUCCESS' }], url: 'https://github.com/o/r/pull/9', headRefOid: '9f8e7d6c5b4a39281706f5e4d3c2b1a098765432' });
   // Here: the person is present and ordered it; away mode's floors are not asked.
   const here = setup();
   here.github.json = failing;
