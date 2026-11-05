@@ -97,7 +97,7 @@ export interface FlowBlock {
   /** For a session: the model and session profile it starts with, by name. */
   model?: string;
   profile?: string;
-  /** How the one doing the step acts, as markdown inside the workflow folder: "briefs/builder.md" makes a builder. Blocks may share one. */
+  /** How the one doing the step acts, as markdown inside the workflow folder: "briefs/builder.md" makes a builder. Blocks may share one. "folder:…" is in the folder the workflow folder is in (ledung#111). */
   brief?: string;
   /** The subagents its one starts, in the order they run (#322). */
   substeps?: FlowSubstep[];
@@ -160,6 +160,8 @@ export interface FlowFrame {
 export interface Flow {
   version: 1;
   title?: string;
+  /** Who made it, as they want the credit (#117): shown with its title, on a shared workflow too. None: no line. */
+  author?: string;
   /** Where work enters; none: the first block. Timer blocks start on their own. */
   start?: string;
   /**

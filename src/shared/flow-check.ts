@@ -22,6 +22,23 @@ const SAFE_PATH = /^(?![\s\S]*(?:^|\/)\.{1,2}(?:\/|$))[A-Za-z0-9_. -]+(?:\/[A-Za
 const MarkdownPath = z.string().max(200).regex(SAFE_PATH, 'is a path inside the workflow folder, such as briefs/review.md: no absolute path, "..", "\\" or drive')
   .refine((p) => /\.md$/i.test(p), 'is a markdown file (.md)');
 
+/**
+ * ledung#111: a brief may name a file in the folder the workflow folder is in, "folder:process/briefs/review.md": a
+ * shared workflow's own folder (or the project's), so a process whose briefs live beside its .ledung/workflow needn't
+ * copy them. The same rules as SAFE_PATH after the prefix, and the readers keep it inside that folder.
+ */
+export const FOLDER_PREFIX = 'folder:';
+/** A brief's path in the folder the workflow folder is in, for "folder:…"; null for a path in the workflow folder. */
+export const inFolder = (p: string): string | null => (p.startsWith(FOLDER_PREFIX) ? p.slice(FOLDER_PREFIX.length) : null);
+/** A brief that isn't there, said where it was looked for (review of PR #136). */
+const missingBrief = (brief: string) => {
+  const rest = inFolder(brief);
+  return rest === null ? `The brief ${brief} is not in the workflow folder.` : `The brief ${rest} is not in the folder the workflow folder is in.`;
+};
+const BriefPath = z.string().max(200)
+  .refine((p) => SAFE_PATH.test(inFolder(p) ?? p), `is a path inside the workflow folder, such as briefs/review.md, or inside the folder it is in, such as ${FOLDER_PREFIX}process/briefs/review.md: no absolute path, "..", "\\" or drive`)
+  .refine((p) => /\.md$/i.test(p), 'is a markdown file (.md)');
+
 // Not trimmed: the builder (part 2) writes back what it read, so a value stays as it was written (review of #310).
 const Text = (max: number) => z.string().max(max).refine((t) => t.trim().length > 0, 'is empty');
 const Comment = z.string().optional();
@@ -70,7 +87,7 @@ const Substep = z.object({
   id: Id,
   kind: z.enum(SUBSTEP_KINDS, { message: 'is "work" or "check": a subagent\'s piece of work, or its check of the block\'s work' }),
   title: Text(80),
-  brief: MarkdownPath.optional(),
+  brief: BriefPath.optional(),
   model: Text(80).optional(),
   when: z.enum(SUBSTEP_WHEN, { message: 'is "start", "done" (when the block\'s own work is done) or "brief" (where the brief says)' }).optional(),
   outcomes: z.array(SubstepOutcome).max(20).optional(),
@@ -85,7 +102,7 @@ const Block = z.object({
   continues: Id.optional(),
   model: Text(80).optional(),
   profile: Text(48).optional(),
-  brief: MarkdownPath.optional(),
+  brief: BriefPath.optional(),
   substeps: z.array(Substep).max(20).optional(),
   outcomes: z.array(Outcome).max(50).optional(),
   ask: z.enum(['question', 'review'], { message: 'is "question" (ask_user) or "review" (a review page)' }).optional(),
@@ -140,6 +157,8 @@ const FlowFile = z.object({
   $comment: Comment,
   version: z.literal(1, { message: 'must be 1, the only version this Ledung knows' }),
   title: Text(120).optional(),
+  /** A line of credit, shown only (#117): no proof of authorship. */
+  author: Text(120).optional(),
   start: Id.optional(),
   manager: MarkdownPath.optional(),
   blocks: z.array(Block).min(1, 'a flow needs at least one block').max(200),
@@ -360,7 +379,7 @@ export function checkFlow(flow: Flow, exists: (file: string) => boolean, profile
       const sat = `${at}.substeps.${s.id}`;
       if (subIds.has(s.id)) add(sat, `Two sub-steps of "${b.title}" have the id "${s.id}"; give each its own.`);
       subIds.add(s.id);
-      if (s.brief && !exists(s.brief)) add(`${sat}.brief`, `The brief ${s.brief} is not in the workflow folder.`);
+      if (s.brief && !exists(s.brief)) add(`${sat}.brief`, missingBrief(s.brief));
       outcomeList(`${sat}.outcomes`, s.title, s.outcomes ?? []);
       // Back to the block's one for ever, unless a count of the same word leads out of the round (#1185, review).
       for (const o of s.outcomes ?? []) {
@@ -381,7 +400,7 @@ export function checkFlow(flow: Flow, exists: (file: string) => boolean, profile
     if (b.kind !== 'timer' && b.guard) add(`${at}.guard`, `Only a timer block has "guard": take it out of "${b.title}", or make it a timer block.`);
     const clock = b.kind === 'timer' && b.timer && 'clock' in b.timer ? b.timer.clock : undefined;
     if (clock && b.guard?.minHours !== undefined && b.guard.minHours <= CLOCK_HOURS[clock]) hint(`${at}.guard.minHours`, `"${b.title}" starts ${clock}, so "at most every ${b.guard.minHours} h" holds nothing back.`);
-    if (b.brief && !exists(b.brief)) add(`${at}.brief`, `The brief ${b.brief} is not in the workflow folder.`);
+    if (b.brief && !exists(b.brief)) add(`${at}.brief`, missingBrief(b.brief));
     // By name, as the config and the workflow's profiles file give them (#298): the flow carries no profiles of its own.
     if (b.profile && profiles && !profiles.includes(b.profile)) add(`${at}.profile`, `There is no session profile "${b.profile}" for this project (${profiles.length ? `there are: ${profiles.join(', ')}` : 'it has none'}).`);
   }
@@ -411,6 +430,7 @@ export function checkFlow(flow: Flow, exists: (file: string) => boolean, profile
   };
   for (const b of flow.blocks) scan({ ...b, id: undefined }, `blocks.${b.id}`);
   if (flow.title) scan(flow.title, 'title');
+  if (flow.author) scan(flow.author, 'author');
   flow.overlays.forEach((o) => scan(o.title, `overlays.${o.id}.title`));
   flow.frames.forEach((f) => scan(f.title, `frames.${f.id}.title`));
 

@@ -40,6 +40,8 @@ export interface DraftFrame {
 
 export interface Draft {
   title?: string;
+  /** As flow.json says it (#117); the builder keeps it. */
+  author?: string;
   /** Part 3f: as flow.json says them; none: the default. */
   worktree?: FlowWorktree;
   limit?: number;
@@ -98,6 +100,7 @@ export function draftFromView(view: FlowView): { base: DraftBase; draft: Draft }
     base: { raw, rawText: view.raw, parsed: flow, rules: view.rules, texts: view.texts, versions: view.versions, copy: view.source?.kind === 'workflow' },
     draft: {
       ...(flow.title !== undefined ? { title: flow.title } : {}),
+      ...(flow.author !== undefined ? { author: flow.author } : {}),
       ...(flow.start !== undefined ? { start: flow.start } : {}),
       ...(flow.manager !== undefined ? { manager: flow.manager } : {}),
       ...follow(flow),
@@ -162,6 +165,7 @@ export function flowOf(draft: Draft): Flow {
   return {
     version: 1,
     ...(draft.title !== undefined ? { title: draft.title } : {}),
+    ...(draft.author !== undefined ? { author: draft.author } : {}),
     ...(draft.start !== undefined ? { start: draft.start } : {}),
     ...(draft.manager !== undefined ? { manager: draft.manager } : {}),
     ...follow(draft),
@@ -174,7 +178,7 @@ export function flowOf(draft: Draft): Flow {
 // --- Writing back -------------------------------------------------------------------------------------------------
 
 /** The fields of each part of the format, in the order a new one is written; nested parts with their own fields. */
-const TOP_FIELDS = ['version', 'title', 'start', 'manager', 'worktree', 'limit', 'tidy', 'oneRunPerRef'];
+const TOP_FIELDS = ['version', 'title', 'author', 'start', 'manager', 'worktree', 'limit', 'tidy', 'oneRunPerRef'];
 const BLOCK_FIELDS = ['id', 'kind', 'title', 'flow', 'session', 'runs', 'continues', 'context', 'model', 'profile', 'brief', 'ask', 'person', 'timer', 'guard', 'parallel', 'limit', 'substeps', 'outcomes', 'at'];
 const SUBSTEP_FIELDS = ['id', 'kind', 'title', 'brief', 'model', 'when', 'outcomes'];
 const OUTCOME_FIELDS = ['word', 'to', 'times', 'end'];
@@ -255,7 +259,7 @@ export function flowText(base: DraftBase, draft: Draft): string {
   const parsed = base.parsed;
   const rawList = (key: string): unknown[] => (raw && Array.isArray(raw[key]) ? raw[key] as unknown[] : []);
   const at = (key: string) => /^[bof](\d+)$/.exec(key) && raw ? Number(key.slice(1)) : -1;
-  const fields = { version: 1, title: draft.title, start: draft.start, manager: draft.manager, worktree: draft.worktree, limit: draft.limit, tidy: draft.tidy, oneRunPerRef: draft.oneRunPerRef };
+  const fields = { version: 1, title: draft.title, author: draft.author, start: draft.start, manager: draft.manager, worktree: draft.worktree, limit: draft.limit, tidy: draft.tidy, oneRunPerRef: draft.oneRunPerRef };
   let top: Record<string, unknown> = raw ? mergeKnown(raw, parsed, fields, TOP_FIELDS) : fresh(fields, TOP_FIELDS);
   // A manager's file new to a read flow goes where a new flow has it, before the blocks, not after everything.
   if (raw && !('manager' in raw) && 'manager' in top && 'blocks' in top) {
