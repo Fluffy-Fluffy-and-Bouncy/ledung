@@ -85,6 +85,7 @@ Each gap below is placed by the same rule.
 - **#112 Per-project values (`<KEY>`) in model, profile and timer.** It is mechanical, but mostly needed by shared processes. **After.** Until then, these values stay in prose.
 - **#113 Overlays switched per project, and able to add blocks.** **After.** It is a larger format change.
 - **#114 Timer guards.** Ledung doesn't run timers yet, so a guard would only be words. **After**, with timers Ledung runs. Until then, the guard is prose in the manager's file.
+  - *Built 2026-11-05 as format only* (Martin, 2026-11-05: "send 114 to the mac to work on as well"): a timer block's `guard`, `{ "minHours": 24, "when": "…" }`, is drawn on the block, set in the builder and checked; the condition stays words the manager reads, and Ledung keeping the guard comes with timers Ledung runs.
 - **#115 Which wins: the written workflow or the drawn flow.** Following is on by default, so a manager on a project with both is now told both.
   - **Recommendation: before part 3 goes public.** One line: the flow says what happens next and who does it, and the written files say how.
   - Make it a setting only if a project needs the other way round.
