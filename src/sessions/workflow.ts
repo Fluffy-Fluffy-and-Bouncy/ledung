@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { ProjectConfig, WorkflowConfig, WorkflowFiles } from '../config.ts';
 import type { SessionRole } from '../shared/protocol.ts';
+import type { StartReading } from './start-reading.ts';
 
 export interface ProjectWorkflow {
   /** The file this kind of session reads first, as the session sees it. */
@@ -20,6 +21,8 @@ export interface ProjectWorkflow {
   profilesWarning?: string;
   /** The workflow's nudges file as a full path, read on every prompt (#405); absent when the workflow names none. */
   nudgesFile?: string;
+  /** The workflow's start-reading list and where its files are (Project-Ledung#469); absent when the workflow names none. */
+  startReading?: StartReading;
 }
 
 /** The workflow with its profiles file's problem, if any, so the session hears of it: never a silent fallback (#298 decision 6). */
@@ -51,6 +54,14 @@ export function projectWorkflow(workflow: WorkflowFiles | undefined, project: Pr
     configExists: project.runner === 'local' ? fs.existsSync(projectConfig) : null,
     // The file is in the process folder on this computer, which Ledung reads itself, also for a container's sessions.
     ...(workflow.nudgesFile ? { nudgesFile: path.resolve(workflow.folder, workflow.nudgesFile) } : {}),
+    // Named in the workflow block like the nudges file, so the code knows no process folder's layout (#469).
+    ...(workflow.startReadingFile ? { startReading: {
+      file: path.resolve(workflow.folder, workflow.startReadingFile),
+      folder: workflow.folder,
+      projectFolder: project.runner === 'local' ? project.path : project.pathInContainer,
+      projectConfig,
+      local: project.runner === 'local',
+    } } : {}),
   };
 }
 
