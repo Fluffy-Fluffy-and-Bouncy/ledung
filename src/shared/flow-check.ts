@@ -255,8 +255,10 @@ export function parseFlow(text: string, file = FLOW_FILE): { flow: Flow; problem
   // $comment is for people reading the file; the page has no use for it.
   const { $comment: _, ...flow } = result.data;
   const plain = <T extends { $comment?: string }>(list: T[] | undefined) => list?.map(({ $comment: _x, ...rest }) => rest);
-  const blocks = flow.blocks.map(({ $comment: _c, outcomes, substeps, ...b }) => ({
+  const blocks = flow.blocks.map(({ $comment: _c, outcomes, substeps, guard, ...b }) => ({
     ...b,
+    // #114 review: a guard's $comment too, so the builder writes back the one in the file.
+    ...(guard ? { guard: (({ $comment: _g, ...g }) => g)(guard) } : {}),
     ...(outcomes ? { outcomes: plain(outcomes) } : {}),
     ...(substeps ? { substeps: substeps.map(({ $comment: _s, outcomes: so, ...sub }) => ({ ...sub, ...(so ? { outcomes: plain(so) } : {}) })) } : {}),
   }));

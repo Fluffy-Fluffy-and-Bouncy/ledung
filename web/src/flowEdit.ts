@@ -175,12 +175,12 @@ export function flowOf(draft: Draft): Flow {
 
 /** The fields of each part of the format, in the order a new one is written; nested parts with their own fields. */
 const TOP_FIELDS = ['version', 'title', 'start', 'manager', 'worktree', 'limit', 'tidy', 'oneRunPerRef'];
-const BLOCK_FIELDS = ['id', 'kind', 'title', 'flow', 'session', 'runs', 'continues', 'context', 'model', 'profile', 'brief', 'ask', 'person', 'timer', 'parallel', 'limit', 'substeps', 'outcomes', 'at'];
+const BLOCK_FIELDS = ['id', 'kind', 'title', 'flow', 'session', 'runs', 'continues', 'context', 'model', 'profile', 'brief', 'ask', 'person', 'timer', 'guard', 'parallel', 'limit', 'substeps', 'outcomes', 'at'];
 const SUBSTEP_FIELDS = ['id', 'kind', 'title', 'brief', 'model', 'when', 'outcomes'];
 const OUTCOME_FIELDS = ['word', 'to', 'times', 'end'];
 const OVERLAY_FIELDS = ['id', 'title', 'file', 'blocks'];
 const FRAME_FIELDS = ['id', 'title', 'colour', 'at', 'size'];
-const NESTED: Record<string, string[]> = { at: ['x', 'y'], timer: ['every', 'of', 'clock'], size: ['width', 'height'] };
+const NESTED: Record<string, string[]> = { at: ['x', 'y'], timer: ['every', 'of', 'clock'], guard: ['$comment', 'minHours', 'when'], size: ['width', 'height'] };
 /** Lists of parts with fields of their own, merged one by one by place when the list is as long as it was. */
 const NESTED_LISTS: Record<string, string[]> = { outcomes: OUTCOME_FIELDS };
 
