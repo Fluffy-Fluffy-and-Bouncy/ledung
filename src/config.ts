@@ -49,6 +49,8 @@ const WorkflowFields = {
   profilesFile: z.string().min(1).optional(),
   /** Inside the folder: the workflow's nudges, texts shown on a prompt while the context is over a threshold (#405). */
   nudgesFile: z.string().min(1).optional(),
+  /** Inside the folder: what each session reads first, printed after every startup, clear, compact and resume (Project-Ledung#469). */
+  startReadingFile: z.string().min(1).optional(),
 };
 
 /** The single "workflow" block (issue #21): the first workflow, named "default" unless it says otherwise (issue #132). */

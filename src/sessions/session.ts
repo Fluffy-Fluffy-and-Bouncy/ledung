@@ -41,6 +41,7 @@ import { needsPluginIds, parseSettingsFile, pluginIdsIn, profileOptions, setting
 import { workflowInstructions, type ProjectWorkflow } from './workflow.ts';
 import { workflowLines } from './flow-files.ts';
 import { promptNudges } from './workflow-nudges.ts';
+import { sessionStartText } from './start-reading.ts';
 import { RemoteControl } from './remote-control.ts';
 import { McpError, mcpServers, reconnectMcp } from './mcp.ts';
 import { boundarySettings, withBoundary } from './boundary.ts';
@@ -65,6 +66,7 @@ import { heldImageNames, heldText } from '../store/store.ts';
 let sourcesExercised = false;
 /** The EXERCISED line of issue #405, once per run. */
 let nudgesExercised = false;
+let startReadingExercised = false;
 /** The EXERCISED line of issue #133, once per run. */
 let awayMergeExercised = false;
 /** The EXERCISED line of issues #143 and #144, once per run. */
@@ -284,6 +286,10 @@ export class Session {
   private readonly workflow: ProjectWorkflow | null;
   /** The nudges file's problem this session was last told of, so it is told once, not every prompt (issue #405). */
   private nudgesProblemTold: string | null = null;
+  /** The start-reading list's problem this session was last told of (Project-Ledung#469), so it is told once. */
+  private startReadingTold: string | null = null;
+  /** Whether this launch's first prompt still owes the start-reading list, its own SessionStart never having reached the hook (#469). */
+  private startReadingPending = false;
   private readonly flow: (() => Promise<string | null>) | null;
   private readonly runs: (() => Promise<RunHandlers | null>) | null;
   private readonly propose: ProposeHandlers | null;
@@ -974,6 +980,8 @@ export class Session {
       const off = skillsOff(found, this.skills.role, this.skills.defaults, this.skills.project);
       profile.settings = withSkillsOff(profile.settings as Record<string, unknown> | undefined, off) as Options['settings'];
     }
+    // A new process starts with the list owed; a running one being reattached already has it (#469).
+    this.startReadingPending = !this.attachTo;
     const role = this.store.getSession(this.id)!.role;
     const manager = this.management.managerOf(this.id);
     const tools: ToolHandlers = {
@@ -1107,6 +1115,14 @@ export class Session {
           }
           return {};
         }] }],
+        // What the session reads first, from its workflow's start-reading list, after every startup, clear, compact
+        // and resume (Project-Ledung#469). Added next to the project's own SessionStart hooks, which still run; with
+        // no workflow or no list it adds nothing, and it never fails the start.
+        SessionStart: [{ hooks: [async () => {
+          this.startReadingPending = false;
+          const text = await this.startReadingContext();
+          return text ? { hookSpecificOutput: { hookEventName: 'SessionStart' as const, additionalContext: text } } : {};
+        }] }],
         // Sessions know the time, without Ledung changing what Simon typed (want 9).
         // Delivered messages carry their context here, not in the user's words (step 4).
         UserPromptSubmit: [{ hooks: [async (input) => {
@@ -1135,15 +1151,42 @@ export class Session {
           const secret = prompt.includes(SECRET_FOR_CLAUDE_START) ? SECRET_RULE : '';
           const time = [promptTimeLine(now, this.lastPromptAt, info?.createdAt ?? null), context, usage, away, secret].filter(Boolean).join('\n');
           this.lastPromptAt = now.getTime();
+          // A launch's own SessionStart never reaches Ledung's hook (Claude Code runs the startup hooks before the
+          // SDK's are registered; loopback of #469), so the launch's first prompt carries the list instead.
+          const start = this.startReadingPending ? (this.startReadingPending = false, await this.startReadingContext()) : null;
           return {
             hookSpecificOutput: {
               hookEventName: 'UserPromptSubmit' as const,
-              additionalContext: attached ? `${time}\n\nDelivered by Ledung (not from ${this.userName}):\n\n${attached}` : time,
+              additionalContext: [time, start, attached ? `Delivered by Ledung (not from ${this.userName}):\n\n${attached}` : null].filter(Boolean).join('\n\n'),
             },
           };
         }] }],
       },
     };
+  }
+
+  /** The start-reading list's text for this session now (#469), or null: none, or its problem already told. Never throws. */
+  private async startReadingContext(): Promise<string | null> {
+    try {
+      const sr = this.workflow?.startReading;
+      if (!sr) return null;
+      const r = await sessionStartText(sr, this.store.getSession(this.id), this.startReadingTold, (file) => this.readForStart(file, sr.local));
+      this.startReadingTold = r.told;
+      if (r.text && !startReadingExercised) {
+        startReadingExercised = true;
+        exercisedLine('EXERCISED #469 a start-reading list or its problem added at a session start');
+      }
+      return r.text;
+    } catch (e) {
+      console.error(`Start-reading list for session ${this.id}: ${(e as Error).message}`);
+      return null;
+    }
+  }
+
+  /** A project file for the start-reading list (#469), as the session sees it: on this computer read here, in a container through the runner. */
+  private readForStart(file: string, local: boolean): Promise<string | null> {
+    if (local) return fs.promises.readFile(file, 'utf8').catch(() => null);
+    return this.runner.readProjectFile(path.posix.relative(this.runner.cwd, file));
   }
 
   private usageFacts(): SessionFacts {
