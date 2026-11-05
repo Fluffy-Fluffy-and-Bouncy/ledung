@@ -30,6 +30,11 @@ const MarkdownPath = z.string().max(200).regex(SAFE_PATH, 'is a path inside the 
 export const FOLDER_PREFIX = 'folder:';
 /** A brief's path in the folder the workflow folder is in, for "folder:…"; null for a path in the workflow folder. */
 export const inFolder = (p: string): string | null => (p.startsWith(FOLDER_PREFIX) ? p.slice(FOLDER_PREFIX.length) : null);
+/** A brief that isn't there, said where it was looked for (review of PR #136). */
+const missingBrief = (brief: string) => {
+  const rest = inFolder(brief);
+  return rest === null ? `The brief ${brief} is not in the workflow folder.` : `The brief ${rest} is not in the folder the workflow folder is in.`;
+};
 const BriefPath = z.string().max(200)
   .refine((p) => SAFE_PATH.test(inFolder(p) ?? p), `is a path inside the workflow folder, such as briefs/review.md, or inside the folder it is in, such as ${FOLDER_PREFIX}process/briefs/review.md: no absolute path, "..", "\\" or drive`)
   .refine((p) => /\.md$/i.test(p), 'is a markdown file (.md)');
@@ -360,7 +365,7 @@ export function checkFlow(flow: Flow, exists: (file: string) => boolean, profile
       const sat = `${at}.substeps.${s.id}`;
       if (subIds.has(s.id)) add(sat, `Two sub-steps of "${b.title}" have the id "${s.id}"; give each its own.`);
       subIds.add(s.id);
-      if (s.brief && !exists(s.brief)) add(`${sat}.brief`, `The brief ${s.brief} is not in the workflow folder.`);
+      if (s.brief && !exists(s.brief)) add(`${sat}.brief`, missingBrief(s.brief));
       outcomeList(`${sat}.outcomes`, s.title, s.outcomes ?? []);
       // Back to the block's one for ever, unless a count of the same word leads out of the round (#1185, review).
       for (const o of s.outcomes ?? []) {
@@ -377,7 +382,7 @@ export function checkFlow(flow: Flow, exists: (file: string) => boolean, profile
     } else if (b.flow !== undefined) add(`${at}.flow`, `Only a Run flow block (kind "flow") runs a flow: take "flow" out, or make "${b.title}" one.`);
     if (b.kind === 'timer' && !b.timer) add(at, `The timer block "${b.title}" doesn't say when it starts: give "timer", e.g. { "every": 30, "of": "merges" } or { "clock": "daily" }.`);
     if (b.kind !== 'timer' && b.timer) add(`${at}.timer`, 'Only a timer block has "timer".');
-    if (b.brief && !exists(b.brief)) add(`${at}.brief`, `The brief ${b.brief} is not in the workflow folder.`);
+    if (b.brief && !exists(b.brief)) add(`${at}.brief`, missingBrief(b.brief));
     // By name, as the config and the workflow's profiles file give them (#298): the flow carries no profiles of its own.
     if (b.profile && profiles && !profiles.includes(b.profile)) add(`${at}.profile`, `There is no session profile "${b.profile}" for this project (${profiles.length ? `there are: ${profiles.join(', ')}` : 'it has none'}).`);
   }

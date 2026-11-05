@@ -260,7 +260,7 @@ test('ledung#111: a "folder:" brief is read from the shared workflow\'s own fold
   assert.equal(view.texts['folder:process/briefs/review.md'], '# Review');
   const problems = view.problems.map((p) => `${p.at}: ${p.message}`);
   assert.ok(!problems.some((p) => p.includes('review.md')), problems.join('\n'));
-  assert.ok(problems.some((p) => p.startsWith('blocks.gone.brief:') && /not in the workflow folder/.test(p)), 'a missing one is said');
+  assert.ok(problems.some((p) => p === 'blocks.gone.brief: The brief process/briefs/gone.md is not in the folder the workflow folder is in.'), 'a missing one is said, where it was looked for');
   assert.ok(problems.some((p) => p.startsWith('folder:process/briefs/big.md:') && /too large/.test(p)), 'the text limit holds');
   // Out of the folder: refused by the format, and by the reader as well.
   const bad = (brief: string) => parseFlow(JSON.stringify({ version: 1, blocks: [block('a', brief)] })).problems.filter((p) => p.at === 'blocks.a.brief');
@@ -398,6 +398,52 @@ test("a container's workflow read script reads only inside the project: a link o
     assert.deepEqual(got.get('.ledung/workflow/overlays/bin.md'), { refused: '.ledung/workflow/overlays/bin.md is not a text file.' });
     assert.deepEqual(got.get('.ledung/workflow/manager.md'), { missing: true });
   });
+});
+
+// ledung#111 in a container project: a "folder:" brief is asked for in the project folder in the container, not in
+// .ledung/workflow, and the container's own script still refuses what leads out (test review of PR #136, finding 1).
+test('ledung#111: a container project reads a "folder:" brief from its project folder; "..", a link out and one to a name ending in a newline are refused', async (t) => {
+  if (spawnSync('sh', ['-c', 'readlink -f .'], { windowsHide: true }).status !== 0) {
+    t.skip('no sh with readlink here');
+    return;
+  }
+  const { INSIDE_PROJECT_SCRIPT, splitMarked } = await import('../src/runners/docker-runner.ts');
+  const { flowPlaces } = await import('../src/sessions/flow-files.ts');
+  const { parseProject } = await import('../src/config.ts');
+  // The container's project folder, here on this computer; read with the very script docker exec runs.
+  const box = fs.mkdtempSync(path.join(base, 'box-111-')).replaceAll('\\', '/');
+  const outside = fs.mkdtempSync(path.join(base, 'box-111-outside-'));
+  fs.mkdirSync(path.join(box, '.ledung', 'workflow'), { recursive: true });
+  fs.mkdirSync(path.join(box, 'process', 'briefs'), { recursive: true });
+  fs.writeFileSync(path.join(box, 'process', 'briefs', 'review.md'), '# Review in the box');
+  // What "folder:../secret.md" would reach: there, so a refusal is not a file merely missing.
+  fs.writeFileSync(path.join(base, 'secret.md'), 'SECRET-OUTSIDE');
+  fs.writeFileSync(path.join(outside, 'x.md'), 'SECRET-OUTSIDE');
+  const asked: string[][] = [];
+  const read = async (files: string[], maxBytes: number, budget: number) => {
+    asked.push(files);
+    const run = spawnSync('sh', ['-c', INSIDE_PROJECT_SCRIPT, 'sh', 'MARK', box, String(maxBytes), String(budget), ...files], { encoding: 'utf8', windowsHide: true });
+    assert.equal(run.status, 0, run.stderr);
+    assert.ok(!run.stdout.includes('SECRET-OUTSIDE'), 'the text outside is never printed');
+    return splitMarked(run.stdout, files, 'MARK');
+  };
+  const project = parseProject({ name: 'c', runner: 'docker', container: 'box', pathInContainer: '/work' });
+  const [place] = flowPlaces(project, undefined, { read, list: async () => [], write: async () => {} });
+  const wanted = ['folder:process/briefs/review.md', 'folder:../secret.md'];
+  let linked = true;
+  try {
+    fs.symlinkSync(path.join(outside, 'x.md'), path.join(box, 'process', 'briefs', 'out.md'));
+    fs.writeFileSync(path.join(outside, 'nl.md\n'), 'SECRET-OUTSIDE');
+    fs.symlinkSync(path.join(outside, 'nl.md\n'), path.join(box, 'process', 'briefs', 'nl.md'));
+    wanted.push('folder:process/briefs/out.md', 'folder:process/briefs/nl.md');
+  } catch {
+    linked = false;
+  }
+  const got = await place!.read(wanted);
+  assert.deepEqual(asked[0]!.slice(0, 2), ['process/briefs/review.md', '../secret.md'], 'asked in the project folder, not in .ledung/workflow');
+  assert.deepEqual(got.get('folder:process/briefs/review.md'), { text: '# Review in the box' });
+  for (const f of wanted.slice(1)) assert.match((got.get(f) as { refused: string }).refused, /leads outside the project folder/, f);
+  if (!linked) t.diagnostic('this machine does not allow links: the two link cases are left out');
 });
 
 // The container's write script, by a real sh (security review of PR #89, findings 3 and 4): a file that is a link is
