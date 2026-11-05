@@ -1537,6 +1537,23 @@ button.settings-menu-item.danger { color: var(--danger); }
 .composer .secret-pop-buttons { display: flex; justify-content: flex-end; gap: 0.4rem; }
 .composer-buttons .send-row { display: flex; gap: 0.3rem; }
 .composer-buttons .send-row .secret-key { padding: 0 0.45rem; }
+/* Images for the next message (issue #128): thumbnails above the box, each with its ✕, and the hint. */
+.composer-buttons .send-row .attach-image { padding: 0 0.45rem; }
+.composer.dropping textarea { border-color: var(--nc); border-style: dashed; }
+.composer .composer-images {
+  display: flex; gap: 0.5rem; align-items: flex-end; flex-wrap: wrap; padding: 0.4rem 0.6rem;
+  background: var(--panel); border: 1px solid var(--border); border-bottom: none; border-radius: 8px 8px 0 0;
+}
+.composer .composer-image { position: relative; display: inline-block; }
+.composer .composer-image img { display: block; height: 64px; max-width: 120px; object-fit: cover; border-radius: 6px; border: 1px solid var(--border); }
+.composer .composer-image-remove {
+  position: absolute; top: -6px; right: -6px; width: 22px; height: 22px; padding: 0; border-radius: 50%;
+  font-size: 12px; line-height: 20px; text-align: center; background: var(--panel); border: 1px solid var(--border);
+}
+.composer .composer-images-hint { font-size: 0.8em; flex-basis: 100%; }
+.msg-images { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.35rem; justify-content: flex-end; }
+.msg-images img { height: 96px; max-width: 200px; object-fit: cover; border-radius: 6px; border: 1px solid var(--border); cursor: zoom-in; }
+.msg-images .msg-image-gone { font-size: 0.85em; }
 .session-menu .secrets-row { flex-direction: column; align-items: stretch; gap: 0.3rem; }
 .session-menu .secrets-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.35rem; }
 .session-menu .secrets-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; }
