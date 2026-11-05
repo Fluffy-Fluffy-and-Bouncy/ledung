@@ -38,6 +38,8 @@ interface Options {
   sensitive?: string[];
   /** Extra sessions: id → project, all managers. */
   managers?: Record<string, string>;
+  /** The project's dev ship command pattern; default: none. */
+  devShip?: string;
 }
 
 function setup(opts: Options = {}) {
@@ -57,7 +59,7 @@ function setup(opts: Options = {}) {
     store.createSession({ id, project, runner: 'local', title: role ? `Manager: ${project}` : 'Worker', parentId, permissionMode: 'auto', ...(role ? { role } : {}) });
     const pushed: string[] = [];
     const session = new Session({
-      info: store.getSession(id)!, store, publish: () => {}, userName: 'Martin', management, away, devShip: null,
+      info: store.getSession(id)!, store, publish: () => {}, userName: 'Martin', management, away, devShip: opts.devShip ?? null,
       runner: {
         cwd: '.', currentBranch: async () => null,
         pullRequestView: async (...args: unknown[]) => {
@@ -86,9 +88,10 @@ function setup(opts: Options = {}) {
         onPermission(t: string, i: Record<string, unknown>, o: { signal: AbortSignal; toolUseID?: string }): Promise<{ behavior: string }>;
       }).onPermission('Bash', { command, description: 'Merge' }, { signal: new AbortController().signal, toolUseID }),
       /** The two stream lines a refused call gives: the model's tool_use, then Claude Code's error result for it. */
-      refuse: (toolUseId: string, command: string, reason = '[Merge Without Review]') => {
-        s.onMessage({ type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'tool_use', id: toolUseId, name: 'Bash', input: { command, description: 'Merge' } }] } });
-        s.onMessage({ type: 'user', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, is_error: true, content: REFUSED(reason) }] } });
+      /** parent: the subagent's Task call, when the refused call is one of the session's subagents'. */
+      refuse: (toolUseId: string, command: string, reason = '[Merge Without Review]', parent: string | null = null) => {
+        s.onMessage({ type: 'assistant', parent_tool_use_id: parent, message: { content: [{ type: 'tool_use', id: toolUseId, name: 'Bash', input: { command, description: 'Merge' } }] } });
+        s.onMessage({ type: 'user', parent_tool_use_id: parent, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, is_error: true, content: REFUSED(reason) }] } });
       },
       events: () => store.listMessages(id, { limit: 100 }).filter((m) => m.kind === 'event').map((m) => String(m.data.text)),
     };
@@ -150,6 +153,18 @@ test('outside away mode, with merge not allowed, or for anything but one plain m
   t.away.start(later(), ['merge']);
   t.away.end();
   assert.equal((await t.mgr.hook(MERGE, 'back')).decision, 'ask');
+  t.away.stop();
+});
+
+test("a dev ship, the other command away mode can allow, is not allowed in the merge hook: only a plain merge is", async () => {
+  // Review of PR #141 (test review, finding 1): with the hook's own "one plain merge" check gone, a dev ship that away
+  // mode allows went past the classifier with no prompt. Away dev ships are out of #133's scope (filed as #140).
+  const SHIP = 'npm run publish:dev';
+  const t = setup({ devShip: SHIP });
+  t.away.start(later(), ['merge', 'devShip']);
+  assert.notEqual((await t.mgr.hook(SHIP, 'ship')).decision, 'allow', 'the dev ship is not decided by the merge hook');
+  // The positive branch, same session and period: the plain merge is allowed.
+  assert.equal((await t.mgr.hook(MERGE, 'merge')).decision, 'allow');
   t.away.stop();
 });
 
@@ -217,6 +232,24 @@ test('a refused merge is asked as before outside away mode, with merge not allow
   t.mgr.refuse('d', 'gh pr merge 4 -R o/r --merge --admin');
   assert.equal(t.refusals().length, 4, 'not a plain merge');
   assert.equal(t.viewed.length, 0, 'GitHub never asked');
+  t.away.stop();
+});
+
+test("a merge by one of the manager's subagents that the classifier refuses is asked as before, even with its floors met", async () => {
+  // Review of PR #141 (code review, finding 1a): only the manager's own merge is away mode's here; a subagent's is
+  // unchanged, in the refusal path as in the hook. Subagent messages carry the Task call's id as parent_tool_use_id.
+  const t = setup({ gh: () => NO_CHECKS });
+  t.away.start(later(), ['merge']);
+  t.mgr.refuse('sub-1', MERGE, '[Merge Without Review]', 'task-1');
+  await t.flush();
+  assert.deepEqual(t.refusals().map((q) => q.details!.refusal!.toolUseId), ['sub-1'], "a subagent's refusal: the alarm, as before");
+  assert.equal(t.away.log('mgr').records.length, 0, 'not in the away log');
+  assert.equal(t.viewed.length, 0, 'GitHub not asked');
+  // The positive branch, same session and period: the manager's own refused merge is logged, not asked.
+  t.mgr.refuse('own-1', 'gh pr merge 2265 -R o/r --merge');
+  await t.flush();
+  assert.equal(t.refusals().length, 1, "the manager's own: not asked");
+  assert.deepEqual(t.away.log('mgr').records.map((r) => r.pr), [2265]);
   t.away.stop();
 });
 

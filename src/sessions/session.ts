@@ -771,9 +771,11 @@ export class Session {
 
   /**
    * The refused call, when it is a manager's own plain `gh pr merge` while away mode allows merge (issue #133): then
-   * awayRefusal decides whether it is asked. Null: asked at once, as every other refusal.
+   * awayRefusal decides whether it is asked. Null: asked at once, as every other refusal. A subagent's refusal (its
+   * result carries the Task call's id as parent) is not the manager's own: asked as before (review of PR #141, 1a).
    */
-  private awayMergeRefused(toolUseId: string): { away: AwayInfo; command: string } | null {
+  private awayMergeRefused(toolUseId: string, parent: string | null | undefined): { away: AwayInfo; command: string } | null {
+    if (parent) return null;
     const call = this.toolCalls.get(toolUseId);
     const command = call?.toolName === 'Bash' ? call.input.command : undefined;
     if (typeof command !== 'string') return null;
@@ -817,7 +819,7 @@ export class Session {
       if (m.type === 'user' && b.type === 'tool_result' && b.is_error === true && b.tool_use_id) {
         const reason = classifierReason(b.content);
         if (reason === null) continue;
-        const away = this.awayMergeRefused(b.tool_use_id);
+        const away = this.awayMergeRefused(b.tool_use_id, (m as { parent_tool_use_id?: string | null }).parent_tool_use_id);
         if (away) {
           const id = b.tool_use_id;
           void this.awayRefusal(id, reason, away).catch((e) => {
