@@ -5,6 +5,7 @@
 // Ledung only detaches, and the next Ledung attaches again and gets what it missed. Messages are stored
 // as they arrive from the host, each with its sequence number, in one write.
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { query, type Options, type PermissionResult, type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
@@ -25,7 +26,7 @@ import {
 import { mergeAnswered, routePermission, sensitiveHookOutput, type SensitiveRules } from './sensitive.ts';
 import { promptTimeLine } from './elapsed.ts';
 import { settingsAction, wordsFor, type Word } from './word.ts';
-import { promptAwayLine, classify, CLASSIFIER_REFUSED, decide as awayDecide, FLOOR_TIMEOUT_MS, formatLog, orderedMergeFloors, type Away, type AwayDecision, type Floor } from './away.ts';
+import { promptAwayLine, classify, CLASSIFIER_REFUSED, decide as awayDecide, FLOOR_TIMEOUT_MS, formatLog, orderedMergeFloors, type Away, type AwayDecision, type Floor, type ViewPr } from './away.ts';
 import type { AwayInfo } from '../shared/protocol.ts';
 import { deskQuestion, questionText, type QuestionDetails } from '../shared/questions.ts';
 import { compactionUsage, contextAfterCompact, UsageRecorder, type SessionFacts } from '../usage/recorder.ts';
@@ -66,6 +67,31 @@ let sourcesExercised = false;
 let nudgesExercised = false;
 /** The EXERCISED line of issue #133, once per run. */
 let awayMergeExercised = false;
+/** The EXERCISED line of issues #143 and #144, once per run. */
+let pinnedMergeExercised = false;
+
+/**
+ * A call's input with an allowed merge's command pinned (issues #143, #144); unchanged for anything else. Every path
+ * away mode allows a merge on runs this, never the command as sent.
+ */
+export function pinnedInput(input: Record<string, unknown>, decision: Pick<AwayDecision, 'command'>): Record<string, unknown> {
+  return decision.command ? { ...input, command: decision.command } : input;
+}
+
+/**
+ * The folder the session's shell stands in, when it is the project folder or inside it; otherwise null (issue #143).
+ * Both are compared as they really are on disk where they can be read (a local session), and as given otherwise (a
+ * container's folders): a folder that can't be shown inside is outside, which holds the merge.
+ */
+export async function shellFolderInside(projectFolder: string, shellFolder: string): Promise<string | null> {
+  const real = (f: string) => fs.promises.realpath(f).catch(() => f);
+  const [project, shell] = await Promise.all([real(projectFolder), real(shellFolder)]);
+  // A container's folders are POSIX paths, whatever this computer is; a Windows folder starts with a drive or \\.
+  const p = /^(?:[A-Za-z]:[\\/]|\\\\)/.test(project) ? path.win32 : path.posix;
+  if (!p.isAbsolute(project) || !p.isAbsolute(shell)) return null;
+  const rel = p.relative(project, shell);
+  return rel === '' || (!rel.startsWith('..') && !p.isAbsolute(rel)) ? shellFolder : null;
+}
 
 /** The limit on working sessions (step 6), as a session sees it. */
 export interface TurnGate {
@@ -283,6 +309,11 @@ export class Session {
    * one rather than asking GitHub and recording it again, and a refusal that comes anyway reads the floors from it.
    */
   private readonly awayDecided = new Map<string, AwayDecision>();
+  /**
+   * Where the shell stood for each Bash call, from its PreToolUse hook, by tool use id (issue #143): a merge that names
+   * no repository is read there, where gh would resolve it, also when it is judged later at the prompt or a refusal.
+   */
+  private readonly shellFolders = new Map<string, string>();
   /** Refused merges already put in the away log instead of asked (issue #133): a replayed refusal adds nothing. */
   private readonly awayRefusals = new Set<string>();
   /** Context to attach to a delivered message, by its exact text, picked up by the UserPromptSubmit hook. */
@@ -662,7 +693,7 @@ export class Session {
     }
     // While the person is away, an ordered merge still passes away mode's floors: the order replaces the ask, not the
     // checks (Martin 2026-11-03, Ledung question #1290; review of PR #107, finding 3). Held, it is asked as before.
-    const floors = away ? await orderedMergeFloors(this.userName, command, (pr, repo, fields) => this.runner.pullRequestView(pr, repo, fields, FLOOR_TIMEOUT_MS)) : null;
+    const floors = away ? await orderedMergeFloors(this.userName, command, this.floorReader(toolUseId)) : null;
     const merge = floors ? { pr: floors.pr, repo: floors.repo, floors: floors.floors } : undefined;
     if (floors && !floors.allowed) {
       const reason = `${floors.reason} (order #${o.id})`;
@@ -677,7 +708,8 @@ export class Session {
     const why = orderNote(o, this.userName);
     this.record('event', { text: why });
     this.allowedBy.ordered(toolUseId, why);
-    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: why } };
+    // An ordered merge checked while away runs pinned like an away merge (issues #143, #144); any other call as sent.
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: why, ...(floors?.command ? { updatedInput: pinnedInput(input, floors) } : {}) } };
   }
 
   /**
@@ -695,7 +727,7 @@ export class Session {
     if (!away?.allow.includes('merge') || this.store.getSession(this.id)?.role !== 'manager') return null;
     // Exactly one plain merge: no chain, no --admin or --auto, nothing computed (away.ts, classify).
     if (classify(input.command, this.devShip).kind !== 'merge') return null;
-    const decision = await this.awayDecision(away, input.command);
+    const decision = await this.awayDecision(away, input.command, toolUseId);
     if (!decision.allowed) {
       if (!('hookSpecificOutput' in sensitiveHookOutput(toolName, input, this.sensitiveRules, this.alwaysAsked))) return null;
       this.away?.record(this.id, input.command, decision);
@@ -710,7 +742,12 @@ export class Session {
       awayMergeExercised = true;
       exercisedLine('EXERCISED #133 an away merge allowed in the PreToolUse hook, ahead of the auto mode classifier');
     }
-    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: decision.reason } };
+    // What runs is the merge pinned to the PR read and its head (issues #143, #144), not the command as sent.
+    if (!pinnedMergeExercised) {
+      pinnedMergeExercised = true;
+      exercisedLine('EXERCISED #143 an away merge run pinned to the PR its floors were read for, at that head (#144)');
+    }
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: decision.reason, updatedInput: pinnedInput(input, decision) } };
   }
 
   private keepAwayDecision(toolUseId: string | undefined, decision: AwayDecision): void {
@@ -720,10 +757,28 @@ export class Session {
     if (this.awayDecided.size > 300) this.awayDecided.delete(this.awayDecided.keys().next().value!);
   }
 
+  /**
+   * Reads a PR for away mode's floors. One the merge names (-R or a link) in the project folder, as before; one it
+   * doesn't name where the session's shell stood for that call, which is where gh resolves it, and only inside the
+   * project folder (issue #143: after `cd vendor/lib`, a bare `gh pr merge 12` is that clone's PR 12, not the
+   * project's). Outside: not read, so the merge is held. Not known (no hook saw the call, which Claude Code's hook
+   * always does): the project folder, as before. Either way the merge then runs pinned to the PR read, so it can
+   * never be another PR than the one whose floors passed.
+   */
+  private floorReader(toolUseId: string | undefined): ViewPr {
+    return async (pr, repo, fields) => {
+      if (repo) return this.runner.pullRequestView(pr, repo, fields, FLOOR_TIMEOUT_MS);
+      const at = toolUseId ? this.shellFolders.get(toolUseId) : undefined;
+      if (at === undefined) return this.runner.pullRequestView(pr, null, fields, FLOOR_TIMEOUT_MS);
+      const inside = await shellFolderInside(this.runner.cwd, at);
+      if (!inside) return { error: `the merge names no repository and the shell is outside the project folder (in ${at}); name it with -R or a link` };
+      return this.runner.pullRequestView(pr, null, fields, FLOOR_TIMEOUT_MS, inside);
+    };
+  }
+
   /** Away mode's decision on a command (issue #35), held when Back was pressed while the floors were checked. */
-  private async awayDecision(away: AwayInfo, command: string): Promise<AwayDecision> {
-    const decision = await awayDecide(away, this.userName, command, this.devShip,
-      (pr, repo, fields) => this.runner.pullRequestView(pr, repo, fields, FLOOR_TIMEOUT_MS));
+  private async awayDecision(away: AwayInfo, command: string, toolUseId: string | undefined): Promise<AwayDecision> {
+    const decision = await awayDecide(away, this.userName, command, this.devShip, this.floorReader(toolUseId));
     if (decision.allowed && !this.away?.current()) {
       decision.allowed = false;
       decision.reason = `held for ${this.userName}: ${this.userName} came back`;
@@ -794,7 +849,7 @@ export class Session {
     this.awayRefusals.add(toolUseId);
     // The hook's decision when it made one (a refusal comes seconds after it); otherwise the floors now.
     const kept = this.awayDecided.get(toolUseId);
-    const decision = kept?.allowed ? kept : await this.awayDecision(away, command);
+    const decision = kept?.allowed ? kept : await this.awayDecision(away, command, toolUseId);
     if (!decision.allowed) {
       this.awayRefusals.delete(toolUseId);
       this.raiseRefusal(toolUseId, reason);
@@ -977,6 +1032,12 @@ export class Session {
             return { hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'deny' as const, permissionDecisionReason: 'This project is nearly air-gapped (lockdown level B): no remote agents.' } };
           }
           const toolInput = i.tool_input && typeof i.tool_input === 'object' ? i.tool_input as Record<string, unknown> : {};
+          const shellAt = (input as { cwd?: unknown }).cwd;
+          if (toolName === 'Bash' && toolUseId && typeof shellAt === 'string') {
+            this.shellFolders.set(toolUseId, shellAt);
+            // A prompt or a refusal comes right after its call: the latest few hundred are plenty.
+            if (this.shellFolders.size > 300) this.shellFolders.delete(this.shellFolders.keys().next().value!);
+          }
           const merge = this.mergeOnAnswer(toolName, toolInput, toolUseId);
           if (merge) return merge;
           const named = this.settingsOnWord(toolName, toolInput, toolUseId);
@@ -1356,7 +1417,7 @@ export class Session {
     // Only a held one: one the hook allowed is judged again here, in case Back was pressed since.
     const kept = !fromSession && opts.toolUseID ? this.awayDecided.get(opts.toolUseID) : undefined;
     const held = kept && !kept.allowed ? kept : undefined;
-    const decision = held ?? await this.awayDecision(away, command);
+    const decision = held ?? await this.awayDecision(away, command, opts.toolUseID);
     if (!held) {
       if (fromSession) this.away?.record(fromSession.managerId, command, { ...decision, reason: `${decision.reason} (run by its session "${fromSession.title}")` });
       else this.away?.record(this.id, command, decision);
@@ -1364,7 +1425,7 @@ export class Session {
     if (decision.allowed) {
       this.record('event', { text: decision.reason });
       this.allowedBy.away(opts.toolUseID, decision.reason);
-      return { behavior: 'allow', updatedInput: input };
+      return { behavior: 'allow', updatedInput: pinnedInput(input, decision) };
     }
     return this.askPermission(toolName, input, { ...opts, decisionReason: [opts.decisionReason, `Away mode ${decision.reason}.`].filter(Boolean).join(' · ') }, sensitive);
   }

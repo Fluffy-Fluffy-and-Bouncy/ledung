@@ -20,8 +20,11 @@ const later = () => clock(Date.now() + 2 * 3600_000);
 const AWAY: AwayInfo = { since: at(1), until: at(8), allow: ['merge', 'devShip'] };
 
 const run = (name: string, status: string, conclusion = '') => ({ __typename: 'CheckRun', name, status, conclusion });
+/** The head commit of the PR GitHub answers for: any 40 hex digits, as gh's headRefOid gives them. */
+const HEAD = '6c1e2f0d9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d';
+// Since issues #143 and #144 the floors also ask for url and headRefOid: GitHub's answer for PR 31 of o/r.
 const pr = (over: Record<string, unknown> = {}) =>
-  JSON.stringify({ state: 'OPEN', mergeable: 'MERGEABLE', statusCheckRollup: [run('check (windows)', 'COMPLETED', 'SUCCESS'), run('check (macos)', 'COMPLETED', 'SUCCESS')], ...over });
+  JSON.stringify({ state: 'OPEN', mergeable: 'MERGEABLE', statusCheckRollup: [run('check (windows)', 'COMPLETED', 'SUCCESS'), run('check (macos)', 'COMPLETED', 'SUCCESS')], url: 'https://github.com/o/r/pull/31', headRefOid: HEAD, ...over });
 
 // ---------------------------------------------------------------- the time and the line
 
@@ -142,7 +145,8 @@ test('decide: a merge whose floors pass is allowed, and GitHub is asked about th
   assert.equal(d.allowed, true);
   assert.equal(d.pr, 31);
   assert.equal(d.repo, 'o/r');
-  assert.deepEqual(v.calls, [[31, 'o/r', 'state,mergeable,statusCheckRollup']]);
+  // Issues #143, #144: also the PR's link and head, to pin the merge to them.
+  assert.deepEqual(v.calls, [[31, 'o/r', 'state,mergeable,statusCheckRollup,url,headRefOid']]);
   assert.match(d.reason, /^Allowed by away mode: PR #31 open, mergeable, no failing checks, 2 checks green$/);
 });
 
@@ -260,7 +264,8 @@ test("while away, a manager's merge with every floor passing runs with no prompt
   const t = sessionSetup('manager', pr());
   t.away.start(later(), ['merge', 'devShip']);
   const result = await t.settle(t.ask('gh pr merge 31 -R o/r'));
-  assert.deepEqual(result, { behavior: 'allow', updatedInput: { command: 'gh pr merge 31 -R o/r' } });
+  // What runs is pinned to the PR read and its head (issues #143, #144).
+  assert.deepEqual(result, { behavior: 'allow', updatedInput: { command: `gh pr merge https://github.com/o/r/pull/31 --match-head-commit ${HEAD} -R o/r` } });
   assert.equal(t.store.pendingPermissions().length, 0, 'no prompt');
   assert.equal(t.viewed.length, 1);
   const log = t.away.log('mgr').records;

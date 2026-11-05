@@ -53,9 +53,10 @@ export interface Runner {
   readProjectFile(relative: string): Promise<string | null>;
   /**
    * `gh pr view <pr> [-R repo] --json <fields>` where the session runs, for away mode's floors (issue #35):
-   * its output, or why there is none. Never throws.
+   * its output, or why there is none. Never throws. `cwd`: a folder inside the project folder to read in, where the
+   * session's shell stands, for a merge that names no repository (issue #143); default the project folder.
    */
-  pullRequestView(pr: number, repo: string | null, fields: string, timeoutMs: number): Promise<{ json: string } | { error: string }>;
+  pullRequestView(pr: number, repo: string | null, fields: string, timeoutMs: number, cwd?: string): Promise<{ json: string } | { error: string }>;
   /**
    * How to run a person's `!` command in the session's folder (issue #212): `kind` is the shell on Windows,
    * `env` the session's environment (sessionEnv's rules, with the project's login). Throws a readable error.
