@@ -330,6 +330,46 @@ test('ledung#159: zipProblem reads a zip made by the format and refuses one that
   // Bytes after the end record, or between the directory and it, are not placed either.
   fs.writeFileSync(streamed, Buffer.concat([fs.readFileSync(ok), Buffer.from('trailing')]));
   assert.match((await zipProblem(streamed, checks))!, /bytes Ledung can't place/);
+  // Test review round 1: bytes between the directory and the end record (its offsets unchanged), and bytes the
+  // directory's size counts but no record holds.
+  const endRec = whole.subarray(whole.length - 22);
+  const dirAt = endRec.readUInt32LE(16);
+  const dirSize = endRec.readUInt32LE(12);
+  const body = whole.subarray(0, dirAt + dirSize);
+  const junk = Buffer.alloc(46);
+  fs.writeFileSync(streamed, Buffer.concat([body, junk, endRec]));
+  assert.match((await zipProblem(streamed, checks))!, /bytes Ledung can't place/, 'between the directory and the end record');
+  const longer = Buffer.from(endRec);
+  longer.writeUInt32LE(dirSize + junk.length, 12);
+  fs.writeFileSync(streamed, Buffer.concat([body, junk, longer]));
+  assert.match((await zipProblem(streamed, checks))!, /bytes Ledung can't place/, 'inside the directory, after its last record');
+  // The same zip with zip64 end records (APPNOTE 4.3.14, 4.3.15) reads clean; 4 bytes between the record and its
+  // locator are not placed.
+  const zip64 = (gap: Buffer) => {
+    const rec = Buffer.alloc(56);
+    rec.writeUInt32LE(0x06064b50, 0);
+    rec.writeBigUInt64LE(44n, 4);
+    rec.writeUInt16LE(45, 12);
+    rec.writeUInt16LE(45, 14);
+    rec.writeBigUInt64LE(BigInt(endRec.readUInt16LE(10)), 24);
+    rec.writeBigUInt64LE(BigInt(endRec.readUInt16LE(10)), 32);
+    rec.writeBigUInt64LE(BigInt(dirSize), 40);
+    rec.writeBigUInt64LE(BigInt(dirAt), 48);
+    const loc = Buffer.alloc(20);
+    loc.writeUInt32LE(0x07064b50, 0);
+    loc.writeBigUInt64LE(BigInt(body.length), 8);
+    loc.writeUInt32LE(1, 16);
+    const end = Buffer.from(endRec);
+    end.writeUInt16LE(0xffff, 8);
+    end.writeUInt16LE(0xffff, 10);
+    end.writeUInt32LE(0xffffffff, 12);
+    end.writeUInt32LE(0xffffffff, 16);
+    return Buffer.concat([body, rec, gap, loc, end]);
+  };
+  fs.writeFileSync(streamed, zip64(Buffer.alloc(0)));
+  assert.equal(await zipProblem(streamed, checks), 'entry a.txt: saw hello', 'a zip64 zip is read through to its entries');
+  fs.writeFileSync(streamed, zip64(Buffer.alloc(4)));
+  assert.match((await zipProblem(streamed, checks))!, /bytes Ledung can't place/, 'between the zip64 record and its locator');
   // Review finding 2 on PR #175: the zip comment, an entry's comment and a folder entry's data go through the text check.
   const quiet = [{ name: 'b.bin', data: Buffer.from([0, 1]) }];
   const said = async (z: Buffer) => {
