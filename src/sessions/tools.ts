@@ -709,7 +709,7 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
       tool('save_linked_file', 'Save a file a manager on a linked computer sent you into the worktree one of your sessions works in, so it can open it. Never over an existing file, never through a link, never to a hidden or sensitive path; not in a locked or container project. The answer gives the path, size and SHA-256 to pass on to the session.', {
         handle: z.string().min(1).describe('The file, as its message named it: "linked:<id>/<name>".'),
         session: z.string().min(8).describe('One of your sessions, as list_sessions shows it.'),
-        path: z.string().min(1).max(400).describe('Where in its worktree, relative to it, e.g. "evidence/shot.png"; missing folders are made. The extension must fit the file: .png, .jpg or .jpeg for an image, .txt, .log or .md for text.'),
+        path: z.string().min(1).max(400).describe('Where in its worktree, relative to it, e.g. "evidence/shot.png"; missing folders are made. The extension must fit the file: .png, .jpg or .jpeg for an image, .txt, .log or .md for text, and the one it came with for audio or a zip (.wav, .mp3, .flac, .ogg, .m4a, .zip).'),
       }, async (a) => safely(() => m.saveLinkedFile(a.handle, a.session, a.path))) as never,
       tool('decide_permission', 'Decide a permission prompt from one of your sessions, within your standing grant.', {
         request: z.string().min(8).describe('The request id from Ledung\'s message or list_permissions.'),
@@ -752,7 +752,7 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
         computer: z.string().min(1).optional().describe('The linked computer it runs on, as list_managers names it; leave out for this computer.'),
         text: z.string().min(1),
         attachments: z.array(z.string().min(1)).min(1).max(5).optional().describe(
-          'Only with computer: files from your project folder, relative to it, that the other manager gets with the message: PNG or JPEG images (at most 5 MB) or .txt, .log or .md text (at most 512 KB). It gets images as files it can show in its questions, and text inline.',
+          'Only with computer: files from your project folder, relative to it, that the other manager gets with the message: PNG or JPEG images (at most 5 MB) or .txt, .log or .md text (at most 512 KB); or .wav, .mp3, .flac, .ogg or .m4a audio and .zip files of any size (a zip is checked entry by entry first). It gets images as files it can show in its questions, and text inline; audio and zips are fetched from here after the message, and it saves them with save_linked_file.',
         ),
       }, async (a) => safely(() => m.messageManager(a.id, a.text, a.computer, a.attachments))) as never,
       tool('list_projects', "List Ledung's projects: folder, settings and whether each one's manager runs. On a linked computer: names and managers only.", {

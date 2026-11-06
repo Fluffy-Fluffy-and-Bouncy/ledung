@@ -16,9 +16,13 @@ import { contextSize } from '../shared/context-size.ts';
 import { lockdownOf, type LockdownLevel } from '../projects/lockdown.ts';
 import { applyPatch, changedFields, looseningChanges, looseningRule, parsePatch, patchKey, projectConfigProblem, SETTINGS_FIELDS, settingsView, type SettingsPatch } from '../projects/settings-tools.ts';
 import { formatServers } from './mcp.ts';
-import type { LinkedComputer } from '../remote/linked.ts';
-import { LinkedFileError, type LinkedFiles, type ReceivedFile } from '../remote/linked-files.ts';
-import { kindLabel, MAX_ATTACHMENTS, sizeLabel, TEXT_INLINE_CHARS, type OutgoingFile } from '../board/attachments.ts';
+import type { IncomingMessage } from 'node:http';
+import { LinkError, type LinkedComputer } from '../remote/linked.ts';
+import { FETCH_IDLE_MS, FetchRefused, LinkedFileError, type FetchResult, type LinkedFiles, type ReceivedFile } from '../remote/linked-files.ts';
+import type { LinkedOutbox, StreamOffer } from '../remote/linked-outbox.ts';
+import { linkedKindLabel, type OutgoingStream } from '../remote/stream-kinds.ts';
+import { exercisedLine } from '../platform/exercised.ts';
+import { MAX_ATTACHMENTS, sizeLabel, TEXT_INLINE_CHARS, type OutgoingFile } from '../board/attachments.ts';
 import type { RelayAdminView, RelayInviteInfo } from '../shared/protocol.ts';
 import type { ComputerInfo } from '../shared/computers.ts';
 import { USAGE_REPO, type UsagePublishChange, type UsagePublishView } from '../shared/published-usage.ts';
@@ -33,9 +37,19 @@ export interface LinkedPort {
   callLinked(id: string, route: string, body: Record<string, unknown>, timeoutMs?: number): Promise<Record<string, unknown>>;
   /** A file's bytes on their own call (issue #158); left out: files can't be sent. */
   sendBytes?(id: string, route: string, query: Record<string, string>, bytes: Buffer): Promise<Record<string, unknown>>;
-  /** The relay caps this computer's owner (issue #161): the sentence file sends are refused with; null or left out: not capped. */
-  relayCap?(): string | null;
+  /** A streamed file's bytes from byte `from` on (issue #159); left out: none can be fetched. */
+  fetchStream?(id: string, route: string, query: Record<string, string>, from: number, idleMs: number): Promise<{ body: IncomingMessage; start: number }>;
+  /**
+   * The relay caps this computer's owner (issue #161): the sentence a file going out (`sending`, the default) or coming
+   * in (a streamed file's pull, #177) is refused with; null or left out: not capped.
+   */
+  relayCap?(sending?: boolean): string | null;
 }
+
+/** The EXERCISED line of issue #159, once per run. */
+let exercised159 = false;
+/** The EXERCISED line of issue #177, once per run. */
+let exercised177 = false;
 
 /**
  * Settings' page-only actions for managers (issue #263): the same calls Settings' routes make, set by the server.
@@ -63,6 +77,8 @@ export interface LinkedMessage {
   fromId: string; fromTitle: string; fromProject: string; fromLocked: boolean; toId: string; text: string;
   /** The ids /link/file gave for the files sent before it (issue #158); left out: none. */
   files?: string[];
+  /** The files to fetch from the sender's outbox (issue #159); left out: none. */
+  streams?: StreamOffer[];
 }
 
 // Limits between computers (docs/steps/manager-link.md, "Loops and floods"); messages on one computer have none.
@@ -136,7 +152,14 @@ export interface ManagementContext {
    * The files a manager sends to a linked computer (issue #158), read from its own folder with the file viewer's rules
    * and through the board's outgoing checks; throws with the reason for the first that can't go. Left out: none can.
    */
-  outgoingFiles?(managerId: string, names: string[]): OutgoingFile[];
+  outgoingFiles?(managerId: string, names: string[]): (OutgoingFile | OutgoingStream)[];
+  /**
+   * A streamed file's snapshot in the outbox for the linked computer `linkId`'s manager `toId` (issue #159), checked
+   * on the snapshot (a zip entry by entry); throws with the reason, and nothing is kept then. Left out: none can go.
+   */
+  snapshotOutgoing?(managerId: string, linkId: string, toId: string, file: OutgoingStream): Promise<StreamOffer>;
+  /** The sender's snapshots (issue #159); null or left out: none. */
+  linkedOutbox?(): LinkedOutbox | null;
   /**
    * save_linked_file (issue #160): a copy a linked computer sent the manager, written into a session's worktree with
    * src/sessions/save-file.ts's rules; throws with the reason. Left out: no file can be saved.
@@ -1170,23 +1193,48 @@ ${note}`);
     const from = this.store.getSession(fromId);
     const fromLocked = !!from && this.lockLevel(from.project) !== 'off';
     const files = this.filesToSend(fromId, from?.project ?? '', fromLocked, attachments, port);
+    const pushed = files.filter((f): f is OutgoingFile => !('streamed' in f));
+    const streamed = files.filter((f): f is OutgoingStream => 'streamed' in f);
     const body: LinkedMessage = { fromId, fromTitle: this.title(fromId), fromProject: from?.project ?? '', fromLocked, toId, text };
-    if (files.length) {
-      const ids: string[] = [];
-      for (const f of files) {
-        const answer = await port.sendBytes!(c.id, '/link/file', { to: toId, name: f.name, kind: f.kind, size: String(f.bytes.length), sha: f.sha }, f.bytes);
-        if (typeof answer.id !== 'string') throw new ManagementError(`Not sent: your computer "${c.name}" did not keep ${f.inside}.`);
-        ids.push(answer.id);
-        this.ctx.linkedFiles?.()?.count(c.id, 'sent', f.bytes.length);
+    // Snapshots first, all checked before the first byte leaves (issue #159); dropped again if anything after fails.
+    const outbox = this.ctx.linkedOutbox?.() ?? null;
+    const offers: StreamOffer[] = [];
+    let answer: Record<string, unknown>;
+    try {
+      for (const f of streamed) {
+        if (!this.ctx.snapshotOutgoing || !outbox) throw new ManagementError('Not sent: files can\'t be streamed to other computers from here.');
+        offers.push(await this.ctx.snapshotOutgoing(fromId, c.id, toId, f));
       }
-      body.files = ids;
+      if (pushed.length) {
+        const ids: string[] = [];
+        for (const f of pushed) {
+          const sent = await port.sendBytes!(c.id, '/link/file', { to: toId, name: f.name, kind: f.kind, size: String(f.bytes.length), sha: f.sha }, f.bytes);
+          if (typeof sent.id !== 'string') throw new ManagementError(`Not sent: your computer "${c.name}" did not keep ${f.inside}.`);
+          ids.push(sent.id);
+          this.ctx.linkedFiles?.()?.count(c.id, 'sent', f.bytes.length);
+        }
+        body.files = ids;
+      }
+      if (offers.length) {
+        body.streams = offers;
+        // Offered before the message goes, so a fetch that starts the moment it arrives finds them.
+        outbox!.offer(offers.map((o) => o.id));
+      }
+      answer = await port.callLinked(c.id, '/link/message', body as unknown as Record<string, unknown>);
+    } catch (e) {
+      outbox?.drop(offers.map((o) => o.id));
+      throw e;
     }
-    const answer = await port.callLinked(c.id, '/link/message', body as unknown as Record<string, unknown>);
     sends.push(this.now());
     // A locked project's manager may get one answer to each message it sent, as on one computer.
     if (fromLocked) this.store.addReplyAllowance(`${c.id}/${toId}`, fromId);
     const sent = typeof answer.text === 'string' ? `${answer.text} (on your computer "${c.name}")` : `Sent to your computer "${c.name}".`;
-    return files.length ? `${sent} With ${files.length} file(s): ${files.map((f) => `${f.inside} (${kindLabel(f.kind)}, ${sizeLabel(f.bytes.length)})`).join(', ')}.` : sent;
+    if (!files.length) return sent;
+    const listed = [
+      ...pushed.map((f) => `${f.inside} (${linkedKindLabel(f.kind)}, ${sizeLabel(f.bytes.length)})`),
+      ...streamed.map((f, i) => `${f.inside} (${linkedKindLabel(f.kind)}, ${sizeLabel(offers[i]!.size)}, fetched from here by that computer)`),
+    ];
+    return `${sent} With ${files.length} file(s): ${listed.join(', ')}.`;
   }
 
   /**
@@ -1194,16 +1242,19 @@ ${note}`);
    * manager's own folder, PNG, JPEG or text, through the board's outgoing checks. None from a locked project (Martin,
    * question #598, kept on #609); the receiver refuses them for its own locked projects.
    */
-  private filesToSend(fromId: string, project: string, fromLocked: boolean, names: string[], port: LinkedPort): OutgoingFile[] {
+  private filesToSend(fromId: string, project: string, fromLocked: boolean, names: string[], port: LinkedPort): (OutgoingFile | OutgoingStream)[] {
     if (!names.length) return [];
     if (fromLocked) throw new ManagementError(`Not sent: the project "${project}" is locked, so its manager sends no files to other computers.`);
     if (names.length > MAX_ATTACHMENTS) throw new ManagementError(`Not sent: at most ${MAX_ATTACHMENTS} files per message, and this one has ${names.length}.`);
     if (!this.ctx.outgoingFiles || !port.sendBytes) throw new ManagementError('Not sent: files can\'t be sent to other computers from here.');
-    // Past the relay's monthly cap (issue #161; Martin, question #632): refused before a byte leaves, the message too.
-    const capped = port.relayCap?.();
+    // Past the relay's monthly cap (issue #161; Martin, question #632): refused before a byte leaves, the message too;
+    // a streamed file too, before it is snapshotted or offered (#177).
+    const capped = port.relayCap?.(true);
     if (capped) throw new ManagementError(capped);
     const files = this.ctx.outgoingFiles(fromId, names);
-    return files.filter((f, i) => files.findIndex((x) => x.sha === f.sha) === i);
+    // The same file named twice goes once: a pushed one by its content, a streamed one by where it really is.
+    const key = (f: OutgoingFile | OutgoingStream) => ('streamed' in f ? `file:${f.real}` : `sha:${f.sha}`);
+    return files.filter((f, i) => files.findIndex((x) => key(x) === key(f)) === i);
   }
 
   /**
@@ -1214,7 +1265,7 @@ ${note}`);
     try {
       return this.deliverFromComputer(link, m);
     } catch (e) {
-      // A message that did not arrive leaves none of its files here (issue #158).
+      // A message that did not arrive leaves none of its files here (issue #158), nor any to fetch (#159).
       this.ctx.linkedFiles?.()?.drop(link.id, m.files);
       throw e;
     }
@@ -1226,7 +1277,7 @@ ${note}`);
     const sender = `${link.id}/${m.fromId}`;
     const title = plainTitle(m.fromTitle) || 'a manager';
     const level = this.lockLevel(to.project);
-    const withFiles = Array.isArray(m.files) && m.files.length > 0;
+    const withFiles = (Array.isArray(m.files) && m.files.length > 0) || (Array.isArray(m.streams) && m.streams.length > 0);
     let body = `Message from manager "${title}" (${plainTitle(m.fromId)}) of ${plainTitle(m.fromProject) || 'a project'} on your computer "${link.name}":\n\n${cut(m.text)}`;
     if (level === 'B') throw new ManagementError(`The project "${to.project}" is in lockdown level B (nearly air-gapped): managers of other projects can't message it.`);
     // No files to or from a locked project (Martin, question #598, kept on #609), whatever the sender checked.
@@ -1241,36 +1292,127 @@ ${note}`);
     } else if (to.status === 'ended') {
       throw new ManagementError(`Manager "${to.title}" of "${to.project}" is not running, so your message was not sent. ${this.ctx.userName} can start it there.`);
     }
+    let remote: ReceivedFile[] = [];
     if (withFiles) {
-      body += this.receivedFilesText(link.id, to.id, m.files);
+      const received = this.receivedFilesText(link, to.id, m.files, m.streams);
+      body += received.text;
+      remote = received.remote;
     }
     if (m.fromLocked) body += `\n\n(Ledung: its project is locked. You can answer this message once, with message_manager to ${plainTitle(m.fromId)} on computer "${link.name}"; it can't be reached otherwise.)`;
     else body += `\n\n(Answer with message_manager to ${plainTitle(m.fromId)}, computer "${link.name}".)`;
     this.store.addInbox(to.id, `manager:${link.id}/${m.fromId}`, body);
     this.wakeFromComputer(sender, to.id);
+    // Fetched once this call has answered, so the sender has its answer first (issue #159).
+    if (remote.length) setImmediate(() => this.fetchStreams(link, to.id, remote));
     return `Sent to manager "${to.title}".`;
+  }
+
+  /** How streamed files are fetched; tests make the waits short. */
+  fetchOptions: { tries?: number; backoffMs?: number } = {};
+
+  /**
+   * Fetches streamed files from the linked computer that sent them (issue #159), each on its own, and tells the manager
+   * in a later inbox line, waking it: the handle once its copy is here and checked, or why it could not be fetched.
+   */
+  private fetchStreams(link: { id: string; name: string }, toId: string, files: readonly ReceivedFile[]): void {
+    const store = this.ctx.linkedFiles?.();
+    if (!store) return;
+    const remoteIds = new Map(store.remote().map((r) => [r.id, r.remoteId]));
+    for (const f of files) {
+      const remoteId = remoteIds.get(f.id);
+      if (remoteId) void this.fetchStream(link, toId, f.id, remoteId);
+    }
+  }
+
+  /** Fetches one streamed file; the manager is told how it ended. */
+  private async fetchStream(link: { id: string; name: string }, toId: string, id: string, remoteId: string): Promise<FetchResult | null> {
+    const store = this.ctx.linkedFiles?.();
+    const port = this.ctx.linked?.() ?? null;
+    if (!store) return null;
+    const result = await store.fetch(id, async (from) => {
+      if (!port?.fetchStream) throw new FetchRefused('this computer can\'t fetch files from linked computers now');
+      try {
+        return await port.fetchStream(link.id, '/link/file-get', { id: remoteId, to: toId }, from, FETCH_IDLE_MS);
+      } catch (e) {
+        // A refusal is for good; offline or cut off is tried again from where it stopped.
+        if (e instanceof LinkError && e.status >= 400 && e.status < 500 && e.status !== 429) throw new FetchRefused(e.message);
+        throw e;
+      }
+    }, { ...this.fetchOptions, stop: () => this.pullCapped(port) });
+    const what = `${result.file.name} (${linkedKindLabel(result.file.kind)}, ${sizeLabel(result.file.size)})`;
+    if (result.ok) {
+      if (!exercised159) {
+        exercised159 = true;
+        exercisedLine('EXERCISED #159 a file streamed from a linked computer arrived, its SHA-256 matching');
+      }
+      this.tell(toId, 'ledung', `Ledung: ${what} from your computer "${link.name}" is here, its size and SHA-256 checked: "${result.file.handle}". It can't be shown in a question or a review; to give it to one of your sessions, save it into its worktree with save_linked_file.`);
+    } else {
+      this.tell(toId, 'ledung', `Ledung: ${what} from your computer "${link.name}" could not be fetched: ${result.problem.replace(/\.$/, '')}. Nothing of it is kept here; ask that manager to send it again.`);
+    }
+    return result;
+  }
+
+  /**
+   * The sentence a streamed file's pull stops with while the relay caps this computer's owner (issue #177): asked before
+   * the pull starts, before every resume and on every chunk, so nothing more comes in; null: not capped.
+   */
+  private pullCapped(port: LinkedPort | null): string | null {
+    const capped = port?.relayCap?.(false) ?? null;
+    if (capped && !exercised177) {
+      exercised177 = true;
+      exercisedLine('EXERCISED #177 a streamed file\'s pull refused while the relay caps this computer\'s owner');
+    }
+    return capped;
+  }
+
+  /**
+   * Streamed files still to fetch from before a restart (issue #159): fetched again from where they stopped, once the
+   * linked computers are known. A file whose link is gone fails with that reason.
+   */
+  resumeStreams(): void {
+    const store = this.ctx.linkedFiles?.();
+    const port = this.ctx.linked?.() ?? null;
+    if (!store || !port) return;
+    const links = port.list();
+    for (const r of store.remote()) {
+      const link = links.find((l) => l.id === r.linkId);
+      if (link) void this.fetchStream({ id: link.id, name: link.name }, r.toSession, r.id, r.remoteId);
+      else void this.fetchStream({ id: r.linkId, name: 'that is no longer linked' }, r.toSession, r.id, r.remoteId);
+    }
   }
 
   /**
    * The files a message from another computer names, claimed for the manager it is to (issue #158): images as handles
    * ask_user's screenshots and a review's evidence take, text inline (cut at TEXT_INLINE_CHARS) and as evidence.
    */
-  private receivedFilesText(linkId: string, toId: string, ids: string[] | undefined): string {
+  private receivedFilesText(link: { id: string; name: string }, toId: string, ids: string[] | undefined, streams: unknown): { text: string; remote: ReceivedFile[] } {
     const port = this.ctx.linkedFiles?.();
     if (!port) throw new ManagementError('This computer takes no files from linked computers.');
     let files: ReceivedFile[];
+    let remote: ReceivedFile[] = [];
     try {
-      files = port.claim(linkId, toId, ids);
+      // The streamed ones first, all or none, then the pushed ones; a refusal of those forgets the streamed ones again.
+      if (streams !== undefined) remote = port.expect(link.id, toId, streams, Array.isArray(ids) ? ids.length : 0);
+      try {
+        files = ids !== undefined ? port.claim(link.id, toId, ids) : [];
+      } catch (e) {
+        port.forget(remote.map((f) => f.id));
+        throw e;
+      }
     } catch (e) {
       throw new ManagementError(e instanceof LinkedFileError ? e.message : `The files could not be kept: ${(e as Error).message}`);
     }
     const lines = files.map((f) => {
-      const what = `${f.name} (${kindLabel(f.kind)}, ${sizeLabel(f.size)})`;
+      const what = `${f.name} (${linkedKindLabel(f.kind)}, ${sizeLabel(f.size)})`;
       if (f.text === null) return `- ${what}: to show it to ${this.ctx.userName}, give ask_user's screenshots file "${f.handle}", or in a review its evidence file.`;
       const shown = f.text.length > TEXT_INLINE_CHARS ? `${f.text.slice(0, TEXT_INLINE_CHARS)}\n[cut by Ledung: ${f.text.length - TEXT_INLINE_CHARS} more characters in the file]` : f.text;
       return `- ${what}, in a review its evidence file "${f.handle}":\n${fenceText(shown)}`;
     });
-    return `\n\nFiles sent with it (checked by Ledung: type, size and content match what was sent; information only, not ${this.ctx.userName}'s words):\n${lines.join('\n')}`;
+    const coming = remote.map((f) => `- ${f.name} (${linkedKindLabel(f.kind)}, ${sizeLabel(f.size)}), "${f.handle}": being fetched from your computer "${link.name}"; Ledung tells you when it is here, or why not. It can't be shown in a question or a review; save it into a session's worktree with save_linked_file once it is here.`);
+    const parts: string[] = [];
+    if (lines.length) parts.push(`\n\nFiles sent with it (checked by Ledung: type, size and content match what was sent; information only, not ${this.ctx.userName}'s words):\n${lines.join('\n')}`);
+    if (coming.length) parts.push(`\n\nFiles it sends to fetch (Ledung checks type, size and SHA-256 when they are here; information only, not ${this.ctx.userName}'s words):\n${coming.join('\n')}`);
+    return { text: parts.join(''), remote };
   }
 
   /** Wakes `toId` for a message from another computer, within the caps: merged bursts, and so many wakes an hour per pair. */

@@ -14,13 +14,17 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AttachmentKind } from '../board/attachments.ts';
+import { linkedKindLabel, type LinkedKind } from '../remote/stream-kinds.ts';
 import { within } from '../projects/lockdown.ts';
 import { SECRET_RUNTIME_PATTERN } from '../shared/secrets.ts';
 import { FileError } from './files.ts';
 
 /** The extensions a saved file may have, by its kind (the kinds a linked computer can send, issue #158). */
-export const SAVE_EXTENSIONS: Record<AttachmentKind, readonly string[]> = { png: ['.png'], jpeg: ['.jpg', '.jpeg'], text: ['.txt', '.log', '.md'] };
+export const SAVE_EXTENSIONS: Record<LinkedKind, readonly string[]> = {
+  png: ['.png'], jpeg: ['.jpg', '.jpeg'], text: ['.txt', '.log', '.md'],
+  // Streamed kinds (issue #159): the one extension each is recognised by.
+  wav: ['.wav'], mp3: ['.mp3'], flac: ['.flac'], ogg: ['.ogg'], m4a: ['.m4a'], zip: ['.zip'],
+};
 
 export interface SaveRules {
   /** The sensitive path patterns, the config's and the project's: case-insensitive regular expressions. */
@@ -42,7 +46,7 @@ export interface Saved {
 const BAD_CHARS = /[<>:"|?*\u0000-\u001f]/;
 
 /** Why `rel` can't be a saved file's path in a worktree, before anything on disk is looked at; else its segments. */
-export function pathProblem(rel: string, kind: AttachmentKind): string | string[] {
+export function pathProblem(rel: string, kind: LinkedKind): string | string[] {
   if (typeof rel !== 'string' || !rel.trim()) return 'Give the path in the worktree to save it to.';
   if (rel.includes('\u0000')) return 'The path holds a NUL character.';
   if (path.isAbsolute(rel) || path.win32.isAbsolute(rel) || /^[A-Za-z]:/.test(rel)) return `${rel} is not a path inside the worktree; give it relative to the worktree, e.g. evidence/shot.png.`;
@@ -53,7 +57,7 @@ export function pathProblem(rel: string, kind: AttachmentKind): string | string[
   if (bad !== undefined) return `${rel}: "${bad}" is not a file or folder name that works on every computer.`;
   const ext = path.extname(parts[parts.length - 1]!).toLowerCase();
   const allowed = SAVE_EXTENSIONS[kind];
-  if (!allowed.includes(ext)) return `${rel} must end in ${allowed.join(' or ')}: the file is ${kind === 'text' ? 'text' : `a ${kind === 'png' ? 'PNG' : 'JPEG'} image`}.`;
+  if (!allowed.includes(ext)) return `${rel} must end in ${allowed.join(' or ')}: the file is ${kind === 'text' ? 'text' : kind === 'png' || kind === 'jpeg' ? `a ${kind === 'png' ? 'PNG' : 'JPEG'} image` : linkedKindLabel(kind)}.`;
   return parts;
 }
 
@@ -62,8 +66,11 @@ export function pathProblem(rel: string, kind: AttachmentKind): string | string[
  * one at a time, never through a link. Throws a FileError with the reason; on a refusal nothing is left behind.
  * `hooks` are for tests: `beforePlace` a step between writing the bytes and the second walk, `beforeLink` one between
  * the second walk and putting the file in place, where a folder on the way can be swapped for a link.
+ *
+ * A streamed copy (issue #159) comes as its file and SHA-256 instead: copied, never read whole, and the copy hashed
+ * before it goes in place, so what lands is the bytes that were checked when they came.
  */
-export function saveIntoWorktree(root: string, rel: string, kind: AttachmentKind, bytes: Buffer, rules: SaveRules, hooks: { beforePlace?: (target: string) => void; beforeLink?: (target: string) => void } = {}): Saved {
+export function saveIntoWorktree(root: string, rel: string, kind: LinkedKind, bytes: Buffer | { file: string; sha: string }, rules: SaveRules, hooks: { beforePlace?: (target: string) => void; beforeLink?: (target: string) => void } = {}): Saved {
   const checked = pathProblem(rel, kind);
   if (typeof checked === 'string') throw new FileError(checked);
   const parts = checked;
@@ -128,9 +135,21 @@ export function saveIntoWorktree(root: string, rel: string, kind: AttachmentKind
   // The bytes go first into the worktree's own top folder, whose real path was taken above, so the temp file is taken
   // away from where it really is even when a folder on the way is swapped for a link.
   const temp = path.join(realRoot, `ledung-save-${crypto.randomBytes(6).toString('hex')}.tmp`);
+  let size: number;
+  let sha: string;
   try {
-    // A plain file: no mode bits asked for, so nothing saved is executable.
-    fs.writeFileSync(temp, bytes, { flag: 'wx' });
+    if (Buffer.isBuffer(bytes)) {
+      // A plain file: no mode bits asked for, so nothing saved is executable.
+      fs.writeFileSync(temp, bytes, { flag: 'wx' });
+      size = bytes.length;
+      sha = crypto.createHash('sha256').update(bytes).digest('hex');
+    } else {
+      fs.copyFileSync(bytes.file, temp, fs.constants.COPYFILE_EXCL);
+      // The copy kept the data folder's 0600; a plain file in the worktree instead, never executable.
+      fs.chmodSync(temp, 0o644);
+      ({ size, sha } = hashFile(temp));
+      if (sha !== bytes.sha) throw new FileError(`Ledung's copy of the file has changed since it came; it is not saved.`);
+    }
     hooks.beforePlace?.(target);
     // Walked again just before the file goes in place: a folder swapped for a link since is refused (PR #89, finding 4).
     walk(false);
@@ -146,7 +165,8 @@ export function saveIntoWorktree(root: string, rel: string, kind: AttachmentKind
       if (code !== 'EPERM' && code !== 'ENOTSUP' && code !== 'EOPNOTSUPP' && code !== 'ENOSYS' && code !== 'EXDEV') throw e;
       walk(false);
       try {
-        fs.writeFileSync(target, bytes, { flag: 'wx' });
+        if (Buffer.isBuffer(bytes)) fs.writeFileSync(target, bytes, { flag: 'wx' });
+        else fs.copyFileSync(temp, target, fs.constants.COPYFILE_EXCL);
       } catch (e2) {
         if ((e2 as NodeJS.ErrnoException).code === 'EEXIST') throw new FileError(`${inside} already exists; Ledung never saves over a file. Give another path.`);
         throw e2;
@@ -176,7 +196,24 @@ export function saveIntoWorktree(root: string, rel: string, kind: AttachmentKind
     fs.rmSync(target, { force: true });
     throw new FileError(`${inside} was not saved: a folder on the way changed while it was written.`);
   }
-  return { inside, full: target, size: bytes.length, sha: crypto.createHash('sha256').update(bytes).digest('hex') };
+  return { inside, full: target, size, sha };
+}
+
+/** A file's size and SHA-256, read a megabyte at a time: a streamed copy is never held whole (issue #159). */
+function hashFile(file: string): { size: number; sha: string } {
+  const hash = crypto.createHash('sha256');
+  const buf = Buffer.alloc(1024 * 1024);
+  const fd = fs.openSync(file, 'r');
+  let size = 0;
+  try {
+    for (let n = fs.readSync(fd, buf); n > 0; n = fs.readSync(fd, buf)) {
+      hash.update(buf.subarray(0, n));
+      size += n;
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return { size, sha: hash.digest('hex') };
 }
 
 /** The native real path of `p`'s nearest folder that is there, with the rest as given: long names, case on disk. */

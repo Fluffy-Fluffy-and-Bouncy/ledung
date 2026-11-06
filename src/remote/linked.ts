@@ -16,6 +16,7 @@
 // through the tunnel over TLS (server.ts), never locally.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import type { IncomingMessage } from 'node:http';
 import https from 'node:https';
 import path from 'node:path';
 import tls from 'node:tls';
@@ -80,8 +81,11 @@ export interface LinkedOptions {
   port?: number;
   /** A link was made or dropped, or a linked computer's port changed: the computer tabs and frames follow (#273). */
   onChange?: () => void;
-  /** The sentence a file send is refused with while the relay caps this computer's owner (issue #161); null: not capped. */
-  relayCap?: () => string | null;
+  /**
+   * The sentence a file transfer is refused with while the relay caps this computer's owner (issue #161): `sending`
+   * for one going out, otherwise for one coming in (a streamed file's pull, #177); null: not capped.
+   */
+  relayCap?: (sending: boolean) => string | null;
   now?: () => number;
 }
 
@@ -290,9 +294,9 @@ export class LinkedComputers {
     return this.call(link.publicName, route, body, link.sendKey, timeoutMs);
   }
 
-  /** The relay caps this computer's owner (issue #161): the sentence file sends are refused with; null: not capped. */
-  relayCap(): string | null {
-    return this.opts.relayCap?.() ?? null;
+  /** The relay caps this computer's owner (issue #161): the sentence a file going out (`sending`) or coming in is refused with; null: not capped. */
+  relayCap(sending = true): string | null {
+    return this.opts.relayCap?.(sending) ?? null;
   }
 
   /**
@@ -303,6 +307,54 @@ export class LinkedComputers {
     const link = this.read().find((l) => l.id === id);
     if (!link) throw new LinkError(404, 'No such linked computer.');
     return this.call(link.publicName, `${route}?${new URLSearchParams(query)}`, { type: 'application/octet-stream', data: bytes }, link.sendKey, timeoutMs);
+  }
+
+  /**
+   * A streamed file from a linked computer (issue #159): GET `route`, from byte `from` on (Range), the answer's body
+   * to read as a stream, never held here. An idle limit instead of one for the whole transfer: no byte for `idleMs`
+   * cuts it off. A refusal (4xx) rejects with a LinkError of that status; offline or cut off, with the reason.
+   */
+  fetchStream(id: string, route: string, query: Record<string, string>, from: number, idleMs: number): Promise<{ body: IncomingMessage; start: number }> {
+    const link = this.read().find((l) => l.id === id);
+    if (!link) return Promise.reject(new LinkError(404, 'No such linked computer.'));
+    const connect = this.opts.connect ?? ((name: string) => tls.connect({ host: name, port: 443, servername: name, ALPNProtocols: ['http/1.1'] }));
+    const publicName = link.publicName;
+    return new Promise((resolve, reject) => {
+      const req = https.request({
+        method: 'GET', path: `${route}?${new URLSearchParams(query)}`, createConnection: () => connect(publicName),
+        // Keep-alive, and the connection closed here once the body is read: with "Connection: close" (Node's default
+        // without an agent) the other Ledung closes as soon as it has written the last byte, and the tunnel stream drops
+        // what was still on its way (seen in the tests of #159: the last 128 KiB of a 6 MB file cut off).
+        headers: { Host: publicName, Authorization: `Bearer ${link.sendKey}`, Connection: 'keep-alive', ...(from > 0 ? { Range: `bytes=${from}-` } : {}) },
+      }, (res) => {
+        res.once('end', () => req.destroy());
+        if (res.statusCode === 200 || res.statusCode === 206) {
+          const range = /^bytes (\d+)-\d+\/\d+$/.exec(String(res.headers['content-range'] ?? ''));
+          resolve({ body: res, start: res.statusCode === 206 && range ? Number(range[1]) : 0 });
+          return;
+        }
+        let text = '';
+        res.setEncoding('utf8');
+        res.on('data', (d: string) => {
+          text += d;
+          if (text.length > MAX_ANSWER) req.destroy(new Error('the answer is too long'));
+        });
+        res.on('end', () => {
+          let error = '';
+          try {
+            const json = JSON.parse(text) as Record<string, unknown>;
+            if (typeof json.error === 'string') error = `: ${json.error}`;
+          } catch { /* an error page: the status says enough */ }
+          reject(new LinkError(res.statusCode ?? 502, `${publicName} answered ${res.statusCode}${error}`));
+        });
+      });
+      // The socket's idle time, also while the body streams: setTimeout on the request is per socket inactivity.
+      req.setTimeout(idleMs, () => req.destroy(new Error(`no byte for ${idleMs / 1000} s`)));
+      req.on('error', (e) => reject(e instanceof LinkError ? e : new LinkError(502, /before secure TLS|ECONNRESET|socket hang up/.test(e.message)
+        ? `${publicName} is offline (its Ledung is not connected to the relay).`
+        : `${publicName} could not be reached: ${e.message}`)));
+      req.end();
+    });
   }
 
   private defaultName(publicName: string): string {
