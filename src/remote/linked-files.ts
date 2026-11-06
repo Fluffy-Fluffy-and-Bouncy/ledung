@@ -255,10 +255,10 @@ export class LinkedFiles {
   /**
    * Fetches the remote file `id` with `get`, streamed to <file>.part: what is already in the part (a fetch cut off
    * before a restart) is hashed again, streamed, and asked for from its end on. Up to `tries` calls, waiting `backoffMs`
-   * doubled each time; a FetchRefused (403, 404, more bytes than said) ends it at once. Done: size, SHA-256 and kind
+   * doubled each time; a FetchRefused (403, 404, more bytes than said) or a reason from `stop` ends it at once. Done: size, SHA-256 and kind
    * agree, the part is renamed into place, the bytes counted as received. Failed: the part is gone, the row says why.
    */
-  async fetch(id: string, get: FetchFrom, opts: { tries?: number; backoffMs?: number } = {}): Promise<FetchResult> {
+  async fetch(id: string, get: FetchFrom, opts: { tries?: number; backoffMs?: number; stop?: () => string | null } = {}): Promise<FetchResult> {
     const r = this.db.prepare(`SELECT * FROM linked_files WHERE id = ?`).get(id) as Record<string, any> | undefined;
     if (!r) throw new FileError('No such file.');
     const file: ReceivedFile = { id: r.id, handle: `${LINKED_FILE_PREFIX}${r.id}/${r.name}`, name: r.name, kind: r.kind, size: Number(r.size), text: null };
@@ -295,6 +295,9 @@ export class LinkedFiles {
       if (size === 0) fs.writeFileSync(part, Buffer.alloc(0), { mode: 0o600 });
       for (let attempt = 1; have < size; attempt++) {
         try {
+          // `stop` (the relay's cap, issue #177) is asked before every call and every chunk: a reason ends it for good.
+          const stopped = opts.stop?.();
+          if (stopped) throw new FetchRefused(stopped);
           const { body, start } = await get(have);
           if (start === 0 && have > 0) {
             restart();
@@ -309,6 +312,8 @@ export class LinkedFiles {
             highWaterMark: 1024 * 1024,
             write(chunk: Buffer, _enc, done) {
               if (have + chunk.length > size) return done(new FetchRefused(`it is larger than the ${size} bytes the message says`));
+              const stopped = opts.stop?.();
+              if (stopped) return done(new FetchRefused(stopped));
               fd.write(chunk).then(() => {
                 hash.update(chunk);
                 have += chunk.length;

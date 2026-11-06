@@ -81,8 +81,11 @@ export interface LinkedOptions {
   port?: number;
   /** A link was made or dropped, or a linked computer's port changed: the computer tabs and frames follow (#273). */
   onChange?: () => void;
-  /** The sentence a file send is refused with while the relay caps this computer's owner (issue #161); null: not capped. */
-  relayCap?: () => string | null;
+  /**
+   * The sentence a file transfer is refused with while the relay caps this computer's owner (issue #161): `sending`
+   * for one going out, otherwise for one coming in (a streamed file's pull, #177); null: not capped.
+   */
+  relayCap?: (sending: boolean) => string | null;
   now?: () => number;
 }
 
@@ -291,9 +294,9 @@ export class LinkedComputers {
     return this.call(link.publicName, route, body, link.sendKey, timeoutMs);
   }
 
-  /** The relay caps this computer's owner (issue #161): the sentence file sends are refused with; null: not capped. */
-  relayCap(): string | null {
-    return this.opts.relayCap?.() ?? null;
+  /** The relay caps this computer's owner (issue #161): the sentence a file going out (`sending`) or coming in is refused with; null: not capped. */
+  relayCap(sending = true): string | null {
+    return this.opts.relayCap?.(sending) ?? null;
   }
 
   /**
