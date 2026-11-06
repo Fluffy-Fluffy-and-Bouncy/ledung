@@ -137,6 +137,11 @@ export interface ManagementContext {
    * and through the board's outgoing checks; throws with the reason for the first that can't go. Left out: none can.
    */
   outgoingFiles?(managerId: string, names: string[]): OutgoingFile[];
+  /**
+   * save_linked_file (issue #160): a copy a linked computer sent the manager, written into a session's worktree with
+   * src/sessions/save-file.ts's rules; throws with the reason. Left out: no file can be saved.
+   */
+  saveLinkedFile?(managerId: string, sessionId: string, handle: string, rel: string): { inside: string; full: string; size: number; sha: string };
   /** Why a session's handoff file can't be used for its clear (clear_self), or null if it can. */
   handoffProblem(sessionId: string, file: string): string | null;
   /**
@@ -544,6 +549,23 @@ export class Management {
     const s = this.store.getSession(id);
     if (!s || s.parentId !== managerId) throw new ManagementError(`Session ${id} is not one you started. Use list_sessions to see yours.`);
     return s;
+  }
+
+  /**
+   * save_linked_file (issue #160): a file a manager on a linked computer sent this manager, written into the worktree
+   * one of its own sessions works in. Refused, nothing written, for a session that is not its own and while the
+   * manager's or the session's project is locked: read now, so a project locked after the file came refuses too.
+   */
+  saveLinkedFile(managerId: string, handle: string, sessionId: string, rel: string): string {
+    const s = this.ownSession(managerId, sessionId);
+    const manager = this.store.getSession(managerId)!;
+    for (const project of new Set([manager.project, s.project])) {
+      const level = this.lockLevel(project);
+      if (level !== 'off') throw new ManagementError(`Not saved: the project "${project}" is in lockdown${level === 'B' ? ' level B (nearly air-gapped)' : ''}; no file from a linked computer goes into it.`);
+    }
+    if (!this.ctx.saveLinkedFile) throw new ManagementError('Not saved: files from linked computers can\'t be saved here.');
+    const saved = this.ctx.saveLinkedFile(managerId, sessionId, handle, rel);
+    return `Saved into "${s.title}"'s worktree: ${saved.inside} (${saved.full}), ${saved.size} bytes, SHA-256 ${saved.sha}. Tell the session that line; the file is its own now, Ledung doesn't remove it.`;
   }
 
   /** Always in the manager's own project, so its sessions use its account (decided 2026-10-11). */

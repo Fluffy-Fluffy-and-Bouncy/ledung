@@ -21,6 +21,8 @@ const SESSION_TOOLS = ['ask_user', 'withdraw_question', 'compact_self', 'clear_s
 const MANAGER_TOOLS = [
   'start_session', 'list_sessions', 'read_session', 'send_message', 'stop_session', 'archive_session', 'clear_session', 'compact_session',
   'answer_question', 'forward_answer', 'list_managers', 'message_manager',
+  // Writes only into the manager's own session's worktree, with save-file.ts's refusals (issue #160).
+  'save_linked_file',
   'decide_permission', 'list_permissions',
   'machine_status', 'set_priority', 'pause_session', 'resume_session', 'list_projects', 'away_log', 'order_done',
   'mcp_status', 'reconnect_mcp_server',
@@ -126,6 +128,8 @@ export interface ManagerHandlers {
   forwardAnswer(userQuestion: number, toQuestion: number): Promise<string>;
   listManagers(computer?: string): Promise<string>;
   messageManager(id: string, text: string, computer?: string, attachments?: string[]): Promise<string>;
+  /** A file a linked computer sent, into one of the manager's sessions' worktree (issue #160). */
+  saveLinkedFile(handle: string, session: string, path: string): string;
   decidePermission(request: string, behavior: 'allow' | 'deny', scope: 'once' | 'session', message?: string): string;
   listPermissions(): string;
   machineStatus(): string;
@@ -385,7 +389,7 @@ export function instructions(h: ToolHandlers): string {
       h.airgap
         ? `Your project is in lockdown level B, nearly air-gapped: you have no tools for other managers, other projects or the board, and your sessions have no network unless ${who} let a host in.`
         : `Other managers: list_managers and message_manager, here and on ${who}'s linked computers, whose managers count as this computer's (give message_manager the computer); work on another computer goes through its manager. Other projects: list_projects; add_project, create_project, start_manager and stop_manager always wait for ${who}'s approval in Ledung, whatever your mode or grant, so call them only when your task needs it.`,
-      `Away mode: while ${who} is away, a line in your prompt says until when and what is allowed. Then Ledung lets your own sensitive \`gh pr merge <number>\` (one plain command; the PR open, mergeable, no check failing or still running) or your project's dev ship command (also from a session you started, and with \`cd <path> &&\` before it or an output redirect after it) through, if that kind is allowed, and holds everything else for ${who} as always. away_log explains "computer control" and lists each decision, for your morning report.`,
+      `Away mode: while ${who} is away, a line in your prompt says until when and what is allowed. Then Ledung lets your own sensitive \`gh pr merge <number> -R <owner/name>\` or \`gh pr merge <PR link>\` (one plain command that names its repository; the PR open, mergeable, no check failing or still running) or your project's dev ship command (also from a session you started, and with \`cd <path> &&\` before it or an output redirect after it) through, if that kind is allowed, and holds everything else for ${who} as always. away_log explains "computer control" and lists each decision, for your morning report.`,
       `Machine resources: only a limited number of sessions may work at once; above that, sessions wait in line for a free place. machine_status shows the load, the line and what your sessions use. set_priority puts one of your sessions ahead in the line: normal or high on your own judgement; critical only when ${who} said so in an answer to one of your questions, which you give as user_question. pause_session and resume_session pause one of your sessions by hand.`,
     );
   }
@@ -702,6 +706,11 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
         user_question: z.number().int().positive().describe(`Your question that ${who} answered.`),
         to_question: z.number().int().positive().describe("Your session's question to answer with it."),
       }, async (a) => safely(() => m.forwardAnswer(a.user_question, a.to_question))) as never,
+      tool('save_linked_file', 'Save a file a manager on a linked computer sent you into the worktree one of your sessions works in, so it can open it. Never over an existing file, never through a link, never to a hidden or sensitive path; not in a locked or container project. The answer gives the path, size and SHA-256 to pass on to the session.', {
+        handle: z.string().min(1).describe('The file, as its message named it: "linked:<id>/<name>".'),
+        session: z.string().min(8).describe('One of your sessions, as list_sessions shows it.'),
+        path: z.string().min(1).max(400).describe('Where in its worktree, relative to it, e.g. "evidence/shot.png"; missing folders are made. The extension must fit the file: .png, .jpg or .jpeg for an image, .txt, .log or .md for text.'),
+      }, async (a) => safely(() => m.saveLinkedFile(a.handle, a.session, a.path))) as never,
       tool('decide_permission', 'Decide a permission prompt from one of your sessions, within your standing grant.', {
         request: z.string().min(8).describe('The request id from Ledung\'s message or list_permissions.'),
         decision: z.enum(['allow', 'deny']),

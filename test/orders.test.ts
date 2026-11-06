@@ -550,14 +550,14 @@ test("an ask_user answer confirms only when its question showed that exact comma
 });
 
 test('#143, #144: an ordered merge checked while away runs pinned to the PR read and its head; one ordered while present runs as sent', async () => {
-  const MERGE = 'gh pr merge 9 --squash';
+  const MERGE = 'gh pr merge 9 -R o/r --squash';
   const HEAD = '9f8e7d6c5b4a39281706f5e4d3c2b1a098765432';
   const green = JSON.stringify({ state: 'OPEN', mergeable: 'MERGEABLE', statusCheckRollup: [], url: 'https://github.com/o/r/pull/9', headRefOid: HEAD });
   const t = setup();
   t.goAway(['ordered']);
   t.github.json = green;
   await t.management.startSession('mgr', { task: 'Merge.', order: { command: MERGE, question: t.agreed(MERGE) } });
-  assert.deepEqual(await (await t.hooksOf('w1')).updated(MERGE, 'a'), { command: `gh pr merge https://github.com/o/r/pull/9 --match-head-commit ${HEAD} --squash`, description: 'Run it' });
+  assert.deepEqual(await (await t.hooksOf('w1')).updated(MERGE, 'a'), { command: `gh pr merge https://github.com/o/r/pull/9 --match-head-commit ${HEAD} -R o/r --squash`, description: 'Run it' });
   // Present: no floors are read, and the order runs exactly as the person agreed it.
   const here = setup();
   here.github.json = green;
@@ -566,9 +566,24 @@ test('#143, #144: an ordered merge checked while away runs pinned to the PR read
   t.away.stop();
 });
 
+test('#149: an ordered merge allowed while away is recorded with the pinned command that ran and the repository of its link', async () => {
+  const MERGE = 'gh pr merge 9 -R owner/repo --squash';
+  const HEAD = '9f8e7d6c5b4a39281706f5e4d3c2b1a098765432';
+  const RAN = `gh pr merge https://github.com/Owner/Repo/pull/9 --match-head-commit ${HEAD} -R owner/repo --squash`;
+  const t = setup();
+  t.goAway(['ordered']);
+  t.github.json = JSON.stringify({ state: 'OPEN', mergeable: 'MERGEABLE', statusCheckRollup: [], url: 'https://github.com/Owner/Repo/pull/9', headRefOid: HEAD });
+  await t.management.startSession('mgr', { task: 'Merge.', order: { command: MERGE, question: t.agreed(MERGE) } });
+  assert.equal((await (await t.hooksOf('w1')).updated(MERGE, 'a'))?.command, RAN, 'premise: this is the command that runs');
+  const [r] = t.away.log('mgr').records;
+  assert.deepEqual([r!.kind, r!.allowed, r!.repo, r!.command], ['ordered', true, 'Owner/Repo', RAN]);
+  assert.ok(formatLog(t.away.log('mgr'), t.away.current(), 'Simon').includes(`ALLOWED · ordered · PR #9 (Owner/Repo)\n  command: ${RAN}\n`));
+  t.away.stop();
+});
+
 test('while the person is away, an ordered merge still passes the floors: the order replaces the ask, not the checks', async () => {
   // Spec-gap 3 of the review of PR #107; Martin 2026-11-03, Ledung question #1290 (no note on the floors: they apply).
-  const MERGE = 'gh pr merge 9 --squash';
+  const MERGE = 'gh pr merge 9 -R o/r --squash';
   const ADMIN = 'gh pr merge 5 --admin';
   const failing = JSON.stringify({ state: 'OPEN', mergeable: 'MERGEABLE', statusCheckRollup: [{ name: 'check', status: 'COMPLETED', conclusion: 'FAILURE' }] });
   // With the link and head the floors ask for since issues #143 and #144.

@@ -53,6 +53,7 @@ import {
   type SessionRole,
 } from '../shared/protocol.ts';
 import { resolveWorkFolder, WorkFolderError } from './work-folder.ts';
+import { saveIntoWorktree, type Saved } from './save-file.ts';
 import { FileError, handoffProblem, hiddenProblem, readProjectFile, readProjectImage, type ProjectFile, type ProjectImage } from './files.ts';
 import { listTree, type TreeListing } from './tree.ts';
 import type { PaneFolderKey, PaneFolders } from '../shared/files-pane.ts';
@@ -155,6 +156,7 @@ export function resumedState(info: SessionInfo): {
 /** The EXERCISED line of issue #425, once per run. */
 let exercised425 = false;
 let exercised96 = false;
+let exercised160 = false;
 
 /** How long the sidebar's read of which projects have a flow waits for one project (a container's docker exec). */
 const WORKFLOWS_READ_MS = 5000;
@@ -282,6 +284,7 @@ export class SessionManager {
       settings: () => this.settings,
       linkedFiles: () => this.linkedFiles,
       outgoingFiles: (managerId, names) => this.outgoingFiles(managerId, names),
+      saveLinkedFile: (managerId, sessionId, handle, rel) => this.saveLinkedFile(managerId, sessionId, handle, rel),
       handoffProblem: (id, file) => this.handoffProblem(id, file),
       // The file viewer's own image rules, so a shot that is attached can also be shown (issue #60).
       // A manager's board attachment ("board:...") is from its project's board cache instead.
@@ -2706,6 +2709,34 @@ ${firstMessage}`);
     } catch (e) {
       throw e instanceof FileError ? new UserError(e.message) : e;
     }
+  }
+
+  /**
+   * save_linked_file (issue #160): the copy `handle` names, which a linked computer sent `managerId`, written into the
+   * worktree `sessionId` works in now. Management checked the session is the manager's own and neither project is
+   * locked; here, in the refine notes' order: the copy (its own, delivered, not pruned, bytes unchanged), the folder
+   * (a container's is inside the container: not yet), then the path and the write (src/sessions/save-file.ts).
+   */
+  saveLinkedFile(managerId: string, sessionId: string, handle: string, rel: string): Saved {
+    const copy = this.readLinkedCopy(managerId, handle, ['png', 'jpeg', 'text']);
+    const { info, project } = this.paneSession(sessionId);
+    if (project.runner !== 'local') throw new UserError(`"${info.title}" works in a container project; saving a file from a linked computer into a container is not available yet. Nothing was saved.`);
+    const rules = {
+      pathPatterns: [...this.config.sensitive.pathPatterns, ...project.sensitive.pathPatterns],
+      refused: this.lockedFoldersBesides(info.project),
+    };
+    let saved: Saved;
+    try {
+      // The bytes read() returned and checked; the data folder is not read again after the checks (refine notes, 6).
+      saved = saveIntoWorktree(this.sessionFolder(info, project), rel, copy.kind, copy.bytes, rules);
+    } catch (e) {
+      throw e instanceof FileError ? new UserError(`Not saved: ${e.message}`) : e;
+    }
+    if (!exercised160) {
+      exercised160 = true;
+      exercisedLine('EXERCISED #160 a file from a linked computer saved into a session\'s worktree');
+    }
+    return saved;
   }
 
   /**
