@@ -491,6 +491,7 @@ export class Session {
         if (attachments?.length) return Promise.reject(new Error('Not sent: attachments go only with computer, to a manager on a linked computer. On this computer, name the file\'s path in the message.'));
         return m.messageManager(id, to, text);
       },
+      saveLinkedFile: (handle, session, rel) => m.saveLinkedFile(id, handle, session, rel),
       decidePermission: (request, behavior, scope, message) => m.decidePermission(id, request, behavior, scope, message),
       listPermissions: () => m.listPermissions(id),
       machineStatus: () => m.machineStatus(id),

@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-06
+- Linked computers: a manager can save a file another computer sent it into one of its own sessions' worktree (`save_linked_file`), so a worker can open it. It is never written over an existing file, through a link, to a hidden or sensitive path, or with an extension that doesn't fit the file, and never into a locked or container project; the answer gives the path, size and SHA-256 to pass on. (#160)
 - Workflow sub-steps: each subagent is told where its brief is, the way the block's own brief is: a plain brief in the workflow folder, a `folder:` brief by its file in the folder beside it, without the `folder:` prefix. (#142)
 - Away mode: a merge that names no repository (no `-R owner/name`, no PR link) is now always held for you, so `GH_REPO`, `GH_HOST` or the folder the session stands in can never decide which pull request gets merged. (#148)
 - Away log and morning report: an allowed away merge now shows the repository it was merged in, from GitHub's link, and the exact command that ran. (#149)
