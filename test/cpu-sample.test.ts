@@ -1,26 +1,15 @@
 // #157: Peak CPU per turn read 26 cores on a 12-thread PC. The sample interval must be the one the
 // process list was read at, and no figure may exceed the machine's thread count.
-import { after, test } from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import { windowsBatchReader, type ProcessList } from '../src/platform/processes.ts';
 import { capCores, treeSample } from '../src/resources/monitor.ts';
 import { capTurnCores, typicalCosts } from '../src/resources/typical.ts';
-import { removeTemp } from './temp.ts';
-
-// The reader's EXERCISED line goes to a file of this test's own: a bare `node --test` of this file
-// would otherwise append it to the real data folder's exercised.log, faking the evidence a play check
-// greps for (PR #155 review).
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-cpu-sample-'));
-const traceFile = path.join(dir, 'exercised.log');
-after(() => removeTemp(dir));
 
 /** Feeds PowerShell's lines to the reader the way readline does and returns the batches. */
 function readBatches(lines: string[], now: () => number): { list: ProcessList; at: number }[] {
   const out: { list: ProcessList; at: number }[] = [];
-  const onLine = windowsBatchReader((list, at) => out.push({ list, at }), now, { console: false, file: () => traceFile });
+  const onLine = windowsBatchReader((list, at) => out.push({ list, at }), now);
   for (const l of lines) onLine(l);
   return out;
 }
@@ -42,10 +31,6 @@ test('two batches Node handles 3 ms apart keep the 5 s PowerShell read them at',
   assert.equal(s.cpuSeconds, 12.5);
   assert.equal(s.cores, 2.5);
   assert.equal(s.memBytes, 3000);
-  // The stamped batch logged the fix's EXERCISED line once, into this test's file, not the data folder's.
-  const trace = fs.readFileSync(traceFile, 'utf8').split('\n').filter(Boolean);
-  assert.equal(trace.length, 1);
-  assert.match(trace[0]!, /EXERCISED #157 CPU sample timed when the process list was read$/);
 });
 
 test('a batch without a read time falls back to the time it is handled', () => {

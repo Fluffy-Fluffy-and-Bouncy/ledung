@@ -94,8 +94,9 @@ function setup() {
     const signal = { signal: new AbortController().signal };
     return {
       /** Ledung's PreToolUse answer for a Bash call: 'allow', or null when it doesn't allow it itself. */
-      decide: async (command: string, toolUseId: string, extra: Record<string, unknown> = {}) => {
-        const out = await pre({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command, description: 'Run it', ...extra } } as never, toolUseId, signal) as { hookSpecificOutput?: { permissionDecision?: string } };
+      /** hookExtra: more of the hook's own input, such as a subagent's agent_id. */
+      decide: async (command: string, toolUseId: string, extra: Record<string, unknown> = {}, hookExtra: Record<string, unknown> = {}) => {
+        const out = await pre({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command, description: 'Run it', ...extra }, ...hookExtra } as never, toolUseId, signal) as { hookSpecificOutput?: { permissionDecision?: string } };
         return out.hookSpecificOutput?.permissionDecision === 'allow' ? 'allow' : null;
       },
       /** The input Claude Code runs instead of the one sent, when the hook gives one (issues #143, #144). */
@@ -279,6 +280,36 @@ test('a once-order runs once: done after it ran; given back with its error when 
   await worker.ran('c');
   assert.equal(t.store.getOrder(1)!.status, 'done');
   assert.equal(await worker.decide(DEPLOY, 'd'), null, 'done: used up');
+});
+
+test("#150: a subagent's identical call is not covered by the order and does not use up a once-order; the session's own still runs", async () => {
+  const t = setup();
+  await t.management.startSession('mgr', { task: 'Deploy.', order: { command: DEPLOY, question: t.agreed(DEPLOY) } });
+  const worker = await t.hooksOf('w1');
+  const sub = { agent_id: 'agent-1' };
+  assert.equal(await worker.decide(DEPLOY, 'sub-1', {}, sub), null, "a subagent's call: not allowed");
+  const order = t.store.getOrder(1)!;
+  assert.deepEqual([order.status, order.runs, order.note], ['open', 0, null], 'not taken');
+  // In the manager as well.
+  const manager = await t.hooksOf('mgr');
+  assert.equal(await manager.decide(DEPLOY, 'msub', {}, sub), null, 'a subagent of the manager: not allowed');
+  // The positive branch: the session's own call still runs, once.
+  assert.equal(await worker.decide(DEPLOY, 'own'), 'allow', "the session's own call");
+  await worker.ran('own');
+  assert.equal(t.store.getOrder(1)!.status, 'done');
+  // An order recorded while away, with the kind off: a subagent's call does not refuse it; it is not the subagent's to
+  // settle (test review of PR #166, finding 1: recorded before the away period, the refusal branch is never reached).
+  t.goAway(['merge']);
+  await t.management.startSession('mgr', { task: 'Deploy again.', order: { command: DEPLOY, question: t.agreed(DEPLOY) } });
+  const second = await t.hooksOf('w2');
+  assert.equal(await second.decide(DEPLOY, 'sub-away', {}, sub), null, "a subagent's call while away: not allowed");
+  const held = t.store.getOrder(2)!;
+  assert.deepEqual([held.status, held.runs, held.note], ['open', 0, null], 'not refused by the subagent');
+  // The positive branch: the session's own call is held and does refuse it.
+  assert.equal(await second.decide(DEPLOY, 'own-away'), null, "the session's own call while away: held");
+  assert.equal(t.store.getOrder(2)!.status, 'refused');
+  assert.match(t.store.getOrder(2)!.note!, /order #2 was recorded while Simon was away/);
+  t.away.stop();
 });
 
 test("a once-order whose run never reported back (a restart, the session's end) waits on the person's word, with why", async () => {

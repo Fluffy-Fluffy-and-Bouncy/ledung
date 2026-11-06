@@ -242,10 +242,11 @@ function ledung(projectToolsUnasked = false) {
   const options = (id: string) => (manager as unknown as { live: Map<string, { claudeOptions(h: object): Promise<Opts> }> }).live.get(id)!.claudeOptions({ onLine: () => {}, onStderr: () => {} });
   let n = 0;
   /** One tool call as Claude Code makes it: the PreToolUse hook, and the tool only if the hook allowed it. */
-  const call = async (id: string, tool: string, input: Record<string, unknown> = {}) => {
+  /** hookExtra: more of the hook's own input, such as a subagent's agent_id. */
+  const call = async (id: string, tool: string, input: Record<string, unknown> = {}, hookExtra: Record<string, unknown> = {}) => {
     const o = await options(id);
     const toolUseId = `tu-${++n}`;
-    const out = await o.hooks!.PreToolUse![0]!.hooks[0]!({ tool_name: `mcp__ledung__${tool}`, tool_input: input }, toolUseId);
+    const out = await o.hooks!.PreToolUse![0]!.hooks[0]!({ tool_name: `mcp__ledung__${tool}`, tool_input: input, ...hookExtra }, toolUseId);
     const decision = out.hookSpecificOutput?.permissionDecision ?? null;
     let result: string | null = null;
     let note: string | null = null;
@@ -297,6 +298,18 @@ test("with the user's word typed on this computer the action runs once, and the 
   assert.equal((await call(id, 'link_computer', { code: CODE })).decision, 'allow');
   assert.equal((await call(id, 'link_computer', { code: CODE })).decision, 'ask');
   assert.deepEqual(ran, ['key', 'key', 'code', `link ${CODE}`]);
+});
+
+test("#150: a subagent's call is asked, and does not use up the user's word; the manager's own still runs on it", async () => {
+  const { start, call, typed, ran } = ledung();
+  const id = await start('manager');
+  typed(id, 'Make a new admin key for the relay and tell me its hash.', true);
+  assert.equal((await call(id, 'relay_admin_key', {}, { agent_id: 'agent-1' })).decision, 'ask', "a subagent's call: asked");
+  assert.deepEqual(ran, [], 'nothing ran');
+  // The positive branch: the word is still there for the manager's own call, once.
+  assert.equal((await call(id, 'relay_admin_key')).decision, 'allow', "the manager's own call");
+  assert.deepEqual(ran, ['key']);
+  assert.equal((await call(id, 'relay_admin_key')).decision, 'ask', 'once');
 });
 
 test('words from the phone, from anyone else, or naming something else never count; the prompt comes', async () => {
