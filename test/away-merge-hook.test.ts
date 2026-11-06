@@ -13,8 +13,8 @@ import path from 'node:path';
 import { openDatabase } from '../src/store/database.ts';
 import { Store } from '../src/store/store.ts';
 import { Management } from '../src/sessions/management.ts';
-import { Session } from '../src/sessions/session.ts';
-import { Away, formatLog, pinnedMerge } from '../src/sessions/away.ts';
+import { Session, shellFolderInside } from '../src/sessions/session.ts';
+import { Away, classify, formatLog, linkRepo, pinnedMerge, words } from '../src/sessions/away.ts';
 
 const clock = (ms: number) => { const d = new Date(ms); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 /** Two hours ahead of the real clock, so the period never runs out during a test (#402). */
@@ -53,6 +53,8 @@ interface Options {
   managers?: Record<string, string>;
   /** The project's dev ship command pattern; default: none. */
   devShip?: string;
+  /** The managers' environment from the project's account (settings, profile or account env); default: none. */
+  env?: Record<string, string>;
 }
 
 function setup(opts: Options = {}) {
@@ -73,6 +75,7 @@ function setup(opts: Options = {}) {
     const pushed: string[] = [];
     const session = new Session({
       info: store.getSession(id)!, store, publish: () => {}, userName: 'Martin', management, away, devShip: opts.devShip ?? null,
+      ...(opts.env ? { account: { name: 'a', env: opts.env } } : {}),
       runner: {
         cwd: opts.cwd ?? '.', currentBranch: async () => null,
         pullRequestView: async (...args: unknown[]) => {
@@ -88,9 +91,12 @@ function setup(opts: Options = {}) {
     s.input = { push: (t: string) => pushed.push(t) };
     store.updateSession(id, { status: 'idle' });
     const signal = { signal: new AbortController().signal };
-    const pre = async () => (await session.claudeOptions({ onLine: () => {}, onStderr: () => {} })).hooks!.PreToolUse![0]!.hooks[0]!;
+    const options = () => session.claudeOptions({ onLine: () => {}, onStderr: () => {} });
+    const pre = async () => (await options()).hooks!.PreToolUse![0]!.hooks[0]!;
     return {
       session, pushed,
+      /** The environment Claude Code, and so the merge's gh, runs with. */
+      env: async () => (await options()).env as Record<string, string>,
       /** Ledung's PreToolUse answer for a Bash call: allow, ask, or none (left to Claude Code). */
       hook: async (command: string, toolUseId: string, extra: Record<string, unknown> = {}) => {
         const out = await (await pre())({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command, description: 'Merge' }, ...extra } as never, toolUseId, signal) as { hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string; updatedInput?: Record<string, unknown> } };
@@ -316,35 +322,56 @@ function folders() {
 const byFolder = (vendor: string) => (pr: number, readIn?: string) =>
   JSON.stringify({ ...JSON.parse(NO_CHECKS), url: `https://github.com/${readIn === vendor ? 'v/lib' : 'o/r'}/pull/${pr}` });
 
-test("#143: after cd into a nested clone, a bare merge is read in that clone and runs as that clone's PR, not the project's PR of the same number", async () => {
+test('#148: while away, a merge that names no repository is held wherever the shell stands, and GitHub is not asked; named with -R or a link, it is read and runs', async () => {
   const f = folders();
   const t = setup({ cwd: f.project, gh: byFolder(f.vendor) });
   t.away.start(later(), ['merge']);
-  const out = await t.mgr.hook('gh pr merge 12 --squash', 'tu-v', { cwd: f.vendor });
-  assert.equal(out.decision, 'allow');
-  assert.deepEqual([t.viewed[0]![0], t.viewed[0]![1], t.viewed[0]![4]], [12, null, f.vendor], 'PR 12 read where the shell stands');
-  assert.deepEqual(out.updatedInput, { command: `gh pr merge https://github.com/v/lib/pull/12 --match-head-commit ${HEAD} --squash`, description: 'Merge' });
-  // The same merge with the shell in the project folder: the project's PR 12.
-  const home = await t.mgr.hook('gh pr merge 12 --squash', 'tu-p', { cwd: f.project });
-  assert.equal(home.updatedInput?.command, `gh pr merge https://github.com/o/r/pull/12 --match-head-commit ${HEAD} --squash`);
+  // Martin, Ledung question #621: "a — Ready, always hold": a merge without -R or a full PR link. In the nested clone,
+  // in the project folder itself, outside it, and with no shell folder known at all.
+  for (const [id, cwd] of [['in-clone', f.vendor], ['in-project', f.project], ['outside', f.outside], ['unknown', undefined]] as const) {
+    const out = await t.mgr.hook('gh pr merge 12 --squash', id, cwd ? { cwd } : {});
+    assert.equal(out.decision, 'ask', `${id}: held, the sensitive ask as before`);
+    assert.equal(out.updatedInput, undefined, `${id}: nothing pinned`);
+  }
+  assert.equal(t.viewed.length, 0, 'GitHub not asked');
+  const held = t.away.log('mgr').records;
+  assert.equal(held.length, 4);
+  for (const r of held) {
+    assert.equal(r.allowed, false);
+    assert.match(r.reason, /^held for Martin: the merge names no repository/);
+    assert.equal(r.command, 'gh pr merge 12 --squash', 'recorded as sent: nothing ran');
+  }
+  // The positive branch, the same shell folders: named with -R or with its link, it is read for that repository and
+  // runs as its link.
+  const named = await t.mgr.hook('gh pr merge 12 -R o/r --squash', 'named', { cwd: f.vendor });
+  assert.equal(named.decision, 'allow');
+  assert.deepEqual([t.viewed[0]![0], t.viewed[0]![1], t.viewed[0]![4]], [12, 'o/r', undefined], 'read for the repository named, in the project folder');
+  assert.equal(named.updatedInput?.command, `gh pr merge https://github.com/o/r/pull/12 --match-head-commit ${HEAD} -R o/r --squash`);
+  const linked = await t.mgr.hook('gh pr merge https://github.com/o/r/pull/12 --squash', 'linked', { cwd: f.outside });
+  assert.equal(linked.decision, 'allow');
+  assert.deepEqual(t.viewed[1]!.slice(0, 2), [12, 'o/r']);
   t.away.stop();
   f.done();
 });
 
-test('#143: a bare merge with the shell outside the project folder is held and GitHub not asked; one that names its repository is read for it and runs as its link', async () => {
-  const f = folders();
-  const t = setup({ cwd: f.project, gh: byFolder(f.vendor) });
+test("#148: with GH_REPO in the session's environment, a merge that names no repository is held, not read or run as GH_REPO's PR", async () => {
+  // Simon's review of PR #147 (issue #148): with GH_REPO set for the session, a bare `gh pr merge 12` meant for a/b#12
+  // is GH_REPO's PR 12 where gh runs. Ledung reads PRs with its own environment, which has no GH_REPO.
+  const t = setup({ env: { GH_REPO: 'g/other' }, gh: () => NO_CHECKS });
+  // Premise: GH_REPO is in the environment the session's commands, and so its gh, run with.
+  assert.equal((await t.mgr.env()).GH_REPO, 'g/other');
   t.away.start(later(), ['merge']);
-  assert.equal((await t.mgr.hook('gh pr merge 12 --squash', 'out', { cwd: f.outside })).decision, 'ask', 'held: the sensitive ask, as before');
+  const out = await t.mgr.hook('gh pr merge 12 --merge', 'bare');
+  assert.equal(out.decision, 'ask', 'held for the person');
   assert.equal(t.viewed.length, 0, 'GitHub not asked');
-  assert.match(t.away.log('mgr').records[0]!.reason, /names no repository and the shell is outside the project folder/);
-  // The positive branch, same shell folder: with -R it is read for that repository, in the project folder.
-  const named = await t.mgr.hook('gh pr merge 12 -R o/r --squash', 'named', { cwd: f.outside });
+  assert.match(t.away.log('mgr').records[0]!.reason, /names no repository, so which PR #12 it is depends on the session's environment; name it with -R owner\/name or the PR's link$/);
+  assert.match(formatLog(t.away.log('mgr'), t.away.current(), 'Martin'), /HELD · merge · PR #12\n {2}command: gh pr merge 12 --merge\n {2}floors: FAIL the merge names no repository/);
+  // The positive branch, the same environment: named, it is read for that repository and runs pinned to its link.
+  const named = await t.mgr.hook('gh pr merge 12 -R o/r --merge', 'named');
   assert.equal(named.decision, 'allow');
-  assert.deepEqual([t.viewed[0]![0], t.viewed[0]![1], t.viewed[0]![4]], [12, 'o/r', undefined]);
-  assert.equal(named.updatedInput?.command, `gh pr merge https://github.com/o/r/pull/12 --match-head-commit ${HEAD} -R o/r --squash`);
+  assert.deepEqual(t.viewed.map((v) => v.slice(0, 2)), [[12, 'o/r']]);
+  assert.equal(named.updatedInput?.command, `gh pr merge https://github.com/o/r/pull/12 --match-head-commit ${HEAD} -R o/r --merge`);
   t.away.stop();
-  f.done();
 });
 
 test("#143: a merge GitHub answers for with another repository's link than the one it names is held: it fails closed", async () => {
@@ -374,30 +401,33 @@ test("#143, #144: GitHub's answer without the PR's link or head commit holds the
 
 // The shell folder is judged as it really is on disk (PR #147 test review, Minor 2): folders() gives real paths, so
 // these two reach it through links, as /var and /private/var on macOS, or a link inside the project.
-test('#143: a project folder reached through a link, the shell in its real path: inside, read there and allowed', async () => {
+test('#143: shellFolderInside judges a local folder as it really is on disk: a project folder reached through a link holds its real path; a link inside it that leads out is outside', async () => {
+  // These were hook tests until issue #148 held every merge that names no repository; the folder rule they checked
+  // still decides where such a merge's floors would be read, so it is checked here directly.
   const f = folders();
   const viaLink = path.join(path.dirname(f.project), 'project-link');
   fs.symlinkSync(f.project, viaLink, LINK);
-  const t = setup({ cwd: viaLink, gh: byFolder(f.vendor) });
-  t.away.start(later(), ['merge']);
-  const real = await t.mgr.hook('gh pr merge 12 --squash', 'real', { cwd: f.vendor });
-  assert.equal(real.decision, 'allow');
-  assert.equal(real.updatedInput?.command, `gh pr merge https://github.com/v/lib/pull/12 --match-head-commit ${HEAD} --squash`);
-  t.away.stop();
+  const outLink = path.join(f.project, 'out');
+  fs.symlinkSync(f.outside, outLink, LINK);
+  assert.equal(await shellFolderInside(viaLink, f.vendor), f.vendor, 'reached through a link: the shell in the real path is inside');
+  assert.equal(await shellFolderInside(f.project, f.project), f.project, 'the project folder itself is inside');
+  assert.equal(await shellFolderInside(f.project, outLink), null, 'a link inside that leads out is outside');
+  assert.equal(await shellFolderInside(f.project, f.outside), null, 'a folder beside it is outside');
   f.done();
 });
 
-test('#143: a link inside the project folder that leads out of it is outside: held, GitHub not asked', async () => {
-  const f = folders();
-  const outLink = path.join(f.project, 'out');
-  fs.symlinkSync(f.outside, outLink, LINK);
-  const t = setup({ cwd: f.project, gh: byFolder(f.vendor) });
-  t.away.start(later(), ['merge']);
-  assert.equal((await t.mgr.hook('gh pr merge 12 --squash', 'out', { cwd: outLink })).decision, 'ask', 'a link out: held');
-  assert.equal(t.viewed.length, 0, 'GitHub not asked');
-  assert.match(t.away.log('mgr').records.at(-1)!.reason, /the shell is outside the project folder/);
-  t.away.stop();
-  f.done();
+test("#149: shellFolderInside's POSIX branch, a container's folders: inside or the folder itself is inside; beside, above, a look-alike name or a relative folder is outside", async () => {
+  // A container's folders are POSIX paths on any computer and can't be read here, so they are compared as given.
+  const project = '/ledung-test-none/workspace/p';
+  assert.equal(await shellFolderInside(project, '/ledung-test-none/workspace/p/vendor/lib'), '/ledung-test-none/workspace/p/vendor/lib');
+  assert.equal(await shellFolderInside(project, project), project);
+  assert.equal(await shellFolderInside(project, '/ledung-test-none/workspace/p/'), '/ledung-test-none/workspace/p/', 'a trailing slash is the same folder');
+  assert.equal(await shellFolderInside(project, '/ledung-test-none/workspace/q'), null, 'beside it');
+  assert.equal(await shellFolderInside(project, '/ledung-test-none/workspace'), null, 'above it');
+  assert.equal(await shellFolderInside(project, '/ledung-test-none/workspace/p-other'), null, 'a name that starts the same');
+  assert.equal(await shellFolderInside(project, '/ledung-test-none/workspace/p/../q'), null, 'out through ..');
+  assert.equal(await shellFolderInside(project, 'vendor/lib'), null, 'a relative folder');
+  assert.equal(await shellFolderInside('workspace/p', '/ledung-test-none/workspace/p'), null, 'a relative project folder');
 });
 
 test('#144: an away merge runs only at the head its floors were read at; a sent --match-head-commit of another commit is held', async () => {
@@ -543,4 +573,63 @@ test("#146: a subagent's refusal of a call the manager's open question already a
   assert.equal(t.refusals().length, 1, "the manager's repeat is only noted, as before");
   t.mgr.refuse('sub', MERGE, '[Merge Without Review]', 'task-1');
   assert.deepEqual(t.refusals().map((q) => [q.details!.refusal!.toolUseId, q.details!.refusal!.byAgent ?? false]), [['own', false], ['sub', true]]);
+});
+
+// ---------------------------------------------------------------- the record of an away merge (issue #149)
+// Simon's review of PR #147: "the away log records the command as sent and `repo: null`, so the morning report doesn't
+// show which repository's PR went in. Record the pinned command and the repo from the URL."
+
+test("#149: an allowed away merge is recorded with the repository of GitHub's link and the pinned command that ran; away_log shows both", async () => {
+  // GitHub gives the repository's own spelling in its link; the merge named it in lower case, which -R allows.
+  const t = setup({ gh: (pr) => JSON.stringify({ ...JSON.parse(NO_CHECKS), url: `https://github.com/Owner/Repo/pull/${pr}`, ...(pr === 14 ? { mergeable: 'CONFLICTING' } : {}) }) });
+  t.away.start(later(), ['merge']);
+  const sent = 'gh pr merge 12 -R owner/repo --squash';
+  const ran = `gh pr merge https://github.com/Owner/Repo/pull/12 --match-head-commit ${HEAD} -R owner/repo --squash`;
+  const out = await t.mgr.hook(sent, 'hook');
+  assert.equal(out.decision, 'allow');
+  assert.equal(out.updatedInput?.command, ran, 'premise: this is the command that runs');
+  // The permission path (canUseTool) records its own allowed merge the same way.
+  assert.deepEqual(await t.mgr.permission('gh pr merge 13 -R owner/repo', 'prompt'), {
+    behavior: 'allow', updatedInput: { command: `gh pr merge https://github.com/Owner/Repo/pull/13 --match-head-commit ${HEAD} -R owner/repo`, description: 'Merge' },
+  });
+  // Held: nothing ran, so the record keeps the command as sent, and the repository as named.
+  assert.equal((await t.mgr.hook('gh pr merge 14 -R owner/repo', 'held')).decision, 'ask');
+  const records = t.away.log('mgr').records;
+  assert.deepEqual(records.map((r) => [r.pr, r.allowed, r.repo, r.command]), [
+    [12, true, 'Owner/Repo', ran],
+    [13, true, 'Owner/Repo', `gh pr merge https://github.com/Owner/Repo/pull/13 --match-head-commit ${HEAD} -R owner/repo`],
+    [14, false, 'owner/repo', 'gh pr merge 14 -R owner/repo'],
+  ]);
+  const log = formatLog(t.away.log('mgr'), t.away.current(), 'Martin');
+  assert.ok(log.includes(`ALLOWED · merge · PR #12 (Owner/Repo)\n  command: ${ran}\n`), log);
+  assert.ok(log.includes('HELD · merge · PR #14 (owner/repo)\n  command: gh pr merge 14 -R owner/repo\n'), log);
+  t.away.stop();
+});
+
+test('#149: a link on another host than github.com is recorded with its host, as -R takes it', async () => {
+  assert.equal(linkRepo('https://github.com/o/r/pull/3'), 'o/r');
+  assert.equal(linkRepo('https://GitHub.com/o/r/pull/3'), 'o/r');
+  assert.equal(linkRepo('https://ghe.example.com/o/r/pull/3'), 'ghe.example.com/o/r');
+  const t = setup({ gh: (pr) => JSON.stringify({ ...JSON.parse(NO_CHECKS), url: `https://ghe.example.com/o/r/pull/${pr}` }) });
+  t.away.start(later(), ['merge']);
+  assert.equal((await t.mgr.hook('gh pr merge 3 -R ghe.example.com/o/r', 'ghe')).decision, 'allow');
+  assert.equal(t.away.log('mgr').records[0]!.repo, 'ghe.example.com/o/r');
+  t.away.stop();
+});
+
+test('#149: a value that starts with - goes through the pinned merge unchanged: read as the value both times, never as an option', () => {
+  // --admin and --auto are held when they are options (classify); as a subject or body they are only words.
+  const sent = `gh pr merge 12 -R o/r --subject --admin -b -x --body '--auto now' --squash`;
+  assert.deepEqual(classify(sent), { kind: 'merge', pr: 12, repo: 'o/r' }, 'premise: the values are values, not options');
+  const pin = { url: 'https://github.com/o/r/pull/12', head: HEAD };
+  const ran = pinnedMerge(sent, pin);
+  assert.ok('command' in ran);
+  const w = words(ran.command);
+  assert.ok(Array.isArray(w));
+  // Each value stays right after its option, as the same word.
+  for (const [flag, value] of [['--subject', '--admin'], ['-b', '-x'], ['--body', '--auto now']] as const) assert.equal(w[w.indexOf(flag) + 1], value, flag);
+  assert.deepEqual(classify(ran.command), { kind: 'merge', pr: 12, repo: 'o/r' }, 'the pinned merge is still one plain merge');
+  assert.deepEqual(pinnedMerge(ran.command, pin), ran, 'pinned again, it is the same command');
+  // The positive branch: the same words as options are held.
+  assert.equal(classify('gh pr merge 12 -R o/r --admin').kind, 'other');
 });
