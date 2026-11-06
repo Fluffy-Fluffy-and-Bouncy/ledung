@@ -298,4 +298,10 @@ test('ledung#160: a pruned copy, a project locked after the file came, and a con
   p.pc.manager.updateProject('Beta', { ...beta, lockdown: { level: 'A', board: false, remoteControl: false } } as never);
   assert.throws(() => management(p.pc).saveLinkedFile('pc-beta', kept, 'pc-worker', 'after.png'), /Not saved: the project "Beta" is in lockdown; no file from a linked computer goes into it\./);
   assert.deepEqual(filesIn(p.worktree), ['before.png'], 'only the save made before the lock');
+  // Level B as well, where it is offered (not on native Windows).
+  if (process.platform !== 'win32') {
+    p.pc.manager.updateProject('Beta', { ...beta, lockdown: { level: 'B', board: false, remoteControl: false } } as never);
+    assert.throws(() => management(p.pc).saveLinkedFile('pc-beta', kept, 'pc-worker', 'after-b.png'), /Not saved: the project "Beta" is in lockdown level B \(nearly air-gapped\); no file from a linked computer goes into it\./);
+    assert.deepEqual(filesIn(p.worktree), ['before.png']);
+  }
 });
