@@ -6,7 +6,7 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import readline from 'node:readline';
 import { promisify } from 'node:util';
-import { exercisedLine } from './exercised.ts';
+import { exercisedLine, type ExercisedTarget } from './exercised.ts';
 
 export interface ProcInfo {
   pid: number;
@@ -69,9 +69,11 @@ let exercised157 = false;
  * read it (its `#BEGIN <ms>` line). Not the time Node gets to the batch: when Ledung's event loop is
  * busy, two batches arrive back to back, and a CPU delta over a whole interval divided by a gap of a
  * few milliseconds read as 26 cores on a 12-thread machine (#157). A `#BEGIN` without a time (an
- * older loop) falls back to the time of handling.
+ * older loop) falls back to the time of handling. `trace` is where the EXERCISED line goes, the data
+ * folder's exercised.log unless given: tests pass one that writes nowhere, so a test run can't fake
+ * the evidence a play check greps for (PR #155 review).
  */
-export function windowsBatchReader(onList: (list: ProcessList, at: number) => void, now: () => number = Date.now): (line: string) => void {
+export function windowsBatchReader(onList: (list: ProcessList, at: number) => void, now: () => number = Date.now, trace?: ExercisedTarget): (line: string) => void {
   let lines: string[] | null = null;
   let at = 0;
   return (line) => {
@@ -81,7 +83,7 @@ export function windowsBatchReader(onList: (list: ProcessList, at: number) => vo
       at = read > 0 ? read : now();
       if (read > 0 && !exercised157) {
         exercised157 = true;
-        exercisedLine('EXERCISED #157 CPU sample timed when the process list was read');
+        exercisedLine('EXERCISED #157 CPU sample timed when the process list was read', trace);
       }
     } else if (line === '#END' && lines) {
       onList(parseWindowsLines(lines), at);
