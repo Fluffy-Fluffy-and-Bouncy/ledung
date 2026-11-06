@@ -162,6 +162,32 @@ test('ledung#160: a folder swapped for a link between the check and the write is
   assert.deepEqual(filesIn(`${evidence}-old`), []);
 });
 
+// The last check (review of PR #172): the swap comes after the second walk, so only where the file really landed shows
+// it went through a link; it is taken away from there and the save refused.
+test('ledung#160: a folder swapped for a link after the second check is caught where the file landed: refused, taken away, nothing left outside or behind', () => {
+  const wt = fresh('wt');
+  const outside = fresh('outside');
+  const evidence = path.join(wt, 'evidence');
+  fs.mkdirSync(evidence);
+  let swapped = false;
+  assert.throws(() => saveIntoWorktree(wt, 'evidence/shot.png', 'png', PNG, NO_RULES, {
+    beforeLink: () => {
+      fs.renameSync(evidence, `${evidence}-old`);
+      fs.symlinkSync(outside, evidence, 'junction');
+      swapped = true;
+    },
+  }), /^Error: evidence\/shot\.png was not saved: a folder on the way changed while it was written\.$/);
+  assert.ok(swapped, 'the swap ran');
+  assert.deepEqual(filesIn(outside), [], 'the file that went through the link was taken away again');
+  assert.deepEqual(filesIn(wt).filter((f) => f !== 'evidence'), [], 'no temp file left');
+  assert.deepEqual(filesIn(`${evidence}-old`), []);
+  // The positive branch: the same save with no swap lands.
+  const again = fresh('wt');
+  fs.mkdirSync(path.join(again, 'evidence'));
+  saveIntoWorktree(again, 'evidence/shot.png', 'png', PNG, NO_RULES, { beforeLink: () => {} });
+  assert.deepEqual(filesIn(again), ['evidence/shot.png']);
+});
+
 test('ledung#160: a sensitive path pattern, the locked secrets\' folder and another locked project\'s folder are refused', () => {
   const wt = fresh('wt');
   const rules = { pathPatterns: ['private-notes', 'customer'], refused: [path.join(wt, 'island')] };
@@ -170,8 +196,9 @@ test('ledung#160: a sensitive path pattern, the locked secrets\' folder and anot
   assert.throws(() => saveIntoWorktree(wt, 'Customer-List.txt', 'text', Buffer.from('x'), rules), /sensitive path pattern \/customer\//);
   assert.throws(() => saveIntoWorktree(wt, 'ledung-secrets-0123abcd/x.txt', 'text', Buffer.from('x'), rules), /where Ledung keeps locked secrets/);
   assert.throws(() => saveIntoWorktree(wt, 'island/shot.png', 'png', PNG, rules), /in a locked project's folder/);
-  // A worktree inside a locked folder refuses every path.
-  assert.throws(() => saveIntoWorktree(path.join(wt, 'island'), 'x.png', 'png', PNG, { pathPatterns: [], refused: [wt] }), /locked project's folder|not there/);
+  // A worktree inside a locked folder refuses every path (test review of PR #172, finding 2: the worktree must exist).
+  fs.mkdirSync(path.join(wt, 'island'));
+  assert.throws(() => saveIntoWorktree(path.join(wt, 'island'), 'x.png', 'png', PNG, { pathPatterns: [], refused: [wt] }), /^Error: x\.png is in a locked project's folder; Ledung saves no file there\.$/);
   assert.deepEqual(filesIn(wt), [], 'nothing written');
   saveIntoWorktree(wt, 'docs/public/a.md', 'text', Buffer.from('x'), rules);
   assert.deepEqual(filesIn(wt), ['docs/public/a.md'], 'the positive branch: a path no rule names is saved');

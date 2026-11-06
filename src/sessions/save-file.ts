@@ -60,10 +60,10 @@ export function pathProblem(rel: string, kind: AttachmentKind): string | string[
 /**
  * Saves `bytes` (already checked against what was sent) at `rel` inside the worktree `root`. Missing folders are made
  * one at a time, never through a link. Throws a FileError with the reason; on a refusal nothing is left behind.
- * `hooks.beforePlace` is for tests: a step between writing the bytes and putting them in place, where a folder on the
- * way can be swapped for a link.
+ * `hooks` are for tests: `beforePlace` a step between writing the bytes and the second walk, `beforeLink` one between
+ * the second walk and putting the file in place, where a folder on the way can be swapped for a link.
  */
-export function saveIntoWorktree(root: string, rel: string, kind: AttachmentKind, bytes: Buffer, rules: SaveRules, hooks: { beforePlace?: (target: string) => void } = {}): Saved {
+export function saveIntoWorktree(root: string, rel: string, kind: AttachmentKind, bytes: Buffer, rules: SaveRules, hooks: { beforePlace?: (target: string) => void; beforeLink?: (target: string) => void } = {}): Saved {
   const checked = pathProblem(rel, kind);
   if (typeof checked === 'string') throw new FileError(checked);
   const parts = checked;
@@ -87,7 +87,8 @@ export function saveIntoWorktree(root: string, rel: string, kind: AttachmentKind
   if (SECRET_RUNTIME_PATTERN.test(full)) throw new FileError(`${inside} is where Ledung keeps locked secrets; Ledung saves no file there.`);
   // within compares real paths where they exist, so a link to a locked folder can't hide it.
   const locked = (at: string) => rules.refused.some((f) => within(f, at));
-  if (locked(realRoot) || locked(full)) throw new FileError(`${inside} is in a locked project's folder; Ledung saves no file there.`);
+  // The full path only: it is inside the worktree, so a worktree inside a locked folder is refused by it too.
+  if (locked(full)) throw new FileError(`${inside} is in a locked project's folder; Ledung saves no file there.`);
 
   // Every folder on the way and the name itself: no link or junction (Node reports a junction as one), each folder a
   // folder; with `create`, a missing folder is made, on its own, so nothing is made through a link either.
@@ -130,6 +131,7 @@ export function saveIntoWorktree(root: string, rel: string, kind: AttachmentKind
     hooks.beforePlace?.(target);
     // Walked again just before the file goes in place: a folder swapped for a link since is refused (PR #89, finding 4).
     walk(false);
+    hooks.beforeLink?.(target);
     // A hard link fails if anything is at the name, a dangling link included; a rename would replace it.
     try {
       fs.linkSync(temp, target);
@@ -154,7 +156,9 @@ export function saveIntoWorktree(root: string, rel: string, kind: AttachmentKind
   }
   fs.rmSync(temp, { force: true });
   // Where it really is, once more: a folder swapped for a link between the second walk and the link put it elsewhere.
-  // Then it is taken away again (through the same link, so from where it went) and refused.
+  // Then it is taken away again (through the same link, so from where it went) and refused. Path calls can't close the
+  // last instant: a folder swapped and swapped back before this check leaves the new file (never over another) where
+  // the link pointed, and the save is refused (review of PR #172); only a process racing inside the worktree can.
   let landed: string | null = null;
   try {
     landed = fs.realpathSync.native(target);
