@@ -536,6 +536,20 @@ test("#146: the manager's own Allow once is not used up by a subagent's identica
   assert.equal((await t.mgr.hook(MERGE, 'sub-retry', { agent_id: 'agent-1' })).decision, 'allow', "the subagent's retry");
 });
 
+test("#150: a merge the person agreed to in their words is not a subagent's to run; the manager's own still is", async () => {
+  const t = setup();
+  // Premise: without the person's word the merge is asked.
+  assert.equal((await t.mgr.hook(MERGE, 'before')).decision, 'ask', 'no word yet: asked');
+  t.store.addMessage('mgr', 'user', { text: 'merge #2264' });
+  const sub = await t.mgr.hook(MERGE, 'sub', { agent_id: 'agent-1' });
+  assert.equal(sub.decision, 'ask', "a subagent's identical call: asked as usual");
+  assert.ok(!t.mgr.events().some((e) => e.startsWith('Merge of #2264 allowed')), 'not noted as allowed');
+  // The positive branch: the manager's own call is allowed on the same words.
+  const own = await t.mgr.hook(MERGE, 'own');
+  assert.equal(own.decision, 'allow', "the manager's own call");
+  assert.match(own.reason, /Martin said yes to merging #2264 in what they typed/);
+});
+
 test("#146: a subagent's refusal of a call the manager's open question already asks about is asked on its own", async () => {
   const t = setup();
   t.mgr.refuse('own', MERGE);
