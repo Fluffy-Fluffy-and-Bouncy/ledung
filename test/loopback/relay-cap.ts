@@ -16,6 +16,7 @@ import tls from 'node:tls';
 import zlib from 'node:zlib';
 import { hashSecret } from '../../relay/relay.ts';
 import { relayCapSentence } from '../../src/remote/tunnel.ts';
+import { capGbText } from '../../web/src/relayCapGb.ts';
 import { check, failed, link, type Page, repo, startPair, until } from './linked-pair.ts';
 
 const work = path.join(repo, '.test', 'relay-cap');
@@ -79,7 +80,11 @@ function viaRelay(front: number, name: string, route: string, ca: string): Promi
   });
 }
 
-async function shot(page: Page, file: string): Promise<boolean> {
+/**
+ * Settings → Remote on `page` in a real browser (dark), with the Owners list loaded, handed to `fn`; false without
+ * PLAYWRIGHT and CHROMIUM. The cap field is driven here as a person would (test review of PR #173).
+ */
+async function inBrowser(page: Page, fn: (tab: any) => Promise<void>): Promise<boolean> {
   if (!process.env.PLAYWRIGHT || !process.env.CHROMIUM) return false;
   const mod = await import(process.env.PLAYWRIGHT) as { chromium?: any; default?: { chromium: any } };
   const chromium = mod.chromium ?? mod.default!.chromium;
@@ -88,18 +93,26 @@ async function shot(page: Page, file: string): Promise<boolean> {
     const ctx = await browser.newContext({ viewport: { width: 1200, height: 1000 }, colorScheme: 'dark' });
     const tab = await ctx.newPage();
     await tab.goto(`${page.origin}/login?token=${page.token}`);
-    await tab.goto(`${page.origin}/#/settings/remote`);
-    const owners = tab.locator('.relay-owners');
-    await owners.waitFor({ timeout: 20_000 });
-    await tab.locator('.relay-owners li').first().waitFor({ timeout: 20_000 });
-    await owners.scrollIntoViewIfNeeded();
-    await tab.waitForTimeout(300);
-    await owners.screenshot({ path: path.join(work, 'shots', file) });
+    await openOwners(tab, page);
+    await fn(tab);
     return true;
   } finally {
     await browser.close();
   }
 }
+
+async function openOwners(tab: any, page: Page): Promise<void> {
+  await tab.goto(`${page.origin}/#/settings/remote`);
+  await tab.reload();
+  const owners = tab.locator('.relay-owners');
+  await owners.waitFor({ timeout: 20_000 });
+  await tab.locator('.relay-owners li').first().waitFor({ timeout: 20_000 });
+  await owners.scrollIntoViewIfNeeded();
+  await tab.waitForTimeout(300);
+}
+
+const capField = (tab: any, owner: string) => tab.getByLabel(`Monthly cap for ${owner} in GB`);
+const ownerItem = (tab: any, owner: string) => tab.locator('.relay-owners li', { has: tab.locator('b', { hasText: new RegExp(`^${owner}$`) }) });
 
 async function main(): Promise<void> {
   const project = (name: string) => ({ name, runner: 'local', path: path.join(work, `project-${name}`), model: 'haiku', managerModel: 'haiku', permissionMode: 'default' });
@@ -154,13 +167,23 @@ async function main(): Promise<void> {
     const textFromBob = await turn(pc, beta.id, send(alpha.id, 'Mac', 'text from bob'), 'Beta sends text from the capped PC');
     check(/Sent to manager "Manager: Alpha"/.test(textFromBob), 'a message without files still goes from Bob\'s PC');
     const slowAsset = await viaRelay(pair.front, 'pc.l.test', asset, ca);
-    // The fewest milliseconds the throttle allows: the bytes at the rate, less what it lets ahead (1 s of slack, one
-    // 64 KiB chunk, and the half second its release comes early).
-    const least = (assetBytes / RATE) * 1000 - (1000 + (64 * 1024 / RATE) * 1000 + 500);
-    check(slowAsset.status === 200 && slowAsset.bytes === assetBytes && slowAsset.ms >= least, 'the same asset still arrives whole, but crawls at the throttle', `${slowAsset.ms} ms against ${fastAsset.ms} ms; at least ${Math.round(least)} ms at ${RATE / 1024} KiB/s`);
+    // Held, not refused. No exact rate bound here: this asset flows from the PC to the relay, and what the PC already sent
+    // before the relay's pause reached it (up to its 4 MiB send buffer, a whole asset on loopback) is passed on at once;
+    // the debt is still charged, so a large file averages the rate. The rate itself is pinned in relay-cap.test.ts,
+    // where the relay holds the sending socket itself (fix round 1 of PR #173: 3.6 s here against a 4.9 s bound).
+    const least = Math.max(1000, fastAsset.ms * 50);
+    check(slowAsset.status === 200 && slowAsset.bytes === assetBytes && slowAsset.ms >= least, 'the same asset still arrives whole, but crawls at the throttle', `${slowAsset.ms} ms against ${fastAsset.ms} ms; at least ${Math.round(least)} ms`);
     const macAsset = await viaRelay(pair.front, 'mac.l.test', asset, ca);
     check(macAsset.status === 200 && macAsset.ms < least / 2, 'Martin\'s own computer at full speed meanwhile', `${macAsset.ms} ms`);
-    if (await shot(mac, 'mac-settings-relay-owners.png')) check(true, 'shot: Settings → Relay → Owners with Bob capped (dark)', 'shots/mac-settings-relay-owners.png');
+    const shown = await inBrowser(mac, async (tab) => {
+      // The field is prefilled with the cap in GB: a cap of under a MB must not read as 0.
+      const value = await capField(tab, 'Bob').inputValue();
+      check(value === capGbText(bobNow.month) && Number(value) > 0, 'Settings shows Bob\'s cap in GB in his field, not 0', `${value} GB for ${bobNow.month} bytes`);
+      check(await capField(tab, 'Martin').count() === 0 && await ownerItem(tab, 'Martin').count() === 1, 'Martin ("you") is listed, with no cap field');
+      await tab.locator('.relay-owners').screenshot({ path: path.join(work, 'shots', 'mac-settings-relay-owners.png') });
+    });
+    if (shown) check(true, 'shot: Settings → Relay → Owners with Bob capped (dark)', 'shots/mac-settings-relay-owners.png');
+    else console.log('   (no PLAYWRIGHT/CHROMIUM: the page\'s cap field is not driven in this run)');
 
     console.log('== 4. A relay restart keeps the counts and the cap ==');
     const before = await owners(mac);
@@ -172,8 +195,23 @@ async function main(): Promise<void> {
     check(true, 'the PC reconnected and was told it is still capped');
 
     console.log('== 5. Removing the cap lets files through at once ==');
-    const removed = await mac.api('POST', 'relay-owners/Bob/cap', { cap: null });
-    check(removed.status === 200, 'cap removed');
+    // Through the page when there is a browser: a GB figure typed and set, read back, then Remove cap.
+    const driven = await inBrowser(mac, async (tab) => {
+      await capField(tab, 'Bob').fill('2');
+      await ownerItem(tab, 'Bob').getByRole('button', { name: 'Set cap' }).click();
+      const raised = await until(async () => { const b = await ownerOf(mac, 'Bob'); return b.cap !== bobNow.month ? b : null; }, 'the cap typed in the page to reach the relay');
+      // 2 GB at 1024³ bytes a GB.
+      check(raised.cap === 2_147_483_648 && !raised.capped, 'a cap of 2 typed in the page is 2 GB at the relay, and Bob is under it', `${raised.cap} bytes`);
+      await openOwners(tab, mac);
+      check(await capField(tab, 'Bob').inputValue() === '2', 'the page shows the 2 GB cap back in the field');
+      await ownerItem(tab, 'Bob').getByRole('button', { name: 'Remove cap' }).click();
+      await until(async () => (await ownerOf(mac, 'Bob')).cap === null || null, 'Remove cap in the page to reach the relay');
+      check(true, 'Remove cap in the page removed it');
+    });
+    if (!driven) {
+      const removed = await mac.api('POST', 'relay-owners/Bob/cap', { cap: null });
+      check(removed.status === 200, 'cap removed');
+    }
     await until(async () => !(await state(pc)).remote?.relayCap, 'the PC to hear the cap is gone');
     const sent2 = await turn(mac, alpha.id, send(beta.id, 'PC', 'three', ['shot.png']), 'Alpha sends a file again');
     check(/With 1 file\(s\): shot\.png/.test(sent2), 'Alpha\'s file to Bob\'s PC goes again');

@@ -75,7 +75,7 @@ export interface RelayLimits {
   attemptWindowSeconds: number;
   /** How long a connection may take to send its request head (or PROXY header and ClientHello) before it is dropped. */
   headTimeoutMs: number;
-  /** What an owner past their monthly cap is held to, all their computers' streams together (#161). */
+  /** What each computer of an owner past their monthly cap is held to, all that computer's streams together (#161): per computer, not shared across the owner's computers (review of PR #173). */
   capThrottleBytesPerSecond: number;
 }
 

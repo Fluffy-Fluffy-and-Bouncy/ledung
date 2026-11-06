@@ -206,7 +206,8 @@ The admin's Ledung shows each owner's bytes today and this month in Settings →
 and sets a monthly cap per owner there (`GET /admin/owners`, `POST /admin/owners/<owner>/cap` with
 `{"cap": <bytes>}` or `{"cap": null}`). An owner with no cap is uncapped; a newly invited owner
 starts that way. An owner whose month reaches the cap is slowed to
-`limits.capThrottleBytesPerSecond` (64 KiB/s), all their computers together, never refused: their
+`limits.capThrottleBytesPerSecond` (64 KiB/s) for each of their computers on its own (two
+computers online move twice that), never refused: their
 messages and pages still go, a large file crawls. Each of their Ledungs is told with a status
 message after the hello and whenever it changes, and refuses file transfers with a sentence that
 says when the cap resets (the first of next month, UTC). Removing or raising the cap lets them go

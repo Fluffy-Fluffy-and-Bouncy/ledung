@@ -290,15 +290,15 @@ export class LinkedComputers {
     return this.call(link.publicName, route, body, link.sendKey, timeoutMs);
   }
 
-  /**
-   * A file's bytes to a linked computer (issue #158): one POST of the raw bytes, what they are in the query, the JSON
-   * answer back as for every call.
-   */
   /** The relay caps this computer's owner (issue #161): the sentence file sends are refused with; null: not capped. */
   relayCap(): string | null {
     return this.opts.relayCap?.() ?? null;
   }
 
+  /**
+   * A file's bytes to a linked computer (issue #158): one POST of the raw bytes, what they are in the query, the JSON
+   * answer back as for every call.
+   */
   async sendBytes(id: string, route: string, query: Record<string, string>, bytes: Buffer, timeoutMs = FILE_REQUEST_MS): Promise<Record<string, unknown>> {
     const link = this.read().find((l) => l.id === id);
     if (!link) throw new LinkError(404, 'No such linked computer.');

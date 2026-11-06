@@ -8,6 +8,7 @@ import type { NewComputerInfo, RelayAdminView, RelayInviteInfo, RelayOwnerInfo, 
 import { api } from '../api.ts';
 import { formatBytes } from '../usage/MachinePanel.tsx';
 import { CopyButton } from './Markdown.tsx';
+import { capFromGb, capGbText } from '../relayCapGb.ts';
 import { usePlainTyping } from '../usePlainTyping.ts';
 
 type Run = (action: () => Promise<unknown>) => Promise<void>;
@@ -152,8 +153,6 @@ function Invites({ run, newComputers, tokenSet }: { run: Run; newComputers: NewC
   );
 }
 
-const GB = 1024 ** 3;
-
 /**
  * Owners on the relay (issue #161): the bytes their computers moved through it today and this month, and a monthly cap
  * for each but the admin's own. No cap: uncapped (Martin, 2026-11-06, Ledung question #633).
@@ -180,11 +179,9 @@ function Owners() {
 }
 
 function OwnerRow({ owner: o, onCap }: { owner: RelayOwnerInfo; onCap: (owner: string, cap: number | null) => Promise<void> }) {
-  // Three significant figures below 100 GB, so a small cap doesn't read as 0.
-  const [gb, setGb] = useState(o.cap === null ? '' : String(o.cap / GB >= 100 ? Math.round(o.cap / GB) : Number((o.cap / GB).toPrecision(3))));
+  const [gb, setGb] = useState(capGbText(o.cap));
   const typing = usePlainTyping();
-  const typed = Number(gb);
-  const valid = gb.trim() !== '' && Number.isFinite(typed) && typed > 0;
+  const typed = capFromGb(gb);
   const bytes = `${formatBytes(o.today)} today, ${formatBytes(o.month)} this month`;
   return (
     <li>
@@ -194,7 +191,7 @@ function OwnerRow({ owner: o, onCap }: { owner: RelayOwnerInfo; onCap: (owner: s
           {o.cap === null ? <span className="muted"> · no cap</span> : <span> · cap {formatBytes(o.cap)} a month{o.capped ? ', reached' : ''}</span>}
           <span className="relay-row">
             <input {...typing} value={gb} onChange={(e) => setGb(e.target.value)} inputMode="decimal" placeholder="GB a month" aria-label={`Monthly cap for ${o.owner} in GB`} />
-            <button className="small" disabled={!valid} onClick={() => void onCap(o.owner, Math.round(typed * GB))}>Set cap</button>
+            <button className="small" disabled={typed === null} onClick={() => { if (typed !== null) void onCap(o.owner, typed); }}>Set cap</button>
             {o.cap !== null && <button className="small" onClick={() => void onCap(o.owner, null).then(() => setGb(''))}>Remove cap</button>}
           </span>
         </>

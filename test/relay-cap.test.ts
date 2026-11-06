@@ -37,7 +37,9 @@ function tempDir(): string {
   return dir;
 }
 
-async function startRelay(opts: { usage?: string | null; now?: () => number; usageEveryMs?: number } = {}) {
+const BOBS_LAPTOP = 'secret of bob\'s laptop 0123456789';
+
+async function startRelay(opts: { usage?: string | null; now?: () => number; usageEveryMs?: number; bobsLaptop?: boolean } = {}) {
   const lines: string[] = [];
   const config = parseRelayConfig({
     port: await freePort(), bind: '127.0.0.1', adminKeySha256: hashSecret(ADMIN_KEY),
@@ -45,6 +47,7 @@ async function startRelay(opts: { usage?: string | null; now?: () => number; usa
     agents: [
       { name: 'mine', owner: 'Martin', host: 'mine.relay.test', secretSha256: hashSecret(MINE) },
       { name: 'bobpc', owner: 'Bob', host: 'bob.relay.test', secretSha256: hashSecret(BOBS) },
+      ...(opts.bobsLaptop ? [{ name: 'boblaptop', owner: 'Bob', host: 'boblaptop.relay.test', secretSha256: hashSecret(BOBS_LAPTOP) }] : []),
     ],
   });
   const relay = new Relay(config, (line) => lines.push(line), { usage: opts.usage ?? null, now: opts.now, usageEveryMs: opts.usageEveryMs });
@@ -172,9 +175,10 @@ test('ledung#161: an owner under the cap goes at full speed, at the cap is throt
   assert.deepEqual(message.answer, ANSWER);
   assert.ok(message.ms < 1000, `a message is not held (${message.ms} ms)`);
   // A file crawls at the throttle rate: at least its bytes at the rate, less what the throttle lets ahead.
-  const slow = await transfer(r.port, 'bob.relay.test', Buffer.alloc(BIG, 3));
+  // Twice BIG, so the bound (6 s less AHEAD_MS) also fails a throttle running at 1.5 times the rate (test review of PR #173).
+  const slow = await transfer(r.port, 'bob.relay.test', Buffer.alloc(BIG * 2, 3));
   assert.deepEqual(slow.answer, ANSWER, 'throttled, not refused');
-  assert.ok(slow.ms >= (BIG / RATE) * 1000 - AHEAD_MS, `held to the rate (${slow.ms} ms)`);
+  assert.ok(slow.ms >= ((BIG * 2) / RATE) * 1000 - AHEAD_MS, `held to the rate (${slow.ms} ms)`);
 
   // The admin's own computers past any number: a cap can't be set, and a large month is never throttled.
   const refused = await r.setCap('Martin', 1);
@@ -215,6 +219,26 @@ test('ledung#161: a computer that connects while its owner is capped is told aft
   await waitFor('the status after the hello', () => !!again.status().relayCap);
   const slow = await transfer(r.port, 'bob.relay.test', Buffer.alloc(BIG, 3));
   assert.ok(slow.ms >= (BIG / RATE) * 1000 - AHEAD_MS, `throttled from the start (${slow.ms} ms)`);
+});
+
+test('ledung#161: a capped owner\'s computers are each held to the rate on their own, not to one rate shared between them', T, async () => {
+  const r = await startRelay({ bobsLaptop: true });
+  const t = await target();
+  const pc = await tunnel(r.port, 'bobpc', BOBS, t.port);
+  const laptop = await tunnel(r.port, 'boblaptop', BOBS_LAPTOP, t.port);
+  assert.equal((await r.setCap('Bob', 1)).status, 200);
+  await transfer(r.port, 'bob.relay.test', Buffer.alloc(10));
+  await waitFor('both of Bob\'s Ledungs to be told', () => !!pc.status().relayCap && !!laptop.status().relayCap);
+  assert.equal((await r.owner('Bob')).computers, 2);
+  // Both at once. Each on its own budget takes its bytes at the rate; one budget shared would take both sets of bytes.
+  const size = BIG * 2;
+  const own = (size / RATE) * 1000;
+  const [a, b] = await Promise.all([transfer(r.port, 'bob.relay.test', Buffer.alloc(size, 1)), transfer(r.port, 'boblaptop.relay.test', Buffer.alloc(size, 2))]);
+  for (const [name, x] of [['the PC', a], ['the laptop', b]] as const) {
+    assert.deepEqual(x.answer, ANSWER);
+    assert.ok(x.ms >= own - AHEAD_MS, `${name} is held to the rate (${x.ms} ms)`);
+    assert.ok(x.ms < 2 * own - AHEAD_MS, `${name} has the whole rate, not half of one shared with the other (${x.ms} ms, shared it would be at least ${2 * own - AHEAD_MS} ms)`);
+  }
 });
 
 test('ledung#161: the counts and caps survive a restart, and are written about once a minute without one', T, async () => {
