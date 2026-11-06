@@ -11,6 +11,12 @@
 // drops it), every manager gets a message saying so, so a session driving the computer stops at once.
 import type { Store } from '../store/store.ts';
 import { AWAY_KINDS, type AwayInfo, type AwayKind, type ServerEvent, type SessionInfo } from '../shared/protocol.ts';
+import { exercisedLine } from '../platform/exercised.ts';
+
+/** The EXERCISED line of issue #148, once per run. */
+let unnamedHeldExercised = false;
+/** The EXERCISED line of issue #149, once per run. */
+let pinnedRecordExercised = false;
 
 const KEY = 'away';
 /** How long a floor check may take (ask-martin's gate uses the same). */
@@ -362,6 +368,12 @@ export function pinOf(pr: number, repo: string | null, json: string): { url: str
   return { url: url[0], head };
 }
 
+/** A PR link's repository as -R takes it: owner/name on github.com, host/owner/name elsewhere (issue #149). */
+export function linkRepo(url: string): string {
+  const m = /^https:\/\/([\w.-]+)\/([\w.-]+\/[\w.-]+)\/pull\/\d+$/.exec(url)!;
+  return m[1]!.toLowerCase() === 'github.com' ? m[2]! : `${m[1]}/${m[2]}`;
+}
+
 /** A word as the shell must see it: plain, or in single quotes. */
 const shellWord = (w: string) => (/^[\w./:=@%+,-]+$/.test(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`);
 
@@ -422,15 +434,28 @@ export async function decide(a: AwayInfo, userName: string, command: string, dev
 async function mergeFloors(command: string, pr: number, repo: string | null, userName: string, viewPr: ViewPr): Promise<AwayDecision> {
   const where = { pr, repo };
   const held = (reason: string, floors: Floor[]): AwayDecision => ({ kind: 'merge', allowed: false, reason: `held for ${userName}: ${reason}`, ...where, floors });
+  // A merge that names no repository is never read or run while away (issue #148; Martin, Ledung question #621, "a —
+  // Ready, always hold"): GH_REPO, GH_HOST or the shell's folder decide which PR it is, and none of them is the person's.
+  if (!repo) {
+    if (!unnamedHeldExercised) {
+      unnamedHeldExercised = true;
+      exercisedLine('EXERCISED #148 an away merge that names no repository held without reading GitHub');
+    }
+    const why = `the merge names no repository, so which PR #${pr} it is depends on the session's environment; name it with -R owner/name or the PR's link`;
+    return held(why, [{ floor: 'named', ok: false, detail: why }]);
+  }
   const view = await viewPr(pr, repo, PR_FLOOR_FIELDS);
   if ('error' in view) return held(`PR #${pr} could not be read (${view.error})`, [{ floor: 'readable', ok: false, detail: view.error }]);
   const floors = floorsOf(pr, view.json);
   const failed = floors.filter((f) => !f.ok);
   if (failed.length) return held(failed.map((f) => f.detail).join('; '), floors);
   const pin = pinOf(pr, repo, view.json);
-  const run = 'why' in pin ? pin : pinnedMerge(command, pin);
-  if ('why' in run) return held(run.why, [...floors, { floor: 'pinned', ok: false, detail: run.why }]);
-  return { kind: 'merge', allowed: true, reason: `Allowed by away mode: PR #${pr} ${floors.map((f) => f.detail).join(', ')}`, ...where, floors, command: run.command };
+  const unpinned = (why: string) => held(why, [...floors, { floor: 'pinned', ok: false, detail: why }]);
+  if ('why' in pin) return unpinned(pin.why);
+  const run = pinnedMerge(command, pin);
+  if ('why' in run) return unpinned(run.why);
+  // The record names the repository GitHub's link gives, the one the pinned merge runs in (issue #149).
+  return { kind: 'merge', allowed: true, reason: `Allowed by away mode: PR #${pr} ${floors.map((f) => f.detail).join(', ')}`, pr, repo: linkRepo(pin.url), floors, command: run.command };
 }
 
 /**
@@ -667,8 +692,14 @@ export class Away {
     this.timer = null;
   }
 
+  /** An allowed merge is recorded as the pinned command that runs, not the one sent (issue #149). */
   record(sessionId: string, command: string, d: AwayDecision, now = Date.now()): void {
-    this.store.addAwayRecord({ at: now, sessionId, kind: d.kind, command, pr: d.pr, repo: d.repo, floors: d.floors, allowed: d.allowed, reason: d.reason });
+    const ran = d.allowed && d.command ? d.command : command;
+    if (ran !== command && !pinnedRecordExercised) {
+      pinnedRecordExercised = true;
+      exercisedLine('EXERCISED #149 an allowed away merge recorded with its pinned command and the repository of its link');
+    }
+    this.store.addAwayRecord({ at: now, sessionId, kind: d.kind, command: ran, pr: d.pr, repo: d.repo, floors: d.floors, allowed: d.allowed, reason: d.reason });
   }
 
   /** The decisions on this session's calls since `since` (default: the start of the last period). */

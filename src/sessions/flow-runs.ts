@@ -8,6 +8,7 @@ import { DEFAULT_FLOW, DEFAULT_TIDY, endingKey, flowFileOf, ordinal, STOPPED_END
 import { makeWorktree, removeWorktree, type WorktreeHost } from './run-worktrees.ts';
 import { decideStep, OPEN_STATES, outcomeList, runLabel, startBlock, type FlowRun, type RunStep } from '../shared/flow-run.ts';
 import { inFolder, sessionOf } from '../shared/flow-check.ts';
+import { exercisedLine } from '../platform/exercised.ts';
 import { ACCEPTED, CHANGES_NEEDED, questionText, type QuestionDetails } from '../shared/questions.ts';
 import type { RunStore } from './run-store.ts';
 
@@ -97,6 +98,15 @@ const HANDOFF_MAX = 4000;
 const NESTED_MAX = 8;
 
 const short = (text: string, n: number) => (text.length > n ? `${text.slice(0, n)}…` : text);
+
+/** Where a brief is, for one who reads it: a "folder:" brief is in the folder the workflow folder is in (ledung#111). */
+function briefPlace(folder: string, brief: string): string {
+  const rest = inFolder(brief);
+  return rest === null ? `${brief} in ${folder}` : `${rest} in ${folder.replace(/[\\/]\.ledung[\\/]workflow$/, '')}`;
+}
+
+/** EXERCISED #142 is logged once per run of Ledung, not per step. */
+let exercised142 = false;
 
 type Handoff = { from: string; text: string } | null;
 
@@ -620,7 +630,7 @@ export class FlowRuns {
       return `At ${at}, but Ledung could not do it: ${(e as Error).message} Do the step yourself, or stop the run. ${outs} ${report}`;
     }
     const brief = await this.briefOf(flows, block);
-    const subs = block.substeps?.length ? `\n\n${this.substepsLine(block)}` : '';
+    const subs = block.substeps?.length ? `\n\n${this.substepsLine(flows, block)}` : '';
     const given = handoff ? `\n\n"${handoff.from}" handed on:\n\n${handoff.text}` : '';
     const tree = run.worktree ? ` The run's worktree: ${run.worktree.path} (branch ${run.worktree.branch}).` : '';
     return `At ${at}: ${block.runs === 'manager' ? 'your own step' : 'a step for you to see through'}.${tree}${given}${brief ? `\n\n${brief}` : ''}${subs}\n\n${outs} ${report}`;
@@ -643,18 +653,22 @@ export class FlowRuns {
   private async briefOf(flows: ProjectFlows, block: FlowBlock): Promise<string> {
     if (!block.brief) return '';
     const text = await flows.text(block.brief).catch(() => null);
-    // A "folder:" brief is in the folder the workflow folder is in (ledung#111).
-    const rest = inFolder(block.brief);
-    const where = rest === null ? `${block.brief} in ${flows.folder}` : `${rest} in ${flows.folder.replace(/[\\/]\.ledung[\\/]workflow$/, '')}`;
+    const where = briefPlace(flows.folder, block.brief);
     return text !== null && text.length <= BRIEF_INLINE
       ? `The brief (${block.brief}):\n\n${text.trim()}`
       : `The brief: read ${where}.`;
   }
 
-  private substepsLine(block: FlowBlock): string {
+  private substepsLine(flows: ProjectFlows, block: FlowBlock): string {
     const subs = (block.substeps ?? []).map((sub) => {
       const outs = (sub.outcomes ?? []).map((o) => `"${o.word}"${o.times ? ` (${ordinal(o.times)} time)` : ''} → ${o.to}`).join(', ');
-      return `- ${sub.title} (${sub.kind}, when ${sub.when ?? 'done'}${sub.model ? `, model ${sub.model}` : ''}${sub.brief ? `, brief ${sub.brief}` : ''})${outs ? `: ${outs}` : ''}`;
+      // Named where it is, as the block's own brief is: the subagent has no workflow folder to look in (ledung#142).
+      const brief = sub.brief ? `, brief ${briefPlace(flows.folder, sub.brief)}` : '';
+      if (sub.brief && !exercised142) {
+        exercised142 = true;
+        exercisedLine('EXERCISED #142 sub-step brief named with its folder');
+      }
+      return `- ${sub.title} (${sub.kind}, when ${sub.when ?? 'done'}${sub.model ? `, model ${sub.model}` : ''}${brief})${outs ? `: ${outs}` : ''}`;
     });
     // Part 3d: four reviewers at once, say; their results come back as one report.
     return block.parallel
@@ -669,7 +683,7 @@ export class FlowRuns {
       `You run "${block.title}" (block ${block.id}) of ${runLabel(run)}, in the flow "${flows.titles.get(run.flow) ?? run.flow}". Ledung started this from the flow; ${this.who(run.coordinator)} coordinates the run.`,
       run.worktree ? `The run has its own git worktree, ${run.worktree.path}, on branch ${run.worktree.branch} (from ${run.worktree.base}): work and commit there, not in the project folder.` : '',
       await this.briefOf(flows, block),
-      block.substeps?.length ? this.substepsLine(block) : '',
+      block.substeps?.length ? this.substepsLine(flows, block) : '',
       handoff ? `What "${handoff.from}" handed on:\n\n${handoff.text}` : '',
       words.length ? `When you are done, end your report with how it went, one of: ${words.map((w) => `"${w}"`).join(', ')}. Your coordinator reads it and decides.` : '',
     ].filter(Boolean).join('\n\n');
