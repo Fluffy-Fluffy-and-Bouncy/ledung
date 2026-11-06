@@ -47,6 +47,9 @@ const PUBLIC_ORIGIN = `https://${PUBLIC}`;
 let clockShift = 0;
 let server: LedungServer;
 let webRoot: string;
+// This run's own temp folder, holding projectRoot and the files "outside the project" next to it, so two runs at once never share
+// them and one run's cleanup can't delete another's (issue #137).
+let runRoot: string;
 let projectRoot: string;
 // The board cache (board attachments) and the manager, for the board attachment route.
 let boardCache: string;
@@ -84,7 +87,8 @@ before(async () => {
   webRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-web-'));
   fs.writeFileSync(path.join(webRoot, 'index.html'), '<!doctype html><title>Ledung</title>');
   const store = new Store(openDatabase(':memory:'));
-  projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-proj-'));
+  runRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-security-'));
+  projectRoot = fs.mkdtempSync(path.join(runRoot, 'ledung-proj-'));
   fs.writeFileSync(path.join(projectRoot, 'a.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]));
   fs.writeFileSync(path.join(projectRoot, 'a.svg'), '<svg/>');
   fs.writeFileSync(path.join(path.dirname(projectRoot), 'ledung-secret.png'), 'x');
@@ -163,8 +167,7 @@ after(async () => {
   removeTemp(webRoot);
   removeTemp(relayDir);
   removeTemp(shortcutDir);
-  removeTemp(projectRoot);
-  fs.rmSync(path.join(path.dirname(projectRoot), 'ledung-secret.png'), { force: true });
+  removeTemp(runRoot);
   removeTemp(chatImagesDir);
 });
 
