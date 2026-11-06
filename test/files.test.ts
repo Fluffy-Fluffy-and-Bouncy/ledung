@@ -820,7 +820,8 @@ test('ledung#158: a copy from a linked computer is served by its handle to the m
   if (process.platform !== 'win32') assert.equal(fs.statSync(path.join(dir, 'link-a', `${id}.png`)).mode & 0o777, 0o600, 'mode 0600');
   // Another manager here, a path, a made-up id: refused (the page route goes through this, server-security.test.ts).
   assert.throws(() => files.read('mgr-2', handle, ['png']), /no file shot\.png from a linked computer for this session/);
-  for (const bad of ['linked:../../x/shot.png', `linked:${id}`, path.join(dir, 'link-a', `${id}.png`), 'linked:0000000000000000/shot.png']) {
+  // The right id with another name: refused, so a question never shows a name the file did not come with.
+  for (const bad of ['linked:../../x/shot.png', `linked:${id}`, path.join(dir, 'link-a', `${id}.png`), 'linked:0000000000000000/shot.png', `linked:${id}/anything.png`]) {
     assert.throws(() => files.read('mgr-1', bad, ['png']), /not a file from a linked computer|no file/, bad);
   }
   assert.throws(() => files.read('mgr-1', handle, ['text']), /not a PNG or JPEG image or a text file/);

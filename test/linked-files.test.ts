@@ -37,16 +37,20 @@ const manager = (n: Node, id: string, project: string) => {
 };
 const copies = (dir: string): string[] => (fs.existsSync(dir) ? fs.readdirSync(dir, { recursive: true }).map(String).filter((f) => /\.(png|jpg|txt)$/.test(f)) : []);
 
-/** A Mac and a PC, linked; each with an open project and a locked one, and a manager for each. */
-async function pair(tag: string) {
+/**
+ * A Mac and a PC, linked; each with an open project and a locked one (level A, or `locked`), and a manager for each.
+ * `config`: more of both configs (board.evidenceDays).
+ */
+async function pair(tag: string, opts: { locked?: 'A' | 'B'; config?: Record<string, unknown> } = {}) {
+  const level = opts.locked ?? 'A';
   const alpha = temp(`${tag}-alpha`);
   const beta = temp(`${tag}-beta`);
-  const common = { userName: 'Martin', browseRoots: [os.tmpdir()], sensitive: { commandPatterns: [], pathPatterns: ['private-notes'], mcpTools: [] } };
+  const common = { ...opts.config, userName: 'Martin', browseRoots: [os.tmpdir()], sensitive: { commandPatterns: [], pathPatterns: ['private-notes'], mcpTools: [] } };
   const mac = await nodes.ledung(`mac-${tag}.files.test`, undefined, undefined, undefined, {
-    ...common, projects: [{ name: 'Alpha', runner: 'local', path: alpha }, { name: 'Island', runner: 'local', path: temp(`${tag}-island`), lockdown: { level: 'A' } }],
+    ...common, projects: [{ name: 'Alpha', runner: 'local', path: alpha }, { name: 'Island', runner: 'local', path: temp(`${tag}-island`), lockdown: { level } }],
   });
   const pc = await nodes.ledung(`pc-${tag}.files.test`, undefined, undefined, undefined, {
-    ...common, projects: [{ name: 'Beta', runner: 'local', path: beta }, { name: 'Fort', runner: 'local', path: temp(`${tag}-fort`), lockdown: { level: 'A' } }],
+    ...common, projects: [{ name: 'Beta', runner: 'local', path: beta }, { name: 'Fort', runner: 'local', path: temp(`${tag}-fort`), lockdown: { level } }],
   });
   const macFiles = temp(`${tag}-mac-linked`);
   const pcFiles = temp(`${tag}-pc-linked`);
@@ -129,6 +133,8 @@ test('ledung#158: what can\'t go is refused with the reason before anything is s
   fs.mkdirSync(path.join(p.alpha, 'private-notes'));
   fs.writeFileSync(path.join(p.alpha, 'private-notes', 'a.png'), PNG);
   fs.writeFileSync(path.join(p.alpha, 'secret.log'), 'the password is hunter2-linked-files\n');
+  // A key file saved under a name text may have: stopped by the token check, not by its kind (test review of #162, 1).
+  fs.writeFileSync(path.join(p.alpha, 'key.txt'), '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----\n');
   fs.writeFileSync(path.join(p.alpha, 'big.png'), Buffer.concat([PNG, Buffer.alloc(5 * 1024 * 1024)]));
   fs.writeFileSync(path.join(p.alpha, 'big.log'), 'x'.repeat(512 * 1024 + 1));
   for (let i = 1; i <= 6; i++) fs.writeFileSync(path.join(p.alpha, `n${i}.log`), `file ${i}`);
@@ -140,6 +146,7 @@ test('ledung#158: what can\'t go is refused with the reason before anything is s
     [['.env'], /Not sent: attachment \.env: .*only PNG and JPEG images and \.txt, \.log or \.md/],
     [['private-notes/a.png'], /Not sent: attachment private-notes\/a\.png: .*sensitive path pattern \/private-notes\//],
     [['secret.log'], /Not sent: attachment secret\.log contains a secret locked in Ledung/],
+    [['key.txt'], /Not sent: attachment key\.txt contains what looks like a private key/],
     [['n1.log', 'n2.log', 'n3.log', 'n4.log', 'n5.log', 'n6.log'], /Not sent: at most 5 files per message, and this one has 6/],
     [['big.png'], /Not sent: attachment big\.png: big\.png is too large/],
     [['big.log'], /Not sent: attachment big\.log: big\.log is too large .*at most 512 KB/],
@@ -221,4 +228,46 @@ test('ledung#158: /link/file needs a link key, checks the hash, kind and size, a
   const other = await nodes.viaTunnel(p.pc.name, '/link/message', { headers: { authorization: `Bearer ${key}` }, body: JSON.stringify({ fromId: 'mac-alpha', toId: 'pc-fort', text: 'hi', files: [id] }) });
   assert.equal(other.status, 400);
   assert.deepEqual(copies(p.pcFiles), []);
+});
+
+const notOnWindows = { skip: process.platform === 'win32' ? 'level B is not offered on native Windows' : false };
+
+test('ledung#158: lockdown B: the receiving computer keeps no file for a B project, and a B project\'s manager sends none', { timeout: HANG_MS, ...notOnWindows }, async () => {
+  const p = await pair('lockb', { locked: 'B' });
+  fs.writeFileSync(path.join(p.alpha, 'ok.png'), PNG);
+  const island = (p.mac.manager.projectStore.get('Island')!.config as { path: string }).path;
+  fs.writeFileSync(path.join(island, 'ok.png'), PNG);
+  // To a B project: refused at /link/file, before anything is kept there.
+  const key = keyFor(p.mac, p.pc);
+  const sha = crypto.createHash('sha256').update(PNG).digest('hex');
+  const refused = await sendFile(p.pc.name, { to: 'pc-fort', name: 'ok.png', kind: 'png', size: String(PNG.length), sha }, PNG, key);
+  assert.equal(refused.status, 403);
+  assert.match(JSON.parse(refused.body).error, /No files go to or from a locked project/);
+  await assert.rejects(p.toPc('mac-alpha', 'pc-fort', 'hi', ['ok.png']), /answered 403: No files go to or from a locked project/);
+  assert.deepEqual(copies(p.pcFiles), []);
+  // From a B project: its manager reaches no other computer at all.
+  await assert.rejects(p.toPc('mac-island', 'pc-beta', 'hi', ['ok.png']), /lockdown level B \(nearly air-gapped\)/);
+  assert.equal((await p.bytes(p.mac)).today.sent, 0);
+  assert.deepEqual(p.pc.store.undeliveredInbox('pc-beta'), []);
+  // The positive branch of the same probes: an open project gets the file.
+  await p.toPc('mac-alpha', 'pc-beta', 'hi', ['ok.png']);
+  assert.equal(copies(p.pcFiles).length, 1);
+  assert.equal((await p.bytes(p.mac)).today.sent, PNG.length);
+});
+
+test('ledung#158: copies are pruned after the config\'s board.evidenceDays, read by the manager', { timeout: HANG_MS }, async () => {
+  const p = await pair('prune', { config: { board: { evidenceDays: 2 } } });
+  fs.writeFileSync(path.join(p.alpha, 'a.png'), PNG);
+  fs.writeFileSync(path.join(p.alpha, 'b.log'), 'kept');
+  await p.toPc('mac-alpha', 'pc-beta', 'two files', ['a.png', 'b.log']);
+  const text = p.pc.store.undeliveredInbox('pc-beta')[0]!.text;
+  const [old, fresh] = [/"(linked:[0-9a-f]{16}\/a\.png)"/, /"(linked:[0-9a-f]{16}\/b\.log)"/].map((re) => re.exec(text)![1]!) as [string, string];
+  // One received three days ago, one a day ago: with 2 evidence days only the first goes (the default 30 keeps both).
+  const day = 86400000;
+  p.pc.db.prepare('UPDATE linked_files SET received_at = ? WHERE id = ?').run(Date.now() - 3 * day, old.slice(7, 23));
+  p.pc.db.prepare('UPDATE linked_files SET received_at = ? WHERE id = ?').run(Date.now() - 1 * day, fresh.slice(7, 23));
+  p.pc.manager.linkedFiles.prune(true);
+  assert.throws(() => management(p.pc).screenshots('pc-beta', [{ file: old, look_for: 'x' }], null), /was pruned/);
+  assert.equal(management(p.pc).reviewEvidence('pc-beta', [{ file: fresh, caption: 'c' }])[0]!.kind, 'text', 'one day old: kept');
+  assert.equal(copies(p.pcFiles).length, 1);
 });

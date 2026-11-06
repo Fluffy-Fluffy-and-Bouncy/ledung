@@ -147,7 +147,8 @@ export class LinkedFiles {
     if (!m) throw new FileError('That is not a file from a linked computer.');
     this.prune();
     const r = this.db.prepare('SELECT * FROM linked_files WHERE id = ?').get(m[1]!) as Record<string, any> | undefined;
-    if (!r || r.to_session !== sessionId || r.state !== 'delivered') throw new FileError(`Ledung has no file ${m[2]} from a linked computer for this session.`);
+    // The name too, so the name a question shows is the one the file came with (review of PR #162, Minor 1).
+    if (!r || r.to_session !== sessionId || r.state !== 'delivered' || r.name !== m[2]) throw new FileError(`Ledung has no file ${m[2]} from a linked computer for this session.`);
     if (r.pruned_at !== null) throw new FileError(`${r.name} was pruned: copies from linked computers are kept for a limited number of days.`);
     const kind = r.kind as AttachmentKind;
     let bytes: Buffer;
