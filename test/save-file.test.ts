@@ -48,7 +48,9 @@ test('ledung#160: the writer saves the bytes at the path in the worktree, making
   const wt = fresh('wt');
   const saved = saveIntoWorktree(wt, 'evidence/shot.png', 'png', PNG, NO_RULES);
   assert.equal(saved.inside, 'evidence/shot.png');
-  assert.equal(saved.full, path.join(wt, 'evidence', 'shot.png'));
+  // The native real path: on Windows the temp folder's JS real path keeps an 8.3 name (C:\\Users\\RUNNER~1) the writer's
+  // has the long one for (Windows CI on PR #172).
+  assert.equal(saved.full, path.join(fs.realpathSync.native(wt), 'evidence', 'shot.png'));
   assert.equal(saved.size, PNG.length);
   assert.equal(saved.sha, sha(PNG));
   assert.equal(sha(fs.readFileSync(path.join(wt, 'evidence', 'shot.png'))), sha(PNG));
@@ -204,6 +206,22 @@ test('ledung#160: a sensitive path pattern, the locked secrets\' folder and anot
   assert.deepEqual(filesIn(wt), ['docs/public/a.md'], 'the positive branch: a path no rule names is saved');
 });
 
+test('ledung#160: a locked folder spelled another way than on disk (another case, or an 8.3 name on Windows) is still refused', (t) => {
+  const wt = fresh('wt');
+  // The worktree's own name in another case, with a locked folder under it that isn't there yet: the JS real path keeps
+  // the spelling as typed, as it keeps C:\\Users\\RUNNER~1 on Windows CI, where the writer's real path has the disk's.
+  const other = path.join(path.dirname(wt), path.basename(wt).toUpperCase());
+  if (!fs.existsSync(other) || fs.realpathSync(other) === fs.realpathSync.native(other)) {
+    t.skip('this file system tells case apart, or its JS real path already gives the name on disk');
+    return;
+  }
+  assert.throws(() => saveIntoWorktree(wt, 'island/shot.png', 'png', PNG, { pathPatterns: [], refused: [path.join(other, 'island')] }), /^Error: island\/shot\.png is in a locked project's folder; Ledung saves no file there\.$/);
+  // And the other way round: the locked folder is there, the path typed in another case than it.
+  fs.mkdirSync(path.join(wt, 'island'));
+  assert.throws(() => saveIntoWorktree(wt, 'ISLAND/shot.png', 'png', PNG, { pathPatterns: [], refused: [path.join(wt, 'island')] }), /in a locked project's folder/);
+  assert.deepEqual(filesIn(wt), [], 'nothing written');
+});
+
 // --- The tool, between two linked Ledungs ------------------------------------------------------------------------
 
 const management = (node: Node) => (node.manager as unknown as { management: Management }).management;
@@ -260,7 +278,7 @@ test('ledung#160: the PC manager saves a PNG from the Mac into its worker\'s wor
   const p = await pair('save');
   const handle = await p.send('pc-beta');
   const out = management(p.pc).saveLinkedFile('pc-beta', handle, 'pc-worker', 'evidence/shot.png');
-  const full = path.join(p.worktree, 'evidence', 'shot.png');
+  const full = path.join(fs.realpathSync.native(p.worktree), 'evidence', 'shot.png');
   assert.equal(out, `Saved into "pc-worker"'s worktree: evidence/shot.png (${full}), ${PNG.length} bytes, SHA-256 ${sha(PNG)}. Tell the session that line; the file is its own now, Ledung doesn't remove it.`);
   assert.equal(sha(fs.readFileSync(full)), sha(PNG), 'the same bytes as were sent');
   assert.ok(!fs.existsSync(path.join(p.beta, 'evidence')), 'in the worktree it entered, not the project folder');

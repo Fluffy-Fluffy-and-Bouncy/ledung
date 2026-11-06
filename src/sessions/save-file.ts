@@ -85,8 +85,11 @@ export function saveIntoWorktree(root: string, rel: string, kind: AttachmentKind
     if (re.test(inside) || re.test(full) || re.test(full.split(path.sep).join('/'))) throw new FileError(`${inside} matches the sensitive path pattern /${p}/; Ledung saves no file there.`);
   }
   if (SECRET_RUNTIME_PATTERN.test(full)) throw new FileError(`${inside} is where Ledung keeps locked secrets; Ledung saves no file there.`);
-  // within compares real paths where they exist, so a link to a locked folder can't hide it.
-  const locked = (at: string) => rules.refused.some((f) => within(f, at));
+  // within compares real paths where they exist, so a link to a locked folder can't hide it. It takes them with the JS
+  // realpath, which keeps an 8.3 name as typed (C:\Users\RUNNER~1) where the worktree's real path above has the long
+  // one; so both sides are also taken in the native form, and compared without case where the disk ignores it
+  // (Windows CI on PR #172: a save into a locked folder went through).
+  const locked = (at: string) => rules.refused.some((f) => within(f, at) || nativeWithin(f, at));
   // The full path only: it is inside the worktree, so a worktree inside a locked folder is refused by it too.
   if (locked(full)) throw new FileError(`${inside} is in a locked project's folder; Ledung saves no file there.`);
 
@@ -174,4 +177,27 @@ export function saveIntoWorktree(root: string, rel: string, kind: AttachmentKind
     throw new FileError(`${inside} was not saved: a folder on the way changed while it was written.`);
   }
   return { inside, full: target, size: bytes.length, sha: crypto.createHash('sha256').update(bytes).digest('hex') };
+}
+
+/** The native real path of `p`'s nearest folder that is there, with the rest as given: long names, case on disk. */
+function nativeReal(p: string): string {
+  const rest: string[] = [];
+  let at = path.resolve(p);
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync.native(at), ...rest.reverse());
+    } catch {
+      const up = path.dirname(at);
+      if (up === at) return path.resolve(p);
+      rest.push(path.basename(at));
+      at = up;
+    }
+  }
+}
+
+/** Is `inner` the folder `outer` or inside it, both in their native real form; without case on macOS and Windows. */
+function nativeWithin(outer: string, inner: string): boolean {
+  const fold = (s: string) => (process.platform === 'darwin' || process.platform === 'win32' ? s.normalize('NFC').toLowerCase() : s);
+  const rel = path.relative(fold(nativeReal(outer)), fold(nativeReal(inner)));
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
