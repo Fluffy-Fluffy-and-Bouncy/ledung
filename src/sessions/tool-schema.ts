@@ -39,19 +39,20 @@ const instanceOf = (server: McpSdkServerConfigWithInstance) => server.instance a
  */
 export async function toolSchemaHash(server: McpSdkServerConfigWithInstance): Promise<string> {
   const instance = instanceOf(server);
-  const answers = new Map<unknown, JsonRpc>();
+  const waiting = new Map<unknown, (m: JsonRpc) => void>();
   const transport: Transport = {
     start: async () => {},
-    send: async (m) => { if (m.id !== undefined) answers.set(m.id, m); },
+    send: async (m) => { waiting.get(m.id)?.(m); },
     close: async () => { transport.onclose?.(); },
   };
   await instance.connect(transport);
-  const ask = async (id: number, method: string, params?: unknown) => {
+  // The server answers in promise callbacks, before any timer or I/O: waiting on the answer itself never lets other
+  // work in during a start (a reattach runs its sessions' starts in a row). The timer only stops a start hanging.
+  const ask = (id: number, method: string, params?: unknown) => new Promise<JsonRpc | undefined>((resolve) => {
+    const timer = setTimeout(() => resolve(undefined), 2000);
+    waiting.set(id, (m) => { clearTimeout(timer); resolve(m); });
     transport.onmessage!({ jsonrpc: '2.0', id, method, ...(params ? { params } : {}) } as JsonRpc);
-    // The handlers answer within a few ticks; a schema hash is never worth hanging a start for.
-    for (let i = 0; i < 100 && !answers.has(id); i++) await new Promise((r) => setImmediate(r));
-    return answers.get(id);
-  };
+  });
   try {
     await ask(1, 'initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'ledung-schema', version: '1' } });
     const list = await ask(2, 'tools/list');
