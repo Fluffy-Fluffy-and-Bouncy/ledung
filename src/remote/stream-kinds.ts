@@ -108,7 +108,10 @@ export interface ZipChecks {
   text(entry: string, text: string): string | null;
 }
 
-interface Entry { name: string; flags: number; method: number; compressed: number; local: number }
+interface Entry { name: string; flags: number; method: number; compressed: number; local: number; comment: string }
+
+/** The central directory's entries, where the directory starts, and the zip's comment. */
+interface Directory { list: Entry[]; at: number; comment: string }
 
 class ZipRefusal extends Error {}
 
@@ -122,29 +125,48 @@ async function readAt(fd: fs.promises.FileHandle, offset: number, length: number
   return buf.subarray(0, bytesRead);
 }
 
-/** The central directory's entries, from the end record (zip64 too); throws a ZipRefusal for anything else. */
-async function entries(fd: fs.promises.FileHandle, size: number): Promise<Entry[]> {
+/** Bytes no entry, directory or end record accounts for (review finding 1 on PR #175): a streaming unzip reads them. */
+const unplaced = (at: number): never => refuse(`it has bytes Ledung can't place (at byte ${at}): they are not in any entry its directory lists, and an unzip tool may still read them`);
+
+/**
+ * The central directory's entries, from the end record (zip64 too); throws a ZipRefusal for anything else. The
+ * directory must run right up to the zip64 records or the end record, and the end record and its comment must end
+ * the file: nothing sits between them for a streaming unzip to find.
+ */
+async function entries(fd: fs.promises.FileHandle, size: number): Promise<Directory> {
   const tailStart = Math.max(0, size - 22 - 65535);
   const tail = await readAt(fd, tailStart, size - tailStart);
   let end = -1;
   for (let i = tail.length - 22; i >= 0; i--) if (tail.readUInt32LE(i) === 0x06054b50) { end = i; break; }
   if (end < 0) refuse('it is not a zip file Ledung can read (no central directory)');
   if (tail.readUInt16LE(end + 4) !== 0 || tail.readUInt16LE(end + 6) !== 0) refuse('it is a zip split over several files');
+  const endAt = tailStart + end;
+  const commentLen = tail.readUInt16LE(end + 20);
+  if (endAt + 22 + commentLen !== size) unplaced(Math.min(endAt + 22 + commentLen, size));
+  const comment = tail.subarray(end + 22, end + 22 + commentLen).toString('utf8');
   let count = tail.readUInt16LE(end + 10);
   let dirSize = tail.readUInt32LE(end + 12);
   let dirAt = tail.readUInt32LE(end + 16);
-  if (count === 0xffff || dirSize === 0xffffffff || dirAt === 0xffffffff) {
-    const locAt = tailStart + end - 20;
-    const loc = locAt >= 0 ? await readAt(fd, locAt, 20) : Buffer.alloc(0);
-    if (loc.length < 20 || loc.readUInt32LE(0) !== 0x07064b50) refuse('its zip64 end record is missing');
-    const rec = await readAt(fd, Number(loc.readBigUInt64LE(8)), 56);
+  // Where the directory must end: at the zip64 end record when there is one, else at the end record.
+  let dirEnd = endAt;
+  const locAt = endAt - 20;
+  const loc = locAt >= 0 ? await readAt(fd, locAt, 20) : Buffer.alloc(0);
+  const zip64 = loc.length === 20 && loc.readUInt32LE(0) === 0x07064b50;
+  if (!zip64 && (count === 0xffff || dirSize === 0xffffffff || dirAt === 0xffffffff)) refuse('its zip64 end record is missing');
+  if (zip64) {
+    const recAt = Number(loc.readBigUInt64LE(8));
+    const rec = await readAt(fd, recAt, 56);
     if (rec.length < 56 || rec.readUInt32LE(0) !== 0x06064b50) refuse('its zip64 end record is missing');
+    // The record's size field counts what follows it (12 bytes of signature and size before); the locator comes next.
+    if (recAt + 12 + Number(rec.readBigUInt64LE(4)) !== locAt) unplaced(recAt);
     count = Number(rec.readBigUInt64LE(32));
     dirSize = Number(rec.readBigUInt64LE(40));
     dirAt = Number(rec.readBigUInt64LE(48));
+    dirEnd = recAt;
   }
   if (dirSize > MAX_DIRECTORY_BYTES) refuse('it has more entries than Ledung checks');
   if (dirAt + dirSize > size) refuse('its central directory is cut off');
+  if (dirAt + dirSize !== dirEnd) unplaced(Math.min(dirAt + dirSize, dirEnd));
   const dir = await readAt(fd, dirAt, dirSize);
   const out: Entry[] = [];
   let p = 0;
@@ -179,11 +201,24 @@ async function entries(fd: fs.promises.FileHandle, size: number): Promise<Entry[
       }
       e += 4 + len;
     }
-    out.push({ name, flags, method, compressed, local });
+    const comment = dir.subarray(p + 46 + nameLen + extraLen, p + 46 + nameLen + extraLen + commentLen).toString(flags & 0x800 ? 'utf8' : 'latin1');
+    out.push({ name, flags, method, compressed, local, comment });
     p += 46 + nameLen + extraLen + commentLen;
   }
   if (out.length !== count) refuse('its central directory does not list the entries it says');
-  return out;
+  if (p !== dir.length) unplaced(dirAt + p);
+  return { list: out, at: dirAt, comment };
+}
+
+/**
+ * How many bytes follow an entry's data as its data descriptor (flag bit 3), from the bytes after the data and where
+ * the next part must start: 12 or 20 (32- or 64-bit sizes), 16 or 24 with the optional signature. A local header
+ * takes 30 bytes at least, so no hidden entry fits in one.
+ */
+function descriptorLength(after: Buffer, room: number): number | null {
+  const signed = after.length >= 4 && after.readUInt32LE(0) === 0x08074b50;
+  const fits = signed ? [16, 24] : [12, 20];
+  return fits.includes(room) ? room : null;
 }
 
 /** An entry's bytes as stored (compressed or not), streamed from the file. */
@@ -246,9 +281,10 @@ async function checkContent(file: string, entry: Entry, dataAt: number, checks: 
 /**
  * Why the zip at `file` can't go, naming the entry, or null when every entry may (issue #159): no entry encrypted, none
  * leading out of the zip, none named as .env, a key or a token file, none matching the sensitive path patterns, no
- * archive inside it, and every text entry through the text checks (the secret scan). Streamed from disk: an entry is
- * never held whole. The local header of each entry must agree with the central directory, so what an unzip tool
- * reads is what was checked.
+ * archive inside it, and every text entry, folder entry's data, entry comment and the zip comment through the text
+ * checks (the secret scan). Streamed from disk: an entry is never held whole. The local header of each entry must agree
+ * with the central directory, and the entries, directory and end records must fill the file with no byte left over,
+ * so what an unzip tool reads, from the directory or from the local headers in order, is what was checked.
  */
 export async function zipProblem(file: string, checks: ZipChecks): Promise<string | null> {
   let fd: fs.promises.FileHandle | null = null;
@@ -256,7 +292,9 @@ export async function zipProblem(file: string, checks: ZipChecks): Promise<strin
     fd = await fs.promises.open(file, 'r');
     const size = (await fd.stat()).size;
     const budget = { text: MAX_ZIP_TEXT_BYTES };
-    for (const entry of await entries(fd, size)) {
+    const dir = await entries(fd, size);
+    const content: [Entry, number][] = [];
+    for (const entry of dir.list) {
       const name = entry.name.replace(/\\/g, '/');
       const shown = entry.name;
       if (!name || name.startsWith('/') || /^[A-Za-z]:/.test(name) || name.split('/').some((p) => p === '..')) refuse(`entry ${shown} has a path that leads out of the zip`);
@@ -270,11 +308,33 @@ export async function zipProblem(file: string, checks: ZipChecks): Promise<strin
       const localName = await readAt(fd, entry.local + 30, local.readUInt16LE(26));
       if (localName.toString(local.readUInt16LE(6) & 0x800 ? 'utf8' : 'latin1') !== entry.name) refuse(`entry ${shown} has another name inside the zip than its directory gives`);
       if (local.readUInt16LE(6) & 0x1) refuse(`entry ${shown} is encrypted; Ledung can't check it`);
-      if (name.endsWith('/')) continue;
       const dataAt = entry.local + 30 + local.readUInt16LE(26) + local.readUInt16LE(28);
       if (dataAt + entry.compressed > size) refuse(`entry ${shown} is cut off`);
-      await checkContent(file, entry, dataAt, checks, budget);
+      // A folder entry's data, if it has any, is checked as a file's is (review finding 2 on PR #175): it leaves too.
+      content.push([entry, dataAt]);
+      const said = entry.comment && checks.text(entry.name, entry.comment);
+      if (said) refuse(`entry ${shown}'s comment: ${said}`);
     }
+    const said = dir.comment && checks.text('the zip comment', dir.comment);
+    if (said) refuse(`the zip's comment: ${said}`);
+    // The entries must fill the file from its first byte to the directory, each local header, name, extra field, data
+    // and data descriptor running straight into the next (review finding 1 on PR #175): a streaming unzip reads local
+    // headers in order and extracts whatever it finds, so a byte the directory doesn't list would go unchecked.
+    const byPlace = [...dir.list].sort((a, b) => a.local - b.local);
+    let at = 0;
+    for (const [n, entry] of byPlace.entries()) {
+      if (entry.local !== at) unplaced(Math.min(at, entry.local));
+      const local = await readAt(fd, entry.local, 30);
+      at = entry.local + 30 + local.readUInt16LE(26) + local.readUInt16LE(28) + entry.compressed;
+      if ((entry.flags | local.readUInt16LE(6)) & 0x8) {
+        const next = byPlace[n + 1]?.local ?? dir.at;
+        const extra = descriptorLength(await readAt(fd, at, 4), next - at);
+        if (extra === null) unplaced(at);
+        at += extra!;
+      }
+    }
+    if (at !== dir.at) unplaced(Math.min(at, dir.at));
+    for (const [entry, dataAt] of content) await checkContent(file, entry, dataAt, checks, budget);
     return null;
   } catch (e) {
     if (e instanceof ZipRefusal) return e.message;

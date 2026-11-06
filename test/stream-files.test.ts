@@ -62,7 +62,13 @@ function wav(bytes: number): Buffer {
 }
 
 /** A zip, by the format (APPNOTE 4.3): stored or deflated entries, each with its local header and its directory record. */
-function zip(entries: { name: string; data: Buffer; deflate?: boolean; flags?: number; localName?: string }[]): Buffer {
+/**
+ * Options for the crafted cases: `hidden` writes the local entry but leaves it out of the directory, `before` puts bytes
+ * ahead of its local header, `descriptor` follows its data with a signed data descriptor (flag bit 3), `comment` is its
+ * directory comment; `comment` on the zip is the archive comment.
+ */
+type ZipEntry = { name: string; data: Buffer; deflate?: boolean; flags?: number; localName?: string; hidden?: boolean; before?: Buffer; descriptor?: boolean; comment?: string };
+function zip(entries: ZipEntry[], comment = ''): Buffer {
   const parts: Buffer[] = [];
   const central: Buffer[] = [];
   let offset = 0;
@@ -72,7 +78,11 @@ function zip(entries: { name: string; data: Buffer; deflate?: boolean; flags?: n
     const body = e.deflate ? zlib.deflateRawSync(e.data) : e.data;
     const crc = zlib.crc32(e.data);
     const method = e.deflate ? 8 : 0;
-    const flags = (e.flags ?? 0) | 0x800;
+    const flags = (e.flags ?? 0) | 0x800 | (e.descriptor ? 0x8 : 0);
+    if (e.before) {
+      parts.push(e.before);
+      offset += e.before.length;
+    }
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(20, 4);
@@ -83,6 +93,16 @@ function zip(entries: { name: string; data: Buffer; deflate?: boolean; flags?: n
     local.writeUInt32LE(e.data.length, 22);
     local.writeUInt16LE(localName.length, 26);
     parts.push(local, localName, body);
+    const descriptor = Buffer.alloc(e.descriptor ? 16 : 0);
+    if (e.descriptor) {
+      descriptor.writeUInt32LE(0x08074b50, 0);
+      descriptor.writeUInt32LE(crc, 4);
+      descriptor.writeUInt32LE(body.length, 8);
+      descriptor.writeUInt32LE(e.data.length, 12);
+      parts.push(descriptor);
+    }
+    const listed = !e.hidden;
+    const note = Buffer.from(e.comment ?? '', 'utf8');
     const dir = Buffer.alloc(46);
     dir.writeUInt32LE(0x02014b50, 0);
     dir.writeUInt16LE(20, 4);
@@ -93,18 +113,22 @@ function zip(entries: { name: string; data: Buffer; deflate?: boolean; flags?: n
     dir.writeUInt32LE(body.length, 20);
     dir.writeUInt32LE(e.data.length, 24);
     dir.writeUInt16LE(name.length, 28);
+    dir.writeUInt16LE(note.length, 32);
     dir.writeUInt32LE(offset, 42);
-    central.push(dir, name);
-    offset += 30 + localName.length + body.length;
+    if (listed) central.push(dir, name, note);
+    offset += 30 + localName.length + body.length + descriptor.length;
   }
   const cd = Buffer.concat(central);
+  const listed = entries.filter((e) => !e.hidden).length;
+  const note = Buffer.from(comment, 'utf8');
   const end = Buffer.alloc(22);
   end.writeUInt32LE(0x06054b50, 0);
-  end.writeUInt16LE(entries.length, 8);
-  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt16LE(listed, 8);
+  end.writeUInt16LE(listed, 10);
   end.writeUInt32LE(cd.length, 12);
   end.writeUInt32LE(offset, 16);
-  return Buffer.concat([...parts, cd, end]);
+  end.writeUInt16LE(note.length, 20);
+  return Buffer.concat([...parts, cd, end, note]);
 }
 
 async function until<T>(get: () => T | null | undefined, what: string, ms = WAIT_MS): Promise<T> {
@@ -250,6 +274,9 @@ test('ledung#159: a zip with a .env, a key, a token file, a sensitive path, a se
     ['nested', [{ name: 'inner.zip', data: zip([{ name: '.env', data: Buffer.from('X=1') }]) }], /entry inner\.zip is an archive inside the zip; Ledung can't check what is in it/],
     ['slip', [{ name: '../escape.txt', data: Buffer.from('x') }], /entry \.\.\/escape\.txt has a path that leads out of the zip/],
     ['names', [{ name: 'ok.txt', localName: '.env', data: Buffer.from('X=1') }], /entry ok\.txt has another name inside the zip than its directory gives/],
+    // Review finding 1 on PR #175: a .env a streaming unzip (bsdtar from a pipe) extracts, though the directory doesn't list it.
+    ['prefix', [{ name: '.env', data: Buffer.from('TOKEN=hidden-value\n'), hidden: true }, { name: 'readme.txt', data: Buffer.from('fine\n') }], /it has bytes Ledung can't place \(at byte 0\)/],
+    ['gap', [ok, { name: 'b.txt', data: Buffer.from('fine\n'), before: Buffer.from('TOKEN=hidden-value-between-entries\n') }], /it has bytes Ledung can't place \(at byte \d+\)/],
   ];
   for (const [tag, entries, reason] of cases) {
     fs.writeFileSync(path.join(p.alpha, `${tag}.zip`), zip(entries));
@@ -295,6 +322,23 @@ test('ledung#159: zipProblem reads a zip made by the format and refuses one that
   const whole = fs.readFileSync(ok);
   fs.writeFileSync(cut, Buffer.concat([whole.subarray(0, 40), whole.subarray(whole.length - 22)]));
   assert.ok(await zipProblem(cut, checks), 'a zip cut short is refused');
+  // Data descriptors (flag bit 3, as a zip written while streaming has them) fill the file too, and go.
+  const streamed = path.join(dir, 'streamed.zip');
+  fs.writeFileSync(streamed, zip([{ name: 'a.txt', data: Buffer.from('fine'), deflate: true, descriptor: true }, { name: 'b.bin', data: Buffer.from([0, 1]), descriptor: true }]));
+  assert.equal(await zipProblem(streamed, checks), null);
+  // Bytes after the end record, or between the directory and it, are not placed either.
+  fs.writeFileSync(streamed, Buffer.concat([fs.readFileSync(ok), Buffer.from('trailing')]));
+  assert.match((await zipProblem(streamed, checks))!, /bytes Ledung can't place/);
+  // Review finding 2 on PR #175: the zip comment, an entry's comment and a folder entry's data go through the text check.
+  const quiet = [{ name: 'b.bin', data: Buffer.from([0, 1]) }];
+  const said = async (z: Buffer) => {
+    fs.writeFileSync(streamed, z);
+    return zipProblem(streamed, checks);
+  };
+  assert.equal(await said(zip(quiet, 'just a note')), null);
+  assert.equal(await said(zip(quiet, 'key hello-abc')), "the zip's comment: saw hello");
+  assert.equal(await said(zip([{ ...quiet[0]!, comment: 'hello there' }])), "entry b.bin's comment: saw hello");
+  assert.equal(await said(zip([{ name: 'docs/', data: Buffer.from('hello in a folder') }])), 'entry docs/: saw hello');
 });
 
 test('ledung#159: /link/file-get gives the bytes only to the link and the manager the message went to, from where it is asked (Range)', { timeout: HANG_MS }, async () => {
