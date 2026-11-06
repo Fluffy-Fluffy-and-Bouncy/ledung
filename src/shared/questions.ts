@@ -150,6 +150,14 @@ export interface RefusalDetails {
    * the session's own Allow once never a subagent's identical call. Absent on questions raised before: the session's own.
    */
   byAgent?: boolean;
+  /**
+   * Allow once can't get this call past Claude Code (Project-Ledung#470), so the person is asked to make it by hand
+   * instead: `protected`, it writes a path Claude Code guards itself; `retried`, an Allow once was used and the retry
+   * was refused again. Absent: Allow once is offered.
+   */
+  byHand?: 'protected' | 'retried';
+  /** With `retried`: the question whose Allow once the retry used. */
+  retryOf?: number;
 }
 
 /** The run and block a person block's question belongs to (workflow part 3b), with their titles as asked. */

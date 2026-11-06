@@ -15,6 +15,8 @@ export const CLASSIFIER_REFUSAL = 'Permission for this action was denied by the 
 /** The answers the person can give; the question offers them as its buttons. */
 export const ALLOW_ONCE = 'Allow once';
 export const DENY = 'Deny';
+/** The answer to a refusal only the person can make (Project-Ledung#470): they made the change themself. */
+export const DONE_BY_HAND = 'Done by hand';
 
 /** How long an Allow once waits for the retry: a day, then the session must be refused and asked again. */
 export const ONCE_GRANT_MS = 24 * 3600 * 1000;
@@ -71,6 +73,78 @@ export function sameCall(granted: { toolName: string; input: Record<string, unkn
   return granted.toolName === toolName && callKey(granted.toolName, granted.input) === callKey(toolName, input);
 }
 
+/** The tools that write a file named in their input; Claude Code checks that path before any hook's allow counts. */
+const FILE_WRITE_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
+
+// The paths Claude Code guards itself, read from its program (2.1.316). Writing to one is a safety check that a
+// PreToolUse hook's allow doesn't lift ("Hook returned 'allow' …, but an ask rule, a safety check … requires the full
+// permission pipeline"). So in auto mode the call goes to the classifier whatever the person answered to Ledung's
+// Allow once (Project-Ledung#470, reproduced with a hook that allows everything). The list has folders anywhere in
+// the path and file names. Claude Code lets through some folders under .claude: a worktree, skills, agents, commands.
+const GUARDED_FOLDERS = ['.git', '.vscode', '.idea', '.claude', '.husky', '.cargo', '.devcontainer', '.yarn', '.mvn'];
+const CLAUDE_OPEN_FOLDERS = ['worktrees', 'skills', 'agents', 'commands'];
+const GUARDED_FILES = [
+  '.gitconfig', '.gitmodules', '.bashrc', '.bash_profile', '.zshrc', '.zprofile', '.profile', '.zshenv', '.zlogin',
+  '.zlogout', '.bash_login', '.bash_aliases', '.bash_logout', '.envrc', '.ripgreprc', '.mcp.json', '.claude.json',
+  '.npmrc', '.yarnrc', '.yarnrc.yml', '.pnp.cjs', '.pnp.loader.mjs', '.pnpmfile.cjs', 'bunfig.toml', '.bunfig.toml',
+  '.bazelrc', '.bazelversion', '.bazeliskrc', '.pre-commit-config.yaml', 'lefthook.yml', '.lefthook.yml',
+  'lefthook.yaml', '.lefthook.yaml', 'gradle-wrapper.properties', 'maven-wrapper.properties', '.devcontainer.json',
+  'pyrightconfig.json', 'managed-settings.json',
+];
+
+/** The file a call writes, when it is a file tool's. */
+function writtenFile(toolName: string, input: Record<string, unknown>): string | null {
+  if (!FILE_WRITE_TOOLS.includes(toolName)) return null;
+  const file = input.file_path ?? input.notebook_path;
+  return typeof file === 'string' && file.trim() ? file.trim() : null;
+}
+
+/**
+ * The guarded file a call writes, when Ledung's Allow once can't get it past Claude Code (Project-Ledung#470), else
+ * null. Only file tools count here: what a shell command writes can't be read off the command. When Allow once can't
+ * lift a shell call, the person hears it after the retry is refused again.
+ */
+export function guardedWrite(toolName: string, input: Record<string, unknown>): string | null {
+  const file = writtenFile(toolName, input);
+  if (!file) return null;
+  const parts = file.split(/[\\/]+/).filter(Boolean).map((p) => p.toLowerCase());
+  let opened = false;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const part = parts[i]!;
+    if (part === '.config' && parts[i + 1] === 'git') return file;
+    if (!GUARDED_FOLDERS.includes(part)) continue;
+    // Claude Code lets one .claude/worktrees (or skills, agents, commands) through; a .claude below it is guarded again.
+    if (part === '.claude' && !opened && CLAUDE_OPEN_FOLDERS.includes(parts[i + 1]!)) {
+      opened = true;
+      continue;
+    }
+    return file;
+  }
+  return GUARDED_FILES.includes(parts.at(-1) ?? '') ? file : null;
+}
+
+/** How the person makes the call themself: the exact edit, the file's whole content, or the command to run. */
+export function byHandText(r: Pick<RefusalDetails, 'toolName' | 'input'>): string {
+  const { toolName, input } = r;
+  const file = writtenFile(toolName, input);
+  const str = (v: unknown) => (typeof v === 'string' ? v : '');
+  const replace = (e: Record<string, unknown>) =>
+    `Replace ${e.replace_all === true ? 'every occurrence of this text' : 'this text'}:\n\n${fenced(str(e.old_string))}\n\nwith:\n\n${fenced(str(e.new_string))}`;
+  if (file && toolName === 'Edit') return `Open \`${file}\` and make this one edit. ${replace(input)}`;
+  if (file && toolName === 'MultiEdit' && Array.isArray(input.edits)) {
+    const edits = (input.edits as Record<string, unknown>[]).map((e, i) => `${i + 1}. ${replace(e)}`);
+    return `Open \`${file}\` and make these edits, in this order:\n\n${edits.join('\n\n')}`;
+  }
+  if (file && toolName === 'Write') return `Write \`${file}\` with exactly this content (it replaces what is there):\n\n${fenced(str(input.content))}`;
+  if (file && toolName === 'NotebookEdit') {
+    return `In the notebook \`${file}\`, ${str(input.edit_mode) || 'replace'} the cell ${str(input.cell_id) || 'the call names'} with:\n\n${fenced(str(input.new_source))}`;
+  }
+  if ((toolName === 'Bash' || toolName === 'PowerShell') && typeof input.command === 'string') {
+    return `Run this yourself, in ${toolName}, in the session's folder:\n\n${fenced(input.command, toolName === 'Bash' ? 'bash' : 'powershell')}`;
+  }
+  return `Make this ${toolName} call yourself:\n\n${fenced(JSON.stringify(input, null, 2), 'json')}`;
+}
+
 /** The refused call a question is about, when Ledung raised it; null for any other question. */
 export function refusalOf(q: Pick<QuestionInfo, 'details'>): RefusalDetails | null {
   return q.details?.refusal ?? null;
@@ -95,6 +169,8 @@ export function onceGrant(
     const r = refusalOf(q);
     return !!r && q.sessionId === sessionId && q.status === 'answered' && q.answeredBy === 'user' && q.forwardedFrom === null
       && allowsOnce(q.answer) && (q.answeredAt ?? 0) > now - ONCE_GRANT_MS && sameCall(r, toolName, input)
+      // A question that offered no Allow once grants nothing, whatever words its answer has (Project-Ledung#470).
+      && !r.byHand
       // The session's own grant is not a subagent's, nor the other way round (issue #146).
       && (r.byAgent ?? false) === byAgent;
   }) ?? null;
@@ -116,17 +192,37 @@ function fenced(text: string, lang = ''): string {
 
 /**
  * The question Ledung asks the person (issue #104): the session, its project, the exact call and the classifier's
- * reason, with Allow once and Deny. In the project's first tier and ranked first, so it heads Waiting for you.
+ * reason, with Allow once and Deny. In the project's first tier and ranked first, so it heads Waiting for you. When
+ * Allow once can't lift it (Project-Ledung#470), it isn't offered: the question says only the person can do it, and
+ * how, with Done by hand and Deny.
  */
 export function refusalQuestion(
   r: RefusalDetails, session: { title: string; project: string }, tier: string | undefined,
 ): { question: string; options: string[]; details: QuestionDetails } {
   const shell = r.toolName === 'Bash' || r.toolName === 'PowerShell';
+  const what = shell ? `${r.toolName} command` : `${r.toolName} call`;
+  const call = fenced(callText(r), shell ? (r.toolName === 'Bash' ? 'bash' : 'powershell') : 'json');
+  const reason = `**The classifier's reason:** ${r.reason}`;
+  if (r.byHand) {
+    const title = `Only you can make this change for "${session.title}"`;
+    const why = r.byHand === 'retried'
+      ? `You allowed this ${what} once${r.retryOf !== undefined ? ` (question #${r.retryOf})` : ''}. The session "${session.title}" (project ${session.project}) retried it unchanged, and the auto mode classifier refused it again. **Allow once can't get this call past Claude Code**, so Ledung doesn't offer it again.`
+      : `The auto mode classifier refused this ${what} in the session "${session.title}" (project ${session.project}). It writes \`${guardedWrite(r.toolName, r.input)}\`, a file Claude Code guards itself. **Allow once in Ledung can't get it past Claude Code**, so Ledung doesn't offer it.`;
+    const issue = [
+      why,
+      call,
+      reason,
+      `**Only you can do it.** ${byHandText(r)}`,
+      `Then answer **${DONE_BY_HAND}**: the session is told you made the change, and goes on without retrying it. **${DENY}** tells the session you said no.`,
+    ].join('\n\n');
+    const details: QuestionDetails = { title, issue, ...(tier ? { tier } : {}), rank: 0, refusal: r };
+    return { question: `**${title}**\n\n${issue}`, options: [DONE_BY_HAND, DENY], details };
+  }
   const title = `Auto mode refused a call in "${session.title}"`;
   const issue = [
-    `The auto mode classifier refused this ${shell ? `${r.toolName} command` : `${r.toolName} call`} in the session "${session.title}" (project ${session.project}).`,
-    fenced(callText(r), shell ? (r.toolName === 'Bash' ? 'bash' : 'powershell') : 'json'),
-    `**The classifier's reason:** ${r.reason}`,
+    `The auto mode classifier refused this ${what} in the session "${session.title}" (project ${session.project}).`,
+    call,
+    reason,
     `**${ALLOW_ONCE}** lets exactly this call run one time: Ledung tells the session to retry it, and lets the retry through. ` +
       `Any other command, and a second run of this one, is refused or asked as usual. **${DENY}** tells the session you said no.`,
   ].join('\n\n');
@@ -138,7 +234,11 @@ export function refusalQuestion(
 export function refusalAnswerText(q: QuestionInfo, userName: string): string {
   const r = refusalOf(q)!;
   const call = fenced(callText(r));
-  if (allowsOnce(q.answer)) {
+  if (r.byHand && q.answer?.trim() === DONE_BY_HAND) {
+    return `${userName} made this change by hand (Ledung's question #${q.id}), because Allow once can't get the call past Claude Code. Don't retry it:\n\n${call}\n\nCheck the result if you need to, and go on.`;
+  }
+  // A question that offered no Allow once grants none, whatever its words say (Project-Ledung#470).
+  if (allowsOnce(q.answer) && !r.byHand) {
     const note = q.answer!.trim().slice(ALLOW_ONCE.length).replace(/^\s*Note:\s*/, '').trim();
     return `${userName} allowed, once, the call the auto mode classifier refused (Ledung's question #${q.id}). Retry exactly this call now, one time, unchanged:\n\n${call}\n\n` +
       'Ledung lets that one retry through; it does not cover any other command, a changed one, or a second run.' +
