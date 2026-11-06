@@ -6,6 +6,7 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import readline from 'node:readline';
 import { promisify } from 'node:util';
+import { exercisedLine } from './exercised.ts';
 
 export interface ProcInfo {
   pid: number;
@@ -53,12 +54,41 @@ $ErrorActionPreference = 'SilentlyContinue'
 while ($true) {
   if (-not (Get-Process -Id ${ledungPid})) { exit }
   $p = Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,KernelModeTime,UserModeTime,WorkingSetSize
-  [Console]::Out.WriteLine('#BEGIN')
+  # The time the list was read, in Unix milliseconds: Node may handle two batches back to back (#471).
+  [Console]::Out.WriteLine("#BEGIN $([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())")
   foreach ($x in $p) { [Console]::Out.WriteLine("$($x.ProcessId),$($x.ParentProcessId),$([long]$x.KernelModeTime + [long]$x.UserModeTime),$($x.WorkingSetSize)") }
   [Console]::Out.WriteLine('#END')
   [Console]::Out.Flush()
   Start-Sleep -Seconds ${intervalSec}
 }`;
+
+let exercised471 = false;
+
+/**
+ * Turns the PowerShell loop's lines into one process list per batch, each with the time PowerShell
+ * read it (its `#BEGIN <ms>` line). Not the time Node gets to the batch: when Ledung's event loop is
+ * busy, two batches arrive back to back, and a CPU delta over a whole interval divided by a gap of a
+ * few milliseconds read as 26 cores on a 12-thread machine (#471). A `#BEGIN` without a time (an
+ * older loop) falls back to the time of handling.
+ */
+export function windowsBatchReader(onList: (list: ProcessList, at: number) => void, now: () => number = Date.now): (line: string) => void {
+  let lines: string[] | null = null;
+  let at = 0;
+  return (line) => {
+    if (line.startsWith('#BEGIN')) {
+      lines = [];
+      const read = Number(line.slice('#BEGIN'.length).trim());
+      at = read > 0 ? read : now();
+      if (read > 0 && !exercised471) {
+        exercised471 = true;
+        exercisedLine('EXERCISED #471 CPU sample timed when the process list was read');
+      }
+    } else if (line === '#END' && lines) {
+      onList(parseWindowsLines(lines), at);
+      lines = null;
+    } else lines?.push(line);
+  };
+}
 
 export class ProcessSampler {
   private child: ChildProcess | null = null;
@@ -82,14 +112,7 @@ export class ProcessSampler {
       stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
     });
-    let lines: string[] | null = null;
-    readline.createInterface({ input: this.child.stdout! }).on('line', (line) => {
-      if (line === '#BEGIN') lines = [];
-      else if (line === '#END' && lines) {
-        this.onList(parseWindowsLines(lines), Date.now());
-        lines = null;
-      } else lines?.push(line);
-    });
+    readline.createInterface({ input: this.child.stdout! }).on('line', windowsBatchReader(this.onList));
     // If the measuring process dies, measuring stops; Ledung itself is unaffected (a broken helper
     // degrades to nothing, never to a dead Ledung — brief section 6). Try again once a minute.
     this.child.on('exit', () => {
@@ -101,8 +124,10 @@ export class ProcessSampler {
   private startPosix(): void {
     const tick = async () => {
       try {
+        // Timed as ps starts, not when its output is handled: a busy event loop delays the second (#471).
+        const at = Date.now();
         const { stdout } = await run('ps', ['-A', '-o', 'pid=,ppid=,time=,rss='], { maxBuffer: 16 * 1024 * 1024 });
-        this.onList(parsePs(stdout), Date.now());
+        this.onList(parsePs(stdout), at);
       } catch {
         // Skip this round.
       }

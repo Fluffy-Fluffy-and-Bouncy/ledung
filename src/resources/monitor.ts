@@ -120,13 +120,8 @@ export class ResourceMonitor {
     for (const t of targets) {
       if (t.kind !== 'local') continue;
       const pid = hostPids.get(t.id);
-      const tree = pid ? treeOf(list, pid) : [];
-      let used = 0;
-      if (this.prevList) {
-        for (const p of tree) used += Math.max(0, p.cpuSeconds - (this.prevList.get(p.pid)?.cpuSeconds ?? 0));
-      }
-      const mem = tree.reduce((n, p) => n + p.memBytes, 0);
-      this.count(t.id, used, this.prevList && dt > 0 ? used / dt : 0, mem);
+      const s = treeSample(this.prevList, list, pid, dt, os.cpus().length);
+      this.count(t.id, s.cpuSeconds, s.cores, s.memBytes);
     }
     this.prevList = list;
     this.prevAt = at;
@@ -179,7 +174,7 @@ export class ResourceMonitor {
           const prev = this.counters.get(t.id)?.lastGroupCpu;
           // Processes that ended take their CPU time with them: never count a drop as negative.
           const delta = prev === undefined ? 0 : Math.max(0, usage.cpuSeconds - prev);
-          this.count(t.id, delta, prev === undefined || dt <= 0 ? 0 : delta / dt, usage.memBytes);
+          this.count(t.id, delta, prev === undefined || dt <= 0 ? 0 : capCores(delta / dt, os.cpus().length), usage.memBytes);
           this.counters.get(t.id)!.lastGroupCpu = usage.cpuSeconds;
         }
       }
@@ -187,6 +182,27 @@ export class ResourceMonitor {
       this.containerBusy = false;
     }
   }
+}
+
+/**
+ * Cores in use can't be more than the machine has threads. A higher figure is a measuring artefact
+ * (two samples closer together than the CPU times they carry), so it is held at the thread count (#471).
+ */
+export function capCores(cores: number, threads: number): number {
+  return threads > 0 ? Math.min(cores, threads) : cores;
+}
+
+/**
+ * One session's sample: the CPU its process tree used since the last list (`prev`, the whole
+ * machine's, so a process that joins the tree late is still counted from its last reading), the
+ * cores that is over `dt` seconds, and its memory. With no last list there is nothing to compare.
+ */
+export function treeSample(prev: ProcessList | null, list: ProcessList, root: number | undefined, dt: number, threads: number): { cpuSeconds: number; cores: number; memBytes: number } {
+  const tree = root ? treeOf(list, root) : [];
+  let used = 0;
+  if (prev) for (const p of tree) used += Math.max(0, p.cpuSeconds - (prev.get(p.pid)?.cpuSeconds ?? 0));
+  const memBytes = tree.reduce((n, p) => n + p.memBytes, 0);
+  return { cpuSeconds: used, cores: prev && dt > 0 ? capCores(used / dt, threads) : 0, memBytes };
 }
 
 function cpuTimes(): { busy: number; total: number } {
