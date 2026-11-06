@@ -31,6 +31,11 @@
 //   their cap is throttled, never refused, so their messages and page still work, and each of their Ledungs is told
 //   with a status message after the hello, so it refuses file transfers with the reason (question #632). The admin's
 //   own owner is never capped. Only totals are logged, once a day; never what goes through.
+// - A capped owner's sends to the admin's own computers (#176): those bytes count for the admin, whose computer was
+//   dialled, so the owner's own throttle never sees them. The relay can't tell who dialled (the stream is TLS to the
+//   Ledung), so the admin's Ledung says, from the linked key on the request, and the relay then holds that stream to
+//   the throttle in the way from the capped computer only. The admin's Ledungs are told which hosts are capped, and
+//   refuse files from them. Taken from and told to the admin's own computers only.
 //
 // Not part of Ledung's release copy or npm package: it runs on its own, from its own container.
 import crypto from 'node:crypto';
@@ -42,7 +47,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { MAX_CLIENT_HELLO, readClientHello } from '../src/remote/clienthello.ts';
-import { decodeFrame, encodeFrame, FRAME, helloMessage, helloVersion, MAX_CHUNK, PROTOCOL_VERSION, Streams } from '../src/remote/mux.ts';
+import { cappedSendersMessage, decodeFrame, encodeFrame, FRAME, helloMessage, helloVersion, MAX_CHUNK, PROTOCOL_VERSION, senderOf, Streams } from '../src/remote/mux.ts';
 import { hashSecret } from '../src/remote/secret.ts';
 import { isJoinToken, JOIN_TOKEN_BYTES, newJoinToken } from '../src/remote/join-token.ts';
 
@@ -470,6 +475,8 @@ export function capMessage(reached: boolean, resetsOn: string): string {
 const USAGE_EVERY_MS = 60_000;
 /** Logged once per run, on the first throttle (agent-workflow worker.md, "EXERCISED line"). */
 let exercisedThrottle = false;
+/** Logged once per run, on the first stream from a capped owner to the admin's own computer (issue #176). */
+let exercisedSender = false;
 
 class ApiError extends Error {
   readonly status: number;
@@ -560,6 +567,8 @@ interface Agent {
   streams: Streams;
   nextId: number;
   alive: boolean;
+  /** The capped senders' hosts it was last told of, joined (issue #176); '' until told any. */
+  toldSenders: string;
 }
 
 export class Relay {
@@ -753,6 +762,8 @@ export class Relay {
     this.byHost.set(host, entry);
     this.added.push(name);
     this.event('agent added', { name, owner, host, tls: entry.tls });
+    // A capped owner's new computer is a capped sender too (#176).
+    for (const agent of this.online.values()) this.applySenderCaps(agent);
     return entry;
   }
 
@@ -810,6 +821,7 @@ export class Relay {
       agent.ws.close(4003, 'Removed from the relay.');
     }
     this.event('agent removed', { name: entry.name, owner: entry.owner, host: entry.host, connected: agent ? 'yes' : 'no' });
+    for (const other of this.online.values()) this.applySenderCaps(other);
     return { agent: entry, wasConnected: !!agent };
   }
 
@@ -1020,6 +1032,42 @@ export class Relay {
       this.log(`${new Date().toISOString()} EXERCISED #161 relay throttled an owner past their monthly cap`);
     }
     for (const agent of this.online.values()) if (agent.entry.owner === owner) this.applyCap(agent);
+    // What that owner's computers send the admin's own is held or let go with it (#176).
+    for (const agent of this.online.values()) this.applySenderCaps(agent);
+  }
+
+  /**
+   * On the admin's own computers (#176): streams from a capped owner's computer are held to the throttle in the way
+   * from that computer, each computer on its own budget, and their Ledung is told which hosts those are, so it refuses
+   * files from them. Any other agent holds none and is told none (or, once no longer the admin's, that none are).
+   */
+  private applySenderCaps(agent: Agent): void {
+    const mine = this.adminOwner !== null && agent.entry.owner === this.adminOwner;
+    const hosts: string[] = [];
+    for (const e of this.byName.values()) {
+      const over = mine && this.capped.has(e.owner);
+      if (over) hosts.push(e.host);
+      agent.streams.throttleSender(e.host, over ? this.config.limits.capThrottleBytesPerSecond : null);
+    }
+    const told = hosts.sort().join(',');
+    if (told === agent.toldSenders || agent.ws.readyState !== agent.ws.OPEN) return;
+    agent.toldSenders = told;
+    agent.ws.send(cappedSendersMessage(hosts, capResetsOn(this.now())));
+  }
+
+  /**
+   * The admin's own Ledung says stream `id` comes from the computer with public host `host` (#176), found from the
+   * linked key on the request. Taken only from the admin's own computers, and only for a stream it carries.
+   */
+  private onSender(agent: Agent, id: number, host: string): void {
+    if (this.adminOwner === null || agent.entry.owner !== this.adminOwner || !agent.streams.has(id)) return;
+    const entry = this.byHost.get(host);
+    if (!entry) return;
+    agent.streams.markSender(id, entry.host);
+    if (this.capped.has(entry.owner) && !exercisedSender) {
+      exercisedSender = true;
+      this.log(`${new Date().toISOString()} EXERCISED #176 relay throttled a capped owner's stream to the admin's own computer`);
+    }
   }
 
   /** The agent's streams held to the throttle or let go, as its owner's cap says, and its Ledung told. */
@@ -1089,6 +1137,8 @@ export class Relay {
       this.checkCap(mine);
       // The one that was "you" until now is an owner like any other again.
       if (before) this.checkCap(before);
+      // The capped senders follow the admin's own computers (#176).
+      for (const agent of this.online.values()) this.applySenderCaps(agent);
       this.saveUsage();
     }
     const now = this.now();
@@ -1370,17 +1420,24 @@ export class Relay {
       previous.ws.close(4000, 'Replaced by a newer connection.');
     }
     // Counted on the agent whose host was dialled, for its owner (#161 refine notes).
-    const agent: Agent = { entry, ws, streams: new Streams(ws, { onBytes: (bytes) => this.countBytes(entry.owner, bytes) }), nextId: 1, alive: true };
+    const agent: Agent = { entry, ws, streams: new Streams(ws, { onBytes: (bytes) => this.countBytes(entry.owner, bytes) }), nextId: 1, alive: true, toldSenders: '' };
     this.online.set(entry.name, agent);
     this.event('agent connected', { name: entry.name, owner: entry.owner, host: entry.host, tls: entry.tls, from });
     // The status message after the hello (#161): whether its owner is past the cap; the throttle with it if so.
     this.applyCap(agent);
+    // The admin's own computer: which senders are capped, and their throttle (#176).
+    this.applySenderCaps(agent);
     ws.on('pong', () => {
       agent.alive = true;
     });
     ws.on('message', (data: Buffer, isBinary: boolean) => {
-      // Text after the hello is for status; the relay sends it (the cap, #161) and takes none from agents.
-      if (!isBinary) return;
+      // Text after the hello is status: the relay sends the cap (#161) and capped senders (#176), and takes only
+      // which computer a stream comes from (#176); anything else is ignored.
+      if (!isBinary) {
+        const sender = senderOf(data.toString('utf8'));
+        if (sender) this.onSender(agent, sender.id, sender.host);
+        return;
+      }
       const frame = decodeFrame(data);
       // Only the relay opens streams; anything else from the agent ends its connection.
       if (!frame || frame.kind === FRAME.open || !agent.streams.receive(frame.kind, frame.id, frame.payload)) {

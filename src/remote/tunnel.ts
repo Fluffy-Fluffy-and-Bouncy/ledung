@@ -9,7 +9,7 @@
 import type { Duplex } from 'node:stream';
 import WebSocket from 'ws';
 import type { RemoteStatus } from '../shared/protocol.ts';
-import { decodeFrame, FRAME, helloMessage, helloVersion, PROTOCOL_VERSION, Streams } from './mux.ts';
+import { cappedSenders, decodeFrame, FRAME, helloMessage, helloVersion, PROTOCOL_VERSION, senderMessage, Streams } from './mux.ts';
 
 export interface TunnelOptions {
   /** The relay, wss://host[/path]; /agent when no path is given. */
@@ -18,8 +18,11 @@ export interface TunnelOptions {
   secret: string;
   /** The public name phones use, shown in Settings. */
   publicName: string;
-  /** A new connection to this Ledung for one stream (LedungServer.tunnelConnection). */
-  connect: () => Duplex;
+  /**
+   * A new connection to this Ledung for one stream (LedungServer.tunnelConnection). `sender`: the server calls it with
+   * the public host of the linked computer a request on it came from, which the relay is told (issue #176).
+   */
+  connect: (sender?: (host: string) => void) => Duplex;
   onStatus?: (status: RemoteStatus) => void;
   /** Backoff between attempts, for tests. */
   minDelayMs?: number;
@@ -45,6 +48,12 @@ export function relayCapSentence(resetsOn: string, sending: boolean): string {
   return sending
     ? `Not sent: your relay's monthly limit is reached; it resets on ${date}. Messages without files still go through.`
     : `Not kept: the relay's monthly limit for this computer's owner is reached; it resets on ${date}. Messages without files still go through.`;
+}
+
+/** What the admin's Ledung says when it refuses a file from a computer whose owner is past the relay's cap (issue #176). */
+export function relayCapSenderSentence(resetsOn: string): string {
+  const date = new Date(`${resetsOn}T00:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
+  return `Not kept: the relay's monthly limit for the sending computer's owner is reached; it resets on ${date}. Messages without files still go through.`;
 }
 
 /** The relay's cap status message (relay/relay.ts capMessage), or null when the text is not one. */
@@ -94,6 +103,8 @@ export class Tunnel {
   private current: RemoteStatus;
   /** What the relay last said of the owner's cap (issue #161); null: not capped. */
   private cap: { resetsOn: string } | null = null;
+  /** The capped senders the relay last named (issue #176), on the admin's own computers; null: none. */
+  private senders: { hosts: string[]; resetsOn: string } | null = null;
 
   constructor(opts: TunnelOptions) {
     this.opts = opts;
@@ -126,10 +137,12 @@ export class Tunnel {
     this.streams = null;
   }
 
-  private set(state: RemoteStatus['state'], error: string | null, cap = this.cap): void {
-    if (this.current.state === state && this.current.error === error && this.cap?.resetsOn === cap?.resetsOn) return;
+  private set(state: RemoteStatus['state'], error: string | null, cap = this.cap, senders = this.senders): void {
+    const told = (s: typeof senders) => (s ? `${s.resetsOn} ${s.hosts.join(',')}` : '');
+    if (this.current.state === state && this.current.error === error && this.cap?.resetsOn === cap?.resetsOn && told(this.senders) === told(senders)) return;
     this.cap = cap;
-    this.current = { state, publicName: this.opts.publicName, error, ...(cap ? { relayCap: cap } : {}) };
+    this.senders = senders;
+    this.current = { state, publicName: this.opts.publicName, error, ...(cap ? { relayCap: cap } : {}), ...(senders ? { cappedSenders: senders } : {}) };
     this.opts.onStatus?.(this.current);
   }
 
@@ -168,13 +181,16 @@ export class Tunnel {
         if (this.streams) {
           const cap = capStatus(text);
           if (cap) this.set(this.current.state, this.current.error, cap.reached ? { resetsOn: cap.resetsOn } : null);
+          // On the admin's own computer: the hosts whose files are refused here (issue #176).
+          const senders = cappedSenders(text);
+          if (senders) this.set(this.current.state, this.current.error, this.cap, senders.hosts.length ? senders : null);
           return;
         }
         if (helloVersion(text) !== PROTOCOL_VERSION) return;
         this.attempt = 0;
         this.streams = new Streams(ws);
         // A new connection starts uncapped until the relay's status says otherwise.
-        this.set('connected', null, null);
+        this.set('connected', null, null, null);
         return;
       }
       const frame = decodeFrame(data);
@@ -199,7 +215,15 @@ export class Tunnel {
   private open(id: number): void {
     const streams = this.streams!;
     if (streams.has(id)) return;
-    streams.attach(id, this.opts.connect());
+    const ws = this.ws;
+    // Who the stream comes from, once per host, to this connection's relay only (issue #176).
+    let said: string | null = null;
+    const sender = (host: string) => {
+      if (host === said || this.streams !== streams || !streams.has(id) || ws?.readyState !== WebSocket.OPEN) return;
+      said = host;
+      ws.send(senderMessage(id, host));
+    };
+    streams.attach(id, this.opts.connect(sender));
   }
 
   private heard(): void {

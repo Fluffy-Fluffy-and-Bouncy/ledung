@@ -217,6 +217,17 @@ The admin's own owner, the owner of the computer the admin's Ledung itself conne
 "you" in Settings and is never capped: the route refuses a cap for it, and one written into
 `relay.usage.json` by hand is ignored with a `cap ignored` line in the log.
 
+What a capped owner's computer sends to one of the admin's own computers counts for the admin,
+whose computer was dialled, so it is held separately (issue #176). The relay can't see who dialled:
+the stream is encrypted to the Ledung. So the admin's Ledung, once a request carries a linked
+computer's key, tells the relay which computer the stream comes from (a `sender` text message on
+its agent socket), and the relay holds that stream to `capThrottleBytesPerSecond` in the way from
+the capped computer only, each such computer on its own budget; what the admin's computer answers
+is never held. The admin's Ledungs are also told the hosts of the capped computers (a
+`cappedSenders` message after the hello and whenever it changes) and refuse files from them with a
+sentence saying when the cap resets. Both are taken from and told to the admin's own computers
+only; the bytes still count for the admin, as before.
+
 ## Several users
 
 Every Ledung is an entry of its own, with its own secret, host and owner; nothing in the relay is
