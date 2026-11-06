@@ -3,7 +3,7 @@ import type { Macro } from '../../src/shared/macros.ts';
 import type {
   AwayInfo, AwayKind, BoardOwnersView, BoardPeopleView, BoardRepoChoicesView, BoardStatus, BoardThreadsView, BoardThreadView, ProjectBoardView,
   AccountChoices, AccountInfoView, ChatsInfo, ContainerInfoView, FolderListingView, MachineInfo, McpServerInfo, Overview, ProjectInfo, PermissionDecision, PermissionMode, Priority, ProjectFileView, TurnResource, TypicalCost, QuestionInfo, SessionInfo, SessionUsage, StoredMessage, UpdateView, UsageFilter, UsageReport, WorkflowCheckView,
-  NewComputerInfo, RelayAdminView, RelayInviteInfo,
+  NewComputerInfo, RelayAdminView, RelayInviteInfo, RelayOwnersView,
   ClaudeCodeView,
   ProfilesView,
   SkillListView, SignInProblem,
@@ -244,6 +244,9 @@ export const api = {
   makeRelayAdminKey: () => call<RelayAdminView>('POST', '/api/relay-admin-key', {}),
   relayComputers: () => call<{ invites: RelayInviteInfo[]; computers: NewComputerInfo[] }>('GET', '/api/relay-computers'),
   relayInvite: (owner: string, name?: string) => call<RelayInviteInfo & { code: string }>('POST', '/api/relay-invite', { owner, ...(name ? { name } : {}) }),
+  // Bytes per owner and their monthly caps (issue #161), from and on the relay.
+  relayOwners: () => call<RelayOwnersView>('GET', '/api/relay-owners'),
+  setRelayCap: (owner: string, cap: number | null) => call<RelayOwnersView>('POST', `/api/relay-owners/${encodeURIComponent(owner)}/cap`, { cap }),
   revokeRelayInvite: (id: string) => call('POST', `/api/relay-invites/${encodeURIComponent(id)}/revoke`, {}),
   approveComputer: (name: string) => call<{ record: string }>('POST', `/api/relay-computers/${encodeURIComponent(name)}/approve`, {}),
   /** Without a token: the admin added the record by hand, so the card goes. */

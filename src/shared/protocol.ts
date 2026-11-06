@@ -1101,6 +1101,28 @@ export interface RelayAdminView {
   tokenSet: boolean;
 }
 
+/**
+ * An owner on the relay, for Settings → Relay (issue #161): the bytes their computers moved through it today and this
+ * month (UTC), and the monthly cap the admin set. The admin's own (`you`) has no cap and is never throttled.
+ */
+export interface RelayOwnerInfo {
+  owner: string;
+  computers: number;
+  today: number;
+  month: number;
+  /** Bytes a month; null: uncapped. */
+  cap: number | null;
+  /** Past the cap now: their computers are throttled and their Ledungs refuse file transfers. */
+  capped: boolean;
+  you: boolean;
+}
+
+export interface RelayOwnersView {
+  owners: RelayOwnerInfo[];
+  /** When monthly caps reset, YYYY-MM-DD (UTC). */
+  resetsOn: string;
+}
+
 /** An invite not used yet (issue #237). */
 export interface RelayInviteInfo {
   id: string;
@@ -1149,6 +1171,11 @@ export interface RemoteStatus {
   tls?: string | null;
   /** The certificate Ledung gets for the public name by ACME (issue #202); absent: no "acme" in the config. */
   certificate?: CertificateStatus;
+  /**
+   * The relay says this computer's owner is past their monthly cap (issue #161): file transfers are refused until
+   * `resetsOn` (YYYY-MM-DD, UTC). Null or absent: not capped.
+   */
+  relayCap?: { resetsOn: string } | null;
 }
 
 /**

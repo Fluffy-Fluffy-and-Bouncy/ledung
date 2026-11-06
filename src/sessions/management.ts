@@ -33,6 +33,8 @@ export interface LinkedPort {
   callLinked(id: string, route: string, body: Record<string, unknown>, timeoutMs?: number): Promise<Record<string, unknown>>;
   /** A file's bytes on their own call (issue #158); left out: files can't be sent. */
   sendBytes?(id: string, route: string, query: Record<string, string>, bytes: Buffer): Promise<Record<string, unknown>>;
+  /** The relay caps this computer's owner (issue #161): the sentence file sends are refused with; null or left out: not capped. */
+  relayCap?(): string | null;
 }
 
 /**
@@ -1175,6 +1177,9 @@ ${note}`);
     if (fromLocked) throw new ManagementError(`Not sent: the project "${project}" is locked, so its manager sends no files to other computers.`);
     if (names.length > MAX_ATTACHMENTS) throw new ManagementError(`Not sent: at most ${MAX_ATTACHMENTS} files per message, and this one has ${names.length}.`);
     if (!this.ctx.outgoingFiles || !port.sendBytes) throw new ManagementError('Not sent: files can\'t be sent to other computers from here.');
+    // Past the relay's monthly cap (issue #161; Martin, question #632): refused before a byte leaves, the message too.
+    const capped = port.relayCap?.();
+    if (capped) throw new ManagementError(capped);
     const files = this.ctx.outgoingFiles(fromId, names);
     return files.filter((f, i) => files.findIndex((x) => x.sha === f.sha) === i);
   }

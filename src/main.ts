@@ -140,7 +140,14 @@ async function main(): Promise<void> {
     emailOf: (account) => account === DEFAULT_ACCOUNT ? manager.accountsEvent().defaultIdentity?.email ?? null : manager.accounts.get(account)?.email ?? null,
     linkedKey: () => server?.linkedUsageKey() ?? Promise.resolve(null),
   });
-  const relayAdmin = new RelayAdmin({ dir: userDataDir(), onComputers: (computers) => server?.sendNewComputers(computers) });
+  const relayAdmin = new RelayAdmin({
+    dir: userDataDir(), onComputers: (computers) => server?.sendNewComputers(computers),
+    // This Ledung's own computer on the relay, so its owner is never capped (issue #161).
+    self: () => {
+      const remote = link?.settings();
+      return remote ? { relay: remote.relay, name: remote.name } : null;
+    },
+  });
   server = new LedungServer({
     port: config.port, token: loadOrCreateToken(), store, manager,
     onRestart,

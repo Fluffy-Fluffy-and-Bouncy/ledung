@@ -80,6 +80,8 @@ export interface LinkedOptions {
   port?: number;
   /** A link was made or dropped, or a linked computer's port changed: the computer tabs and frames follow (#273). */
   onChange?: () => void;
+  /** The sentence a file send is refused with while the relay caps this computer's owner (issue #161); null: not capped. */
+  relayCap?: () => string | null;
   now?: () => number;
 }
 
@@ -292,6 +294,11 @@ export class LinkedComputers {
    * A file's bytes to a linked computer (issue #158): one POST of the raw bytes, what they are in the query, the JSON
    * answer back as for every call.
    */
+  /** The relay caps this computer's owner (issue #161): the sentence file sends are refused with; null: not capped. */
+  relayCap(): string | null {
+    return this.opts.relayCap?.() ?? null;
+  }
+
   async sendBytes(id: string, route: string, query: Record<string, string>, bytes: Buffer, timeoutMs = FILE_REQUEST_MS): Promise<Record<string, unknown>> {
     const link = this.read().find((l) => l.id === id);
     if (!link) throw new LinkError(404, 'No such linked computer.');

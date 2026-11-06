@@ -47,6 +47,22 @@ const HEADER = 5;
 export const MAX_CHUNK = 64 * 1024;
 /** Stop reading every stream while this much waits to go out on the agent's socket. */
 const SOCKET_HIGH_WATER = 4 * 1024 * 1024;
+/**
+ * Under a throttle (issue #161), a stream is held once the bytes past exceed the rate by more than this: one second's
+ * worth goes through at once, so a short request or message isn't held at all.
+ */
+const THROTTLE_SLACK_MS = 1000;
+/**
+ * A peer that keeps sending after it was asked to hold is past this many milliseconds' worth of the rate: its stream
+ * is reset. A peer that honours pause never gets near it: what it has in flight is at most its socket's high water,
+ * about a minute at 64 KiB/s.
+ */
+const THROTTLE_MAX_DEBT_MS = 5 * 60_000;
+
+export interface StreamsOptions {
+  /** Each stream byte that crosses, either way (issue #161): the relay counts them per owner. Never the bytes themselves. */
+  onBytes?: (bytes: number) => void;
+}
 
 export function encodeFrame(kind: number, id: number, payload?: Buffer): Buffer {
   const frame = Buffer.allocUnsafe(HEADER + (payload?.length ?? 0));
@@ -75,6 +91,10 @@ interface Stream {
   sentPause: boolean;
   /** The other side asked us to stop reading this stream. */
   peerPaused: boolean;
+  /** The throttle stopped reading our socket (issue #161). */
+  heldIn: boolean;
+  /** The throttle asked the other side to stop sending this stream (issue #161). */
+  heldOut: boolean;
 }
 
 /**
@@ -86,9 +106,29 @@ export class Streams {
   private readonly ws: FrameSocket;
   private readonly streams = new Map<number, Stream>();
   private waiting = false;
+  private readonly onBytes: ((bytes: number) => void) | undefined;
+  /** Bytes a second for all streams together, or null: no throttle (issue #161). */
+  private rate: number | null = null;
+  /** When the bytes so far have been paid for at the rate. */
+  private freeAt = 0;
+  private release: NodeJS.Timeout | null = null;
 
-  constructor(ws: FrameSocket) {
+  constructor(ws: FrameSocket, options: StreamsOptions = {}) {
     this.ws = ws;
+    this.onBytes = options.onBytes;
+  }
+
+  /**
+   * Holds every stream together to `bytesPerSecond`, or lets them go at once with null (issue #161): reading our
+   * sockets stops, and the other side is asked to pause, with the same pause and resume as backpressure.
+   */
+  throttle(bytesPerSecond: number | null): void {
+    if (bytesPerSecond === this.rate) return;
+    this.rate = bytesPerSecond;
+    if (bytesPerSecond === null) {
+      this.freeAt = 0;
+      this.releaseAll();
+    }
   }
 
   get size(): number {
@@ -101,7 +141,7 @@ export class Streams {
 
   /** Carries a socket as stream `id`; `first` are bytes already read from it (the relay's request head). */
   attach(id: number, socket: Duplex, first?: Buffer): void {
-    const stream: Stream = { socket, sentEnd: false, gotEnd: false, sentPause: false, peerPaused: false };
+    const stream: Stream = { socket, sentEnd: false, gotEnd: false, sentPause: false, peerPaused: false, heldIn: false, heldOut: false };
     this.streams.set(id, stream);
     if (first?.length) this.sendData(id, first, socket);
     socket.on('data', (chunk: Buffer) => this.sendData(id, chunk, socket));
@@ -113,7 +153,8 @@ export class Streams {
     socket.on('drain', () => {
       if (this.streams.get(id) !== stream || !stream.sentPause) return;
       stream.sentPause = false;
-      this.ws.send(encodeFrame(FRAME.resume, id));
+      // Still held by the throttle: its release sends the resume.
+      if (!stream.heldOut) this.ws.send(encodeFrame(FRAME.resume, id));
     });
     socket.on('error', () => {});
     socket.on('close', () => {
@@ -129,10 +170,12 @@ export class Streams {
     const stream = this.streams.get(id);
     switch (kind) {
       case FRAME.data:
-        if (stream && !stream.gotEnd && !stream.socket.write(payload) && !stream.sentPause) {
+        if (!stream || stream.gotEnd) return true;
+        if (!stream.socket.write(payload) && !stream.sentPause) {
           stream.sentPause = true;
           this.ws.send(encodeFrame(FRAME.pause, id));
         }
+        this.charge(id, stream, payload.length, 'out');
         return true;
       case FRAME.end:
         if (stream && !stream.gotEnd) {
@@ -155,7 +198,7 @@ export class Streams {
       case FRAME.resume:
         if (stream) {
           stream.peerPaused = false;
-          if (!this.waiting) stream.socket.resume();
+          if (!this.waiting && !stream.heldIn) stream.socket.resume();
         }
         return true;
       default:
@@ -167,6 +210,8 @@ export class Streams {
   closeAll(): void {
     for (const stream of this.streams.values()) stream.socket.destroy();
     this.streams.clear();
+    if (this.release) clearTimeout(this.release);
+    this.release = null;
   }
 
   private sendData(id: number, chunk: Buffer, socket: Duplex): void {
@@ -174,6 +219,58 @@ export class Streams {
     if (this.ws.bufferedAmount > SOCKET_HIGH_WATER) {
       socket.pause();
       this.waitForSocket();
+    }
+    const stream = this.streams.get(id);
+    if (stream?.socket === socket) this.charge(id, stream, chunk.length, 'in');
+  }
+
+  /**
+   * Counts `bytes` of stream `id`, and under a throttle holds it once the bytes so far are ahead of the rate: `in`, our
+   * socket's reading stops; `out`, the other side is asked to pause. One timer lets every held stream go together.
+   */
+  private charge(id: number, stream: Stream, bytes: number, way: 'in' | 'out'): void {
+    this.onBytes?.(bytes);
+    if (this.rate === null) return;
+    const now = Date.now();
+    this.freeAt = Math.max(now, this.freeAt) + (bytes * 1000) / this.rate;
+    const ahead = this.freeAt - now;
+    if (way === 'out' && ahead > THROTTLE_MAX_DEBT_MS && stream.heldOut) {
+      // Asked to hold and still sending: the throttle would not hold, so the stream goes.
+      this.streams.delete(id);
+      stream.socket.destroy();
+      this.ws.send(encodeFrame(FRAME.reset, id));
+      return;
+    }
+    if (ahead <= THROTTLE_SLACK_MS) return;
+    if (way === 'in' && !stream.heldIn) {
+      stream.heldIn = true;
+      stream.socket.pause();
+    } else if (way === 'out' && !stream.heldOut) {
+      stream.heldOut = true;
+      if (!stream.sentPause) this.ws.send(encodeFrame(FRAME.pause, id));
+    }
+    if (!this.release) {
+      this.release = setTimeout(() => {
+        this.release = null;
+        this.releaseAll();
+      }, Math.max(0, this.freeAt - THROTTLE_SLACK_MS / 2 - now));
+      this.release.unref();
+    }
+  }
+
+  /** Every stream the throttle holds goes again, unless backpressure holds it too. */
+  private releaseAll(): void {
+    if (this.release) clearTimeout(this.release);
+    this.release = null;
+    for (const [id, stream] of this.streams) {
+      if (stream.heldIn) {
+        stream.heldIn = false;
+        if (!stream.peerPaused && !this.waiting) stream.socket.resume();
+      }
+      if (stream.heldOut) {
+        stream.heldOut = false;
+        if (!stream.sentPause) this.ws.send(encodeFrame(FRAME.resume, id));
+      }
     }
   }
 
@@ -185,7 +282,7 @@ export class Streams {
       if (this.ws.bufferedAmount > SOCKET_HIGH_WATER / 2) return;
       clearInterval(check);
       this.waiting = false;
-      for (const stream of this.streams.values()) if (!stream.peerPaused) stream.socket.resume();
+      for (const stream of this.streams.values()) if (!stream.peerPaused && !stream.heldIn) stream.socket.resume();
     }, 20);
     check.unref();
   }

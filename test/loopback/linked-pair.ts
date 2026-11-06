@@ -13,7 +13,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
-import { hashSecret, parseRelayConfig, Relay } from '../../relay/relay.ts';
+import { hashSecret, parseRelayConfig, Relay, type RelayLimits } from '../../relay/relay.ts';
 import { selfSigned } from '../self-signed.ts';
 import { removeTemp } from '../temp.ts';
 
@@ -84,11 +84,20 @@ export class Page {
 
 export type Ledung = ChildProcess & { output: () => string };
 
+/** More of the relay (issue #161): each side's owner (default "test"), an admin key, a byte-count file, limits. */
+export interface PairRelay {
+  owners?: { mac: string; pc: string };
+  adminKeySha256?: string;
+  usage?: string;
+  limits?: Partial<RelayLimits>;
+}
+
 /**
  * Starts the relay, the front and both Ledungs, and waits for both tunnels. `projects` gives each Ledung's config
- * projects (folders are made in `work`). `close` stops everything it started.
+ * projects (folders are made in `work`). `close` stops everything it started; `restartRelay` stops the relay and
+ * starts it again on the same ports and files, as a restart of its container would.
  */
-export async function startPair(work: string, projects: { mac?: unknown[]; pc?: unknown[] } = {}, opts: { ports?: { mac: number; pc: number }; config?: { mac?: Record<string, unknown>; pc?: Record<string, unknown> } } = {}) {
+export async function startPair(work: string, projects: { mac?: unknown[]; pc?: unknown[] } = {}, opts: { ports?: { mac: number; pc: number }; config?: { mac?: Record<string, unknown>; pc?: Record<string, unknown> }; relay?: PairRelay } = {}) {
   const ports = opts.ports ?? { mac: 4397, pc: 4398 };
   for (const port of [...Object.values(P), ports.mac, ports.pc]) if (await portOpen(port)) throw new Error(`Port ${port} is in use; this loopback starts everything itself.`);
   removeTemp(work);
@@ -106,11 +115,19 @@ export async function startPair(work: string, projects: { mac?: unknown[]; pc?: 
   const trust = path.join(work, 'trust.pem');
   fs.writeFileSync(trust, A.pair.cert + B.pair.cert);
 
-  const relay = new Relay(parseRelayConfig({
+  const newRelay = () => new Relay(parseRelayConfig({
     port: P.relay, bind: '127.0.0.1', passthroughPort: P.passthrough, passthroughFrom: ['127.0.0.0/8'],
-    agents: [A, B].map((s) => ({ name: s.n, owner: 'test', host: s.name, secretSha256: hashSecret(s.secret), tls: 'passthrough' })),
-  }), (line) => fs.appendFileSync(path.join(work, 'relay.log'), `${line}\n`));
+    ...(opts.relay?.adminKeySha256 ? { adminKeySha256: opts.relay.adminKeySha256 } : {}),
+    ...(opts.relay?.limits ? { limits: opts.relay.limits } : {}),
+    agents: [A, B].map((s) => ({ name: s.n, owner: opts.relay?.owners?.[s.n] ?? 'test', host: s.name, secretSha256: hashSecret(s.secret), tls: 'passthrough' })),
+  }), (line) => fs.appendFileSync(path.join(work, 'relay.log'), `${line}\n`), { usage: opts.relay?.usage ?? null });
+  let relay = newRelay();
   await relay.listen();
+  const restartRelay = async () => {
+    await relay.close();
+    relay = newRelay();
+    await relay.listen();
+  };
   const seen = { clear: false, bytes: 0 };
   const front = net.createServer((client) => {
     const upstream = net.connect(P.passthrough, '127.0.0.1', () => {
@@ -176,7 +193,7 @@ export async function startPair(work: string, projects: { mac?: unknown[]; pc?: 
   };
   const pcOff = () => off('pc');
   const pcOn = () => on('pc');
-  return { pages, ledungs, seen, close, pcOff, pcOn, off, on, work, front: P.front };
+  return { pages, ledungs, seen, close, pcOff, pcOn, off, on, work, front: P.front, relayPort: P.relay, restartRelay };
 }
 
 /** Links the PC to the Mac through the pages, as Settings does: a code on the Mac, pasted on the PC as "Mac". */
