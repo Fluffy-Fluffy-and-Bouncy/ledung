@@ -5,7 +5,8 @@ import os from 'node:os';
 import { listHostRecords } from '../host/client.ts';
 import { memoryUsed } from '../platform/memory.ts';
 import { containerGroups, containerSessionGroup, dockerVm, type DockerVm } from '../platform/containers.ts';
-import { ProcessSampler, treeOf, type ProcessList } from '../platform/processes.ts';
+import { exercisedLine } from '../platform/exercised.ts';
+import { ProcessSampler, sessionTree, type ProcessList, type TreeMemory } from '../platform/processes.ts';
 import type { ResourceFigures } from '../shared/protocol.ts';
 
 export type MonitorTarget =
@@ -41,6 +42,8 @@ export class ResourceMonitor {
   private readonly counters = new Map<string, Counter>();
   private readonly turns = new Map<string, TurnTotals & { startCpu: number }>();
   private readonly groups = new Map<string, number>();
+  /** Local sessions: the processes each held at the last sample (#169). */
+  private readonly trees = new Map<string, TreeMemory>();
   private containerBusy = false;
   private dockerAt = 0;
   private dockerBusy = false;
@@ -113,14 +116,16 @@ export class ResourceMonitor {
     const live = new Set(targets.map((t) => t.id));
     for (const id of this.counters.keys()) if (!live.has(id)) this.counters.delete(id);
     for (const id of this.groups.keys()) if (!live.has(id)) this.groups.delete(id);
+    for (const id of this.trees.keys()) if (!live.has(id)) this.trees.delete(id);
 
-    // Local sessions: the tree under the session's host process.
+    // Local sessions: the tree under the session's host process, turn or not, and what left it (#169).
     const dt = (at - this.prevAt) / 1000;
     const hostPids = new Map(listHostRecords().map((r) => [r.sessionId, r.hostPid]));
     for (const t of targets) {
       if (t.kind !== 'local') continue;
       const pid = hostPids.get(t.id);
-      const s = treeSample(this.prevList, list, pid, dt, os.cpus().length);
+      const s = treeSample(this.prevList, list, pid, dt, os.cpus().length, this.trees.get(t.id) ?? null);
+      this.trees.set(t.id, s.memory);
       this.count(t.id, s.cpuSeconds, s.cores, s.memBytes);
     }
     this.prevList = list;
@@ -192,17 +197,25 @@ export function capCores(cores: number, threads: number): number {
   return threads > 0 ? Math.min(cores, threads) : cores;
 }
 
+let exercised169 = false;
+
 /**
- * One session's sample: the CPU its process tree used since the last list (`prev`, the whole
- * machine's, so a process that joins the tree late is still counted from its last reading), the
- * cores that is over `dt` seconds, and its memory. With no last list there is nothing to compare.
+ * One session's sample: the CPU its processes used since the last list (`prev`, the whole
+ * machine's, so a process that joins late is still counted from its last reading), the cores that
+ * is over `dt` seconds, and its memory. Its processes are the tree under `root` plus, given the
+ * `memory` of the last sample, those that have left that tree since (`sessionTree`, #169); the new
+ * memory is returned for the next sample. With no last list there is nothing to compare.
  */
-export function treeSample(prev: ProcessList | null, list: ProcessList, root: number | undefined, dt: number, threads: number): { cpuSeconds: number; cores: number; memBytes: number } {
-  const tree = root ? treeOf(list, root) : [];
+export function treeSample(prev: ProcessList | null, list: ProcessList, root: number | undefined, dt: number, threads: number, memory: TreeMemory | null = null): { cpuSeconds: number; cores: number; memBytes: number; memory: TreeMemory } {
+  const { tree, memory: next } = sessionTree(list, root, memory);
   let used = 0;
   if (prev) for (const p of tree) used += Math.max(0, p.cpuSeconds - (prev.get(p.pid)?.cpuSeconds ?? 0));
   const memBytes = tree.reduce((n, p) => n + p.memBytes, 0);
-  return { cpuSeconds: used, cores: prev && dt > 0 ? capCores(used / dt, threads) : 0, memBytes };
+  if (!exercised169 && root && tree.length > sessionTree(list, root, null).tree.length) {
+    exercised169 = true;
+    exercisedLine('EXERCISED #169 a session counted a process that had left its host\'s tree');
+  }
+  return { cpuSeconds: used, cores: prev && dt > 0 ? capCores(used / dt, threads) : 0, memBytes, memory: next };
 }
 
 function cpuTimes(): { busy: number; total: number } {
