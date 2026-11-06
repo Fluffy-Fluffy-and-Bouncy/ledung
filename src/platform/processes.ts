@@ -13,6 +13,8 @@ export interface ProcInfo {
   /** Total CPU time used so far, in seconds. */
   cpuSeconds: number;
   memBytes: number;
+  /** Process group, from ps (macOS, Linux); Windows has none. */
+  pgid?: number;
 }
 
 export type ProcessList = Map<number, ProcInfo>;
@@ -30,9 +32,12 @@ export function parsePsTime(t: string): number {
 export function parsePs(stdout: string): ProcessList {
   const list: ProcessList = new Map();
   for (const line of stdout.split('\n')) {
-    const m = line.trim().match(/^(\d+)\s+(\d+)\s+(\S+)\s+(\d+)$/);
+    // The process group is the last column, when asked for (#169).
+    const m = line.trim().match(/^(\d+)\s+(\d+)\s+(\S+)\s+(\d+)(?:\s+(\d+))?$/);
     if (!m) continue;
-    list.set(Number(m[1]), { pid: Number(m[1]), ppid: Number(m[2]), cpuSeconds: parsePsTime(m[3]!), memBytes: Number(m[4]) * 1024 });
+    const p: ProcInfo = { pid: Number(m[1]), ppid: Number(m[2]), cpuSeconds: parsePsTime(m[3]!), memBytes: Number(m[4]) * 1024 };
+    if (m[5] !== undefined) p.pgid = Number(m[5]);
+    list.set(p.pid, p);
   }
   return list;
 }
@@ -119,7 +124,7 @@ export class ProcessSampler {
       try {
         // Timed as ps starts, not when its output is handled: a busy event loop delays the second (#157).
         const at = Date.now();
-        const { stdout } = await run('ps', ['-A', '-o', 'pid=,ppid=,time=,rss='], { maxBuffer: 16 * 1024 * 1024 });
+        const { stdout } = await run('ps', ['-A', '-o', 'pid=,ppid=,time=,rss=,pgid='], { maxBuffer: 16 * 1024 * 1024 });
         this.onList(parsePs(stdout), at);
       } catch {
         // Skip this round.
@@ -151,4 +156,49 @@ export function treeOf(list: ProcessList, root: number): ProcInfo[] {
   };
   walk(root);
   return out;
+}
+
+/** The processes a session's tree held at the last sample, kept to go on counting those that left it (#169). */
+export type TreeMemory = Map<number, ProcInfo>;
+
+/** The same process as the one seen last time: its CPU time never shrinks, and its parent is unchanged or gone. */
+function sameProcess(was: ProcInfo, now: ProcInfo, list: ProcessList): boolean {
+  return now.cpuSeconds >= was.cpuSeconds && (now.ppid === was.ppid || !list.has(was.ppid));
+}
+
+/**
+ * A session's processes: the tree under its root, plus everything that belonged to the session at
+ * the last sample and has since left that tree (#169). A command started in the background can lose
+ * its line to the root when a process between them exits: on macOS and Linux it moves to pid 1, on
+ * Windows its parent id names a process that is gone. Its CPU then counted for the machine but not
+ * for the session, which read "idle, 0.0 cores". So a session also keeps:
+ * - every process it held last time that is still the same process (`sameProcess`), with its tree;
+ * - on Windows, the children of a process it held that has since exited (their parent id still names it);
+ * - on macOS and Linux, every process in a process group one of its processes led: a background
+ *   command stays in its shell's group after the shell exits, even one that lived between two samples.
+ * Without a root or a memory, it is the plain tree.
+ */
+export function sessionTree(list: ProcessList, root: number | undefined, memory: TreeMemory | null): { tree: ProcInfo[]; memory: TreeMemory } {
+  const seeds: number[] = [];
+  if (root && list.has(root)) seeds.push(root);
+  if (memory) {
+    const gone = new Set<number>();
+    const groups = new Set<number>();
+    for (const was of memory.values()) {
+      const now = list.get(was.pid);
+      if (now && sameProcess(was, now, list)) seeds.push(was.pid);
+      else if (!now) gone.add(was.pid);
+      // Only a group the session's own process leads: a host in Ledung's group must not take in Ledung.
+      if (was.pgid !== undefined && was.pgid === was.pid && was.pgid > 1) groups.add(was.pgid);
+    }
+    for (const p of list.values()) {
+      if (gone.has(p.ppid) || (p.pgid !== undefined && groups.has(p.pgid))) seeds.push(p.pid);
+    }
+  }
+  const out: TreeMemory = new Map();
+  for (const seed of seeds) {
+    if (out.has(seed)) continue;
+    for (const p of treeOf(list, seed)) out.set(p.pid, p);
+  }
+  return { tree: [...out.values()], memory: out };
 }
