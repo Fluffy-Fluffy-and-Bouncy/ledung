@@ -273,7 +273,7 @@ test('part 3b: blocks act: Build gets a new session with its settings, Fix conti
   assert.deepEqual({ ...build, task: '' }, { project: 'shop', coordinator: 'manager-1', title: 'Build: Fix the cart total', task: '', model: 'opus', profile: undefined, runBlock: { run: 'run-1', block: 'build', runTitle: 'Fix the cart total', blockTitle: 'Build', flow: 'main' } });
   assert.match(build.task, /^You run "Build" \(block build\) of run-1 "Fix the cart total" \(#142\), in the flow "Ledung's own process"\. .*manager "Manager: shop" coordinates the run\./);
   assert.match(build.task, /The brief \(briefs\/builder\.md\):\n\n/);
-  assert.match(build.task, /Start these subagents, in order:\n- Self-review \(check, when done, model sonnet, brief briefs\/reviewer\.md\): "No findings" → done, "Findings" → owner, "Findings" \(3rd time\) → report/);
+  assert.match(build.task, /Start these subagents, in order:\n- Self-review \(check, when done, model sonnet, brief briefs\/reviewer\.md in [^)]+[\\/]\.ledung[\\/]workflow\): "No findings" → done, "Findings" → owner, "Findings" \(3rd time\) → report/);
   assert.match(build.task, /What "Issue" handed on:\n\nThe total adds VAT twice\./);
   assert.match(build.task, /end your report with how it went, one of: "PR opened"\./);
   assert.deepEqual(store.getSession('block-1')!.runBlock, { run: 'run-1', block: 'build', runTitle: 'Fix the cart total', blockTitle: 'Build', flow: 'main' });
@@ -853,4 +853,23 @@ test('ledung#111: a "folder:" brief too long to give is pointed at in the folder
   const flows = { folder: '/team/.ledung/workflow', flows: new Map([['main', flow]]), titles: new Map([['main', 'Team']]), text: async () => 'x'.repeat(7000) };
   const { runs } = await engine({ flows });
   assert.match(await runs.start('manager-1', { title: 'Port it' }), /The brief: read process\/briefs\/plan\.md in \/team\./);
+});
+
+test('ledung#142: a sub-step brief is named where it is, a plain one in the workflow folder and a "folder:" one in the folder that is in', async () => {
+  const flow = parseFlow(JSON.stringify({ version: 1, blocks: [{ id: 'review', kind: 'check', title: 'Review', runs: 'manager', substeps: [
+    { id: 'code', kind: 'check', title: 'Code', brief: 'briefs/reviewer.md' },
+    { id: 'security', kind: 'check', title: 'Security', when: 'start', brief: 'folder:process/briefs/security.md' },
+  ], outcomes: [{ word: 'Done', end: true }] }] })).flow!;
+  // Premise: the flow keeps both kinds as written, the "folder:" one with its prefix.
+  assert.deepEqual(flow.blocks[0]!.substeps!.map((s) => s.brief), ['briefs/reviewer.md', 'folder:process/briefs/security.md']);
+  const flows = { folder: '/team/.ledung/workflow', flows: new Map([['main', flow]]), titles: new Map([['main', 'Team']]), text: async () => null };
+  const { runs } = await engine({ flows });
+  const said = await runs.start('manager-1', { title: 'Check it' });
+  assert.match(said, /\n- Code \(check, when done, brief briefs\/reviewer\.md in \/team\/\.ledung\/workflow\)\n/);
+  assert.match(said, /\n- Security \(check, when start, brief process\/briefs\/security\.md in \/team\)/);
+  // No "folder:" prefix reaches the subagent; the file it names does (the positive branch of the same probe).
+  const lines = said.split('\n').filter((l) => l.startsWith('- '));
+  assert.equal(lines.length, 2);
+  assert.ok(lines.some((l) => l.includes('process/briefs/security.md')));
+  assert.ok(!lines.some((l) => l.includes('folder:')));
 });
