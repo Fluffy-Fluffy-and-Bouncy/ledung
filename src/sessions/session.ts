@@ -728,7 +728,7 @@ export class Session {
     const command = String(input.command);
     const away = this.away?.current() ?? null;
     const here = o.sessionId === this.id && o.sessionId !== o.managerId ? ` (run by its session "${this.store.getSession(this.id)?.title ?? this.id}")` : '';
-    const log = (allowed: boolean, reason: string, merge: { pr: number | null; repo: string | null; floors: Floor[] } = { pr: null, repo: null, floors: [] }) =>
+    const log = (allowed: boolean, reason: string, merge: { pr: number | null; repo: string | null; floors: Floor[]; command?: string } = { pr: null, repo: null, floors: [] }) =>
       this.away?.record(o.managerId, command, { kind: 'ordered', allowed, reason: `${reason}${here}`, ...merge });
     if (away && o.awaySince === away.since && !away.allow.includes('ordered')) {
       const reason = `held for ${this.userName}: order #${o.id} was recorded while ${this.userName} was away, and away mode does not allow ordered commands`;
@@ -739,7 +739,8 @@ export class Session {
     // While the person is away, an ordered merge still passes away mode's floors: the order replaces the ask, not the
     // checks (Martin 2026-11-03, Ledung question #1290; review of PR #107, finding 3). Held, it is asked as before.
     const floors = away ? await orderedMergeFloors(this.userName, command, this.floorReader(toolUseId)) : null;
-    const merge = floors ? { pr: floors.pr, repo: floors.repo, floors: floors.floors } : undefined;
+    // With the pinned command, so an allowed ordered merge is recorded as it runs (issue #149).
+    const merge = floors ? { pr: floors.pr, repo: floors.repo, floors: floors.floors, ...(floors.command ? { command: floors.command } : {}) } : undefined;
     if (floors && !floors.allowed) {
       const reason = `${floors.reason} (order #${o.id})`;
       log(false, reason, merge);
@@ -808,7 +809,8 @@ export class Session {
    * project folder (issue #143: after `cd vendor/lib`, a bare `gh pr merge 12` is that clone's PR 12, not the
    * project's). Outside: not read, so the merge is held. Not known (no hook saw the call, which Claude Code's hook
    * always does): the project folder, as before. Either way the merge then runs pinned to the PR read, so it can
-   * never be another PR than the one whose floors passed.
+   * never be another PR than the one whose floors passed. Since issue #148 a merge that names no repository is held
+   * before it is read, so only a named one reaches here; the rest stays as the second line of defence.
    */
   private floorReader(toolUseId: string | undefined): ViewPr {
     return async (pr, repo, fields) => {
