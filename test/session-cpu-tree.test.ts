@@ -231,12 +231,14 @@ test('macOS/Linux: a background command whose shell came and went between two sa
   const record = path.join(hostsDir(), `${id}.json`);
   let busyPid = 0;
   let sent = false;
+  let goAt = 0;
   const monitor: ResourceMonitor = new ResourceMonitor({
     intervalSec: 1, targets: () => [{ id, kind: 'local' }], withDocker: () => false,
     // Right after a sample, so the shell lives and exits before the next one.
     onSample: () => {
       if (!sent && monitor.figures()[id]) {
         sent = true;
+        goAt = Date.now();
         host.stdin!.write('go\n');
       }
     },
@@ -248,8 +250,13 @@ test('macOS/Linux: a background command whose shell came and went between two sa
     busyPid = b;
     const until = Date.now() + WAIT_MS;
     while (alive(shell) && Date.now() < until) await sleep(50);
+    const goneBy = Date.now() - goAt;
     assert.equal(alive(shell), false, 'the shell exited');
     assert.equal(alive(b), true, 'the busy command outlived it');
+    // The next ps starts no sooner than 1 s after the sample that sent "go" (src/platform/processes.ts,
+    // startPosix). Seen gone within that, the shell was in no sample, so only the group rule can keep the
+    // busy command (test review of PR #184, round 2).
+    assert.ok(goneBy < 1000, `the shell was gone ${goneBy} ms after "go", before the next sample`);
     await sleep(3500);
     const f = monitor.figures()[id];
     assert.ok(f, 'the session is measured');
@@ -260,4 +267,19 @@ test('macOS/Linux: a background command whose shell came and went between two sa
     host.kill();
     fs.rmSync(record, { force: true });
   }
+});
+
+test("Windows: the sampler's own list carries each process's start time", { skip: process.platform === 'win32' ? false : 'creation times are read on Windows only', timeout: HANG_MS }, async () => {
+  const list = await new Promise<ProcessList>((resolve) => {
+    const sampler = new ProcessSampler(1, (l) => {
+      sampler.stop();
+      resolve(l);
+    });
+    sampler.start();
+  });
+  const started = list.get(process.pid)?.started;
+  assert.ok(started !== undefined, 'the test process has a start time');
+  // This process started process.uptime() seconds ago; a few seconds' leeway for Node's own start.
+  const expected = Date.now() - process.uptime() * 1000;
+  assert.ok(Math.abs(started - expected) < 5000, `started ${started}, expected about ${Math.round(expected)}`);
 });
