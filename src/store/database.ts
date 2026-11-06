@@ -652,6 +652,32 @@ const MIGRATIONS: string[] = [
   ALTER TABLE flow_runs ADD COLUMN worktree TEXT;
   ALTER TABLE flow_runs ADD COLUMN queue TEXT;
   `,
+  // 45: files a manager on a linked computer sent with a message (issue #158), kept in the data folder: which link sent
+  // it, the manager it went to, its name as shown, kind, size and SHA-256, whether the message naming it arrived
+  // (pending, delivered), when it came and when its copy was pruned. And the bytes of files sent and received per link
+  // and day (local YYYY-MM-DD), counted only (Martin, question #609: "Track only").
+  `
+  CREATE TABLE linked_files (
+    id TEXT PRIMARY KEY,
+    link_id TEXT NOT NULL,
+    to_session TEXT NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    sha TEXT NOT NULL,
+    state TEXT NOT NULL,
+    received_at INTEGER NOT NULL,
+    pruned_at INTEGER
+  );
+  CREATE INDEX linked_files_by_time ON linked_files(state, received_at);
+  CREATE TABLE link_bytes (
+    link_id TEXT NOT NULL,
+    day TEXT NOT NULL,
+    sent INTEGER NOT NULL DEFAULT 0,
+    received INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (link_id, day)
+  );
+  `,
 ];
 
 export function databaseFile(dir = userDataDir()): string {

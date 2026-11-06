@@ -80,7 +80,9 @@ async function signFor(method: string, path: string, text: string): Promise<stri
 }
 
 /** A paired device as Settings lists it (issue #160). */
-export type LinkedComputerInfo = { id: string; name: string; publicName: string; linkedAt: number; lastUsedAt: number | null };
+/** Bytes of files sent to and received from a linked computer (issue #158): counted only, never a limit. */
+export type LinkBytes = { today: { sent: number; received: number }; month: { sent: number; received: number } };
+export type LinkedComputerInfo = { id: string; name: string; publicName: string; linkedAt: number; lastUsedAt: number | null; files?: LinkBytes };
 export type DeviceInfo ={ id: string; name: string; createdAt: number; lastUsedAt: number | null; passkey: boolean; passkeyAt: number | null; kind: 'phone' | 'computer'; pairedVia?: string | null };
 
 /** The live connection's key (#104): Ledung decides nothing sensitive without it. Null while there is no connection. */

@@ -2,13 +2,17 @@
 // your computers' Ledungs, once, with a code made on one and pasted on the other; unlink on either. Only on this
 // computer: through the public name the list is refused, and the section stays away.
 import { useEffect, useState } from 'react';
-import { api, type LinkedComputerInfo } from '../api.ts';
+import { api, type LinkBytes, type LinkedComputerInfo } from '../api.ts';
 import { usePlainTyping } from '../usePlainTyping.ts';
 
 type Run = (action: () => Promise<unknown>) => Promise<void>;
 type View = { publicName: string | null; problem: string | null; links: LinkedComputerInfo[] };
 
 const when = (at: number | null) => (at ? new Date(at).toLocaleString() : 'never');
+
+const size = (n: number) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} bytes`);
+/** Files sent and received through the link (issue #158), today and this month; counted only, nothing is held back on it. */
+const filesLine = (f: LinkBytes) => `files sent ${size(f.today.sent)} today, ${size(f.month.sent)} this month · received ${size(f.today.received)} today, ${size(f.month.received)} this month`;
 
 export function LinkedSettings({ run }: { run: Run }) {
   const typing = usePlainTyping();
@@ -45,7 +49,7 @@ export function LinkedSettings({ run }: { run: Run }) {
           {view.links.length === 0 && <p className="muted">No linked computers.</p>}
           {view.links.map((l) => (
             <div key={l.id} className="device-row">
-              <span><b>{l.name}</b> <span className="muted">· {l.publicName} · linked {when(l.linkedAt)} · last heard from {when(l.lastUsedAt)}</span></span>
+              <span><b>{l.name}</b> <span className="muted">· {l.publicName} · linked {when(l.linkedAt)} · last heard from {when(l.lastUsedAt)}{l.files ? ` · ${filesLine(l.files)}` : ''}</span></span>
               <button className="small" onClick={() => void run(async () => { await api.unlink(l.id); await load(); })}>Unlink</button>
             </div>
           ))}

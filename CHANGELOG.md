@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-06
+- Linked computers: a manager can send up to five files from its project folder (PNG or JPEG screenshots up to 5 MB, `.txt`, `.log` or `.md` text up to 512 KB) with a message to a manager on another of your computers, without waiting for you. That manager gets text inline and screenshots it can put in its questions and reviews. Files are refused, with nothing sent, if they lie outside the folder, are on a sensitive path, hold a secret, are too large or come six at a time, and always to or from a locked project. Settings → Linked computers shows the file bytes sent and received per computer, today and this month. (#158)
 - Auto mode refusals that "Allow once" can't get past Claude Code no longer offer it. Two cases: a session's edit of a file Claude Code guards itself (its settings files, `.git`, shell start files and the like), and a retry refused again after your Allow once. You get "Only you can make this change" instead, with the exact edit or command to make by hand, and Done by hand or Deny. (Project-Ledung#470)
 
 ## 2026-11-05

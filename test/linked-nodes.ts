@@ -26,7 +26,7 @@ export const TOKEN = 'f'.repeat(64);
 export const COOKIE = `ledung_auth=${TOKEN}`;
 
 
-export interface Node { name: string; server: LedungServer; port: number; dir: string; cert: string; store: Store; db: ReturnType<typeof openDatabase> }
+export interface Node { name: string; server: LedungServer; port: number; dir: string; cert: string; store: Store; db: ReturnType<typeof openDatabase>; manager: SessionManager }
 
 export class LinkedNodes {
   private readonly nodes = new Map<string, Node>();
@@ -64,7 +64,8 @@ export class LinkedNodes {
     this.nodes.delete(name);
   }
 
-  async ledung(name: string, computerSettings?: ComputerSetting[], waitingPollMs?: number, push?: ServerOptions['push']): Promise<Node> {
+  /** `config`: more of the config than its port (projects, sensitive patterns), for tests that need them (#158). */
+  async ledung(name: string, computerSettings?: ComputerSetting[], waitingPollMs?: number, push?: ServerOptions['push'], config: Record<string, unknown> = {}): Promise<Node> {
     const port = await freePort();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-linked-'));
     const pair = selfSigned(name);
@@ -74,8 +75,9 @@ export class LinkedNodes {
     fs.writeFileSync(path.join(webRoot, 'index.html'), '<!doctype html><title>Ledung</title>');
     const db = openDatabase(':memory:');
     const store = new Store(db);
+    let manager!: SessionManager;
     const start = async () => {
-      const manager = refuseRealSignInStores(new SessionManager(parseConfig({ port }), store, () => {}));
+      manager = refuseRealSignInStores(new SessionManager(parseConfig({ ...config, port }), store, () => {}));
       const server = new LedungServer({
         port, token: TOKEN, store, manager, webRoot, publicName: name, tunnelTls: { dir, required: true }, now: this.now, linkConnect: this.connect,
         // As main.ts gives them: the config's tabs, and its list for the frames.
@@ -85,10 +87,11 @@ export class LinkedNodes {
       await server.listen();
       return server;
     };
-    const node: Node = { name, server: await start(), port, dir, cert: pair.cert, store, db };
+    const node: Node = { name, server: await start(), port, dir, cert: pair.cert, store, db, manager };
     this.restarts.set(name, async () => {
       await node.server.close();
       node.server = await start();
+      node.manager = manager;
     });
     // Every server closes before any database: one still running would otherwise answer, or be answered by, a
     // Ledung whose database is closed (#463: "database is not open" after a test's end).

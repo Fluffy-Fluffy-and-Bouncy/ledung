@@ -64,9 +64,12 @@ export interface ReviewDetails {
   evidence?: ReviewEvidence[];
 }
 
-/** A stored screenshot or evidence file as people read it: a container file's kept copy (issue #122) by its path in the project. */
+/**
+ * A stored screenshot or evidence file as people read it: a container file's kept copy (issue #122) by its path in the
+ * project; a file from a linked computer (issue #158) by its name, marked as from there.
+ */
 export function shownFile(file: string): string {
-  return file.replace(/^container:[0-9a-f]{32}\//, '');
+  return file.replace(/^container:[0-9a-f]{32}\//, '').replace(/^linked:[0-9a-f]{16}\//, 'linked: ');
 }
 
 /** At most this many evidence files per review. */

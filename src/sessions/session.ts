@@ -470,7 +470,12 @@ export class Session {
       answerQuestion: (q, answer) => m.answerQuestion(id, q, answer),
       forwardAnswer: (from, to) => m.forwardAnswer(id, from, to),
       listManagers: (computer) => m.listManagersEverywhere(id, computer),
-      messageManager: (to, text, computer) => (computer ? m.messageComputerManager(id, computer, to, text) : m.messageManager(id, to, text)),
+      messageManager: (to, text, computer, attachments) => {
+        if (computer) return m.messageComputerManager(id, computer, to, text, attachments);
+        // On this computer a manager names a file by its path; files travel only to a linked computer (issue #158).
+        if (attachments?.length) return Promise.reject(new Error('Not sent: attachments go only with computer, to a manager on a linked computer. On this computer, name the file\'s path in the message.'));
+        return m.messageManager(id, to, text);
+      },
       decidePermission: (request, behavior, scope, message) => m.decidePermission(id, request, behavior, scope, message),
       listPermissions: () => m.listPermissions(id),
       machineStatus: () => m.machineStatus(id),

@@ -777,3 +777,73 @@ test("the container's time limit wrapper runs the script with its arguments, and
   assert.notEqual(slow.status, 0);
   assert.ok(Date.now() - started < 10000, 'ended by the limit');
 });
+
+// Files from managers on linked computers (issue #158): the sender reads with the viewer's rules and the attachment
+// kinds, text up to 512 KB; the receiver serves a copy by its handle only to the manager it was sent to, only while
+// its bytes are what came, and prunes it after evidenceDays.
+test('ledung#158: a file sent to a linked computer is read inside the folder only, PNG, JPEG or .txt/.log/.md text, within the limits', async () => {
+  const { readLinkOutgoing, MAX_IMAGE_BYTES, MAX_TEXT_BYTES } = await import('../src/board/attachments.ts');
+  const dir = path.join(base, 'link-out');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'shot.png'), PNG);
+  fs.writeFileSync(path.join(dir, 'run.log'), 'x'.repeat(MAX_TEXT_BYTES));
+  fs.writeFileSync(path.join(dir, 'big.log'), 'x'.repeat(MAX_TEXT_BYTES + 1));
+  fs.writeFileSync(path.join(dir, 'huge.png'), Buffer.concat([PNG, Buffer.alloc(MAX_IMAGE_BYTES)]));
+  fs.writeFileSync(path.join(dir, '.env'), 'TOKEN=1');
+  fs.writeFileSync(path.join(dir, 'fake.png'), 'not a png');
+  fs.writeFileSync(path.join(base, 'outside.png'), PNG);
+  const shot = readLinkOutgoing(dir, 'shot.png');
+  assert.deepEqual([shot.kind, shot.bytes, shot.text, shot.inside], ['png', PNG, null, 'shot.png']);
+  const log = readLinkOutgoing(dir, 'run.log');
+  assert.deepEqual([log.kind, log.bytes.length], ['text', MAX_TEXT_BYTES], 'text up to 512 KB, not cut at what a board post shows');
+  assert.throws(() => readLinkOutgoing(dir, 'big.log'), /too large .* at most 512 KB/);
+  assert.throws(() => readLinkOutgoing(dir, 'huge.png'), /too large/);
+  assert.throws(() => readLinkOutgoing(dir, '.env'), /only PNG and JPEG images and \.txt, \.log or \.md/);
+  assert.throws(() => readLinkOutgoing(dir, 'fake.png'), /not really a PNG/);
+  assert.throws(() => readLinkOutgoing(dir, '../outside.png'), /Only files inside the project folder/);
+  assert.throws(() => readLinkOutgoing(dir, path.join(base, 'outside.png')), /Only files inside the project folder/);
+});
+
+test('ledung#158: a copy from a linked computer is served by its handle to the manager it went to only, never once changed, and pruned after evidenceDays', async () => {
+  const { LinkedFiles, PENDING_MS } = await import('../src/remote/linked-files.ts');
+  const { openDatabase } = await import('../src/store/database.ts');
+  const { sha256 } = await import('../src/board/attachments.ts');
+  const dir = path.join(base, 'linked-copies');
+  let now = Date.UTC(2026, 10, 6, 12);
+  const files = new LinkedFiles(openDatabase(':memory:'), () => dir, () => 30, () => now);
+  const meta = (to: string) => ({ to, name: 'shot.png', kind: 'png' as const, size: PNG.length, sha: sha256(PNG) });
+  const id = files.receive('link-a', meta('mgr-1'), PNG);
+  const [got] = files.claim('link-a', 'mgr-1', [id]);
+  const handle = got!.handle;
+  assert.equal(handle, `linked:${id}/shot.png`);
+  assert.deepEqual(files.read('mgr-1', handle, ['png', 'jpeg']).bytes, PNG);
+  if (process.platform !== 'win32') assert.equal(fs.statSync(path.join(dir, 'link-a', `${id}.png`)).mode & 0o777, 0o600, 'mode 0600');
+  // Another manager here, a path, a made-up id: refused (the page route goes through this, server-security.test.ts).
+  assert.throws(() => files.read('mgr-2', handle, ['png']), /no file shot\.png from a linked computer for this session/);
+  for (const bad of ['linked:../../x/shot.png', `linked:${id}`, path.join(dir, 'link-a', `${id}.png`), 'linked:0000000000000000/shot.png']) {
+    assert.throws(() => files.read('mgr-1', bad, ['png']), /not a file from a linked computer|no file/, bad);
+  }
+  assert.throws(() => files.read('mgr-1', handle, ['text']), /not a PNG or JPEG image or a text file/);
+  // Claimed once only, and only by the link and manager it came from and for.
+  const id2 = files.receive('link-a', meta('mgr-1'), PNG);
+  assert.throws(() => files.claim('link-b', 'mgr-1', [id2]), /did not get from you/, 'another link');
+  assert.throws(() => files.claim('link-a', 'mgr-2', [id2]), /did not get from you/, 'another manager');
+  assert.throws(() => files.claim('link-a', 'mgr-1', [id]), /did not get from you/, 'already claimed');
+  assert.throws(() => files.claim('link-a', 'mgr-1', ['../x']), /by the ids/);
+  // Changed on disk: not shown.
+  fs.writeFileSync(path.join(dir, 'link-a', `${id}.png`), Buffer.concat([PNG, Buffer.from([1])]));
+  assert.throws(() => files.read('mgr-1', handle, ['png']), /has changed/);
+  // A pending file no message claimed goes after an hour; a delivered one after evidenceDays (30 here), its row kept.
+  now += PENDING_MS + 1;
+  files.prune(true);
+  assert.ok(!fs.existsSync(path.join(dir, 'link-a', `${id2}.png`)), 'unclaimed: gone');
+  assert.ok(fs.existsSync(path.join(dir, 'link-a', `${id}.png`)), 'delivered: still kept after an hour');
+  now += 30 * 86400000;
+  files.prune(true);
+  assert.ok(!fs.existsSync(path.join(dir, 'link-a', `${id}.png`)), 'delivered: gone after evidenceDays');
+  assert.throws(() => files.read('mgr-1', handle, ['png']), /was pruned/);
+  // A wrong hash or kind is never kept.
+  assert.throws(() => files.receive('link-a', { ...meta('mgr-1'), sha: 'f'.repeat(64) }, PNG), /content is not what/);
+  assert.throws(() => files.receive('link-a', { ...meta('mgr-1'), kind: 'jpeg' }, PNG), /not really a JPEG/);
+  assert.deepEqual(fs.readdirSync(path.join(dir, 'link-a')), [], 'nothing left behind');
+});

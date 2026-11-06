@@ -1,4 +1,4 @@
-// Two throwaway Ledungs, "mac" on 4397 and "pc" on 4398, behind a real relay, for the linked-computer loopbacks
+// Two throwaway Ledungs, "mac" on 4397 and "pc" on 4398 (or the ports a loopback gives), behind a real relay, for the linked-computer loopbacks
 // (issue #245): link-pair.ts (linking), link-managers.ts (managers across computers) and frame-renewal.ts (#286).
 //
 // All on 127.0.0.1: the relay from relay/relay.ts with both Ledungs as passthrough agents, a PROXY v2 front standing
@@ -88,14 +88,15 @@ export type Ledung = ChildProcess & { output: () => string };
  * Starts the relay, the front and both Ledungs, and waits for both tunnels. `projects` gives each Ledung's config
  * projects (folders are made in `work`). `close` stops everything it started.
  */
-export async function startPair(work: string, projects: { mac?: unknown[]; pc?: unknown[] } = {}) {
-  for (const port of [...Object.values(P), 4397, 4398]) if (await portOpen(port)) throw new Error(`Port ${port} is in use; this loopback starts everything itself.`);
+export async function startPair(work: string, projects: { mac?: unknown[]; pc?: unknown[] } = {}, opts: { ports?: { mac: number; pc: number }; config?: { mac?: Record<string, unknown>; pc?: Record<string, unknown> } } = {}) {
+  const ports = opts.ports ?? { mac: 4397, pc: 4398 };
+  for (const port of [...Object.values(P), ports.mac, ports.pc]) if (await portOpen(port)) throw new Error(`Port ${port} is in use; this loopback starts everything itself.`);
   removeTemp(work);
   fs.mkdirSync(path.join(work, 'shots'), { recursive: true });
   const children: ChildProcess[] = [];
   const side = (n: 'mac' | 'pc', port: number) => ({ n, port, data: path.join(work, `data-${n}`), name: `${n}.l.test`, secret: crypto.randomBytes(16).toString('hex'), pair: selfSigned(`${n}.l.test`) });
-  const A = side('mac', 4397);
-  const B = side('pc', 4398);
+  const A = side('mac', ports.mac);
+  const B = side('pc', ports.pc);
   for (const s of [A, B]) {
     fs.mkdirSync(path.join(s.data, 'remote'), { recursive: true });
     fs.writeFileSync(path.join(s.data, 'remote', 'tls.key'), s.pair.key, { mode: 0o600 });
@@ -129,6 +130,7 @@ export async function startPair(work: string, projects: { mac?: unknown[]; pc?: 
     const list = (projects[s.n] ?? []) as { path?: string; name: string }[];
     for (const p of list) if (p.path) fs.mkdirSync(p.path, { recursive: true });
     const config = {
+      ...opts.config?.[s.n],
       port: s.port, userName: 'Martin', projects: list,
       remote: { relay: `ws://127.0.0.1:${P.relay}`, name: s.n, publicName: s.name, secret: s.secret, tls: 'required', linkVia: `127.0.0.1:${P.front}` },
     };
@@ -149,7 +151,7 @@ export async function startPair(work: string, projects: { mac?: unknown[]; pc?: 
     await gone;
   };
   const ledungs = { mac: run(A), pc: run(B) };
-  const pages = { mac: new Page(4397, A.data), pc: new Page(4398, B.data) };
+  const pages = { mac: new Page(ports.mac, A.data), pc: new Page(ports.pc, B.data) };
   const close = async () => {
     pages.mac.ws?.close();
     pages.pc.ws?.close();

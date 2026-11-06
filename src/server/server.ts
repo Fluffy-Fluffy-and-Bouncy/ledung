@@ -36,6 +36,8 @@ import type { RelayAdmin } from '../remote/admin.ts';
 import type { UsagePublisher } from '../usage/publisher.ts';
 import type { Shortcuts } from '../platform/shortcuts.ts';
 import { LinkError, LinkedComputers } from '../remote/linked.ts';
+import { LinkedFileError } from '../remote/linked-files.ts';
+import { MAX_IMAGE_BYTES } from '../board/attachments.ts';
 import { ManagementError, type SettingsPort } from '../sessions/management.ts';
 import { waitingCount } from '../shared/waiting.ts';
 
@@ -43,6 +45,8 @@ import { waitingCount } from '../shared/waiting.ts';
 const LINK_PER_MINUTE = 60;
 /** The largest request body on /link/ (#245): a message is at most a few thousand characters. */
 const LINK_MAX_BODY = 16 * 1024;
+/** /link/file's own limit (issue #158): one file, the largest an attachment may be (an image, 5 MB). */
+const LINK_FILE_MAX_BODY = MAX_IMAGE_BYTES;
 
 /**
  * Pairing codes a linked computer may ask for (issue #273, Martin's manager's decision on question #222): one every
@@ -279,7 +283,7 @@ export class LedungServer {
       invite: (owner, name) => this.relayAdmin().invite(owner, name),
       linkCode: () => this.requireLinked().newCode(),
       link: (code, name) => this.requireLinked().join(code, name),
-      links: () => ({ problem: this.linkProblem(), links: this.linked?.list() ?? [] }),
+      links: () => ({ problem: this.linkProblem(), links: this.linksWithBytes() }),
       computers: () => this.computers(),
       // Publishing usage (issue #376): the page's switch; usage_publish asks the user before switching on.
       usagePublish: () => this.opts.usagePublisher?.view() ?? null,
@@ -782,7 +786,7 @@ export class LedungServer {
     }
 
     if (url.pathname.startsWith('/link/')) {
-      await this.linkRoute(req, res, url.pathname, remote);
+      await this.linkRoute(req, res, url, remote);
       return;
     }
 
@@ -820,17 +824,22 @@ export class LedungServer {
    * one-time code; everything else needs a linked computer's key in Authorization, never a cookie, so a browser
    * can't send one by itself, and that key is good for nothing outside /link/.
    */
-  private async linkRoute(req: IncomingMessage, res: ServerResponse, route: string, remote: boolean): Promise<void> {
+  private async linkRoute(req: IncomingMessage, res: ServerResponse, url: URL, remote: boolean): Promise<void> {
+    const route = url.pathname;
     const linked = this.linked;
     if (!remote || !(req.socket as tls.TLSSocket).encrypted || !linked || req.method !== 'POST') throw new HttpError(404, 'Not found.');
-    // The header when there is one; the bytes read when the body comes chunked (review 254, Important 1).
-    if (Number(req.headers['content-length'] ?? 0) > LINK_MAX_BODY) throw new HttpError(413, 'Request too large.');
-    const body = await readJson(req, LINK_MAX_BODY);
     const from = () => {
       const computer = linked.byKey(req.headers.authorization);
       if (!computer) throw new LinkError(401, 'Not a linked computer.');
       return computer;
     };
+    if (route === '/link/file') {
+      this.json(res, 200, await this.linkFile(req, url, from));
+      return;
+    }
+    // The header when there is one; the bytes read when the body comes chunked (review 254, Important 1).
+    if (Number(req.headers['content-length'] ?? 0) > LINK_MAX_BODY) throw new HttpError(413, 'Request too large.');
+    const body = await readJson(req, LINK_MAX_BODY);
     let answer: unknown;
     try {
       switch (route) {
@@ -891,6 +900,7 @@ export class LedungServer {
           if (!text('fromId') || !text('toId') || !text('text')) throw new HttpError(400, 'Send fromId, toId and text.');
           answer = { text: this.opts.manager.linkMessage({ id: computer.id, name: computer.name }, {
             fromId: text('fromId'), fromTitle: text('fromTitle'), fromProject: text('fromProject'), fromLocked: body.fromLocked === true, toId: text('toId'), text: text('text'),
+            ...(body.files !== undefined ? { files: body.files as string[] } : {}),
           }) };
           break;
         }
@@ -926,6 +936,35 @@ export class LedungServer {
     this.frameUnpaired.set(what, { at: now, held: 0 });
     const more = last?.held ? ` (and ${last.held} more like it since the last such line)` : '';
     console.log(`Devices: a frame on another computer's page opened this page with ${what}, so it shows as not paired${more}.`);
+  }
+
+  /**
+   * /link/file (issue #158): one file a manager there sends a manager here, as raw bytes, before the message that names
+   * it. The key first, then the rate, then the body with its own limit: the header when there is one, the bytes as they
+   * are read otherwise. What the bytes are (kind, size, SHA-256) is in the query and checked against them.
+   */
+  private async linkFile(req: IncomingMessage, url: URL, from: () => { id: string }): Promise<{ id: string }> {
+    let computer: { id: string };
+    try {
+      computer = from();
+    } catch (e) {
+      throw e instanceof LinkError ? new HttpError(e.status, e.message) : e;
+    }
+    this.linkRate(computer.id);
+    if (!(req.headers['content-type'] ?? '').startsWith('application/octet-stream')) throw new HttpError(415, 'Send the file\'s bytes.');
+    if (Number(req.headers['content-length'] ?? 0) > LINK_FILE_MAX_BODY) throw new HttpError(413, 'Request too large.');
+    const bytes = await readBody(req, LINK_FILE_MAX_BODY);
+    try {
+      return this.opts.manager.linkFile(computer.id, url.searchParams, bytes);
+    } catch (e) {
+      if (e instanceof LinkedFileError) throw new HttpError(e.status, e.message);
+      throw e;
+    }
+  }
+
+  /** The linked computers for Settings, each with the bytes of files sent and received (issue #158), counted only. */
+  private linksWithBytes() {
+    return (this.linked?.list() ?? []).map((l) => ({ ...l, files: this.opts.manager.linkBytes(l.id) }));
   }
 
   /** Calls per linked computer in the last minute: past LINK_PER_MINUTE, 429 (manager-link.md, "Loops and floods"). */
@@ -1246,7 +1285,7 @@ export class LedungServer {
       // lets the other computer's managers reach this one's, so making and using a code needs the open page (#104).
       case 'GET links':
         this.requireLocal(req, LINKED_HERE);
-        return { publicName: this.publicName, problem: this.linkProblem(), links: this.linked?.list() ?? [] };
+        return { publicName: this.publicName, problem: this.linkProblem(), links: this.linksWithBytes() };
       case 'POST links-code':
         this.requireLocal(req, LINKED_HERE);
         await this.requirePage(req, url);
