@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import { duplexPair, type Duplex } from 'node:stream';
 import { hashSecret, parseRelayConfig, Relay, type OwnerRow } from '../relay/relay.ts';
-import { cappedSenders, cappedSendersMessage, senderMessage, senderOf } from '../src/remote/mux.ts';
+import { cappedSenders, cappedSendersMessage, senderMessage, senderOf, Streams } from '../src/remote/mux.ts';
 import { Tunnel } from '../src/remote/tunnel.ts';
 import { freePort } from './free-port.ts';
 import { HANG_MS, WAIT_MS } from './limits.ts';
@@ -161,6 +161,21 @@ test('the sender and capped-senders messages read back what was written, and not
     assert.equal(senderOf(text), null, text);
     assert.equal(cappedSenders(text), null, text);
   }
+});
+
+test('ledung#176: lifting a sender\'s throttle lets a stream it holds go at once, not when the hold would have ended', async () => {
+  const streams = new Streams({ send: () => {}, bufferedAmount: 0 });
+  const [here, there] = duplexPair();
+  streams.attach(7, here);
+  streams.markSender(7, 'bob.relay.test');
+  // 1 KiB/s: 64 KiB is 64 s ahead, so the stream is held, and its own release is about a minute away.
+  streams.throttleSender('bob.relay.test', 1024);
+  there.write(Buffer.alloc(64 * 1024));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(here.isPaused(), true, 'held by the sender\'s throttle');
+  streams.throttleSender('bob.relay.test', null);
+  assert.equal(here.isPaused(), false, 'let go as the throttle is lifted');
+  streams.closeAll();
 });
 
 test('ledung#176: with Bob capped, what his computer sends one of the admin\'s computers is held to the shipped rate; the admin\'s Ledung is told his host, Bob\'s is not', T, async () => {
