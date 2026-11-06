@@ -54,7 +54,7 @@ $ErrorActionPreference = 'SilentlyContinue'
 while ($true) {
   if (-not (Get-Process -Id ${ledungPid})) { exit }
   $p = Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,KernelModeTime,UserModeTime,WorkingSetSize
-  # The time the list was read, in Unix milliseconds: Node may handle two batches back to back (#471).
+  # The time the list was read, in Unix milliseconds: Node may handle two batches back to back (#157).
   [Console]::Out.WriteLine("#BEGIN $([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())")
   foreach ($x in $p) { [Console]::Out.WriteLine("$($x.ProcessId),$($x.ParentProcessId),$([long]$x.KernelModeTime + [long]$x.UserModeTime),$($x.WorkingSetSize)") }
   [Console]::Out.WriteLine('#END')
@@ -62,13 +62,13 @@ while ($true) {
   Start-Sleep -Seconds ${intervalSec}
 }`;
 
-let exercised471 = false;
+let exercised157 = false;
 
 /**
  * Turns the PowerShell loop's lines into one process list per batch, each with the time PowerShell
  * read it (its `#BEGIN <ms>` line). Not the time Node gets to the batch: when Ledung's event loop is
  * busy, two batches arrive back to back, and a CPU delta over a whole interval divided by a gap of a
- * few milliseconds read as 26 cores on a 12-thread machine (#471). A `#BEGIN` without a time (an
+ * few milliseconds read as 26 cores on a 12-thread machine (#157). A `#BEGIN` without a time (an
  * older loop) falls back to the time of handling.
  */
 export function windowsBatchReader(onList: (list: ProcessList, at: number) => void, now: () => number = Date.now): (line: string) => void {
@@ -79,9 +79,9 @@ export function windowsBatchReader(onList: (list: ProcessList, at: number) => vo
       lines = [];
       const read = Number(line.slice('#BEGIN'.length).trim());
       at = read > 0 ? read : now();
-      if (read > 0 && !exercised471) {
-        exercised471 = true;
-        exercisedLine('EXERCISED #471 CPU sample timed when the process list was read');
+      if (read > 0 && !exercised157) {
+        exercised157 = true;
+        exercisedLine('EXERCISED #157 CPU sample timed when the process list was read');
       }
     } else if (line === '#END' && lines) {
       onList(parseWindowsLines(lines), at);
@@ -124,7 +124,7 @@ export class ProcessSampler {
   private startPosix(): void {
     const tick = async () => {
       try {
-        // Timed as ps starts, not when its output is handled: a busy event loop delays the second (#471).
+        // Timed as ps starts, not when its output is handled: a busy event loop delays the second (#157).
         const at = Date.now();
         const { stdout } = await run('ps', ['-A', '-o', 'pid=,ppid=,time=,rss='], { maxBuffer: 16 * 1024 * 1024 });
         this.onList(parsePs(stdout), at);

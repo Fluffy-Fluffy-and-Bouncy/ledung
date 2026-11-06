@@ -3,7 +3,7 @@
 import type { TurnResource, TypicalCost } from '../shared/protocol.ts';
 
 /**
- * A turn's CPU figures held at the machine's thread count. Turns recorded before #471 was fixed can
+ * A turn's CPU figures held at the machine's thread count. Turns recorded before #157 was fixed can
  * carry a peak far above it (a measuring artefact, see capCores in monitor.ts); they stay in the
  * database as they are and are held at the limit when read.
  */
@@ -12,7 +12,7 @@ export function capTurnCores<T extends TurnResource>(t: T, threads: number): T {
   return { ...t, peakCores: Math.min(t.peakCores, threads), avgCores: Math.min(t.avgCores, threads) };
 }
 
-/** `threads`: the machine's thread count, which no turn's CPU figure may exceed (#471); 0 holds nothing. */
+/** `threads`: the machine's thread count, which no turn's CPU figure may exceed (#157); 0 holds nothing. */
 export function typicalCosts(rows: (TurnResource & { project: string })[], threads = 0): TypicalCost[] {
   const turns = rows.map((t) => capTurnCores(t, threads));
   const groups = new Map<string, (TurnResource & { project: string })[]>();

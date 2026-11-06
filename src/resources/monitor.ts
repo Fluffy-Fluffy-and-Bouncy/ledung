@@ -186,7 +186,7 @@ export class ResourceMonitor {
 
 /**
  * Cores in use can't be more than the machine has threads. A higher figure is a measuring artefact
- * (two samples closer together than the CPU times they carry), so it is held at the thread count (#471).
+ * (two samples closer together than the CPU times they carry), so it is held at the thread count (#157).
  */
 export function capCores(cores: number, threads: number): number {
   return threads > 0 ? Math.min(cores, threads) : cores;

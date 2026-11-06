@@ -1,4 +1,4 @@
-// #471: Peak CPU per turn read 26 cores on a 12-thread PC. The sample interval must be the one the
+// #157: Peak CPU per turn read 26 cores on a 12-thread PC. The sample interval must be the one the
 // process list was read at, and no figure may exceed the machine's thread count.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
