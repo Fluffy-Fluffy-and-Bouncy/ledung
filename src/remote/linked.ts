@@ -26,6 +26,8 @@ export const LINK_CODE_MS = 10 * 60 * 1000;
 /** How long computer 2 waits for computer 1's callback after sending the code. */
 export const CONFIRM_MS = 60 * 1000;
 const REQUEST_MS = 15_000;
+/** A file's call (issue #158): up to 5 MB through the relay, so longer than a message's; offline still fails at once. */
+const FILE_REQUEST_MS = 120_000;
 const MAX_ANSWER = 16 * 1024;
 const TOUCH_MS = 60 * 1000;
 const SECRET_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -286,6 +288,16 @@ export class LinkedComputers {
     return this.call(link.publicName, route, body, link.sendKey, timeoutMs);
   }
 
+  /**
+   * A file's bytes to a linked computer (issue #158): one POST of the raw bytes, what they are in the query, the JSON
+   * answer back as for every call.
+   */
+  async sendBytes(id: string, route: string, query: Record<string, string>, bytes: Buffer, timeoutMs = FILE_REQUEST_MS): Promise<Record<string, unknown>> {
+    const link = this.read().find((l) => l.id === id);
+    if (!link) throw new LinkError(404, 'No such linked computer.');
+    return this.call(link.publicName, `${route}?${new URLSearchParams(query)}`, { type: 'application/octet-stream', data: bytes }, link.sendKey, timeoutMs);
+  }
+
   private defaultName(publicName: string): string {
     return computerName(this.opts.nameFor?.(publicName), publicName.split('.')[0]!);
   }
@@ -316,13 +328,14 @@ export class LinkedComputers {
   }
 
   /** One POST to another Ledung's public name over TLS; the JSON answer, or an error with the reason. */
-  private call(publicName: string, route: string, body: Record<string, unknown>, key?: string, timeoutMs = REQUEST_MS): Promise<Record<string, unknown>> {
-    const data = JSON.stringify(body);
+  private call(publicName: string, route: string, body: Record<string, unknown> | { type: string; data: Buffer }, key?: string, timeoutMs = REQUEST_MS): Promise<Record<string, unknown>> {
+    const raw = Buffer.isBuffer(body.data) ? body as { type: string; data: Buffer } : null;
+    const data = raw ? raw.data : JSON.stringify(body);
     const connect = this.opts.connect ?? ((name: string) => tls.connect({ host: name, port: 443, servername: name, ALPNProtocols: ['http/1.1'] }));
     return new Promise((resolve, reject) => {
       const req = https.request({
         method: 'POST', path: route, createConnection: () => connect(publicName),
-        headers: { Host: publicName, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data), ...(key ? { Authorization: `Bearer ${key}` } : {}) },
+        headers: { Host: publicName, 'Content-Type': raw ? raw.type : 'application/json', 'Content-Length': Buffer.byteLength(data), ...(key ? { Authorization: `Bearer ${key}` } : {}) },
       }, (res) => {
         let text = '';
         res.setEncoding('utf8');

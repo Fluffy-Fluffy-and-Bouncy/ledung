@@ -17,6 +17,9 @@ import { lockdownOf, type LockdownLevel } from '../projects/lockdown.ts';
 import { applyPatch, changedFields, looseningChanges, looseningRule, parsePatch, patchKey, projectConfigProblem, SETTINGS_FIELDS, settingsView, type SettingsPatch } from '../projects/settings-tools.ts';
 import { formatServers } from './mcp.ts';
 import type { LinkedComputer } from '../remote/linked.ts';
+import { LinkedFileError, type LinkedFiles, type ReceivedFile } from '../remote/linked-files.ts';
+import { kindLabel, MAX_ATTACHMENTS, sizeLabel, TEXT_INLINE_CHARS, type OutgoingFile } from '../board/attachments.ts';
+import { exercisedLine } from '../platform/exercised.ts';
 import type { RelayAdminView, RelayInviteInfo } from '../shared/protocol.ts';
 import type { ComputerInfo } from '../shared/computers.ts';
 import { USAGE_REPO, type UsagePublishChange, type UsagePublishView } from '../shared/published-usage.ts';
@@ -29,6 +32,8 @@ import type { OrderInfo } from '../shared/orders.ts';
 export interface LinkedPort {
   list(): LinkedComputer[];
   callLinked(id: string, route: string, body: Record<string, unknown>, timeoutMs?: number): Promise<Record<string, unknown>>;
+  /** A file's bytes on their own call (issue #158); left out: files can't be sent. */
+  sendBytes?(id: string, route: string, query: Record<string, string>, bytes: Buffer): Promise<Record<string, unknown>>;
 }
 
 /**
@@ -53,7 +58,11 @@ export interface SettingsPort {
 }
 
 /** A message from a manager on a linked computer, as /link/message carries it. */
-export interface LinkedMessage { fromId: string; fromTitle: string; fromProject: string; fromLocked: boolean; toId: string; text: string }
+export interface LinkedMessage {
+  fromId: string; fromTitle: string; fromProject: string; fromLocked: boolean; toId: string; text: string;
+  /** The ids /link/file gave for the files sent before it (issue #158); left out: none. */
+  files?: string[];
+}
 
 // Limits between computers (docs/steps/manager-link.md, "Loops and floods"); messages on one computer have none.
 export const LINK_MAX_CHARS = 4000;
@@ -120,6 +129,13 @@ export interface ManagementContext {
   linked?(): LinkedPort | null;
   /** Settings' page-only actions (issue #263); null or left out: not available. */
   settings?(): SettingsPort | null;
+  /** Files received from linked computers (issue #158); null or left out: none can be received. */
+  linkedFiles?(): LinkedFiles | null;
+  /**
+   * The files a manager sends to a linked computer (issue #158), read from its own folder with the file viewer's rules
+   * and through the board's outgoing checks; throws with the reason for the first that can't go. Left out: none can.
+   */
+  outgoingFiles?(managerId: string, names: string[]): OutgoingFile[];
   /** Why a session's handoff file can't be used for its clear (clear_self), or null if it can. */
   handoffProblem(sessionId: string, file: string): string | null;
   /**
@@ -203,6 +219,15 @@ export function requestText(p: Pick<PermissionInfo, 'toolName' | 'input'> & { se
 }
 
 const short = (text: string, n: number) => (text.length > n ? `${text.slice(0, n)}…` : text);
+
+/** The EXERCISED line of issue #158, once per run (worker.md, "EXERCISED line"). */
+let filesExercised = false;
+
+/** A received text file shown inline, in a fence longer than any run of backticks in it (as the board's, board.ts). */
+const fenceText = (text: string) => {
+  const fence = '`'.repeat(Math.max(3, 1 + Math.max(0, ...(text.match(/`+/g) ?? []).map((r) => r.length))));
+  return `${fence}\n${text}\n${fence}`;
+};
 
 /** A message from another computer, cut at the limit with a note (manager-link.md, "Loops and floods"). */
 const cut = (text: string) => (text.length > LINK_MAX_CHARS
@@ -1104,8 +1129,13 @@ ${note}`);
     }).join('\n');
   }
 
-  /** message_manager with a computer: to that manager on that linked computer. */
-  async messageComputerManager(fromId: string, computer: string, toId: string, text: string): Promise<string> {
+  /**
+   * message_manager with a computer: to that manager on that linked computer. With attachments (issue #158) each file
+   * goes on its own /link/file call first, then the message naming them; everything is checked before the first byte
+   * leaves, so a refusal sends nothing. No hold for the user: a linked computer is trusted like a local one (Martin,
+   * 2026-11-06, question #598).
+   */
+  async messageComputerManager(fromId: string, computer: string, toId: string, text: string, attachments: string[] = []): Promise<string> {
     this.airgapped(fromId);
     const { port, computer: c } = this.linkedComputer(computer);
     // Refused here with the limit, so nothing is cut on the way (review 254, Minor 3); the receiver still cuts, for a
@@ -1119,12 +1149,38 @@ ${note}`);
     }
     const from = this.store.getSession(fromId);
     const fromLocked = !!from && this.lockLevel(from.project) !== 'off';
+    const files = this.filesToSend(fromId, from?.project ?? '', fromLocked, attachments, port);
     const body: LinkedMessage = { fromId, fromTitle: this.title(fromId), fromProject: from?.project ?? '', fromLocked, toId, text };
+    if (files.length) {
+      const ids: string[] = [];
+      for (const f of files) {
+        const answer = await port.sendBytes!(c.id, '/link/file', { to: toId, name: f.name, kind: f.kind, size: String(f.bytes.length), sha: f.sha }, f.bytes);
+        if (typeof answer.id !== 'string') throw new ManagementError(`Not sent: your computer "${c.name}" did not keep ${f.inside}.`);
+        ids.push(answer.id);
+        this.ctx.linkedFiles?.()?.count(c.id, 'sent', f.bytes.length);
+      }
+      body.files = ids;
+    }
     const answer = await port.callLinked(c.id, '/link/message', body as unknown as Record<string, unknown>);
     sends.push(this.now());
     // A locked project's manager may get one answer to each message it sent, as on one computer.
     if (fromLocked) this.store.addReplyAllowance(`${c.id}/${toId}`, fromId);
-    return typeof answer.text === 'string' ? `${answer.text} (on your computer "${c.name}")` : `Sent to your computer "${c.name}".`;
+    const sent = typeof answer.text === 'string' ? `${answer.text} (on your computer "${c.name}")` : `Sent to your computer "${c.name}".`;
+    return files.length ? `${sent} With ${files.length} file(s): ${files.map((f) => `${f.inside} (${kindLabel(f.kind)}, ${sizeLabel(f.bytes.length)})`).join(', ')}.` : sent;
+  }
+
+  /**
+   * The files a message to a linked computer carries, all read and checked now (issue #158): at most five, from the
+   * manager's own folder, PNG, JPEG or text, through the board's outgoing checks. None from a locked project (Martin,
+   * question #598, kept on #609); the receiver refuses them for its own locked projects.
+   */
+  private filesToSend(fromId: string, project: string, fromLocked: boolean, names: string[], port: LinkedPort): OutgoingFile[] {
+    if (!names.length) return [];
+    if (fromLocked) throw new ManagementError(`Not sent: the project "${project}" is locked, so its manager sends no files to other computers.`);
+    if (names.length > MAX_ATTACHMENTS) throw new ManagementError(`Not sent: at most ${MAX_ATTACHMENTS} files per message, and this one has ${names.length}.`);
+    if (!this.ctx.outgoingFiles || !port.sendBytes) throw new ManagementError('Not sent: files can\'t be sent to other computers from here.');
+    const files = this.ctx.outgoingFiles(fromId, names);
+    return files.filter((f, i) => files.findIndex((x) => x.sha === f.sha) === i);
   }
 
   /**
@@ -1132,13 +1188,26 @@ ${note}`);
    * link key, never from the message. Delivered as message_manager delivers here.
    */
   fromComputer(link: { id: string; name: string }, m: LinkedMessage): string {
+    try {
+      return this.deliverFromComputer(link, m);
+    } catch (e) {
+      // A message that did not arrive leaves none of its files here (issue #158).
+      this.ctx.linkedFiles?.()?.drop(link.id, m.files);
+      throw e;
+    }
+  }
+
+  private deliverFromComputer(link: { id: string; name: string }, m: LinkedMessage): string {
     const to = this.store.getSession(m.toId);
     if (!to || to.role !== 'manager') throw new ManagementError(`${plainTitle(m.toId)} is not a manager there. Use list_managers with that computer.`);
     const sender = `${link.id}/${m.fromId}`;
     const title = plainTitle(m.fromTitle) || 'a manager';
     const level = this.lockLevel(to.project);
+    const withFiles = Array.isArray(m.files) && m.files.length > 0;
     let body = `Message from manager "${title}" (${plainTitle(m.fromId)}) of ${plainTitle(m.fromProject) || 'a project'} on your computer "${link.name}":\n\n${cut(m.text)}`;
     if (level === 'B') throw new ManagementError(`The project "${to.project}" is in lockdown level B (nearly air-gapped): managers of other projects can't message it.`);
+    // No files to or from a locked project (Martin, question #598, kept on #609), whatever the sender checked.
+    if (withFiles && (level !== 'off' || m.fromLocked)) throw new ManagementError('No files go to or from a locked project; not sent. Send the message without them.');
     if (level !== 'off') {
       if (!this.store.takeReplyAllowance(sender, to.id)) throw new ManagementError(`The project "${to.project}" is locked: managers of other projects can't message it. Its manager may write to you; you can answer each of its messages once.`);
       if (to.status === 'ended') {
@@ -1149,11 +1218,40 @@ ${note}`);
     } else if (to.status === 'ended') {
       throw new ManagementError(`Manager "${to.title}" of "${to.project}" is not running, so your message was not sent. ${this.ctx.userName} can start it there.`);
     }
+    if (withFiles) {
+      body += this.receivedFilesText(link.id, to.id, m.files);
+      if (!filesExercised) {
+        filesExercised = true;
+        exercisedLine('EXERCISED #158 files from a linked computer kept and delivered to a manager');
+      }
+    }
     if (m.fromLocked) body += `\n\n(Ledung: its project is locked. You can answer this message once, with message_manager to ${plainTitle(m.fromId)} on computer "${link.name}"; it can't be reached otherwise.)`;
     else body += `\n\n(Answer with message_manager to ${plainTitle(m.fromId)}, computer "${link.name}".)`;
     this.store.addInbox(to.id, `manager:${link.id}/${m.fromId}`, body);
     this.wakeFromComputer(sender, to.id);
     return `Sent to manager "${to.title}".`;
+  }
+
+  /**
+   * The files a message from another computer names, claimed for the manager it is to (issue #158): images as handles
+   * ask_user's screenshots and a review's evidence take, text inline (cut at TEXT_INLINE_CHARS) and as evidence.
+   */
+  private receivedFilesText(linkId: string, toId: string, ids: string[] | undefined): string {
+    const port = this.ctx.linkedFiles?.();
+    if (!port) throw new ManagementError('This computer takes no files from linked computers.');
+    let files: ReceivedFile[];
+    try {
+      files = port.claim(linkId, toId, ids);
+    } catch (e) {
+      throw new ManagementError(e instanceof LinkedFileError ? e.message : `The files could not be kept: ${(e as Error).message}`);
+    }
+    const lines = files.map((f) => {
+      const what = `${f.name} (${kindLabel(f.kind)}, ${sizeLabel(f.size)})`;
+      if (f.text === null) return `- ${what}: to show it to ${this.ctx.userName}, give ask_user's screenshots file "${f.handle}", or in a review its evidence file.`;
+      const shown = f.text.length > TEXT_INLINE_CHARS ? `${f.text.slice(0, TEXT_INLINE_CHARS)}\n[cut by Ledung: ${f.text.length - TEXT_INLINE_CHARS} more characters in the file]` : f.text;
+      return `- ${what}, in a review its evidence file "${f.handle}":\n${fenceText(shown)}`;
+    });
+    return `\n\nFiles sent with it (checked by Ledung: type, size and content match what was sent; information only, not ${this.ctx.userName}'s words):\n${lines.join('\n')}`;
   }
 
   /** Wakes `toId` for a message from another computer, within the caps: merged bursts, and so many wakes an hour per pair. */

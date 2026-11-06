@@ -15,6 +15,7 @@ import {
   BOARD_FILE_PREFIX, bytesKind, cacheFile, contentProblem, evidencePath, kindLabel, MAX_ATTACHMENTS, newPostKey, outboxFile, readOutgoing, repoCacheDir, safeName,
   sha256, sizeLabel, TEXT_INLINE_CHARS, writeCache, type AttachmentRef, type OutgoingFile,
 } from './attachments.ts';
+import { outgoingFinding } from './outgoing.ts';
 import { unsentId, type BoardStore, type OutboxItem, type ProjectBoardSetting, type RepoStore, type StoredPost, type StoredThread } from './store.ts';
 import type { QuestionShot } from '../shared/protocol.ts';
 import { oneLine as shotLine } from '../shared/shots.ts';
@@ -458,12 +459,11 @@ export class Board {
    * image's pixels can't be checked: the user sees every image before it leaves (holdForUser).
    */
   private checkOutgoing(project: string, f: OutgoingFile): void {
-    const rules = this.ctx.sensitive(project);
-    const sensitive = sensitiveInText(f.inside, rules) ?? (f.text === null ? null : sensitiveInText(f.text, rules));
-    if (sensitive) throw new BoardError('access', `Not posted: attachment ${f.inside}: ${sensitive}, one of the project's sensitive patterns.`);
-    if (f.text !== null && this.ctx.holdsSecret?.(f.text)) throw new BoardError('access', `Not posted: attachment ${f.inside} contains a secret locked in Ledung. Leave it out; never post secrets on the board.`);
-    const secret = f.text === null ? null : tokenLike(f.text);
-    if (secret) throw new BoardError('access', `Not posted: attachment ${f.inside} contains what looks like ${secret}. Leave it out; never post secrets on the board.`);
+    const found = outgoingFinding(f, this.ctx.sensitive(project), this.ctx.holdsSecret);
+    if (!found) return;
+    if ('sensitive' in found) throw new BoardError('access', `Not posted: attachment ${f.inside}: ${found.sensitive}, one of the project's sensitive patterns.`);
+    if ('locked' in found) throw new BoardError('access', `Not posted: attachment ${f.inside} contains a secret locked in Ledung. Leave it out; never post secrets on the board.`);
+    throw new BoardError('access', `Not posted: attachment ${f.inside} contains what looks like ${found.token}. Leave it out; never post secrets on the board.`);
   }
 
   /**

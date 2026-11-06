@@ -102,6 +102,19 @@ export function readOutgoing(root: string, link: string): OutgoingFile {
   return { name: safeName(f.path), kind, bytes, sha: sha256(bytes), text, inside: f.path };
 }
 
+/**
+ * A file a manager sends to a manager on a linked computer (issue #158): the kinds of an attachment by the file the
+ * link resolves to, but text up to MAX_TEXT_BYTES as a review's evidence takes it, since nothing is held for the user
+ * before it leaves (Martin's decision on question #598: a linked computer is trusted like a local one). Sent as read.
+ */
+export function readLinkOutgoing(root: string, link: string): OutgoingFile {
+  const f = readProjectBytes(root, link, MAX_IMAGE_BYTES);
+  const kind = kindOrThrow(f.bytes, f.path);
+  if (kind !== 'text') return { name: safeName(f.path), kind, bytes: f.bytes, sha: sha256(f.bytes), text: null, inside: f.path };
+  if (f.bytes.length > MAX_TEXT_BYTES) throw new FileError(`${f.path} is too large (${Math.round(f.bytes.length / 1024)} KB; a text file is at most 512 KB).`);
+  return { name: safeName(f.path), kind, bytes: f.bytes, sha: sha256(f.bytes), text: f.bytes.toString('utf8'), inside: f.path };
+}
+
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const JPEG = Buffer.from([0xff, 0xd8, 0xff]);
 

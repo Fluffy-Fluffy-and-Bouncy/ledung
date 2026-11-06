@@ -75,7 +75,9 @@ import { validateSensitive } from './sensitive.ts';
 import { idleReason, idleStopBlocker } from './idle.ts';
 import { chooseProfile, FULL_PROFILE, pluginIdsIn, profileByName, profileNames, type Profile } from './profiles.ts';
 import { Boards } from '../board/boards.ts';
-import { BOARD_FILE_PREFIX, bytesKind, MAX_IMAGE_BYTES as EVIDENCE_IMAGE_MAX_BYTES, MAX_TEXT_BYTES as EVIDENCE_TEXT_MAX_BYTES, readEvidence } from '../board/attachments.ts';
+import { BOARD_FILE_PREFIX, bytesKind, MAX_IMAGE_BYTES as EVIDENCE_IMAGE_MAX_BYTES, MAX_TEXT_BYTES as EVIDENCE_TEXT_MAX_BYTES, readEvidence, readLinkOutgoing, type AttachmentKind, type OutgoingFile } from '../board/attachments.ts';
+import { outgoingFinding } from '../board/outgoing.ts';
+import { LinkedFileError, LinkedFiles, LINKED_FILE_PREFIX, parseFileMeta, type ByteTotals } from '../remote/linked-files.ts';
 import type { RepoDirectory } from '../board/repos.ts';
 import { BoardStore } from '../board/store.ts';
 import { BoardError, type BoardBackend } from '../board/types.ts';
@@ -176,6 +178,8 @@ export class SessionManager {
   private linked: LinkedPort | null = null;
   /** Settings' page-only actions for managers (#263), set by the server. */
   private settings: SettingsPort | null = null;
+  /** Files managers on linked computers sent (issue #158), and the bytes counted per link. */
+  readonly linkedFiles: LinkedFiles;
   readonly projectStore: ProjectStore;
   readonly accounts: AccountStore;
   private readonly monitor: ResourceMonitor;
@@ -276,11 +280,15 @@ export class SessionManager {
       },
       linked: () => this.linked,
       settings: () => this.settings,
+      linkedFiles: () => this.linkedFiles,
+      outgoingFiles: (managerId, names) => this.outgoingFiles(managerId, names),
       handoffProblem: (id, file) => this.handoffProblem(id, file),
       // The file viewer's own image rules, so a shot that is attached can also be shown (issue #60).
       // A manager's board attachment ("board:...") is from its project's board cache instead.
       // A container project's file is a copy Ledung kept when the question was asked (keepContainerFiles, issue #122).
+      // A file a manager on a linked computer sent this one ("linked:...") is the copy kept in the data folder (issue #158).
       shotPath: (id, file) => file.startsWith(BOARD_FILE_PREFIX) ? this.readBoardShot(id, file)
+        : file.startsWith(LINKED_FILE_PREFIX) ? (this.readLinkedCopy(id, file, ['png', 'jpeg']), file)
         : file.startsWith(CONTAINER_FILE_PREFIX) ? (this.readContainerCopy(id, file, ['png', 'jpeg']), file) : this.readImageHere(id, file).path,
       keepContainerFiles: (id, files) => this.keepContainerFiles(id, files),
       evidenceFile: (id, file) => {
@@ -289,6 +297,7 @@ export class SessionManager {
       },
     });
     this.proposals = new ProposalStore(store.database);
+    this.linkedFiles = new LinkedFiles(store.database, () => this.linkedFilesDir(), () => boardConfig(this.config).evidenceDays);
     this.flowRuns = new FlowRuns({
       runs: new RunStore(store.database),
       getSession: (id) => this.store.getSession(id),
@@ -589,6 +598,10 @@ export class SessionManager {
    * (ownBoard) and from any board in use here when the page shows it, as board images are.
    */
   private readEvidenceFile(sessionId: string, file: string, ownBoard: boolean): { file: string; kind: 'png' | 'jpeg' | 'text'; bytes: Buffer } {
+    if (file.startsWith(LINKED_FILE_PREFIX)) {
+      const copy = this.readLinkedCopy(sessionId, file, ['png', 'jpeg', 'text']);
+      return { file, kind: copy.kind, bytes: copy.bytes };
+    }
     if (file.startsWith(CONTAINER_FILE_PREFIX)) {
       const copy = this.readContainerCopy(sessionId, file, ['png', 'jpeg', 'text']);
       if (copy.kind === 'text' && copy.bytes.length > EVIDENCE_TEXT_MAX_BYTES) throw new UserError(`${copy.path} is too large.`);
@@ -653,6 +666,7 @@ export class SessionManager {
     this.monitor.start();
     this.waitTimer = setInterval(() => {
       this.checkWaiting();
+      this.linkedFiles.prune();
       void this.relaunchWaiting();
     }, 60000);
     // Always on, as idleStopMinutes can change while Ledung runs (issue #353); checkIdle reads it each time.
@@ -2657,6 +2671,10 @@ ${firstMessage}`);
    * container project. A copy Ledung kept for a question ("container:...") is read from the copies.
    */
   async readImage(sessionId: string, link: string, folder?: PaneFolderKey): Promise<ProjectImage> {
+    if (link.startsWith(LINKED_FILE_PREFIX)) {
+      const copy = this.readLinkedCopy(sessionId, link, ['png', 'jpeg']);
+      return { path: copy.path, type: copy.kind === 'png' ? 'image/png' : 'image/jpeg', bytes: copy.bytes };
+    }
     if (link.startsWith(CONTAINER_FILE_PREFIX)) {
       const copy = this.readContainerCopy(sessionId, link, ['png', 'jpeg']);
       return { path: copy.path, type: copy.kind === 'png' ? 'image/png' : 'image/jpeg', bytes: copy.bytes };
@@ -2676,6 +2694,65 @@ ${firstMessage}`);
   containerExecFor: (project: DockerProjectConfig) => ContainerExec = (project) => new DockerRunner(project, 'files').fileExec();
   /** Where the copies of container files for questions are kept. */
   containerCopiesDir = (): string => path.join(userDataDir(), 'container-files');
+  /** Where copies of files from linked computers are kept (issue #158); tests move it. */
+  linkedFilesDir = (): string => path.join(userDataDir(), 'linked-files');
+
+  // --- Files between managers on linked computers (issue #158) ----------------------------------------
+
+  /** A copy a manager on a linked computer sent this session, by its handle: only the manager it was sent to. */
+  private readLinkedCopy(sessionId: string, handle: string, kinds: readonly AttachmentKind[]): { path: string; kind: AttachmentKind; bytes: Buffer } {
+    try {
+      return this.linkedFiles.read(sessionId, handle, kinds);
+    } catch (e) {
+      throw e instanceof FileError ? new UserError(e.message) : e;
+    }
+  }
+
+  /**
+   * The files a manager sends to a linked computer: from its own folder with the file viewer's rules (readFrom), PNG,
+   * JPEG or text by their first bytes, then the board's outgoing checks with the project's sensitive patterns and the
+   * locked secrets. The reason for the first that can't go; nothing is sent then.
+   */
+  private outgoingFiles(managerId: string, names: string[]): OutgoingFile[] {
+    const info = this.store.getSession(managerId);
+    if (!info) throw new UserError('No such session.');
+    const project = this.projectStore.get(info.project)?.config;
+    const rules = {
+      commandPatterns: [...this.config.sensitive.commandPatterns, ...(project?.sensitive.commandPatterns ?? [])],
+      pathPatterns: [...this.config.sensitive.pathPatterns, ...(project?.sensitive.pathPatterns ?? [])],
+    };
+    return names.map((name) => {
+      let f: OutgoingFile;
+      try {
+        f = this.readFrom(managerId, name.trim().replace(/\\/g, '/'), readLinkOutgoing);
+      } catch (e) {
+        throw new UserError(`Not sent: attachment ${name}: ${(e as Error).message}`);
+      }
+      const found = outgoingFinding(f, rules, (text) => this.secrets?.holdsValue(text) ?? false);
+      if (!found) return f;
+      if ('sensitive' in found) throw new UserError(`Not sent: attachment ${f.inside}: ${found.sensitive}, one of the project's sensitive patterns.`);
+      if ('locked' in found) throw new UserError(`Not sent: attachment ${f.inside} contains a secret locked in Ledung. Leave it out.`);
+      throw new UserError(`Not sent: attachment ${f.inside} contains what looks like ${found.token}. Leave it out.`);
+    });
+  }
+
+  /**
+   * /link/file from the linked computer `linkId` (issue #158): only for a manager here whose project is not locked
+   * (Martin, question #598), checked and kept as pending until the message naming it comes. Its id back.
+   */
+  linkFile(linkId: string, query: URLSearchParams, bytes: Buffer): { id: string } {
+    const meta = parseFileMeta(query);
+    const to = this.store.getSession(meta.to);
+    if (!to || to.role !== 'manager') throw new LinkedFileError(400, `${meta.to.slice(0, 100)} is not a manager there. Use list_managers with that computer.`);
+    const project = this.projectStore.get(to.project)?.config;
+    if (project && lockdownOf(project).level !== 'off') throw new LinkedFileError(403, 'No files go to or from a locked project; not sent. Send the message without them.');
+    return { id: this.linkedFiles.receive(linkId, meta, bytes) };
+  }
+
+  /** The bytes of files sent to and received from a linked computer, today and this month (issue #158). */
+  linkBytes(linkId: string): ByteTotals {
+    return this.linkedFiles.totals(linkId);
+  }
 
   /**
    * The project's exec and the rules besides its folder: every other locked project's folder in the same container
@@ -2755,7 +2832,7 @@ ${firstMessage}`);
   }
 
   private async keepContainerFile(access: ContainerAccess, root: string, project: string, f: { file: string; as: 'shot' | 'evidence' }): Promise<string> {
-    if (f.file.startsWith(BOARD_FILE_PREFIX) || f.file.startsWith(CONTAINER_FILE_PREFIX)) return f.file;
+    if (f.file.startsWith(BOARD_FILE_PREFIX) || f.file.startsWith(CONTAINER_FILE_PREFIX) || f.file.startsWith(LINKED_FILE_PREFIX)) return f.file;
     if (f.as === 'shot') {
       const image = await readContainerImage(access, root, f.file, CONTAINER_IMAGE_MAX_BYTES);
       return keepCopy(this.containerCopiesDir(), project, image.path, image.bytes);

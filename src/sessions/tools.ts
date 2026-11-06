@@ -125,7 +125,7 @@ export interface ManagerHandlers {
   answerQuestion(question: number, answer: string): Promise<string>;
   forwardAnswer(userQuestion: number, toQuestion: number): Promise<string>;
   listManagers(computer?: string): Promise<string>;
-  messageManager(id: string, text: string, computer?: string): Promise<string>;
+  messageManager(id: string, text: string, computer?: string, attachments?: string[]): Promise<string>;
   decidePermission(request: string, behavior: 'allow' | 'deny', scope: 'once' | 'session', message?: string): string;
   listPermissions(): string;
   machineStatus(): string;
@@ -742,7 +742,10 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
         id: z.string().min(8).describe('The manager id, as list_managers shows it.'),
         computer: z.string().min(1).optional().describe('The linked computer it runs on, as list_managers names it; leave out for this computer.'),
         text: z.string().min(1),
-      }, async (a) => safely(() => m.messageManager(a.id, a.text, a.computer))) as never,
+        attachments: z.array(z.string().min(1)).min(1).max(5).optional().describe(
+          'Only with computer: files from your project folder, relative to it, that the other manager gets with the message: PNG or JPEG images (at most 5 MB) or .txt, .log or .md text (at most 512 KB). It gets images as files it can show in its questions, and text inline.',
+        ),
+      }, async (a) => safely(() => m.messageManager(a.id, a.text, a.computer, a.attachments))) as never,
       tool('list_projects', "List Ledung's projects: folder, settings and whether each one's manager runs. On a linked computer: names and managers only.", {
         computer: z.string().min(1).optional().describe('A linked computer, as list_managers names it; leave out for this one.'),
       }, async (a) => safely(() => m.listProjects(a.computer))) as never,

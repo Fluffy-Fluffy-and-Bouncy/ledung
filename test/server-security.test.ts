@@ -1011,6 +1011,42 @@ test("ask_user screenshots take a board attachment from a manager's own project'
   assert.throws(() => shot('m1', 'board:org/board/7/../../secret.png'), /inside the project/);
 });
 
+// Files from a manager on a linked computer (issue #158): the page shows a copy only through the session it was sent to,
+// with the sign-in and this host, read-only; another session's handle, a path or a made-up handle is refused.
+test('ledung#158: a file from a linked computer is shown only through the manager it was sent to, by its handle, never by a path', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-linked-files-security-'));
+  try {
+    sessions.linkedFilesDir = () => dir;
+    const png = fs.readFileSync(path.join(projectRoot, 'a.png'));
+    const sha = crypto.createHash('sha256').update(png).digest('hex');
+    const id = sessions.linkedFiles.receive('link-1', { to: 'm1', name: 'shot.png', kind: 'png', size: png.length, sha }, png);
+    const [file] = sessions.linkedFiles.claim('link-1', 'm1', [id]);
+    const url = (session: string, p: string) => `/api/sessions/${session}/image?path=${encodeURIComponent(p)}`;
+    const good = url('m1', file!.handle);
+    assert.equal((await request({ path: good })).status, 401);
+    assert.equal((await request({ path: good, headers: { host: 'evil.example:80', cookie: COOKIE } })).status, 403);
+    const ok = await request({ path: good, headers: { cookie: COOKIE } });
+    assert.equal(ok.status, 200);
+    assert.equal(ok.headers['content-type'], 'image/png');
+    assert.equal(ok.body, png.toString());
+    for (const [session, bad] of [
+      ['s1', file!.handle], ['m1', 'linked:../../link-1/x.png'], ['m1', `linked:${id}`], ['m1', path.join(dir, 'link-1', `${id}.png`)], ['m1', `linked:${'0'.repeat(16)}/shot.png`],
+    ] as const) {
+      const res = await request({ path: url(session, bad), headers: { cookie: COOKIE } });
+      assert.equal(res.status, 400, `${session} ${bad}`);
+    }
+    // ask_user's screenshots take it from that manager only (the same wiring as the board's, above).
+    const shot = (sid: string, f: string) => (sessions as unknown as { management: { screenshots(id: string, s: { file: string; look_for: string }[], q: null): { path: string }[] } })
+      .management.screenshots(sid, [{ file: f, look_for: 'x' }], null);
+    assert.equal(shot('m1', file!.handle)[0]!.path, file!.handle);
+    assert.throws(() => shot('s1', file!.handle), /no file shot\.png from a linked computer/);
+    const post = await request({ method: 'POST', path: good, headers: { cookie: COOKIE, origin: ORIGIN } });
+    assert.notEqual(post.status, 200);
+  } finally {
+    removeTemp(dir);
+  }
+});
+
 test("a review's text files need the sign-in and this host, and come only as the review names them, checked again (docs/steps/pr-review.md)", async () => {
   const store = (sessions as unknown as { store: Store }).store;
   fs.writeFileSync(path.join(projectRoot, 'run.log'), 'step 1 ok\nstep 2 ok\n');
