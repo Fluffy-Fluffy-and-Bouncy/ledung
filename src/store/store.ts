@@ -201,7 +201,7 @@ export class Store {
     id: string,
     fields: Partial<Pick<SessionInfo,
       'status' | 'title' | 'permissionMode' | 'claudeSessionId' | 'model' | 'claudeVersion' | 'claudeProgram' | 'cwd' | 'endedAt' | 'endReason' | 'branch' | 'contextTokens' | 'contextWindow' | 'pr'
-      | 'priority' | 'priorityNote' | 'paused' | 'queuedAt' | 'account' | 'archivedAt' | 'clearDue' | 'clearedAt' | 'compacting' | 'runBlock'>>,
+      | 'priority' | 'priorityNote' | 'paused' | 'queuedAt' | 'account' | 'archivedAt' | 'clearDue' | 'clearedAt' | 'compacting' | 'runBlock' | 'requestedModel'>>,
   ): void {
     const columns: Record<string, string> = {
       pr: 'pr',
@@ -228,6 +228,7 @@ export class Store {
       cwd: 'cwd',
       endedAt: 'ended_at',
       endReason: 'end_reason',
+      requestedModel: 'requested_model',
     };
     const entries = Object.entries(fields).filter(([k]) => k in columns);
     if (entries.length === 0) return;

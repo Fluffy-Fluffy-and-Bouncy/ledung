@@ -1987,6 +1987,11 @@ export class LedungServer {
         await manager.setPermissionMode(id, String(body.mode ?? ''));
         return;
       }
+      // The sidebar menu's Change model (2026-11-06): the sign-in, Host and Origin checks like every change.
+      case 'POST sessions/:id/model': {
+        const body = await readJson(req);
+        return manager.setModel(id, body.model ?? null);
+      }
       case 'POST sessions/:id/interrupt':
         return manager.interrupt(id);
       // Its MCP servers, and restarting one it already has (issue #118).

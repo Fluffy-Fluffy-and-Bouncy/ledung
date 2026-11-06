@@ -301,7 +301,8 @@ export class Session {
   private readonly runner: Runner;
   private readonly store: Store;
   private readonly publish: (event: ServerEvent) => void;
-  private readonly model: string | undefined;
+  /** Its own model, changed by the sidebar menu's Change model; undefined: the project's default. */
+  private model: string | undefined;
   private readonly defaultModel: string | undefined;
   private readonly resume: string | undefined;
   private readonly attachTo: string | undefined;
@@ -2097,6 +2098,22 @@ export class Session {
     await this.q.setPermissionMode(mode);
     this.record('event', { text: `Permission mode set to ${PERMISSION_MODE_LABELS[mode]} by ${by === 'user' ? this.userName : by}.` });
     this.update({ permissionMode: mode });
+  }
+
+  /**
+   * Changes the model from its next reply on (the sidebar menu's Change model), as Claude Code's /model does: the
+   * SDK's setModel, a control request like setPermissionMode. null: the project's default again, which is named
+   * outright, since setModel(undefined) would give Claude Code's own default instead.
+   */
+  async setModel(model: string | null, by: string): Promise<void> {
+    if (!this.q || this.stopping) throw new Error('The session is not running.');
+    const fileModel = typeof this.fileSettings?.model === 'string' ? this.fileSettings.model : undefined;
+    await this.q.setModel(model ?? fileModel ?? this.defaultModel);
+    this.model = model ?? undefined;
+    this.record('event', { text: `Model set to ${model ?? "the project's default"} by ${by === 'user' ? this.userName : by}; it applies from the next reply.` });
+    // Kept for a resume, as start_session's model is.
+    this.store.updateSession(this.id, { requestedModel: model });
+    this.publish({ type: 'session', session: this.info });
   }
 
   async interrupt(): Promise<void> {

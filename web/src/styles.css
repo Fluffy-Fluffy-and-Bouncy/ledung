@@ -921,6 +921,21 @@ table.calls td { white-space: nowrap; }
 .session-menu .menu-buttons > button { flex: 1; }
 /* Read-only facts (the Claude Code version) close the menu, set apart from the settings above. */
 .session-menu .menu-info { padding-top: 0.4rem; border-top: 1px solid var(--border); font-size: 0.9em; }
+/* The sidebar's right-click menu (2026-11-06): over everything, at the point it was opened (RowMenu.tsx). */
+.row-menu { position: fixed; z-index: 60; min-width: 13rem; max-width: calc(100vw - 8px); max-height: calc(100vh - 8px); overflow-y: auto; padding: 0.3rem 0; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35); }
+.row-menu .row-menu-item { display: flex; align-items: center; width: 100%; padding: 0.3rem 0.9rem 0.3rem 0.4rem; border: 0; border-radius: 0; background: none; color: inherit; text-align: left; font: inherit; }
+.row-menu .row-menu-item:hover, .row-menu .row-menu-item:focus { background: color-mix(in srgb, var(--accent) 22%, transparent); outline: none; }
+.row-menu .row-menu-item.danger { color: var(--danger); }
+.row-menu .row-menu-tick { display: inline-block; width: 1.3rem; text-align: center; color: var(--accent); flex: none; }
+.row-menu .row-menu-heading { padding: 0.25rem 0.9rem 0.1rem 1.7rem; font-size: 0.8em; color: var(--muted); }
+.row-menu .row-menu-separator { height: 1px; margin: 0.3rem 0; background: var(--border); }
+.row-menu .row-menu-question { max-width: 18rem; padding: 0.4rem 0.9rem 0.5rem 1.7rem; }
+/* The row the menu is for, which the menu may cover. */
+.session-row.menu-open > .session-item, .project-row.menu-open { outline: 1px solid var(--accent); outline-offset: -1px; border-radius: 6px; }
+/* A finger needs 44 px a row (issue #176). */
+@media (pointer: coarse) {
+  .row-menu .row-menu-item { min-height: 44px; }
+}
 .session-menu .away-row { align-items: flex-start; flex-wrap: wrap; }
 .session-menu .away-row > .away-entry, .session-menu .away-row > .away-strip { flex: 1; min-width: 0; }
 /* A running session's MCP servers (issue #118): one line each, its Reconnect at the right. */

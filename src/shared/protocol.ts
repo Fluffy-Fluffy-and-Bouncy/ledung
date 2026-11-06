@@ -99,6 +99,10 @@ export interface ChatsInfo {
   colour: NameColour | null;
 }
 
+/** The models the sidebar menu's Change model offers, besides the project's default (Simon, 2026-11-06). */
+export type ModelChoice = 'opus' | 'sonnet' | 'haiku';
+export const MODEL_CHOICES: readonly ModelChoice[] = ['opus', 'sonnet', 'haiku'];
+
 /** Who goes first when sessions wait for a free place (step 6). */
 export type Priority = 'normal' | 'high' | 'critical';
 export const PRIORITIES: readonly Priority[] = ['normal', 'high', 'critical'];

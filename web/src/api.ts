@@ -2,7 +2,7 @@
 import type { Macro } from '../../src/shared/macros.ts';
 import type {
   AwayInfo, AwayKind, BoardOwnersView, BoardPeopleView, BoardRepoChoicesView, BoardStatus, BoardThreadsView, BoardThreadView, ProjectBoardView,
-  AccountChoices, AccountInfoView, ChatsInfo, ContainerInfoView, FolderListingView, MachineInfo, McpServerInfo, Overview, ProjectInfo, PermissionDecision, PermissionMode, Priority, ProjectFileView, TurnResource, TypicalCost, QuestionInfo, SessionInfo, SessionUsage, StoredMessage, UpdateView, UsageFilter, UsageReport, WorkflowCheckView,
+  AccountChoices, AccountInfoView, ChatsInfo, ContainerInfoView, FolderListingView, MachineInfo, McpServerInfo, ModelChoice, Overview, ProjectInfo, PermissionDecision, PermissionMode, Priority, ProjectFileView, TurnResource, TypicalCost, QuestionInfo, SessionInfo, SessionUsage, StoredMessage, UpdateView, UsageFilter, UsageReport, WorkflowCheckView,
   NewComputerInfo, RelayAdminView, RelayInviteInfo, RelayOwnersView,
   ClaudeCodeView,
   ProfilesView,
@@ -332,6 +332,8 @@ export const api = {
   /** Orders on record (issue #105): cancelling one only takes a permission away. */
   cancelOrder: (id: number) => call('POST', `/api/orders/${id}/cancel`, {}),
   setPriority: (sessionId: string, priority: Priority) => call('POST', `/api/sessions/${sessionId}/priority`, { priority }),
+  /** null: the project's default model. */
+  setModel: (sessionId: string, model: ModelChoice | null) => call<SessionInfo>('POST', `/api/sessions/${sessionId}/model`, { model }),
   setPaused: (sessionId: string, paused: boolean) => call('POST', `/api/sessions/${sessionId}/pause`, { paused }),
   cancelClear: (sessionId: string) => call('POST', `/api/sessions/${sessionId}/cancel-clear`, {}),
   startNow: (sessionId: string) => call('POST', `/api/sessions/${sessionId}/start-now`, {}),

@@ -40,6 +40,8 @@ import {
   CHATS,
   PERMISSION_MODES,
   type ChatsInfo,
+  MODEL_CHOICES,
+  type ModelChoice,
   PRIORITIES,
   type MachineInfo,
   type McpServerInfo,
@@ -3135,6 +3137,34 @@ ${firstMessage}`);
     if (!this.resuming.has(id) && this.live.has(id) && info.status !== 'ended') return;
     const after = await this.resume(id);
     if (after.status === 'ended') throw new UserError(`The session could not be resumed: ${after.endReason ?? 'unknown reason'}`);
+  }
+
+  /**
+   * The sidebar menu's Change model: opus, sonnet, haiku, or null for the project's default. A running session
+   * changes from its next reply; an ended one keeps it for its resume. Either way it is the session's
+   * requestedModel, which a resume starts with, as start_session's model is.
+   */
+  async setModel(id: string, model: unknown): Promise<SessionInfo> {
+    if (model !== null && !MODEL_CHOICES.includes(model as ModelChoice)) throw new UserError(`Choose ${MODEL_CHOICES.join(', ')} or the project's default.`);
+    const chosen = model as ModelChoice | null;
+    const info = this.store.getSession(id);
+    if (!info) throw new UserError('No such session.');
+    if (info.status === 'stopping') throw new UserError('The session is stopping; change its model once it has ended.');
+    const live = this.live.get(id);
+    if (live && info.status !== 'ended') {
+      try {
+        await live.setModel(chosen, 'user');
+      } catch (e) {
+        throw new UserError(`Could not change the model: ${(e as Error).message}`);
+      }
+      return live.info;
+    }
+    if (chosen !== info.requestedModel) {
+      this.store.updateSession(id, { requestedModel: chosen });
+      this.publish({ type: 'message', message: this.store.addMessage(id, 'event', { text: `Model set to ${chosen ?? "the project's default"} by ${this.config.userName}; it applies when the session is resumed.` }) });
+      this.publish({ type: 'session', session: this.store.getSession(id)! });
+    }
+    return this.store.getSession(id)!;
   }
 
   async setPermissionMode(id: string, mode: string): Promise<void> {
