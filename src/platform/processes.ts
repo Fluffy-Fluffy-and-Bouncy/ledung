@@ -15,6 +15,8 @@ export interface ProcInfo {
   memBytes: number;
   /** Process group, from ps (macOS, Linux); Windows has none. */
   pgid?: number;
+  /** Start time in Unix milliseconds, from Windows; ps gives none here (#169). */
+  started?: number;
 }
 
 export type ProcessList = Map<number, ProcInfo>;
@@ -42,13 +44,23 @@ export function parsePs(stdout: string): ProcessList {
   return list;
 }
 
-/** Lines "pid,ppid,cpu100ns,workingSet" from the PowerShell loop. */
+/** Windows FILETIME (100 ns since 1601) to Unix milliseconds; exact, since a FILETIME is beyond a Number. */
+export function fileTimeToMs(fileTime: string): number | undefined {
+  if (!/^\d+$/.test(fileTime) || fileTime === '0') return undefined;
+  return Number(BigInt(fileTime) / 10000n - 11644473600000n);
+}
+
+/** Lines "pid,ppid,cpu100ns,workingSet[,creationFileTime]" from the PowerShell loop. */
 export function parseWindowsLines(lines: string[]): ProcessList {
   const list: ProcessList = new Map();
   for (const line of lines) {
-    const [pid, ppid, cpu, mem] = line.split(',').map(Number);
+    const fields = line.split(',');
+    const [pid, ppid, cpu, mem] = fields.slice(0, 4).map(Number);
     if (!pid || Number.isNaN(cpu)) continue;
-    list.set(pid, { pid, ppid: ppid ?? 0, cpuSeconds: (cpu ?? 0) / 1e7, memBytes: mem ?? 0 });
+    const p: ProcInfo = { pid, ppid: ppid ?? 0, cpuSeconds: (cpu ?? 0) / 1e7, memBytes: mem ?? 0 };
+    const started = fields[4] === undefined ? undefined : fileTimeToMs(fields[4].trim());
+    if (started !== undefined) p.started = started;
+    list.set(pid, p);
   }
   return list;
 }
@@ -57,10 +69,14 @@ const WINDOWS_LOOP = (intervalSec: number, ledungPid: number) => `
 $ErrorActionPreference = 'SilentlyContinue'
 while ($true) {
   if (-not (Get-Process -Id ${ledungPid})) { exit }
-  $p = Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,KernelModeTime,UserModeTime,WorkingSetSize
+  $p = Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,KernelModeTime,UserModeTime,WorkingSetSize,CreationDate
   # The time the list was read, in Unix milliseconds: Node may handle two batches back to back (#157).
   [Console]::Out.WriteLine("#BEGIN $([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())")
-  foreach ($x in $p) { [Console]::Out.WriteLine("$($x.ProcessId),$($x.ParentProcessId),$([long]$x.KernelModeTime + [long]$x.UserModeTime),$($x.WorkingSetSize)") }
+  # The start time tells a reused process id from the process that had it (#169, as #162); 0 when Windows gives none.
+  foreach ($x in $p) {
+    $c = 0; if ($x.CreationDate) { $c = $x.CreationDate.ToFileTimeUtc() }
+    [Console]::Out.WriteLine("$($x.ProcessId),$($x.ParentProcessId),$([long]$x.KernelModeTime + [long]$x.UserModeTime),$($x.WorkingSetSize),$c")
+  }
   [Console]::Out.WriteLine('#END')
   [Console]::Out.Flush()
   Start-Sleep -Seconds ${intervalSec}
@@ -141,6 +157,15 @@ export class ProcessSampler {
   }
 }
 
+/**
+ * A child that started before its parent is not its child: Windows keeps a parent id after the
+ * parent exits, so a process that later gets that id would adopt the old one's children (#162, #169).
+ * Without both start times (ps, an older loop) it counts.
+ */
+export function startedAfter(child: ProcInfo, parent: ProcInfo): boolean {
+  return child.started === undefined || parent.started === undefined || child.started >= parent.started;
+}
+
 /** The process and all its descendants. */
 export function treeOf(list: ProcessList, root: number): ProcInfo[] {
   const children = new Map<number, ProcInfo[]>();
@@ -152,7 +177,7 @@ export function treeOf(list: ProcessList, root: number): ProcInfo[] {
     if (!p || seen.has(pid)) return;
     seen.add(pid);
     out.push(p);
-    for (const c of children.get(pid) ?? []) if (c.pid !== pid) walk(c.pid);
+    for (const c of children.get(pid) ?? []) if (c.pid !== pid && startedAfter(c, p)) walk(c.pid);
   };
   walk(root);
   return out;
@@ -161,8 +186,12 @@ export function treeOf(list: ProcessList, root: number): ProcInfo[] {
 /** The processes a session's tree held at the last sample, kept to go on counting those that left it (#169). */
 export type TreeMemory = Map<number, ProcInfo>;
 
-/** The same process as the one seen last time: its CPU time never shrinks, and its parent is unchanged or gone. */
+/**
+ * The same process as the one seen last time: the same start time where Windows gives one; otherwise
+ * its CPU time never shrinks, and its parent is unchanged or gone.
+ */
 function sameProcess(was: ProcInfo, now: ProcInfo, list: ProcessList): boolean {
+  if (was.started !== undefined && now.started !== undefined) return was.started === now.started;
   return now.cpuSeconds >= was.cpuSeconds && (now.ppid === was.ppid || !list.has(was.ppid));
 }
 
@@ -182,17 +211,20 @@ export function sessionTree(list: ProcessList, root: number | undefined, memory:
   const seeds: number[] = [];
   if (root && list.has(root)) seeds.push(root);
   if (memory) {
-    const gone = new Set<number>();
+    const gone = new Map<number, ProcInfo>();
     const groups = new Set<number>();
     for (const was of memory.values()) {
       const now = list.get(was.pid);
-      if (now && sameProcess(was, now, list)) seeds.push(was.pid);
-      else if (!now) gone.add(was.pid);
-      // Only a group the session's own process leads: a host in Ledung's group must not take in Ledung.
-      if (was.pgid !== undefined && was.pgid === was.pid && was.pgid > 1) groups.add(was.pgid);
+      const same = now !== undefined && sameProcess(was, now, list);
+      if (same) seeds.push(was.pid);
+      else if (!now) gone.set(was.pid, was);
+      // Only a group the session's own process leads (a host in Ledung's group must not take in Ledung),
+      // and only while that leader is gone or still the same: a reused id leads someone else's group.
+      if (was.pgid !== undefined && was.pgid === was.pid && was.pgid > 1 && (same || !now)) groups.add(was.pgid);
     }
     for (const p of list.values()) {
-      if (gone.has(p.ppid) || (p.pgid !== undefined && groups.has(p.pgid))) seeds.push(p.pid);
+      const parent = gone.get(p.ppid);
+      if ((parent && startedAfter(p, parent)) || (p.pgid !== undefined && groups.has(p.pgid))) seeds.push(p.pid);
     }
   }
   const out: TreeMemory = new Map();
