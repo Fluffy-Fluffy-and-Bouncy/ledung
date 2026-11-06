@@ -678,6 +678,30 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (link_id, day)
   );
   `,
+  // 46: files streamed between linked computers (issue #159). On the receiver, a file the message only names is a
+  // linked_files row in state remote (then delivered, or failed with its problem), with the sender's outbox id. On the
+  // sender, the snapshot kept in its outbox for the other computer to fetch: the link and the manager it is for, the
+  // manager that sent it, what it is, held until its message arrived, then offered; when it was first read to its end,
+  // and when it was pruned.
+  `
+  ALTER TABLE linked_files ADD COLUMN remote_id TEXT;
+  ALTER TABLE linked_files ADD COLUMN problem TEXT;
+  CREATE TABLE linked_outbox (
+    id TEXT PRIMARY KEY,
+    link_id TEXT NOT NULL,
+    from_session TEXT NOT NULL,
+    to_session TEXT NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    sha TEXT NOT NULL,
+    state TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    fetched_at INTEGER,
+    pruned_at INTEGER
+  );
+  CREATE INDEX linked_outbox_by_time ON linked_outbox(pruned_at, created_at);
+  `,
 ];
 
 export function databaseFile(dir = userDataDir()): string {
