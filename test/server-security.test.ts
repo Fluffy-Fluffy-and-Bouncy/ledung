@@ -1930,8 +1930,10 @@ const RELAY_CHANGES: [string, unknown][] = [
   ['/api/relay-invites/x/revoke', {}],
   ['/api/relay-computers/x/approve', {}],
   ['/api/relay-computers/x/added', {}],
+  // Issue #161: an owner's monthly cap.
+  ['/api/relay-owners/x/cap', { cap: 1 }],
 ];
-const RELAY_READS = ['/api/remote-link', '/api/relay-admin', '/api/relay-computers'];
+const RELAY_READS = ['/api/remote-link', '/api/relay-admin', '/api/relay-computers', '/api/relay-owners'];
 
 test('the relay routes refuse without the sign-in cookie, without Ledung\'s Origin and without the open page (issue #237)', async () => {
   const before = fs.existsSync(path.join(relayDir, 'relay-admin.json')) ? fs.readFileSync(path.join(relayDir, 'relay-admin.json'), 'utf8') : null;

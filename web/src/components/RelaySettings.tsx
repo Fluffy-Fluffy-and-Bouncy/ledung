@@ -1,11 +1,14 @@
 // Invite a computer and Join with a code (issue #237). Settings → Remote: Join with a code, or Leave this relay, on
 // the computer joining. Settings → Relay: the relay admin's own settings (relay address, admin key, Cloudflare token)
 // and Invite a computer. The admin key and the token are typed or made here but never come back to the page: it
-// sees the key's SHA-256 and whether a token is set.
+// sees the key's SHA-256 and whether a token is set. Owners (issue #161): each owner's bytes through the relay and the
+// monthly cap set for them; the admin's own ("you") has no cap field.
 import { useEffect, useState } from 'react';
-import type { NewComputerInfo, RelayAdminView, RelayInviteInfo, RemoteStatus } from '../../../src/shared/protocol.ts';
+import type { NewComputerInfo, RelayAdminView, RelayInviteInfo, RelayOwnerInfo, RelayOwnersView, RemoteStatus } from '../../../src/shared/protocol.ts';
 import { api } from '../api.ts';
+import { formatBytes } from '../usage/MachinePanel.tsx';
 import { CopyButton } from './Markdown.tsx';
+import { capFromGb, capGbText } from '../relayCapGb.ts';
 import { usePlainTyping } from '../usePlainTyping.ts';
 
 type Run = (action: () => Promise<unknown>) => Promise<void>;
@@ -73,6 +76,7 @@ export function RelayAdminSettings({ view, onView, run, newComputers }: { view: 
     <>
       <RelayAdminForm view={view} onView={onView} run={run} />
       {view.relay && view.keySha256 && <Invites run={run} newComputers={newComputers} tokenSet={view.tokenSet} />}
+      {view.relay && view.keySha256 && <Owners />}
     </>
   );
 }
@@ -146,6 +150,53 @@ function Invites({ run, newComputers, tokenSet }: { run: Run; newComputers: NewC
       )}
       {newComputers.length > 0 && <p className="muted">{newComputers.length} computer{newComputers.length === 1 ? '' : 's'} joined and wait{newComputers.length === 1 ? 's' : ''} for the CAA record: see Waiting for you.</p>}
     </div>
+  );
+}
+
+/**
+ * Owners on the relay (issue #161): the bytes their computers moved through it today and this month, and a monthly cap
+ * for each but the admin's own. No cap: uncapped (Martin, 2026-11-06, Ledung question #633).
+ */
+function Owners() {
+  const [view, setView] = useState<RelayOwnersView | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const refresh = () => void api.relayOwners().then((v) => { setView(v); setProblem(null); }, (e) => setProblem((e as Error).message));
+  useEffect(refresh, []);
+  const setCap = (owner: string, cap: number | null) => api.setRelayCap(owner, cap).then((v) => { setView(v); setProblem(null); }, (e) => setProblem((e as Error).message));
+  return (
+    <div className="relay-owners">
+      <h4>Owners</h4>
+      <p className="muted">Bytes through the relay, both ways, per owner (UTC days). An owner past their monthly cap is slowed down, and their Ledungs refuse file transfers until {view?.resetsOn || 'the first of next month'}; messages still go through. No cap: no limit.</p>
+      {problem && <p className="restart-problem">{problem}</p>}
+      {view && (
+        <ul className="relay-list">
+          {view.owners.map((o) => <OwnerRow key={o.owner} owner={o} onCap={setCap} />)}
+        </ul>
+      )}
+      <button className="small" onClick={refresh}>Refresh</button>
+    </div>
+  );
+}
+
+function OwnerRow({ owner: o, onCap }: { owner: RelayOwnerInfo; onCap: (owner: string, cap: number | null) => Promise<void> }) {
+  const [gb, setGb] = useState(capGbText(o.cap));
+  const typing = usePlainTyping();
+  const typed = capFromGb(gb);
+  const bytes = `${formatBytes(o.today)} today, ${formatBytes(o.month)} this month`;
+  return (
+    <li>
+      <b>{o.owner}</b>{o.you ? ' (you)' : ''}: {o.computers} computer{o.computers === 1 ? '' : 's'}, {bytes}
+      {o.you ? <span className="muted"> · never capped</span> : (
+        <>
+          {o.cap === null ? <span className="muted"> · no cap</span> : <span> · cap {formatBytes(o.cap)} a month{o.capped ? ', reached' : ''}</span>}
+          <span className="relay-row">
+            <input {...typing} value={gb} onChange={(e) => setGb(e.target.value)} inputMode="decimal" placeholder="GB a month" aria-label={`Monthly cap for ${o.owner} in GB`} />
+            <button className="small" disabled={typed === null} onClick={() => { if (typed !== null) void onCap(o.owner, typed); }}>Set cap</button>
+            {o.cap !== null && <button className="small" onClick={() => void onCap(o.owner, null).then(() => setGb(''))}>Remove cap</button>}
+          </span>
+        </>
+      )}
+    </li>
   );
 }
 
