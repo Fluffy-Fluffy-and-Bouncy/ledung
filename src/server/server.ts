@@ -20,7 +20,7 @@ import { actionOf, DEVICE_LOCKED, PASSKEY_HEADER, PasskeyError, Passkeys } from 
 import { linkedPushItem, Push, PushError, type LinkedPushItem } from './push.ts';
 import type { UsageQueries } from '../usage/queries.ts';
 import { readRunningRelease, type Updater } from '../update/updater.ts';
-import { typicalCosts } from '../resources/typical.ts';
+import { capTurnCores, typicalCosts } from '../resources/typical.ts';
 import { BoardError } from '../board/types.ts';
 import type { ProjectConfig } from '../config.ts';
 import type { Overview, Priority, UsageFilter, UsagePeriod } from '../shared/protocol.ts';
@@ -1708,10 +1708,10 @@ export class LedungServer {
         manager.startNow(id);
         return;
       case 'GET sessions/:id/turns':
-        return store.turnResources({ sessionId: id });
+        return store.turnResources({ sessionId: id }).map((t) => capTurnCores(t, os.cpus().length));
       case 'GET typical-costs': {
         const days = Math.min(365, Math.max(1, Number(url.searchParams.get('days')) || 30));
-        return typicalCosts(store.turnResources({ since: Date.now() - days * 86400000, role: 'session' }));
+        return typicalCosts(store.turnResources({ since: Date.now() - days * 86400000, role: 'session' }), os.cpus().length);
       }
       case 'GET sessions/:id/file':
         return manager.readFile(id, url.searchParams.get('path') ?? '', paneFolder(url));

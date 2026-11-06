@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-06
+- Usage: CPU figures per session, per turn and in "Typical machine use per turn" no longer read more cores than the machine has threads (a 12-thread PC showed a Peak CPU of 26); turns already recorded are held at the limit when shown, and the page says what Avg and Peak CPU mean. (#157)
 - Auto mode refusals that "Allow once" can't get past Claude Code no longer offer it. Two cases: a session's edit of a file Claude Code guards itself (its settings files, `.git`, shell start files and the like), and a retry refused again after your Allow once. You get "Only you can make this change" instead, with the exact edit or command to make by hand, and Done by hand or Deny. (Project-Ledung#470)
 
 ## 2026-11-05
