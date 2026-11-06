@@ -336,7 +336,7 @@ export class LedungServer {
         dir: this.tunnelTls.dir, publicName, connect: this.opts.linkConnect, now: this.opts.now, port: this.opts.port,
         nameFor: (name) => this.computers().find((c) => c.id === name)?.name ?? null,
         onChange: () => this.computersChanged(),
-        relayCap: () => this.relayCap(true),
+        relayCap: (sending) => this.relayCap(sending),
       }) : null;
       this.opts.manager.setLinked(this.linked);
       if (this.servers.length) this.linked?.helloAll();
@@ -910,6 +910,10 @@ export class LedungServer {
           this.linkRate(computer.id);
           const text = (key: string) => (typeof body[key] === 'string' ? body[key] as string : '');
           if (!text('fromId') || !text('toId') || !text('text')) throw new HttpError(400, 'Send fromId, toId and text.');
+          // Streamed files to fetch while this computer's owner is past the relay's cap (issue #177): the message is
+          // refused as #161 refuses a pushed file, so the sender keeps nothing on offer and nothing is pulled here.
+          const capped = Array.isArray(body.streams) && body.streams.length > 0 ? this.relayCap(false) : null;
+          if (capped) throw new HttpError(429, capped);
           answer = { text: this.opts.manager.linkMessage({ id: computer.id, name: computer.name }, {
             fromId: text('fromId'), fromTitle: text('fromTitle'), fromProject: text('fromProject'), fromLocked: body.fromLocked === true, toId: text('toId'), text: text('text'),
             ...(body.files !== undefined ? { files: body.files as string[] } : {}),
@@ -991,6 +995,11 @@ export class LedungServer {
     try {
       computer = from();
       this.linkRate(computer.id);
+      // This computer's owner is past the relay's monthly cap (issue #177, as #161 for /link/file): nothing is served.
+      // 403, not 429: the other computer's fetch takes a 4xx but 429 as for good, and a monthly cap does not lift in the
+      // minute its tries take, so it ends now with the sentence instead of keeping a part that long.
+      const capped = this.relayCap(true);
+      if (capped) throw new HttpError(403, capped);
       snap = this.opts.manager.linkFileGet(computer.id, url.searchParams);
     } catch (e) {
       if (e instanceof LinkError || e instanceof LinkedFileError) throw new HttpError(e.status, e.message);
@@ -1024,6 +1033,10 @@ export class LedungServer {
       if (sent - counted >= LINK_COUNT_EVERY) {
         this.opts.manager.linkFileSent(computer.id, snap.id, sent - counted, false);
         counted = sent;
+        // Capped while it goes (issue #177): stopped here, a mebibyte at most past the relay's word; the other
+        // computer's fetch ends cut off and does not keep the part.
+        const capped = this.relayCap(true);
+        if (capped) stream.destroy(new Error(capped));
       }
     });
     try {

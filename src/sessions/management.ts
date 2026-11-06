@@ -39,12 +39,17 @@ export interface LinkedPort {
   sendBytes?(id: string, route: string, query: Record<string, string>, bytes: Buffer): Promise<Record<string, unknown>>;
   /** A streamed file's bytes from byte `from` on (issue #159); left out: none can be fetched. */
   fetchStream?(id: string, route: string, query: Record<string, string>, from: number, idleMs: number): Promise<{ body: IncomingMessage; start: number }>;
-  /** The relay caps this computer's owner (issue #161): the sentence file sends are refused with; null or left out: not capped. */
-  relayCap?(): string | null;
+  /**
+   * The relay caps this computer's owner (issue #161): the sentence a file going out (`sending`, the default) or coming
+   * in (a streamed file's pull, #177) is refused with; null or left out: not capped.
+   */
+  relayCap?(sending?: boolean): string | null;
 }
 
 /** The EXERCISED line of issue #159, once per run. */
 let exercised159 = false;
+/** The EXERCISED line of issue #177, once per run. */
+let exercised177 = false;
 
 /**
  * Settings' page-only actions for managers (issue #263): the same calls Settings' routes make, set by the server.
@@ -1242,8 +1247,9 @@ ${note}`);
     if (fromLocked) throw new ManagementError(`Not sent: the project "${project}" is locked, so its manager sends no files to other computers.`);
     if (names.length > MAX_ATTACHMENTS) throw new ManagementError(`Not sent: at most ${MAX_ATTACHMENTS} files per message, and this one has ${names.length}.`);
     if (!this.ctx.outgoingFiles || !port.sendBytes) throw new ManagementError('Not sent: files can\'t be sent to other computers from here.');
-    // Past the relay's monthly cap (issue #161; Martin, question #632): refused before a byte leaves, the message too.
-    const capped = port.relayCap?.();
+    // Past the relay's monthly cap (issue #161; Martin, question #632): refused before a byte leaves, the message too;
+    // a streamed file too, before it is snapshotted or offered (#177).
+    const capped = port.relayCap?.(true);
     if (capped) throw new ManagementError(capped);
     const files = this.ctx.outgoingFiles(fromId, names);
     // The same file named twice goes once: a pushed one by its content, a streamed one by where it really is.
@@ -1332,7 +1338,7 @@ ${note}`);
         if (e instanceof LinkError && e.status >= 400 && e.status < 500 && e.status !== 429) throw new FetchRefused(e.message);
         throw e;
       }
-    }, this.fetchOptions);
+    }, { ...this.fetchOptions, stop: () => this.pullCapped(port) });
     const what = `${result.file.name} (${linkedKindLabel(result.file.kind)}, ${sizeLabel(result.file.size)})`;
     if (result.ok) {
       if (!exercised159) {
@@ -1341,9 +1347,22 @@ ${note}`);
       }
       this.tell(toId, 'ledung', `Ledung: ${what} from your computer "${link.name}" is here, its size and SHA-256 checked: "${result.file.handle}". It can't be shown in a question or a review; to give it to one of your sessions, save it into its worktree with save_linked_file.`);
     } else {
-      this.tell(toId, 'ledung', `Ledung: ${what} from your computer "${link.name}" could not be fetched: ${result.problem}. Nothing of it is kept here; ask that manager to send it again.`);
+      this.tell(toId, 'ledung', `Ledung: ${what} from your computer "${link.name}" could not be fetched: ${result.problem.replace(/\.$/, '')}. Nothing of it is kept here; ask that manager to send it again.`);
     }
     return result;
+  }
+
+  /**
+   * The sentence a streamed file's pull stops with while the relay caps this computer's owner (issue #177): asked before
+   * the pull starts, before every resume and on every chunk, so nothing more comes in; null: not capped.
+   */
+  private pullCapped(port: LinkedPort | null): string | null {
+    const capped = port?.relayCap?.(false) ?? null;
+    if (capped && !exercised177) {
+      exercised177 = true;
+      exercisedLine('EXERCISED #177 a streamed file\'s pull refused while the relay caps this computer\'s owner');
+    }
+    return capped;
   }
 
   /**
