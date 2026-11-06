@@ -66,7 +66,6 @@ import { heldImageNames, heldText } from '../store/store.ts';
 let sourcesExercised = false;
 /** The EXERCISED line of issue #405, once per run. */
 let nudgesExercised = false;
-let startReadingExercised = false;
 /** The EXERCISED line of issue #133, once per run. */
 let awayMergeExercised = false;
 /** The EXERCISED line of issues #143 and #144, once per run. */
@@ -1169,10 +1168,6 @@ export class Session {
       const sr = this.workflow?.startReading;
       if (!sr) return null;
       const text = await sessionStartText(sr, this.store.getSession(this.id), (file) => this.readForStart(file, sr.local));
-      if (text && !startReadingExercised) {
-        startReadingExercised = true;
-        exercisedLine('EXERCISED #469 a start-reading list or its problem added at a session start');
-      }
       return text;
     } catch (e) {
       console.error(`Start-reading list for session ${this.id}: ${(e as Error).message}`);
