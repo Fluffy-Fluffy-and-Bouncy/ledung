@@ -2,7 +2,19 @@
 // Shown to Simon first; using them to decide whether there is room is a later decision.
 import type { TurnResource, TypicalCost } from '../shared/protocol.ts';
 
-export function typicalCosts(turns: (TurnResource & { project: string })[]): TypicalCost[] {
+/**
+ * A turn's CPU figures held at the machine's thread count. Turns recorded before #157 was fixed can
+ * carry a peak far above it (a measuring artefact, see capCores in monitor.ts); they stay in the
+ * database as they are and are held at the limit when read.
+ */
+export function capTurnCores<T extends TurnResource>(t: T, threads: number): T {
+  if (threads <= 0 || (t.peakCores <= threads && t.avgCores <= threads)) return t;
+  return { ...t, peakCores: Math.min(t.peakCores, threads), avgCores: Math.min(t.avgCores, threads) };
+}
+
+/** `threads`: the machine's thread count, which no turn's CPU figure may exceed (#157); 0 holds nothing. */
+export function typicalCosts(rows: (TurnResource & { project: string })[], threads = 0): TypicalCost[] {
+  const turns = rows.map((t) => capTurnCores(t, threads));
   const groups = new Map<string, (TurnResource & { project: string })[]>();
   for (const t of turns) {
     const kinds = t.commands.length ? [...new Set(t.commands)] : [''];

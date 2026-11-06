@@ -164,6 +164,7 @@ export function TypicalCosts() {
     <section>
       <h2>Typical machine use per turn</h2>
       <p className="muted">Last 30 days, sessions only (not managers): what a turn that ran each kind of command usually used. Ledung learns these; they don't decide anything yet.</p>
+      <p className="muted">CPU is in cores (threads) in use, never more than the machine has. Avg CPU: a turn's CPU time over its length, averaged over the turns. Peak CPU: the highest reading in each turn (one every few seconds), averaged over the turns, so it is what a turn's busiest moment usually reaches, not the highest ever seen.</p>
       {!costs ? <p className="muted">Loading…</p> : !costs.length ? <p className="muted">No turns measured yet.</p> : (
         <div className="table-scroll">
           <table className="plain">
