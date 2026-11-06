@@ -442,12 +442,13 @@ test('ledung#159: a fetch cut off midway resumes from where it stopped; one whos
   assert.equal(p.bytes(p.pc).received, sound.length, 'nothing more counted');
 });
 
-test('ledung#159: the sender\'s snapshots and the receiver\'s copies are pruned after board.evidenceDays; a snapshot read to its end goes an hour later', { timeout: HANG_MS }, async () => {
+test('ledung#159: the sender\'s snapshots and the receiver\'s copies are pruned after board.evidenceDays; a snapshot read to its end goes an hour later, not before', { timeout: HANG_MS }, async () => {
   const p = await pair('prune', { board: { evidenceDays: 2 } });
   fs.writeFileSync(path.join(p.alpha, 'a.wav'), wav(1000));
   fs.writeFileSync(path.join(p.alpha, 'b.wav'), wav(1000));
   fs.writeFileSync(path.join(p.alpha, 'c.wav'), wav(1000));
-  // Three snapshots offered; none fetched yet (the PC's fetches are held).
+  fs.writeFileSync(path.join(p.alpha, 'd.wav'), wav(1000));
+  // Four snapshots offered; none fetched yet (the PC's fetches are held).
   const linked = (p.pc.server as unknown as { linked: LinkedComputers }).linked;
   const real = linked.fetchStream.bind(linked);
   let release!: () => void;
@@ -456,28 +457,32 @@ test('ledung#159: the sender\'s snapshots and the receiver\'s copies are pruned 
     await held;
     return real(...a);
   };
-  await p.toPc('pc-beta', 'three', ['a.wav', 'b.wav', 'c.wav']);
+  await p.toPc('pc-beta', 'four', ['a.wav', 'b.wav', 'c.wav', 'd.wav']);
   const rows = p.mac.db.prepare('SELECT id, name FROM linked_outbox').all() as { id: string; name: string }[];
   const byName = (n: string) => rows.find((r) => r.name === n)!.id;
   const day = 86400000;
-  // a: made three days ago (past 2 evidence days); b: read to its end two hours ago; c: fresh, never read.
+  // a: made three days ago (past 2 evidence days); b: read to its end two hours ago; c: fresh, never read; d: read to
+  // its end half an hour ago, inside the hour (test review on PR #175: the near side of FETCHED_KEEP_MS).
   p.mac.db.prepare('UPDATE linked_outbox SET created_at = ? WHERE id = ?').run(Date.now() - 3 * day, byName('a.wav'));
   p.mac.db.prepare('UPDATE linked_outbox SET fetched_at = ? WHERE id = ?').run(Date.now() - 2 * 3600_000, byName('b.wav'));
+  p.mac.db.prepare('UPDATE linked_outbox SET fetched_at = ? WHERE id = ?').run(Date.now() - 1800_000, byName('d.wav'));
   p.mac.manager.linkedOutbox.prune(true);
-  const left = filesIn(p.macOutbox).map((f) => path.basename(f, '.wav'));
-  assert.deepEqual(left, [byName('c.wav')], 'only the fresh one is kept');
+  const left = filesIn(p.macOutbox).map((f) => path.basename(f, '.wav')).sort();
+  assert.deepEqual(left, [byName('c.wav'), byName('d.wav')].sort(), 'the fresh one and the one read half an hour ago are kept');
   const pruned = (p.mac.db.prepare('SELECT name FROM linked_outbox WHERE pruned_at IS NOT NULL ORDER BY name').all() as { name: string }[]).map((r) => r.name);
   assert.deepEqual(pruned, ['a.wav', 'b.wav']);
   release();
-  // a and b are gone on the Mac: their fetches fail with that reason; c arrives.
-  await until(() => p.inbox().filter((t) => /^Ledung: /.test(t)).length === 3 || null, 'three fetch lines');
+  // a and b are gone on the Mac: their fetches fail with that reason; c and d arrive.
+  await until(() => p.inbox().filter((t) => /^Ledung: /.test(t)).length === 4 || null, 'four fetch lines');
+  assert.ok(p.inbox().some((t) => /^Ledung: d\.wav .* is here/.test(t)), p.inbox().join('\n'));
   assert.ok(p.inbox().some((t) => /^Ledung: a\.wav .* could not be fetched: .*answered 404: a\.wav is no longer kept here/.test(t)), p.inbox().join('\n'));
   const cLine = p.inbox().find((t) => /^Ledung: c\.wav .* is here/.test(t))!;
-  // The receiver's copy: three days old with 2 evidence days, pruned; save_linked_file then says so.
+  // The receiver's copy of c: three days old with 2 evidence days, pruned; save_linked_file then says so. d's is fresh, kept.
   const cId = handleOf(cLine, 'c.wav')!.slice(7, 23);
   p.pc.db.prepare('UPDATE linked_files SET received_at = ? WHERE id = ?').run(Date.now() - 3 * day, cId);
-  assert.equal(filesIn(p.pcFiles).filter((f) => f.endsWith('.wav')).length, 1);
+  assert.equal(filesIn(p.pcFiles).filter((f) => f.endsWith('.wav')).length, 2);
   p.pc.manager.linkedFiles.prune(true);
-  assert.deepEqual(filesIn(p.pcFiles).filter((f) => f.endsWith('.wav')), []);
+  assert.equal(filesIn(p.pcFiles).filter((f) => f.endsWith('.wav')).length, 1);
+  assert.ok(!filesIn(p.pcFiles).some((f) => f.includes(cId)), "c's copy is gone");
   assert.throws(() => management(p.pc).saveLinkedFile('pc-beta', handleOf(cLine, 'c.wav')!, 'pc-worker', 'c.wav'), /c\.wav was pruned/);
 });
