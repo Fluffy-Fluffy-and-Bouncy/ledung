@@ -64,13 +64,13 @@ export function pathProblem(rel: string, kind: LinkedKind): string | string[] {
 /**
  * Saves `bytes` (already checked against what was sent) at `rel` inside the worktree `root`. Missing folders are made
  * one at a time, never through a link. Throws a FileError with the reason; on a refusal nothing is left behind.
- * `hooks.beforePlace` is for tests: a step between writing the bytes and putting them in place, where a folder on the
- * way can be swapped for a link.
+ * `hooks` are for tests: `beforePlace` a step between writing the bytes and the second walk, `beforeLink` one between
+ * the second walk and putting the file in place, where a folder on the way can be swapped for a link.
  *
  * A streamed copy (issue #159) comes as its file and SHA-256 instead: copied, never read whole, and the copy hashed
  * before it goes in place, so what lands is the bytes that were checked when they came.
  */
-export function saveIntoWorktree(root: string, rel: string, kind: LinkedKind, bytes: Buffer | { file: string; sha: string }, rules: SaveRules, hooks: { beforePlace?: (target: string) => void } = {}): Saved {
+export function saveIntoWorktree(root: string, rel: string, kind: LinkedKind, bytes: Buffer | { file: string; sha: string }, rules: SaveRules, hooks: { beforePlace?: (target: string) => void; beforeLink?: (target: string) => void } = {}): Saved {
   const checked = pathProblem(rel, kind);
   if (typeof checked === 'string') throw new FileError(checked);
   const parts = checked;
@@ -92,9 +92,13 @@ export function saveIntoWorktree(root: string, rel: string, kind: LinkedKind, by
     if (re.test(inside) || re.test(full) || re.test(full.split(path.sep).join('/'))) throw new FileError(`${inside} matches the sensitive path pattern /${p}/; Ledung saves no file there.`);
   }
   if (SECRET_RUNTIME_PATTERN.test(full)) throw new FileError(`${inside} is where Ledung keeps locked secrets; Ledung saves no file there.`);
-  // within compares real paths where they exist, so a link to a locked folder can't hide it.
-  const locked = (at: string) => rules.refused.some((f) => within(f, at));
-  if (locked(realRoot) || locked(full)) throw new FileError(`${inside} is in a locked project's folder; Ledung saves no file there.`);
+  // within compares real paths where they exist, so a link to a locked folder can't hide it. It takes them with the JS
+  // realpath, which keeps an 8.3 name as typed (C:\Users\RUNNER~1) where the worktree's real path above has the long
+  // one; so both sides are also taken in the native form, and compared without case where the disk ignores it
+  // (Windows CI on PR #172: a save into a locked folder went through).
+  const locked = (at: string) => rules.refused.some((f) => within(f, at) || nativeWithin(f, at));
+  // The full path only: it is inside the worktree, so a worktree inside a locked folder is refused by it too.
+  if (locked(full)) throw new FileError(`${inside} is in a locked project's folder; Ledung saves no file there.`);
 
   // Every folder on the way and the name itself: no link or junction (Node reports a junction as one), each folder a
   // folder; with `create`, a missing folder is made, on its own, so nothing is made through a link either.
@@ -149,6 +153,7 @@ export function saveIntoWorktree(root: string, rel: string, kind: LinkedKind, by
     hooks.beforePlace?.(target);
     // Walked again just before the file goes in place: a folder swapped for a link since is refused (PR #89, finding 4).
     walk(false);
+    hooks.beforeLink?.(target);
     // A hard link fails if anything is at the name, a dangling link included; a rename would replace it.
     try {
       fs.linkSync(temp, target);
@@ -174,7 +179,9 @@ export function saveIntoWorktree(root: string, rel: string, kind: LinkedKind, by
   }
   fs.rmSync(temp, { force: true });
   // Where it really is, once more: a folder swapped for a link between the second walk and the link put it elsewhere.
-  // Then it is taken away again (through the same link, so from where it went) and refused.
+  // Then it is taken away again (through the same link, so from where it went) and refused. Path calls can't close the
+  // last instant: a folder swapped and swapped back before this check leaves the new file (never over another) where
+  // the link pointed, and the save is refused (review of PR #172); only a process racing inside the worktree can.
   let landed: string | null = null;
   try {
     landed = fs.realpathSync.native(target);
@@ -207,4 +214,27 @@ function hashFile(file: string): { size: number; sha: string } {
     fs.closeSync(fd);
   }
   return { size, sha: hash.digest('hex') };
+}
+
+/** The native real path of `p`'s nearest folder that is there, with the rest as given: long names, case on disk. */
+function nativeReal(p: string): string {
+  const rest: string[] = [];
+  let at = path.resolve(p);
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync.native(at), ...rest.reverse());
+    } catch {
+      const up = path.dirname(at);
+      if (up === at) return path.resolve(p);
+      rest.push(path.basename(at));
+      at = up;
+    }
+  }
+}
+
+/** Is `inner` the folder `outer` or inside it, both in their native real form; without case on macOS and Windows. */
+function nativeWithin(outer: string, inner: string): boolean {
+  const fold = (s: string) => (process.platform === 'darwin' || process.platform === 'win32' ? s.normalize('NFC').toLowerCase() : s);
+  const rel = path.relative(fold(nativeReal(outer)), fold(nativeReal(inner)));
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
