@@ -10,6 +10,8 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-06
+- Away mode: a merge that names no repository (no `-R owner/name`, no PR link) is now always held for you, so `GH_REPO`, `GH_HOST` or the folder the session stands in can never decide which pull request gets merged. (#148)
+- Away log and morning report: an allowed away merge now shows the repository it was merged in, from GitHub's link, and the exact command that ran. (#149)
 - What you said yes to covers only the session's own calls, never one of its subagents': a merge you agreed to in an answer or typed words, a Settings action you asked for, and an order. A subagent's identical call is asked as usual and doesn't use up your word or a once-order. (#150)
 - Linked computers: a manager can send up to five files from its project folder (PNG or JPEG screenshots up to 5 MB, `.txt`, `.log` or `.md` text up to 512 KB) with a message to a manager on another of your computers, without waiting for you. That manager gets text inline and screenshots it can put in its questions and reviews. Files are refused, with nothing sent, if they lie outside the folder, are on a sensitive path, hold a secret, are too large or come six at a time, and always to or from a locked project. Settings → Linked computers shows the file bytes sent and received per computer, today and this month. (#158)
 - Usage: CPU figures per session, per turn and in "Typical machine use per turn" no longer read more cores than the machine has threads (a 12-thread PC showed a Peak CPU of 26); turns already recorded are held at the limit when shown, and the page says what Avg and Peak CPU mean. (#157)
