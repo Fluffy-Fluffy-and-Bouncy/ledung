@@ -39,6 +39,8 @@ export interface LinkedPort {
   sendBytes?(id: string, route: string, query: Record<string, string>, bytes: Buffer): Promise<Record<string, unknown>>;
   /** A streamed file's bytes from byte `from` on (issue #159); left out: none can be fetched. */
   fetchStream?(id: string, route: string, query: Record<string, string>, from: number, idleMs: number): Promise<{ body: IncomingMessage; start: number }>;
+  /** The relay caps this computer's owner (issue #161): the sentence file sends are refused with; null or left out: not capped. */
+  relayCap?(): string | null;
 }
 
 /** The EXERCISED line of issue #159, once per run. */
@@ -1240,6 +1242,9 @@ ${note}`);
     if (fromLocked) throw new ManagementError(`Not sent: the project "${project}" is locked, so its manager sends no files to other computers.`);
     if (names.length > MAX_ATTACHMENTS) throw new ManagementError(`Not sent: at most ${MAX_ATTACHMENTS} files per message, and this one has ${names.length}.`);
     if (!this.ctx.outgoingFiles || !port.sendBytes) throw new ManagementError('Not sent: files can\'t be sent to other computers from here.');
+    // Past the relay's monthly cap (issue #161; Martin, question #632): refused before a byte leaves, the message too.
+    const capped = port.relayCap?.();
+    if (capped) throw new ManagementError(capped);
     const files = this.ctx.outgoingFiles(fromId, names);
     // The same file named twice goes once: a pushed one by its content, a streamed one by where it really is.
     const key = (f: OutgoingFile | OutgoingStream) => ('streamed' in f ? `file:${f.real}` : `sha:${f.sha}`);
