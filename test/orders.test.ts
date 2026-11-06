@@ -288,12 +288,8 @@ test("#150: a subagent's identical call is not covered by the order and does not
   const worker = await t.hooksOf('w1');
   const sub = { agent_id: 'agent-1' };
   assert.equal(await worker.decide(DEPLOY, 'sub-1', {}, sub), null, "a subagent's call: not allowed");
-  // Away with the kind off: a subagent's call does not refuse the order either; it is not the subagent's to settle.
-  t.goAway(['merge']);
-  assert.equal(await worker.decide(DEPLOY, 'sub-2', {}, sub), null, "a subagent's call while away: not allowed");
-  t.away.stop();
   const order = t.store.getOrder(1)!;
-  assert.deepEqual([order.status, order.runs, order.note], ['open', 0, null], 'not taken, not refused');
+  assert.deepEqual([order.status, order.runs, order.note], ['open', 0, null], 'not taken');
   // In the manager as well.
   const manager = await t.hooksOf('mgr');
   assert.equal(await manager.decide(DEPLOY, 'msub', {}, sub), null, 'a subagent of the manager: not allowed');
@@ -301,6 +297,19 @@ test("#150: a subagent's identical call is not covered by the order and does not
   assert.equal(await worker.decide(DEPLOY, 'own'), 'allow', "the session's own call");
   await worker.ran('own');
   assert.equal(t.store.getOrder(1)!.status, 'done');
+  // An order recorded while away, with the kind off: a subagent's call does not refuse it; it is not the subagent's to
+  // settle (test review of PR #166, finding 1: recorded before the away period, the refusal branch is never reached).
+  t.goAway(['merge']);
+  await t.management.startSession('mgr', { task: 'Deploy again.', order: { command: DEPLOY, question: t.agreed(DEPLOY) } });
+  const second = await t.hooksOf('w2');
+  assert.equal(await second.decide(DEPLOY, 'sub-away', {}, sub), null, "a subagent's call while away: not allowed");
+  const held = t.store.getOrder(2)!;
+  assert.deepEqual([held.status, held.runs, held.note], ['open', 0, null], 'not refused by the subagent');
+  // The positive branch: the session's own call is held and does refuse it.
+  assert.equal(await second.decide(DEPLOY, 'own-away'), null, "the session's own call while away: held");
+  assert.equal(t.store.getOrder(2)!.status, 'refused');
+  assert.match(t.store.getOrder(2)!.note!, /order #2 was recorded while Simon was away/);
+  t.away.stop();
 });
 
 test("a once-order whose run never reported back (a restart, the session's end) waits on the person's word, with why", async () => {

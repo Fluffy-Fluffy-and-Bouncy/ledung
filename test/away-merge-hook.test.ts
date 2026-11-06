@@ -548,6 +548,8 @@ test("#150: a merge the person agreed to in their words is not a subagent's to r
   const own = await t.mgr.hook(MERGE, 'own');
   assert.equal(own.decision, 'allow', "the manager's own call");
   assert.match(own.reason, /Martin said yes to merging #2264 in what they typed/);
+  // The events probe above finds the note when there is one (test review of PR #166, finding 2).
+  assert.ok(t.mgr.events().some((e) => e.startsWith('Merge of #2264 allowed')), "the manager's own merge is noted as allowed");
 });
 
 test("#146: a subagent's refusal of a call the manager's open question already asks about is asked on its own", async () => {
