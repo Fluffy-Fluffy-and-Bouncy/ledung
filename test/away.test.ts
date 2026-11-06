@@ -9,7 +9,7 @@ import { Management } from '../src/sessions/management.ts';
 import { Session } from '../src/sessions/session.ts';
 import { SessionManager } from '../src/sessions/manager.ts';
 import { parseConfig } from '../src/config.ts';
-import { Away, awayLine, backText, classify, decide, shipCore, SHIP_FORM, droppedText, floorsOf, formatLog, periodText, promptAwayLine, ranOutText, untilFromHHMM, words, type ViewPr } from '../src/sessions/away.ts';
+import { Away, awayLine, backText, classify, decide, shipCore, SHIP_FORM, droppedText, floorsOf, formatLog, orderedMergeFloors, periodText, promptAwayLine, ranOutText, untilFromHHMM, words, type ViewPr } from '../src/sessions/away.ts';
 import type { AwayInfo, ServerEvent } from '../src/shared/protocol.ts';
 import { refuseRealSignInStores } from './signin-stores.ts';
 
@@ -151,15 +151,35 @@ test('decide: a merge whose floors pass is allowed, and GitHub is asked about th
 });
 
 test('decide: a floor that fails holds the merge for Martin, with the reason', async () => {
-  const d = await decide(AWAY, 'Martin', 'gh pr merge 31', null, view(pr({ statusCheckRollup: [run('ci', 'IN_PROGRESS')] })));
+  const d = await decide(AWAY, 'Martin', 'gh pr merge 31 -R o/r', null, view(pr({ statusCheckRollup: [run('ci', 'IN_PROGRESS')] })));
   assert.equal(d.allowed, false);
   assert.equal(d.reason, 'held for Martin: checks still running: ci');
 });
 
 test('decide: a PR GitHub does not answer for is held', async () => {
-  const d = await decide(AWAY, 'Martin', 'gh pr merge 31', null, async () => ({ error: 'gh did not answer within 20 s' }));
+  const d = await decide(AWAY, 'Martin', 'gh pr merge 31 -R o/r', null, async () => ({ error: 'gh did not answer within 20 s' }));
   assert.equal(d.allowed, false);
   assert.match(d.reason, /PR #31 could not be read \(gh did not answer within 20 s\)/);
+});
+
+test('#148: decide and an ordered merge while away hold a merge that names no repository without asking GitHub; one with -R or a link is read', async () => {
+  // Martin, Ledung question #621: "a — Ready, always hold": a merge without -R or a full PR link.
+  for (const command of ['gh pr merge 31', 'gh pr merge 31 --squash --delete-branch']) {
+    const v = view(pr());
+    for (const d of [await decide(AWAY, 'Martin', command, null, v), (await orderedMergeFloors('Martin', command, v))!]) {
+      assert.equal(d.allowed, false, command);
+      assert.equal(d.reason, "held for Martin: the merge names no repository, so which PR #31 it is depends on the session's environment; name it with -R owner/name or the PR's link");
+      assert.deepEqual([d.pr, d.repo, d.floors.map((f) => [f.floor, f.ok])], [31, null, [['named', false]]]);
+    }
+    assert.equal(v.calls.length, 0, 'GitHub not asked');
+  }
+  // The positive branch: named either way, the floors are read and the merge is allowed.
+  for (const command of ['gh pr merge 31 -R o/r', 'gh pr merge https://github.com/o/r/pull/31']) {
+    const v = view(pr());
+    assert.equal((await decide(AWAY, 'Martin', command, null, v)).allowed, true, command);
+    assert.equal((await orderedMergeFloors('Martin', command, v))!.allowed, true, command);
+    assert.deepEqual(v.calls.map((c) => c.slice(0, 2)), [[31, 'o/r'], [31, 'o/r']]);
+  }
 });
 
 test('decide: a kind Martin did not allow is held without asking GitHub', async () => {
@@ -209,9 +229,9 @@ test('away_log: what was allowed and held, per manager, since the period began',
   const store = new Store(openDatabase(':memory:'));
   const away = new Away(store, () => {});
   const a = away.start('08:00', ['merge', 'devShip']);
-  away.record('mgr', 'gh pr merge 31', await decide(a, 'Martin', 'gh pr merge 31', null, view(pr())));
-  away.record('mgr', 'gh pr merge 32', await decide(a, 'Martin', 'gh pr merge 32', null, view(pr({ mergeable: 'CONFLICTING' }))));
-  away.record('other-mgr', 'gh pr merge 33', await decide(a, 'Martin', 'gh pr merge 33', null, view(pr())));
+  away.record('mgr', 'gh pr merge 31 -R o/r', await decide(a, 'Martin', 'gh pr merge 31 -R o/r', null, view(pr())));
+  away.record('mgr', 'gh pr merge 32 -R o/r', await decide(a, 'Martin', 'gh pr merge 32 -R o/r', null, view(pr({ mergeable: 'CONFLICTING' }))));
+  away.record('other-mgr', 'gh pr merge 33 -R o/r', await decide(a, 'Martin', 'gh pr merge 33 -R o/r', null, view(pr())));
   const log = away.log('mgr');
   assert.equal(log.since, a.since);
   assert.deepEqual(log.records.map((r) => [r.pr, r.allowed]), [[31, true], [32, false]]);
@@ -279,7 +299,7 @@ test("while away, a manager's merge with every floor passing runs with no prompt
 test('while away, a merge that fails a floor is the same prompt to Martin as always, with the reason', async () => {
   const t = sessionSetup('manager', pr({ statusCheckRollup: [run('ci', 'COMPLETED', 'FAILURE')] }));
   t.away.start(later(), ['merge']);
-  assert.equal(await t.settle(t.ask('gh pr merge 31')), 'waiting');
+  assert.equal(await t.settle(t.ask('gh pr merge 31 -R o/r')), 'waiting');
   const [p] = t.store.pendingPermissions();
   assert.equal(p!.addressedTo, 'user');
   assert.ok(p!.sensitive);
@@ -332,7 +352,7 @@ test("while away, a request re-sent after a restart stays the prompt already on 
 test("Back pressed while GitHub is being asked: the merge is held for Martin, not run", async () => {
   const t = sessionSetup('manager', pr(), { onView: (away) => away.end() });
   t.away.start(later(), ['merge', 'devShip']);
-  assert.equal(await t.settle(t.ask('gh pr merge 31')), 'waiting');
+  assert.equal(await t.settle(t.ask('gh pr merge 31 -R o/r')), 'waiting');
   assert.equal(t.viewed.length, 1, 'GitHub was asked while away');
   const prompts = t.store.pendingPermissions();
   assert.equal(prompts.length, 1);
