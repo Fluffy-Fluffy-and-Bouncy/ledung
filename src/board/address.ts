@@ -101,16 +101,17 @@ export function tokenLike(text: string): string | null {
 
 /**
  * A word like "secret" or "API_KEY" given a value of 8+ characters. Not when the "value" is plain prose (issue #163:
- * "nothing secret: attachment test" was refused): a colon and a space, then a word of letters only, then more words
- * on the same line. Anything else is refused as before: `=`, no space after the colon, quotes, digits or symbols in
- * the value, or the value alone at the end of the line.
+ * "nothing secret: attachment test" was refused): a colon and a space, then a word of small letters (a capital only
+ * first), then more words on the same line. Anything else is refused as before: `=`, no space after the colon,
+ * quotes, digits, symbols or capitals inside the value (PR #182 review: a letters-only mixed-case key), or the value
+ * alone at the end of the line.
  */
 let exercised163 = false;
 function assignsSecret(text: string): boolean {
   const re = /\b(?:password|passwd|secret|api[_-]?key|token)\s*([:=])(\s*)(\S{8,})/gi;
   for (const m of text.matchAll(re)) {
     const rest = text.slice(m.index + m[0].length);
-    const prose = m[1] === ':' && /^[ \t]+$/.test(m[2] ?? '') && /^\p{L}+(?:['’-]\p{L}+)*[.,;!?]?$/u.test(m[3] ?? '') && /^[ \t]+\p{L}/u.test(rest);
+    const prose = m[1] === ':' && /^[ \t]+$/.test(m[2] ?? '') && /^\p{Lu}?\p{Ll}+(?:['’-]\p{Ll}+)*[.,;!?]?$/u.test(m[3] ?? '') && /^[ \t]+\p{L}/u.test(rest);
     if (!prose) return true;
     if (!exercised163) {
       exercised163 = true;

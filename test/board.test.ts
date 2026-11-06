@@ -579,6 +579,8 @@ test('the secret-word rule (#163): plain prose after "secret:" passes, posts and
     'the token: remember, everything stays local',
     'Password: anything that looks like one is refused',
     'api_key: rotated yesterday, see the issue',
+    'Secret: Absolutely nothing here', // a capital at the start of a word is prose
+    'secret: lösenordet är hemligt',
   ];
   for (const text of prose) {
     assert.equal(tokenLike(text), null, text);
@@ -596,6 +598,12 @@ test('the secret-word rule (#163): plain prose after "secret:" passes, posts and
     'passwd: s3cr3t-value here',
     'export SECRET=letmeinplease',
     'nothing secret: attachment test\ntoken: Ab12Cd34Ef56',
+    // Review round 1 (test review, PR #182): each meets every prose condition but one.
+    'API_KEY= abcdefghijkl more words', // `=`, never prose
+    'secret: abcdefghijkl\nnext line', // the words that follow are on another line
+    // Review round 1 (code review Minor 1): letters only, but capitals inside, which a prose word never has.
+    'Password: AbCdEfGhIjKlMnOpQrStUvWxYzAbCdEfGh used here',
+    'secret: SuperSecretValue more',
   ];
   for (const text of keys) {
     assert.equal(tokenLike(text), 'a password or key assignment', text);
