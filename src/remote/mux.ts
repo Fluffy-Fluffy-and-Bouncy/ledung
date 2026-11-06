@@ -139,6 +139,16 @@ export class Streams {
     return this.streams.has(id);
   }
 
+  /**
+   * Whether stream `id`'s socket must stay paused: held by the throttle or by a backed-up agent socket. Their releases
+   * resume it, so whoever attached a paused socket resumes it only when this is false (issue #161, round 2: the relay
+   * resumed it unconditionally, undoing a hold its first bytes had set, and the upload then ran unthrottled).
+   */
+  holding(id: number): boolean {
+    const stream = this.streams.get(id);
+    return !!stream && (stream.heldIn || this.waiting);
+  }
+
   /** Carries a socket as stream `id`; `first` are bytes already read from it (the relay's request head). */
   attach(id: number, socket: Duplex, first?: Buffer): void {
     const stream: Stream = { socket, sentEnd: false, gotEnd: false, sentPause: false, peerPaused: false, heldIn: false, heldOut: false };

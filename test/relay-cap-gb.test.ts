@@ -10,13 +10,19 @@ test('ledung#161: a GB figure typed in the cap field becomes bytes at 1024³ a G
   assert.equal(capFromGb('2'), 2_147_483_648);
   assert.equal(capFromGb('0.5'), 536_870_912);
   assert.equal(capFromGb(' 10 '), 10_737_418_240);
-  assert.equal(capFromGb('1000000'), 1_073_741_824_000_000, 'a petabyte-sized cap, the relay\'s ceiling is 10¹⁵');
+  // The relay takes caps up to 10¹⁵ bytes: 931 322 GB is 999 999 383 011 328 bytes, 931 323 GB is 1 000 000 456 753 152.
+  assert.equal(capFromGb('931322'), 999_999_383_011_328, 'just under the relay\'s ceiling');
+  assert.equal(capFromGb('931323'), null, 'just over it: Set cap stays off');
+  assert.equal(capFromGb('1000000'), null, 'a million GB is 1.07 × 10¹⁵ bytes, over the ceiling (code review of PR #173, round 2)');
   // 0.001 GB = 1 073 741.824 bytes, rounded to whole bytes.
   assert.equal(capFromGb('0.001'), 1_073_742);
 });
 
 test('ledung#161: what is not a number above 0 sets no cap, and a number does', () => {
-  for (const text of ['', '   ', '0', '-1', 'abc', '1e400', 'NaN']) assert.equal(capFromGb(text), null, JSON.stringify(text));
+  // 0.0000000001 GB is 0.107… bytes, which rounds to none (code review of PR #173, round 2).
+  for (const text of ['', '   ', '0', '-1', 'abc', '1e400', 'NaN', '0.0000000001']) assert.equal(capFromGb(text), null, JSON.stringify(text));
+  // 0.000000001 GB is 1.07… bytes: one byte, the smallest cap.
+  assert.equal(capFromGb('0.000000001'), 1);
   assert.equal(capFromGb('3'), 3 * 1_073_741_824, 'the positive branch');
 });
 

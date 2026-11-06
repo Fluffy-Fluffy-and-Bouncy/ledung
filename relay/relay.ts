@@ -1224,7 +1224,8 @@ export class Relay {
     agent.nextId = agent.nextId >= 0xffffffff ? 1 : agent.nextId + 1;
     agent.ws.send(encodeFrame(FRAME.open, id));
     agent.streams.attach(id, socket, first);
-    socket.resume();
+    // The first bytes may already have put the stream on hold (the throttle, #161); its release resumes it then.
+    if (!agent.streams.holding(id)) socket.resume();
   }
 
   /**

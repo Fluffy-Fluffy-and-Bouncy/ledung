@@ -39,11 +39,12 @@ function tempDir(): string {
 
 const BOBS_LAPTOP = 'secret of bob\'s laptop 0123456789';
 
-async function startRelay(opts: { usage?: string | null; now?: () => number; usageEveryMs?: number; bobsLaptop?: boolean } = {}) {
+async function startRelay(opts: { usage?: string | null; now?: () => number; usageEveryMs?: number; bobsLaptop?: boolean; shippedRate?: boolean } = {}) {
   const lines: string[] = [];
   const config = parseRelayConfig({
     port: await freePort(), bind: '127.0.0.1', adminKeySha256: hashSecret(ADMIN_KEY),
-    limits: { capThrottleBytesPerSecond: RATE },
+    // shippedRate: the relay's own default, as it ships (test review of PR #173, round 2).
+    ...(opts.shippedRate ? {} : { limits: { capThrottleBytesPerSecond: RATE } }),
     agents: [
       { name: 'mine', owner: 'Martin', host: 'mine.relay.test', secretSha256: hashSecret(MINE) },
       { name: 'bobpc', owner: 'Bob', host: 'bob.relay.test', secretSha256: hashSecret(BOBS) },
@@ -67,7 +68,7 @@ async function startRelay(opts: { usage?: string | null; now?: () => number; usa
   };
   const owner = async (name: string) => (await owners()).owners.find((o) => o.owner === name)!;
   const setCap = (name: string, cap: number | null) => call('POST', `/admin/owners/${encodeURIComponent(name)}/cap`, { cap });
-  return { relay, port, lines, call, owners, owner, setCap };
+  return { relay, port, lines, call, owners, owner, setCap, config };
 }
 
 async function waitFor(what: string, ok: () => boolean, ms = WAIT_MS): Promise<void> {
@@ -239,6 +240,24 @@ test('ledung#161: a capped owner\'s computers are each held to the rate on their
     assert.ok(x.ms >= own - AHEAD_MS, `${name} is held to the rate (${x.ms} ms)`);
     assert.ok(x.ms < 2 * own - AHEAD_MS, `${name} has the whole rate, not half of one shared with the other (${x.ms} ms, shared it would be at least ${2 * own - AHEAD_MS} ms)`);
   }
+});
+
+test('ledung#161: at the rate the relay ships with, 64 KiB/s, an upload is held to it, also when its first bytes already put it on hold', T, async () => {
+  const r = await startRelay({ shippedRate: true });
+  // 64 KiB/s by default, from the issue's refine notes.
+  const SHIPPED = 64 * 1024;
+  assert.equal(r.config.limits.capThrottleBytesPerSecond, SHIPPED);
+  const t = await target();
+  const bob = await tunnel(r.port, 'bobpc', BOBS, t.port);
+  assert.equal((await r.setCap('Bob', 1)).status, 200);
+  await transfer(r.port, 'bob.relay.test', Buffer.alloc(10));
+  await waitFor('Bob\'s Ledung to be told', () => !!bob.status().relayCap);
+  // The relay's first read of a connection (its head and up to 64 KiB of body) is a second's worth at this rate, so the
+  // stream is put on hold as it is opened; that hold must last (round 2: the relay resumed the socket right after).
+  const ahead = 1000 + ((64 * 1024) / SHIPPED) * 1000 + 500;
+  const slow = await transfer(r.port, 'bob.relay.test', Buffer.alloc(BIG, 6));
+  assert.deepEqual(slow.answer, ANSWER, 'throttled, not refused');
+  assert.ok(slow.ms >= (BIG / SHIPPED) * 1000 - ahead, `held to the shipped rate (${slow.ms} ms, at least ${(BIG / SHIPPED) * 1000 - ahead} ms)`);
 });
 
 test('ledung#161: the counts and caps survive a restart, and are written about once a minute without one', T, async () => {
