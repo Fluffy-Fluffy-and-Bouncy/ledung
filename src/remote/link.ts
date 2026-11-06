@@ -38,7 +38,7 @@ function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> 
 /** What the link needs of the server (LedungServer). */
 export interface RemoteServer {
   setPublicName(name: string | null, tunnelTls: { dir: string; required: boolean } | null): void;
-  tunnelConnection(): Duplex;
+  tunnelConnection(sender?: (host: string) => void): Duplex;
   setChallenge(pair: { key: Buffer; cert: Buffer } | null): void;
   loadCertificate(): void;
   setCertificate(status: CertificateStatus): void;
@@ -184,7 +184,7 @@ export class RemoteLink {
       server.setCertificate(certificates.get());
     }
     this.certificates = certificates;
-    const tunnel: Tunnel = new Tunnel({ ...remote, connect: () => server.tunnelConnection(), onStatus: (status) => {
+    const tunnel: Tunnel = new Tunnel({ ...remote, connect: (sender) => server.tunnelConnection(sender), onStatus: (status) => {
       if (this.tunnel !== tunnel) return;
       server.setRemote(status);
       certificates?.setConnected(status.state === 'connected');

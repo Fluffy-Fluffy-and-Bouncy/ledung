@@ -1176,6 +1176,11 @@ export interface RemoteStatus {
    * `resetsOn` (YYYY-MM-DD, UTC). Null or absent: not capped.
    */
   relayCap?: { resetsOn: string } | null;
+  /**
+   * On the relay admin's own computers (issue #176): the public names of linked computers whose owner is past their
+   * monthly cap, whose files are refused here until `resetsOn`. Absent: none.
+   */
+  cappedSenders?: { hosts: string[]; resetsOn: string } | null;
 }
 
 /**

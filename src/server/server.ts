@@ -7,6 +7,7 @@ import os from 'node:os';
 import tls from 'node:tls';
 import path from 'node:path';
 import { type Duplex, duplexPair } from 'node:stream';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { appDir, appVersion, PACKAGED } from '../platform/paths.ts';
 import { readRepository, sourceOffer } from './source.ts';
@@ -37,7 +38,7 @@ import type { UsagePublisher } from '../usage/publisher.ts';
 import type { Shortcuts } from '../platform/shortcuts.ts';
 import { LinkError, LinkedComputers } from '../remote/linked.ts';
 import { LinkedFileError } from '../remote/linked-files.ts';
-import { relayCapSentence } from '../remote/tunnel.ts';
+import { relayCapSenderSentence, relayCapSentence } from '../remote/tunnel.ts';
 import { MAX_IMAGE_BYTES } from '../board/attachments.ts';
 import { ManagementError, type SettingsPort } from '../sessions/management.ts';
 import { waitingCount } from '../shared/waiting.ts';
@@ -46,6 +47,8 @@ import { waitingCount } from '../shared/waiting.ts';
 const LINK_PER_MINUTE = 60;
 /** The largest request body on /link/ (#245): a message is at most a few thousand characters. */
 const LINK_MAX_BODY = 16 * 1024;
+/** A tunnel stream's way to tell the relay who it comes from, across the TLS server (issue #176; tunnelConnection). */
+const tunnelSender = new AsyncLocalStorage<((host: string) => void) | undefined>();
 /** /link/file's own limit (issue #158): one file, the largest an attachment may be (an image, 5 MB). */
 const LINK_FILE_MAX_BODY = MAX_IMAGE_BYTES;
 
@@ -222,6 +225,11 @@ export class LedungServer {
   private readonly opts: ServerOptions;
   /** The tunnel to the relay (issue #160); null: none is configured. */
   private remote: RemoteStatus | null = null;
+  /**
+   * Per socket through the tunnel, how to tell the relay which linked computer its requests come from (issue #176):
+   * the stream itself for a plain connection, the TLS socket ended here for an encrypted one.
+   */
+  private readonly tunnelSenders = new WeakMap<object, (host: string) => void>();
   /** The certificate for TLS through the tunnel (issue #201); null: no tunnelTls option. */
   private certificate: CertificateFiles | null = null;
   /**
@@ -443,8 +451,11 @@ export class LedungServer {
    * Its first byte says which server it goes to (issue #201, docs/steps/relay-e2e.md 3a): a TLS handshake to the
    * TLS server, which ends the encryption here with the certificate in remoteDir(); anything else to the plain one,
    * from a relay that still ends TLS itself, unless tunnelTls.required closes it.
+   *
+   * `sender`: tells the relay which linked computer the stream comes from, once a request on it carries a linked key
+   * (issue #176), so a capped owner's computer is held to the throttle.
    */
-  tunnelConnection(): Duplex {
+  tunnelConnection(sender?: (host: string) => void): Duplex {
     const plain = this.servers[0];
     if (!plain) throw new Error('Ledung is not listening yet.');
     const [ours, theirs] = duplexPair();
@@ -455,6 +466,7 @@ export class LedungServer {
     ours.once('close', () => theirs.destroy());
     theirs.once('close', () => ours.destroy());
     this.guard.markTunnel(ours);
+    if (sender) this.tunnelSenders.set(ours, sender);
     if (!this.certificate) {
       plain.emit('connection', ours);
       return theirs;
@@ -475,7 +487,9 @@ export class LedungServer {
       ours.unshift(head);
       if (hello?.state === 'hello' && hello.alpn.includes(ACME_TLS)) this.toChallenge(ours, hello.sni);
       // One the parser refuses goes on as before, and Node's own TLS decides (issue #201).
-      else if (hello) this.toTls(ours);
+      // The TLS server makes its own socket for the stream and names no way back to it: the sender rides along in the
+      // async context the TLS socket is made in, and its secureConnection takes it from there (issue #176).
+      else if (hello) tunnelSender.run(sender, () => this.toTls(ours));
       else if (this.tunnelTls?.required) {
         this.setTlsProblem('A plain connection came through the relay and was closed: "tls" is "required", so the relay must pass encrypted connections through instead of ending TLS itself.');
         ours.destroy();
@@ -556,6 +570,8 @@ export class LedungServer {
         // Behind TLS, req.socket is the TLSSocket and not the marked stream under it: mark it too, before any
         // request on it is read (review finding 4a of PR #198, proven by spike #199).
         this.guard.markTunnel(socket);
+        const sender = tunnelSender.getStore();
+        if (sender) this.tunnelSenders.set(socket, sender);
         // To the listening plain server, whose request-head and request limits only a listening server keeps
         // (review 201, finding 1: a server that never listens let a dribbled head hold a stream forever).
         const plain = this.servers[0];
@@ -830,6 +846,10 @@ export class LedungServer {
     const route = url.pathname;
     const linked = this.linked;
     if (!remote || !(req.socket as tls.TLSSocket).encrypted || !linked || req.method !== 'POST') throw new HttpError(404, 'Not found.');
+    // Which linked computer this stream comes from, told to the relay before any body is read (issue #176): a capped
+    // owner's computer is held to the throttle from then on, whatever its own Ledung does.
+    const caller = linked.byKey(req.headers.authorization);
+    if (caller) this.tunnelSenders.get(req.socket)?.(caller.publicName);
     const from = () => {
       const computer = linked.byKey(req.headers.authorization);
       if (!computer) throw new LinkError(401, 'Not a linked computer.');
@@ -945,8 +965,8 @@ export class LedungServer {
    * it. The key first, then the rate, then the body with its own limit: the header when there is one, the bytes as they
    * are read otherwise. What the bytes are (kind, size, SHA-256) is in the query and checked against them.
    */
-  private async linkFile(req: IncomingMessage, url: URL, from: () => { id: string }): Promise<{ id: string }> {
-    let computer: { id: string };
+  private async linkFile(req: IncomingMessage, url: URL, from: () => { id: string; publicName: string }): Promise<{ id: string }> {
+    let computer: { id: string; publicName: string };
     try {
       computer = from();
     } catch (e) {
@@ -956,6 +976,9 @@ export class LedungServer {
     // This computer's owner is past the relay's monthly cap (issue #161): no file comes in, messages still do.
     const capped = this.relayCap(false);
     if (capped) throw new HttpError(429, capped);
+    // The sending computer's owner is past it (issue #176): the relay told this Ledung, on the admin's own computers.
+    const senders = this.remote?.cappedSenders;
+    if (senders?.hosts.includes(computer.publicName)) throw new HttpError(429, relayCapSenderSentence(senders.resetsOn));
     if (!(req.headers['content-type'] ?? '').startsWith('application/octet-stream')) throw new HttpError(415, 'Send the file\'s bytes.');
     if (Number(req.headers['content-length'] ?? 0) > LINK_FILE_MAX_BODY) throw new HttpError(413, 'Request too large.');
     const bytes = await readBody(req, LINK_FILE_MAX_BODY);

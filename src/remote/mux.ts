@@ -42,6 +42,42 @@ export function helloVersion(text: string): number | null {
   }
 }
 
+/**
+ * Agent to relay (issue #176): stream `id` comes from the linked computer with this public host, as the agent's Ledung
+ * found from the linked key the request carried. The relay can't tell itself: the stream is TLS to the Ledung.
+ */
+export function senderMessage(id: number, host: string): string {
+  return JSON.stringify({ type: 'sender', id, host });
+}
+
+export function senderOf(text: string): { id: number; host: string } | null {
+  try {
+    const m = JSON.parse(text) as { type?: unknown; id?: unknown; host?: unknown };
+    return m?.type === 'sender' && Number.isInteger(m.id) && typeof m.host === 'string' && m.host.length <= 253
+      ? { id: m.id as number, host: m.host.toLowerCase() } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Relay to the admin's own agents (issue #176): the public hosts of the computers whose owner is past the monthly cap,
+ * so their Ledung refuses files from them; sent after the hello and whenever it changes.
+ */
+export function cappedSendersMessage(hosts: string[], resetsOn: string): string {
+  return JSON.stringify({ type: 'cappedSenders', hosts, resetsOn });
+}
+
+export function cappedSenders(text: string): { hosts: string[]; resetsOn: string } | null {
+  try {
+    const m = JSON.parse(text) as { type?: unknown; hosts?: unknown; resetsOn?: unknown };
+    return m?.type === 'cappedSenders' && Array.isArray(m.hosts) && m.hosts.every((h) => typeof h === 'string') && typeof m.resetsOn === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(m.resetsOn)
+      ? { hosts: m.hosts as string[], resetsOn: m.resetsOn } : null;
+  } catch {
+    return null;
+  }
+}
+
 const HEADER = 5;
 /** Bytes of one data frame at most; larger reads are split, so a frame never exceeds a relay's limit. */
 export const MAX_CHUNK = 64 * 1024;
@@ -95,6 +131,8 @@ interface Stream {
   heldIn: boolean;
   /** The throttle asked the other side to stop sending this stream (issue #161). */
   heldOut: boolean;
+  /** Whose computer our socket's bytes come from, once the far end has said (issue #176); null: not said. */
+  sender: string | null;
 }
 
 /**
@@ -112,6 +150,11 @@ export class Streams {
   /** When the bytes so far have been paid for at the rate. */
   private freeAt = 0;
   private release: NodeJS.Timeout | null = null;
+  /**
+   * Senders held to a rate (issue #176): the bytes our sockets read from a stream marked as theirs, each sender on its
+   * own budget, apart from this agent's own throttle. Only that way: what goes back to them is not held.
+   */
+  private readonly senders = new Map<string, { rate: number; freeAt: number }>();
 
   constructor(ws: FrameSocket, options: StreamsOptions = {}) {
     this.ws = ws;
@@ -129,6 +172,23 @@ export class Streams {
       this.freeAt = 0;
       this.releaseAll();
     }
+  }
+
+  /** Stream `id`'s bytes come from `sender`'s computer (issue #176): its throttle, if any, holds what our socket reads. */
+  markSender(id: number, sender: string): void {
+    const stream = this.streams.get(id);
+    if (stream) stream.sender = sender;
+  }
+
+  /** Holds what `sender`'s streams send to `bytesPerSecond`, or lets them go at once with null (issue #176). */
+  throttleSender(sender: string, bytesPerSecond: number | null): void {
+    const budget = this.senders.get(sender);
+    if (bytesPerSecond === null) {
+      if (!budget) return;
+      this.senders.delete(sender);
+      this.releaseAll();
+    } else if (budget) budget.rate = bytesPerSecond;
+    else this.senders.set(sender, { rate: bytesPerSecond, freeAt: 0 });
   }
 
   get size(): number {
@@ -151,7 +211,7 @@ export class Streams {
 
   /** Carries a socket as stream `id`; `first` are bytes already read from it (the relay's request head). */
   attach(id: number, socket: Duplex, first?: Buffer): void {
-    const stream: Stream = { socket, sentEnd: false, gotEnd: false, sentPause: false, peerPaused: false, heldIn: false, heldOut: false };
+    const stream: Stream = { socket, sentEnd: false, gotEnd: false, sentPause: false, peerPaused: false, heldIn: false, heldOut: false, sender: null };
     this.streams.set(id, stream);
     if (first?.length) this.sendData(id, first, socket);
     socket.on('data', (chunk: Buffer) => this.sendData(id, chunk, socket));
@@ -237,13 +297,22 @@ export class Streams {
   /**
    * Counts `bytes` of stream `id`, and under a throttle holds it once the bytes so far are ahead of the rate: `in`, our
    * socket's reading stops; `out`, the other side is asked to pause. One timer lets every held stream go together.
+   * A stream marked with a throttled sender (issue #176) is also held, `in` only, once that sender's budget is ahead.
    */
   private charge(id: number, stream: Stream, bytes: number, way: 'in' | 'out'): void {
     this.onBytes?.(bytes);
-    if (this.rate === null) return;
+    const sender = way === 'in' && stream.sender !== null ? this.senders.get(stream.sender) : undefined;
+    if (this.rate === null && !sender) return;
     const now = Date.now();
-    this.freeAt = Math.max(now, this.freeAt) + (bytes * 1000) / this.rate;
-    const ahead = this.freeAt - now;
+    let ahead = -Infinity;
+    if (this.rate !== null) {
+      this.freeAt = Math.max(now, this.freeAt) + (bytes * 1000) / this.rate;
+      ahead = this.freeAt - now;
+    }
+    if (sender) {
+      sender.freeAt = Math.max(now, sender.freeAt) + (bytes * 1000) / sender.rate;
+      ahead = Math.max(ahead, sender.freeAt - now);
+    }
     if (way === 'out' && ahead > THROTTLE_MAX_DEBT_MS && stream.heldOut) {
       // Asked to hold and still sending: the throttle would not hold, so the stream goes.
       this.streams.delete(id);
@@ -263,7 +332,7 @@ export class Streams {
       this.release = setTimeout(() => {
         this.release = null;
         this.releaseAll();
-      }, Math.max(0, this.freeAt - THROTTLE_SLACK_MS / 2 - now));
+      }, Math.max(0, ahead - THROTTLE_SLACK_MS / 2));
       this.release.unref();
     }
   }
