@@ -76,6 +76,21 @@ let otherRefusalExercised = false;
 let kindDroppedExercised = false;
 /** The EXERCISED line of Project-Ledung#470, once per run. */
 let byHandExercised = false;
+/** The EXERCISED line of issue #150, once per run. */
+let subagentGrantExercised = false;
+
+/**
+ * True for a subagent's call (the hook input's agent_id): a grant on the person's word never covers it, nor is used up
+ * by it; it is asked as usual (Martin 2026-11-06, Ledung question #618, issue #150).
+ */
+function subagentCall(agentId: unknown, grant: string): boolean {
+  if (!agentId) return false;
+  if (!subagentGrantExercised) {
+    subagentGrantExercised = true;
+    exercisedLine(`EXERCISED #150 a subagent's call kept off the person's-word grants (first at ${grant})`);
+  }
+  return true;
+}
 
 /**
  * A call's input with an allowed merge's command pinned (issues #143, #144); unchanged for anything else. Every path
@@ -607,9 +622,10 @@ export class Session {
   /**
    * A manager's `gh pr merge N` that the user already said yes to, as an answer to one of its own questions
    * about #N in the last two days: allowed without asking again, recorded with the question (decided
-   * 2026-10-13; agent-manager's gate did the same with the owner's word in the lead pane). Null: as before.
+   * 2026-10-13; agent-manager's gate did the same with the owner's word in the lead pane). Not a subagent's call
+   * (issue #150). Null: as before.
    */
-  private mergeOnAnswer(toolName: string, input: Record<string, unknown>, toolUseId: string | undefined): Record<string, unknown> | null {
+  private mergeOnAnswer(toolName: string, input: Record<string, unknown>, toolUseId: string | undefined, agentId: unknown): Record<string, unknown> | null {
     if (toolName !== 'Bash' || typeof input.command !== 'string') return null;
     if (this.store.getSession(this.id)?.role !== 'manager') return null;
     const since = Date.now() - 2 * 24 * 3600 * 1000;
@@ -620,7 +636,7 @@ export class Session {
       .filter((m) => m.kind === 'user' && !m.data.from && typeof m.data.text === 'string' && m.at > since)
       .map((m, k) => ({ id: -(k + 1), question: m.data.text as string, answer: m.data.text as string, answeredBy: 'user', typed: true, at: m.at }));
     const hit = mergeAnswered(input.command, this.sensitiveRules, [...own, ...typed]);
-    if (!hit) return null;
+    if (!hit || subagentCall(agentId, 'merge on an answer')) return null;
     const said = hit.questionId < 0
       ? `in what they typed at ${new Date(typed[-hit.questionId - 1]!.at).toLocaleTimeString()}`
       : `in their answer to question #${hit.questionId}`;
@@ -635,9 +651,10 @@ export class Session {
    * once per word and action, and recorded with the word. Only words given on this computer count, typed into
    * this manager or answering one of its own questions, in the last two days (Martin's b on question #447): from
    * the phone the prompt comes, signed with its passkey. A session's, a manager's or a board post's words never
-   * count, nor a delivered message (it carries `from`). Null: asked like every sensitive call.
+   * count, nor a delivered message (it carries `from`), nor does a subagent's call use the word (issue #150). Null:
+   * asked like every sensitive call.
    */
-  private settingsOnWord(toolName: string, input: Record<string, unknown>, toolUseId: string | undefined): Record<string, unknown> | null {
+  private settingsOnWord(toolName: string, input: Record<string, unknown>, toolUseId: string | undefined, agentId: unknown): Record<string, unknown> | null {
     const action = settingsAction(toolName);
     if (!action || this.store.getSession(this.id)?.role !== 'manager') return null;
     const since = Date.now() - 2 * 24 * 3600 * 1000;
@@ -659,7 +676,10 @@ export class Session {
       });
     // One instruction runs once: every word that tells it is used up together (useWord is atomic), so the same
     // instruction typed and then said yes to as the manager's question can't run it twice (review of #263, finding 2).
-    const fresh = wordsFor(action, input, [...typed.reverse(), ...answers]).filter((w) => this.store.useWord(this.id, w.key, action));
+    const naming = wordsFor(action, input, [...typed.reverse(), ...answers]);
+    // A subagent's call is turned away before useWord, which spends the words (issue #150).
+    if (!naming.length || subagentCall(agentId, 'settings on the word')) return null;
+    const fresh = naming.filter((w) => this.store.useWord(this.id, w.key, action));
     const word = fresh[0];
     if (!word) return null;
     const why = `${this.userName} asked for this (${action.replace(/_/g, ' ')}) ${said.get(word.key)}`;
@@ -697,12 +717,13 @@ export class Session {
    * went to, covers exactly this call. Allowed past the sensitive list and the classifier, as the merge on an answer
    * is, with a note that quotes the words. While the person is away, an order recorded during the away period runs
    * only when away mode allows "ordered"; otherwise it is held as before (asked, with away mode's reason) and the order
-   * reads refused. Either way away_log records it. Settings actions keep their own rule. Null: as before.
+   * reads refused. Either way away_log records it. Settings actions keep their own rule. A subagent's call is not
+   * covered, and neither takes nor refuses the order (issue #150). Null: as before.
    */
-  private async onOrder(toolName: string, input: Record<string, unknown>, toolUseId: string | undefined): Promise<Record<string, unknown> | null> {
+  private async onOrder(toolName: string, input: Record<string, unknown>, toolUseId: string | undefined, agentId: unknown): Promise<Record<string, unknown> | null> {
     if (!this.orders || settingsAction(toolName) || SETTINGS_CHANGE_TOOLS.includes(toolName)) return null;
     const o = this.orders.covering(this.id, toolName, input);
-    if (!o) return null;
+    if (!o || subagentCall(agentId, 'an order')) return null;
     const command = String(input.command);
     const away = this.away?.current() ?? null;
     const here = o.sessionId === this.id && o.sessionId !== o.managerId ? ` (run by its session "${this.store.getSession(this.id)?.title ?? this.id}")` : '';
@@ -1105,15 +1126,17 @@ export class Session {
             // A prompt or a refusal comes right after its call: the latest few hundred are plenty.
             if (this.shellFolders.size > 300) this.shellFolders.delete(this.shellFolders.keys().next().value!);
           }
-          const merge = this.mergeOnAnswer(toolName, toolInput, toolUseId);
+          // A subagent's call: every grant on the person's word below is the session's own (issues #146, #150).
+          const agentId = (input as { agent_id?: string }).agent_id;
+          const merge = this.mergeOnAnswer(toolName, toolInput, toolUseId, agentId);
           if (merge) return merge;
-          const named = this.settingsOnWord(toolName, toolInput, toolUseId);
+          const named = this.settingsOnWord(toolName, toolInput, toolUseId, agentId);
           if (named) return named;
-          const once = this.onceOnTap(toolName, toolInput, toolUseId, (input as { agent_id?: string }).agent_id);
+          const once = this.onceOnTap(toolName, toolInput, toolUseId, agentId);
           if (once) return once;
-          const ordered = await this.onOrder(toolName, toolInput, toolUseId);
+          const ordered = await this.onOrder(toolName, toolInput, toolUseId, agentId);
           if (ordered) return ordered;
-          const awayMerge = await this.awayMergeHook(toolName, toolInput, toolUseId, (input as { agent_id?: string }).agent_id);
+          const awayMerge = await this.awayMergeHook(toolName, toolInput, toolUseId, agentId);
           if (awayMerge) return awayMerge;
           return sensitiveHookOutput(toolName, toolInput, this.sensitiveRules, this.alwaysAsked);
         }] }],
