@@ -17,7 +17,7 @@ import type { Store } from '../store/store.ts';
 import type { UsageStopInfo } from '../shared/protocol.ts';
 import { promptUsageLine, windowName } from '../usage/stops.ts';
 import type { AttachedSource, CompactingInfo, McpServerInfo, PermissionDecision, PermissionMode, PullRequestInfo, ServerEvent, SessionInfo, StoredMessage } from '../shared/protocol.ts';
-import type { PermissionUpdate } from '@anthropic-ai/claude-agent-sdk';
+import type { McpSdkServerConfigWithInstance, PermissionUpdate } from '@anthropic-ai/claude-agent-sdk';
 import { AllowedNotes, asSessionUpdate, describeRule, exactRule, rulesFromSuggestions } from './grants.ts';
 import {
   buildDelivery, CLEAR_NOTE_SOURCE, COMPACT_ALERT_MINUTES, compactCommand, compactRequester, isClear, isCompact, parseClear, promptContextLine,
@@ -61,7 +61,10 @@ import { classifierReason, guardedWrite, ONCE_ACTION, ONCE_GRANT_MS, onceGrant, 
 import { orderNote, type Orders } from './orders.ts';
 import type { ChatImages, ImageBlock } from './chat-images.ts';
 import { heldImageNames, heldText } from '../store/store.ts';
+import { onToolServerConnected, STALE_TOOLS_NOTE, toolSchemaHash } from './tool-schema.ts';
 
+/** The EXERCISED line of issue #164, once per run. */
+let staleToolsExercised = false;
 /** The EXERCISED line of issue #369, once per run. */
 let sourcesExercised = false;
 /** The EXERCISED line of issue #405, once per run. */
@@ -78,6 +81,12 @@ let kindDroppedExercised = false;
 let byHandExercised = false;
 /** The EXERCISED line of issue #150, once per run. */
 let subagentGrantExercised = false;
+
+/** Notes for after a call, one per line; undefined when there are none. */
+function joinNotes(...notes: (string | undefined)[]): string | undefined {
+  const given = notes.filter((n): n is string => !!n);
+  return given.length ? given.join('\n') : undefined;
+}
 
 /**
  * True for a subagent's call (the hook input's agent_id): a grant on the person's word never covers it, nor is used up
@@ -410,6 +419,10 @@ export class Session {
   /** Its locked secrets (issue #468), and what its launch gives the runner. */
   private readonly secrets: SessionSecrets | null;
   private launchSecrets: LaunchSecrets | undefined;
+  /** The fingerprint of the tool list this Ledung gives the session (issue #164); null: it could not be worked out. */
+  private toolsCurrent: string | null = null;
+  /** The stale-tools note is given once per Ledung run, on the first Ledung call that finds the tools old (issue #164). */
+  private staleToolsTold = false;
   /** The person's images sent with their messages (issue #128). */
   private readonly images: ChatImages | null;
   /** When the turn now under way (or the last one) began, for the "once" secrets' rule (issue #468). */
@@ -560,6 +573,41 @@ export class Session {
     if (this.attachTo) return this.info.claudeProgram?.path ?? 'claude';
     if (!this.runner.claudeProgram) return 'claude';
     return this.claudePath;
+  }
+
+  /**
+   * Ledung's tool server for this start (issue #164). A new Claude Code process is given this list, so it is
+   * recorded as the session's. A reattached one still has the list of the Ledung it started under: when that
+   * differs, Claude Code is told the tools changed (MCP notifications/tools/list_changed). That brings it new tools
+   * but not changed ones (src/sessions/tool-schema.ts), so the record stays until the next start or resume.
+   */
+  private async watchedToolServer(tools: ToolHandlers): Promise<McpSdkServerConfigWithInstance> {
+    // A server of its own for the fingerprint: an MCP server takes one connection, and the SDK's comes later.
+    this.toolsCurrent = await toolSchemaHash(ledungToolServer(tools)).catch((e: Error) => {
+      console.error(`Tool schema of session ${this.id}: ${e.message}`);
+      return null;
+    });
+    if (this.toolsCurrent && !this.attachTo) this.store.setToolsSchema(this.id, this.toolsCurrent);
+    return onToolServerConnected(ledungToolServer(tools), (server) => {
+      if (!this.attachTo || !this.toolsStale()) return;
+      server.sendToolListChanged();
+      if (!staleToolsExercised) {
+        staleToolsExercised = true;
+        exercisedLine('EXERCISED #164 a reattached session told its Ledung tools changed');
+      }
+    });
+  }
+
+  /** Whether the session's Claude Code has an older Ledung tool list than this Ledung's; unknown (before #164) counts as older. */
+  private toolsStale(): boolean {
+    return !!this.toolsCurrent && this.store.toolsSchema(this.id) !== this.toolsCurrent;
+  }
+
+  /** The note after a Ledung call while the tools are old, once per Ledung run (issue #164). */
+  private staleToolsNote(toolName: string | undefined): string | undefined {
+    if (this.staleToolsTold || !toolName?.startsWith(`mcp__${LEDUNG_SERVER}__`) || !this.toolsStale()) return undefined;
+    this.staleToolsTold = true;
+    return STALE_TOOLS_NOTE;
   }
 
   async start(): Promise<void> {
@@ -1090,7 +1138,7 @@ export class Session {
       mcpServers: {
         ...profile.mcpServers,
         // Ledung's own server last, so no profile can replace it (validateProfiles refuses the name too).
-        [LEDUNG_SERVER]: ledungToolServer(tools),
+        [LEDUNG_SERVER]: await this.watchedToolServer(tools),
       },
       canUseTool: (toolName, input, opts) =>
         // Ledung's own tools never need a prompt; the project tools only when the project opted in (2026-10-14).
@@ -1147,13 +1195,15 @@ export class Session {
         // failed was allowed all the same, and without its note would read as allowed by the session's mode.
         PostToolUse: [{ hooks: [async (input) => {
           this.orderRunEnded((input as { tool_use_id?: string }).tool_use_id, true, null);
-          const note = this.allowedBy.take((input as { tool_use_id?: string }).tool_use_id);
+          // And, after a Ledung call, that its Ledung tools are old (issue #164).
+          const note = joinNotes(this.allowedBy.take((input as { tool_use_id?: string }).tool_use_id), this.staleToolsNote((input as { tool_name?: string }).tool_name));
           return note === undefined ? {} : { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: note } };
         }] }],
         PostToolUseFailure: [{ hooks: [async (input) => {
-          const failed = input as { tool_use_id?: string; error?: unknown };
+          const failed = input as { tool_use_id?: string; tool_name?: string; error?: unknown };
           this.orderRunEnded(failed.tool_use_id, false, typeof failed.error === 'string' ? failed.error : null);
-          const note = this.allowedBy.take((input as { tool_use_id?: string }).tool_use_id);
+          // A refused new parameter is the likeliest way old tools show (issue #164's evidence), so here too.
+          const note = joinNotes(this.allowedBy.take(failed.tool_use_id), this.staleToolsNote(failed.tool_name));
           return note === undefined ? {} : { hookSpecificOutput: { hookEventName: 'PostToolUseFailure' as const, additionalContext: note } };
         }] }],
         // Idle stop: at the end of each turn Claude Code says what still runs in the background and what

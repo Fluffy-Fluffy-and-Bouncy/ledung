@@ -11,6 +11,7 @@ is nothing user-facing in it).
 
 ## 2026-11-06
 - machine_status and the page: a session's CPU and memory now include its background commands that lost their link to it (a shell in between exited), so a session whose background command loads the machine no longer reads "idle, 0.0 cores" between turns. (#169)
+- Sessions after an update: a session that kept running through Restart Ledung while Ledung's tools changed is told so. Claude Code is sent "tools changed", which brings it brand-new Ledung tools but not new parameters on the ones it has, so its next Ledung call also gets the note "restart this session to get the new tools". (#164)
 - Secret check on board posts and outgoing files: a word like "secret:" or "token:" followed by ordinary words ("nothing secret: attachment test") no longer gets a post or file refused; a real value after it (`secret: Zq8Lm3Np7Rt2`, `API_KEY=…`, a quoted value) is still refused. (#163)
 - Relay: a capped owner's computer sending to one of your own computers is slowed down too, and your Ledung refuses to keep a file from it, with a sentence saying when the cap resets; messages still go, and your own computers are still never slowed. (#176)
 - Relay cap: streamed audio and zip files obey the relay's monthly cap too. A capped computer doesn't offer them, stops serving one mid-way, and doesn't take, start, resume or continue fetching one; its manager gets the same "Not sent" or "Not kept" sentence with the reset date, and nothing half-fetched is kept. Lifting the cap works again at once. (#177)

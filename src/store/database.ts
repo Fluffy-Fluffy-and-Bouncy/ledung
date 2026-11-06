@@ -702,6 +702,9 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX linked_outbox_by_time ON linked_outbox(pruned_at, created_at);
   `,
+  // The fingerprint of the Ledung tool list each session's Claude Code was given (issue #164); null: not known,
+  // a session started before this release.
+  `ALTER TABLE sessions ADD COLUMN tools_schema TEXT;`,
 ];
 
 export function databaseFile(dir = userDataDir()): string {
