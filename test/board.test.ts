@@ -10,6 +10,7 @@ import { Boards, type ProjectBoardInput } from '../src/board/boards.ts';
 import { BoardStore, type RepoStore } from '../src/board/store.ts';
 import { FakeBackend, FakeBoard } from '../src/board/fake.ts';
 import { parseAddress, readHeader, sensitiveInText, tokenLike, withHeader } from '../src/board/address.ts';
+import { outgoingFinding } from '../src/board/outgoing.ts';
 import { BoardError } from '../src/board/types.ts';
 import type { RepoDirectory } from '../src/board/repos.ts';
 import { buildDelivery } from '../src/sessions/management.ts';
@@ -567,6 +568,47 @@ test('token-like text: known prefixes and random strings, but not commit hashes 
   assert.equal(tokenLike('merged ec571c0b1f2a3c4d5e6f708192a3b4c5d6e7f809 into main'), null);
   assert.equal(tokenLike('see SessionManagerBoardIntegrationTests'), null);
   assert.equal(sensitiveInText('nothing here', { commandPatterns: ['kubectl'], pathPatterns: ['\\.env$'] }), null);
+});
+
+test('the secret-word rule (#163): plain prose after "secret:" passes, posts and attachments alike; real assignments are refused', () => {
+  const none = { commandPatterns: [], pathPatterns: [] };
+  // The text #163 was refused for (2026-11-06 11:48), and other prose of the same shape.
+  const prose = [
+    'nothing secret: attachment test',
+    'nothing secret: attachment test\nsecond line of the log',
+    'the token: remember, everything stays local',
+    'Password: anything that looks like one is refused',
+    'api_key: rotated yesterday, see the issue',
+    'Secret: Absolutely nothing here', // a capital at the start of a word is prose
+    'secret: lösenordet är hemligt',
+  ];
+  for (const text of prose) {
+    assert.equal(tokenLike(text), null, text);
+    assert.equal(outgoingFinding({ inside: '.ledung/tmp/158-check.log', text }, none), null, text);
+  }
+  // Real assignments: none of these match a known token prefix, only the assignment rule.
+  const keys = [
+    'secret: Zq8Lm3Np7Rt2',
+    'secret: abcdefghijkl',
+    'secret:attachmenttest and more',
+    'API_KEY=abcdefghijklmnop',
+    'api-key = "correct horse battery"',
+    'token=ghp_short123',
+    "password: 'hunter2hunter2'",
+    'passwd: s3cr3t-value here',
+    'export SECRET=letmeinplease',
+    'nothing secret: attachment test\ntoken: Ab12Cd34Ef56',
+    // Review round 1 (test review, PR #182): each meets every prose condition but one.
+    'API_KEY= abcdefghijkl more words', // `=`, never prose
+    'secret: abcdefghijkl\nnext line', // the words that follow are on another line
+    // Review round 1 (code review Minor 1): letters only, but capitals inside, which a prose word never has.
+    'Password: AbCdEfGhIjKlMnOpQrStUvWxYzAbCdEfGh used here',
+    'secret: SuperSecretValue more',
+  ];
+  for (const text of keys) {
+    assert.equal(tokenLike(text), 'a password or key assignment', text);
+    assert.deepEqual(outgoingFinding({ inside: '.ledung/tmp/158-check.log', text }, none), { token: 'a password or key assignment' }, text);
+  }
 });
 
 test('two Ledungs on one board: a question and its answer, each woken once', async () => {

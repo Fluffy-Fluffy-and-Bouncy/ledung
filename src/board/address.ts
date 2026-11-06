@@ -1,5 +1,6 @@
 // Board addresses and Ledung's header in a post (docs/steps/message-board.md, decision 3).
 import { PROJECT_NAME } from '../config.ts';
+import { exercisedLine } from '../platform/exercised.ts';
 import { MAX_ATTACHMENTS, validRef, type AttachmentRef } from './attachments.ts';
 
 /** GitHub's login rules: letters, digits and single hyphens, at most 39. Other services fit inside them. */
@@ -85,9 +86,9 @@ export function tokenLike(text: string): string | null {
     [/\bxox[abposr]-[A-Za-z0-9-]{10,}/, 'a Slack token'],
     [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, 'a private key'],
     [/\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/, 'a JWT'],
-    [/\b(?:password|passwd|secret|api[_-]?key|token)\s*[:=]\s*\S{8,}/i, 'a password or key assignment'],
   ];
   for (const [re, what] of known) if (re.test(text)) return what;
+  if (assignsSecret(text)) return 'a password or key assignment';
   // 32+ characters with many capitals, small letters and digits mixed: random, so a token. Commit hashes
   // (hex) are common in managers' posts and pass; so do CamelCase names, which have few digits.
   const count = (s: string, re: RegExp) => s.match(re)?.length ?? 0;
@@ -96,6 +97,28 @@ export function tokenLike(text: string): string | null {
     if (count(run, /[A-Z]/g) >= 4 && count(run, /[a-z]/g) >= 4 && count(run, /[0-9]/g) >= 4) return 'a long token-like string';
   }
   return null;
+}
+
+/**
+ * A word like "secret" or "API_KEY" given a value of 8+ characters. Not when the "value" is plain prose (issue #163:
+ * "nothing secret: attachment test" was refused): a colon and a space, then a word of small letters (a capital only
+ * first), then more words on the same line. Anything else is refused as before: `=`, no space after the colon,
+ * quotes, digits, symbols or capitals inside the value (PR #182 review: a letters-only mixed-case key), or the value
+ * alone at the end of the line.
+ */
+let exercised163 = false;
+function assignsSecret(text: string): boolean {
+  const re = /\b(?:password|passwd|secret|api[_-]?key|token)\s*([:=])(\s*)(\S{8,})/gi;
+  for (const m of text.matchAll(re)) {
+    const rest = text.slice(m.index + m[0].length);
+    const prose = m[1] === ':' && /^[ \t]+$/.test(m[2] ?? '') && /^\p{Lu}?\p{Ll}+(?:['’-]\p{Ll}+)*[.,;!?]?$/u.test(m[3] ?? '') && /^[ \t]+\p{L}/u.test(rest);
+    if (!prose) return true;
+    if (!exercised163) {
+      exercised163 = true;
+      exercisedLine('EXERCISED #163 a secret word followed by prose passed the secret check');
+    }
+  }
+  return false;
 }
 
 /**
