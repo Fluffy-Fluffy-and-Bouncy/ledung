@@ -27,6 +27,11 @@ test('a manager: the same minus Archive and Priority, plus its workflow when the
   assert.ok(!sessionActions({ ...manager, status: 'ended' }, false).includes('archive'));
 });
 
+test('a session still starting is not offered Stop and archive: a stop then may leave it unended', () => {
+  assert.ok(!sessionActions({ ...base, status: 'starting' }, false).includes('stopArchive'));
+  assert.ok(sessionActions({ ...base, status: 'starting' }, false).includes('model'), 'its model still changes, for its start');
+});
+
 test('a stopping session offers neither model nor stop; compact and clear wait for one already under way', () => {
   assert.deepEqual(sessionActions({ ...base, status: 'stopping' }, false), ['rename', 'priority', 'copyId']);
   assert.ok(!sessionActions({ ...base, clearDue: Date.now() }, false).includes('clear'));

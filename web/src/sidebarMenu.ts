@@ -32,7 +32,8 @@ export function sessionActions(s: Shown, hasWorkflow: boolean): SessionAction[] 
     ...(live && talked && !busy ? ['compact' as const, 'clear' as const] : []),
     'copyId',
     // Ended: archived at once, as nothing is deleted; running: stopped first, asked first.
-    ...(s.role === 'session' && !s.archivedAt ? (ended ? ['archive' as const] : live ? ['stopArchive' as const] : []) : []),
+    // Not while starting: a stop then may come before Claude Code is up and leave it unended (review finding 6).
+    ...(s.role === 'session' && !s.archivedAt ? (ended ? ['archive' as const] : live && s.status !== 'starting' ? ['stopArchive' as const] : []) : []),
   ];
 }
 

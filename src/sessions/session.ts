@@ -2106,11 +2106,16 @@ export class Session {
    * outright, since setModel(undefined) would give Claude Code's own default instead.
    */
   async setModel(model: string | null, by: string): Promise<void> {
-    if (!this.q || this.stopping) throw new Error('The session is not running.');
+    if (this.stopping) throw new Error('The session is stopping.');
     const fileModel = typeof this.fileSettings?.model === 'string' ? this.fileSettings.model : undefined;
-    await this.q.setModel(model ?? fileModel ?? this.defaultModel);
+    const named = model ?? fileModel ?? this.defaultModel;
+    // Still starting, Claude Code isn't there yet: it starts with this.model (claudeOptions). And a default that only
+    // the project's own Claude settings name can't be given by name, so it waits for the resume, which reads them.
+    const now = !!this.q && named !== undefined;
+    if (now) await this.q!.setModel(named);
     this.model = model ?? undefined;
-    this.record('event', { text: `Model set to ${model ?? "the project's default"} by ${by === 'user' ? this.userName : by}; it applies from the next reply.` });
+    const when = now || !this.q ? 'it applies from the next reply' : 'it applies when the session is resumed';
+    this.record('event', { text: `Model set to ${model ?? "the project's default"} by ${by === 'user' ? this.userName : by}; ${when}.` });
     // Kept for a resume, as start_session's model is.
     this.store.updateSession(this.id, { requestedModel: model });
     this.publish({ type: 'session', session: this.info });

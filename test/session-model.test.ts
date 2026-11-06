@@ -31,7 +31,7 @@ after(() => {
 });
 
 /** A running Session whose query records each setModel, failing when told to. */
-async function running(opts: { defaultModel?: string; fail?: boolean } = {}) {
+async function running(opts: { defaultModel?: string; fail?: boolean; start?: boolean } = {}) {
   const store = new Store(openDatabase(':memory:'));
   const info = store.createSession({ id: 's1', project: 'p', runner: 'local', title: 'Worker', parentId: null, permissionMode: 'default', role: 'session', requestedModel: 'haiku' });
   const asked: (string | undefined)[] = [];
@@ -44,15 +44,16 @@ async function running(opts: { defaultModel?: string; fail?: boolean } = {}) {
     [Symbol.asyncIterator]: () => ({ next: () => new Promise<IteratorResult<unknown>>(() => {}) }),
   };
   const events: string[] = [];
+  const launched: (string | undefined)[] = [];
   const s = new Session({
     info, store, publish: (e) => events.push(e.type), userName: 'Simon', model: 'haiku', defaultModel: opts.defaultModel,
     management: new Proxy({}, { get: (_, k) => (k === 'questionTiers' ? () => [] : () => undefined) }) as never,
     runner: new LocalRunner({ name: 'p', runner: 'local', path: base } as never),
     gate: { mayStart: () => true, started: () => {}, ended: () => {} },
-    query: (() => stream) as never,
+    query: ((args: { options: { model?: string } }) => { launched.push(args.options.model); return stream; }) as never,
   });
-  await s.start();
-  return { s, store, asked, events };
+  if (opts.start !== false) await s.start();
+  return { s, store, asked, events, launched };
 }
 
 const notes = (store: Store) => store.listMessages('s1', { limit: 50 }).filter((m) => m.kind === 'event').map((m) => String(m.data.text));
@@ -71,6 +72,23 @@ test("the project's default is named outright, never left to Claude Code's own d
   await s.setModel(null, 'user');
   assert.deepEqual(asked, ['opus']);
   assert.equal(store.getSession('s1')!.requestedModel, null);
+});
+
+test('a session still starting gets the model it starts with: no SDK call before Claude Code is there', async () => {
+  const { s, store, asked, launched } = await running({ start: false });
+  await s.setModel('opus', 'user');
+  assert.deepEqual(asked, []);
+  assert.equal(store.getSession('s1')!.requestedModel, 'opus');
+  await s.start();
+  assert.deepEqual(launched, ['opus'], 'Claude Code is started with it');
+});
+
+test("a default only the project's Claude settings name isn't sent by name: it waits for the resume, which reads them", async () => {
+  const { s, store, asked } = await running();
+  await s.setModel(null, 'user');
+  assert.deepEqual(asked, [], "setModel(undefined) would be Claude Code's own default, not the project's");
+  assert.equal(store.getSession('s1')!.requestedModel, null);
+  assert.ok(notes(store).some((t) => t.includes('applies when the session is resumed')));
 });
 
 test('a change Claude Code refuses leaves the stored model as it was', async () => {

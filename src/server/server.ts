@@ -1990,7 +1990,9 @@ export class LedungServer {
       // The sidebar menu's Change model (2026-11-06): the sign-in, Host and Origin checks like every change.
       case 'POST sessions/:id/model': {
         const body = await readJson(req);
-        return manager.setModel(id, body.model ?? null);
+        // null is the project's default; left out is no choice at all, not a reset.
+        if (!('model' in body)) throw new HttpError(400, "Send model: opus, sonnet, haiku or null for the project's default.");
+        return manager.setModel(id, body.model);
       }
       case 'POST sessions/:id/interrupt':
         return manager.interrupt(id);

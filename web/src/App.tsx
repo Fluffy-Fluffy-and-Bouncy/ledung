@@ -844,6 +844,9 @@ function Sidebar(props: {
     const entries = groupEntries(rowMenu.target.slice(2));
     return entries.length ? { label: `Menu of ${rowMenu.target.slice(2)}`, entries } : null;
   })();
+  // Its row gone (archived by its manager, a project removed): closed for good, not shown again when the row returns.
+  const menuGone = !!rowMenu && !menuFor;
+  useEffect(() => { if (menuGone) setRowMenu(null); }, [menuGone]);
   /** Where the drop marker goes in a project's rows: before one row, or after one (the last place). */
   const markerIn = (rows: Row[]): { before?: string; after?: string } | null => {
     if (!drag || drag.slot === null || drag.group === 'projects') return null;

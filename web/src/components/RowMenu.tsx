@@ -24,7 +24,11 @@ export function RowMenu({ label, x, y, entries, onClose }: {
 }) {
   const box = useRef<HTMLDivElement>(null);
   const [place, setPlace] = useState<{ left: number; top: number } | null>(null);
-  const [asking, setAsking] = useState<{ question: string; yes: string; onPick: () => void } | null>(null);
+  // The question being asked, by its words; its yes is the entry's as it is now, and when the entry is gone (the
+  // session ended meanwhile, so Stop and archive became Archive) the menu closes instead of acting on what was.
+  const [askingFor, setAskingFor] = useState<string | null>(null);
+  const asking = askingFor === null ? null : entries.find((e): e is Extract<MenuEntry, { kind: 'item' }> => e.kind === 'item' && e.ask?.question === askingFor) ?? null;
+  const gone = askingFor !== null && !asking;
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
   // The browser's own menu event that follows the menu key or Shift+F10 lands on the menu once it has the focus.
@@ -34,13 +38,14 @@ export function RowMenu({ label, x, y, entries, onClose }: {
   useLayoutEffect(() => {
     const r = box.current!.getBoundingClientRect();
     setPlace(menuPlace(x, y, r.width, r.height, window.innerWidth, window.innerHeight));
-  }, [x, y, asking]);
+  }, [x, y, askingFor]);
 
   // Once placed: a hidden menu can't take the focus.
   const placed = place !== null;
   useEffect(() => {
     if (placed) box.current?.querySelector<HTMLElement>(ITEMS)?.focus();
-  }, [placed, asking]);
+  }, [placed, askingFor]);
+  useEffect(() => { if (gone) closeRef.current(false); }, [gone]);
 
   useEffect(() => {
     const onDown = (e: PointerEvent) => { if (!box.current?.contains(e.target as Node)) closeRef.current(false); };
@@ -52,14 +57,21 @@ export function RowMenu({ label, x, y, entries, onClose }: {
       closeRef.current(true);
     };
     const onAway = () => closeRef.current(false);
+    // A phone's address bar showing or hiding changes only the height; that keeps the menu.
+    const width = window.innerWidth;
+    const onResize = () => { if (window.innerWidth !== width) onAway(); };
+    // The list scrolling away under it, not the menu's own scrolling.
+    const onScroll = (e: Event) => { if (!box.current?.contains(e.target as Node)) onAway(); };
     document.addEventListener('pointerdown', onDown, true);
     document.addEventListener('keydown', onKey, true);
-    window.addEventListener('resize', onAway);
+    document.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', onResize);
     window.addEventListener('blur', onAway);
     return () => {
       document.removeEventListener('pointerdown', onDown, true);
       document.removeEventListener('keydown', onKey, true);
-      window.removeEventListener('resize', onAway);
+      document.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', onResize);
       window.removeEventListener('blur', onAway);
     };
   }, []);
@@ -72,9 +84,12 @@ export function RowMenu({ label, x, y, entries, onClose }: {
     items[next]!.focus();
   };
 
-  const pick = (entry: Extract<MenuEntry, { kind: 'item' }>) => {
-    if (entry.ask) return setAsking({ ...entry.ask, onPick: entry.onPick });
-    closeRef.current(false);
+  // Picked from the keyboard (a click with no pointer behind it), the focus goes back to the row before the action,
+  // so one that moves it on (Rename's name box, a page it opens) still can.
+  const fromKeys = (e: { detail: number }) => e.detail === 0;
+  const pick = (entry: Extract<MenuEntry, { kind: 'item' }>, keys: boolean) => {
+    if (entry.ask) return setAskingFor(entry.ask.question);
+    closeRef.current(keys);
     entry.onPick();
   };
 
@@ -91,13 +106,13 @@ export function RowMenu({ label, x, y, entries, onClose }: {
     if (entry.kind === 'radio') {
       return (
         <button key={i} type="button" role="menuitemradio" aria-checked={entry.checked} tabIndex={-1} className="row-menu-item"
-          onClick={() => { closeRef.current(false); if (!entry.checked) entry.onPick(); }}>
+          onClick={(e) => { closeRef.current(fromKeys(e)); if (!entry.checked) entry.onPick(); }}>
           <span className="row-menu-tick" aria-hidden="true">{entry.checked ? '✓' : ''}</span>{entry.label}
         </button>
       );
     }
     return (
-      <button key={i} type="button" role="menuitem" tabIndex={-1} className="row-menu-item" title={entry.hint} onClick={() => pick(entry)}>
+      <button key={i} type="button" role="menuitem" tabIndex={-1} className="row-menu-item" title={entry.hint} onClick={(e) => pick(entry, fromKeys(e))}>
         <span className="row-menu-tick" aria-hidden="true" />{entry.label}{entry.ask ? '…' : ''}
       </button>
     );
@@ -108,7 +123,7 @@ export function RowMenu({ label, x, y, entries, onClose }: {
       ref={box}
       className="row-menu"
       role="menu"
-      aria-label={asking ? asking.question : label}
+      aria-label={asking ? asking.ask!.question : label}
       style={place ? { left: place.left, top: place.top } : { left: x, top: y, visibility: 'hidden' }}
       onKeyDown={onKeyDown}
       // Its own items never show the browser's menu, but Shift+right-click still does (not the Shift+F10 that opened it).
@@ -116,9 +131,9 @@ export function RowMenu({ label, x, y, entries, onClose }: {
     >
       {asking ? (
         <>
-          <div className="row-menu-question" aria-hidden="true">{asking.question}</div>
-          <button type="button" role="menuitem" tabIndex={-1} className="row-menu-item danger" onClick={() => { closeRef.current(false); asking.onPick(); }}>
-            <span className="row-menu-tick" aria-hidden="true" />{asking.yes}
+          <div className="row-menu-question" aria-hidden="true">{asking.ask!.question}</div>
+          <button type="button" role="menuitem" tabIndex={-1} className="row-menu-item danger" onClick={(e) => { closeRef.current(fromKeys(e)); asking.onPick(); }}>
+            <span className="row-menu-tick" aria-hidden="true" />{asking.ask!.yes}
           </button>
           <button type="button" role="menuitem" tabIndex={-1} className="row-menu-item" onClick={() => closeRef.current(true)}>
             <span className="row-menu-tick" aria-hidden="true" />Cancel

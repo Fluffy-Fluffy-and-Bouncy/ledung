@@ -302,6 +302,20 @@ test("renaming a session needs the sign-in and Ledung's own origin, like every c
   assert.equal((await change(p, { title: 't' })).status, 200, 'its name put back for the other tests');
 });
 
+test("the sidebar menu's Change model needs the sign-in and Ledung's own origin, and takes only the offered models", async () => {
+  const p = '/api/sessions/s2/model';
+  const body = JSON.stringify({ model: 'opus' });
+  assert.equal((await request({ method: 'POST', path: p, body })).status, 401);
+  assert.equal((await request({ method: 'POST', path: p, headers: { cookie: COOKIE }, body })).status, 403);
+  assert.equal((await request({ method: 'POST', path: p, headers: { cookie: COOKIE, origin: 'https://evil.example' }, body })).status, 403);
+  assert.equal((await change(p, {})).status, 400, 'no model named is no choice, not a reset');
+  assert.equal((await change(p, { model: 'claude-anything' })).status, 400);
+  const ok = await change(p, { model: 'opus' });
+  assert.equal(ok.status, 200);
+  assert.equal(JSON.parse(ok.body).requestedModel, 'opus');
+  assert.equal(JSON.parse((await change(p, { model: null })).body).requestedModel, null, "the project's default again, for the other tests");
+});
+
 test("the sidebar order needs the sign-in and Ledung's own origin, like every change (issue #88)", async () => {
   for (const [p, body] of [['/api/projects-order', { names: ['p'] }], ['/api/sessions-order', { ids: ['s1'] }]] as const) {
     const json = JSON.stringify(body);
