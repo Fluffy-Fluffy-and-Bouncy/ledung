@@ -239,7 +239,8 @@ test('ledung#159: a 6 MB WAV and a zip go as handles at once, are fetched in chu
 
   // With #160: saved into the worker's worktree, same SHA-256; with the wrong extension, refused.
   const saved = management(p.pc).saveLinkedFile('pc-beta', wavHandle, 'pc-worker', 'audio/take.wav');
-  const full = path.join(p.worktree, 'audio', 'take.wav');
+  // The native real path, as #172 gives it: on Windows the temp folder's JS real path keeps an 8.3 name (RUNNER~1).
+  const full = path.join(fs.realpathSync.native(p.worktree), 'audio', 'take.wav');
   assert.equal(saved, `Saved into "pc-worker"'s worktree: audio/take.wav (${full}), ${sound.length} bytes, SHA-256 ${sha(sound)}. Tell the session that line; the file is its own now, Ledung doesn't remove it.`);
   assert.equal(sha(fs.readFileSync(full)), sha(sound));
   assert.throws(() => management(p.pc).saveLinkedFile('pc-beta', zipHandle, 'pc-worker', 'bundle.txt'), /must end in \.zip: the file is zip/);
