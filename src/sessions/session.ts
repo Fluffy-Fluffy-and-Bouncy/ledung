@@ -57,7 +57,7 @@ import { conversationBefore } from './earlier.ts';
 import { attachSources, type SourceContext } from './sources.ts';
 import type { SessionRole, ShellBlock } from '../shared/protocol.ts';
 import { exercisedLine } from '../platform/exercised.ts';
-import { classifierReason, ONCE_ACTION, ONCE_GRANT_MS, onceGrant, refusalOf, refusalQuestion, sameCall } from './refusals.ts';
+import { classifierReason, guardedWrite, ONCE_ACTION, ONCE_GRANT_MS, onceGrant, refusalOf, refusalQuestion, sameCall } from './refusals.ts';
 import { orderNote, type Orders } from './orders.ts';
 import type { ChatImages, ImageBlock } from './chat-images.ts';
 import { heldImageNames, heldText } from '../store/store.ts';
@@ -74,6 +74,8 @@ let pinnedMergeExercised = false;
 let otherRefusalExercised = false;
 /** The EXERCISED line of issue #146, once per run. */
 let kindDroppedExercised = false;
+/** The EXERCISED line of Project-Ledung#470, once per run. */
+let byHandExercised = false;
 
 /**
  * A call's input with an allowed merge's command pinned (issues #143, #144); unchanged for anything else. Every path
@@ -323,6 +325,8 @@ export class Session {
   private readonly shellFolders = new Map<string, string>();
   /** Refused merges already put in the away log instead of asked (issue #133): a replayed refusal adds nothing. */
   private readonly awayRefusals = new Set<string>();
+  /** The calls an Allow once let through, by tool use id, with the question it came from (Project-Ledung#470). */
+  private readonly onceUsedBy = new Map<string, number>();
   /** Context to attach to a delivered message, by its exact text, picked up by the UserPromptSubmit hook. */
   private readonly contextFor = new Map<string, string>();
   private readonly usage = new UsageRecorder();
@@ -674,6 +678,12 @@ export class Session {
     const why = `${this.userName} allowed this exact call once, at ${new Date(q.answeredAt!).toLocaleTimeString()}, in their answer to question #${q.id}`;
     this.record('event', { text: `Refused call allowed once: ${why}.` });
     this.allowedBy.onceAllowed(toolUseId, this.userName, q.answeredAt!, q.id);
+    // Claude Code may still refuse the call after this allow. Its own safety checks come first, such as a write to its
+    // settings files. If it does, raiseRefusal tells the person instead of offering Allow once again (Project-Ledung#470).
+    if (toolUseId) {
+      this.onceUsedBy.set(toolUseId, q.id);
+      if (this.onceUsedBy.size > 300) this.onceUsedBy.delete(this.onceUsedBy.keys().next().value!);
+    }
     return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: `Allowed by Ledung: ${why}.` } };
   }
 
@@ -824,22 +834,39 @@ export class Session {
    * A tool result that is the auto mode classifier's refusal (issue #104): the user is asked at once, Allow once or
    * Deny, at the top of Waiting for you and with a push (every question addressed to the user pushes). Always the
    * user's, never a manager's, whoever started the session. Once per refused call; while one such question is open
-   * for the same call, a repeat of it is only noted.
+   * for the same call, a repeat of it is only noted. When Allow once can't lift the call (Project-Ledung#470), because
+   * it writes a file Claude Code guards or because a retry an Allow once let through was refused again, the person is
+   * asked to make it by hand instead, and Allow once isn't offered.
    */
   private raiseRefusal(toolUseId: string, reason: string, byAgent = false): void {
     const call = this.toolCalls.get(toolUseId);
     if (!call) return;
     const mine = this.store.listQuestions(500, false).filter((q) => q.sessionId === this.id && refusalOf(q));
     if (mine.some((q) => refusalOf(q)!.toolUseId === toolUseId)) return;
+    const retryOf = this.onceUsedBy.get(toolUseId);
+    // The grant's note never reaches the session: the call it was for didn't run.
+    if (retryOf !== undefined) this.allowedBy.take(toolUseId);
     const open = mine.find((q) => q.status === 'open' && sameCall(refusalOf(q)!, call.toolName, call.input) && (refusalOf(q)!.byAgent ?? false) === byAgent);
     if (open) {
       this.record('event', { text: `The auto mode classifier refused the same call again; it still waits for ${this.userName} as question #${open.id}.` });
       return;
     }
+    const byHand = retryOf !== undefined ? 'retried' as const : guardedWrite(call.toolName, call.input) ? 'protected' as const : null;
     const info = this.store.getSession(this.id)!;
-    const asked = refusalQuestion({ ...call, reason, toolUseId, ...(byAgent ? { byAgent } : {}) }, { title: info.title, project: info.project }, this.management.questionTiers(this.id)[0]);
+    const refusal = { ...call, reason, toolUseId, ...(byAgent ? { byAgent } : {}), ...(byHand ? { byHand } : {}), ...(retryOf !== undefined ? { retryOf } : {}) };
+    const asked = refusalQuestion(refusal, { title: info.title, project: info.project }, this.management.questionTiers(this.id)[0]);
     const q = this.store.createQuestion({ sessionId: this.id, question: asked.question, options: asked.options, addressedTo: 'user', details: asked.details });
-    this.record('event', { text: `The auto mode classifier refused a ${call.toolName} call; Ledung asked ${this.userName} (question #${q.id}).` });
+    if (byHand) {
+      this.record('event', {
+        text: byHand === 'retried'
+          ? `The auto mode classifier refused the ${call.toolName} call again after ${this.userName}'s Allow once (question #${retryOf}): Allow once can't get it past Claude Code. Ledung asked ${this.userName} to make it by hand (question #${q.id}).`
+          : `The auto mode classifier refused a ${call.toolName} call that writes a file Claude Code guards itself, which Allow once can't get past. Ledung asked ${this.userName} to make it by hand (question #${q.id}).`,
+      });
+      if (!byHandExercised) {
+        byHandExercised = true;
+        exercisedLine(`EXERCISED #470 a refusal Allow once can't lift (${byHand}) asked of the person as a change by hand`);
+      }
+    } else this.record('event', { text: `The auto mode classifier refused a ${call.toolName} call; Ledung asked ${this.userName} (question #${q.id}).` });
     this.record('question', { questionId: q.id });
     this.publish({ type: 'question', question: q });
   }

@@ -12,7 +12,7 @@ import { Store } from '../src/store/store.ts';
 import { buildDelivery, Management } from '../src/sessions/management.ts';
 import { Session } from '../src/sessions/session.ts';
 import { Push, type PushPayload } from '../src/server/push.ts';
-import { classifierReason, sameCall } from '../src/sessions/refusals.ts';
+import { classifierReason, guardedWrite, sameCall } from '../src/sessions/refusals.ts';
 import { waitingLists } from '../web/src/waitingLists.ts';
 import type { QuestionInfo, ServerEvent } from '../src/shared/protocol.ts';
 import { removeTemp } from './temp.ts';
@@ -60,6 +60,11 @@ function setup() {
     s.onMessage({ type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'tool_use', id, name: 'Bash', input: { command, description: 'Do it' } }] } });
     s.onMessage({ type: 'user', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: isError, content: REFUSED(reason) }] } });
   };
+  /** The same two lines for any tool's call (Project-Ledung#470). */
+  const refuseCall = (id: string, name: string, input: Record<string, unknown>, reason = '[Self-Modification]') => {
+    s.onMessage({ type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'tool_use', id, name, input }] } });
+    s.onMessage({ type: 'user', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: true, content: REFUSED(reason) }] } });
+  };
   const refusals = () => store.listQuestions(100).filter((q) => q.details?.refusal);
   const hooks = async () => {
     const o = await session.claudeOptions({ onLine: () => {}, onStderr: () => {} });
@@ -72,13 +77,18 @@ function setup() {
         const out = await pre({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command, description } } as never, toolUseId, signal) as { hookSpecificOutput?: { permissionDecision?: string } };
         return out.hookSpecificOutput?.permissionDecision === 'allow' ? 'allow' : null;
       },
+      /** The same for any tool's call. */
+      decideCall: async (toolName: string, toolInput: Record<string, unknown>, toolUseId: string) => {
+        const out = await pre({ hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: toolInput } as never, toolUseId, signal) as { hookSpecificOutput?: { permissionDecision?: string } };
+        return out.hookSpecificOutput?.permissionDecision === 'allow' ? 'allow' : null;
+      },
       note: async (toolUseId: string) => {
         const out = await post({ hook_event_name: 'PostToolUse', tool_use_id: toolUseId } as never, toolUseId, signal) as { hookSpecificOutput?: { additionalContext?: string } };
         return out.hookSpecificOutput?.additionalContext ?? null;
       },
     };
   };
-  return { store, session, management, sent, published, refuse, refusals, hooks };
+  return { store, session, management, sent, published, refuse, refuseCall, refusals, hooks };
 }
 
 test("the classifier's refusal is found in a tool result, with its reason; any other error is not", () => {
@@ -207,4 +217,89 @@ test('the exact match: same tool and input, the description aside; no prefix, no
   const nested = { toolName: 'mcp__x__post', input: { body: { description: 'one' } } };
   assert.ok(!sameCall(nested, nested.toolName, { body: { description: 'two' } }));
   assert.ok(!sameCall(granted, 'Bash', { command: 'git push origin main', extra: { description: 'x' } }), "only a shell command's own top-level description is its label");
+});
+
+// Project-Ledung#470. Claude Code 2.1.316 checks a write to its own settings files (and the other paths it guards)
+// before a PreToolUse hook's allow counts. So in auto mode the classifier decides the call, whatever the person
+// answered to Allow once. Reproduced with a hook that allows every call: Claude Code still asked about
+// .claude/settings.local.json ("Claude requested permissions to write to …, but you haven't granted it yet"), and it
+// let the hook allow an ordinary file through. The settings Edit below is the one in the issue.
+const SETTINGS_EDIT = {
+  file_path: 'C:\\Users\\simon\\work\\ledung\\.claude\\settings.local.json',
+  old_string: '{\n  "permissions": {}\n}',
+  new_string: '{\n  "permissions": { "allow": ["Bash(npm run check)"] }\n}',
+};
+
+test('the files Claude Code guards itself are known; an ordinary file and a worktree under .claude are not', () => {
+  assert.equal(guardedWrite('Edit', SETTINGS_EDIT), SETTINGS_EDIT.file_path, "the project's local settings, as in the issue");
+  assert.ok(guardedWrite('Write', { file_path: '/home/simon/.claude/settings.json', content: '{}' }), "the user's settings");
+  assert.ok(guardedWrite('Edit', { file_path: 'repo/.git/config', old_string: 'a', new_string: 'b' }), 'git config');
+  assert.ok(guardedWrite('Write', { file_path: '/home/simon/.bashrc', content: '' }), 'a shell start file');
+  assert.ok(guardedWrite('Edit', { file_path: 'repo/.mcp.json', old_string: 'a', new_string: 'b' }), "the project's MCP servers");
+  assert.ok(guardedWrite('Edit', { file_path: 'repo/.claude/worktrees/w/.claude/settings.local.json', old_string: 'a', new_string: 'b' }), "a worktree's own settings");
+  // Not guarded: an ordinary file, a file in a worktree under .claude (where every worker writes), a read, a shell command.
+  assert.equal(guardedWrite('Edit', { file_path: 'C:\\Users\\simon\\work\\ledung\\src\\main.ts', old_string: 'a', new_string: 'b' }), null);
+  assert.equal(guardedWrite('Edit', { file_path: 'C:\\Users\\simon\\work\\ledung\\.claude\\worktrees\\w\\src\\main.ts', old_string: 'a', new_string: 'b' }), null);
+  assert.equal(guardedWrite('Read', { file_path: SETTINGS_EDIT.file_path }), null);
+  assert.equal(guardedWrite('Bash', { command: 'echo {} > .claude/settings.local.json' }), null);
+});
+
+test('a refused write to a guarded file is never offered as Allow once: only the person can do it, and the question gives the exact edit', async () => {
+  const { refuseCall, refusals, store, hooks } = setup();
+  refuseCall('tu-s', 'Edit', SETTINGS_EDIT);
+  const [q, ...more] = refusals();
+  assert.ok(q, 'the refusal was raised');
+  assert.equal(more.length, 0);
+  assert.equal(q.addressedTo, 'user');
+  assert.deepEqual(q.options, ['Done by hand', 'Deny'], 'no Allow once');
+  assert.equal(q.details!.refusal!.byHand, 'protected');
+  assert.match(q.question, /Only you can/);
+  assert.match(q.question, /Allow once in Ledung can't get it past Claude Code/);
+  // The exact edit, to make by hand: the file, the text to replace and what replaces it.
+  assert.ok(q.question.includes(`Open \`${SETTINGS_EDIT.file_path}\` and make this one edit.`), q.question);
+  assert.ok(q.question.includes(`\`\`\`\n${SETTINGS_EDIT.old_string}\n\`\`\`\n\nwith:\n\n\`\`\`\n${SETTINGS_EDIT.new_string}\n\`\`\``), 'old and new text, each as it is');
+  // The words "Allow once" typed as an answer grant nothing: the question offered no such thing.
+  store.answerQuestion(q.id, 'Allow once', 'user');
+  const { decideCall } = await hooks();
+  assert.equal(await decideCall('Edit', SETTINGS_EDIT, 'r-s'), null);
+  // The positive branch: a refused Edit of an ordinary file still offers Allow once, and its tap lets the retry through.
+  const plain = { file_path: 'C:\\Users\\simon\\work\\ledung\\src\\main.ts', old_string: 'a', new_string: 'b' };
+  refuseCall('tu-p', 'Edit', plain, '[External System Writes]');
+  const p = refusals().find((x) => x.details!.refusal!.toolUseId === 'tu-p')!;
+  assert.deepEqual(p.options, ['Allow once', 'Deny']);
+  assert.equal(p.details!.refusal!.byHand, undefined);
+  store.answerQuestion(p.id, 'Allow once', 'user');
+  assert.equal(await decideCall('Edit', plain, 'r-p'), 'allow');
+});
+
+test('a retry refused again after an Allow once tells the person, with the call to make by hand, not another Allow once', async () => {
+  const { refuse, refusals, store, hooks, published } = setup();
+  refuse('tu-1', 'Set-Content .claude/settings.local.json "{}"');
+  const first = refusals()[0]!;
+  assert.deepEqual(first.options, ['Allow once', 'Deny'], 'a shell command: what it writes is not read off it, so Allow once is offered');
+  store.answerQuestion(first.id, 'Allow once', 'user');
+  const { decide, note } = await hooks();
+  // Ledung lets the retry through; Claude Code refuses it anyway.
+  assert.equal(await decide('Set-Content .claude/settings.local.json "{}"', 'tu-2'), 'allow');
+  refuse('tu-2', 'Set-Content .claude/settings.local.json "{}"', '[Self-Modification]');
+  const again = refusals().filter((q) => q.id !== first.id);
+  assert.equal(again.length, 1, 'the person is told');
+  const q = again[0]!;
+  assert.equal(q.addressedTo, 'user');
+  assert.equal(q.status, 'open');
+  assert.deepEqual(q.options, ['Done by hand', 'Deny'], 'not Allow once again');
+  assert.equal(q.details!.refusal!.byHand, 'retried');
+  assert.equal(q.details!.refusal!.retryOf, first.id);
+  assert.ok(q.question.includes(`You allowed this Bash command once (question #${first.id})`), q.question);
+  assert.match(q.question, /refused it again/);
+  assert.match(q.question, /Run this yourself, in Bash, in the session's folder:\n\n```bash\nSet-Content \.claude\/settings\.local\.json "\{\}"\n```/);
+  assert.ok(published.some((e) => e.type === 'question' && e.question.id === q.id), 'published, so the page and a push show it');
+  assert.equal(await note('tu-2'), null, "no note says the grant was used for a call that didn't run");
+  assert.ok(store.listMessages('s', { limit: 50 }).some((m) => m.kind === 'event' && /refused the Bash call again after Simon's Allow once/.test(String(m.data.text))));
+  // Answered Done by hand, the session is told not to retry.
+  store.answerQuestion(q.id, 'Done by hand', 'user');
+  const told = buildDelivery('Simon', [store.getQuestion(q.id)!], [], () => '').userText;
+  assert.match(told, /Simon made this change by hand/);
+  assert.match(told, /Don't retry it/);
+  assert.doesNotMatch(told, /Retry exactly this call/);
 });

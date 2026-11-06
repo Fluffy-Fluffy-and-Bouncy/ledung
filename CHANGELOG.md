@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-06
+- Auto mode refusals that "Allow once" can't get past Claude Code no longer offer it. Two cases: a session's edit of a file Claude Code guards itself (its settings files, `.git`, shell start files and the like), and a retry refused again after your Allow once. You get "Only you can make this change" instead, with the exact edit or command to make by hand, and Done by hand or Deny. (Project-Ledung#470)
+
 ## 2026-11-05
 - A workflow can name a start-reading list (`"startReadingFile"`): after every start, clear, compact and resume, each session is told which files to read first, the manager its own, with the modules its project's process config switches on and the files that project keeps; a project's own SessionStart hook still runs, and a broken list is told to the session at every start until it is fixed. (#469)
 - Away mode: only a merge auto mode refused as "[Merge Without Review]" goes quietly to the away log; refused for any other reason, it is asked of you as before, and the log says its checks passed when refused rather than that away mode allowed it. Taking merge off away mode while a merge's checks are read now holds that merge, and an "Allow once" answer covers only the session's own calls, or only its subagents', whichever was refused. (#145, #146)
