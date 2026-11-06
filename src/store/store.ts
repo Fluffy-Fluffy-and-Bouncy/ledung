@@ -309,6 +309,16 @@ export class Store {
     return Number(r?.host_seq ?? 0);
   }
 
+  /** The fingerprint of the Ledung tool list the session's Claude Code has (issue #164); null: not known. */
+  toolsSchema(sessionId: string): string | null {
+    const r = this.db.prepare('SELECT tools_schema FROM sessions WHERE id = ?').get(sessionId) as { tools_schema: string | null } | undefined;
+    return r?.tools_schema ?? null;
+  }
+
+  setToolsSchema(sessionId: string, hash: string): void {
+    this.db.prepare('UPDATE sessions SET tools_schema = ? WHERE id = ?').run(hash, sessionId);
+  }
+
   /** Starts counting host lines from zero again (a new host for the session). */
   resetHostSeq(sessionId: string): void {
     this.db.prepare('UPDATE sessions SET host_seq = 0 WHERE id = ?').run(sessionId);
