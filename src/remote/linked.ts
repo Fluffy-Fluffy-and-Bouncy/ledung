@@ -80,6 +80,8 @@ export interface LinkedOptions {
   port?: number;
   /** A link was made or dropped, or a linked computer's port changed: the computer tabs and frames follow (#273). */
   onChange?: () => void;
+  /** The sentence a file send is refused with while the relay caps this computer's owner (issue #161); null: not capped. */
+  relayCap?: () => string | null;
   now?: () => number;
 }
 
@@ -286,6 +288,11 @@ export class LinkedComputers {
     const link = this.read().find((l) => l.id === id);
     if (!link) throw new LinkError(404, 'No such linked computer.');
     return this.call(link.publicName, route, body, link.sendKey, timeoutMs);
+  }
+
+  /** The relay caps this computer's owner (issue #161): the sentence file sends are refused with; null: not capped. */
+  relayCap(): string | null {
+    return this.opts.relayCap?.() ?? null;
   }
 
   /**

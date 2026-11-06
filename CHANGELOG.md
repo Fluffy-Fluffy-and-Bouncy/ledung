@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-06
+- Relay: Settings → Relay → Owners lists each owner on your relay with the bytes their computers moved today and this month, and lets you set a monthly cap for anyone but yourself (no cap until you set one). An owner past their cap is slowed down, not cut off: their messages and pages still work, and their Ledungs refuse file transfers with a sentence saying when the cap resets. Removing the cap lets them through at once; the counts survive a relay restart. (#161)
 - Linked computers: a manager can save a file another computer sent it into one of its own sessions' worktree (`save_linked_file`), so a worker can open it. It is never written over an existing file, through a link, to a hidden or sensitive path, or with an extension that doesn't fit the file, and never into a locked or container project; the answer gives the path, size and SHA-256 to pass on. (#160)
 - Workflow sub-steps: each subagent is told where its brief is, the way the block's own brief is: a plain brief in the workflow folder, a `folder:` brief by its file in the folder beside it, without the `folder:` prefix. (#142)
 - Away mode: a merge that names no repository (no `-R owner/name`, no PR link) is now always held for you, so `GH_REPO`, `GH_HOST` or the folder the session stands in can never decide which pull request gets merged. (#148)

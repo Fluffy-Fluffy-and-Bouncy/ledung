@@ -25,6 +25,12 @@
 //   this way is passed through end to end (Martin, 2026-10-19, Ledung questions 396 and 398). The work is
 //   in Relay.add, remove and list (adminRequest takes them as one request) and readStore / writeStore;
 //   the commands only parse their arguments, send one request and print the answer.
+// - Bytes per owner (#161): every stream byte through an agent, either way, is counted for the agent's owner, per UTC
+//   day, in relay.usage.json beside the store, written about once a minute, with the monthly caps the admin's Ledung
+//   sets (Settings → Relay). An owner with no cap is uncapped (Martin, 2026-11-06, Ledung question #633). An owner past
+//   their cap is throttled, never refused, so their messages and page still work, and each of their Ledungs is told
+//   with a status message after the hello, so it refuses file transfers with the reason (question #632). The admin's
+//   own owner is never capped. Only totals are logged, once a day; never what goes through.
 //
 // Not part of Ledung's release copy or npm package: it runs on its own, from its own container.
 import crypto from 'node:crypto';
@@ -45,7 +51,7 @@ export { hashSecret };
 export interface AgentEntry {
   /** What the agent gives when it connects. */
   name: string;
-  /** Who the agent belongs to; only logged for now (decision 7). */
+  /** Who the agent belongs to: logged, and its bytes are counted and capped per owner (#161). */
   owner: string;
   /** The public host phones use for it, e.g. "pc.example.org". */
   host: string;
@@ -69,6 +75,8 @@ export interface RelayLimits {
   attemptWindowSeconds: number;
   /** How long a connection may take to send its request head (or PROXY header and ClientHello) before it is dropped. */
   headTimeoutMs: number;
+  /** What each computer of an owner past their monthly cap is held to, all that computer's streams together (#161): per computer, not shared across the owner's computers (review of PR #173). */
+  capThrottleBytesPerSecond: number;
 }
 
 export interface RelayConfig {
@@ -99,7 +107,8 @@ export interface RelayConfig {
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$/;
 const HOST = /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/;
-const DEFAULT_LIMITS: RelayLimits = { maxFrameBytes: 1024 * 1024, maxStreamsPerAgent: 64, failedAttemptsPerAddress: 10, attemptWindowSeconds: 600, headTimeoutMs: 10_000 };
+// 64 KiB/s past the cap (#161 refine notes): a message of a few KB or a page still goes, a 200 MB file takes most of an hour.
+const DEFAULT_LIMITS: RelayLimits = { maxFrameBytes: 1024 * 1024, maxStreamsPerAgent: 64, failedAttemptsPerAddress: 10, attemptWindowSeconds: 600, headTimeoutMs: 10_000, capThrottleBytesPerSecond: 64 * 1024 };
 /** A request head larger than this is refused. */
 const MAX_HEAD = 16 * 1024;
 const PING_MS = 30_000;
@@ -367,6 +376,101 @@ export function writeInvites(file: string, data: { invites: Invite[]; joined: Jo
   }
 }
 
+/** One owner's bytes (#161): per UTC day, both ways together, and the monthly cap the admin set (null: none). */
+export interface OwnerUsage {
+  owner: string;
+  cap: number | null;
+  days: Record<string, number>;
+}
+
+/** relay.usage.json: the owners' bytes and caps, the admin's own owner, and the last day whose totals were logged. */
+export interface UsageData {
+  owners: OwnerUsage[];
+  /** The owner of the agent the admin's Ledung connects as: never capped. Null: not known yet. */
+  admin: string | null;
+  logged: string | null;
+}
+
+/** An owner on the relay, as Settings → Relay shows it (GET /admin/owners). */
+export interface OwnerRow {
+  owner: string;
+  /** The computers on the relay that are theirs. */
+  computers: number;
+  today: number;
+  month: number;
+  cap: number | null;
+  /** Past their cap now: throttled, and their Ledungs refuse file transfers. */
+  capped: boolean;
+  /** The admin's own: no cap is offered, and none applies. */
+  you: boolean;
+}
+
+/** The largest cap that can be set: a petabyte, well past what a month could carry. */
+const MAX_CAP = 1e15;
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+const validCap = (cap: unknown): cap is number => typeof cap === 'number' && Number.isInteger(cap) && cap > 0 && cap <= MAX_CAP;
+
+/** The byte counts as written; a part that isn't one is an error with the reason, so a bad edit can't zero a month. No file: nothing yet. */
+export function readUsage(file: string): UsageData {
+  if (!fs.existsSync(file)) return { owners: [], admin: null, logged: null };
+  try {
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as { owners?: unknown; admin?: unknown; logged?: unknown };
+    if (!Array.isArray(raw.owners)) throw new Error('no "owners" list');
+    const owners = raw.owners.map((o: unknown, i): OwnerUsage => {
+      const u = (o ?? {}) as Record<string, unknown>;
+      if (typeof u.owner !== 'string' || !u.owner) throw new Error(`owners[${i}].owner: a name`);
+      const cap = u.cap ?? null;
+      if (cap !== null && !validCap(cap)) throw new Error(`owners[${i}].cap: a whole number of bytes, or null`);
+      const days = u.days ?? {};
+      if (typeof days !== 'object' || Array.isArray(days)) throw new Error(`owners[${i}].days: bytes per day`);
+      const kept: Record<string, number> = {};
+      for (const [day, bytes] of Object.entries(days as Record<string, unknown>)) {
+        if (!DAY.test(day) || typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes < 0) throw new Error(`owners[${i}].days: "${day}" is not a day with a byte count`);
+        kept[day] = bytes;
+      }
+      return { owner: u.owner, cap, days: kept };
+    });
+    const text = (v: unknown) => (typeof v === 'string' && v ? v : null);
+    return { owners, admin: text(raw.admin), logged: text(raw.logged) };
+  } catch (e) {
+    throw new Error(`The relay's byte counts (${file}) can't be read: ${(e as Error).message}`);
+  }
+}
+
+/** Written whole beside it, then renamed over it, as the store is. */
+export function writeUsage(file: string, data: UsageData): void {
+  const temp = `${file}.${process.pid}.tmp`;
+  const body = { $comment: 'Bytes through the relay per owner and UTC day, and the monthly caps the admin\'s Ledung set (Settings → Relay). Not by hand.', ...data };
+  try {
+    fs.writeFileSync(temp, `${JSON.stringify(body, null, 2)}\n`, { mode: 0o600 });
+    fs.renameSync(temp, file);
+  } catch (e) {
+    fs.rmSync(temp, { force: true });
+    throw new Error(`Could not write the relay's byte counts (${file}): ${(e as Error).message}`);
+  }
+}
+
+/** The UTC day of a time, "2026-11-06": the relay's days and months are UTC wherever it runs. */
+export function utcDay(at: number): string {
+  return new Date(at).toISOString().slice(0, 10);
+}
+
+/** The first day of the month after the one `at` is in: when a monthly cap resets. */
+export function capResetsOn(at: number): string {
+  const d = new Date(at);
+  return utcDay(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1));
+}
+
+/** The status message an agent gets after its hello and whenever it changes (#161): whether its owner is past the cap. */
+export function capMessage(reached: boolean, resetsOn: string): string {
+  return JSON.stringify({ type: 'cap', reached, resetsOn });
+}
+
+/** How often the byte counts are written: a restart loses at most this much (#161 refine notes, "about once a minute"). */
+const USAGE_EVERY_MS = 60_000;
+/** Logged once per run, on the first throttle (agent-workflow worker.md, "EXERCISED line"). */
+let exercisedThrottle = false;
+
 class ApiError extends Error {
   readonly status: number;
   constructor(status: number, message: string) {
@@ -486,12 +590,21 @@ export class Relay {
   private invites: Invite[] = [];
   private joined: Joined[] = [];
   private readonly now: () => number;
+  /** Where the owners' byte counts and caps are kept (#161), or null to keep them only while the relay runs (tests). */
+  private readonly usageFile: string | null;
+  private readonly usage = new Map<string, { cap: number | null; days: Map<string, number> }>();
+  private adminOwner: string | null = null;
+  private loggedDay: string;
+  private usageChanged = false;
+  /** The owners past their cap now, throttled. */
+  private readonly capped = new Set<string>();
+  private readonly usageTimer: NodeJS.Timeout;
 
   /**
    * `store`: the file added computers are kept in (README, Adding a computer). `invites`: the file invites and joined
    * computers are kept in (README, Invite a computer). `now`: the clock invites run out by; tests move it.
    */
-  constructor(config: RelayConfig, log: (line: string) => void = (line) => console.log(line), options: { store?: string | null; pickName?: () => string; invites?: string | null; now?: () => number } = {}) {
+  constructor(config: RelayConfig, log: (line: string) => void = (line) => console.log(line), options: { store?: string | null; pickName?: () => string; invites?: string | null; now?: () => number; usage?: string | null; usageEveryMs?: number } = {}) {
     this.config = config;
     this.log = log;
     this.store = options.store ?? null;
@@ -499,6 +612,13 @@ export class Relay {
     this.invitesFile = options.invites ?? null;
     this.now = options.now ?? Date.now;
     if (this.invitesFile) ({ invites: this.invites, joined: this.joined } = readInvites(this.invitesFile));
+    this.usageFile = options.usage ?? null;
+    const usage = this.usageFile ? readUsage(this.usageFile) : { owners: [], admin: null, logged: null };
+    for (const o of usage.owners) this.usage.set(o.owner, { cap: o.cap, days: new Map(Object.entries(o.days)) });
+    this.adminOwner = usage.admin;
+    this.loggedDay = usage.logged ?? utcDay(this.now());
+    this.noteAdminCap();
+    for (const owner of this.usage.keys()) this.checkCap(owner);
     for (const a of config.agents) {
       this.byHost.set(a.host, a);
       this.byName.set(a.name, a);
@@ -526,6 +646,8 @@ export class Relay {
     this.passthrough = config.passthroughPort === null ? null : net.createServer({ allowHalfOpen: true }, (socket) => this.onPassthrough(socket));
     this.pinger = setInterval(() => this.ping(), PING_MS);
     this.pinger.unref();
+    this.usageTimer = setInterval(() => this.usageTick(), options.usageEveryMs ?? USAGE_EVERY_MS);
+    this.usageTimer.unref();
   }
 
   /** Listens on both ports; resolves with the HTTP one (useful with port 0 in tests; see passthroughPort()). */
@@ -550,6 +672,8 @@ export class Relay {
 
   async close(): Promise<void> {
     clearInterval(this.pinger);
+    clearInterval(this.usageTimer);
+    this.saveUsage();
     for (const agent of this.online.values()) agent.ws.terminate();
     for (const socket of this.sockets) socket.destroy();
     const close = (server: net.Server | null) => new Promise<void>((resolve) => (server?.listening ? server.close(() => resolve()) : resolve()));
@@ -812,7 +936,7 @@ export class Relay {
     try {
       if (!this.config.adminKeySha256) throw new ApiError(404, 'Inviting computers is not set up on this relay.');
       if (this.blocked(from)) throw new ApiError(429, 'Too many failed attempts; try again later.');
-      const route = `${req.method} ${pathname.replace(/^\/admin\/(invites|computers)\/[^/]+/, '/admin/$1/:id')}`;
+      const route = `${req.method} ${pathname.replace(/^\/admin\/(invites|computers|owners)\/[^/]+/, '/admin/$1/:id')}`;
       if (route === 'POST /enrol') {
         try {
           return answer(200, this.enrol(await readApiBody(req)));
@@ -846,6 +970,11 @@ export class Relay {
         case 'POST /admin/computers/:id/approved':
           this.approved(id);
           return answer(200, { ok: true });
+        // Bytes per owner and their caps (#161), for Settings → Relay on the admin's Ledung.
+        case 'GET /admin/owners':
+          return answer(200, this.owners(new URL(req.url ?? '/', 'http://relay').searchParams.get('self') ?? undefined));
+        case 'POST /admin/owners/:id/cap':
+          return answer(200, this.setCap(id, (await readApiBody(req)).cap ?? null));
       }
       throw new ApiError(404, 'Not found.');
     } catch (e) {
@@ -853,6 +982,146 @@ export class Relay {
       this.event('api error', { error: (e as Error).message });
       return answer(500, { error: 'The relay could not do that.' });
     }
+  }
+
+  /** Stream bytes through one of `owner`'s computers (#161): counted for today, and the cap checked. */
+  private countBytes(owner: string, bytes: number): void {
+    let u = this.usage.get(owner);
+    if (!u) this.usage.set(owner, u = { cap: null, days: new Map() });
+    const day = utcDay(this.now());
+    u.days.set(day, (u.days.get(day) ?? 0) + bytes);
+    this.usageChanged = true;
+    this.checkCap(owner);
+  }
+
+  private monthBytes(owner: string, at = this.now()): number {
+    const month = utcDay(at).slice(0, 7);
+    let sum = 0;
+    for (const [day, bytes] of this.usage.get(owner)?.days ?? []) if (day.startsWith(month)) sum += bytes;
+    return sum;
+  }
+
+  /** The cap that applies: the admin's own owner has none, whatever the file says (#161). */
+  private capOf(owner: string): number | null {
+    return owner === this.adminOwner ? null : this.usage.get(owner)?.cap ?? null;
+  }
+
+  /** Throttles an owner who reached their cap, lets one go who is under it again, and tells their Ledungs. */
+  private checkCap(owner: string): void {
+    const cap = this.capOf(owner);
+    const month = this.monthBytes(owner);
+    const over = cap !== null && month >= cap;
+    if (over === this.capped.has(owner)) return;
+    if (over) this.capped.add(owner);
+    else this.capped.delete(owner);
+    this.event(over ? 'owner capped' : 'owner cap lifted', { owner, month, cap: cap ?? 'none' });
+    if (over && !exercisedThrottle) {
+      exercisedThrottle = true;
+      this.log(`${new Date().toISOString()} EXERCISED #161 relay throttled an owner past their monthly cap`);
+    }
+    for (const agent of this.online.values()) if (agent.entry.owner === owner) this.applyCap(agent);
+  }
+
+  /** The agent's streams held to the throttle or let go, as its owner's cap says, and its Ledung told. */
+  private applyCap(agent: Agent): void {
+    const over = this.capped.has(agent.entry.owner);
+    agent.streams.throttle(over ? this.config.limits.capThrottleBytesPerSecond : null);
+    if (agent.ws.readyState === agent.ws.OPEN) agent.ws.send(capMessage(over, capResetsOn(this.now())));
+  }
+
+  /** A cap in the file for the admin's own owner (a hand edit) is ignored, and said so (#161). */
+  private noteAdminCap(): void {
+    if (this.adminOwner && this.usage.get(this.adminOwner)?.cap != null) {
+      this.event('cap ignored', { owner: this.adminOwner, reason: 'the admin\'s own computers are never capped' });
+    }
+  }
+
+  /**
+   * About once a minute: a new day logs the last one's totals per owner (the only byte figures in the log), a new month
+   * lifts the caps reached in the last, days before last month are dropped, and the counts are written if they changed.
+   */
+  private usageTick(): void {
+    const now = this.now();
+    const today = utcDay(now);
+    if (today !== this.loggedDay) {
+      const day = this.loggedDay;
+      for (const [owner, u] of this.usage) {
+        const bytes = u.days.get(day);
+        if (bytes) this.event('owner bytes', { owner, day, bytes, month: this.monthBytes(owner, Date.parse(`${day}T12:00:00Z`)) });
+      }
+      this.loggedDay = today;
+      this.usageChanged = true;
+      const d = new Date(now);
+      const keepFrom = utcDay(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - 1, 1));
+      for (const u of this.usage.values()) for (const old of [...u.days.keys()]) if (old < keepFrom) u.days.delete(old);
+      for (const owner of this.usage.keys()) this.checkCap(owner);
+    }
+    this.saveUsage();
+  }
+
+  /** Writes the counts if they changed; a write that fails is logged and tried again next time. */
+  saveUsage(): void {
+    if (!this.usageFile || !this.usageChanged) return;
+    try {
+      writeUsage(this.usageFile, {
+        owners: [...this.usage].map(([owner, u]) => ({ owner, cap: u.cap, days: Object.fromEntries(u.days) })),
+        admin: this.adminOwner,
+        logged: this.loggedDay,
+      });
+      this.usageChanged = false;
+    } catch (e) {
+      this.event('usage not written', { error: (e as Error).message });
+    }
+  }
+
+  /**
+   * Every owner with a computer on the relay, or with bytes or a cap this month, the admin's own first (#161). `self`:
+   * the agent the admin's Ledung connects as; its owner is the admin's own from then on, kept in the file.
+   */
+  owners(self?: string): { owners: OwnerRow[]; resetsOn: string } {
+    const mine = self ? this.byName.get(self)?.owner : undefined;
+    if (mine && mine !== this.adminOwner) {
+      const before = this.adminOwner;
+      this.adminOwner = mine;
+      this.usageChanged = true;
+      this.event('admin owner', { owner: mine });
+      this.noteAdminCap();
+      this.checkCap(mine);
+      // The one that was "you" until now is an owner like any other again.
+      if (before) this.checkCap(before);
+      this.saveUsage();
+    }
+    const now = this.now();
+    const today = utcDay(now);
+    const agents = [...this.byName.values()];
+    const names = new Set(agents.map((a) => a.owner));
+    for (const [owner, u] of this.usage) if (u.cap !== null || this.monthBytes(owner, now) > 0) names.add(owner);
+    const rows = [...names].map((owner): OwnerRow => ({
+      owner,
+      computers: agents.filter((a) => a.owner === owner).length,
+      today: this.usage.get(owner)?.days.get(today) ?? 0,
+      month: this.monthBytes(owner, now),
+      cap: this.capOf(owner),
+      capped: this.capped.has(owner),
+      you: owner === this.adminOwner,
+    }));
+    rows.sort((a, b) => Number(b.you) - Number(a.you) || a.owner.localeCompare(b.owner));
+    return { owners: rows, resetsOn: capResetsOn(now) };
+  }
+
+  /** Sets an owner's monthly cap in bytes, or removes it with null; it applies at once (#161). Never the admin's own. */
+  setCap(owner: string, cap: unknown): OwnerRow {
+    if (cap !== null && !validCap(cap)) throw new ApiError(400, '"cap": a whole number of bytes above 0, or null for none.');
+    if (![...this.byName.values()].some((a) => a.owner === owner) && !this.usage.has(owner)) throw new ApiError(404, 'No such owner on this relay.');
+    if (owner === this.adminOwner) throw new ApiError(400, 'Those are your own computers; they are never capped.');
+    let u = this.usage.get(owner);
+    if (!u) this.usage.set(owner, u = { cap: null, days: new Map() });
+    u.cap = cap;
+    this.usageChanged = true;
+    this.saveUsage();
+    this.event(cap === null ? 'cap removed' : 'cap set', { owner, cap: cap ?? undefined });
+    this.checkCap(owner);
+    return this.owners().owners.find((r) => r.owner === owner)!;
   }
 
   private addedEntries(): AgentEntry[] {
@@ -955,7 +1224,8 @@ export class Relay {
     agent.nextId = agent.nextId >= 0xffffffff ? 1 : agent.nextId + 1;
     agent.ws.send(encodeFrame(FRAME.open, id));
     agent.streams.attach(id, socket, first);
-    socket.resume();
+    // The first bytes may already have put the stream on hold (the throttle, #161); its release resumes it then.
+    if (!agent.streams.holding(id)) socket.resume();
   }
 
   /**
@@ -1099,14 +1369,17 @@ export class Relay {
       previous.streams.closeAll();
       previous.ws.close(4000, 'Replaced by a newer connection.');
     }
-    const agent: Agent = { entry, ws, streams: new Streams(ws), nextId: 1, alive: true };
+    // Counted on the agent whose host was dialled, for its owner (#161 refine notes).
+    const agent: Agent = { entry, ws, streams: new Streams(ws, { onBytes: (bytes) => this.countBytes(entry.owner, bytes) }), nextId: 1, alive: true };
     this.online.set(entry.name, agent);
     this.event('agent connected', { name: entry.name, owner: entry.owner, host: entry.host, tls: entry.tls, from });
+    // The status message after the hello (#161): whether its owner is past the cap; the throttle with it if so.
+    this.applyCap(agent);
     ws.on('pong', () => {
       agent.alive = true;
     });
     ws.on('message', (data: Buffer, isBinary: boolean) => {
-      // Text after the hello is for later messages (status); none are defined yet.
+      // Text after the hello is for status; the relay sends it (the cap, #161) and takes none from agents.
       if (!isBinary) return;
       const frame = decodeFrame(data);
       // Only the relay opens streams; anything else from the agent ends its connection.
@@ -1267,7 +1540,9 @@ async function main(): Promise<void> {
   const store = process.env.RELAY_STORE || path.join(path.dirname(path.resolve(file)), 'relay.added.json');
   // Invites and joined computers (#237) next to the store, in the same writable place.
   const invites = process.env.RELAY_INVITES || path.join(path.dirname(path.resolve(store)), 'relay.invites.json');
-  const relay = new Relay(config, undefined, { store, invites });
+  // The owners' byte counts and caps (#161), there too.
+  const usage = process.env.RELAY_USAGE || path.join(path.dirname(path.resolve(store)), 'relay.usage.json');
+  const relay = new Relay(config, undefined, { store, invites, usage });
   const port = await relay.listen();
   await relay.listenAdmin();
   const passthrough = relay.passthroughPort();

@@ -36,6 +36,28 @@ const AGENT_NAME_HEADER = 'x-ledung-agent';
 const SILENCE_MS = 75_000;
 const MAX_FRAME = 1024 * 1024;
 
+/**
+ * What a Ledung whose owner is past the relay's monthly cap says when it refuses a file transfer (issue #161; Martin,
+ * 2026-11-06, Ledung question #632): `sending` for a file it would send, otherwise for one sent to it.
+ */
+export function relayCapSentence(resetsOn: string, sending: boolean): string {
+  const date = new Date(`${resetsOn}T00:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
+  return sending
+    ? `Not sent: your relay's monthly limit is reached; it resets on ${date}. Messages without files still go through.`
+    : `Not kept: the relay's monthly limit for this computer's owner is reached; it resets on ${date}. Messages without files still go through.`;
+}
+
+/** The relay's cap status message (relay/relay.ts capMessage), or null when the text is not one. */
+export function capStatus(text: string): { reached: boolean; resetsOn: string } | null {
+  try {
+    const m = JSON.parse(text) as { type?: unknown; reached?: unknown; resetsOn?: unknown };
+    return m?.type === 'cap' && typeof m.reached === 'boolean' && typeof m.resetsOn === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(m.resetsOn)
+      ? { reached: m.reached, resetsOn: m.resetsOn } : null;
+  } catch {
+    return null;
+  }
+}
+
 /** wss://, or ws:// to this computer. */
 export function secureRelay(relay: string): boolean {
   try {
@@ -70,6 +92,8 @@ export class Tunnel {
   private attempt = 0;
   private stopped = false;
   private current: RemoteStatus;
+  /** What the relay last said of the owner's cap (issue #161); null: not capped. */
+  private cap: { resetsOn: string } | null = null;
 
   constructor(opts: TunnelOptions) {
     this.opts = opts;
@@ -102,9 +126,10 @@ export class Tunnel {
     this.streams = null;
   }
 
-  private set(state: RemoteStatus['state'], error: string | null): void {
-    if (this.current.state === state && this.current.error === error) return;
-    this.current = { state, publicName: this.opts.publicName, error };
+  private set(state: RemoteStatus['state'], error: string | null, cap = this.cap): void {
+    if (this.current.state === state && this.current.error === error && this.cap?.resetsOn === cap?.resetsOn) return;
+    this.cap = cap;
+    this.current = { state, publicName: this.opts.publicName, error, ...(cap ? { relayCap: cap } : {}) };
     this.opts.onStatus?.(this.current);
   }
 
@@ -138,11 +163,18 @@ export class Tunnel {
     ws.on('message', (data: Buffer, isBinary: boolean) => {
       this.heard();
       if (!isBinary) {
-        // The relay's hello; other text messages are for later (status) and ignored.
-        if (this.streams || helloVersion(data.toString('utf8')) !== PROTOCOL_VERSION) return;
+        // The relay's hello, then status: the owner's cap (issue #161); any other text is ignored.
+        const text = data.toString('utf8');
+        if (this.streams) {
+          const cap = capStatus(text);
+          if (cap) this.set(this.current.state, this.current.error, cap.reached ? { resetsOn: cap.resetsOn } : null);
+          return;
+        }
+        if (helloVersion(text) !== PROTOCOL_VERSION) return;
         this.attempt = 0;
         this.streams = new Streams(ws);
-        this.set('connected', null);
+        // A new connection starts uncapped until the relay's status says otherwise.
+        this.set('connected', null, null);
         return;
       }
       const frame = decodeFrame(data);

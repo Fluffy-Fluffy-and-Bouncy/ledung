@@ -37,6 +37,7 @@ import type { UsagePublisher } from '../usage/publisher.ts';
 import type { Shortcuts } from '../platform/shortcuts.ts';
 import { LinkError, LinkedComputers } from '../remote/linked.ts';
 import { LinkedFileError } from '../remote/linked-files.ts';
+import { relayCapSentence } from '../remote/tunnel.ts';
 import { MAX_IMAGE_BYTES } from '../board/attachments.ts';
 import { ManagementError, type SettingsPort } from '../sessions/management.ts';
 import { waitingCount } from '../shared/waiting.ts';
@@ -331,6 +332,7 @@ export class LedungServer {
         dir: this.tunnelTls.dir, publicName, connect: this.opts.linkConnect, now: this.opts.now, port: this.opts.port,
         nameFor: (name) => this.computers().find((c) => c.id === name)?.name ?? null,
         onChange: () => this.computersChanged(),
+        relayCap: () => this.relayCap(true),
       }) : null;
       this.opts.manager.setLinked(this.linked);
       if (this.servers.length) this.linked?.helloAll();
@@ -951,6 +953,9 @@ export class LedungServer {
       throw e instanceof LinkError ? new HttpError(e.status, e.message) : e;
     }
     this.linkRate(computer.id);
+    // This computer's owner is past the relay's monthly cap (issue #161): no file comes in, messages still do.
+    const capped = this.relayCap(false);
+    if (capped) throw new HttpError(429, capped);
     if (!(req.headers['content-type'] ?? '').startsWith('application/octet-stream')) throw new HttpError(415, 'Send the file\'s bytes.');
     if (Number(req.headers['content-length'] ?? 0) > LINK_FILE_MAX_BODY) throw new HttpError(413, 'Request too large.');
     const bytes = await readBody(req, LINK_FILE_MAX_BODY);
@@ -960,6 +965,12 @@ export class LedungServer {
       if (e instanceof LinkedFileError) throw new HttpError(e.status, e.message);
       throw e;
     }
+  }
+
+  /** The sentence a file transfer is refused with while the relay says this computer's owner is past their cap (#161); null: not capped. */
+  private relayCap(sending: boolean): string | null {
+    const cap = this.remote?.relayCap;
+    return cap ? relayCapSentence(cap.resetsOn, sending) : null;
   }
 
   /** The linked computers for Settings, each with the bytes of files sent and received (issue #158), counted only. */
@@ -1999,6 +2010,16 @@ export class LedungServer {
       case 'GET relay-computers':
         this.requireLocal(req);
         return adminCall(() => this.relayAdmin().list());
+      // Bytes per owner and their monthly caps (issue #161), from and on the relay.
+      case 'GET relay-owners':
+        this.requireLocal(req);
+        return adminCall(() => this.relayAdmin().owners());
+      case 'POST relay-owners/:id/cap': {
+        this.requireLocal(req);
+        await this.requirePage(req, url);
+        const body = await readJson(req);
+        return adminCall(() => this.relayAdmin().setCap(decodeURIComponent(id), body.cap ?? null));
+      }
       case 'POST relay-invite': {
         this.requireLocal(req);
         await this.requirePage(req, url);

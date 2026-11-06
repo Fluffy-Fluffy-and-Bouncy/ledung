@@ -10,12 +10,14 @@
 // - Computers that joined wait for their CAA record. This Ledung asks the relay for them once a minute while an invite
 //   is open or a computer waits (#405 default 4), and shows each as an Approve card in Waiting for you. Approve writes
 //   the record through Cloudflare (refusing a name that has one already), then tells the relay it is done.
+// - Bytes per owner and their monthly caps (issue #161): read from the relay and set on it, never kept here. The relay
+//   is told which of its computers this Ledung is, so it knows the admin's own owner, who is never capped.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { PUBLIC_NAME } from '../config.ts';
 import { caaRecord, caaValue } from '../server/acme.ts';
-import type { NewComputerInfo, RelayAdminView, RelayInviteInfo } from '../shared/protocol.ts';
+import type { NewComputerInfo, RelayAdminView, RelayInviteInfo, RelayOwnersView } from '../shared/protocol.ts';
 import { Cloudflare } from './cloudflare.ts';
 import { joinCode } from './join-code.ts';
 import { secureRelay } from './tunnel.ts';
@@ -37,6 +39,11 @@ export interface RelayAdminOptions {
   dir: string;
   /** New computers changed: to open pages (Waiting for you). */
   onComputers: (computers: NewComputerInfo[]) => void;
+  /**
+   * This Ledung's own place on a relay (its remote block's relay and name), so the relay knows the admin's own owner
+   * (issue #161); null: on none.
+   */
+  self?: () => { relay: string; name: string } | null;
   /** Tests: a stand-in for the relay's admin API and Cloudflare's. */
   fetch?: typeof fetch;
   setTimer?: (fn: () => void, ms: number) => unknown;
@@ -154,6 +161,27 @@ export class RelayAdmin {
     return { invites, computers: this.newComputers() };
   }
 
+  /**
+   * Settings → Relay: every owner with their bytes today and this month and their cap (issue #161). The relay hears
+   * this Ledung's own name only when it is on the same relay, so another relay's name can't make someone "you".
+   */
+  async owners(): Promise<RelayOwnersView> {
+    const self = this.opts.self?.();
+    const admin = this.saved().relay;
+    const same = !!self && !!admin && sameHost(self.relay, admin);
+    const answer = await this.relayCall<RelayOwnersView>('GET', `/admin/owners${same ? `?self=${encodeURIComponent(self!.name)}` : ''}`);
+    return { owners: Array.isArray(answer.owners) ? answer.owners : [], resetsOn: String(answer.resetsOn ?? '') };
+  }
+
+  /** An owner's monthly cap in bytes, or null to remove it; the relay applies it at once and refuses one for "you". */
+  async setCap(owner: unknown, cap: unknown): Promise<RelayOwnersView> {
+    if (typeof owner !== 'string' || !owner) throw new Error('Name the owner.');
+    if (cap !== null && !(typeof cap === 'number' && Number.isInteger(cap) && cap > 0)) throw new Error('The cap is a whole number of bytes above 0, or none.');
+    await this.relayCall('POST', `/admin/owners/${encodeURIComponent(owner)}/cap`, { cap });
+    this.log(cap === null ? `Relay admin: removed the monthly cap for ${owner}.` : `Relay admin: set a monthly cap of ${cap} bytes for ${owner}.`);
+    return this.owners();
+  }
+
   async revokeInvite(id: string): Promise<void> {
     await this.relayCall('DELETE', `/admin/invites/${encodeURIComponent(id)}`);
   }
@@ -266,6 +294,14 @@ export class RelayAdmin {
     const temp = `${this.file()}.${process.pid}.new`;
     fs.writeFileSync(temp, `${JSON.stringify(saved, null, 2)}\n`, { mode: 0o600 });
     fs.renameSync(temp, this.file());
+  }
+}
+
+function sameHost(a: string, b: string): boolean {
+  try {
+    return new URL(a).host === new URL(b).host;
+  } catch {
+    return false;
   }
 }
 

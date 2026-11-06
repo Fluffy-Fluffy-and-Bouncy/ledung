@@ -187,11 +187,35 @@ on to Caddy as before (`docs/steps/relay-e2e.md`, piece 1, and the spike's Caddy
 ## Limits
 
 `limits` in the config: the largest message an agent may send (`maxFrameBytes`), phone connections
-open at once through one Ledung (`maxStreamsPerAgent`), and failed agent sign-ins from one address
-before it is turned away (`failedAttemptsPerAddress` within `attemptWindowSeconds`). A request head
+open at once through one Ledung (`maxStreamsPerAgent`), failed agent sign-ins from one address
+before it is turned away (`failedAttemptsPerAddress` within `attemptWindowSeconds`), and what an
+owner past their monthly cap is slowed to (`capThrottleBytesPerSecond`, below). A request head
 over 16 KiB, or one that takes longer than `headTimeoutMs` (10 seconds) to arrive, is dropped. On the passthrough
 listener the same goes for the PROXY header and ClientHello, and a ClientHello split over several
 TLS records is refused (legal, but rare).
+
+## Bytes per owner and caps
+
+Every byte through a computer's streams, both ways, is counted for the computer's owner, per UTC
+day, and kept in `relay.usage.json` beside the store (`RELAY_USAGE` moves it), written about once a
+minute and when the relay stops, so a restart keeps the month (issue #161). Only the counts are
+kept and logged: once a day an `owner bytes` line per owner with that day's total and the month's,
+never what went through.
+
+The admin's Ledung shows each owner's bytes today and this month in Settings → Relay → Owners,
+and sets a monthly cap per owner there (`GET /admin/owners`, `POST /admin/owners/<owner>/cap` with
+`{"cap": <bytes>}` or `{"cap": null}`). An owner with no cap is uncapped; a newly invited owner
+starts that way. An owner whose month reaches the cap is slowed to
+`limits.capThrottleBytesPerSecond` (64 KiB/s) for each of their computers on its own (two
+computers online move twice that), never refused: their
+messages and pages still go, a large file crawls. Each of their Ledungs is told with a status
+message after the hello and whenever it changes, and refuses file transfers with a sentence that
+says when the cap resets (the first of next month, UTC). Removing or raising the cap lets them go
+at once; a new month does too.
+
+The admin's own owner, the owner of the computer the admin's Ledung itself connects as, is marked
+"you" in Settings and is never capped: the route refuses a cap for it, and one written into
+`relay.usage.json` by hand is ignored with a `cap ignored` line in the log.
 
 ## Several users
 
