@@ -11,7 +11,7 @@ export type OutgoingFinding = { sensitive: string } | { locked: true } | { token
  * issue #158): its own path, and a text file's content, against the project's sensitive patterns, a secret locked in
  * Ledung, and text that looks like a token. An image's pixels can't be checked.
  */
-export function outgoingFinding(f: OutgoingFile, rules: { commandPatterns: string[]; pathPatterns: string[] }, holdsSecret?: (text: string) => boolean): OutgoingFinding {
+export function outgoingFinding(f: Pick<OutgoingFile, 'inside' | 'text'>, rules: { commandPatterns: string[]; pathPatterns: string[] }, holdsSecret?: (text: string) => boolean): OutgoingFinding {
   const sensitive = sensitiveInText(f.inside, rules) ?? (f.text === null ? null : sensitiveInText(f.text, rules));
   if (sensitive) return { sensitive };
   if (f.text !== null && holdsSecret?.(f.text)) return { locked: true };

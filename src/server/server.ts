@@ -37,6 +37,8 @@ import type { UsagePublisher } from '../usage/publisher.ts';
 import type { Shortcuts } from '../platform/shortcuts.ts';
 import { LinkError, LinkedComputers } from '../remote/linked.ts';
 import { LinkedFileError } from '../remote/linked-files.ts';
+import type { StreamOffer } from '../remote/linked-outbox.ts';
+import { pipeline } from 'node:stream/promises';
 import { MAX_IMAGE_BYTES } from '../board/attachments.ts';
 import { ManagementError, type SettingsPort } from '../sessions/management.ts';
 import { waitingCount } from '../shared/waiting.ts';
@@ -47,6 +49,8 @@ const LINK_PER_MINUTE = 60;
 const LINK_MAX_BODY = 16 * 1024;
 /** /link/file's own limit (issue #158): one file, the largest an attachment may be (an image, 5 MB). */
 const LINK_FILE_MAX_BODY = MAX_IMAGE_BYTES;
+/** A streamed file's bytes are counted as sent each time this many more went (issue #159). */
+const LINK_COUNT_EVERY = 1024 * 1024;
 
 /**
  * Pairing codes a linked computer may ask for (issue #273, Martin's manager's decision on question #222): one every
@@ -827,12 +831,18 @@ export class LedungServer {
   private async linkRoute(req: IncomingMessage, res: ServerResponse, url: URL, remote: boolean): Promise<void> {
     const route = url.pathname;
     const linked = this.linked;
-    if (!remote || !(req.socket as tls.TLSSocket).encrypted || !linked || req.method !== 'POST') throw new HttpError(404, 'Not found.');
+    // A GET only for a streamed file's bytes (issue #159); the key is still in Authorization, never a cookie.
+    const method = route === '/link/file-get' ? 'GET' : 'POST';
+    if (!remote || !(req.socket as tls.TLSSocket).encrypted || !linked || req.method !== method) throw new HttpError(404, 'Not found.');
     const from = () => {
       const computer = linked.byKey(req.headers.authorization);
       if (!computer) throw new LinkError(401, 'Not a linked computer.');
       return computer;
     };
+    if (route === '/link/file-get') {
+      await this.linkFileGet(req, res, url, from);
+      return;
+    }
     if (route === '/link/file') {
       this.json(res, 200, await this.linkFile(req, url, from));
       return;
@@ -901,6 +911,8 @@ export class LedungServer {
           answer = { text: this.opts.manager.linkMessage({ id: computer.id, name: computer.name }, {
             fromId: text('fromId'), fromTitle: text('fromTitle'), fromProject: text('fromProject'), fromLocked: body.fromLocked === true, toId: text('toId'), text: text('text'),
             ...(body.files !== undefined ? { files: body.files as string[] } : {}),
+            // Checked where they are claimed (LinkedFiles.expect), all or none.
+            ...(body.streams !== undefined ? { streams: body.streams as StreamOffer[] } : {}),
           }) };
           break;
         }
@@ -959,6 +971,62 @@ export class LedungServer {
     } catch (e) {
       if (e instanceof LinkedFileError) throw new HttpError(e.status, e.message);
       throw e;
+    }
+  }
+
+  /**
+   * /link/file-get (issue #159): a streamed file's bytes, which a message from here named, to the linked computer it
+   * went to, for the manager it named; from where a cut-off fetch stopped when asked ("Range: bytes=N-"). The key,
+   * then the rate, then the snapshot's own checks. Streamed from disk with back-pressure, never held here; the bytes
+   * that went are counted as sent while they go.
+   */
+  private async linkFileGet(req: IncomingMessage, res: ServerResponse, url: URL, from: () => { id: string }): Promise<void> {
+    let computer: { id: string };
+    let snap: { file: string; size: number; id: string };
+    try {
+      computer = from();
+      this.linkRate(computer.id);
+      snap = this.opts.manager.linkFileGet(computer.id, url.searchParams);
+    } catch (e) {
+      if (e instanceof LinkError || e instanceof LinkedFileError) throw new HttpError(e.status, e.message);
+      throw e;
+    }
+    const range = req.headers.range;
+    let start = 0;
+    if (range !== undefined) {
+      const m = /^bytes=(\d+)-$/.exec(range);
+      if (!m) throw new HttpError(416, 'Only "bytes=<from>-" is understood.');
+      start = Number(m[1]);
+      if (!Number.isSafeInteger(start) || start >= snap.size) throw new HttpError(416, `The file has ${snap.size} bytes.`);
+    }
+    const partial = start > 0;
+    res.writeHead(partial ? 206 : 200, {
+      'Content-Type': 'application/octet-stream', 'Content-Length': String(snap.size - start), 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-store',
+      ...(partial ? { 'Content-Range': `bytes ${start}-${snap.size - 1}/${snap.size}` } : {}),
+    });
+    if (snap.size === 0) {
+      res.end();
+      this.opts.manager.linkFileSent(computer.id, snap.id, 0, true);
+      return;
+    }
+    // Counted as it goes, a mebibyte at a time, so a Ledung that stops mid-stream has counted what it sent.
+    let sent = 0;
+    let counted = 0;
+    const stream = fs.createReadStream(snap.file, { start, highWaterMark: 64 * 1024 });
+    // Added in the same tick as the pipe below, so no chunk goes by before the pipe has it.
+    stream.on('data', (chunk) => {
+      sent += chunk.length;
+      if (sent - counted >= LINK_COUNT_EVERY) {
+        this.opts.manager.linkFileSent(computer.id, snap.id, sent - counted, false);
+        counted = sent;
+      }
+    });
+    try {
+      await pipeline(stream, res);
+    } catch (e) {
+      console.log(`Linked computers: a streamed file to ${computer.id} stopped after ${start + sent} of ${snap.size} bytes (${(e as Error).message}).`);
+    } finally {
+      this.opts.manager.linkFileSent(computer.id, snap.id, sent - counted, start + sent === snap.size);
     }
   }
 

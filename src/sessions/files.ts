@@ -135,6 +135,23 @@ export function readProjectBytes(root: string, link: string, maxBytes: number): 
   return { path: inside, bytes: fs.readFileSync(real) };
 }
 
+/**
+ * A file in the project folder, with readProjectFile's path rules, that is streamed rather than read (issue #159): its
+ * real path, its size and its first `headBytes` bytes, for the kind. Nothing more of it is read here.
+ */
+export function openProjectFile(root: string, link: string, headBytes: number): { path: string; real: string; size: number; head: Buffer } {
+  const { real, inside } = resolveInside(root, link);
+  const fd = fs.openSync(real, 'r');
+  try {
+    const size = fs.fstatSync(fd).size;
+    const head = Buffer.alloc(Math.min(headBytes, size));
+    const read = fs.readSync(fd, head, 0, head.length, 0);
+    return { path: inside, real, size, head: head.subarray(0, read) };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 /** A handoff must be fresh, so an old file can't stand in for one (clear_self, docs/steps/clear-and-compact.md). */
 export const HANDOFF_MAX_AGE_MS = 60 * 60 * 1000;
 

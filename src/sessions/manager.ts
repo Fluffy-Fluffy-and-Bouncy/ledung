@@ -79,6 +79,9 @@ import { Boards } from '../board/boards.ts';
 import { BOARD_FILE_PREFIX, bytesKind, MAX_IMAGE_BYTES as EVIDENCE_IMAGE_MAX_BYTES, MAX_TEXT_BYTES as EVIDENCE_TEXT_MAX_BYTES, readEvidence, readLinkOutgoing, type AttachmentKind, type OutgoingFile } from '../board/attachments.ts';
 import { outgoingFinding } from '../board/outgoing.ts';
 import { LinkedFileError, LinkedFiles, LINKED_FILE_PREFIX, parseFileMeta, type ByteTotals } from '../remote/linked-files.ts';
+import { LinkedOutbox, type StreamOffer } from '../remote/linked-outbox.ts';
+import { linkOutgoing, zipProblem, type OutgoingStream } from '../remote/stream-kinds.ts';
+import { sensitiveInText } from '../board/address.ts';
 import type { RepoDirectory } from '../board/repos.ts';
 import { BoardStore } from '../board/store.ts';
 import { BoardError, type BoardBackend } from '../board/types.ts';
@@ -182,6 +185,8 @@ export class SessionManager {
   private settings: SettingsPort | null = null;
   /** Files managers on linked computers sent (issue #158), and the bytes counted per link. */
   readonly linkedFiles: LinkedFiles;
+  /** The snapshots of files streamed to linked computers (issue #159). */
+  readonly linkedOutbox: LinkedOutbox;
   readonly projectStore: ProjectStore;
   readonly accounts: AccountStore;
   private readonly monitor: ResourceMonitor;
@@ -284,6 +289,8 @@ export class SessionManager {
       settings: () => this.settings,
       linkedFiles: () => this.linkedFiles,
       outgoingFiles: (managerId, names) => this.outgoingFiles(managerId, names),
+      snapshotOutgoing: (managerId, linkId, toId, file) => this.snapshotOutgoing(managerId, linkId, toId, file),
+      linkedOutbox: () => this.linkedOutbox,
       saveLinkedFile: (managerId, sessionId, handle, rel) => this.saveLinkedFile(managerId, sessionId, handle, rel),
       handoffProblem: (id, file) => this.handoffProblem(id, file),
       // The file viewer's own image rules, so a shot that is attached can also be shown (issue #60).
@@ -301,6 +308,7 @@ export class SessionManager {
     });
     this.proposals = new ProposalStore(store.database);
     this.linkedFiles = new LinkedFiles(store.database, () => this.linkedFilesDir(), () => boardConfig(this.config).evidenceDays);
+    this.linkedOutbox = new LinkedOutbox(store.database, () => this.linkedOutboxDir(), () => boardConfig(this.config).evidenceDays);
     this.flowRuns = new FlowRuns({
       runs: new RunStore(store.database),
       getSession: (id) => this.store.getSession(id),
@@ -670,6 +678,7 @@ export class SessionManager {
     this.waitTimer = setInterval(() => {
       this.checkWaiting();
       this.linkedFiles.prune();
+      this.linkedOutbox.prune();
       void this.relaunchWaiting();
     }, 60000);
     // Always on, as idleStopMinutes can change while Ledung runs (issue #353); checkIdle reads it each time.
@@ -2150,7 +2159,14 @@ export class SessionManager {
   /** The linked computers managers may reach (#245); null: none (no public name, or no end to end). */
   setLinked(linked: LinkedPort | null): void {
     this.linked = linked;
+    // Streamed files a restart cut off are fetched again from where they stopped, once (issue #159).
+    if (linked && !this.streamsResumed) {
+      this.streamsResumed = true;
+      this.management.resumeStreams();
+    }
   }
+
+  private streamsResumed = false;
 
   /** Settings' page-only actions, for managers' tools (issue #263). */
   setSettings(settings: SettingsPort | null): void {
@@ -2699,6 +2715,8 @@ ${firstMessage}`);
   containerCopiesDir = (): string => path.join(userDataDir(), 'container-files');
   /** Where copies of files from linked computers are kept (issue #158); tests move it. */
   linkedFilesDir = (): string => path.join(userDataDir(), 'linked-files');
+  /** Where snapshots of files streamed to linked computers wait to be fetched (issue #159); tests move it. */
+  linkedOutboxDir = (): string => path.join(userDataDir(), 'linked-outbox');
 
   // --- Files between managers on linked computers (issue #158) ----------------------------------------
 
@@ -2718,7 +2736,13 @@ ${firstMessage}`);
    * (a container's is inside the container: not yet), then the path and the write (src/sessions/save-file.ts).
    */
   saveLinkedFile(managerId: string, sessionId: string, handle: string, rel: string): Saved {
-    const copy = this.readLinkedCopy(managerId, handle, ['png', 'jpeg', 'text']);
+    // A streamed copy (issue #159) by its file, never read whole; the writer checks its copy's SHA-256 against it.
+    let copy: ReturnType<LinkedFiles['source']>;
+    try {
+      copy = this.linkedFiles.source(managerId, handle);
+    } catch (e) {
+      throw e instanceof FileError ? new UserError(e.message) : e;
+    }
     const { info, project } = this.paneSession(sessionId);
     if (project.runner !== 'local') throw new UserError(`"${info.title}" works in a container project; saving a file from a linked computer into a container is not available yet. Nothing was saved.`);
     const rules = {
@@ -2728,7 +2752,7 @@ ${firstMessage}`);
     let saved: Saved;
     try {
       // The bytes read() returned and checked; the data folder is not read again after the checks (refine notes, 6).
-      saved = saveIntoWorktree(this.sessionFolder(info, project), rel, copy.kind, copy.bytes, rules);
+      saved = saveIntoWorktree(this.sessionFolder(info, project), rel, copy.kind, 'bytes' in copy ? copy.bytes : { file: copy.file, sha: copy.sha }, rules);
     } catch (e) {
       throw e instanceof FileError ? new UserError(`Not saved: ${e.message}`) : e;
     }
@@ -2744,20 +2768,20 @@ ${firstMessage}`);
    * JPEG or text by their first bytes, then the board's outgoing checks with the project's sensitive patterns and the
    * locked secrets. The reason for the first that can't go; nothing is sent then.
    */
-  private outgoingFiles(managerId: string, names: string[]): OutgoingFile[] {
-    const info = this.store.getSession(managerId);
-    if (!info) throw new UserError('No such session.');
-    const project = this.projectStore.get(info.project)?.config;
-    const rules = {
-      commandPatterns: [...this.config.sensitive.commandPatterns, ...(project?.sensitive.commandPatterns ?? [])],
-      pathPatterns: [...this.config.sensitive.pathPatterns, ...(project?.sensitive.pathPatterns ?? [])],
-    };
+  private outgoingFiles(managerId: string, names: string[]): (OutgoingFile | OutgoingStream)[] {
+    const rules = this.outgoingRules(managerId);
     return names.map((name) => {
-      let f: OutgoingFile;
+      let f: OutgoingFile | OutgoingStream;
       try {
-        f = this.readFrom(managerId, name.trim().replace(/\\/g, '/'), readLinkOutgoing);
+        f = this.readFrom(managerId, name.trim().replace(/\\/g, '/'), linkOutgoing);
       } catch (e) {
         throw new UserError(`Not sent: attachment ${name}: ${(e as Error).message}`);
+      }
+      // Audio or a zip (issue #159): its path checked now, as an image's is; a zip's entries on the snapshot.
+      if ('streamed' in f) {
+        const sensitive = sensitiveInText(f.inside, rules);
+        if (sensitive) throw new UserError(`Not sent: attachment ${f.inside}: ${sensitive}, one of the project's sensitive patterns.`);
+        return f;
       }
       const found = outgoingFinding(f, rules, (text) => this.secrets?.holdsValue(text) ?? false);
       if (!found) return f;
@@ -2765,6 +2789,66 @@ ${firstMessage}`);
       if ('locked' in found) throw new UserError(`Not sent: attachment ${f.inside} contains a secret locked in Ledung. Leave it out.`);
       throw new UserError(`Not sent: attachment ${f.inside} contains what looks like ${found.token}. Leave it out.`);
     });
+  }
+
+  /** The sensitive patterns a manager's outgoing files are checked against: the config's and its project's. */
+  private outgoingRules(managerId: string): { commandPatterns: string[]; pathPatterns: string[] } {
+    const info = this.store.getSession(managerId);
+    if (!info) throw new UserError('No such session.');
+    const project = this.projectStore.get(info.project)?.config;
+    return {
+      commandPatterns: [...this.config.sensitive.commandPatterns, ...(project?.sensitive.commandPatterns ?? [])],
+      pathPatterns: [...this.config.sensitive.pathPatterns, ...(project?.sensitive.pathPatterns ?? [])],
+    };
+  }
+
+  /**
+   * A streamed file's snapshot for the linked computer `linkId`'s manager `toId` (issue #159), made from the file the
+   * checks above passed; a zip is then checked entry by entry on the snapshot, so what was checked is what is fetched.
+   * Refused: the snapshot goes again, and the reason names the entry.
+   */
+  private async snapshotOutgoing(managerId: string, linkId: string, toId: string, f: OutgoingStream): Promise<StreamOffer> {
+    let offer: StreamOffer;
+    try {
+      offer = await this.linkedOutbox.snapshot(f.real, { linkId, from: managerId, to: toId, name: f.name, inside: f.inside, kind: f.kind });
+    } catch (e) {
+      throw new UserError(`Not sent: attachment ${f.inside}: ${(e as Error).message}`);
+    }
+    if (f.kind !== 'zip') return offer;
+    const rules = this.outgoingRules(managerId);
+    const problem = await zipProblem(this.linkedOutbox.fileOf(linkId, offer.id, offer.kind), {
+      name: (entry) => sensitiveInText(entry, { commandPatterns: [], pathPatterns: rules.pathPatterns }),
+      text: (entry, text) => {
+        const found = outgoingFinding({ inside: entry, text }, rules, (t) => this.secrets?.holdsValue(t) ?? false);
+        if (!found) return null;
+        if ('sensitive' in found) return `${found.sensitive}, one of the project's sensitive patterns`;
+        if ('locked' in found) return 'it contains a secret locked in Ledung';
+        return `it contains what looks like ${found.token}`;
+      },
+    });
+    if (problem) {
+      this.linkedOutbox.drop([offer.id]);
+      throw new UserError(`Not sent: attachment ${f.inside}: ${problem}. Nothing was sent.`);
+    }
+    return offer;
+  }
+
+  /**
+   * /link/file-get from the linked computer `linkId` (issue #159): the snapshot its message named, for the manager it
+   * named, while the sending manager's project is not locked. The file to stream and its size.
+   */
+  linkFileGet(linkId: string, query: URLSearchParams): { file: string; size: number; id: string } {
+    return this.linkedOutbox.serve(linkId, query, (session) => {
+      const s = this.store.getSession(session);
+      const project = s ? this.projectStore.get(s.project)?.config : undefined;
+      return !!project && lockdownOf(project).level !== 'off';
+    });
+  }
+
+  /** A streamed file's bytes went to the linked computer `linkId` (issue #159): counted; read to its end, noted. */
+  linkFileSent(linkId: string, id: string, bytes: number, toEnd: boolean): void {
+    this.linkedFiles.count(linkId, 'sent', bytes);
+    if (toEnd) this.linkedOutbox.fetched(id);
   }
 
   /**
