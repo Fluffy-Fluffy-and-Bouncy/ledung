@@ -19,7 +19,6 @@ import { formatServers } from './mcp.ts';
 import type { LinkedComputer } from '../remote/linked.ts';
 import { LinkedFileError, type LinkedFiles, type ReceivedFile } from '../remote/linked-files.ts';
 import { kindLabel, MAX_ATTACHMENTS, sizeLabel, TEXT_INLINE_CHARS, type OutgoingFile } from '../board/attachments.ts';
-import { exercisedLine } from '../platform/exercised.ts';
 import type { RelayAdminView, RelayInviteInfo } from '../shared/protocol.ts';
 import type { ComputerInfo } from '../shared/computers.ts';
 import { USAGE_REPO, type UsagePublishChange, type UsagePublishView } from '../shared/published-usage.ts';
@@ -219,9 +218,6 @@ export function requestText(p: Pick<PermissionInfo, 'toolName' | 'input'> & { se
 }
 
 const short = (text: string, n: number) => (text.length > n ? `${text.slice(0, n)}…` : text);
-
-/** The EXERCISED line of issue #158, once per run (worker.md, "EXERCISED line"). */
-let filesExercised = false;
 
 /** A received text file shown inline, in a fence longer than any run of backticks in it (as the board's, board.ts). */
 const fenceText = (text: string) => {
@@ -1220,10 +1216,6 @@ ${note}`);
     }
     if (withFiles) {
       body += this.receivedFilesText(link.id, to.id, m.files);
-      if (!filesExercised) {
-        filesExercised = true;
-        exercisedLine('EXERCISED #158 files from a linked computer kept and delivered to a manager');
-      }
     }
     if (m.fromLocked) body += `\n\n(Ledung: its project is locked. You can answer this message once, with message_manager to ${plainTitle(m.fromId)} on computer "${link.name}"; it can't be reached otherwise.)`;
     else body += `\n\n(Answer with message_manager to ${plainTitle(m.fromId)}, computer "${link.name}".)`;

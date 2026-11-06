@@ -228,7 +228,6 @@ async function main(): Promise<void> {
     check(linkedFiles(pair.pages.pc.data).length === pcCopies && linkedFiles(pair.pages.mac.data).length === macCopies && (await filesOf(mac)).today.sent === sent, 'no copy on either side, nothing counted', `PC ${pcCopies}, Mac ${macCopies} as before`);
 
     console.log('== 9. The trace ==');
-    check(pair.ledungs.pc.output().includes('EXERCISED #158') && pair.ledungs.mac.output().includes('EXERCISED #158'), 'EXERCISED #158 on both computers (each received files)');
     check(!pair.seen.clear && pair.seen.bytes > sent, 'the server\'s side carried only TLS, the files inside it', `${pair.seen.bytes} bytes`);
   } finally {
     await pair.close();
