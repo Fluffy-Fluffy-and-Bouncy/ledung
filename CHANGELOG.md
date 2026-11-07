@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-07
+- Message box: 🔑 (lock a secret) and 📎 (add images) moved from beside Send into the ＋ menu above the box, as its first two entries, so Send stands alone and the box is wider; pasting or dropping an image still works. The ＋ always reads "＋" (no more "+1"/"+2"), and its menu works with the keyboard: Up and Down move, Enter picks, Escape closes it. (#186)
+
 ## 2026-11-06
 - machine_status and the page: a session's CPU and memory now include its background commands that lost their link to it (a shell in between exited), so a session whose background command loads the machine no longer reads "idle, 0.0 cores" between turns. (#169)
 - Sessions after an update: a session that kept running through Restart Ledung while Ledung's tools changed is told so. Claude Code is sent "tools changed", which brings it brand-new Ledung tools but not new parameters on the ones it has, so its next Ledung call also gets the note "restart this session to get the new tools". (#164)
