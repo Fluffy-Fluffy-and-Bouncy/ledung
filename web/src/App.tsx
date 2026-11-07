@@ -994,6 +994,8 @@ export function SessionView(props: {
    * box through this, set by the Composer.
    */
   const quoteInto = useRef<((quoted: string) => void) | null>(null);
+  // The composer's 🔑 and 📎, offered at the top of the macros' ＋ menu (issue #186); set by the composer.
+  const composerActions = useRef<ComposerActions | null>(null);
   const quote = useCallback((who: string, at: number, text: string) => {
     const body = text.length > 2000 ? `${text.slice(0, 2000)}…` : text;
     quoteInto.current?.(`> ${who}, ${formatTime(at)}:\n${body.split('\n').map((l) => `> ${l}`).join('\n')}\n\n`);
@@ -1202,8 +1204,12 @@ export function SessionView(props: {
             tint={tint}
           />
           <WorkingIndicator key={session.id} session={session} sessions={ledung.sessions} messages={ledung.messages}
-            extra={<MacroChips key={session.id} macros={macros} onUse={fireMacro} onEdit={() => (location.hash = '#/settings/macros')} />} />
-          <Composer session={session} tint={tint} run={run} quoteInto={quoteInto} bangShell={ledung.bangShell} />
+            extra={<MacroChips key={session.id} macros={macros} onUse={fireMacro} onEdit={() => (location.hash = '#/settings/macros')}
+              actions={[
+                { id: 'secret', label: '🔑 Lock a secret…', title: 'Type or paste it into a masked field; Claude gets only its name', disabled: composerClosed(session), onPick: () => composerActions.current?.secret() },
+                { id: 'images', label: '📎 Add images…', title: 'PNG, JPEG, GIF or WebP (or paste or drop them on the box)', disabled: composerClosed(session), onPick: () => composerActions.current?.images() },
+              ]} />} />
+          <Composer session={session} tint={tint} run={run} quoteInto={quoteInto} actionsInto={composerActions} bangShell={ledung.bangShell} />
         </div>
         {showUsage && <SessionUsagePanel sessionId={session.id} onClose={() => setShowUsage(false)} />}
         {files.length > 0 && (
@@ -1441,7 +1447,15 @@ function SecretsInMenu({ session, run }: { session: SessionInfo; run: (action: (
   return <SessionSecretsMenu sessionId={session.id} secrets={secrets} running={session.status !== 'ended' && session.status !== 'stopping'} run={run} />;
 }
 
-function Composer({ session, tint, run, quoteInto, bangShell }: {
+/** What the macros' ＋ menu can ask of the composer (issue #186). */
+type ComposerActions = { secret: () => void; images: () => void };
+
+/** The message box takes nothing: an ended session that can't be resumed, or one stopping. */
+function composerClosed(session: Pick<SessionInfo, 'status' | 'claudeSessionId'>): boolean {
+  return (session.status === 'ended' && !session.claudeSessionId) || session.status === 'stopping';
+}
+
+function Composer({ session, tint, run, quoteInto, actionsInto, bangShell }: {
   session: SessionInfo;
   /** The shell a "!" command runs in on this computer (issue #212). */
   bangShell: string;
@@ -1450,13 +1464,15 @@ function Composer({ session, tint, run, quoteInto, bangShell }: {
   run: (action: () => Promise<unknown>) => Promise<void>;
   /** Set here to what Quote calls with its text (issue #323). */
   quoteInto: RefObject<((quoted: string) => void) | null>;
+  /** Set here to the 🔑 and 📎 actions, which the macros' ＋ menu offers (issue #186). */
+  actionsInto: RefObject<ComposerActions | null>;
 }) {
   const typing = usePlainTyping();
   // The box's own text, kept per session in this browser (issues #73, #323).
   const [text, setText, saveNow] = useDraft(session.id);
   // An ended session that can be resumed takes messages: sending resumes it (idle stop and archive).
   const resumable = session.status === 'ended' && !!session.claudeSessionId;
-  const ended = (session.status === 'ended' && !resumable) || session.status === 'stopping';
+  const ended = composerClosed(session);
   const stoppable = canInterrupt(session);
   const { box, area, style, grip } = useComposerHeight();
   // Locked secrets (issue #468): the 🔑 by a selection, the chip being edited, the masked field by Send.
@@ -1538,6 +1554,16 @@ function Composer({ session, tint, run, quoteInto, bangShell }: {
   const imageKey = useRef(0);
   // They belong to the message being written to this session, not to the next session opened.
   useEffect(() => setImages([]), [session.id]);
+  // The ＋ menu's 🔑 and 📎 do what the buttons beside Send did (issue #186), except that 🔑 opens the masked field
+  // rather than toggling it: picked from a menu, it is never meant as "close".
+  actionsInto.current = {
+    secret: () => {
+      if (ended) return;
+      setEditing(null);
+      setMasked((m) => m ?? area.current?.selectionStart ?? text.length);
+    },
+    images: () => { if (!ended) picker.current?.click(); },
+  };
   const addImages = (files: File[]) => void run(async () => {
     const room = MAX_CHAT_IMAGES - images.length;
     if (files.length > room) throw new Error(`At most ${MAX_CHAT_IMAGES} images per message.`);
@@ -1691,20 +1717,6 @@ function Composer({ session, tint, run, quoteInto, bangShell }: {
           STOP
         </button>
         <div className="send-row">
-          <button
-            className="secret-key"
-            title="Lock a secret: type or paste it into a masked field; Claude gets only its name"
-            aria-label="Lock a secret"
-            disabled={ended}
-            onClick={() => { setEditing(null); setMasked(masked === null ? area.current?.selectionStart ?? text.length : null); }}
-          >🔑</button>
-          <button
-            className="attach-image"
-            title="Add images: PNG, JPEG, GIF or WebP (or paste or drop them on the box)"
-            aria-label="Add images"
-            disabled={ended}
-            onClick={() => picker.current?.click()}
-          >📎</button>
           <input
             ref={picker} type="file" hidden multiple accept={CHAT_IMAGE_TYPES.join(',')}
             onChange={(e) => {
