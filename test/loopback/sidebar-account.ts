@@ -42,14 +42,15 @@ async function shot(tab: Tab, name: string): Promise<void> {
   await tab.screenshot({ path: path.join(shots, `${name}.png`) });
 }
 
-/** What the sidebar shows of a project's row: its account line, where it sits against the name, and its buttons. */
+/** What the sidebar shows of a project's row: its account line, where it sits against the name, and the name's button
+ *  (the row's + and ⚙ moved into its right-click menu, 2026-11-08). */
 const row = (tab: Tab, project: string) => tab.evaluate((name: string) => {
   const rows = [...document.querySelectorAll('.project-row')];
   const r = rows.find((e) => e.querySelector('.project-name')?.textContent?.includes(name));
   if (!r) return null;
   const account = r.querySelector('.project-account') as HTMLElement | null;
   const title = r.querySelector('.project-name-text') as HTMLElement | null;
-  const actions = r.querySelector('.project-actions') as HTMLElement | null;
+  const actions = r.querySelector('.project-name') as HTMLElement | null;
   const box = (e: Element | null) => (e ? e.getBoundingClientRect() : null);
   return {
     account: account?.textContent ?? null,
@@ -138,7 +139,7 @@ async function main(): Promise<void> {
     check(meadow?.account === LONG && meadow.over && meadow.cut, `Meadow's long account is cut at the sidebar's width`, JSON.stringify(meadow));
     check(meadow?.accountTitle?.includes(LONG) ?? false, 'and its whole name is in the tooltip', meadow?.accountTitle ?? '');
     check(!!meadow && !!lantern && meadow.actionsRight === lantern.actionsRight && meadow.actionsWidth === lantern.actionsWidth && meadow.actionsRight! <= meadow.rowRight,
-      "the long name leaves the row's buttons where a row without an account has them", JSON.stringify({ meadow, lantern }));
+      "the long name keeps the name's button where a row without an account has it", JSON.stringify({ meadow, lantern }));
     const managerRows = await tab.locator('.session-item').count();
     const managerAccounts = await tab.locator('.session-item .project-account').count();
     const named = await tab.locator('.session-item', { hasText: /work|side-project|northwind/ }).count();
@@ -150,7 +151,7 @@ async function main(): Promise<void> {
     await phone.goto(`${page.origin}/`);
     await phone.waitForTimeout(1500);
     const pm = await row(phone, 'Meadow');
-    check(pm?.account === LONG && pm.over && pm.actionsRight! <= pm.rowRight, 'phone: Meadow names its account over its name, the buttons in the row', JSON.stringify(pm));
+    check(pm?.account === LONG && pm.over && pm.actionsRight! <= pm.rowRight, 'phone: Meadow names its account over its name, inside the row', JSON.stringify(pm));
     check((await row(phone, 'Lantern'))?.account === null, 'phone: Lantern names none');
     await shot(phone, '394-sidebar-account-390-dark');
   } finally {

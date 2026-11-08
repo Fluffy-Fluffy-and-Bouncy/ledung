@@ -9,8 +9,10 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-08
+- Sidebar: right-click a chat, session or manager for Rename, Model ▸ (Opus, Sonnet, Haiku or the project's default, from its next reply, kept when resumed), Priority, Pause, Stop or Resume, Compact, Clear context, Copy session ID and Archive ("Stop and archive" on a running one, asked first). A project's heading offers New session, Account ▸ (when there is more than one), Settings, Workflow and Collapse all; its + and ⚙ buttons are gone, as are those on Chats' heading (New chat and Chats settings are in its menu). Long press on a phone, the menu key or Shift+F10 from the keyboard; Shift+right-click keeps the browser's own menu. (no issue)
+
 ## 2026-11-06
-- Sidebar: right-click a chat, session or manager for Rename, Change model (Opus, Sonnet, Haiku or the project's default, from its next reply, kept when resumed), Priority, Pause, Stop or Resume, Compact, Clear context, Copy session ID and Archive ("Stop and archive" on a running one, asked first). A project's heading offers New session, Settings, Workflow and Collapse all. Long press on a phone, the menu key or Shift+F10 from the keyboard; Shift+right-click keeps the browser's own menu. (no issue)
 - machine_status and the page: a session's CPU and memory now include its background commands that lost their link to it (a shell in between exited), so a session whose background command loads the machine no longer reads "idle, 0.0 cores" between turns. (#169)
 - Sessions after an update: a session that kept running through Restart Ledung while Ledung's tools changed is told so. Claude Code is sent "tools changed", which brings it brand-new Ledung tools but not new parameters on the ones it has, so its next Ledung call also gets the note "restart this session to get the new tools". (#164)
 - Secret check on board posts and outgoing files: a word like "secret:" or "token:" followed by ordinary words ("nothing secret: attachment test") no longer gets a post or file refused; a real value after it (`secret: Zq8Lm3Np7Rt2`, `API_KEY=…`, a quoted value) is still refused. (#163)

@@ -6,7 +6,7 @@ import { MODEL_CHOICES, type ModelChoice, type SessionInfo } from '../../src/sha
 /** In the order the menu shows them. */
 export type SessionAction =
   | 'rename' | 'workflow' | 'model' | 'priority' | 'pause' | 'unpause' | 'stop' | 'resume' | 'compact' | 'clear' | 'copyId' | 'archive' | 'stopArchive';
-export type GroupAction = 'newSession' | 'newChat' | 'settings' | 'workflow' | 'collapseAll' | 'expandAll';
+export type GroupAction = 'newSession' | 'newChat' | 'account' | 'settings' | 'workflow' | 'collapseAll' | 'expandAll';
 
 type Shown = Pick<SessionInfo, 'role' | 'status' | 'paused' | 'claudeSessionId' | 'archivedAt' | 'compacting' | 'clearDue'>;
 
@@ -38,12 +38,15 @@ export function sessionActions(s: Shown, hasWorkflow: boolean): SessionAction[] 
 }
 
 /**
- * What a group's heading offers: a project's New session, Settings and Workflow, Chats' New chat and Settings, and
- * folding every group at once. No model here: the project's default stays in its Settings (Simon, 2026-11-06).
+ * What a group's heading offers: a project's New session, Account (only with more than one to pick, Simon
+ * 2026-11-08), Settings and Workflow, Chats' New chat and Settings, and folding every group at once. The heading has
+ * no + or ⚙ of its own any more: they are here. No model: the project's default stays in its Settings (2026-11-06).
  */
-export function groupActions(kind: 'project' | 'chats' | 'removed', hasWorkflow: boolean, allFolded: boolean): GroupAction[] {
+export function groupActions(kind: 'project' | 'chats' | 'removed', hasWorkflow: boolean, allFolded: boolean, accountChoices = 0): GroupAction[] {
   return [
-    ...(kind === 'project' ? ['newSession' as const, 'settings' as const, ...(hasWorkflow ? ['workflow' as const] : [])] : []),
+    ...(kind === 'project'
+      ? ['newSession' as const, ...(accountChoices > 1 ? ['account' as const] : []), 'settings' as const, ...(hasWorkflow ? ['workflow' as const] : [])]
+      : []),
     ...(kind === 'chats' ? ['newChat' as const, 'settings' as const] : []),
     allFolded ? 'expandAll' : 'collapseAll',
   ];
@@ -53,6 +56,16 @@ export function groupActions(kind: 'project' | 'chats' | 'removed', hasWorkflow:
 export function modelChoices(requested: string | null): { model: string | null; label: string }[] {
   const offered = [null, ...MODEL_CHOICES].map((m) => ({ model: m, label: m ? m[0]!.toUpperCase() + m.slice(1) : "Project's default" }));
   return requested && !MODEL_CHOICES.includes(requested as ModelChoice) ? [...offered, { model: requested, label: requested }] : offered;
+}
+
+/**
+ * Where a submenu goes beside its row: to the right of the menu, or to its left when it doesn't fit there; level
+ * with its row, moved up so all of it stays on the screen.
+ */
+export function subMenuPlace(item: { left: number; right: number; top: number }, w: number, h: number, vw: number, vh: number, margin = 4): { left: number; top: number } {
+  const left = item.right + w + margin <= vw ? item.right : Math.max(margin, item.left - w);
+  const top = Math.max(margin, Math.min(item.top, vh - h - margin));
+  return { left, top };
 }
 
 /** Whether a key opens the menu on a focused row: the menu key, or Shift+F10 (both the keyboard's way to it). */

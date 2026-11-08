@@ -1,5 +1,5 @@
 import { Component, Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from 'react';
-import { CHATS, PERMISSION_MODES, PRIORITIES, projectLabel, type ModelChoice, type AwayInfo, type BoardStatus, type ChatsInfo, type GitHubBudget, type CompactingInfo, type MachineInfo, type McpServerInfo, type PermissionMode, type Priority, type ProjectInfo, type QuestionInfo, type RemoteControlInfo, type SessionInfo } from '../../src/shared/protocol.ts';
+import { CHATS, PERMISSION_MODES, PRIORITIES, projectLabel, type ModelChoice, type AccountInfoView, type AwayInfo, type BoardStatus, type ChatsInfo, type GitHubBudget, type CompactingInfo, type MachineInfo, type McpServerInfo, type PermissionMode, type Priority, type ProjectInfo, type QuestionInfo, type RemoteControlInfo, type SessionInfo } from '../../src/shared/protocol.ts';
 import { AddProjectView, ProjectSettingsView, ProjectStartView } from './projects/ProjectViews.tsx';
 import { ChatsSettingsView, NewChatView } from './chats/ChatViews.tsx';
 import { api } from './api.ts';
@@ -33,6 +33,7 @@ import { useSidebarDrag } from './sidebarDrag.ts';
 import { groupActions, modelChoices, opensMenu, sessionActions } from './sidebarMenu.ts';
 import { RowMenu, type MenuEntry } from './components/RowMenu.tsx';
 import { copyText } from './components/Markdown.tsx';
+import { settingsOf, toApi } from './projects/projectSettings.ts';
 import { foldRows, readFolded, readFoldedSessions, toggleFolded, writeFolded, writeFoldedSessions, type FoldedRow, type Hidden } from './sidebarFold.ts';
 import { conversationFromHash, conversationHash, conversationOf, messageFromHash, messageHash, type CameFrom } from './conversation.ts';
 
@@ -534,6 +535,7 @@ export function App() {
           connection={ledung.connection}
           board={ledung.board}
           workflows={ledung.workflows}
+          accounts={ledung.accounts}
           runs={ledung.runs}
           questions={ledung.questions}
         />
@@ -675,6 +677,8 @@ function Sidebar(props: {
   board: BoardStatus | null;
   /** Which projects have a workflow, their runs and the open questions, for each one's Workflow row (2026-11-04). */
   workflows: Record<string, boolean>;
+  /** The added Claude accounts, for a project heading's Account (2026-11-08). */
+  accounts: AccountInfoView[];
   runs: Record<string, FlowRun[]>;
   questions: Record<number, QuestionInfo>;
 }) {
@@ -780,10 +784,14 @@ function Sidebar(props: {
     const act = (label: string, onPick: () => void, more: { hint?: string; ask?: { question: string; yes: string } } = {}) => entries.push({ kind: 'item', label, onPick, ...more });
     for (const a of sessionActions(s, !!project && !!props.workflows[s.project])) {
       if (a === 'model') {
+        // One row, "Model ▸ Haiku", opening the choices (Simon, 2026-11-08).
+        const choices = modelChoices(s.requestedModel);
         entries.push({ kind: 'separator' }, {
-          kind: 'group',
-          label: s.status === 'ended' ? 'Model, when resumed' : 'Model, from the next reply',
-          entries: modelChoices(s.requestedModel).map((m) => ({
+          kind: 'submenu',
+          label: 'Model',
+          value: s.requestedModel === null ? 'Default' : choices.find((m) => m.model === s.requestedModel)!.label,
+          note: s.status === 'ended' ? 'When it is resumed' : 'From its next reply',
+          entries: choices.map((m) => ({
             kind: 'radio' as const,
             label: m.model === null && projectDefault ? `${m.label} (${projectDefault})` : m.label,
             checked: m.model === s.requestedModel,
@@ -826,8 +834,29 @@ function Sidebar(props: {
     if (!g) return [];
     const kind = g.project ? 'project' : name === CHATS ? 'chats' : 'removed';
     const all = groups.map((x) => x.name);
-    return groupActions(kind, !!g.project && !!props.workflows[name], all.every((n) => folded.includes(n))).map((a): MenuEntry => {
-      if (a === 'newSession') return { kind: 'item', label: 'New session', onPick: () => newSession(name, g.project?.profileNames ?? props.profiles) };
+    const project = g.project;
+    // The accounts it can run on, as Settings offers them: login folders only on this computer, not in a container.
+    const accounts = [{ name: '', label: "This computer's own login" }, ...(project?.runner === 'docker' ? [] : props.accounts.map((a) => ({ name: a.name, label: a.name })))];
+    return groupActions(kind, !!project && !!props.workflows[name], all.every((n) => folded.includes(n)), accounts.length).map((a): MenuEntry => {
+      if (a === 'newSession') return { kind: 'item', label: 'New session', onPick: () => newSession(name, project?.profileNames ?? props.profiles) };
+      if (a === 'account' && project) {
+        const current = project.account ?? '';
+        return {
+          kind: 'submenu',
+          label: 'Account',
+          value: accounts.find((x) => x.name === current)?.label ?? current,
+          // As Settings says of its own changes: running sessions keep theirs; new and resumed ones get it.
+          note: "New sessions and the manager's next start; running ones keep theirs until restarted",
+          entries: accounts.map((x) => ({
+            kind: 'radio' as const,
+            label: x.label,
+            checked: x.name === current,
+            // The project's settings saved as the Settings page saves them, with only the account changed: the same
+            // route, checks and Origin.
+            onPick: () => void props.run(() => api.updateProject(name, toApi({ ...settingsOf(project), account: x.name }, project))),
+          })),
+        };
+      }
       if (a === 'newChat') return { kind: 'item', label: 'New chat', onPick: () => props.onOpen('chat') };
       if (a === 'settings') return { kind: 'item', label: 'Settings', onPick: () => props.onOpen(kind === 'chats' ? 'chats' : `ps:${name}`) };
       if (a === 'workflow') return { kind: 'item', label: 'Workflow', onPick: () => props.onOpen(`wf:${name}`) };
@@ -934,6 +963,8 @@ function Sidebar(props: {
     );
   };
 
+  // The headings' + and ⚙ are in their menu now (Simon, 2026-11-08), so the heading says where to find it.
+  const moreHint = coarsePointer() ? 'Press and hold for more' : 'Right-click for more';
   const conn = connectionMark(props.connection);
   return (
     <aside className="sidebar">
@@ -961,8 +992,9 @@ function Sidebar(props: {
                   </button>
                   {g.project ? (
                     <button
-                      className={`project-name${props.openId === `p:${g.name}` || (g.project.managerId && props.openId === g.project.managerId) ? ' open' : ''}`}
-                      title={`${g.project.where}${g.project.managerId ? '' : ' · manager not started yet'}`}
+                      className={`project-name${props.openId === `p:${g.name}` || (g.project.managerId && props.openId === g.project.managerId) || tabOf(props.openId) === `ps:${g.name}` ? ' open' : ''}`}
+                      title={`${g.project.where}${g.project.managerId ? '' : ' · manager not started yet'}
+${moreHint}`}
                       onClick={() => props.onOpen(g.project!.managerId ?? `p:${g.name}`)}
                       data-drag="projects"
                       data-drag-id={g.name}
@@ -980,28 +1012,11 @@ function Sidebar(props: {
                       })()}
                     </button>
                   ) : g.name === CHATS ? (
-                    <button className={`project-name${props.openId === 'chat' ? ' open' : ''}`} title="Sessions of your own with no project, workflow or manager" onClick={() => props.onOpen('chat')}><Named colour={props.chats?.colour ?? null}>Chats</Named></button>
+                    <button className={`project-name${props.openId === 'chat' || tabOf(props.openId) === 'chats' ? ' open' : ''}`} title={`Sessions of your own with no project, workflow or manager
+${moreHint}`} onClick={() => props.onOpen('chat')}><Named colour={props.chats?.colour ?? null}>Chats</Named></button>
                   ) : <span className="project-name muted">{g.name}</span>}
                   {hiddenChip(g.view.project, g.view.project?.count === 1 ? 'session' : 'sessions')}
                   {g.view.project?.pending ? <span className="badge">{g.view.project.pending}</span> : null}
-                  {g.name === CHATS && (
-                    <span className="project-actions">
-                      {shows.plusOnly
-                        ? <button className="mini" title="New chat" aria-label="New chat" onClick={() => props.onOpen('chat')}>+</button>
-                        : <button className="small" title="A Claude Code session of your own, with no project" onClick={() => props.onOpen('chat')}>+ Chat</button>}
-                      <button className={`${shows.plusOnly ? 'mini cog' : 'small'}${tabOf(props.openId) === 'chats' ? ' on' : ''}`} title="Chats settings" aria-label="Settings of chats" onClick={() => props.onOpen('chats')}>⚙</button>
-                    </span>
-                  )}
-                  {g.project && (
-                    <span className="project-actions">
-                      {shows.plusOnly ? (
-                        <button className="mini" title={`New session in ${g.name}`} aria-label={`New session in ${g.name}`} onClick={() => newSession(g.name, g.project?.profileNames ?? props.profiles)}>+</button>
-                      ) : (
-                        <button className="small" title="A session of your own in this project, outside its manager" onClick={() => newSession(g.name, g.project?.profileNames ?? props.profiles)}>+ Session</button>
-                      )}
-                      <button className={`${shows.plusOnly ? 'mini cog' : 'small'}${tabOf(props.openId) === `ps:${g.name}` ? ' on' : ''}`} title="Project settings" aria-label={`Settings of ${g.name}`} onClick={() => props.onOpen(`ps:${g.name}`)}>⚙</button>
-                    </span>
-                  )}
                 </div>
                 {/* Everything of the project one step in under its name, along a guide line from its ▾ (Simon, 2026-11-04:
                     the manager row sat left of the project's, so it didn't read as the project's). */}

@@ -71,13 +71,13 @@ test('four steps, None first, in the order of the mockup columns', () => {
 
 test('each step keeps the rows the issue gives it', () => {
   // 1 None: as before.
-  assert.deepEqual(compactRows(1), { time: true, usage: true, plusOnly: false });
+  assert.deepEqual(compactRows(1), { time: true, usage: true });
   // 2: no time row, the usage line kept.
-  assert.deepEqual(compactRows(2), { time: false, usage: true, plusOnly: false });
+  assert.deepEqual(compactRows(2), { time: false, usage: true });
   // 3: title, ship and badge only; "+".
-  assert.deepEqual(compactRows(3), { time: false, usage: false, plusOnly: true });
+  assert.deepEqual(compactRows(3), { time: false, usage: false });
   // 4: as 3, tightest; the ship at 6 px, the size a click steps to from the 7 px default.
-  assert.deepEqual(compactRows(4), { time: false, usage: false, plusOnly: true, shipMax: 6 });
+  assert.deepEqual(compactRows(4), { time: false, usage: false, shipMax: 6 });
 });
 
 test('step 1 leaves the tooltip as it was; steps 2–4 add the time and the usage line with its branch', () => {
@@ -92,7 +92,7 @@ test('step 1 leaves the tooltip as it was; steps 2–4 add the time and the usag
 });
 
 // The sidebar must follow the slider: its rows, the project buttons and the ship's size come from compactRows.
-test('the sidebar draws its rows, tooltip, ship and project buttons from the step', () => {
+test('the sidebar draws its rows, tooltip and ship from the step', () => {
   const app = read('web/src/App.tsx');
   const sidebar = app.slice(app.indexOf('function Sidebar('), app.indexOf('function SessionView('));
   assert.match(sidebar, /const \[compact\] = useCompactSidebar\(\);/);
@@ -104,7 +104,8 @@ test('the sidebar draws its rows, tooltip, ship and project buttons from the ste
   assert.match(sidebar, /title=\{rowTooltip\(compact, rowStatus\(dotShown, s\)\.tooltip, time, usage\)\}/);
   // The ship is drawn at every step: no step condition in front of it, only its size capped.
   assert.match(sidebar, /return mode && <span className=\{`session-ship [^`]*`\}><SailingShip [^>]*maxSize=\{shows\.shipMax\}/);
-  assert.match(sidebar, /shows\.plusOnly \? \(\s*<button className="mini" title=\{`New session in \$\{g\.name\}`\}/);
+  // The headings' + and ⚙ moved into their right-click menu (Simon, 2026-11-08): no step draws them.
+  assert.doesNotMatch(sidebar, /project-actions|plusOnly/);
   // No other time or usage row that ignores the step.
   assert.equal(sidebar.match(/className="session-sub/g)?.length, 2);
 });

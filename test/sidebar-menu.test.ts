@@ -2,7 +2,7 @@
 // through it, and a place on the screen that keeps all of it in view.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { groupActions, menuPlace, modelChoices, moveFocus, opensMenu, sessionActions } from '../web/src/sidebarMenu.ts';
+import { groupActions, menuPlace, modelChoices, moveFocus, opensMenu, sessionActions, subMenuPlace } from '../web/src/sidebarMenu.ts';
 
 const base = { role: 'session' as const, status: 'idle' as const, paused: false, claudeSessionId: 'c1', archivedAt: null, compacting: null, clearDue: null };
 
@@ -44,6 +44,19 @@ test("a project's heading: new session, settings, workflow if any, collapse all;
   assert.deepEqual(groupActions('project', false, false), ['newSession', 'settings', 'collapseAll']);
   assert.deepEqual(groupActions('chats', false, false), ['newChat', 'settings', 'collapseAll']);
   assert.deepEqual(groupActions('removed', false, true), ['expandAll'], 'everything folded: Expand all');
+});
+
+test('a project heading offers Account only with more than one account to pick (Simon, 2026-11-08)', () => {
+  assert.deepEqual(groupActions('project', false, false, 3), ['newSession', 'account', 'settings', 'collapseAll']);
+  assert.ok(!groupActions('project', false, false, 1).includes('account'), "only this computer's own login: nothing to pick");
+  assert.ok(!groupActions('chats', false, false, 3).includes('account'));
+});
+
+test('a submenu opens to the right of its row, to the left at the screen edge, and moves up to stay on screen', () => {
+  const item = { left: 100, right: 300, top: 200 };
+  assert.deepEqual(subMenuPlace(item, 180, 150, 1280, 800), { left: 300, top: 200 });
+  assert.deepEqual(subMenuPlace({ left: 1000, right: 1200, top: 200 }, 180, 150, 1280, 800), { left: 820, top: 200 });
+  assert.deepEqual(subMenuPlace({ left: 100, right: 300, top: 750 }, 180, 150, 1280, 800), { left: 300, top: 646 });
 });
 
 test("the models: the project's default first, then opus, sonnet, haiku; a full name it started with is listed too", () => {
