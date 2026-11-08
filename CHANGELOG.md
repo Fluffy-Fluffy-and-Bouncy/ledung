@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-08
+- Board page: **Board settings** opens Settings on Remote & devices, where Message board is, instead of Update & restart. (#64)
+
 ## 2026-11-07
 - Message box: 🔑 (lock a secret) and 📎 (add images) moved from beside Send into the ＋ menu above the box, as its first two entries, so Send stands alone and the box is wider; pasting or dropping an image still works. The ＋ always reads "＋" (no more "+1"/"+2"), and its menu works with the keyboard: Up and Down move, Enter picks, Escape closes it. (#186)
 
