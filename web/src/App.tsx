@@ -572,7 +572,7 @@ export function App() {
               run={run}
             />
           ) : openId === 'board' ? (
-            <BoardListView board={ledung.board} onOpen={open} onOpenSettings={() => open('settings')} />
+            <BoardListView board={ledung.board} onOpen={open} onOpenSettings={() => open(bannerView('board'))} />
           ) : parseThreadOpenId(openId) ? (
             <BoardThreadPage key={openId} repo={parseThreadOpenId(openId)!.repo} id={parseThreadOpenId(openId)!.id} board={ledung.board} projects={ledung.projects} onOpen={open} onBack={() => open('board')} />
           ) : settingsBody ? (

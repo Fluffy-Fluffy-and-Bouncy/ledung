@@ -100,8 +100,11 @@ export const FIRST_GROUP = LEDUNG_GROUPS[0]!.id;
 /** The view id of a Ledung group: "settings:remote", shown at #/settings/remote. */
 export const groupView = (group: string): string => `settings:${group}`;
 
-/** The setting each banner is about; its Settings button opens that setting's group, not the first one (issue #412). */
-export const BANNER_SETTINGS = { usageStop: 'Usage stops', claudeProblem: 'Claude Code', configProblem: 'Config file' } as const;
+/**
+ * The setting each banner is about; its Settings button opens that setting's group, not the first one (issue #412).
+ * The Board page's Board settings button is one too, so it opens Remote & devices, not Update & restart (#64).
+ */
+export const BANNER_SETTINGS = { usageStop: 'Usage stops', claudeProblem: 'Claude Code', configProblem: 'Config file', board: 'Message board' } as const;
 
 /** The view a banner's Settings button opens: the group holding its setting, or plain Settings if none does. */
 export function bannerView(banner: keyof typeof BANNER_SETTINGS): string {
