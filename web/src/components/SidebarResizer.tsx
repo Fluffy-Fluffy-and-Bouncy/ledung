@@ -1,4 +1,5 @@
 import { useEffect, useState, type KeyboardEvent, type PointerEvent } from 'react';
+import { ResizeHandle } from './ResizeHandle.tsx';
 import { clampSize, NARROW_QUERY, parseStoredSize, sizeForKey, sizeLimits, type Axis } from '../sidebarSize.ts';
 
 function read(axis: Axis): number | null {
@@ -64,20 +65,16 @@ export function SidebarResizer() {
   };
 
   return (
-    <div
-      className={`sidebar-resizer ${narrow ? 'horizontal' : 'vertical'}`}
-      role="separator"
-      aria-label="Resize the sidebar"
-      aria-orientation={narrow ? 'horizontal' : 'vertical'}
-      aria-valuenow={size}
-      aria-valuemin={min}
-      aria-valuemax={max}
-      tabIndex={0}
-      title="Drag to resize, double-click to reset"
+    <ResizeHandle
+      orientation={narrow ? 'horizontal' : 'vertical'}
+      label="Resize the sidebar"
+      value={size}
+      min={min}
+      max={max}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
-      onDoubleClick={() => set(null)}
       onKeyDown={onKeyDown}
+      onReset={() => set(null)}
     />
   );
 }

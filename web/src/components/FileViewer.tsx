@@ -8,6 +8,7 @@ import { api } from '../api.ts';
 import { CopyButton, Markdown } from './Markdown.tsx';
 import { isImagePath, ProjectImage } from './ProjectImage.tsx';
 import { SENT_IMAGE_PREFIX } from '../chatImages.ts';
+import { usePaneWidth } from './PaneResizer.tsx';
 
 /** The folder part of a project-relative path ("docs/steps/a.md" → "docs/steps"). */
 export function dirOf(path: string): string {
@@ -43,6 +44,7 @@ export function FileViewer(props: {
   const link = props.stack[props.stack.length - 1]!;
   const [file, setFile] = useState<ProjectFileView | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const pane = usePaneWidth<HTMLElement>('chat-pane');
   const [full, setFull] = useState(false);
   const image = isImagePath(link);
 
@@ -62,7 +64,8 @@ export function FileViewer(props: {
   }, [props.sessionId, link, image, props.folder]);
 
   return (
-    <aside className="file-panel" aria-label="File">
+    <aside className="file-panel" aria-label="File" ref={pane.ref}>
+      {pane.handle}
       <header className="file-head">
         {(props.stack.length > 1 || props.backToPane) && <button className="small" onClick={props.onBack}>{props.backToPane && props.stack.length === 1 ? '‹ Files' : 'Back'}</button>}
         <span className="file-path" title={(!image && file?.path) || link}>{(!image && file?.path) || (link.startsWith(SENT_IMAGE_PREFIX) ? 'Image you sent' : link)}</span>

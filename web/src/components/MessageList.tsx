@@ -220,12 +220,17 @@ export const MessageList = memo(function MessageList(props: {
 
   // Moving the tab to another window or rotating a phone resizes the scroller, briefly to no height; keep the reader's place.
   const distance = useRef(0);
+  // The size last restored at. A narrower column (the Files pane opened or dragged wider, issue #198) makes the browser
+  // move the text itself, with a scroll event before the observer runs; taken as the reader's, it unstuck the chat
+  // from its end. A scroll at a size not yet restored at is left to the observer.
+  const restoredAt = useRef({ width: -1, height: -1 });
   useEffect(() => {
     const el = scroller.current;
     if (!el) return;
     const observer = new ResizeObserver(() => {
       if (el.clientHeight <= 0) return;
       el.scrollTop = restoredScrollTop(stick.current, distance.current, el.scrollHeight, el.clientHeight);
+      restoredAt.current = { width: el.clientWidth, height: el.clientHeight };
       updatePinned();
     });
     observer.observe(el);
@@ -238,6 +243,7 @@ export const MessageList = memo(function MessageList(props: {
       ref={scroller}
       onScroll={(e) => {
         const el = e.currentTarget;
+        if (el.clientWidth !== restoredAt.current.width || el.clientHeight !== restoredAt.current.height) return;
         const d = distanceFromBottom(el.scrollHeight, el.scrollTop, el.clientHeight);
         if (d === null) return;
         distance.current = d;
