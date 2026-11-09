@@ -3,7 +3,7 @@
 // insert, and Settings → Macros (list, edit form, keybind clash), in a real browser on a throwaway Ledung on 4397. Not
 // in CI (it starts a Ledung and a browser). playwright-core is given from outside, as for settings-frame.ts.
 //
-//   PLAYWRIGHT=/path/to/playwright-core [CHROMIUM=/path/to/chrome] [SHOTS=<folder>] node test/loopback/macros.ts
+//   PLAYWRIGHT=/path/to/playwright-core [CHROMIUM=/path/to/chrome] [SHOTS=<folder>] [LEDUNG_TEST_PORT=4398] node test/loopback/macros.ts
 //
 // The sessions run a stand-in for Claude Code that answers once and then waits: nothing signs in or reaches
 // Anthropic. Exit code 1 on any FAIL.
@@ -16,7 +16,8 @@ import { removeTemp } from '../temp.ts';
 import type { Macro } from '../../src/shared/macros.ts';
 
 const work = path.join(repo, '.test', 'macros-loopback');
-const PORT = 4397;
+// LEDUNG_TEST_PORT: the port the lead handed this session, when 4397 is someone else's.
+const PORT = Number(process.env.LEDUNG_TEST_PORT ?? 4397);
 type Tab = any;
 
 const m = (id: string, name: string, text: string, send: boolean, key: string | null, over: Partial<Macro> = {}): Macro =>
@@ -132,7 +133,8 @@ async function main(): Promise<void> {
       check(s.all.length === 3, `${width}: three chips in the info bar`, JSON.stringify(s));
       check(s.oneLine && s.rightGap !== null && s.rightGap <= 20, `${width}: on the bar's one line, right-aligned`, JSON.stringify(s));
       if (width === 1280) check(s.shown.length === 3 && s.more === '＋', '1280: all three in sight, and ＋ for Edit macros', JSON.stringify(s));
-      else check(s.shown.length >= 1 && s.shown.length < 3 && s.more === `+${3 - s.shown.length}`, '390: what does not fit is counted on the last chip', JSON.stringify(s));
+      // The ＋ is fixed, never "+N" (issue #186, Martin 2026-11-07 in Ledung question #671).
+      else check(s.shown.length >= 1 && s.shown.length < 3 && s.more === '＋', '390: what does not fit goes in the menu, and the ＋ stays ＋', JSON.stringify(s));
       check(s.labelWidth > 40, `${width}: the status keeps room`, String(s.labelWidth));
       await shot(tab, `410-b-3chips-${width}-dark`);
       await tab.context().close();
@@ -144,11 +146,12 @@ async function main(): Promise<void> {
       const tab = await open(width, height, session);
       let s = await bar(tab);
       check(s.all.length === 8 && !s.all.includes('Lantern only') && !s.all.some((t: string) => t.startsWith('Go on')), `${width}: eight chips: the global ones and Orchard's, no keybind-only one`, JSON.stringify(s.all));
-      check(s.more === `+${8 - s.shown.length + 1}`, `${width}: the last chip counts the hidden chips and the keybind-only one`, JSON.stringify(s));
+      check(s.more === '＋', `${width}: the ＋ stays ＋ with hidden chips and a keybind-only one in its menu (#186)`, JSON.stringify(s));
       await shot(tab, `410-b-8chips-${width}-dark`);
       await tab.click('.status-line .macro-more');
       s = await bar(tab);
       check(s.menu.some((t: string) => t.startsWith('Go on')) && s.menu.at(-1) === 'Edit macros…', `${width}: the menu has the rest, the keybind-only one, and Edit macros…`, JSON.stringify(s.menu));
+      check(s.menu[0] === '🔑 Lock a secret…' && s.menu[1] === '📎 Add images…', `${width}: the menu starts with Lock a secret… and Add images… (#186)`, JSON.stringify(s.menu));
       await shot(tab, `410-b-8chips-menu-${width}-dark`);
       await tab.context().close();
     }

@@ -13,6 +13,12 @@ is nothing user-facing in it).
 - Sidebar: right-click a chat, session or manager for Rename, Model ▸ (Opus, Sonnet, Haiku or the project's default, from its next reply, kept when resumed), Priority, Pause, Stop or Resume, Compact, Clear context, Copy session ID and Archive ("Stop and archive" on a running one, asked first). A project's heading offers New session, Account ▸ (when there is more than one), Settings, Workflow and Collapse all; its + and ⚙ buttons are gone, as are those on Chats' heading (New chat and Chats settings are in its menu). Long press on a phone, the menu key or Shift+F10 from the keyboard; Shift+right-click keeps the browser's own menu. (no issue)
 - Settings → Update & restart: on a page that can't stop Ledung (another computer, the phone, the public name), the Stop Ledung section now says where it works instead of being empty where Settings' search leads. (no issue)
 
+## 2026-11-08
+- Board page: **Board settings** opens Settings on Remote & devices, where Message board is, instead of Update & restart. (#64)
+
+## 2026-11-07
+- Message box: 🔑 (lock a secret) and 📎 (add images) moved from beside Send into the ＋ menu above the box, as its first two entries, so Send stands alone and the box is wider; pasting or dropping an image still works. The ＋ always reads "＋" (no more "+1"/"+2"), and its menu works with the keyboard: Up and Down move, Enter picks, Escape closes it. (#186)
+
 ## 2026-11-06
 - machine_status and the page: a session's CPU and memory now include its background commands that lost their link to it (a shell in between exited), so a session whose background command loads the machine no longer reads "idle, 0.0 cores" between turns. (#169)
 - Sessions after an update: a session that kept running through Restart Ledung while Ledung's tools changed is told so. Claude Code is sent "tools changed", which brings it brand-new Ledung tools but not new parameters on the ones it has, so its next Ledung call also gets the note "restart this session to get the new tools". (#164)

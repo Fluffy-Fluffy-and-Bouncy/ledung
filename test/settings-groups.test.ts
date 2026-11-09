@@ -141,6 +141,11 @@ test("each banner's Settings opens the group its setting is in (#412)", () => {
   assert.equal(bannerView('configProblem'), 'settings:config');
 });
 
+test("the Board page's Board settings opens Remote & devices, where Message board is (#64)", () => {
+  // Message board is the last setting of Remote & devices in the side menu above, not in Update & restart.
+  assert.equal(bannerView('board'), 'settings:remote');
+});
+
 // The places that draw them must use the two helpers above, or the tests above prove nothing (test review of PR #426).
 const pageSource = (file: string) => readFileSync(path.join(import.meta.dirname, '..', 'web', 'src', file), 'utf8');
 
@@ -150,6 +155,15 @@ test("the usage stop, Claude Code and config banners' Settings buttons go throug
   assert.ok(banners.length > 0, 'the three banners are found in App.tsx');
   for (const banner of ['usageStop', 'claudeProblem', 'configProblem']) assert.match(banners, new RegExp(`onClick=\\{\\(\\) => open\\(bannerView\\('${banner}'\\)\\)\\}>Settings<`));
   assert.doesNotMatch(banners, /open\('settings'\)/, 'no banner opens plain Settings');
+});
+
+test("the Board page's Board settings button goes through bannerView (#64)", () => {
+  const app = pageSource('App.tsx');
+  const start = app.indexOf('<BoardListView ');
+  assert.ok(start >= 0, 'the Board page is found in App.tsx');
+  const board = app.slice(start, app.indexOf('/>', start));
+  assert.match(board, /onOpenSettings=\{\(\) => open\(bannerView\('board'\)\)\}/);
+  assert.doesNotMatch(board, /open\('settings'\)/, 'Board settings does not open plain Settings');
 });
 
 test('Update & restart draws its words from updateTexts, with no git or release words of its own (#412)', () => {
