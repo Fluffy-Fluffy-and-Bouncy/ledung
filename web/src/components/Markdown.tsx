@@ -6,7 +6,7 @@ import { isImagePath, ProjectImage } from './ProjectImage.tsx';
 
 /** Copies plain text. Browsers only allow the clipboard API on secure pages, which a page opened from
  *  another computer over plain HTTP is not, so there is a fallback for that case. */
-async function copyText(text: string): Promise<void> {
+export async function copyText(text: string): Promise<void> {
   if (window.isSecureContext && navigator.clipboard) return navigator.clipboard.writeText(text);
   const area = document.createElement('textarea');
   area.value = text;

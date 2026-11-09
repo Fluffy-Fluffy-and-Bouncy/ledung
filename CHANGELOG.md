@@ -9,6 +9,10 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-09
+- Sidebar: right-click a chat, session or manager for Rename, Model ▸ (Opus, Sonnet, Haiku or the project's default, from its next reply, kept when resumed), Priority, Pause, Stop or Resume, Compact, Clear context, Copy session ID and Archive ("Stop and archive" on a running one, asked first). A project's heading offers New session, Account ▸ (when there is more than one), Settings, Workflow and Collapse all; its + and ⚙ buttons are gone, as are those on Chats' heading (New chat and Chats settings are in its menu). Long press on a phone, the menu key or Shift+F10 from the keyboard; Shift+right-click keeps the browser's own menu. (no issue)
+- Settings → Update & restart: on a page that can't stop Ledung (another computer, the phone, the public name), the Stop Ledung section now says where it works instead of being empty where Settings' search leads. (no issue)
+
 ## 2026-11-08
 - Board page: **Board settings** opens Settings on Remote & devices, where Message board is, instead of Update & restart. (#64)
 

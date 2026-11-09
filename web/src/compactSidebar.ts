@@ -45,8 +45,6 @@ export interface CompactRows {
   time: boolean;
   /** Tokens, context, branch and the rest of the usage line. */
   usage: boolean;
-  /** "+" and a smaller ⚙ instead of "+ Session" and ⚙. */
-  plusOnly: boolean;
   /** The largest text size the ship is drawn at, or none: the size chosen by clicking a ship. */
   shipMax?: number;
 }
@@ -57,10 +55,10 @@ export interface CompactRows {
  */
 export function compactRows(step: CompactStep): CompactRows {
   switch (step) {
-    case 1: return { time: true, usage: true, plusOnly: false };
-    case 2: return { time: false, usage: true, plusOnly: false };
-    case 3: return { time: false, usage: false, plusOnly: true };
-    case 4: return { time: false, usage: false, plusOnly: true, shipMax: 6 };
+    case 1: return { time: true, usage: true };
+    case 2: return { time: false, usage: true };
+    case 3: return { time: false, usage: false };
+    case 4: return { time: false, usage: false, shipMax: 6 };
   }
 }
 

@@ -1,5 +1,5 @@
-import { Component, Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
-import { CHATS, PERMISSION_MODES, PRIORITIES, projectLabel, type AwayInfo, type BoardStatus, type ChatsInfo, type GitHubBudget, type CompactingInfo, type MachineInfo, type McpServerInfo, type PermissionMode, type Priority, type ProjectInfo, type QuestionInfo, type RemoteControlInfo, type SessionInfo } from '../../src/shared/protocol.ts';
+import { Component, Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from 'react';
+import { CHATS, PERMISSION_MODES, PRIORITIES, projectLabel, type ModelChoice, type AccountInfoView, type AwayInfo, type BoardStatus, type ChatsInfo, type GitHubBudget, type CompactingInfo, type MachineInfo, type McpServerInfo, type PermissionMode, type Priority, type ProjectInfo, type QuestionInfo, type RemoteControlInfo, type SessionInfo } from '../../src/shared/protocol.ts';
 import { AddProjectView, ProjectSettingsView, ProjectStartView } from './projects/ProjectViews.tsx';
 import { ChatsSettingsView, NewChatView } from './chats/ChatViews.tsx';
 import { api } from './api.ts';
@@ -30,6 +30,10 @@ import { Named, sessionColour } from './components/ProjectName.tsx';
 import { NameEditor } from './components/NameEditor.tsx';
 import { siblingOrder } from './sidebarOrder.ts';
 import { useSidebarDrag } from './sidebarDrag.ts';
+import { groupActions, modelChoices, opensMenu, sessionActions } from './sidebarMenu.ts';
+import { RowMenu, type MenuEntry } from './components/RowMenu.tsx';
+import { copyText } from './components/Markdown.tsx';
+import { settingsOf, toApi } from './projects/projectSettings.ts';
 import { foldRows, readFolded, readFoldedSessions, toggleFolded, writeFolded, writeFoldedSessions, type FoldedRow, type Hidden } from './sidebarFold.ts';
 import { conversationFromHash, conversationHash, conversationOf, messageFromHash, messageHash, type CameFrom } from './conversation.ts';
 
@@ -531,6 +535,7 @@ export function App() {
           connection={ledung.connection}
           board={ledung.board}
           workflows={ledung.workflows}
+          accounts={ledung.accounts}
           runs={ledung.runs}
           questions={ledung.questions}
         />
@@ -672,6 +677,8 @@ function Sidebar(props: {
   board: BoardStatus | null;
   /** Which projects have a workflow, their runs and the open questions, for each one's Workflow row (2026-11-04). */
   workflows: Record<string, boolean>;
+  /** The added Claude accounts, for a project heading's Account (2026-11-08). */
+  accounts: AccountInfoView[];
   runs: Record<string, FlowRun[]>;
   questions: Record<number, QuestionInfo>;
 }) {
@@ -731,8 +738,144 @@ function Sidebar(props: {
     setChoosing(choosing === name ? null : name);
   };
 
+  // The right-click menu (2026-11-06): which row's (data-menu: "s:<id>" or "g:<group>"), where, and the row to
+  // give the focus back to when it closes from the keyboard.
+  const [rowMenu, setRowMenu] = useState<{ target: string; x: number; y: number; row: HTMLElement } | null>(null);
+  const keyOpenedAt = useRef(0);
+  const openRowMenu = (row: HTMLElement, x: number, y: number) => setRowMenu({ target: row.dataset.menu!, x, y, row });
+  const closeRowMenu = (refocus: boolean) => {
+    if (refocus) rowMenu?.row.querySelector<HTMLElement>('.session-item, .project-name')?.focus();
+    setRowMenu(null);
+  };
+  /** A typed field keeps the browser's menu (a name being edited in its row). */
+  const typing = (t: EventTarget) => t instanceof HTMLElement && !!t.closest('input, textarea, select');
   const { nav, drag, handlers } = useSidebarDrag((group, ids) =>
-    void props.run(() => (group === 'projects' ? api.orderProjects(ids) : api.orderSessions(ids))));
+    void props.run(() => (group === 'projects' ? api.orderProjects(ids) : api.orderSessions(ids))), {
+    onHold: openRowMenu,
+    onDragStart: () => setRowMenu(null),
+    onContextMenu: (e) => {
+      // The browser's own event after the menu key or Shift+F10, already handled by onMenuKey.
+      if (Date.now() - keyOpenedAt.current < 800) return e.preventDefault();
+      // Shift+right-click is always the browser's own menu.
+      if (e.shiftKey || typing(e.target)) return;
+      const row = (e.target as HTMLElement).closest<HTMLElement>('[data-menu]');
+      if (!row) return;
+      e.preventDefault();
+      // From the keyboard there is no pointer: under the row, as from the menu key.
+      const r = row.getBoundingClientRect();
+      openRowMenu(row, e.clientX || e.clientY ? e.clientX : r.left + 16, e.clientX || e.clientY ? e.clientY : r.bottom);
+    },
+  });
+  const onMenuKey = (e: ReactKeyboardEvent) => {
+    if (!opensMenu(e) || typing(e.target)) return;
+    const row = (e.target as HTMLElement).closest<HTMLElement>('[data-menu]');
+    if (!row) return;
+    e.preventDefault();
+    keyOpenedAt.current = Date.now();
+    const r = (e.target as HTMLElement).getBoundingClientRect();
+    openRowMenu(row, r.left + 16, r.bottom);
+  };
+
+  /** The menu's items for a session's, chat's or manager's row, each the action the page already has for it. */
+  const sessionEntries = (s: SessionInfo): MenuEntry[] => {
+    const project = props.projects.find((p) => p.name === s.project);
+    const projectDefault = (s.role === 'manager' && project?.managerModel) || project?.model;
+    const entries: MenuEntry[] = [];
+    const act = (label: string, onPick: () => void, more: { hint?: string; ask?: { question: string; yes: string } } = {}) => entries.push({ kind: 'item', label, onPick, ...more });
+    for (const a of sessionActions(s, !!project && !!props.workflows[s.project])) {
+      if (a === 'model') {
+        // One row, "Model ▸ Haiku", opening the choices (Simon, 2026-11-08).
+        const choices = modelChoices(s.requestedModel);
+        entries.push({ kind: 'separator' }, {
+          kind: 'submenu',
+          label: 'Model',
+          value: s.requestedModel === null ? 'Default' : choices.find((m) => m.model === s.requestedModel)!.label,
+          note: s.status === 'ended' ? 'When it is resumed' : 'From its next reply',
+          entries: choices.map((m) => ({
+            kind: 'radio' as const,
+            label: m.model === null && projectDefault ? `${m.label} (${projectDefault})` : m.label,
+            checked: m.model === s.requestedModel,
+            onPick: () => void props.run(() => api.setModel(s.id, m.model as ModelChoice | null)),
+          })),
+        });
+        continue;
+      }
+      if (a === 'priority') {
+        entries.push({ kind: 'separator' }, {
+          kind: 'group',
+          label: 'Priority',
+          // Normal or high (Simon, 2026-11-06); a critical one its manager set is shown as it is.
+          entries: PRIORITIES.filter((p) => p !== 'critical' || s.priority === 'critical').map((p) => ({
+            kind: 'radio' as const, label: PRIORITY_LABEL[p], checked: s.priority === p,
+            onPick: () => void props.run(() => api.setPriority(s.id, p)),
+          })),
+        });
+        continue;
+      }
+      if (a === 'pause' || a === 'unpause' || a === 'resume' || a === 'copyId') entries.push({ kind: 'separator' });
+      if (a === 'rename') act('Rename', () => setRenaming(s.id));
+      else if (a === 'workflow') act('Open workflow', () => props.onOpen(`wf:${s.project}`));
+      else if (a === 'pause') act('Pause', () => void props.run(() => api.setPaused(s.id, true)), { hint: 'The command running now finishes; the next tool call waits, and no new turn starts' });
+      else if (a === 'unpause') act('Unpause', () => void props.run(() => api.setPaused(s.id, false)), { hint: 'Let it go on' });
+      else if (a === 'stop') act('Stop', () => void props.run(() => api.stop(s.id)));
+      else if (a === 'resume') act('Resume', () => void props.run(() => api.resume(s.id)));
+      // As if typed in its message box, as the page has always run them.
+      else if (a === 'compact') act('Compact', () => void props.run(() => api.send(s.id, '/compact')), { hint: 'As if you typed /compact: the conversation so far becomes a summary' });
+      else if (a === 'clear') act('Clear context', () => void props.run(() => api.send(s.id, '/clear')), { hint: 'As if you typed /clear', ask: { question: `Clear the conversation of "${s.title}"? It goes on with an empty context.`, yes: 'Clear context' } });
+      else if (a === 'copyId') act('Copy session ID', () => void copyText(s.id), { hint: s.id });
+      else if (a === 'archive') act('Archive', () => void props.run(() => api.archive(s.id)), { hint: "Out of the sidebar, listed under the project's Archived; nothing is deleted" });
+      else if (a === 'stopArchive') act('Stop and archive', () => void props.run(async () => { await api.stop(s.id); await api.archive(s.id); }), { ask: { question: `Stop "${s.title}" and archive it? Nothing is deleted.`, yes: 'Stop and archive' } });
+    }
+    return entries;
+  };
+  /** The menu's items for a group's heading. */
+  const groupEntries = (name: string): MenuEntry[] => {
+    const g = groups.find((x) => x.name === name);
+    if (!g) return [];
+    const kind = g.project ? 'project' : name === CHATS ? 'chats' : 'removed';
+    const all = groups.map((x) => x.name);
+    const project = g.project;
+    // The accounts it can run on, as Settings offers them: login folders only on this computer, not in a container.
+    const accounts = [{ name: '', label: "This computer's own login" }, ...(project?.runner === 'docker' ? [] : props.accounts.map((a) => ({ name: a.name, label: a.name })))];
+    return groupActions(kind, !!project && !!props.workflows[name], all.every((n) => folded.includes(n)), accounts.length).map((a): MenuEntry => {
+      if (a === 'newSession') return { kind: 'item', label: 'New session', onPick: () => newSession(name, project?.profileNames ?? props.profiles) };
+      if (a === 'account' && project) {
+        const current = project.account ?? '';
+        return {
+          kind: 'submenu',
+          label: 'Account',
+          value: accounts.find((x) => x.name === current)?.label ?? current,
+          // As Settings says of its own changes: running sessions keep theirs; new and resumed ones get it.
+          note: "New sessions and the manager's next start; running ones keep theirs until restarted",
+          entries: accounts.map((x) => ({
+            kind: 'radio' as const,
+            label: x.label,
+            checked: x.name === current,
+            // The project's settings saved as the Settings page saves them, with only the account changed: the same
+            // route, checks and Origin.
+            onPick: () => void props.run(() => api.updateProject(name, toApi({ ...settingsOf(project), account: x.name }, project))),
+          })),
+        };
+      }
+      if (a === 'newChat') return { kind: 'item', label: 'New chat', onPick: () => props.onOpen('chat') };
+      if (a === 'settings') return { kind: 'item', label: 'Settings', onPick: () => props.onOpen(kind === 'chats' ? 'chats' : `ps:${name}`) };
+      if (a === 'workflow') return { kind: 'item', label: 'Workflow', onPick: () => props.onOpen(`wf:${name}`) };
+      const fold = a === 'collapseAll';
+      return { kind: 'item', label: fold ? 'Collapse all' : 'Expand all', onPick: () => { const next = fold ? all : []; writeFolded(localStorage, next); setFolded(next); } };
+    });
+  };
+  const menuFor = (() => {
+    if (!rowMenu) return null;
+    if (rowMenu.target.startsWith('s:')) {
+      const s = shown.find((x) => x.id === rowMenu.target.slice(2));
+      return s ? { label: `Menu of ${s.title}`, entries: sessionEntries(s) } : null;
+    }
+    const entries = groupEntries(rowMenu.target.slice(2));
+    return entries.length ? { label: `Menu of ${rowMenu.target.slice(2)}`, entries } : null;
+  })();
+  // Its row gone (archived by its manager, a project removed): closed for good, not shown again when the row returns.
+  const menuGone = !!rowMenu && !menuFor;
+  useEffect(() => { if (menuGone) setRowMenu(null); }, [menuGone]);
   /** Where the drop marker goes in a project's rows: before one row, or after one (the last place). */
   const markerIn = (rows: Row[]): { before?: string; after?: string } | null => {
     if (!drag || drag.slot === null || drag.group === 'projects') return null;
@@ -782,7 +925,7 @@ function Sidebar(props: {
       return parts.join(' · ');
     })();
     return (
-      <div className="session-row">
+      <div className={`session-row${rowMenu?.target === `s:${s.id}` ? ' menu-open' : ''}`} data-menu={`s:${s.id}`}>
         {folds && (
           <button className="fold-caret session-caret" aria-expanded={!isFolded} aria-label={`${isFolded ? 'Unfold' : 'Fold'} the sessions of ${s.title}`}
             title={isFolded ? 'Show the sessions it runs' : 'Fold the sessions it runs away'} onClick={() => foldSession(s.id)}>
@@ -820,6 +963,8 @@ function Sidebar(props: {
     );
   };
 
+  // The headings' + and ⚙ are in their menu now (Simon, 2026-11-08), so the heading says where to find it.
+  const moreHint = coarsePointer() ? 'Press and hold for more' : 'Right-click for more';
   const conn = connectionMark(props.connection);
   return (
     <aside className="sidebar">
@@ -834,21 +979,22 @@ function Sidebar(props: {
         <span>Waiting for you</span>
         {props.waiting ? <span className="badge">{props.waiting}</span> : <span className="muted">nothing</span>}
       </button>
-      <nav className="session-list" data-compact={compact > 1 ? compact : undefined} ref={nav} {...handlers}>
+      <nav className="session-list" data-compact={compact > 1 ? compact : undefined} ref={nav} {...handlers} onKeyDown={onMenuKey}>
         {!props.projects.length && <p className="muted project-empty">No projects yet. Add one in Settings (⚙ below).</p>}
         {groups.map((g) => ({ ...g, isFolded: folded.includes(g.name), view: foldRows(g.rows, { foldedSessions, folded: folded.includes(g.name), openId: props.openId, pending: props.pending }) })).map((g) => (
           <Fragment key={g.name}>
             {projectMarker?.before === g.name && marker}
             <div className={`project-group${drag?.group === 'projects' && drag.id === g.name ? ' dragging' : ''}`}>
               <LockdownFrame level={frameLevel(g.project)}>
-                <div className="project-row">
+                <div className={`project-row${rowMenu?.target === `g:${g.name}` ? ' menu-open' : ''}`} data-menu={`g:${g.name}`}>
                   <button className="fold-caret" aria-expanded={!g.isFolded} aria-label={`${g.isFolded ? 'Unfold' : 'Fold'} ${g.name}`} title={g.isFolded ? 'Show its sessions' : 'Fold its sessions away'} onClick={() => fold(g.name)}>
                     {g.isFolded ? '▸' : '▾'}
                   </button>
                   {g.project ? (
                     <button
-                      className={`project-name${props.openId === `p:${g.name}` || (g.project.managerId && props.openId === g.project.managerId) ? ' open' : ''}`}
-                      title={`${g.project.where}${g.project.managerId ? '' : ' · manager not started yet'}`}
+                      className={`project-name${props.openId === `p:${g.name}` || (g.project.managerId && props.openId === g.project.managerId) || tabOf(props.openId) === `ps:${g.name}` ? ' open' : ''}`}
+                      title={`${g.project.where}${g.project.managerId ? '' : ' · manager not started yet'}
+${moreHint}`}
                       onClick={() => props.onOpen(g.project!.managerId ?? `p:${g.name}`)}
                       data-drag="projects"
                       data-drag-id={g.name}
@@ -866,28 +1012,11 @@ function Sidebar(props: {
                       })()}
                     </button>
                   ) : g.name === CHATS ? (
-                    <button className={`project-name${props.openId === 'chat' ? ' open' : ''}`} title="Sessions of your own with no project, workflow or manager" onClick={() => props.onOpen('chat')}><Named colour={props.chats?.colour ?? null}>Chats</Named></button>
+                    <button className={`project-name${props.openId === 'chat' || tabOf(props.openId) === 'chats' ? ' open' : ''}`} title={`Sessions of your own with no project, workflow or manager
+${moreHint}`} onClick={() => props.onOpen('chat')}><Named colour={props.chats?.colour ?? null}>Chats</Named></button>
                   ) : <span className="project-name muted">{g.name}</span>}
                   {hiddenChip(g.view.project, g.view.project?.count === 1 ? 'session' : 'sessions')}
                   {g.view.project?.pending ? <span className="badge">{g.view.project.pending}</span> : null}
-                  {g.name === CHATS && (
-                    <span className="project-actions">
-                      {shows.plusOnly
-                        ? <button className="mini" title="New chat" aria-label="New chat" onClick={() => props.onOpen('chat')}>+</button>
-                        : <button className="small" title="A Claude Code session of your own, with no project" onClick={() => props.onOpen('chat')}>+ Chat</button>}
-                      <button className={`${shows.plusOnly ? 'mini cog' : 'small'}${tabOf(props.openId) === 'chats' ? ' on' : ''}`} title="Chats settings" aria-label="Settings of chats" onClick={() => props.onOpen('chats')}>⚙</button>
-                    </span>
-                  )}
-                  {g.project && (
-                    <span className="project-actions">
-                      {shows.plusOnly ? (
-                        <button className="mini" title={`New session in ${g.name}`} aria-label={`New session in ${g.name}`} onClick={() => newSession(g.name, g.project?.profileNames ?? props.profiles)}>+</button>
-                      ) : (
-                        <button className="small" title="A session of your own in this project, outside its manager" onClick={() => newSession(g.name, g.project?.profileNames ?? props.profiles)}>+ Session</button>
-                      )}
-                      <button className={`${shows.plusOnly ? 'mini cog' : 'small'}${tabOf(props.openId) === `ps:${g.name}` ? ' on' : ''}`} title="Project settings" aria-label={`Settings of ${g.name}`} onClick={() => props.onOpen(`ps:${g.name}`)}>⚙</button>
-                    </span>
-                  )}
                 </div>
                 {/* Everything of the project one step in under its name, along a guide line from its ▾ (Simon, 2026-11-04:
                     the manager row sat left of the project's, so it didn't read as the project's). */}
@@ -936,6 +1065,7 @@ function Sidebar(props: {
           </Fragment>
         ))}
       </nav>
+      {rowMenu && menuFor && <RowMenu key={`${rowMenu.target} ${rowMenu.x} ${rowMenu.y}`} label={menuFor.label} x={rowMenu.x} y={rowMenu.y} entries={menuFor.entries} onClose={closeRowMenu} />}
       <div className={`connection ${props.connection}`}>
         <button
           className={`icon settings-cog${isSettingsView(props.openId) ? ' on' : ''}`}

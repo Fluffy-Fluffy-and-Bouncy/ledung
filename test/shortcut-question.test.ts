@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ShortcutsView } from '../src/shared/protocol.ts';
-import { asksFirstRun, placesText, questionText, settingsText } from '../web/src/shortcuts.ts';
+import { asksFirstRun, placesText, questionText, settingsText, stopRefusal } from '../web/src/shortcuts.ts';
 
 // Start at sign-in and the log (issue #456) don't change when the question is asked.
 const extra = { signIn: { available: true, reason: null, label: 'Start Ledung when I sign in to Windows', on: false, file: null }, log: { file: 'ledung.log', active: false } };
@@ -39,4 +39,16 @@ test('never again once answered, Yes or No, or once an icon is there', () => {
 
 test('not asked where Ledung makes no shortcuts', () => {
   assert.equal(asksFirstRun({ kind: 'other', available: false, reason: 'Shortcuts are made on Windows and macOS.', asked: false, places: [], ...extra }, false), false);
+});
+
+// Stop Ledung (#456) works only on this computer's own page; elsewhere Settings says where instead of showing nothing,
+// which its search still led to (2026-11-09).
+test("Stop Ledung: this computer's own page may; any other page is told where it works", () => {
+  assert.equal(stopRefusal(false, { protocol: 'http:', hostname: '127.0.0.1', port: '41579' }), null);
+  assert.equal(stopRefusal(false, { protocol: 'http:', hostname: 'localhost', port: '41579' }), null);
+  assert.equal(stopRefusal(false, { protocol: 'http:', hostname: '172.20.4.143', port: '41579' }),
+    'Stop Ledung only works on the page at http://127.0.0.1:41579 on the computer Ledung runs on.');
+  assert.equal(stopRefusal(false, { protocol: 'https:', hostname: 'ledung.example.org', port: '' }),
+    'Stop Ledung only works on the page at http://127.0.0.1 on the computer Ledung runs on.', 'through the public name the port is not known');
+  assert.match(stopRefusal(true, { protocol: 'http:', hostname: '127.0.0.1', port: '41579' })!, /^This is another computer's page/);
 });
