@@ -23,7 +23,7 @@ export function OriginLine({ origin, compact = false }: { origin: FlowOrigin; co
   return (
     <div className="flow-origin" title={tip}>
       Based on <strong>{originName(origin)}</strong>
-      {!origin.release && origin.copiedAt && <>, copied {origin.copiedAt},</>}
+      {origin.release === undefined && origin.copiedAt && <>, copied {origin.copiedAt}{origin.author ? ',' : ''}</>}
       {origin.author && <> by {origin.author}</>}
       {first && first !== origin.author && <span className="muted"> · first by {first}</span>}
     </div>

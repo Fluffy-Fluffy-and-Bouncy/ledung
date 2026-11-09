@@ -11,8 +11,8 @@ import { checkFlow, parseFlow } from '../src/shared/flow-check.ts';
 import { chainAfter, cleanRemote, EARLIER_MAX, firstAuthor, ownCredit, repoKey } from '../src/shared/flow-origin.ts';
 import type { FlowOrigin } from '../src/shared/flow.ts';
 import { flowPlaces, readFlowView, workflowPlace } from '../src/sessions/flow-files.ts';
-import { originInfo, originOf, remoteOf, today, workflowHash } from '../src/sessions/flow-origin.ts';
-import { keepOrigin } from '../src/sessions/flow-propose.ts';
+import { originalOf, originInfo, originOf, remoteOf, today, workflowHash } from '../src/sessions/flow-origin.ts';
+import { buildProposal, keepOrigin } from '../src/sessions/flow-propose.ts';
 import { withOrigin, workspaceFromView, workspaceWrites } from '../web/src/flowEdit.ts';
 import { removeTemp } from './temp.ts';
 
@@ -122,7 +122,13 @@ test("the remote is read from the folder's git config, a worktree's too, and is 
   fs.writeFileSync(path.join(gitdir, 'commondir'), '../..\n');
   fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${gitdir}\n`);
   assert.equal(remoteOf(wt), 'https://github.com/example/team.git');
-  const none = folderWith({ 'flow.json': flowJson() }, 'C:/repos/team');
+  // "origin" a folder: the next remote fit to write (the fixture's "upstream"), never the folder.
+  const local = folderWith({ 'flow.json': flowJson() }, 'C:/repos/team');
+  assert.equal(remoteOf(local), 'https://example.com/other.git');
+  const none = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-origin-none-'));
+  temps.push(none);
+  fs.mkdirSync(path.join(none, '.git'));
+  fs.writeFileSync(path.join(none, '.git', 'config'), '[remote "origin"]\n\turl = C:/repos/team\n');
   assert.equal(remoteOf(none), undefined);
 });
 
@@ -177,13 +183,13 @@ test('a split-off records the origin, moves the author and release into it, writ
   assert.equal(after.view.source?.kind, 'project');
   assert.deepEqual(after.view.flow?.origin, splitOff);
   assert.deepEqual(after.view.shared, { workflow: 'team', differs: false });
-  assert.deepEqual(after.original, { workflow: 'team', release: 3, changed: false });
+  assert.deepEqual(after.original, { workflow: 'team', title: 'Team process', release: 3, changed: false });
   assert.equal(after.adopt, undefined, 'a copy with an origin is offered nothing');
   assert.equal(after.splitOff, undefined);
   // The original changes a brief and raises its release: the copy is told, and stays as it is.
   fs.writeFileSync(path.join(s.folder, '.ledung', 'workflow', 'briefs', 'a.md'), '# A, better');
   fs.writeFileSync(path.join(s.folder, '.ledung', 'workflow', 'flow.json'), flowJson({ author: 'Ana (ana)', release: 4 }));
-  assert.deepEqual((await s.info()).original, { workflow: 'team', release: 4, changed: true });
+  assert.deepEqual((await s.info()).original, { workflow: 'team', title: 'Team process', release: 4, changed: true });
 });
 
 test('the original is found by its remote when it goes by another name here, and a copy of a copy names the first author', async () => {
@@ -197,7 +203,7 @@ test('the original is found by its remote when it goes by another name here, and
   const view = await readFlowView('shop', s.places());
   const copy = { ...view, source: { kind: 'project' as const, folder: '/elsewhere' }, flow: { ...view.flow!, origin: { ...splitOff!, workflow: 'renamed' } } };
   const known = [{ name: 'team', folder: s.folder, place: workflowPlace(workflowConfig('team', s.folder)) }];
-  assert.deepEqual((await originInfo(copy, [], known, { dismissed: false })).original, { workflow: 'team', changed: false });
+  assert.deepEqual((await originInfo(copy, [], known, { dismissed: false })).original, { workflow: 'team', title: 'Team process', changed: false });
   // Neither the remote nor the name here: nothing said.
   const lost = { ...copy, flow: { ...copy.flow, origin: { ...splitOff!, workflow: 'gone', repo: 'https://github.com/example/gone' } } };
   assert.equal((await originInfo(lost, [], known, { dismissed: false })).original, undefined);
@@ -248,4 +254,72 @@ test('today is the local day, and originOf gives nothing for a view without a fl
   const dir = folderWith({ 'flow.json': '{ nope' });
   const view = await readFlowView('p', [workflowPlace(workflowConfig('team', dir))]);
   assert.equal(originOf(view, 'team', undefined, '2026-11-09'), undefined);
+});
+
+test('the original: by remote and name among workflows in one repository, never one of the same name from another, never itself', () => {
+  const w = (name: string, folder = `/w/${name}`) => ({ name, folder, place: { kind: 'workflow' as const, folder: `${folder}/.ledung/workflow`, workflow: name, read: async () => new Map(), list: async () => [] } });
+  const remotes: Record<string, string | undefined> = { '/w/team': 'https://github.com/acme/flows.git', '/w/review': 'git@github.com:acme/flows', '/w/solo': 'https://github.com/acme/solo', '/w/local': undefined };
+  const remote = (x: { folder: string }) => remotes[x.folder];
+  const all = [w('team'), w('review'), w('solo'), w('local')];
+  const project = { source: { kind: 'project' as const, folder: '/p/.ledung/workflow' } };
+  const o = (workflow: string, repo?: string): FlowOrigin => ({ workflow, title: 'T', hash: 'sha256:000000000000', copiedAt: '2026-11-09', ...(repo ? { repo } : {}) });
+  // Two workflows in one repository: the one of the origin's name.
+  assert.equal(originalOf(o('review', 'https://github.com/acme/flows'), project, all, remote)?.name, 'review');
+  assert.equal(originalOf(o('team', 'https://github.com/acme/flows'), project, all, remote)?.name, 'team');
+  // Renamed here, and its repository holds two: which one can't be told, so none.
+  assert.equal(originalOf(o('renamed', 'https://github.com/acme/flows'), project, all, remote), undefined);
+  // Renamed here, alone in its repository: that one.
+  assert.equal(originalOf(o('renamed', 'https://github.com/acme/solo.git'), project, all, remote)?.name, 'solo');
+  // The same name from another repository is not it; a workflow of that name with no remote may be.
+  assert.equal(originalOf(o('solo', 'https://github.com/someone/else'), project, all, remote), undefined);
+  assert.equal(originalOf(o('local', 'https://github.com/someone/else'), project, all, remote)?.name, 'local');
+  assert.equal(originalOf(o('solo'), project, all, remote)?.name, 'solo');
+  // A shared workflow that is a copy and kept its name is never compared with itself.
+  const itself = { source: { kind: 'workflow' as const, folder: 'C:/elsewhere', workflow: 'solo' } };
+  assert.equal(originalOf(o('solo', 'https://github.com/acme/solo'), itself, all, remote), undefined);
+});
+
+test("the remote: a comment after it, names in any case, another remote when origin's is a folder", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-origin-git-'));
+  temps.push(dir);
+  fs.mkdirSync(path.join(dir, '.git'));
+  const config = (text: string) => fs.writeFileSync(path.join(dir, '.git', 'config'), text);
+  config('[Remote "origin"]\n\tURL = https://github.com/o/r.git # the old one\n');
+  assert.equal(remoteOf(dir), 'https://github.com/o/r.git');
+  config('[remote "origin"]\n\turl = "https://github.com/o/r.git" ; quoted\n');
+  assert.equal(remoteOf(dir), 'https://github.com/o/r.git');
+  config('[remote "origin"]\n\turl = C:/repos/r\n[remote "github"]\n\turl = git@github.com:o/r.git\n');
+  assert.equal(remoteOf(dir), 'git@github.com:o/r.git');
+  // Remotes and keys within what the checks take.
+  assert.equal(cleanRemote(`https://github.com/${'a'.repeat(300)}`), undefined);
+  assert.notEqual(repoKey('git@host.example:2024/repo'), repoKey('https://host.example/repo'));
+  assert.equal(repoKey('ssh://git@host.example:2222/o/r.git'), 'host.example/o/r');
+});
+
+test("an older copy whose version is not known still moves the original's release out when it is recorded", async () => {
+  const shared = { 'flow.json': flowJson({ author: 'Ana (ana)', release: 2 }), 'briefs/a.md': '# A' };
+  const s = sharedSetup(shared, { ...shared, 'briefs/a.md': '# A, mine' });
+  const { view, adopt, adoptFrom } = await s.info();
+  assert.equal(adopt?.release, undefined);
+  assert.deepEqual(adoptFrom, { author: 'Ana (ana)', release: 2 });
+  const written = JSON.parse(workspaceWrites(withOrigin(workspaceFromView(view)!, adopt!, adoptFrom))[0]!.text!);
+  assert.equal('release' in written, false);
+  assert.equal('author' in written, false);
+});
+
+test('flow_propose: a proposal that drops the origin gets it back and says so; one that only drops it proposes nothing', async () => {
+  const origin = { workflow: 'team', title: 'Team process', hash: 'sha256:1a2b3c4d5e6f', copiedAt: '2026-11-09' };
+  const dir = folderWith({ 'flow.json': flowJson({ origin }), 'briefs/a.md': '# A' });
+  const project = parseProject({ name: 'shop', runner: 'local', path: dir });
+  const view = await readFlowView('shop', flowPlaces(project, undefined));
+  const changed = JSON.stringify({ version: 1, title: 'Team process', blocks: [{ ...BLOCKS[0], title: 'Build it' }] }, null, 2);
+  const p = await buildProposal(view, [{ file: 'flow.json', text: changed }], 'Rename the block');
+  assert.equal(p.originKept, true);
+  const written = JSON.parse(p.writes[0]!.text!);
+  assert.deepEqual(written.origin, origin);
+  assert.equal(written.blocks[0].title, 'Build it');
+  const dropped = JSON.stringify({ version: 1, title: 'Team process', blocks: BLOCKS });
+  await assert.rejects(buildProposal(view, [{ file: 'flow.json', text: dropped }], 'Drop the origin'), /a proposal can't change it/);
+  const untouched = await buildProposal(view, [{ file: 'briefs/a.md', text: '# A, better' }], 'Better brief');
+  assert.equal(untouched.originKept, undefined);
 });

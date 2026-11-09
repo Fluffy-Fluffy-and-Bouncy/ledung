@@ -542,6 +542,10 @@ export class Store {
     return r?.value ?? null;
   }
 
+  deleteMeta(key: string): void {
+    this.db.prepare('DELETE FROM meta WHERE key = ?').run(key);
+  }
+
   setMeta(key: string, value: string): void {
     this.db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value').run(key, value);
   }

@@ -391,7 +391,7 @@ export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowF
       {view?.original?.changed && view.flow?.origin && (
         // workflow-origin.md, section 3: information only; updates from the original come with sharing.
         <div className="flow-note flow-origin-note" role="status">
-          <span>"{view.original.workflow}" has changed since this copy was made{view.original.release !== undefined && view.original.release !== view.flow.origin.release ? ` (now v${view.original.release})` : ''}. This copy stays as it is.</span>
+          <span>{view.original.title} has changed since this copy was made{view.original.release !== undefined && view.original.release !== view.flow.origin.release ? ` (now v${view.original.release})` : ''}. This copy stays as it is.</span>
         </div>
       )}
       {view?.adopt && !editing && (
@@ -404,7 +404,7 @@ export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowF
               const opened = workspaceFromView(view);
               if (!opened) return setError("The flow can't be opened for writing; the problems above say why.");
               setAdopting(true);
-              const writes = workspaceWrites(withOrigin(opened, leaveRepo ? withoutRepo(view.adopt!) : view.adopt!)).filter((w) => w.path === FLOW_FILE);
+              const writes = workspaceWrites(withOrigin(opened, leaveRepo ? withoutRepo(view.adopt!) : view.adopt!, view.adoptFrom)).filter((w) => w.path === FLOW_FILE);
               api.saveFlow(project, writes).then((v) => { setView(v); setSaved(`Recorded where ${project}'s copy came from, in its flow.json.`); }, (e: Error) => setError(e.message)).finally(() => setAdopting(false));
             }}>Record where this came from</button>
             <button className="small" disabled={adopting} onClick={() => api.dismissOrigin(project).then(setView, (e: Error) => setError(e.message))}>Not now</button>

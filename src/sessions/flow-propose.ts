@@ -73,6 +73,15 @@ export function keepOrigin(current: string | null, proposed: string): { text: st
 `, kept: true };
 }
 
+/** Two JSON texts that say the same, key order and layout aside; false when either isn't JSON. */
+function sameJson(a: string | null, b: string): boolean {
+  try {
+    return sortedJson(JSON.parse((a ?? '').replace(/^﻿/, ''))) === sortedJson(JSON.parse(b));
+  } catch {
+    return false;
+  }
+}
+
 /** A view's flows by name with their titles: the default one ("main") and those in flows/. */
 function flowsOf(view: FlowView): ProposalFlow[] {
   return [
@@ -116,14 +125,22 @@ export async function buildProposal(view: FlowView, changes: ProposedChange[], w
       if (file === FLOW_FILE) {
         const k = keepOrigin(view.raw, text);
         text = k.text;
-        if (k.kept) originKept = true;
+        if (k.kept) {
+          originKept = true;
+          // With the origin back, the same flow as now (only written anew): nothing to put to the person (review of part d).
+          if (sameJson(view.raw, text)) continue;
+        }
       }
       if (before.get(file) === text) continue;
       writes.push({ path: file, text, base: view.versions[file] ?? null });
       after.set(file, text);
     }
   }
-  if (!writes.length) throw new FileError('Nothing changes: every file given is as it is now.');
+  if (!writes.length) {
+    throw new FileError(originKept
+      ? "Nothing changes: with its origin as recorded, flow.json is as it is now. Where this copy came from (\"origin\") is Ledung's to keep, and a proposal can't change it."
+      : 'Nothing changes: every file given is as it is now.');
+  }
   // The builder's own rules for what may be written (#311): the format's files, the limits, a flow.json that is a flow.
   flowWrites(writes);
   if (!after.has(FLOW_FILE)) throw new FileError(`A workflow needs ${FLOW_FILE}, its default flow.`);

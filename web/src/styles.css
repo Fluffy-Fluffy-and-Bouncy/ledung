@@ -1857,7 +1857,7 @@ button.settings-menu-item.danger { color: var(--danger); }
 .flow-origin strong { color: var(--text); font-weight: 600; }
 .workflow-pane .flow-origin { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .flow-origin-note { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
-.flow-origin-record { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 0.3rem 0.8rem; align-items: center; color: var(--muted); }
+.flow-origin-record { flex-basis: 100%; min-width: 0; overflow-wrap: anywhere; display: flex; flex-wrap: wrap; gap: 0.3rem 0.8rem; align-items: center; color: var(--muted); }
 .flow-origin-repo { display: inline-flex; gap: 0.35rem; align-items: center; color: var(--text); overflow-wrap: anywhere; }
 .workflow-pane .workflow-pane-full { white-space: nowrap; }
 .workflow-pane-body { overflow-y: auto; display: flex; flex-direction: column; min-height: 0; flex: 1; }

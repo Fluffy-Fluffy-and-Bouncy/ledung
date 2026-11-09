@@ -67,7 +67,8 @@ export function cleanRemote(url: string): string | undefined {
   if (short) {
     const [, user, host, rest] = short;
     if (rest!.startsWith('/') || rest!.includes('..')) return undefined;
-    return `${user === 'git' ? 'git@' : ''}${host}:${rest}`;
+    const out = `${user === 'git' ? 'git@' : ''}${host}:${rest}`;
+    return out.length <= 300 ? out : undefined;
   }
   let parsed: URL;
   try {
@@ -77,7 +78,9 @@ export function cleanRemote(url: string): string | undefined {
   }
   if (!['https:', 'http:', 'ssh:', 'git:'].includes(parsed.protocol) || !parsed.hostname) return undefined;
   const path = parsed.pathname.replace(/\/+$/, '');
-  return `${parsed.protocol}//${parsed.host}${path}`;
+  const out = `${parsed.protocol}//${parsed.host}${path}`;
+  // Within what the origin's check takes (review of part a).
+  return out.length <= 300 ? out : undefined;
 }
 
 /**
@@ -85,8 +88,11 @@ export function cleanRemote(url: string): string | undefined {
  * no protocol, user, port, ".git" or slash at the end.
  */
 export function repoKey(url: string): string {
-  let u = url.trim().toLowerCase().replace(/^[a-z+]+:\/\//, '').replace(/^[^@/]*@/, '');
-  // The short form's "host:path", and a URL's "host:port/path".
-  u = u.replace(/^([^/:]+):\d+\//, '$1/').replace(/^([^/:]+):/, '$1/');
+  const lower = url.trim().toLowerCase();
+  const scheme = /^[a-z+]+:\/\//.test(lower);
+  let u = lower.replace(/^[a-z+]+:\/\//, '').replace(/^[^@/]*@/, '');
+  // A URL's "host:port/path" (only a URL has a port: the short form's "host:2024/x" is a path), and the short form's "host:path".
+  if (scheme) u = u.replace(/^([^/]+):\d+\//, '$1/');
+  else u = u.replace(/^([^/:]+):/, '$1/');
   return u.replace(/\/+$/, '').replace(/\.git$/, '').replace(/\/+$/, '');
 }

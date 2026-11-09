@@ -347,12 +347,14 @@ export interface FlowView {
    * The flow has an origin whose original is a workflow configured on this computer, read now: its release, and whether
    * its files have changed since the copy (by hash). None: no origin with a hash, or the original isn't here.
    */
-  original?: { workflow: string; release?: number; changed: boolean };
+  original?: { workflow: string; title: string; release?: number; changed: boolean };
   /**
    * The project's own copy has no origin and follows a shared workflow with a flow: the origin "Record where this came
    * from" would write (without a hash when the copy differs), until the person dismisses the offer.
    */
   adopt?: FlowOrigin;
+  /** The original's own author and release now, which recording the origin moves out of the copy (section 4). */
+  adoptFrom?: { author?: string; release?: number };
   /**
    * The project's other flows (#447), by name; `flow`, `raw` and `problems` above are the default flow's (flow.json),
    * with the problems of what all share (the rules, the texts).

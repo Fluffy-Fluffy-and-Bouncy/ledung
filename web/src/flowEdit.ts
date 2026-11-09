@@ -942,11 +942,12 @@ export interface Workspace {
  * out (the remote left out when the person ticked so), and the original's author and release moved into it, so the
  * copy claims neither.
  */
-export function withOrigin(ws: Workspace, origin: FlowOrigin): Workspace {
+export function withOrigin(ws: Workspace, origin: FlowOrigin, from: { author?: string; release?: number } = origin): Workspace {
   const [first, ...rest] = ws.flows;
   if (!first) return ws;
   const { author, release, origin: _, ...draft } = first.draft;
-  const own = ownCredit({ ...(author !== undefined ? { author } : {}), ...(release !== undefined ? { release } : {}) }, origin);
+  // `from`: the original's own credit, when the origin can't carry it (an older copy whose version isn't known, review of part d).
+  const own = ownCredit({ ...(author !== undefined ? { author } : {}), ...(release !== undefined ? { release } : {}) }, { title: origin.title, ...from });
   return { ...ws, flows: [{ ...first, draft: { ...draft, ...own, origin } }, ...rest] };
 }
 

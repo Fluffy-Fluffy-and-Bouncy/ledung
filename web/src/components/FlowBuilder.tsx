@@ -638,6 +638,39 @@ function BlockChooser({ draft, problems, choices, onSelect }: { draft: Draft; pr
   );
 }
 
+/** The largest release the checks take (src/shared/flow-check.ts). */
+const RELEASE_MAX = 1000000;
+
+/**
+ * The flow's own release (workflow-origin.md): a whole number from 1, or empty for none. What is typed stays in the
+ * field while it isn't one, marked, rather than quietly becoming none (review of part c).
+ */
+function ReleaseField({ release, copying, onRelease }: { release: number | undefined; copying: boolean; onRelease: (release: number | undefined) => void }) {
+  const typing = usePlainTyping();
+  const [text, setText] = useState(release === undefined ? '' : String(release));
+  useEffect(() => {
+    setText((t) => (t.trim() === '' && release === undefined) || Number(t) === release ? t : release === undefined ? '' : String(release));
+  }, [release]);
+  const n = Number(text);
+  const bad = text.trim() !== '' && (!/^\d+$/.test(text.trim()) || n < 1 || n > RELEASE_MAX);
+  const hint = bad
+    ? `A whole number from 1 to ${RELEASE_MAX}, or empty for none.`
+    : copying
+      ? "Saving the copy moves the original's release into where it came from, unless you change it: the copy starts with none of its own."
+      : 'Your own number for what you share, raised by hand when you publish a change: copies say they are based on it (v3). Empty: none.';
+  return (
+    <Field label="Release" hint={hint}>
+      <input {...typing} inputMode="numeric" value={text} aria-invalid={bad} placeholder="none" onChange={(e) => {
+        const t = e.target.value;
+        setText(t);
+        const v = Number(t.trim());
+        if (t.trim() === '') onRelease(undefined);
+        else if (/^\d+$/.test(t.trim()) && v >= 1 && v <= RELEASE_MAX) onRelease(v);
+      }} />
+    </Field>
+  );
+}
+
 function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: ReactNode }) {
   return (
     <label className="flow-field">
@@ -1243,6 +1276,8 @@ function FlowFields({ draft, commit, narrow, onSelect, ws, flow, commitWs, onDel
   const [overlayTitle, setOverlayTitle] = useState('');
   const [problem, setProblem] = useState<string | null>(null);
   const isDefault = flow.key === ws.flows[0]!.key;
+  // A shared workflow being saved as the project's copy: its author and release move into the origin (workflow-origin.md).
+  const copying = isDefault && ws.flows[0]!.base.copy;
   const [name, setName] = useState(flow.name);
   const [nameProblem, setNameProblem] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -1269,18 +1304,12 @@ function FlowFields({ draft, commit, narrow, onSelect, ws, flow, commitWs, onDel
       <h3>{ws.flows.length > 1 ? (isDefault ? 'This flow, the default one' : 'This flow') : 'The workflow'}</h3>
       <Field label="Title"><input {...typing} value={draft.title ?? ''} onChange={(e) => commitWs(setFlowTitle(ws, flow.key, optional(e.target.value)), `${flow.key}:flow-title`)} /></Field>
       {/* #117 and workflow-origin.md: the flow's own credit; a copy's original is credited by its origin, below. */}
-      <Field label="Author" hint={isDefault && ws.flows[0]!.base.copy ? "Saving a copy moves the original's author into where it came from; give the copy's own here." : 'A credit line shown under the title, e.g. "Name (login)". Credit only.'}>
+      <Field label="Author" hint={copying ? "Saving the copy moves the original's author into where it came from, unless you change it: give the copy's own here." : 'A credit line shown under the title, e.g. "Name (login)". Credit only.'}>
         <input {...typing} value={draft.author ?? ''} placeholder="Name (login)" onChange={(e) => commitWs(setCredit(ws, flow.key, { author: optional(e.target.value) }), `${flow.key}:author`)} />
       </Field>
-      {isDefault && (
-        <Field label="Release" hint="Your own number for what you share, raised by hand when you publish a change: copies say they are based on it (v3). Left empty: none.">
-          <input {...typing} type="number" min={1} step={1} value={draft.release ?? ''} onChange={(e) => {
-            const n = Number(e.target.value);
-            commitWs(setCredit(ws, flow.key, { release: e.target.value === '' || !Number.isInteger(n) || n < 1 ? undefined : n }), `${flow.key}:release`);
-          }} />
-        </Field>
-      )}
-      {isDefault && draft.origin && (
+      {isDefault && <ReleaseField key={flow.key} release={draft.release} copying={copying} onRelease={(release) => commitWs(setCredit(ws, flow.key, { release }), `${flow.key}:release`)} />}
+      {/* While a shared workflow is being copied, its own origin is not this copy's: the confirm says what will be recorded (review of parts b and c). */}
+      {isDefault && draft.origin && !copying && (
         <div className="flow-field-hint">
           <OriginLine origin={draft.origin} />
           <span className="muted">Where this copy came from: Ledung keeps it, and the builder doesn't change it.</span>

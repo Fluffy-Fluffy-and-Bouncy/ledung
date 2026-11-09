@@ -1352,7 +1352,8 @@ export class SessionManager {
     const manager = this.store.getSession(managerId);
     if (!manager || manager.role !== 'manager') throw new Error('Only a manager proposes workflow changes.');
     const project = this.project(manager.project);
-    const view = await this.flowView(project.name);
+    // A plain read: a proposal needs no origin parts (review of part b).
+    const view = await this.plainFlowView(project.name);
     let data;
     try {
       data = await buildProposal(view, changes, why, profileNames(this.profilesFor(project).profiles));
@@ -1409,7 +1410,7 @@ export class SessionManager {
     try {
       // What the person saw checked must still be the workflow it is saved into (review of 3e): any file changed since,
       // also one the proposal doesn't write (a flow it runs, a brief), and it is not saved.
-      const now = (await this.flowView(p.project)).versions;
+      const now = (await this.plainFlowView(p.project)).versions;
       const moved = [...new Set([...Object.keys(p.read ?? {}), ...Object.keys(now)])].filter((f) => (p.read ?? {})[f] !== now[f]);
       if (moved.length) throw new Error(`the workflow changed since it was proposed (${moved.slice(0, 5).join(', ')}), so what was checked is not what would be saved.`);
       await this.saveFlow(p.project, p.writes);
@@ -1483,16 +1484,21 @@ export class SessionManager {
   async flowView(name: string): Promise<FlowView> {
     const project = this.projectStore.get(name)?.config;
     if (!project) throw new UserError(`There is no project named "${name}".`);
-    // A block's profile is checked against what the project's sessions can use: the config and its workflow's profiles file (#298).
     const places = this.flowPlacesOf(project);
-    const view = await readFlowView(project.name, places, profileNames(this.profilesFor(project).profiles));
-    // workflow-origin.md: what a split-off records, whether a copy's original changed since, "Record where this came from".
+    const view = await this.plainFlowView(name);
+    // workflow-origin.md: what a split-off records, whether a copy's original changed since, "Record where this came
+    // from". Each part fails on its own (originInfo), so a split-off never loses its origin to another part's error.
     const workflows = workflowsOf(this.config).map((w) => ({ name: w.name, folder: w.folder, place: workflowPlace(w) }));
-    const origin = await originInfo(view, places, workflows, { dismissed: this.store.getMeta(`${ORIGIN_DISMISSED}${project.name}`) !== null }).catch((e: Error) => {
-      console.warn(`Workflow: the origin of ${project.name}'s flow could not be worked out: ${e.message}`);
-      return {};
-    });
+    const origin = await originInfo(view, places, workflows, { dismissed: this.store.getMeta(`${ORIGIN_DISMISSED}${project.name}`) !== null });
     return { ...view, ...origin };
+  }
+
+  /** The flow as read, with its checks, and none of the origin parts: for a proposal and its Accept (review of part b). */
+  private async plainFlowView(name: string): Promise<FlowView> {
+    const project = this.projectStore.get(name)?.config;
+    if (!project) throw new UserError(`There is no project named "${name}".`);
+    // A block's profile is checked against what the project's sessions can use: the config and its workflow's profiles file (#298).
+    return readFlowView(project.name, this.flowPlacesOf(project), profileNames(this.profilesFor(project).profiles));
   }
 
   /** The person dismissed "Record where this came from" for a project's older copy (workflow-origin.md, section 4). */
@@ -2089,6 +2095,11 @@ export class SessionManager {
         throw e;
       }
     }
+    // "Record where this came from" stays dismissed under the new name (review of part d).
+    if (p.config.name !== name && this.store.getMeta(`${ORIGIN_DISMISSED}${name}`) !== null) {
+      this.store.setMeta(`${ORIGIN_DISMISSED}${p.config.name}`, this.store.getMeta(`${ORIGIN_DISMISSED}${name}`)!);
+      this.store.deleteMeta(`${ORIGIN_DISMISSED}${name}`);
+    }
     this.boards?.refresh();
     this.publishProjects();
     for (const s of this.sessions()) if (s.project === p.config.name) this.publish({ type: 'session', session: s });
@@ -2167,6 +2178,8 @@ export class SessionManager {
     for (const s of running) this.live.delete(s.id);
     this.projectStore.remove(name);
     this.flowRuns.stopProject(name, `the project "${name}" was removed`);
+    // A later project of the same name is offered "Record where this came from" afresh (review of part d).
+    this.store.deleteMeta(`${ORIGIN_DISMISSED}${name}`);
     // Its secrets, the project's and its sessions', go with it (issue #468).
     void this.secrets?.dropProject(name).catch((e) => console.error(`Secrets of ${name}: ${(e as Error).message}`));
     this.boards?.refresh();
