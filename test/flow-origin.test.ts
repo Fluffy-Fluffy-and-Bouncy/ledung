@@ -175,6 +175,8 @@ test('a split-off records the origin, moves the author and release into it, writ
   assert.deepEqual(written.origin, splitOff);
   assert.equal('author' in written, false);
   assert.equal('release' in written, false);
+  // With the credit at the top, not after the blocks.
+  assert.deepEqual(Object.keys(written), ['version', 'title', 'origin', 'blocks']);
   for (const form of [s.folder, JSON.stringify(s.folder).slice(1, -1), s.folder.split(path.sep).join('/')]) assert.equal(flow.text!.includes(form), false, form);
   assert.doesNotMatch(flow.text!, /token/);
   for (const w of writes) fs.mkdirSync(path.dirname(path.join(s.dir, '.ledung', 'workflow', w.path)), { recursive: true });

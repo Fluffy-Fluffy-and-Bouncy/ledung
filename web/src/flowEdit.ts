@@ -275,6 +275,16 @@ export function flowText(base: DraftBase, draft: Draft): string {
     const { manager: m, ...rest } = top;
     top = Object.fromEntries(Object.entries(rest).flatMap(([k, v]) => (k === 'blocks' ? [['manager', m], [k, v]] : [[k, v]])));
   }
+  // A release or origin new to a read flow (workflow-origin.md: a split-off, or recording an older copy's) goes with the
+  // credit at the top, after the title and author, as a new flow has it, not after the blocks.
+  for (const key of ['release', 'origin']) {
+    if (!raw || key in raw || !(key in top)) continue;
+    const value = top[key];
+    const after = TOP_FIELDS.slice(0, TOP_FIELDS.indexOf(key)).filter((k) => k in top).at(-1);
+    const entries = Object.entries(top).filter(([k]) => k !== key);
+    entries.splice(after === undefined ? 0 : entries.findIndex(([k]) => k === after) + 1, 0, [key, value]);
+    top = Object.fromEntries(entries);
+  }
   top.blocks = draft.blocks.map((entry) => {
     const { key, block } = entry;
     const i = key.startsWith('b') ? at(key) : -1;
