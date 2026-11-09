@@ -13,8 +13,10 @@ import { BLOCK_KINDS, DEFAULT_BRANCH, DEFAULT_FLOW, DEFAULT_TIDY, STOPPED_ENDING
 import { NAME_COLOURS, type NameColour } from '../../../src/shared/name-colours.ts';
 import { inFolder } from '../../../src/shared/flow-check.ts';
 import { actorLine, BLOCK_HEIGHT, BLOCK_WIDTH, blockSize, flowLine, KIND_LABEL, layoutFlow, outcomeHandles, substepText, substepToText, type PlacedKind, type Point } from '../flowLayout.ts';
-import { addBlock, addEndings, addFlow, addFrame, addOutcome, addOverlay, addSubstep, amendedBy, arrange, boxRound, connect, deleteBlocks, deleteFlow, deleteFrame, deleteOutcome, deleteOverlay, deleteSubstep, flowNameProblem, flowOf, frameMembers, framesInside, moveBlock, moveFrame, moveSubstep, newBrief, newManagerFile, newOverlayFile, newSubstepBrief, outcomeKeys, PALETTE, pinned, renameFlow, setBlock, setFollow, setFlowTitle, setFrame, setManager, setOutcome, setOverlay, setSubstep, substepKeys, toggleAmends, wireOutcome, withDraft, workspaceBlocksSaving, workspaceProblems, workspaceWrites, type Draft, type DraftFlow, type Workspace } from '../flowEdit.ts';
+import { addBlock, addEndings, addFlow, addFrame, addOutcome, addOverlay, addSubstep, amendedBy, arrange, boxRound, connect, deleteBlocks, deleteFlow, deleteFrame, deleteOutcome, deleteOverlay, deleteSubstep, flowNameProblem, flowOf, frameMembers, framesInside, moveBlock, moveFrame, moveSubstep, newBrief, newManagerFile, newOverlayFile, newSubstepBrief, outcomeKeys, PALETTE, pinned, renameFlow, setBlock, setCredit, setFollow, setFlowTitle, setFrame, setManager, setOutcome, setOverlay, setSubstep, substepKeys, toggleAmends, wireOutcome, withDraft, withOrigin, workspaceBlocksSaving, workspaceProblems, workspaceWrites, type Draft, type DraftFlow, type Workspace } from '../flowEdit.ts';
 import { setLeaveGuard } from '../flowNav.ts';
+import { originName, withoutRepo } from '../../../src/shared/flow-origin.ts';
+import { OriginLine } from './OriginLine.tsx';
 import { ARROW_COLOUR, continueHandles, EDGE_TYPES, FlowMiniMap, FlowTabs, frameColour, frameNode, lightArrows, NODE_TYPES, useMeasured, useOpeningView, withLabelSpots, type BlockData } from './FlowDiagram.tsx';
 
 /**
@@ -92,7 +94,10 @@ export function FlowBuilder({ project, view, initial, shown, onShowFlow, onRenam
   const problems = useMemo(() => all.filter((p) => !p.hint), [all]);
   const hints = useMemo(() => all.filter((p) => p.hint), [all]);
   const allProblems = useMemo(() => [...byFlow.values()].reduce((n, ps) => n + ps.filter((p) => !p.hint).length, 0), [byFlow]);
-  const writes = useMemo(() => workspaceWrites(ws), [ws]);
+  // workflow-origin.md: a split-off records where the copy came from, the remote left out when the person ticks so.
+  const [leaveRepo, setLeaveRepo] = useState(false);
+  const copyOrigin = useMemo(() => (view.splitOff && ws.flows[0]?.base.copy ? (leaveRepo ? withoutRepo(view.splitOff) : view.splitOff) : null), [view.splitOff, ws, leaveRepo]);
+  const writes = useMemo(() => workspaceWrites(copyOrigin ? withOrigin(ws, copyOrigin) : ws), [ws, copyOrigin]);
   const cantSave = useMemo(() => workspaceBlocksSaving(ws), [ws]);
   const dirty = writes.length > 0;
   // What a Run flow block may run (#447): the other flows, and how each can end.
@@ -289,7 +294,9 @@ export function FlowBuilder({ project, view, initial, shown, onShowFlow, onRenam
   return (
     <div className={`page-view workflow-view flow-builder${narrow ? ' narrow' : ''}`}>
       <header className="session-head">
-        <div className="session-head-text"><h2>{project}: editing the workflow{draft.title ? ` · ${draft.title}` : ''}</h2>{ownFolder}</div>
+        <div className="session-head-text"><h2>{project}: editing the workflow{draft.title ? ` · ${draft.title}` : ''}</h2>
+          {ws.flows[0]?.draft.origin && !ws.flows[0].base.copy && <OriginLine origin={ws.flows[0].draft.origin} />}
+          {ownFolder}</div>
         <div className="session-corner flow-tools">
           <button className="small" onClick={undo} disabled={!h.past.length} title="Undo (Ctrl+Z)">↶ Undo</button>
           <button className="small" onClick={redo} disabled={!h.future.length} title="Redo (Ctrl+Shift+Z)">↷ Redo</button>
@@ -309,6 +316,12 @@ export function FlowBuilder({ project, view, initial, shown, onShowFlow, onRenam
       {confirm === 'fork' && (
         <div className="flow-confirm" role="alertdialog">
           <span>{project} follows the shared workflow "{view.source?.workflow}". Saving gives {project} its own copy of it in {where}: from then on {project} follows that copy and no longer gets changes made to "{view.source?.workflow}". The workflow page offers "Back to shared" later. Save a copy?</span>
+          {copyOrigin && (
+            <span className="flow-origin-record">
+              This copy will record: based on {originName(copyOrigin)}{copyOrigin.author ? ` by ${copyOrigin.author}` : ''}{copyOrigin.repo ? `, from ${copyOrigin.repo}` : ''}{copyOrigin.hash ? ` (version ${copyOrigin.hash})` : ''}.
+              {view.splitOff?.repo && <label className="flow-origin-repo"><input type="checkbox" checked={leaveRepo} onChange={(e) => setLeaveRepo(e.target.checked)} /> Leave the repository out</label>}
+            </span>
+          )}
           <span className="flow-confirm-buttons"><button className="small primary" onClick={() => { setForkAgreed(true); void save(false, true); }}>Save a copy</button><button className="small" onClick={() => setConfirm(null)}>Keep editing</button></span>
         </div>
       )}
@@ -1255,6 +1268,24 @@ function FlowFields({ draft, commit, narrow, onSelect, ws, flow, commitWs, onDel
     <div className="flow-panel-body flow-fields">
       <h3>{ws.flows.length > 1 ? (isDefault ? 'This flow, the default one' : 'This flow') : 'The workflow'}</h3>
       <Field label="Title"><input {...typing} value={draft.title ?? ''} onChange={(e) => commitWs(setFlowTitle(ws, flow.key, optional(e.target.value)), `${flow.key}:flow-title`)} /></Field>
+      {/* #117 and workflow-origin.md: the flow's own credit; a copy's original is credited by its origin, below. */}
+      <Field label="Author" hint={isDefault && ws.flows[0]!.base.copy ? "Saving a copy moves the original's author into where it came from; give the copy's own here." : 'A credit line shown under the title, e.g. "Name (login)". Credit only.'}>
+        <input {...typing} value={draft.author ?? ''} placeholder="Name (login)" onChange={(e) => commitWs(setCredit(ws, flow.key, { author: optional(e.target.value) }), `${flow.key}:author`)} />
+      </Field>
+      {isDefault && (
+        <Field label="Release" hint="Your own number for what you share, raised by hand when you publish a change: copies say they are based on it (v3). Left empty: none.">
+          <input {...typing} type="number" min={1} step={1} value={draft.release ?? ''} onChange={(e) => {
+            const n = Number(e.target.value);
+            commitWs(setCredit(ws, flow.key, { release: e.target.value === '' || !Number.isInteger(n) || n < 1 ? undefined : n }), `${flow.key}:release`);
+          }} />
+        </Field>
+      )}
+      {isDefault && draft.origin && (
+        <div className="flow-field-hint">
+          <OriginLine origin={draft.origin} />
+          <span className="muted">Where this copy came from: Ledung keeps it, and the builder doesn't change it.</span>
+        </div>
+      )}
       {isDefault
         ? ws.flows.length > 1 && <span className="muted flow-field-hint">In {FLOW_FILE}: where work goes unless the manager or the person picks another flow. Run flow blocks name it "{DEFAULT_FLOW}".</span>
         : (

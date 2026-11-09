@@ -7,8 +7,9 @@
 // Comment frames (#446) are rectangles round blocks: moving one moves the blocks inside it. A project may have several
 // flows (#447): the builder edits them together as a workspace, one draft each, sharing the rules and texts, so one
 // undo history and one save cover them all.
-import { BLOCK_KINDS, DEFAULT_FLOW, FLOW_FILE, flowFileOf, FLOW_IN_FOLDER, linkedTexts, MANAGER_FILE, RULES_FILE, WRITABLE_FLOW_FILE, type BlockKind, type Flow, type FlowBlock, type FlowFileWrite, type FlowFrame, type FlowOutcome, type FlowOverlay, type FlowProblem, type FlowSubstep, type FlowTidy, type FlowView, type FlowWorktree } from '../../src/shared/flow.ts';
+import { BLOCK_KINDS, DEFAULT_FLOW, FLOW_FILE, flowFileOf, FLOW_IN_FOLDER, linkedTexts, MANAGER_FILE, RULES_FILE, WRITABLE_FLOW_FILE, type BlockKind, type Flow, type FlowBlock, type FlowFileWrite, type FlowFrame, type FlowOrigin, type FlowOutcome, type FlowOverlay, type FlowProblem, type FlowSubstep, type FlowTidy, type FlowView, type FlowWorktree } from '../../src/shared/flow.ts';
 import { checkFlow, checkFlowCalls, machinePathIn, parseFlow, personGatedFlows } from '../../src/shared/flow-check.ts';
+import { ownCredit } from '../../src/shared/flow-origin.ts';
 import { blockSize, layoutFlow } from './flowLayout.ts';
 
 /** A block being edited; `key` stays when its id changes, so it is still matched to what was read. */
@@ -42,6 +43,10 @@ export interface Draft {
   title?: string;
   /** As flow.json says it (#117); the builder keeps it. */
   author?: string;
+  /** The author's own release number (workflow-origin.md); only the default flow has one. */
+  release?: number;
+  /** Where this copy came from (workflow-origin.md): written back as read; set only by a split-off or "Record where this came from". */
+  origin?: FlowOrigin;
   /** Part 3f: as flow.json says them; none: the default. */
   worktree?: FlowWorktree;
   limit?: number;
@@ -101,6 +106,8 @@ export function draftFromView(view: FlowView): { base: DraftBase; draft: Draft }
     draft: {
       ...(flow.title !== undefined ? { title: flow.title } : {}),
       ...(flow.author !== undefined ? { author: flow.author } : {}),
+      ...(flow.release !== undefined ? { release: flow.release } : {}),
+      ...(flow.origin !== undefined ? { origin: flow.origin } : {}),
       ...(flow.start !== undefined ? { start: flow.start } : {}),
       ...(flow.manager !== undefined ? { manager: flow.manager } : {}),
       ...follow(flow),
@@ -166,6 +173,8 @@ export function flowOf(draft: Draft): Flow {
     version: 1,
     ...(draft.title !== undefined ? { title: draft.title } : {}),
     ...(draft.author !== undefined ? { author: draft.author } : {}),
+    ...(draft.release !== undefined ? { release: draft.release } : {}),
+    ...(draft.origin !== undefined ? { origin: draft.origin } : {}),
     ...(draft.start !== undefined ? { start: draft.start } : {}),
     ...(draft.manager !== undefined ? { manager: draft.manager } : {}),
     ...follow(draft),
@@ -178,7 +187,7 @@ export function flowOf(draft: Draft): Flow {
 // --- Writing back -------------------------------------------------------------------------------------------------
 
 /** The fields of each part of the format, in the order a new one is written; nested parts with their own fields. */
-const TOP_FIELDS = ['version', 'title', 'author', 'start', 'manager', 'worktree', 'limit', 'tidy', 'oneRunPerRef'];
+const TOP_FIELDS = ['version', 'title', 'author', 'release', 'origin', 'start', 'manager', 'worktree', 'limit', 'tidy', 'oneRunPerRef'];
 const BLOCK_FIELDS = ['id', 'kind', 'title', 'flow', 'session', 'runs', 'continues', 'context', 'model', 'profile', 'brief', 'ask', 'person', 'timer', 'guard', 'parallel', 'limit', 'substeps', 'outcomes', 'at'];
 const SUBSTEP_FIELDS = ['id', 'kind', 'title', 'brief', 'model', 'when', 'outcomes'];
 const OUTCOME_FIELDS = ['word', 'to', 'times', 'end'];
@@ -259,7 +268,7 @@ export function flowText(base: DraftBase, draft: Draft): string {
   const parsed = base.parsed;
   const rawList = (key: string): unknown[] => (raw && Array.isArray(raw[key]) ? raw[key] as unknown[] : []);
   const at = (key: string) => /^[bof](\d+)$/.exec(key) && raw ? Number(key.slice(1)) : -1;
-  const fields = { version: 1, title: draft.title, author: draft.author, start: draft.start, manager: draft.manager, worktree: draft.worktree, limit: draft.limit, tidy: draft.tidy, oneRunPerRef: draft.oneRunPerRef };
+  const fields = { version: 1, title: draft.title, author: draft.author, release: draft.release, origin: draft.origin, start: draft.start, manager: draft.manager, worktree: draft.worktree, limit: draft.limit, tidy: draft.tidy, oneRunPerRef: draft.oneRunPerRef };
   let top: Record<string, unknown> = raw ? mergeKnown(raw, parsed, fields, TOP_FIELDS) : fresh(fields, TOP_FIELDS);
   // A manager's file new to a read flow goes where a new flow has it, before the blocks, not after everything.
   if (raw && !('manager' in raw) && 'manager' in top && 'blocks' in top) {
@@ -926,6 +935,28 @@ export interface Workspace {
   read: string[];
   /** Numbers the keys of the flows made here. */
   seq: number;
+}
+
+/**
+ * The workspace a split-off saves (workflow-origin.md, section 2): its default flow with the origin the server worked
+ * out (the remote left out when the person ticked so), and the original's author and release moved into it, so the
+ * copy claims neither.
+ */
+export function withOrigin(ws: Workspace, origin: FlowOrigin): Workspace {
+  const [first, ...rest] = ws.flows;
+  if (!first) return ws;
+  const { author, release, origin: _, ...draft } = first.draft;
+  const own = ownCredit({ ...(author !== undefined ? { author } : {}), ...(release !== undefined ? { release } : {}) }, origin);
+  return { ...ws, flows: [{ ...first, draft: { ...draft, ...own, origin } }, ...rest] };
+}
+
+/** The flow's own author or release set, or taken out when empty (workflow-origin.md: the builder offers both). */
+export function setCredit(ws: Workspace, key: string, patch: { author?: string | undefined; release?: number | undefined }): Workspace {
+  const f = ws.flows.find((x) => x.key === key);
+  if (!f) return ws;
+  const next: Draft = { ...f.draft, ...patch };
+  for (const k of Object.keys(patch) as (keyof typeof patch)[]) if (patch[k] === undefined) delete next[k];
+  return withDraft(ws, key, next);
 }
 
 /** A workspace of one flow: a project as it was before #447. */

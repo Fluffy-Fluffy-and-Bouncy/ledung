@@ -157,11 +157,44 @@ export interface FlowFrame {
   size: { width: number; height: number };
 }
 
+/**
+ * One copy further back in a copy's credit chain (docs/steps/workflow-origin.md, Simon 2026-11-06, question #1680):
+ * a copy of a copy still names the first author.
+ */
+export interface FlowOriginLink {
+  title: string;
+  release?: number;
+  hash?: string;
+  author?: string;
+}
+
+/**
+ * Where a project's own copy of a shared workflow came from (docs/steps/workflow-origin.md, approved 2026-11-09, #1732):
+ * written by Ledung at the split-off (ledung#110) or when the person records it for an older copy, never by a manager.
+ * Credit only, nothing enforced; no path on one computer, so a copy can be committed to a public repository.
+ */
+export interface FlowOrigin extends FlowOriginLink {
+  /** The shared workflow's name in Ledung's config when it was copied. */
+  workflow: string;
+  /** The shared folder's git remote, with any user, password, token or query taken out. */
+  repo?: string;
+  /** The day it was copied (YYYY-MM-DD); an origin recorded later has `adopted` instead. */
+  copiedAt?: string;
+  /** The day an older copy's origin was recorded (YYYY-MM-DD): the version copied may not be known then. */
+  adopted?: string;
+  /** The copies further back, oldest first: the first author is earlier[0]'s, or this one's when there are none. */
+  earlier?: FlowOriginLink[];
+}
+
 export interface Flow {
   version: 1;
   title?: string;
   /** Who made it, as they want the credit (#117): shown with its title, on a shared workflow too. None: no line. */
   author?: string;
+  /** The author's own number for what they publish, raised by hand (workflow-origin.md); only in the default flow. */
+  release?: number;
+  /** Where this copy came from (workflow-origin.md); only in the default flow, and only Ledung writes it. */
+  origin?: FlowOrigin;
   /** Where work enters; none: the first block. Timer blocks start on their own. */
   start?: string;
   /**
@@ -305,6 +338,21 @@ export interface FlowView {
   shared?: { workflow: string; differs: boolean };
   /** Why there is nowhere to save, when the project's own folder is a shared workflow's (ledung#109). */
   readOnly?: string;
+  /**
+   * The flow shown is a shared workflow's and the project can save: the origin a copy saved now records
+   * (workflow-origin.md), which the builder writes into the copy's flow.json.
+   */
+  splitOff?: FlowOrigin;
+  /**
+   * The flow has an origin whose original is a workflow configured on this computer, read now: its release, and whether
+   * its files have changed since the copy (by hash). None: no origin with a hash, or the original isn't here.
+   */
+  original?: { workflow: string; release?: number; changed: boolean };
+  /**
+   * The project's own copy has no origin and follows a shared workflow with a flow: the origin "Record where this came
+   * from" would write (without a hash when the copy differs), until the person dismisses the offer.
+   */
+  adopt?: FlowOrigin;
   /**
    * The project's other flows (#447), by name; `flow`, `raw` and `problems` above are the default flow's (flow.json),
    * with the problems of what all share (the rules, the texts).

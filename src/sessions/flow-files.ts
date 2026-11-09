@@ -353,13 +353,16 @@ export function flowPlaces(project: ProjectConfig, workflow: WorkflowConfig | un
   // A shared workflow's folder is on this computer; a container project follows one only when it says so (#21).
   // The builder never writes there (#311): one project's change would change every project that follows it.
   // Not twice: the workflow whose folder is the project's own is already its first place.
-  if (workflow && projectWorkflow(workflow, project) && workflow.name !== shared?.name) {
-    places.push({
-      kind: 'workflow', folder: path.join(workflow.folder, ...FLOW_FOLDER.split('/')), workflow: workflow.name,
-      read: localReader(workflow.folder, FLOW_FOLDER), list: localLister(workflow.folder, FLOW_FOLDER),
-    });
-  }
+  if (workflow && projectWorkflow(workflow, project) && workflow.name !== shared?.name) places.push(workflowPlace(workflow));
   return places;
+}
+
+/** A shared workflow's own folder as a place to read its flow from, as a project following it reads it. */
+export function workflowPlace(workflow: WorkflowConfig): FlowPlace {
+  return {
+    kind: 'workflow', folder: path.join(workflow.folder, ...FLOW_FOLDER.split('/')), workflow: workflow.name,
+    read: localReader(workflow.folder, FLOW_FOLDER), list: localLister(workflow.folder, FLOW_FOLDER),
+  };
 }
 
 /**
@@ -478,8 +481,17 @@ async function sharedDifference(places: FlowPlace[], place: FlowPlace, own: stri
     }
   };
   const sameFlow = (a: string | null, b: string | null) => asJson(a) === asJson(b);
+  // workflow-origin.md: a copy's origin, and the author and release that moved into it, don't make it differ.
+  const asCopy = (t: string | null) => {
+    try {
+      const { origin: _o, author: _a, release: _r, ...rest } = JSON.parse(t ?? '') as Record<string, unknown>;
+      return asJson(JSON.stringify(rest));
+    } catch {
+      return asJson(t);
+    }
+  };
   const ownTexts = Object.keys(mine).filter(isText);
-  const differs = !sameFlow(own, theirs.text)
+  const differs = asCopy(own) !== asCopy(theirs.text)
     || listed.length !== flows.length || flows.some((f) => !listed.includes(f.file) || !sameFlow(f.raw, text(f.file)))
     || theirTexts.filter((f) => text(f) !== null).length !== ownTexts.length || ownTexts.some((f) => !same(mine[f]!, text(f)));
   return { workflow: other.workflow!, differs };

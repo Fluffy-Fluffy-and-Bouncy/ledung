@@ -9,7 +9,9 @@ import '@xyflow/react/dist/style.css';
 import { api } from '../api.ts';
 import { DEFAULT_FLOW, FLOW_FILE, type Flow, type FlowBlock, type FlowEntry, type FlowView } from '../../../src/shared/flow.ts';
 import { actorLine, arrowsFrom, flowLine, frameOf, KIND_LABEL, layoutFlow, outcomeHandles, readingOrder, substepText, type FlowLayout } from '../flowLayout.ts';
-import { amendedBy, newDraft, single, workspaceFromView, type Workspace } from '../flowEdit.ts';
+import { amendedBy, newDraft, single, withOrigin, workspaceFromView, workspaceWrites, type Workspace } from '../flowEdit.ts';
+import { originName, withoutRepo } from '../../../src/shared/flow-origin.ts';
+import { OriginLine } from './OriginLine.tsx';
 import { ARROW_COLOUR, continueHandles, EDGE_TYPES, FlowMiniMap, FlowTabs, frameColour, frameNode, lightArrows, NODE_TYPES, useEscapeClears, useMeasured, useNarrow, useOpeningView, withLabelSpots, type BlockData } from './FlowDiagram.tsx';
 import { FlowBuilder } from './FlowBuilder.tsx';
 import { Markdown } from './Markdown.tsx';
@@ -272,6 +274,9 @@ export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowF
   const [editing, setEditing] = useState<Workspace | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
   const [backing, setBacking] = useState(false);
+  // workflow-origin.md, section 4: "Record where this came from" for an older copy.
+  const [adopting, setAdopting] = useState(false);
+  const [leaveRepo, setLeaveRepo] = useState(false);
   // The flow shown (#447), by name; one that is gone shows the default one, and says so.
   const shownName = shownFlow ?? DEFAULT_FLOW;
   useEffect(() => {
@@ -357,6 +362,7 @@ export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowF
     <div className="page-view workflow-view">
       <header className="session-head"><div className="session-head-text"><h2>{project}: workflow{flow?.title ? ` · ${flow.title}` : ''}</h2>
         {flow?.author && <div className="flow-author">by {flow.author}</div>}
+        {view?.flow?.origin && <OriginLine origin={view.flow.origin} />}
         {source && <div className="muted mono">{source.kind === 'project' ? "From the project's folder: " : `From the shared workflow "${source.workflow}": `}{source.folder}</div>}</div>
         <div className="session-corner">
           {view?.flow && !cannot && <button className="small" onClick={edit} title={narrow ? "Change the blocks' words and the rules; drawing is for a computer" : 'Draw and change the workflow'}>Edit</button>}
@@ -382,6 +388,29 @@ export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowF
         </details>
       )}
       {view && view.source && cannot && <p className="muted flow-note">{cannot}</p>}
+      {view?.original?.changed && view.flow?.origin && (
+        // workflow-origin.md, section 3: information only; updates from the original come with sharing.
+        <div className="flow-note flow-origin-note" role="status">
+          <span>"{view.original.workflow}" has changed since this copy was made{view.original.release !== undefined && view.original.release !== view.flow.origin.release ? ` (now v${view.original.release})` : ''}. This copy stays as it is.</span>
+        </div>
+      )}
+      {view?.adopt && !editing && (
+        // workflow-origin.md, section 4: an older copy, made before copies recorded where they came from.
+        <div className="flow-note flow-origin-note" role="status">
+          <span>{project}'s copy doesn't say where it came from. It follows "{view.adopt.workflow}": record "based on {originName(view.adopt)}{view.adopt.author ? ` by ${view.adopt.author}` : ''}" in its flow.json?{view.adopt.hash ? '' : ' It differs from the original now, so the version it was copied from is not known and is left out.'}</span>{' '}
+          {view.adopt.repo && <label className="flow-origin-repo"><input type="checkbox" checked={leaveRepo} onChange={(e) => setLeaveRepo(e.target.checked)} /> Leave the repository out ({view.adopt.repo})</label>}
+          <span className="flow-confirm-buttons">
+            <button className="small primary" disabled={adopting} onClick={() => {
+              const opened = workspaceFromView(view);
+              if (!opened) return setError("The flow can't be opened for writing; the problems above say why.");
+              setAdopting(true);
+              const writes = workspaceWrites(withOrigin(opened, leaveRepo ? withoutRepo(view.adopt!) : view.adopt!)).filter((w) => w.path === FLOW_FILE);
+              api.saveFlow(project, writes).then((v) => { setView(v); setSaved(`Recorded where ${project}'s copy came from, in its flow.json.`); }, (e: Error) => setError(e.message)).finally(() => setAdopting(false));
+            }}>Record where this came from</button>
+            <button className="small" disabled={adopting} onClick={() => api.dismissOrigin(project).then(setView, (e: Error) => setError(e.message))}>Not now</button>
+          </span>
+        </div>
+      )}
       {view?.shared?.differs && (
         // ledung#110: a project's own copy, which no longer gets the shared workflow's changes.
         <div className="flow-note flow-shared-note" role="status">

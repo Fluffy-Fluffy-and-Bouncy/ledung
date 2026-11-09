@@ -1,6 +1,11 @@
 # A workflow copy's origin and version — proposal
 
-Nov 9, 2026 · **Proposal, not approved.** Docs only; nothing is built until Simon says so.
+Nov 9, 2026 · **Approved (Simon, 2026-11-09, #1732)**: "Approve, and I'd like to test it before we push it or publish it anywhere." Built on a local branch; nothing goes to the public repository or npm until Simon has tried it.
+
+**As built (differences from the text below):**
+- "Record where this came from" writes `adopted` for both cases (the day it was copied is never known for an older copy); when the copy is still the same as the original it has the version and hash too.
+- The "has changed since" notice has no link to the original: there is no page for a shared workflow by itself, only per project.
+- The Workflow pane shows the short line on a phone too, cut with "…" where it doesn't fit.
 
 **Done when:** a project that splits off its own copy of a shared workflow records where it came from (which workflow, which version, whose), without a path on one computer. The copy shows "based on Team process v3 by Ana" on the workflow page, in the builder and in the Workflow pane. When the original on this computer has changed since, the page says so. A copy of that copy still names Ana.
 

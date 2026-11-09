@@ -13,7 +13,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { boardConfig, parseProject, workflowsOf } from '../config.ts';
 import { checkFolder, chosenWorkflow, projectWorkflow, withProfilesWarning, type WorkflowCheck } from './workflow.ts';
-import { backToShared, findFlow, flowInstructions, flowPlaces, readFlows, readFlowView, saveFlowFiles, type FlowPlace } from './flow-files.ts';
+import { backToShared, findFlow, flowInstructions, flowPlaces, readFlows, readFlowView, saveFlowFiles, workflowPlace, type FlowPlace } from './flow-files.ts';
+import { originInfo } from './flow-origin.ts';
+
+/** The meta key, with the project's name, that says "Record where this came from" was dismissed (workflow-origin.md, section 4). */
+const ORIGIN_DISMISSED = 'flow-origin-dismissed:';
 import type { FlowView } from '../shared/flow.ts';
 import { remoteControlName } from './remote-control.ts';
 import { loosensGate } from '../projects/gate.ts';
@@ -1367,9 +1371,11 @@ export class SessionManager {
       review: {
         solving: why.trim(),
         done: `${manager.title} proposes this change to ${project.name}'s workflow:\n\n${proposalSummary(data)}\n\nThe diagrams below show each flow before and after. Accepted saves it into the project's .ledung/workflow.`,
-        notes: faults.length
+        notes: (faults.length
           ? `The checks find ${faults.length === 1 ? 'one problem' : `${faults.length} problems`} in the workflow as it would be:\n\n${listed(faults)}`
-          : `The checks find no problems in the workflow as it would be.${hints.length ? ` Hints:\n\n${listed(hints)}` : ''}`,
+          : `The checks find no problems in the workflow as it would be.${hints.length ? ` Hints:\n\n${listed(hints)}` : ''}`)
+          // workflow-origin.md, section 5: only Ledung writes a copy's origin.
+          + (data.originKept ? '\n\nOrigin kept as recorded: the proposed flow.json left out or changed where this copy came from, and only Ledung writes that.' : ''),
       },
     };
     const q = this.store.createQuestion({ sessionId: managerId, question: questionText(undefined, details), options: null, addressedTo: 'user', details });
@@ -1478,7 +1484,22 @@ export class SessionManager {
     const project = this.projectStore.get(name)?.config;
     if (!project) throw new UserError(`There is no project named "${name}".`);
     // A block's profile is checked against what the project's sessions can use: the config and its workflow's profiles file (#298).
-    return readFlowView(project.name, this.flowPlacesOf(project), profileNames(this.profilesFor(project).profiles));
+    const places = this.flowPlacesOf(project);
+    const view = await readFlowView(project.name, places, profileNames(this.profilesFor(project).profiles));
+    // workflow-origin.md: what a split-off records, whether a copy's original changed since, "Record where this came from".
+    const workflows = workflowsOf(this.config).map((w) => ({ name: w.name, folder: w.folder, place: workflowPlace(w) }));
+    const origin = await originInfo(view, places, workflows, { dismissed: this.store.getMeta(`${ORIGIN_DISMISSED}${project.name}`) !== null }).catch((e: Error) => {
+      console.warn(`Workflow: the origin of ${project.name}'s flow could not be worked out: ${e.message}`);
+      return {};
+    });
+    return { ...view, ...origin };
+  }
+
+  /** The person dismissed "Record where this came from" for a project's older copy (workflow-origin.md, section 4). */
+  async dismissAdoptOrigin(name: string): Promise<FlowView> {
+    if (!this.projectStore.get(name)) throw new UserError(`There is no project named "${name}".`);
+    this.store.setMeta(`${ORIGIN_DISMISSED}${name}`, new Date().toISOString());
+    return this.flowView(name);
   }
 
   /**
