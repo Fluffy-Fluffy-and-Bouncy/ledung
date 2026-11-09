@@ -3,7 +3,7 @@
 // and switched in Settings, and where the background log is. Stop Ledung (#456).
 import { useState } from 'react';
 import { inFrame } from '../computerFrame.ts';
-import { SHORTCUT_ABOUT, asksFirstRun, questionText, settingsText } from '../shortcuts.ts';
+import { SHORTCUT_ABOUT, asksFirstRun, questionText, settingsText, stopRefusal } from '../shortcuts.ts';
 import { useShortcuts } from '../useShortcuts.ts';
 import { api } from '../api.ts';
 
@@ -86,17 +86,17 @@ export function ShortcutSettings({ run }: { run: Run }) {
 
 /**
  * Stop Ledung (issue #456), with a confirm: its sessions stop, as with Ctrl+C in its window. Only on this computer's
- * own page, the one place it can be started again from; elsewhere Ledung refuses it and this is not shown.
+ * own page, the one place it can be started again from; elsewhere Ledung refuses it, and the section says where it
+ * works instead of a button (2026-11-09: it showed nothing, while Settings' search still led to it).
  */
 export function StopSettings() {
-  const { view } = useShortcuts();
   const [state, setState] = useState<'idle' | 'confirming' | 'stopped' | 'failed'>('idle');
-  if (!view || inFrame()) return null;
+  const refusal = stopRefusal(inFrame(), location);
   return (
     <section>
       <h3>Stop Ledung</h3>
       <p className="muted">Stops Ledung and its sessions; resume a session after the next start to continue it. Start Ledung again with its icon or the <code>ledung</code> command.</p>
-      {state === 'stopped' ? <p>Ledung has stopped. This page stays as it was until Ledung runs again.</p>
+      {refusal ? <p className="stop-refusal">{refusal}</p> : state === 'stopped' ? <p>Ledung has stopped. This page stays as it was until Ledung runs again.</p>
         : state === 'confirming' ? (
           <span className="restart-confirm">
             <span className="muted">Running sessions stop.</span>
