@@ -109,6 +109,11 @@ a.ctab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .sidebar-resizer.vertical { width: 8px; margin: 0 -4px 0 -4px; cursor: col-resize; }
 .sidebar-resizer.horizontal { height: 12px; margin: -6px 0; cursor: row-resize; }
 .sidebar-resizer:hover, .sidebar-resizer:focus-visible, .sidebar-resizer:active { background: color-mix(in srgb, var(--accent) 60%, transparent); outline: none; }
+/* The same handle on the left edge of a panel on the right (issue #198): inside a Files or Workflow pane, or over the
+   start of a workflow page's side panel, in its grid cell, since the panel itself scrolls and would clip it. */
+.file-panel > .pane-resizer { position: absolute; top: 0; bottom: 0; left: -4px; margin: 0; }
+.flow-main > .pane-resizer { grid-row: 1; grid-column: -2; justify-self: start; margin: 0 0 0 -4px; }
+.flow-main > .flow-panel { grid-row: 1; grid-column: -2; }
 .session-list { flex: 1; overflow-y: auto; padding: 0.4rem; }
 .session-list { --tree-line: color-mix(in srgb, var(--muted) 30%, transparent); }
 .session-item {
@@ -424,7 +429,7 @@ button.conv svg, .conv-row svg { width: 16px; height: 16px; }
 /* Chat beside the file panel */
 .session-body { flex: 1; display: flex; min-height: 0; }
 .chat-column { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-.file-panel { width: min(50%, 760px); flex-shrink: 0; display: flex; flex-direction: column; border-left: 1px solid var(--border); background: var(--panel); }
+.file-panel { width: var(--chat-pane-w, min(50%, 760px)); position: relative; flex-shrink: 0; display: flex; flex-direction: column; border-left: 1px solid var(--border); background: var(--panel); }
 .file-head { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); }
 .file-head .copy-button { position: static; opacity: 1; }
 .file-path { flex: 1; min-width: 0; font-family: ui-monospace, Consolas, monospace; font-size: 0.85em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
@@ -1279,7 +1284,7 @@ body.sidebar-dragging, body.sidebar-dragging * { cursor: grabbing !important; }
 
 /* The Files pane (issue #225, a test feature): the file panel's frame and phone overlay, with a tree and a diff. */
 .files-toggle.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
-.files-pane { width: min(46%, 720px); }
+.files-pane { width: var(--chat-pane-w, min(46%, 720px)); }
 .files-pane[hidden], .pane-body[hidden] { display: none; }
 .files-pane .spacer, .line-comment-head .spacer { flex: 1; }
 .chip.test-feature { border-color: var(--warn-border); background: var(--warn-bg); }
@@ -1598,7 +1603,7 @@ button.settings-menu-item.danger { color: var(--danger); }
 .flow-arrow.arrow-back .react-flow__edge-path { stroke-dasharray: 6 4; }
 .flow-arrow.arrow-counted .react-flow__edge-path { stroke: var(--warn-border); stroke-dasharray: 2 4; stroke-width: 2; }
 .flow-problem-inline { color: var(--danger); }
-.flow-main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(16rem, 24rem); }
+.flow-main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) var(--flow-panel-w, minmax(16rem, 24rem)); }
 .flow-drawing { min-height: 0; display: flex; flex-direction: column; }
 .flow-canvas { flex: 1; min-height: 420px; }
 .flow-panel { border-left: 1px solid var(--border); background: var(--panel); overflow: auto; min-height: 0; }
@@ -1736,7 +1741,7 @@ button.settings-menu-item.danger { color: var(--danger); }
 .flow-confirm-buttons { display: flex; gap: 0.4rem; }
 .flow-builder .flow-problems { max-height: 9rem; overflow: auto; }
 .flow-builder .flow-problems button.link { font: inherit; }
-.flow-main.flow-main-edit { grid-template-columns: 9.5rem minmax(0, 1fr) minmax(17rem, 24rem); }
+.flow-main.flow-main-edit { grid-template-columns: 9.5rem minmax(0, 1fr) var(--builder-panel-w, minmax(17rem, 24rem)); }
 .flow-palette { border-right: 1px solid var(--border); background: var(--panel); padding: 0.5rem; overflow: auto; display: flex; flex-direction: column; gap: 0.35rem; min-height: 0; }
 .flow-palette-head { font-size: 0.8em; }
 .flow-palette-item { display: flex; flex-direction: column; align-items: flex-start; text-align: left; gap: 0.1rem; padding: 0.35rem 0.5rem; border: 1px solid var(--border); border-left: 4px solid var(--muted); border-radius: 6px; background: var(--bg); color: var(--text); cursor: grab; }

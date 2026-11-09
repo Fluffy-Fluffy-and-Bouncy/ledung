@@ -10,6 +10,7 @@ import { formatLineComments, lineCommentsMessage, openReviewFor, reviewAnswerWit
 import { CHATS } from '../../../src/shared/protocol.ts';
 import { api } from '../api.ts';
 import { usePlainTyping } from '../usePlainTyping.ts';
+import { usePaneWidth } from './PaneResizer.tsx';
 import { colourDiff, languageOf } from '../highlight.ts';
 import { useHighlighter } from '../useHighlighter.ts';
 import { putLineDraft, readLineDrafts, sameLine, writeLineDrafts, type DraftComment } from '../lineCommentDrafts.ts';
@@ -42,8 +43,10 @@ export function FilesPane(props: {
   const [tab, setTab] = useState<'files' | 'changes'>('files');
   const [drafts, setDrafts] = useState(() => readLineDrafts(localStorage, props.session.id));
   useEffect(() => writeLineDrafts(localStorage, props.session.id, drafts), [props.session.id, drafts]);
+  const pane = usePaneWidth<HTMLElement>('chat-pane');
   return (
-    <aside className="file-panel files-pane" aria-label="Files" hidden={props.hidden}>
+    <aside className="file-panel files-pane" aria-label="Files" hidden={props.hidden} ref={pane.ref}>
+      {pane.handle}
       <header className="file-head">
         <strong>Files</strong>
         <span className="chip test-feature" title="A test feature: Martin is trying it out (issue #225). It may change or go.">Test feature</span>

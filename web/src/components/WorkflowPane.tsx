@@ -12,6 +12,7 @@ import { blockRuns, followLine, pinCounts, runPath, type RunMarks } from '../flo
 import { workflowHash } from '../flowNav.ts';
 import { FlowTabs, useNarrow } from './FlowDiagram.tsx';
 import { RunsPanel } from './FlowRuns.tsx';
+import { usePaneWidth } from './PaneResizer.tsx';
 import { Diagram, flowsOf } from './WorkflowView.tsx';
 
 export function WorkflowPane({ session, liveRuns, connected, onClose }: {
@@ -66,9 +67,11 @@ export function WorkflowPane({ session, liveRuns, connected, onClose }: {
     const r = runs.find((x) => x.id === id);
     if (r) setShownName(r.flow);
   };
+  const pane = usePaneWidth<HTMLElement>('chat-pane');
   const full = workflowHash(project, shown && shown.name !== DEFAULT_FLOW ? shown.name : null);
   return (
-    <aside className="file-panel workflow-pane" aria-label="Workflow">
+    <aside className="file-panel workflow-pane" aria-label="Workflow" ref={pane.ref}>
+      {pane.handle}
       <header className="file-head">
         <strong>Workflow</strong>
         {flow?.title && <span className="muted workflow-pane-title">{flow.title}</span>}
