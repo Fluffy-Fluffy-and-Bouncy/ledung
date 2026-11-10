@@ -58,7 +58,6 @@ import { attachSources, type SourceContext } from './sources.ts';
 import type { SessionRole, ShellBlock } from '../shared/protocol.ts';
 import { effortLevel, type EffortLevel } from '../shared/protocol.ts';
 import { exercisedLine } from '../platform/exercised.ts';
-import { MERGE_NAME } from '../shared/sensitive-suggestions.ts';
 import { classifierReason, guardedWrite, ONCE_ACTION, ONCE_GRANT_MS, onceGrant, refusalOf, refusalQuestion, sameCall } from './refusals.ts';
 import { orderNote, type Orders } from './orders.ts';
 import type { ChatImages, ImageBlock } from './chat-images.ts';
@@ -67,8 +66,6 @@ import { onToolServerConnected, STALE_TOOLS_NOTE, toolSchemaHash } from './tool-
 
 /** The EXERCISED line of issue #164, once per run. */
 let staleToolsExercised = false;
-/** The EXERCISED line of issue #208, once per run. */
-let mergeSuggestionExercised = false;
 /** The EXERCISED line of issue #369, once per run. */
 let sourcesExercised = false;
 /** The EXERCISED line of issue #405, once per run. */
@@ -1219,13 +1216,7 @@ export class Session {
           if (ordered) return ordered;
           const awayMerge = await this.awayMergeHook(toolName, toolInput, toolUseId, agentId);
           if (awayMerge) return awayMerge;
-          const held = sensitiveHookOutput(toolName, toolInput, this.sensitiveRules, this.alwaysAsked);
-          // Held by the suggested merge entry itself (issue #208), not by a pattern the project wrote for merges.
-          if (!mergeSuggestionExercised && (held.hookSpecificOutput as { permissionDecisionReason?: string } | undefined)?.permissionDecisionReason === `Sensitive: ${MERGE_NAME}`) {
-            mergeSuggestionExercised = true;
-            exercisedLine('EXERCISED #208 a merge held for the person by the suggested "Merging a pull request" entry');
-          }
-          return held;
+          return sensitiveHookOutput(toolName, toolInput, this.sensitiveRules, this.alwaysAsked);
         }] }],
         // After a call someone in Ledung allowed: say who, so the session never guesses. A call that
         // failed was allowed all the same, and without its note would read as allowed by the session's mode.
