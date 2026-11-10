@@ -14,7 +14,7 @@ import { readRepository, sourceOffer } from './source.ts';
 import type { SessionManager } from '../sessions/manager.ts';
 import { UserError } from '../sessions/manager.ts';
 import type { Store } from '../store/store.ts';
-import { AWAY_DEFAULT, AWAY_KINDS, EFFORT_LEVELS, type AwayKind, type PermissionDecision, type PermissionMode, type RemoteStatus, type ServerEvent } from '../shared/protocol.ts';
+import { AWAY_DEFAULT, AWAY_KINDS, EFFORT_LEVELS, unknownEffort, type AwayKind, type PermissionDecision, type PermissionMode, type RemoteStatus, type ServerEvent } from '../shared/protocol.ts';
 import { deviceCookieHeader, Guard, readCookies, securityHeaders } from './security.ts';
 import { DEVICE_COOKIE, type Device, type DeviceKind, deviceName, Devices, deviceView } from './devices.ts';
 import { actionOf, DEVICE_LOCKED, PASSKEY_HEADER, PasskeyError, Passkeys } from './passkeys.ts';
@@ -1917,6 +1917,8 @@ export class LedungServer {
       case 'POST chats-new': {
         const body = await readJson(req);
         const text = (v: unknown) => (typeof v === 'string' && v.trim() ? v : undefined);
+        // Anything but a level's name is refused, not dropped, as the sidebar menu's Effort does (issue #202).
+        if (body.effort != null && typeof body.effort !== 'string') throw new HttpError(400, unknownEffort(body.effort));
         return manager.startChat({
           folder: text(body.folder), model: text(body.model), effort: text(body.effort), profile: text(body.profile), text: text(body.text),
           permissionMode: text(body.permissionMode) as PermissionMode | undefined,

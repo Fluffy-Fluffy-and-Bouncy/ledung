@@ -48,7 +48,7 @@ const handlers = { onLine: () => {}, onStderr: () => {} };
 type Hook = (input: object, id: string, o: object) => Promise<unknown>;
 
 /** A Session whose query records what it was launched with and each flag-settings call, failing when told to. */
-async function running(opts: { effort?: EffortLevel; defaultEffort?: EffortLevel; fail?: boolean; start?: boolean } = {}) {
+async function running(opts: { effort?: EffortLevel; defaultEffort?: EffortLevel; fail?: boolean; start?: boolean; attachTo?: string } = {}) {
   const store = new Store(openDatabase(':memory:'));
   const info = store.createSession({ id: 's1', project: 'p', runner: 'local', title: 'Worker', parentId: null, permissionMode: 'default', role: 'session', requestedEffort: opts.effort ?? null });
   const flags: unknown[] = [];
@@ -63,7 +63,7 @@ async function running(opts: { effort?: EffortLevel; defaultEffort?: EffortLevel
   const events: string[] = [];
   const launched: Record<string, unknown>[] = [];
   const s = new Session({
-    info, store, publish: (e) => events.push(e.type), userName: 'Simon', effort: opts.effort, defaultEffort: opts.defaultEffort,
+    info, store, publish: (e) => events.push(e.type), userName: 'Simon', effort: opts.effort, defaultEffort: opts.defaultEffort, attachTo: opts.attachTo,
     management: new Proxy({}, { get: (_, k) => (k === 'questionTiers' ? () => [] : () => undefined) }) as never,
     runner: new LocalRunner({ name: 'p', runner: 'local', path: base } as never),
     gate: { mayStart: () => true, started: () => {}, ended: () => {} },
@@ -158,6 +158,17 @@ test("a subagent's tool call says the subagent's effort, not the session's; and 
   await quiet.toolCall({ effort: { level: 'medium' } });
   assert.equal(quiet.store.getSession('s1')!.effort, 'medium', 'its info still shows what it runs with');
   assert.equal(notes(quiet.store).filter((t) => t.startsWith('Effort')).length, 0);
+});
+
+test('a session reconnected after a Ledung restart does not say its level again, but its info still follows Claude Code', async () => {
+  const again = await running({ effort: 'high', attachTo: 'pipe-of-a-running-host', start: false });
+  await again.toolCall({ effort: { level: 'high' } });
+  assert.equal(again.store.getSession('s1')!.effort, 'high');
+  assert.equal(notes(again.store).filter((t) => t.startsWith('Effort')).length, 0, 'the process was launched before the restart and said it then');
+  // The same probe on a freshly launched session finds the line.
+  const fresh = await running({ effort: 'high', start: false });
+  await fresh.toolCall({ effort: { level: 'high' } });
+  assert.equal(notes(fresh.store).filter((t) => t.startsWith('Effort')).length, 1);
 });
 
 test('a running session changes effort through Claude Code, keeps it for a resume and says so in its history', async () => {

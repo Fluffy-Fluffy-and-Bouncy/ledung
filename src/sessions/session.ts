@@ -301,6 +301,9 @@ export function claudeEnvironment(
   return { ...env, ...accountEnv, [MCP_LIMIT_ENV]: mcpLimitFor(ledungInstructions, base[MCP_LIMIT_ENV]) };
 }
 
+/** Whether this Ledung run has logged its `EXERCISED #202` line: once per run, not per session or tool call. */
+let exercised202 = false;
+
 export class Session {
   readonly id: string;
   private readonly runner: Runner;
@@ -449,6 +452,9 @@ export class Session {
     this.defaultModel = opts.defaultModel;
     this.effort = opts.effort;
     this.defaultEffort = opts.defaultEffort;
+    // A process reattached after a Ledung restart was launched earlier and has had its line; its profile's settings
+    // file isn't read again either, so what it was asked for can't be told for sure here (self-check of #202).
+    this.effortTold = !!opts.attachTo;
     this.resume = opts.resume;
     this.attachTo = opts.attachTo;
     this.secrets = opts.secrets ?? null;
@@ -2160,11 +2166,14 @@ export class Session {
     const asked = this.askedEffort();
     if (!asked || this.effortTold) return;
     this.effortTold = true;
-    exercisedLine('EXERCISED #202 a session started with an effort said which level it runs with');
+    if (!exercised202) {
+      exercised202 = true;
+      exercisedLine('EXERCISED #202 a session started with an effort said which level it runs with');
+    }
     this.record('event', {
       text: got === asked ? `Effort: runs with ${got}.`
         : got ? `Effort: asked for ${asked}; Claude Code runs this model with ${got}.`
-          : `Effort: asked for ${asked}; Claude Code reports no effort level for this model, so it runs without one.`,
+          : `Effort: asked for ${asked}; Claude Code reports no effort level for this model: it has none, or this Claude Code doesn't say which it runs with.`,
     });
   }
 
