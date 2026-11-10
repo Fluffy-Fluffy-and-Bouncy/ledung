@@ -4,7 +4,7 @@
 // network path back to Ledung (issue #6). Managers (step 3) get extra tools.
 import { createSdkMcpServer, tool, type McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import { PERMISSION_MODES, type AttachedSource, type PermissionMode, type QuestionInfo, type SessionRole } from '../shared/protocol.ts';
+import { EFFORT_LEVELS, PERMISSION_MODES, type AttachedSource, type PermissionMode, type QuestionInfo, type SessionRole } from '../shared/protocol.ts';
 import { failedSourcesNote, MAX_SOURCES, type SourceInput } from './sources.ts';
 import {
   ACCEPTED, CHANGES_NEEDED, detailsProblem, hasDetails, MAX_REVIEW_EVIDENCE, optionAnswer, questionText, splitOption, type OrderCommandDetails, type Opinion, type QuestionDetails, type QuestionOption, type ReviewDetails,
@@ -66,6 +66,8 @@ export interface ProjectArgs {
   name: string;
   folder: string;
   model?: string;
+  /** Its sessions' default effort (issue #202): low, medium, high, xhigh or max. */
+  effort?: string;
   permissionMode?: PermissionMode;
   managerGrant?: string;
   account?: string;
@@ -112,7 +114,7 @@ function orderSpec(o: z.infer<typeof orderSchema> | undefined): OrderSpec | unde
 
 /** The manager's tools, already bound to the manager they belong to. */
 export interface ManagerHandlers {
-  startSession(args: { task: string; title?: string; permissionMode?: PermissionMode; model?: string; profile?: string; cwd?: string; order?: OrderSpec }): Promise<string>;
+  startSession(args: { task: string; title?: string; permissionMode?: PermissionMode; model?: string; effort?: string; profile?: string; cwd?: string; order?: OrderSpec }): Promise<string>;
   listSessions(): string;
   readSession(id: string, last?: number): string;
   sendMessage(id: string, text: string, order?: OrderSpec): Promise<string>;
@@ -412,6 +414,7 @@ export function instructions(h: ToolHandlers): string {
 const projectSettings = {
   name: z.string().min(1).describe('The project name: letters, digits, spaces, ".", "_" or "-".'),
   model: z.string().min(1).optional().describe('Default model for its sessions: opus, sonnet, haiku or a full name.'),
+  effort: z.string().min(1).optional().describe(`Default effort for its sessions: ${EFFORT_LEVELS.join(', ')}. Left out: Claude Code's own default.`),
   permission_mode: z.enum(PERMISSION_MODES as [PermissionMode, ...PermissionMode[]]).optional().describe('Default permission mode for its sessions.'),
   manager_grant: z.string().min(1).optional().describe('What its manager may decide on its own.'),
   account: z.string().min(1).optional().describe("The Claude account for its manager and sessions, as added in Ledung; default: whatever Claude Code is logged in as."),
@@ -430,7 +433,7 @@ const projectSettings = {
 };
 
 type ProjectSettingsInput = {
-  name: string; model?: string; permission_mode?: PermissionMode; manager_grant?: string; account?: string;
+  name: string; model?: string; effort?: string; permission_mode?: PermissionMode; manager_grant?: string; account?: string;
   sensitive?: { command_patterns?: string[]; path_patterns?: string[]; mcp_tools?: string[] };
   tickets?: { pattern: string; url: string };
   lockdown?: 'off' | 'A' | 'B';
@@ -439,7 +442,7 @@ type ProjectSettingsInput = {
 
 function projectArgs<T extends object>(a: ProjectSettingsInput, extra: T): Omit<ProjectArgs, 'folder'> & T {
   return {
-    name: a.name, model: a.model, permissionMode: a.permission_mode, managerGrant: a.manager_grant, account: a.account, tickets: a.tickets, lockdown: a.lockdown, workflow: a.workflow,
+    name: a.name, model: a.model, effort: a.effort, permissionMode: a.permission_mode, managerGrant: a.manager_grant, account: a.account, tickets: a.tickets, lockdown: a.lockdown, workflow: a.workflow,
     sensitive: a.sensitive && { commandPatterns: a.sensitive.command_patterns, pathPatterns: a.sensitive.path_patterns, mcpTools: a.sensitive.mcp_tools },
     ...extra,
   };
@@ -665,6 +668,9 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
         model: z.string().min(1).optional().describe(
           "opus, sonnet, haiku or a full model name; defaults to the project's. Kept when the session is resumed. Which role gets which model is the project's own rule.",
         ),
+        effort: z.string().min(1).optional().describe(
+          `How much reasoning it puts into its replies: ${EFFORT_LEVELS.join(', ')}; defaults to the project's, else Claude Code's own. Kept when the session is resumed or cleared. A level its model doesn't have doesn't fail the start: Claude Code steps it down, and the session's history says which level it runs with.`,
+        ),
         profile: z.string().min(1).optional().describe(
           "A session profile from Ledung's config: how much of the user's own setup (plugins, other MCP servers, some tools) the session gets. \"full\" is everything; defaults to the project's. Ledung's tools are always there. Kept when the session is resumed.",
         ),
@@ -672,7 +678,7 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
           "The folder the session works in: the project folder (the default), a folder inside it, or one under the project's extra folders (its settings), such as a git worktree. Claude Code treats it as the project folder. Kept when the session is resumed or cleared; the folder must exist (create worktrees yourself).",
         ),
         order: orderSchema.optional(),
-      }, async (a) => safely(() => m.startSession({ task: a.task, title: a.title, permissionMode: a.permission_mode, model: a.model, profile: a.profile, cwd: a.cwd, order: orderSpec(a.order) }))) as never,
+      }, async (a) => safely(() => m.startSession({ task: a.task, title: a.title, permissionMode: a.permission_mode, model: a.model, effort: a.effort, profile: a.profile, cwd: a.cwd, order: orderSpec(a.order) }))) as never,
       tool('list_sessions', 'List the sessions you started: status and how long they have been in it, and open questions.', {}, async () => safely(() => m.listSessions())) as never,
       tool('read_session', "Read the recent messages of one of your sessions.", {
         id,

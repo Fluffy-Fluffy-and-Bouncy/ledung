@@ -56,6 +56,7 @@ import { SECRET_FOR_CLAUDE_START, SECRET_RULE, type SecretInfo } from '../shared
 import { conversationBefore } from './earlier.ts';
 import { attachSources, type SourceContext } from './sources.ts';
 import type { SessionRole, ShellBlock } from '../shared/protocol.ts';
+import { effortLevel, type EffortLevel } from '../shared/protocol.ts';
 import { exercisedLine } from '../platform/exercised.ts';
 import { classifierReason, guardedWrite, ONCE_ACTION, ONCE_GRANT_MS, onceGrant, refusalOf, refusalQuestion, sameCall } from './refusals.ts';
 import { orderNote, type Orders } from './orders.ts';
@@ -218,6 +219,10 @@ export interface SessionOptions {
   model?: string;
   /** The project's default model: used unless the profile's settings file names a model. */
   defaultModel?: string;
+  /** An effort chosen for this one session (issue #202); always wins. */
+  effort?: EffortLevel;
+  /** The project's default effort: used unless the profile's settings file names one. */
+  defaultEffort?: EffortLevel;
   /** Claude Code session id to resume in a new host. */
   resume?: string;
   /** Attach to the host already running this session (after a Ledung restart). */
@@ -304,6 +309,11 @@ export class Session {
   /** Its own model, changed by the sidebar menu's Change model; undefined: the project's default. */
   private model: string | undefined;
   private readonly defaultModel: string | undefined;
+  /** Its own effort (issue #202), changed by the sidebar menu's Effort; undefined: the project's default. */
+  private effort: EffortLevel | undefined;
+  private readonly defaultEffort: EffortLevel | undefined;
+  /** Whether this launch's history already says which effort Claude Code runs it with; a change asks again. */
+  private effortTold = false;
   private readonly resume: string | undefined;
   private readonly attachTo: string | undefined;
   private readonly userName: string;
@@ -437,6 +447,8 @@ export class Session {
     this.publish = opts.publish;
     this.model = opts.model;
     this.defaultModel = opts.defaultModel;
+    this.effort = opts.effort;
+    this.defaultEffort = opts.defaultEffort;
     this.resume = opts.resume;
     this.attachTo = opts.attachTo;
     this.secrets = opts.secrets ?? null;
@@ -638,7 +650,8 @@ export class Session {
         if (signIn && !noClaude) this.record('event', { text: signIn.warn });
         if (noClaude) throw new Error(claude.problem ?? 'There is no Claude Code to start.');
         this.claudePath = claude?.program && claude.program.kind !== 'bundled' ? claude.program.path : undefined;
-        this.update({ claudeProgram: claude?.program ? { kind: claude.program.kind, path: claude.program.path } : null });
+        // And the effort a new process runs with is not known until it says (issue #202).
+        this.update({ claudeProgram: claude?.program ? { kind: claude.program.kind, path: claude.program.path } : null, effort: null });
       } catch (e) {
         this.record('event', { text: `Could not start: ${(e as Error).message}` });
         this.update({ status: 'ended', endedAt: Date.now(), endReason: (e as Error).message });
@@ -1128,6 +1141,9 @@ export class Session {
       cwd: this.runner.cwd,
       // Claude Code's own option beats the settings file's model, so the project's default is left out when the file names one.
       model: this.model ?? (this.fileSettings?.model === undefined ? this.defaultModel : undefined),
+      // Claude Code's own --effort (issue #202), a launch argument like the model, so nothing changes in the host.
+      // None: left out, and Claude Code takes its own default as before.
+      ...(this.askedEffort() ? { effort: this.askedEffort() } : {}),
       // Level B keeps only what Claude Code and a shell need of Ledung's environment (issue #109).
       env: { ...claudeEnvironment(this.airgap ? airgapEnvironment(process.env, tmp) : process.env, this.account?.env, instructions(tools)), ...launched?.env },
       resume: this.attachTo ? undefined : this.resume,
@@ -1157,6 +1173,7 @@ export class Session {
         // session rules, project settings, the Auto classifier), so Ledung's check in onPermission would
         // never see them. "Ask" sends a match to onPermission, in every mode.
         PreToolUse: [{ timeout: 7 * 24 * 3600, hooks: [async (input, toolUseId) => {
+          this.noteEffort(input as { agent_id?: string; effort?: { level?: unknown } });
           await this.whilePaused();
           await this.whileHeld();
           const i = input as { tool_name?: string; tool_input?: unknown };
@@ -2118,6 +2135,56 @@ export class Session {
     this.record('event', { text: `Model set to ${model ?? "the project's default"} by ${by === 'user' ? this.userName : by}; ${when}.` });
     // Kept for a resume, as start_session's model is.
     this.store.updateSession(this.id, { requestedModel: model });
+    this.publish({ type: 'session', session: this.info });
+  }
+
+  /**
+   * The effort Claude Code is asked for (issue #202): the session's own, else the project's default. As with the
+   * model, Claude Code's own option beats the settings file's effortLevel, so the default is left out when the
+   * profile's file names one.
+   */
+  private askedEffort(): EffortLevel | undefined {
+    return this.effort ?? (this.fileSettings?.effortLevel === undefined ? this.defaultEffort : undefined);
+  }
+
+  /**
+   * What Claude Code says of the effort a turn really runs with, on its tool calls' hook: the level after its own
+   * step down for the model, or nothing for a model without effort levels. Claude Code doesn't refuse a level a
+   * model lacks, so this is where the session says which it got: on its info, and once per launch or change in its
+   * history when one was asked for. A subagent's call says the subagent's effort, not the session's.
+   */
+  private noteEffort(input: { agent_id?: string; effort?: { level?: unknown } }): void {
+    if (input.agent_id) return;
+    const got = effortLevel(input.effort?.level);
+    if (got !== (this.store.getSession(this.id)?.effort ?? null)) this.update({ effort: got });
+    const asked = this.askedEffort();
+    if (!asked || this.effortTold) return;
+    this.effortTold = true;
+    exercisedLine('EXERCISED #202 a session started with an effort said which level it runs with');
+    this.record('event', {
+      text: got === asked ? `Effort: runs with ${got}.`
+        : got ? `Effort: asked for ${asked}; Claude Code runs this model with ${got}.`
+          : `Effort: asked for ${asked}; Claude Code reports no effort level for this model, so it runs without one.`,
+    });
+  }
+
+  /**
+   * Changes the effort (the sidebar menu's Effort, issue #202), as Claude Code's /effort does: the SDK's flag
+   * settings, which Claude Code takes from its next request. null: the project's default again, named outright
+   * as the model's is, since clearing the flag would give the model's own default instead.
+   */
+  async setEffort(effort: EffortLevel | null, by: string): Promise<void> {
+    if (this.stopping) throw new Error('The session is stopping.');
+    const named = effort ?? effortLevel(this.fileSettings?.effortLevel) ?? this.defaultEffort;
+    // Still starting: it starts with this.effort (claudeOptions). A default nothing names waits for the resume.
+    const now = !!this.q && named !== undefined;
+    if (now) await this.q!.applyFlagSettings({ effortLevel: named });
+    this.effort = effort ?? undefined;
+    this.effortTold = false;
+    const when = now || !this.q ? 'it applies from the next reply' : 'it applies when the session is resumed';
+    this.record('event', { text: `Effort set to ${effort ?? "the project's default"} by ${by === 'user' ? this.userName : by}; ${when}.` });
+    // Kept for a resume, as start_session's effort is.
+    this.store.updateSession(this.id, { requestedEffort: effort });
     this.publish({ type: 'session', session: this.info });
   }
 

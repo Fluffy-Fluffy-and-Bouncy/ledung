@@ -27,7 +27,7 @@ Added to Ledung's tool server, for managers only:
 
 | Tool | What it does |
 |---|---|
-| `start_session(project, task, title?, permission_mode?, model?)` | Starts a session under this manager with `task` as its first message. `model` (added later, model per session) overrides the project's model for that session and is kept when it is resumed; which role gets which model is the project's own rule. |
+| `start_session(project, task, title?, permission_mode?, model?, effort?)` | Starts a session under this manager with `task` as its first message. `model` (added later, model per session) overrides the project's model for that session and is kept when it is resumed; which role gets which model is the project's own rule. `effort` (added 2026-11-10, issue #202) is Claude Code's effort level, `low`, `medium`, `high`, `xhigh` or `max`: it overrides the project's default effort (project settings "Effort" and "Effort for its manager", `effort` and `managerEffort`; `add_project`, `create_project` and `set_project_settings` take it too) and is kept when the session is resumed or cleared. The order is the model's: the session's own, then an `effortLevel` in the profile's settings file, then the project's default, then Claude Code's own. An unknown level is refused with the five; a level the model lacks doesn't fail the start, Claude Code steps it down and the session's history says which level it runs with. |
 | `list_sessions()` | Its sessions: status, what each is doing, open questions, last activity. |
 | `read_session(id, since?)` | A session's recent messages as text, to check on progress. |
 | `send_message(id, text)` | Sends an instruction to one of its sessions. Arrives marked "Message from your manager". |

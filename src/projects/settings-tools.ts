@@ -7,11 +7,13 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { ProjectConfig, WorkflowConfig } from '../config.ts';
 import { tiersOf } from '../shared/questions.ts';
+import { EFFORT_LEVELS, type EffortLevel } from '../shared/protocol.ts';
 import { chosenWorkflow } from '../sessions/workflow.ts';
 import { loosensGate } from './gate.ts';
 import { within } from './lockdown.ts';
 
 const list = z.array(z.string());
+const effort = z.enum(EFFORT_LEVELS as [EffortLevel, ...EffortLevel[]]).nullable().optional();
 
 /** set_project_settings' input: the project, and only the fields to change; null clears one, a list is replaced whole. */
 export const SETTINGS_PATCH = {
@@ -29,6 +31,9 @@ export const SETTINGS_PATCH = {
   tickets: z.object({ pattern: z.string().min(1), url: z.string().min(1) }).strict().nullable().optional().describe('Ticket ids shown as links; null clears it.'),
   publishUsageName: z.boolean().optional().describe("Its usage is published to the shared usage repo under its name (true) or as other# and a hash (false); see usage_publish."),
   usageRepo: z.string().nullable().optional().describe("The usage repository its usage is published to, as owner/name, instead of this computer's default one (usage_publish); null clears it, back to the default."),
+  // Last, so the fields named before them keep their order in the refusal of any other (issue #202).
+  effort: effort.describe(`The default effort of its sessions (${EFFORT_LEVELS.join(', ')}), used when a session names none; null clears it, back to Claude Code's own default.`),
+  managerEffort: effort.describe("Its manager's effort, the same levels; null clears it, back to the same as its sessions."),
 };
 const Patch = z.object(SETTINGS_PATCH).strict();
 export type SettingsPatch = z.infer<typeof Patch>;
@@ -60,6 +65,8 @@ export function applyPatch(config: ProjectConfig, patch: SettingsPatch): Record<
     else next[key] = v;
   };
   put('managerGrant', patch.managerGrant, patch.managerGrant === '');
+  put('effort', patch.effort, false);
+  put('managerEffort', patch.managerEffort, false);
   put('workflow', patch.workflow, false);
   put('questionTiers', patch.questionTiers, patch.questionTiers?.length === 0);
   put('devShipCommand', patch.devShipCommand, patch.devShipCommand === '');
@@ -125,7 +132,7 @@ export function projectConfigProblem(c: ProjectConfig): string | null {
 
 /** The fields a patch changes, by name, for the tool's answer. */
 export function changedFields(before: ProjectConfig, after: ProjectConfig): string[] {
-  const keys = ['managerGrant', 'workflow', 'questionTiers', 'sensitive', 'devShipCommand', 'tickets', 'publishUsageName', 'usageRepo'] as const;
+  const keys = ['managerGrant', 'workflow', 'questionTiers', 'sensitive', 'devShipCommand', 'tickets', 'publishUsageName', 'usageRepo', 'effort', 'managerEffort'] as const;
   // publishUsageName: a stored false is the same as none.
   const value = (c: ProjectConfig, k: typeof keys[number]) => JSON.stringify(k === 'publishUsageName' ? c[k] === true : c[k] ?? null);
   return keys.filter((k) => value(before, k) !== value(after, k));
@@ -140,6 +147,8 @@ export function settingsView(c: ProjectConfig, workflows: readonly WorkflowConfi
   const w = use ? chosenWorkflow(workflows, c) : undefined;
   return {
     managerGrant: c.managerGrant ?? null,
+    effort: c.effort ?? null,
+    managerEffort: c.managerEffort ?? null,
     workflow: c.workflow ?? null,
     questionTiers: tiersOf(c.questionTiers),
     sensitive: { commandPatterns: c.sensitive.commandPatterns, pathPatterns: c.sensitive.pathPatterns, mcpTools: c.sensitive.mcpTools },

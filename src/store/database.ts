@@ -705,6 +705,12 @@ const MIGRATIONS: string[] = [
   // The fingerprint of the Ledung tool list each session's Claude Code was given (issue #164); null: not known,
   // a session started before this release.
   `ALTER TABLE sessions ADD COLUMN tools_schema TEXT;`,
+  // Effort per session (issue #202): the level it was started with or set to, kept for resume as requested_model
+  // is, and the level Claude Code says it runs with; null: none asked for, not known.
+  `
+  ALTER TABLE sessions ADD COLUMN requested_effort TEXT;
+  ALTER TABLE sessions ADD COLUMN effort TEXT;
+  `,
 ];
 
 export function databaseFile(dir = userDataDir()): string {

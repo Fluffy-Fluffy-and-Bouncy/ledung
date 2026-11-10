@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { appDir, envSetting, PACKAGED, userDataDir } from './platform/paths.ts';
-import { PERMISSION_MODES, type PermissionMode } from './shared/protocol.ts';
+import { EFFORT_LEVELS, PERMISSION_MODES, type EffortLevel, type PermissionMode } from './shared/protocol.ts';
 import { validateSensitive } from './sessions/sensitive.ts';
 import { ProfilesSetting, RoleProfilesSetting, validateProfiles } from './sessions/profiles.ts';
 import { SkillChoicesSetting } from './sessions/skills.ts';
@@ -26,6 +26,9 @@ const SensitiveSetting = z
 
 /** The permission mode new sessions in a project start in; changeable per session in the page. */
 const PermissionModeSetting = z.enum(PERMISSION_MODES as [PermissionMode, ...PermissionMode[]]).optional();
+
+/** A project's default effort (issue #202): one of Claude Code's levels. */
+const Effort = z.enum(EFFORT_LEVELS as [EffortLevel, ...EffortLevel[]]);
 
 /** Ticket ids to find in a session's title, branch and pull request, shown as links (step 5c). */
 const TicketsSetting = z.object({ pattern: z.string().min(1), url: z.string().min(1) }).optional();
@@ -256,6 +259,10 @@ const LocalProject = z.object({
   model: z.string().optional(),
   /** Its manager's model; none: the same as its sessions (decision of 2026-10-13). */
   managerModel: z.string().optional(),
+  /** The default effort of its sessions (issue #202); none: Claude Code's own. */
+  effort: Effort.optional(),
+  /** Its manager's effort; none: the same as its sessions. */
+  managerEffort: Effort.optional(),
   permissionMode: PermissionModeSetting,
   managerGrant: z.string().optional(),
   /** Its manager's project tools (add_project, create_project, start_manager, stop_manager) run unasked (decision of 2026-10-14). */
@@ -297,6 +304,8 @@ const DockerProject = z.object({
   user: z.string().min(1).optional(),
   model: z.string().optional(),
   managerModel: z.string().optional(),
+  effort: Effort.optional(),
+  managerEffort: Effort.optional(),
   permissionMode: PermissionModeSetting,
   /** What this project's manager may decide on the user's behalf (the brief's fixed limits always apply). */
   managerGrant: z.string().optional(),
