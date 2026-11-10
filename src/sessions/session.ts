@@ -315,8 +315,11 @@ export class Session {
   /** Its own effort (issue #202), changed by the sidebar menu's Effort; undefined: the project's default. */
   private effort: EffortLevel | undefined;
   private readonly defaultEffort: EffortLevel | undefined;
-  /** Whether this launch's history already says which effort Claude Code runs it with; a change asks again. */
-  private effortTold = false;
+  /**
+   * The level this launch's history last said Claude Code runs it with (null: none reported); undefined: nothing
+   * said yet, or the effort was changed since. A report that differs from it is said, so the line follows the level.
+   */
+  private effortSaid: EffortLevel | null | undefined;
   private readonly resume: string | undefined;
   private readonly attachTo: string | undefined;
   private readonly userName: string;
@@ -454,7 +457,7 @@ export class Session {
     this.defaultEffort = opts.defaultEffort;
     // A process reattached after a Ledung restart that already reported its level has had its line (the stored level
     // is empty from each launch until the first report); one that hasn't yet still owes it (self-check of #202).
-    this.effortTold = !!opts.attachTo && !!opts.info.effort;
+    this.effortSaid = opts.attachTo && opts.info.effort ? opts.info.effort : undefined;
     this.resume = opts.resume;
     this.attachTo = opts.attachTo;
     this.secrets = opts.secrets ?? null;
@@ -1233,6 +1236,12 @@ export class Session {
         // Idle stop: at the end of each turn Claude Code says what still runs in the background and what
         // will wake the session later; a session with either is never stopped for being idle.
         Stop: [{ hooks: [async (input) => {
+          // The end of a turn says the effort too, so a turn with no tool call still reports it (review of #202, Minor 1).
+          try {
+            this.noteEffort(input as { agent_id?: string; effort?: { level?: unknown } }, 'turn');
+          } catch (e) {
+            console.error(`Effort of session ${this.id}: ${(e as Error).message}`);
+          }
           try {
             const i = input as { background_tasks?: unknown[]; session_crons?: unknown[] };
             this.store.setIdleFacts(this.id, {
@@ -2154,24 +2163,31 @@ export class Session {
   }
 
   /**
-   * What Claude Code says of the effort a turn really runs with, on its tool calls' hook: the level after its own
-   * step down for the model, or nothing for a model without effort levels. Claude Code doesn't refuse a level a
-   * model lacks, so this is where the session says which it got: on its info, and once per launch or change in its
-   * history when one was asked for. A subagent's call says the subagent's effort, not the session's.
+   * What Claude Code says of the effort a turn really runs with, on its tool calls' hook and at the end of each turn
+   * (so a turn with no tool call reports too): the level after its own step down for the model, or nothing for a
+   * model without effort levels. Claude Code doesn't refuse a level a model lacks, so this is where the session says
+   * which it got: on its info, and in its history when one was asked for, once per launch or change and again only
+   * if the level it reports changes (a change made mid-turn may first report the turn's old level; Minor 2). A
+   * subagent's call says the subagent's effort, not the session's.
    */
-  private noteEffort(input: { agent_id?: string; effort?: { level?: unknown } }): void {
+  private noteEffort(input: { agent_id?: string; effort?: { level?: unknown } }, at: 'tool' | 'turn' = 'tool'): void {
     if (input.agent_id) return;
     const got = effortLevel(input.effort?.level);
+    // A turn's end that names no level is not taken as "none": only a tool call's word clears a level already known.
+    if (at === 'turn' && !got) return;
     if (got !== (this.store.getSession(this.id)?.effort ?? null)) this.update({ effort: got });
     const asked = this.askedEffort();
-    if (!asked || this.effortTold) return;
-    this.effortTold = true;
+    if (!asked || this.effortSaid === got) return;
+    this.effortSaid = got;
+    // Reattached, the profile's settings file was not read again: with one, what was asked can't be told for sure
+    // here, so only the level is said (Minor 4).
+    const sure = !(this.attachTo && this.profile?.settingsFile);
     if (!exercised202) {
       exercised202 = true;
       exercisedLine('EXERCISED #202 a session started with an effort said which level it runs with');
     }
     this.record('event', {
-      text: got === asked ? `Effort: runs with ${got}.`
+      text: got && (got === asked || !sure) ? `Effort: runs with ${got}.`
         : got ? `Effort: asked for ${asked}; Claude Code runs this model with ${got}.`
           : `Effort: asked for ${asked}; Claude Code reports no effort level for this model: it has none, or this Claude Code doesn't say which it runs with.`,
     });
@@ -2189,7 +2205,7 @@ export class Session {
     const now = !!this.q && named !== undefined;
     if (now) await this.q!.applyFlagSettings({ effortLevel: named });
     this.effort = effort ?? undefined;
-    this.effortTold = false;
+    this.effortSaid = undefined;
     const when = now || !this.q ? 'it applies from the next reply' : 'it applies when the session is resumed';
     this.record('event', { text: `Effort set to ${effort ?? "the project's default"} by ${by === 'user' ? this.userName : by}; ${when}.` });
     // Kept for a resume, as start_session's effort is.

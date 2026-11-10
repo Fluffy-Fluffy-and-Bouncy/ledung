@@ -48,7 +48,7 @@ const handlers = { onLine: () => {}, onStderr: () => {} };
 type Hook = (input: object, id: string, o: object) => Promise<unknown>;
 
 /** A Session whose query records what it was launched with and each flag-settings call, failing when told to. */
-async function running(opts: { effort?: EffortLevel; defaultEffort?: EffortLevel; fail?: boolean; start?: boolean; attachTo?: string; reported?: EffortLevel } = {}) {
+async function running(opts: { effort?: EffortLevel; defaultEffort?: EffortLevel; fail?: boolean; start?: boolean; attachTo?: string; reported?: EffortLevel; settingsFile?: string } = {}) {
   const store = new Store(openDatabase(':memory:'));
   store.createSession({ id: 's1', project: 'p', runner: 'local', title: 'Worker', parentId: null, permissionMode: 'default', role: 'session', requestedEffort: opts.effort ?? null });
   // What Claude Code reported before a Ledung restart, as the store kept it.
@@ -67,6 +67,7 @@ async function running(opts: { effort?: EffortLevel; defaultEffort?: EffortLevel
   const launched: Record<string, unknown>[] = [];
   const s = new Session({
     info, store, publish: (e) => events.push(e.type), userName: 'Simon', effort: opts.effort, defaultEffort: opts.defaultEffort, attachTo: opts.attachTo,
+    ...(opts.settingsFile ? { profile: { settingsFile: opts.settingsFile, mcpServers: 'all', plugins: 'all', disallowedTools: [], userSettings: true } as never } : {}),
     management: new Proxy({}, { get: (_, k) => (k === 'questionTiers' ? () => [] : () => undefined) }) as never,
     runner: new LocalRunner({ name: 'p', runner: 'local', path: base } as never),
     gate: { mayStart: () => true, started: () => {}, ended: () => {} },
@@ -78,7 +79,12 @@ async function running(opts: { effort?: EffortLevel; defaultEffort?: EffortLevel
     const hook = (await s.claudeOptions(handlers)).hooks!.PreToolUse![0]!.hooks[0]! as unknown as Hook;
     await hook({ tool_name: 'mcp__ledung__ask_user', tool_input: {}, ...input }, 'tu-1', { signal: new AbortController().signal });
   };
-  return { s, store, flags, events, launched, toolCall };
+  /** Claude Code's end-of-turn hook, which carries the turn's effort too. */
+  const turnEnd = async (input: { effort?: { level: string }; agent_id?: string }) => {
+    const hook = (await s.claudeOptions(handlers)).hooks!.Stop![0]!.hooks[0]! as unknown as Hook;
+    await hook({ hook_event_name: 'Stop', stop_hook_active: false, ...input }, 'stop-1', { signal: new AbortController().signal });
+  };
+  return { s, store, flags, events, launched, toolCall, turnEnd };
 }
 
 const notes = (store: Store, id = 's1') => store.listMessages(id, { limit: 50 }).filter((m) => m.kind === 'event').map((m) => String(m.data.text));
@@ -161,6 +167,51 @@ test("a subagent's tool call says the subagent's effort, not the session's; and 
   await quiet.toolCall({ effort: { level: 'medium' } });
   assert.equal(quiet.store.getSession('s1')!.effort, 'medium', 'its info still shows what it runs with');
   assert.equal(notes(quiet.store).filter((t) => t.startsWith('Effort')).length, 0);
+});
+
+test('a turn with no tool call still says the level, at its end: on the info and once in the history', async () => {
+  const { store, turnEnd, toolCall } = await running({ effort: 'high' });
+  assert.equal(store.getSession('s1')!.effort, null, 'not known before Claude Code says');
+  await turnEnd({ effort: { level: 'high' } });
+  assert.equal(store.getSession('s1')!.effort, 'high');
+  assert.deepEqual(notes(store).filter((t) => t.startsWith('Effort')), ['Effort: runs with high.']);
+  // Said once: neither the next turn's end nor a later tool call with the same level repeats it.
+  await turnEnd({ effort: { level: 'high' } });
+  await toolCall({ effort: { level: 'high' } });
+  assert.equal(notes(store).filter((t) => t.startsWith('Effort')).length, 1);
+  // A turn's end that names no level leaves the known one alone; a stepped-down one is said as such.
+  await turnEnd({});
+  assert.equal(store.getSession('s1')!.effort, 'high');
+  const down = await running({ effort: 'max' });
+  await down.turnEnd({ effort: { level: 'high' } });
+  assert.deepEqual(notes(down.store).filter((t) => t.startsWith('Effort')), ['Effort: asked for max; Claude Code runs this model with high.']);
+});
+
+test('a change made mid-turn may first report the old level; the line follows when the new one is reported', async () => {
+  const { s, store, toolCall, turnEnd } = await running({ effort: 'high' });
+  await toolCall({ effort: { level: 'high' } });
+  await s.setEffort('low', 'user');
+  await toolCall({ effort: { level: 'high' } });
+  await turnEnd({ effort: { level: 'high' } });
+  await toolCall({ effort: { level: 'low' } });
+  await toolCall({ effort: { level: 'low' } });
+  assert.deepEqual(notes(store).filter((t) => t.startsWith('Effort: ')), [
+    'Effort: runs with high.',
+    'Effort: asked for low; Claude Code runs this model with high.',
+    'Effort: runs with low.',
+  ]);
+  assert.equal(store.getSession('s1')!.effort, 'low');
+});
+
+test("reconnected with a profile settings file, what was asked can't be told: only the level is said", async () => {
+  // The file may name its own effort, which is not read again on a reconnect; the project's default must not be called asked.
+  const filed = await running({ defaultEffort: 'medium', attachTo: 'pipe-of-a-running-host', settingsFile: '.claude/lean.json', start: false });
+  await filed.toolCall({ effort: { level: 'low' } });
+  assert.deepEqual(notes(filed.store).filter((t) => t.startsWith('Effort')), ['Effort: runs with low.']);
+  // Without a settings file the default is what was asked, and a different level is said as such.
+  const plain = await running({ defaultEffort: 'medium', attachTo: 'pipe-of-a-running-host', start: false });
+  await plain.toolCall({ effort: { level: 'low' } });
+  assert.deepEqual(notes(plain.store).filter((t) => t.startsWith('Effort')), ['Effort: asked for medium; Claude Code runs this model with low.']);
 });
 
 test('a session reconnected after a Ledung restart does not say its level again, but its info still follows Claude Code', async () => {
