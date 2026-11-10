@@ -301,9 +301,6 @@ export function claudeEnvironment(
   return { ...env, ...accountEnv, [MCP_LIMIT_ENV]: mcpLimitFor(ledungInstructions, base[MCP_LIMIT_ENV]) };
 }
 
-/** Whether this Ledung run has logged issue #202's trace line: once per run, not per session or tool call. */
-let exercised202 = false;
-
 export class Session {
   readonly id: string;
   private readonly runner: Runner;
@@ -2182,10 +2179,6 @@ export class Session {
     // Reattached, the profile's settings file was not read again: with one, what was asked can't be told for sure
     // here, so only the level is said (Minor 4).
     const sure = !(this.attachTo && this.profile?.settingsFile);
-    if (!exercised202) {
-      exercised202 = true;
-      exercisedLine('EXERCISED #202 a session started with an effort said which level it runs with');
-    }
     this.record('event', {
       text: got && (got === asked || !sure) ? `Effort: runs with ${got}.`
         : got ? `Effort: asked for ${asked}; Claude Code runs this model with ${got}.`
