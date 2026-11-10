@@ -1,7 +1,7 @@
 // The sidebar's right-click menu (Simon, 2026-11-06): on a chat, session or manager row, and on a project's heading.
 // It offers only what makes sense for that row, each item the action the page already has for it. Shift+right-click
 // keeps the browser's own menu; a long press opens it on a phone, the menu key or Shift+F10 from the keyboard.
-import { MODEL_CHOICES, type ModelChoice, type SessionInfo } from '../../src/shared/protocol.ts';
+import { EFFORT_LEVELS, MODEL_CHOICES, type EffortLevel, type ModelChoice, type ProjectInfo, type SessionInfo } from '../../src/shared/protocol.ts';
 
 /** In the order the menu shows them. */
 export type SessionAction =
@@ -56,6 +56,29 @@ export function groupActions(kind: 'project' | 'chats' | 'removed', hasWorkflow:
 export function modelChoices(requested: string | null): { model: string | null; label: string }[] {
   const offered = [null, ...MODEL_CHOICES].map((m) => ({ model: m, label: m ? m[0]!.toUpperCase() + m.slice(1) : "Project's default" }));
   return requested && !MODEL_CHOICES.includes(requested as ModelChoice) ? [...offered, { model: requested, label: requested }] : offered;
+}
+
+/** The effort levels as the page names them (issue #202). */
+export const EFFORT_LABEL: Record<EffortLevel, string> = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' };
+
+/** The efforts offered beside the models, the project's default (null) first. */
+export function effortChoices(): { effort: EffortLevel | null; label: string }[] {
+  return [null, ...EFFORT_LEVELS].map((e) => ({ effort: e, label: e ? EFFORT_LABEL[e] : "Project's default" }));
+}
+
+/** The project's effort for a session of this role, as the server works it out (defaultEffortFor); null: Claude Code's own. */
+export function projectEffort(project: Pick<ProjectInfo, 'effort' | 'managerEffort'> | undefined, role: SessionInfo['role']): EffortLevel | null {
+  return (role === 'manager' && project?.managerEffort) || project?.effort || null;
+}
+
+/**
+ * What a session's info says of its effort: the level Claude Code says it runs with once that is known (its first
+ * tool call), until then the level it was asked to run with, marked as asked. Null: none asked for and none known.
+ */
+export function effortShown(s: Pick<SessionInfo, 'effort' | 'requestedEffort'>, projectDefault: EffortLevel | null): { text: string; hint: string } | null {
+  if (s.effort) return { text: `effort ${s.effort}`, hint: 'The effort Claude Code runs it with' };
+  const asked = s.requestedEffort ?? projectDefault;
+  return asked ? { text: `effort ${asked} (asked)`, hint: 'The effort it was asked to run with; its history says which level it got after its first tool call' } : null;
 }
 
 /**

@@ -3,7 +3,7 @@
 // project's manager before it has started.
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import {
-  PERMISSION_MODES, type AccountInfoView, type BoardStatus, type ContainerInfoView, type FolderListingView, type PermissionMode, type ProfilesView, type ProjectInfo, type WorkflowCheckView,
+  EFFORT_LEVELS, PERMISSION_MODES, type AccountInfoView, type BoardStatus, type ContainerInfoView, type FolderListingView, type PermissionMode, type ProfilesView, type ProjectInfo, type WorkflowCheckView,
 } from '../../../src/shared/protocol.ts';
 import { SUGGESTIONS, missingSuggestions, suggestionName, withSuggestions } from '../../../src/shared/sensitive-suggestions.ts';
 import { DEFAULT_TIERS } from '../../../src/shared/questions.ts';
@@ -20,6 +20,7 @@ import { InheritLine, SaveBar, SettingsSplit, useNarrow } from '../components/Se
 import { NARROW_QUERY } from '../sidebarSize.ts';
 import { PROJECT_GROUPS, tabGroupOf, tabGroupView, tabView } from '../settingsGroups.ts';
 import { useEdited } from '../useEdited.ts';
+import { EFFORT_LABEL } from '../sidebarMenu.ts';
 import {
   FIELD_GROUP, RESET, changedFields, chooseWorkflow, emptySettings, followsWorkflow, inherit, profileDefaults, settingsOf, tierLines, toApi, type Settings,
 } from './projectSettings.ts';
@@ -54,6 +55,13 @@ function inheritLine(f: FieldProps, key: keyof typeof RESET, def: string): React
   if (!f.defaults) return null;
   const i = inherit(f.value[key] as string | object, def);
   return <InheritLine follows={i.follows} text={i.text} onReset={() => f.onChange({ ...f.value, [key]: RESET[key] })} />;
+}
+
+/** The same line for the effort fields (issue #202), whose default is the empty choice. */
+function effortLine(f: FieldProps, key: 'effort' | 'managerEffort', def: string): ReactNode {
+  if (!f.defaults) return null;
+  const i = inherit(f.value[key], def);
+  return <InheritLine follows={i.follows} text={i.text} onReset={() => f.onChange({ ...f.value, [key]: '' })} />;
 }
 
 const setter = (f: FieldProps, k: keyof Settings) => (e: { target: { value: string } }) => f.onChange({ ...f.value, [k]: e.target.value });
@@ -94,6 +102,22 @@ function ModelFields(f: FieldProps) {
       </Field>
       <Field name="Model for its manager" hint="(empty: the same as its sessions)" line={inheritLine(f, 'managerModel', 'the same as its sessions')}>
         {(id) => <input id={id} {...typing} value={f.value.managerModel} onChange={setter(f, 'managerModel')} list="ledung-models" placeholder="opus, sonnet, haiku or a full model name" />}
+      </Field>
+      <Field name="Effort" hint="(how much reasoning its sessions put into their replies)" line={effortLine(f, 'effort', "Claude Code's own")}>
+        {(id) => (
+          <select id={id} value={f.value.effort} onChange={setter(f, 'effort')}>
+            <option value="">Claude Code's own default</option>
+            {EFFORT_LEVELS.map((l) => <option key={l} value={l}>{EFFORT_LABEL[l]}</option>)}
+          </select>
+        )}
+      </Field>
+      <Field name="Effort for its manager" line={effortLine(f, 'managerEffort', 'the same as its sessions')}>
+        {(id) => (
+          <select id={id} value={f.value.managerEffort} onChange={setter(f, 'managerEffort')}>
+            <option value="">the same as its sessions</option>
+            {EFFORT_LEVELS.map((l) => <option key={l} value={l}>{EFFORT_LABEL[l]}</option>)}
+          </select>
+        )}
       </Field>
     </>
   );

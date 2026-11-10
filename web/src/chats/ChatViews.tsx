@@ -2,7 +2,8 @@
 // and permission mode and nothing about a project; and the chats' tab in Settings (#366), with their name colour (#222) and
 // own sensitive list.
 import { Fragment, useEffect, useState } from 'react';
-import { PERMISSION_MODES, type AccountInfoView, type ChatsInfo, type PermissionMode } from '../../../src/shared/protocol.ts';
+import { EFFORT_LEVELS, PERMISSION_MODES, type AccountInfoView, type ChatsInfo, type EffortLevel, type PermissionMode } from '../../../src/shared/protocol.ts';
+import { EFFORT_LABEL } from '../sidebarMenu.ts';
 import { api } from '../api.ts';
 import { FolderBrowser, SensitiveList } from '../projects/ProjectViews.tsx';
 import { ChatsColourPicker } from '../components/ProjectName.tsx';
@@ -23,6 +24,7 @@ export function NewChatView({ chats, profiles, accounts, defaultAccount, run, on
   const [folder, setFolder] = useState<string | null>(null);
   const [browsing, setBrowsing] = useState(false);
   const [model, setModel] = useState('');
+  const [effort, setEffort] = useState<EffortLevel | ''>('');
   const [profile, setProfile] = useState('');
   const [mode, setMode] = useState<PermissionMode | ''>('');
   // null: Settings' "Account for chats", followed while untouched; "": the computer's own login (issue #119).
@@ -39,7 +41,7 @@ export function NewChatView({ chats, profiles, accounts, defaultAccount, run, on
     setBusy(true);
     try {
       const chat = await api.startChat({
-        ...(folder ? { folder } : {}), ...(model.trim() ? { model: model.trim() } : {}), ...(profile ? { profile } : {}), ...(mode ? { permissionMode: mode } : {}),
+        ...(folder ? { folder } : {}), ...(model.trim() ? { model: model.trim() } : {}), ...(effort ? { effort } : {}), ...(profile ? { profile } : {}), ...(mode ? { permissionMode: mode } : {}),
         ...(account !== null ? { account: account || 'default' } : {}),
       });
       onStarted(chat.id);
@@ -59,6 +61,13 @@ export function NewChatView({ chats, profiles, accounts, defaultAccount, run, on
           <label>
             Model <span className="muted">(empty: Claude Code's own default)</span>
             <input {...typing} value={model} onChange={(e) => setModel(e.target.value)} placeholder="opus, sonnet, haiku or a full model name" />
+          </label>
+          <label>
+            Effort <span className="muted">(how much reasoning it puts into its replies)</span>
+            <select value={effort} onChange={(e) => setEffort(e.target.value as EffortLevel | '')}>
+              <option value="">Claude Code's own default</option>
+              {EFFORT_LEVELS.map((l) => <option key={l} value={l}>{EFFORT_LABEL[l]}</option>)}
+            </select>
           </label>
           {profiles.length > 1 && (
             <label>

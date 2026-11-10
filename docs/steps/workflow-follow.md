@@ -44,7 +44,7 @@ The manager gets three tools (only when its project has a flow and following is 
 
 | The block runs as | What Ledung does / tells the manager |
 |---|---|
-| **new session** | Ledung starts the session itself with the block's model, profile, brief and sub-steps, and the run's title/ref and the previous step's report as the handoff; the run records the session. |
+| **new session** | Ledung starts the session itself with the block's model, profile, brief and sub-steps (and the project's default effort: a block names none yet, #112 and #202), and the run's title/ref and the previous step's report as the handoff; the run records the session. |
 | **continue** | Ledung sends the block's brief and the handoff to the session that ran the named block, resuming it if it ended. |
 | **manager** | Tells the manager the block's brief: it does the step itself, then reports with `flow_step`. |
 | **person** | Ledung puts it to the person: `ask: review` becomes a review page, `ask: question` a question whose options are the block's outcome words; the answer moves the run by itself (no manager step), and the manager is told. |

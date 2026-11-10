@@ -30,7 +30,7 @@ import { Named, sessionColour } from './components/ProjectName.tsx';
 import { NameEditor } from './components/NameEditor.tsx';
 import { siblingOrder } from './sidebarOrder.ts';
 import { useSidebarDrag } from './sidebarDrag.ts';
-import { groupActions, modelChoices, opensMenu, sessionActions } from './sidebarMenu.ts';
+import { EFFORT_LABEL, effortChoices, effortShown, groupActions, modelChoices, opensMenu, projectEffort, sessionActions } from './sidebarMenu.ts';
 import { RowMenu, type MenuEntry } from './components/RowMenu.tsx';
 import { copyText } from './components/Markdown.tsx';
 import { settingsOf, toApi } from './projects/projectSettings.ts';
@@ -798,6 +798,21 @@ function Sidebar(props: {
             onPick: () => void props.run(() => api.setModel(s.id, m.model as ModelChoice | null)),
           })),
         });
+        // Effort beside the model (issue #202), the same way: "Effort ▸ High".
+        const effortDefault = projectEffort(project, s.role);
+        const asked = s.requestedEffort ?? null;
+        entries.push({
+          kind: 'submenu',
+          label: 'Effort',
+          value: asked ? EFFORT_LABEL[asked] : 'Default',
+          note: s.status === 'ended' ? 'When it is resumed' : 'From its next reply',
+          entries: effortChoices().map((e) => ({
+            kind: 'radio' as const,
+            label: e.effort === null && effortDefault ? `${e.label} (${EFFORT_LABEL[effortDefault]})` : e.label,
+            checked: e.effort === asked,
+            onPick: () => void props.run(() => api.setEffort(s.id, e.effort)),
+          })),
+        });
         continue;
       }
       if (a === 'priority') {
@@ -1161,6 +1176,8 @@ export function SessionView(props: {
   const ended = session.status === 'ended';
   const controls = sessionControls(session);
   const lock = frameLevel(ledung.projects.find((p) => p.name === session.project));
+  // The effort it runs with, beside its model (issue #202).
+  const effort = effortShown(session, projectEffort(ledung.projects.find((p) => p.name === session.project), session.role));
   // The session's name colour: its message box (#133) and its own messages (#269).
   const tint = useMemo(() => nameTint(session, withChatsColour(ledung.projects, ledung.chats)), [session.project, session.role, ledung.projects, ledung.chats]);
   // The conversation is memoized (issue #323): what it is given keeps its identity unless what it shows changed.
@@ -1262,6 +1279,7 @@ export function SessionView(props: {
               : null}
             {session.account ? <> · <span className="chip" title="The Claude account this session runs under">{session.account}</span></> : null}
             {session.model ? ` · ${session.model}` : ''}
+            {effort ? <> · <span title={effort.hint}>{effort.text}</span></> : null}
             {session.profile && session.profile !== 'full'
               ? <> · <span className="chip" title="Its session profile: what it gets of your own plugins, MCP servers and tools">{session.profile}</span></>
               : null}

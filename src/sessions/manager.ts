@@ -42,6 +42,9 @@ import {
   type ChatsInfo,
   MODEL_CHOICES,
   type ModelChoice,
+  effortLevel,
+  unknownEffort,
+  type EffortLevel,
   PRIORITIES,
   type MachineInfo,
   type McpServerInfo,
@@ -260,7 +263,7 @@ export class SessionManager {
       wake: (id) => this.live.get(id)?.deliver(),
       resume: (id) => this.resumeIfEnded(id),
       archiveSession: (id, by) => void this.archive(id, by),
-      startSession: (project, task, opts) => this.start(project, task, { parentId: opts.parentId, title: opts.title, permissionMode: opts.permissionMode, model: opts.model, profile: opts.profile, cwd: opts.cwd, before: opts.before }),
+      startSession: (project, task, opts) => this.start(project, task, { parentId: opts.parentId, title: opts.title, permissionMode: opts.permissionMode, model: opts.model, effort: opts.effort, profile: opts.profile, cwd: opts.cwd, before: opts.before }),
       profilesWarning: (project) => this.profilesFor(this.project(project)).warning,
       stopSession: (id, reason) => this.stop(id, reason),
       projectNames: () => this.projectStore.list().map((p) => p.config.name),
@@ -1046,6 +1049,8 @@ export class SessionManager {
         ? (where: SignInContext) => this.signInRefusal(project.account ?? DEFAULT_ACCOUNT, where)
         : project.account ? () => this.containerSignInRefusal(project.account!, { container: project.container, user: project.user || undefined }) : undefined,
       runner: this.runnerFor(project, info), store: this.store, publish: this.publish, model: info.requestedModel ?? undefined, defaultModel: defaultModelFor(project, info.role),
+      // Read from the stored session on every start, resume and reattach, so it is kept as the model is (issue #202).
+      effort: info.requestedEffort ?? undefined, defaultEffort: defaultEffortFor(project, info.role),
       // A project the user opted in lets its manager's project tools run unasked (decision of 2026-10-14).
       projectToolsUnasked: project.projectToolsUnasked ?? false,
       userName: this.config.userName, management: this.management, grant: project.managerGrant, tickets: project.tickets, gate: this.gate,
@@ -2442,8 +2447,9 @@ export class SessionManager {
    * The account is New chat's choice (issue #119): a name, or "default" for the computer's own login; left
    * out, the one chosen for chats in Settings.
    */
-  async startChat(opts: { folder?: string; model?: string; profile?: string; permissionMode?: PermissionMode; account?: unknown; text?: string } = {}): Promise<SessionInfo> {
+  async startChat(opts: { folder?: string; model?: string; effort?: unknown; profile?: string; permissionMode?: PermissionMode; account?: unknown; text?: string } = {}): Promise<SessionInfo> {
     if (opts.permissionMode !== undefined && !PERMISSION_MODES.includes(opts.permissionMode)) throw new UserError(`Unknown permission mode "${opts.permissionMode}".`);
+    const effort = chosenEffort(opts.effort);
     const account = this.chatAccount(opts.account);
     const workDir = this.chatFolder(opts.folder);
     let profile: string;
@@ -2463,7 +2469,7 @@ export class SessionManager {
     }
     const info = this.store.createSession({
       id: randomUUID(), project: CHATS, runner: 'local', role: 'session', title: 'New chat', parentId: null,
-      permissionMode: opts.permissionMode ?? project.permissionMode ?? 'auto', requestedModel: opts.model?.trim() || null, profile, workDir,
+      permissionMode: opts.permissionMode ?? project.permissionMode ?? 'auto', requestedModel: opts.model?.trim() || null, requestedEffort: effort, profile, workDir,
     });
     if (project.account) this.store.updateSession(info.id, { account: project.account });
     this.publish({ type: 'session', session: info });
@@ -2534,6 +2540,8 @@ export class SessionManager {
     firstMessage?: string,
     opts: {
       role?: SessionRole; parentId?: string; title?: string; permissionMode?: PermissionMode; model?: string; profile?: string; cwd?: string; here?: boolean; before?: string;
+      /** One of Claude Code's effort levels (issue #202); an unknown one is refused before anything starts. */
+      effort?: string;
       /** A block's session (workflow part 3b): the run and block it serves, and the heading of its task in place of the manager's. */
       runBlock?: RunBlock; intro?: string;
       /** `cwd` is its run's worktree (part 3f): allowed in a container project too. */
@@ -2541,6 +2549,7 @@ export class SessionManager {
     } = {},
   ): Promise<SessionInfo> {
     const project = this.project(projectName);
+    const effort = chosenEffort(opts.effort);
     // Managers work in the project folder, so the project keeps one place for its manager.
     if (opts.cwd !== undefined && opts.role === 'manager') throw new UserError('A manager always works in the project folder.');
     const workDir = this.workFolder(project, opts.cwd, opts.runWorktree === true);
@@ -2573,7 +2582,7 @@ export class SessionManager {
       id: randomUUID(), project: project.name, runner: project.runner, role,
       title: opts.title?.trim() || managerName || (role === 'manager' ? `Manager: ${project.name}` : 'New session'),
       parentId: opts.parentId ?? null, permissionMode: opts.permissionMode ?? project.permissionMode ?? 'default',
-      requestedModel: opts.model?.trim() || null, profile, workDir,
+      requestedModel: opts.model?.trim() || null, requestedEffort: effort, profile, workDir,
     });
     if (project.account) this.store.updateSession(info.id, { account: project.account });
     if (opts.runBlock) this.store.updateSession(info.id, { runBlock: opts.runBlock });
@@ -3167,6 +3176,34 @@ ${firstMessage}`);
     return this.store.getSession(id)!;
   }
 
+  /**
+   * The sidebar menu's Effort (issue #202): one of Claude Code's levels, or null for the project's default. As
+   * setModel: a running session changes from its next reply, an ended one keeps it for its resume; either way it is
+   * the session's requestedEffort, which a resume starts with, as start_session's effort is.
+   */
+  async setEffort(id: string, effort: unknown): Promise<SessionInfo> {
+    const chosen = effort === null ? null : effortLevel(effort);
+    if (effort !== null && !chosen) throw new UserError(`${unknownEffort(effort)} Or null for the project's default.`);
+    const info = this.store.getSession(id);
+    if (!info) throw new UserError('No such session.');
+    if (info.status === 'stopping') throw new UserError('The session is stopping; change its effort once it has ended.');
+    const live = this.live.get(id);
+    if (live && info.status !== 'ended') {
+      try {
+        await live.setEffort(chosen, 'user');
+      } catch (e) {
+        throw new UserError(`Could not change the effort: ${(e as Error).message}`);
+      }
+      return live.info;
+    }
+    if (chosen !== (info.requestedEffort ?? null)) {
+      this.store.updateSession(id, { requestedEffort: chosen });
+      this.publish({ type: 'message', message: this.store.addMessage(id, 'event', { text: `Effort set to ${chosen ?? "the project's default"} by ${this.config.userName}; it applies when the session is resumed.` }) });
+      this.publish({ type: 'session', session: this.store.getSession(id)! });
+    }
+    return this.store.getSession(id)!;
+  }
+
   async setPermissionMode(id: string, mode: string): Promise<void> {
     if (!PERMISSION_MODES.includes(mode as PermissionMode)) throw new UserError(`Unknown permission mode "${mode}".`);
     try {
@@ -3365,6 +3402,22 @@ export function defaultModelFor(project: Pick<ProjectConfig, 'model' | 'managerM
   return (role === 'manager' && project.managerModel?.trim()) || project.model?.trim() || undefined;
 }
 
+/**
+ * The project's effort for a session of this role (issue #202), as defaultModelFor: a manager has its own; empty:
+ * the sessions'. None at all: no effort is passed, so Claude Code takes its own default.
+ */
+export function defaultEffortFor(project: Pick<ProjectConfig, 'effort' | 'managerEffort'>, role: SessionRole): EffortLevel | undefined {
+  return (role === 'manager' && project.managerEffort) || project.effort || undefined;
+}
+
+/** A start's effort as given: none (left out, null or blank), or one of the levels; anything else is refused with the levels there are. */
+function chosenEffort(value: unknown): EffortLevel | null {
+  if (value === undefined || value === null || (typeof value === 'string' && !value.trim())) return null;
+  const level = effortLevel(value);
+  if (!level) throw new UserError(unknownEffort(value));
+  return level;
+}
+
 /** The lockdown part of every session's launch settings while no project is locked (issue #109). */
 export const NO_LOCKDOWN_KEY = JSON.stringify({ others: null, closed: null });
 
@@ -3381,6 +3434,8 @@ function projectInfo(p: StoredProject): ProjectInfo {
     account: c.account ?? null,
     model: c.model ?? null,
     managerModel: c.managerModel ?? null,
+    effort: c.effort ?? null,
+    managerEffort: c.managerEffort ?? null,
     permissionMode: c.permissionMode ?? null,
     managerGrant: c.managerGrant ?? null,
     projectToolsUnasked: c.projectToolsUnasked ?? false,
