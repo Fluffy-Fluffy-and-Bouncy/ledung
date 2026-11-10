@@ -2447,7 +2447,7 @@ export class SessionManager {
    * The account is New chat's choice (issue #119): a name, or "default" for the computer's own login; left
    * out, the one chosen for chats in Settings.
    */
-  async startChat(opts: { folder?: string; model?: string; effort?: string; profile?: string; permissionMode?: PermissionMode; account?: unknown; text?: string } = {}): Promise<SessionInfo> {
+  async startChat(opts: { folder?: string; model?: string; effort?: unknown; profile?: string; permissionMode?: PermissionMode; account?: unknown; text?: string } = {}): Promise<SessionInfo> {
     if (opts.permissionMode !== undefined && !PERMISSION_MODES.includes(opts.permissionMode)) throw new UserError(`Unknown permission mode "${opts.permissionMode}".`);
     const effort = chosenEffort(opts.effort);
     const account = this.chatAccount(opts.account);
@@ -3410,9 +3410,9 @@ export function defaultEffortFor(project: Pick<ProjectConfig, 'effort' | 'manage
   return (role === 'manager' && project.managerEffort) || project.effort || undefined;
 }
 
-/** A start's effort as given: none, or one of the levels; anything else is refused with the levels there are. */
-function chosenEffort(value: string | undefined): EffortLevel | null {
-  if (value === undefined || !value.trim()) return null;
+/** A start's effort as given: none (left out, null or blank), or one of the levels; anything else is refused with the levels there are. */
+function chosenEffort(value: unknown): EffortLevel | null {
+  if (value === undefined || value === null || (typeof value === 'string' && !value.trim())) return null;
   const level = effortLevel(value);
   if (!level) throw new UserError(unknownEffort(value));
   return level;

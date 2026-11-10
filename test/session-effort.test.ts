@@ -48,9 +48,12 @@ const handlers = { onLine: () => {}, onStderr: () => {} };
 type Hook = (input: object, id: string, o: object) => Promise<unknown>;
 
 /** A Session whose query records what it was launched with and each flag-settings call, failing when told to. */
-async function running(opts: { effort?: EffortLevel; defaultEffort?: EffortLevel; fail?: boolean; start?: boolean; attachTo?: string } = {}) {
+async function running(opts: { effort?: EffortLevel; defaultEffort?: EffortLevel; fail?: boolean; start?: boolean; attachTo?: string; reported?: EffortLevel } = {}) {
   const store = new Store(openDatabase(':memory:'));
-  const info = store.createSession({ id: 's1', project: 'p', runner: 'local', title: 'Worker', parentId: null, permissionMode: 'default', role: 'session', requestedEffort: opts.effort ?? null });
+  store.createSession({ id: 's1', project: 'p', runner: 'local', title: 'Worker', parentId: null, permissionMode: 'default', role: 'session', requestedEffort: opts.effort ?? null });
+  // What Claude Code reported before a Ledung restart, as the store kept it.
+  if (opts.reported) store.updateSession('s1', { effort: opts.reported });
+  const info = store.getSession('s1')!;
   const flags: unknown[] = [];
   const stream = {
     accountInfo: async () => ({}),
@@ -161,14 +164,14 @@ test("a subagent's tool call says the subagent's effort, not the session's; and 
 });
 
 test('a session reconnected after a Ledung restart does not say its level again, but its info still follows Claude Code', async () => {
-  const again = await running({ effort: 'high', attachTo: 'pipe-of-a-running-host', start: false });
+  const again = await running({ effort: 'max', attachTo: 'pipe-of-a-running-host', reported: 'high', start: false });
   await again.toolCall({ effort: { level: 'high' } });
   assert.equal(again.store.getSession('s1')!.effort, 'high');
-  assert.equal(notes(again.store).filter((t) => t.startsWith('Effort')).length, 0, 'the process was launched before the restart and said it then');
-  // The same probe on a freshly launched session finds the line.
-  const fresh = await running({ effort: 'high', start: false });
-  await fresh.toolCall({ effort: { level: 'high' } });
-  assert.equal(notes(fresh.store).filter((t) => t.startsWith('Effort')).length, 1);
+  assert.equal(notes(again.store).filter((t) => t.startsWith('Effort')).length, 0, 'it reported before the restart and said it then');
+  // Reconnected before its first tool call, it still owes the line: the same probe finds it.
+  const early = await running({ effort: 'high', attachTo: 'pipe-of-a-running-host', start: false });
+  await early.toolCall({ effort: { level: 'high' } });
+  assert.deepEqual(notes(early.store).filter((t) => t.startsWith('Effort')), ['Effort: runs with high.']);
 });
 
 test('a running session changes effort through Claude Code, keeps it for a resume and says so in its history', async () => {
@@ -251,6 +254,8 @@ test('an unknown effort is refused with the levels there are, and nothing starts
   const refusal = (e: Error) => e instanceof UserError && e.message === 'Unknown effort "ultra". Choose low, medium, high, xhigh, max.';
   await assert.rejects(manager.start('proj', undefined, { effort: 'ultra' }), refusal);
   await assert.rejects(manager.startChat({ effort: 'ultra' }), refusal);
+  // New chat's call passes what the page sent: a value that is no level's name is refused too, never dropped.
+  await assert.rejects(manager.startChat({ effort: 5 }), (e: Error) => e instanceof UserError && e.message === 'Unknown effort 5. Choose low, medium, high, xhigh, max.');
   assert.equal(store.listSessions().length, 0, 'no session was made');
   // The same calls with a real level do start one.
   assert.equal((await manager.start('proj', undefined, { effort: 'low' })).requestedEffort, 'low');

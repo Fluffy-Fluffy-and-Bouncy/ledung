@@ -452,9 +452,9 @@ export class Session {
     this.defaultModel = opts.defaultModel;
     this.effort = opts.effort;
     this.defaultEffort = opts.defaultEffort;
-    // A process reattached after a Ledung restart was launched earlier and has had its line; its profile's settings
-    // file isn't read again either, so what it was asked for can't be told for sure here (self-check of #202).
-    this.effortTold = !!opts.attachTo;
+    // A process reattached after a Ledung restart that already reported its level has had its line (the stored level
+    // is empty from each launch until the first report); one that hasn't yet still owes it (self-check of #202).
+    this.effortTold = !!opts.attachTo && !!opts.info.effort;
     this.resume = opts.resume;
     this.attachTo = opts.attachTo;
     this.secrets = opts.secrets ?? null;
