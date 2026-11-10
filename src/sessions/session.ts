@@ -301,7 +301,7 @@ export function claudeEnvironment(
   return { ...env, ...accountEnv, [MCP_LIMIT_ENV]: mcpLimitFor(ledungInstructions, base[MCP_LIMIT_ENV]) };
 }
 
-/** Whether this Ledung run has logged its `EXERCISED #202` line: once per run, not per session or tool call. */
+/** Whether this Ledung run has logged issue #202's trace line: once per run, not per session or tool call. */
 let exercised202 = false;
 
 export class Session {
