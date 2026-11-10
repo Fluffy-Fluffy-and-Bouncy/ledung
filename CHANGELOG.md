@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-10
+- Waiting for you, the chat and the file viewer: a long command or table scrolled sideways (a refused call's command, a question's code block) no longer jumps back to the left whenever something else on the page updates, and images in a Markdown file are no longer loaded again each time the page updates. (#200)
+
 ## 2026-11-09
 - Panels on the right can be made wider or narrower like the sidebar: drag the left edge of the Files or Workflow pane beside a chat, the workflow page's side panel (Runs, rules, a block's details) or the builder's panel; arrow keys, Home and End work on the edge, and a double-click puts the standard width back. Each kind keeps its width in this browser, and the chat or diagram always keeps room beside it. A small flow is fitted again as its area changes, until you move or zoom it yourself. No handles on a phone. Opening or widening a pane no longer moves the chat up from its end. (#198)
 - Sidebar: right-click a chat, session or manager for Rename, Model ▸ (Opus, Sonnet, Haiku or the project's default, from its next reply, kept when resumed), Priority, Pause, Stop or Resume, Compact, Clear context, Copy session ID and Archive ("Stop and archive" on a running one, asked first). A project's heading offers New session, Account ▸ (when there is more than one), Settings, Workflow and Collapse all; its + and ⚙ buttons are gone, as are those on Chats' heading (New chat and Chats settings are in its menu). Long press on a phone, the menu key or Shift+F10 from the keyboard; Shift+right-click keeps the browser's own menu. (no issue)
