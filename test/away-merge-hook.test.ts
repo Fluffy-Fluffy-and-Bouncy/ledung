@@ -15,6 +15,7 @@ import { Store } from '../src/store/store.ts';
 import { Management } from '../src/sessions/management.ts';
 import { Session, shellFolderInside } from '../src/sessions/session.ts';
 import { Away, classify, formatLog, linkRepo, pinnedMerge, words } from '../src/sessions/away.ts';
+import { SUGGESTIONS } from '../src/shared/sensitive-suggestions.ts';
 
 const clock = (ms: number) => { const d = new Date(ms); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 /** Two hours ahead of the real clock, so the period never runs out during a test (#402). */
@@ -648,4 +649,43 @@ test('#149: a value that starts with - goes through the pinned merge unchanged: 
   assert.deepEqual(pinnedMerge(ran.command, pin), ran, 'pinned again, it is the same command');
   // The positive branch: the same words as options are held.
   assert.equal(classify('gh pr merge 12 -R o/r --admin').kind, 'other');
+});
+
+// ---------------------------------------------------------------- issue #208: merges held by the suggested entry
+
+/** A new project's command list (issue #208): the suggestions, with no merge pattern written by hand. */
+const SUGGESTED = SUGGESTIONS.filter((x) => x.kind === 'command').map((x) => x.pattern);
+const HELD_AS = 'Sensitive: Merging a pull request';
+
+test('#208: with merges held by the suggested entry, an away merge that names its repository with -R or a PR link still goes through', async () => {
+  const t = setup({ sensitive: SUGGESTED, gh: () => NO_CHECKS });
+  const linked = 'gh pr merge https://github.com/o/r/pull/31 --squash';
+  // Premise: not away, both are asked, by that entry.
+  assert.deepEqual(await t.mgr.hook(MERGE, 'tu-0'), { decision: 'ask', reason: HELD_AS });
+  assert.deepEqual(await t.mgr.hook(linked, 'tu-1'), { decision: 'ask', reason: HELD_AS });
+  // Away without merge allowed: still asked.
+  t.away.start(later(), ['devShip']);
+  assert.equal((await t.mgr.hook(MERGE, 'tu-2')).decision, 'ask', 'merge not allowed: asked');
+  t.away.stop();
+  t.away.start(later(), ['merge']);
+  const numbered = await t.mgr.hook(MERGE, 'tu-3');
+  assert.equal(numbered.decision, 'allow');
+  assert.match(numbered.reason, /^Allowed by away mode: PR #2264 open, mergeable/);
+  const byLink = await t.mgr.hook(linked, 'tu-4');
+  assert.equal(byLink.decision, 'allow');
+  assert.match(byLink.reason, /^Allowed by away mode: PR #31 open, mergeable/);
+  assert.deepEqual(t.away.log('mgr').records.filter((r) => r.allowed).map((r) => [r.kind, r.pr]), [['merge', 2264], ['merge', 31]]);
+  // What away mode does not let through is held by the same entry: gh.exe is not its plain merge.
+  assert.equal((await t.mgr.hook('gh.exe pr merge 2264 -R o/r --merge', 'tu-5')).decision, 'ask');
+  t.away.stop();
+});
+
+test("#208: with merges held by the suggested entry, a merge the person's words named still goes through, once named", async () => {
+  const t = setup({ sensitive: SUGGESTED });
+  assert.deepEqual(await t.mgr.hook(MERGE, 'before'), { decision: 'ask', reason: HELD_AS }, 'no word yet: asked');
+  t.store.addMessage('mgr', 'user', { text: 'merge #2264' });
+  const own = await t.mgr.hook(MERGE, 'own');
+  assert.equal(own.decision, 'allow');
+  assert.match(own.reason, /Martin said yes to merging #2264 in what they typed/);
+  assert.deepEqual(await t.mgr.hook('gh pr merge 2265 -R o/r --merge', 'other'), { decision: 'ask', reason: HELD_AS }, 'another PR: asked');
 });

@@ -18,6 +18,7 @@ import { openDatabase } from '../src/store/database.ts';
 import { Store } from '../src/store/store.ts';
 import { CHATS } from '../src/shared/protocol.ts';
 import { LATER_SUGGESTIONS, SUGGESTIONS } from '../src/shared/sensitive-suggestions.ts';
+import { matchSensitive } from '../src/sessions/sensitive.ts';
 import { rulePath } from '../src/sessions/boundary.ts';
 import { hostsDir, listHostRecords } from '../src/host/client.ts';
 import { pipePath } from '../src/host/protocol.ts';
@@ -292,6 +293,21 @@ test('chats are ordered and archived among themselves; removing or renaming a pr
   assert.deepEqual(store.listSessions().filter((x) => x.project === CHATS).map((x) => x.id).sort(), [a.id, b.id].sort());
   // No way in through the project routes: a chat is started with startChat only.
   await assert.rejects(manager.start(CHATS), /no project named/);
+});
+
+test('#208: a project added in the page starts with "Merging a pull request" in its sensitive list, and its merges are held', () => {
+  const { manager } = ledung();
+  const fresh = path.join(home, 'fresh');
+  fs.mkdirSync(fresh, { recursive: true });
+  const added = manager.addProject({ name: 'fresh', runner: 'local', path: fresh } as never);
+  const merge = SUGGESTIONS.find((s) => s.name === 'Merging a pull request');
+  assert.ok(merge, 'the suggestion exists under that name');
+  assert.ok(added.sensitive.commandPatterns.includes(merge.pattern), "in the new project's own list");
+  for (const command of ['gh pr merge 12 -R owner/name', 'gh pr merge https://github.com/owner/name/pull/12 --squash', 'gh.exe pr merge 12 -R owner/name']) {
+    assert.equal(matchSensitive('Bash', { command }, added.sensitive)?.rule, 'Merging a pull request', command);
+  }
+  // The same probe on what only mentions a merge finds nothing.
+  assert.equal(matchSensitive('Bash', { command: 'gh pr view 12' }, added.sensitive), null);
 });
 
 test('a later batch of suggestions reaches a chats list saved before it, once, as it reaches projects (#213)', () => {
