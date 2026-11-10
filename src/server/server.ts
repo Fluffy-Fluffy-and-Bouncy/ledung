@@ -14,7 +14,7 @@ import { readRepository, sourceOffer } from './source.ts';
 import type { SessionManager } from '../sessions/manager.ts';
 import { UserError } from '../sessions/manager.ts';
 import type { Store } from '../store/store.ts';
-import { AWAY_DEFAULT, AWAY_KINDS, type AwayKind, type PermissionDecision, type PermissionMode, type RemoteStatus, type ServerEvent } from '../shared/protocol.ts';
+import { AWAY_DEFAULT, AWAY_KINDS, EFFORT_LEVELS, type AwayKind, type PermissionDecision, type PermissionMode, type RemoteStatus, type ServerEvent } from '../shared/protocol.ts';
 import { deviceCookieHeader, Guard, readCookies, securityHeaders } from './security.ts';
 import { DEVICE_COOKIE, type Device, type DeviceKind, deviceName, Devices, deviceView } from './devices.ts';
 import { actionOf, DEVICE_LOCKED, PASSKEY_HEADER, PasskeyError, Passkeys } from './passkeys.ts';
@@ -1919,6 +1919,8 @@ export class LedungServer {
         const text = (v: unknown) => (typeof v === 'string' && v.trim() ? v : undefined);
         return manager.startChat({
           folder: text(body.folder), model: text(body.model), profile: text(body.profile), text: text(body.text),
+          // As sent: anything but a level's name is refused by startChat, not dropped (issue #202).
+          effort: body.effort,
           permissionMode: text(body.permissionMode) as PermissionMode | undefined,
           // New chat's account (issue #119): checked against the known ones by name, never a token.
           account: body.account,
@@ -1993,6 +1995,12 @@ export class LedungServer {
         // null is the project's default; left out is no choice at all, not a reset.
         if (!('model' in body)) throw new HttpError(400, "Send model: opus, sonnet, haiku or null for the project's default.");
         return manager.setModel(id, body.model);
+      }
+      // The sidebar menu's Effort (issue #202): as the model's, with the same checks.
+      case 'POST sessions/:id/effort': {
+        const body = await readJson(req);
+        if (!('effort' in body)) throw new HttpError(400, `Send effort: ${EFFORT_LEVELS.join(', ')} or null for the project's default.`);
+        return manager.setEffort(id, body.effort);
       }
       case 'POST sessions/:id/interrupt':
         return manager.interrupt(id);

@@ -1,6 +1,6 @@
 // A project's settings as its form edits them, and what goes to the API: moved out of ProjectViews.tsx (issue #366)
 // so the project tab's unsaved count and Ledung defaults can be tested. What toApi sends is unchanged.
-import type { PermissionMode, ProjectInfo, ProfilesView } from '../../../src/shared/protocol.ts';
+import type { EffortLevel, PermissionMode, ProjectInfo, ProfilesView } from '../../../src/shared/protocol.ts';
 import { withSuggestions } from '../../../src/shared/sensitive-suggestions.ts';
 import { DEFAULT_TIERS } from '../../../src/shared/questions.ts';
 import type { SkillChoices } from '../../../src/shared/skills.ts';
@@ -12,6 +12,10 @@ export interface Settings {
   model: string;
   /** Empty: the same as its sessions. */
   managerModel: string;
+  /** Its sessions' default effort (issue #202); empty: Claude Code's own default. */
+  effort: EffortLevel | '';
+  /** Empty: the same as its sessions. */
+  managerEffort: EffortLevel | '';
   permissionMode: PermissionMode | '';
   managerGrant: string;
   /** Its manager's project tools run unasked (decision of 2026-10-14). */
@@ -59,13 +63,14 @@ export interface Settings {
 }
 
 export const emptySettings = (name = ''): Settings => ({
-  name, account: '', model: '', managerModel: '', permissionMode: '', managerGrant: '', projectToolsUnasked: false, projectSettingsTools: false, publishUsageName: false, usageRepo: '', managerProfile: '', sessionProfile: '', skills: {}, ...withSuggestions({ commandPatterns: [], pathPatterns: [] }), devShipCommand: '', ticketPattern: '', ticketUrl: '', questionTiers: DEFAULT_TIERS.join('\n'), extraFolders: '', workflowUse: null, workflowName: '', workflowConfig: '', followFlow: true, worktreeSetup: '',
+  name, account: '', model: '', managerModel: '', effort: '', managerEffort: '', permissionMode: '', managerGrant: '', projectToolsUnasked: false, projectSettingsTools: false, publishUsageName: false, usageRepo: '', managerProfile: '', sessionProfile: '', skills: {}, ...withSuggestions({ commandPatterns: [], pathPatterns: [] }), devShipCommand: '', ticketPattern: '', ticketUrl: '', questionTiers: DEFAULT_TIERS.join('\n'), extraFolders: '', workflowUse: null, workflowName: '', workflowConfig: '', followFlow: true, worktreeSetup: '',
   lockdownLevel: 'off', lockdownBoard: false, lockdownRemoteControl: false, lockdownNetwork: '', lockdownDockerNetwork: '',
 });
 
 export function settingsOf(p: ProjectInfo): Settings {
   return {
     name: p.name, account: p.account ?? '', model: p.model ?? '', managerModel: p.managerModel ?? '', permissionMode: p.permissionMode ?? '', managerGrant: p.managerGrant ?? '',
+    effort: p.effort ?? '', managerEffort: p.managerEffort ?? '',
     projectToolsUnasked: p.projectToolsUnasked,
     projectSettingsTools: p.projectSettingsTools === true,
     publishUsageName: p.publishUsageName === true,
@@ -90,6 +95,8 @@ export function toApi(s: Settings, keep: ProjectInfo | null): Record<string, unk
     name: s.name.trim(),
     ...(s.model.trim() ? { model: s.model.trim() } : {}),
     ...(s.managerModel.trim() ? { managerModel: s.managerModel.trim() } : {}),
+    ...(s.effort ? { effort: s.effort } : {}),
+    ...(s.managerEffort ? { managerEffort: s.managerEffort } : {}),
     ...(s.permissionMode ? { permissionMode: s.permissionMode } : {}),
     ...(s.managerGrant.trim() ? { managerGrant: s.managerGrant.trim() } : {}),
     ...(s.projectToolsUnasked ? { projectToolsUnasked: true } : {}),
@@ -153,7 +160,7 @@ export function chooseWorkflow(s: Settings, name: string, container: boolean): S
  * Message board's own fields and the name colours (saved at once) are not here.
  */
 export const FIELD_GROUP: Record<keyof Settings, string> = {
-  name: 'general', account: 'general', model: 'general', managerModel: 'general', permissionMode: 'general', extraFolders: 'general', publishUsageName: 'general', usageRepo: 'general',
+  name: 'general', account: 'general', model: 'general', managerModel: 'general', effort: 'general', managerEffort: 'general', permissionMode: 'general', extraFolders: 'general', publishUsageName: 'general', usageRepo: 'general',
   commandPatterns: 'safety', pathPatterns: 'safety',
   managerGrant: 'powers', projectToolsUnasked: 'powers', projectSettingsTools: 'powers', devShipCommand: 'powers',
   lockdownLevel: 'powers', lockdownBoard: 'powers', lockdownRemoteControl: 'powers', lockdownNetwork: 'powers', lockdownDockerNetwork: 'powers',
