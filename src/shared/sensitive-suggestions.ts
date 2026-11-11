@@ -21,6 +21,27 @@ export interface Suggestion {
 export const MERGE_NAME = 'Merging a pull request';
 export const MERGE_PATTERN = String.raw`(?<![\w.-])gh(?:\.exe)?\s+pr\s+(?:(?:-R|--repo)(?:\s+|=)\S+\s+)?merge(?![\w-])`;
 
+/**
+ * Publishing to npm (Project-Ledung#473): `npm publish`, also with npm's options before the word (`npm --tag dev
+ * publish`). `npm run publish:dev` is a script, not this.
+ */
+export const PUBLISH_PATTERN = String.raw`\bnpm(?:\s+-{1,2}[\w-]+(?:[=\s][^\s-]\S*)?)*\s+publish\b`;
+/** Options git takes before its command: `-C dir`, `-c key=value`, `--git-dir x`, `--no-pager` and the like. */
+const GIT_OPTIONS = String.raw`(?:\s+(?:-[Cc]\s+\S+|--(?:git-dir|work-tree|namespace|exec-path|config-env)\s+\S+|-{1,2}[\w-]+(?:=\S+)?))*`;
+/** A push option, with its value when written with "=". */
+const PUSH_OPTION = String.raw`(?:\s+-{1,2}[\w-]+(?:=\S+)?)*`;
+/**
+ * Pushing to main or master, or force-pushing (Project-Ledung#473): with git's own options before `push`; a force
+ * as `--force…`, a short `-f` among others (`-uf`) or a `+` refspec; and a push that names no branch (`git push`,
+ * `git push origin`, `git push -u origin HEAD`), which pushes the current one, main included. A push of a named
+ * branch other than main or master (`git push -u origin feature`) is not it.
+ */
+export const PUSH_PATTERN = String.raw`\bgit${GIT_OPTIONS}\s+push\b(?:[^|;&]*(?:\s--force\b|\s-[A-Za-z]*f[A-Za-z]*\b|\s\+\S|\bmain\b|\bmaster\b)|${PUSH_OPTION}(?:\s+[^\s|;&<>-]\S*)?${PUSH_OPTION}(?:\s+(?:HEAD|@))?${PUSH_OPTION}(?:\s+\d*[<>]\S*)*\s*(?:$|[|;&)]))`;
+
+/** The suggested patterns before Project-Ledung#473, replaced by the ones above in lists that still have them. */
+const OLD_PUBLISH_PATTERN = String.raw`\bnpm\s+publish\b`;
+const OLD_PUSH_PATTERN = String.raw`\bgit\s+(?:-[Cc]\s+\S+\s+)*push\b[^|;&]*(\s--force\b|\s-f\b|\s--force-with-lease\b|\bmain\b|\bmaster\b)`;
+
 export const SUGGESTIONS: Suggestion[] = [
   // Deploys and infrastructure.
   { name: 'Kubernetes or Helm commands', kind: 'command', pattern: String.raw`\b(kubectl|helm)\b` },
@@ -29,14 +50,10 @@ export const SUGGESTIONS: Suggestion[] = [
   // Cloud CLIs, except obviously read-only commands.
   { name: 'Cloud CLI commands (aws, az, gcloud) that are not read-only', kind: 'command', pattern: String.raw`\b(aws|az|gcloud)\b(?![^|;&]*\b(describe|list|get|show|ls|version|help)\b)` },
   // Publishing.
-  { name: 'Publishing to npm', kind: 'command', pattern: String.raw`\bnpm\s+publish\b` },
+  { name: 'Publishing to npm', kind: 'command', pattern: PUBLISH_PATTERN },
   { name: 'Pushing a container image', kind: 'command', pattern: String.raw`\b(docker|podman)\s+push\b` },
-  // Pushing to main/master, or force-pushing; also with git's -C and -c options before "push".
-  {
-    name: 'Pushing to main or master, or force-pushing',
-    kind: 'command',
-    pattern: String.raw`\bgit\s+(?:-[Cc]\s+\S+\s+)*push\b[^|;&]*(\s--force\b|\s-f\b|\s--force-with-lease\b|\bmain\b|\bmaster\b)`,
-  },
+  // Pushing to main/master (also a push naming no branch), or force-pushing; also with git's options before "push".
+  { name: 'Pushing to main or master, or force-pushing', kind: 'command', pattern: PUSH_PATTERN },
   // Merging a pull request (#208): the person's to decide wherever a project has not said otherwise.
   { name: MERGE_NAME, kind: 'command', pattern: MERGE_PATTERN },
   // Elevated commands (#213): they raise UAC on the PC's desktop, and run as administrator once allowed there.
@@ -48,15 +65,37 @@ export const SUGGESTIONS: Suggestion[] = [
   { name: 'Key and certificate files (.pem, .key, .p12, .pfx)', kind: 'path', pattern: String.raw`\.(pem|key|p12|pfx)$` },
 ];
 
+export interface LaterSuggestions {
+  key: string;
+  /** Patterns added at the end of a list that lacks them. */
+  commandPatterns: string[];
+  /** Old suggested patterns and what replaces each, in place; a list without the old one (deleted or edited) is left as it is. */
+  replaces?: Record<string, string>;
+}
+
 /**
- * Suggestions added after the first copy into existing projects, each batch copied in once more under its
- * own key (the first copy's key is 'sensitive-suggestions-added'). A batch's entry deleted later stays deleted.
+ * Suggestions added or changed after the first copy into existing projects, each batch applied once more under
+ * its own key (the first copy's key is 'sensitive-suggestions-added'). A batch's entry deleted later stays deleted.
  */
-export const LATER_SUGGESTIONS: { key: string; commandPatterns: string[] }[] = [
+export const LATER_SUGGESTIONS: LaterSuggestions[] = [
   { key: 'sensitive-suggestions-elevation-added', commandPatterns: [SUDO_PATTERN, RUNAS_PATTERN] },
   // Merges reach projects made before #208 too, once. Taking this one line out leaves them as they are.
   { key: 'sensitive-suggestions-merge-added', commandPatterns: [MERGE_PATTERN] },
+  // The wider push and publish patterns (Project-Ledung#473) replace the old ones where a list still has them unchanged.
+  { key: 'sensitive-suggestions-push-publish-widened', commandPatterns: [], replaces: { [OLD_PUSH_PATTERN]: PUSH_PATTERN, [OLD_PUBLISH_PATTERN]: PUBLISH_PATTERN } },
 ];
+
+/** A list's command patterns with a later batch applied: old ones replaced in place, missing ones added at the end. */
+export function withLaterBatch(commandPatterns: string[], batch: LaterSuggestions): string[] {
+  const replaced: string[] = [];
+  for (const p of commandPatterns) {
+    // Own keys only: a user's pattern may be any text, "constructor" included.
+    const by = batch.replaces && Object.hasOwn(batch.replaces, p) ? batch.replaces[p] : undefined;
+    if (by === undefined) replaced.push(p);
+    else if (!commandPatterns.includes(by) && !replaced.includes(by)) replaced.push(by);
+  }
+  return [...replaced, ...batch.commandPatterns.filter((p) => !replaced.includes(p))];
+}
 
 /** The plain-words name of a suggested pattern, if this is exactly one. */
 export function suggestionName(pattern: string, kind: Suggestion['kind']): string | undefined {

@@ -47,10 +47,17 @@ export function matchSensitive(
   if ((toolName === 'Bash' || toolName === 'PowerShell') && typeof input.command === 'string') {
     // PowerShell quotes and escapes differently from a POSIX shell, so its commands are matched whole, line
     // by line: more asked than needed rather than a gap (#213: `Start-Process … -Verb RunAs` comes this way).
-    const lines = toolName === 'Bash' ? runnableLines(input.command) : input.command.split(/\r?\n/);
+    const read = toolName === 'Bash' ? readBash(input.command) : readPowerShell(input.command);
     for (const p of rules.commandPatterns ?? []) {
       const re = new RegExp(p, 'i');
-      if (lines.some((l) => re.test(l))) return { rule: suggestionName(p, 'command') ?? `command matches /${p}/` };
+      if (read.lines.some((l) => re.test(l))) return { rule: suggestionName(p, 'command') ?? `command matches /${p}/` };
+    }
+    // The files a command names meet the path patterns too, as a file tool's path does (Project-Ledung#473):
+    // a shell reads a file as well as the Read tool.
+    for (const file of read.paths) {
+      for (const p of rules.pathPatterns ?? []) {
+        if (new RegExp(p, 'i').test(file)) return { rule: suggestionName(p, 'path') ?? `path matches /${p}/` };
+      }
     }
   }
   for (const file of filePaths(input)) {
@@ -128,19 +135,75 @@ const RUN_OPTION = /^(?:-[a-z]*c|-command|--command|\/c|-e|--eval)$/i;
 const RUNS_ARGUMENTS = /^(?:.*[\\/])?(?:ssh|eval|watch|xargs)(?:\.exe)?$/i;
 
 /**
- * The lines of a command that run, with text that is only read (heredoc bodies, quoted strings, comments)
- * blanked out. On anything it can't follow (an unclosed quote or heredoc) it gives back the whole command.
+ * The lines of a command that run, with text that is only read (heredoc bodies, quoted prose, comments)
+ * blanked out and a quoted single word without its quotes. On anything it can't follow (an unclosed quote or
+ * heredoc) it gives back the whole command.
  */
 export function runnableLines(command: string): string[] {
   try {
-    return blankUnrun(command).replace(/\\\r?\n/g, ' ').split(/\r?\n/);
+    return blankUnrun(command).text.replace(/\\\r?\n/g, ' ').split(/\r?\n/);
   } catch {
     return command.split(/\r?\n/);
   }
 }
 
-function blankUnrun(src: string): string {
+/** What a command is matched by: the lines it runs, and the words in it that may name a file. */
+interface ReadCommand { lines: string[]; paths: string[] }
+
+/**
+ * A Bash command as the patterns see it (Project-Ledung#473): its runnable lines, each also with its backslash
+ * escapes taken out as the shell takes them out, and the words that may name a file.
+ */
+function readBash(command: string): ReadCommand {
+  let text = command;
+  let quotedPaths: string[] = [];
+  try {
+    ({ text, quotedPaths } = blankUnrun(command));
+  } catch {
+    // Matched whole, as runnableLines does.
+  }
+  const lines = text.replace(/\\\r?\n/g, ' ').split(/\r?\n/).flatMap((l) => (/\\./.test(l) ? [l, l.replace(/\\(.)/g, '$1')] : [l]));
+  return { lines, paths: [...commandWords(lines), ...quotedPaths] };
+}
+
+/**
+ * A PowerShell command: matched whole, line by line (#213), each line also without its quotes and backtick
+ * escapes, as PowerShell runs it (Project-Ledung#473). Its quoted strings with a slash in them may name a file.
+ */
+function readPowerShell(command: string): ReadCommand {
+  const raw = command.split(/\r?\n/);
+  const lines = raw.flatMap((l) => (/['"`]/.test(l) ? [l, l.replace(/['"`]/g, '')] : [l]));
+  const quoted = [...command.matchAll(/'([^'\n]*)'|"([^"\n]*)"/g)].map((m) => m[1] ?? m[2] ?? '').filter((q) => /[\\/]/.test(q));
+  return { lines, paths: [...commandWords(lines), ...quoted] };
+}
+
+/**
+ * The words of command lines that may name a file: split where a shell splits words, quotes taken off, plus the
+ * part after `--option=`, `-Option:` and curl's `@`. Every word is a candidate, options and the program too:
+ * asked more than needed rather than a file read unasked.
+ */
+function commandWords(lines: string[]): string[] {
+  const words = lines.flatMap((l) => l.split(/[\s;&|()<>`,]+/)).map((w) => w.replace(/^['"]+|['"]+$/g, '')).filter(Boolean);
+  return words.flatMap((w) => {
+    const forms = [w];
+    if (w.includes('=')) forms.push(w.slice(w.indexOf('=') + 1));
+    if (/^-[\w-]+:./.test(w)) forms.push(w.slice(w.indexOf(':') + 1));
+    if (w.startsWith('@')) forms.push(w.slice(1));
+    return forms;
+  });
+}
+
+/**
+ * A quoted word with nothing in it a shell would split on or run: matched without its quotes, as the shell runs
+ * it, so `"git" push` is a git push (Project-Ledung#473). Quoted text with spaces or shell characters in it is
+ * prose or a message, and stays blanked.
+ */
+const PLAIN_WORD = /^[^\s;&|()<>`]*$/;
+
+function blankUnrun(src: string): { text: string; quotedPaths: string[] } {
   let out = '';
+  // Blanked quoted text with a slash in it: it may still be a file the command reads (a path with spaces).
+  const quotedPaths: string[] = [];
   let i = 0;
   // Words of the current simple command so far, to tell whether a quote or heredoc is run.
   let words: string[] = [];
@@ -202,8 +265,17 @@ function blankUnrun(src: string): string {
       const end = c === "'" ? src.indexOf("'", i + 1) : closingDouble(src, i + 1);
       if (end < 0) throw new Error('unclosed quote');
       const body = src.slice(i + 1, end);
-      out += c + (quoteRuns(body) ? body : c === '"' ? keepSubstitutions(body) : ' '.repeat(body.length)) + c;
-      word += 'Q';
+      // The word as the shell has it, so a quoted program (`"bash" -c '…'`) is still recognised.
+      const value = c === '"' ? body.replace(/\\([\\"$`])/g, '$1') : body;
+      if (quoteRuns(body)) out += c + body + c;
+      else if (PLAIN_WORD.test(value)) out += value;
+      else {
+        // Blanked to an empty pair, so an option's quoted value (`git -C "my dir" push`) still reads as one word.
+        const kept = c === '"' ? keepSubstitutions(body) : '';
+        out += c + (kept.trim() ? kept : '') + c;
+        if (/[\\/]/.test(value)) quotedPaths.push(value);
+      }
+      word += value;
       i = end + 1;
       continue;
     }
@@ -214,7 +286,7 @@ function blankUnrun(src: string): string {
     i++;
   }
   if (pendingHeredocs.length) throw new Error('unclosed heredoc');
-  return out;
+  return { text: out, quotedPaths };
 }
 
 /** The index of the `"` that closes a double-quoted string starting at `from`, -1 if none. */
