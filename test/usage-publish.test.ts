@@ -237,16 +237,23 @@ test('the account fingerprint is keyed with the usage key: stable across a resta
   const b = setup({ keyDir: a.keyDir, github });
   b.store.addUsage(record(1, b.clock.now - 60_000, {}));
   await b.publisher.configure({ enabled: true, repo: REPO });
+  assert.match(fingerprintOf(github) ?? '', /^[0-9a-f]{64}$/);
   assert.equal(fingerprintOf(github), first, 'the same after a restart');
   // Another computer with the person's key (linked) agrees; one with a key of its own does not.
   const linked = setup({ linkedKey: a.publisher.key(), github: fakeGitHub({ login: 'alice' }) });
   linked.store.addUsage(record(1, linked.clock.now - 60_000, {}));
   await linked.publisher.configure({ enabled: true, repo: REPO });
+  assert.match(fingerprintOf(linked.github) ?? '', /^[0-9a-f]{64}$/);
   assert.equal(fingerprintOf(linked.github), first, 'a computer sharing the key shows the account as the same card');
   const own = setup();
   own.store.addUsage(record(1, own.clock.now - 60_000, {}));
   await own.publisher.configure({ enabled: true, repo: REPO });
+  assert.match(fingerprintOf(own.github) ?? '', /^[0-9a-f]{64}$/, 'the other computer publishes a fingerprint too');
   assert.notEqual(fingerprintOf(own.github), first, 'a computer with another key does not');
+  // The key itself never goes into the published file: it is in the key file, and nowhere in the file's text.
+  const key = a.publisher.key()!;
+  assert.equal(fs.readFileSync(keyFile, 'utf8'), key);
+  assert.ok(!JSON.stringify(a.github.fileOn([...a.github.refs.keys()][0]!)).includes(key), 'the usage key is not in the file');
   assert.ok(a.logs.includes('EXERCISED #480 usage published with keyed account fingerprints'));
 });
 
