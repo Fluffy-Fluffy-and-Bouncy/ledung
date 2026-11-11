@@ -12,6 +12,15 @@ export interface Suggestion {
   pattern: string;
 }
 
+/**
+ * Merging a pull request with GitHub's CLI (issue #208; Martin, 2026-11-10): `gh pr merge`, as a program or a path
+ * to one (`gh.exe`), also with `pr`'s own -R/--repo standing before `merge`. Only the merge itself: `gh pr view`,
+ * `gh pr checks` and a `--search "merge"` are not it. Away mode and a merge the person's answer named
+ * (src/sessions/away.ts, mergeAnswered) still let their merges through; they act on calls this holds.
+ */
+export const MERGE_NAME = 'Merging a pull request';
+export const MERGE_PATTERN = String.raw`(?<![\w.-])gh(?:\.exe)?\s+pr\s+(?:(?:-R|--repo)(?:\s+|=)\S+\s+)?merge(?![\w-])`;
+
 export const SUGGESTIONS: Suggestion[] = [
   // Deploys and infrastructure.
   { name: 'Kubernetes or Helm commands', kind: 'command', pattern: String.raw`\b(kubectl|helm)\b` },
@@ -28,6 +37,8 @@ export const SUGGESTIONS: Suggestion[] = [
     kind: 'command',
     pattern: String.raw`\bgit\s+(?:-[Cc]\s+\S+\s+)*push\b[^|;&]*(\s--force\b|\s-f\b|\s--force-with-lease\b|\bmain\b|\bmaster\b)`,
   },
+  // Merging a pull request (#208): the person's to decide wherever a project has not said otherwise.
+  { name: MERGE_NAME, kind: 'command', pattern: MERGE_PATTERN },
   // Elevated commands (#213): they raise UAC on the PC's desktop, and run as administrator once allowed there.
   { name: 'Elevated commands with gsudo or sudo', kind: 'command', pattern: SUDO_PATTERN },
   { name: 'Starting a program as administrator (-Verb RunAs, runas)', kind: 'command', pattern: RUNAS_PATTERN },
@@ -43,6 +54,8 @@ export const SUGGESTIONS: Suggestion[] = [
  */
 export const LATER_SUGGESTIONS: { key: string; commandPatterns: string[] }[] = [
   { key: 'sensitive-suggestions-elevation-added', commandPatterns: [SUDO_PATTERN, RUNAS_PATTERN] },
+  // Merges reach projects made before #208 too, once. Taking this one line out leaves them as they are.
+  { key: 'sensitive-suggestions-merge-added', commandPatterns: [MERGE_PATTERN] },
 ];
 
 /** The plain-words name of a suggested pattern, if this is exactly one. */

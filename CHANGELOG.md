@@ -10,6 +10,8 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-10
+- Waiting for you, the chat and the file viewer: a long command or table scrolled sideways (a refused call's command, a question's code block) no longer jumps back to the left whenever something else on the page updates, and images in a Markdown file are no longer loaded again each time the page updates. (#200)
+- Sensitive list: **Merging a pull request** (`gh pr merge`) is now one of the suggested entries, so a new project asks you before a session merges, with no setup step. Existing projects and the chats' list get the entry once; delete it in the project's settings if you don't want it, and it stays deleted. Away mode's merges and a merge you already said yes to go through as before. (#208)
 - Effort level: a session's reasoning effort (low, medium, high, xhigh, max) can be set wherever its model is. Managers: `start_session` takes `effort`, and `add_project`, `create_project` and `set_project_settings` a project's default. The page: project settings have Effort and Effort for its manager beside the models, New chat has Effort, and the sidebar's right-click menu has Effort ▸ beside Model ▸ (from its next reply, kept when resumed). A session's header shows the effort it runs with; a level its model lacks doesn't stop the start, and its history says which level it got. Empty everywhere: Claude Code's own default, as before. (#202)
 
 ## 2026-11-09
