@@ -18,6 +18,9 @@ import { insertByTime, lastOwnMessage, shownWoven, wovenQuestions } from '../con
 import { SENT_IMAGE_PREFIX, sentImageUrl } from '../chatImages.ts';
 import { NEAR_TOP, stepUp, tailStart, windowStart } from '../messageWindow.ts';
 
+/** The drawn part's first key when it starts at the very first item, whatever is loaded above later. */
+const FROM_TOP = '\u0000top';
+
 type Item =
   | { key: string; at: number; type: 'user'; text: string; byLedung: boolean; context: string | null; images: string[] }
   | { key: string; at: number; type: 'question'; questionId: number }
@@ -199,20 +202,23 @@ export const MessageList = memo(function MessageList(props: {
   const mustShow = focus !== null
     ? items.findIndex((it) => it.type === 'question' && it.questionId === focus)
     : focusMessage !== null ? items.findIndex((it) => it.type === 'assistant' && it.anchor === focusMessage) : -1;
-  const keyed = firstKey === null ? undefined : indexOfKey.get(firstKey);
+  // FROM_TOP: drawn from the very first item, so messages "Load earlier" adds above it are drawn too (self-check 2).
+  const keyed = firstKey === null ? undefined : firstKey === FROM_TOP ? 0 : indexOfKey.get(firstKey);
   const start = windowStart(keyed ?? tailStart(items.length), items.length, mustShow);
+  const keyAt = (i: number) => (i === 0 ? FROM_TOP : items[i]!.key);
   const ownAt = own ? items.indexOf(own) : -1;
   /** Where the reader was before a batch above was drawn, so drawing it doesn't move what they see. */
   const before = useRef<{ top: number; height: number } | null>(null);
-  const drawEarlier = () => {
-    const el = scroller.current;
-    if (!el || start === 0) return;
-    before.current = { top: el.scrollTop, height: el.scrollHeight };
-    setFirstKey(items[stepUp(start)]!.key);
-  };
   /** The pinned message's "show it whole" from above the drawn part: draw down from it first, then scroll to it. */
   const revealOwn = useRef(false);
+  /** Until then the drawn part neither grows nor is let go: a smooth scroll to the pinned message is under way. */
   const holdUntil = useRef(0);
+  const drawEarlier = () => {
+    const el = scroller.current;
+    if (!el || start === 0 || Date.now() < holdUntil.current) return;
+    before.current = { top: el.scrollTop, height: el.scrollHeight };
+    setFirstKey(keyAt(stepUp(start)));
+  };
   useLayoutEffect(() => {
     const el = scroller.current, was = before.current;
     before.current = null;
@@ -286,6 +292,9 @@ export const MessageList = memo(function MessageList(props: {
         // Back at the end: the earlier batches are let go; near the top: the next batch up is drawn.
         // Not while it scrolls up to the pinned message: it starts at the end.
         if (stick.current && firstKey !== null && Date.now() > holdUntil.current) setFirstKey(null);
+        // Off the end: the drawn part stays put, so a new message at the bottom doesn't let go of one at the top and
+        // move what the reader sees (self-check 1: Safari on a phone doesn't keep the place itself).
+        else if (!stick.current && firstKey === null) setFirstKey(keyAt(start));
         else if (!stick.current && el.scrollTop < NEAR_TOP) drawEarlier();
       }}
     >
@@ -301,7 +310,7 @@ export const MessageList = memo(function MessageList(props: {
             revealOwn.current = true;
             holdUntil.current = Date.now() + 2000;
             before.current = null;
-            setFirstKey(items[windowStart(start, items.length, ownAt)]!.key);
+            setFirstKey(keyAt(windowStart(start, items.length, ownAt)));
           }} />
         </div>
       )}

@@ -906,6 +906,9 @@ const Sidebar = memo(function Sidebar(props: {
 
   // The status dot, or with it switched off the status as the row's tooltip (#151).
   const [dotShown] = useStatusDot();
+  // The memoized sidebar no longer redraws on every message; a budget past its reset still drops out within a minute
+  // (self-check 4 of #233).
+  const minute = useNow(60_000);
   // The Compact sidebar step (#153): which rows a card keeps; what it hides goes in its tooltip.
   const [compact] = useCompactSidebar();
   const shows = compactRows(compact);
@@ -981,7 +984,7 @@ const Sidebar = memo(function Sidebar(props: {
   return (
     <aside className="sidebar">
       <LimitMeters account={props.stripAccount} limits={props.limits} stops={props.usageStops} run={props.run} />
-      {githubBudgetsShown(props.github, Date.now()).map((b) => (
+      {githubBudgetsShown(props.github, minute).map((b) => (
         <div key={`${b.container ?? ''} ${b.host}`} className={`github-budget muted ${githubBudgetClass(b)}`} title="What is left of the GitHub budget Ledung's pull request checks use (the worst of GitHub's readings). Under 20 % left they run every 10 minutes, under 5 % not until the reset.">
           {githubBudgetLine(b, (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}
         </div>
