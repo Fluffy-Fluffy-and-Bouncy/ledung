@@ -76,7 +76,9 @@ function zip(entries: { name: string; data: Buffer; unpacked?: number }[]): Buff
 
 const offer = (name: string, kind: string, size: number) => ({ id: crypto.randomBytes(8).toString('hex'), name, kind, size, sha: 'a'.repeat(64) });
 
-test('Project-Ledung#479: a streamed offer above the cap per file or per message is refused before anything is recorded or fetched', () => {
+test('Project-Ledung#479: a streamed offer above the cap per file or per message is refused before anything is recorded or fetched', (t) => {
+  const logged: string[] = [];
+  t.mock.method(console, 'log', (line: string) => void logged.push(String(line)));
   const { files } = store({ maxFileBytes: 10 * MB, maxMessageBytes: 15 * MB });
   const refused = (offers: unknown[]) => {
     try {
@@ -96,9 +98,14 @@ test('Project-Ledung#479: a streamed offer above the cap per file or per message
   assert.equal(all?.status, 413);
   assert.match(all!.message, /in all; this computer takes up to 15(\.0)? MB in one message/);
   assert.deepEqual(files.remote(), [], 'nothing recorded, so nothing is fetched');
+  assert.deepEqual(logged.map((l) => l.split(': ').slice(0, 3).join(': ')), [
+    'Linked computers: linked file refused from link-a: talk.wav',
+    'Linked computers: linked file refused from link-a: 2 files',
+  ], 'each refusal logged once');
   // The positive branch: at the caps exactly, the message is taken and its files wait to be fetched.
   const taken = files.expect('link-a', 'mgr-1', [offer('a.wav', 'wav', 10 * MB), offer('b.zip', 'zip', 5 * MB)], 0);
   assert.equal(taken.length, 2);
+  assert.equal(logged.length, 2, 'a message taken logs no refusal');
   assert.equal(files.remote().length, 2);
 });
 
@@ -160,7 +167,7 @@ test('Project-Ledung#479: a zip is checked when it arrives; a broken, too large 
   // At the limit exactly, entries and unpacked size both pass.
   const atLimit = await fetchZip(zip(Array.from({ length: MAX_ZIP_ENTRIES }, (_, i) => ({ name: `${i}`, data: Buffer.alloc(0) }))));
   assert.equal(atLimit.result.ok, true, String(atLimit.problem));
-  // Four entries saying 4 GiB less a byte each: just under 16 GiB unpacked, so taken.
+  // Four entries saying 4 GiB less two bytes each: just under 16 GiB unpacked, so taken.
   const justUnder = await fetchZip(zip(Array.from({ length: 4 }, (_, i) => ({ name: `${i}.bin`, data: Buffer.from('x'), unpacked: 0xffffffff - 1 }))));
   assert.equal(justUnder.result.ok, true, String(justUnder.problem));
   // The good ones were never logged as refused.
