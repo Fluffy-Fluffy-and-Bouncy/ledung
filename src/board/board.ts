@@ -60,6 +60,12 @@ export interface BoardContext {
   setTimer?: (fn: () => void, ms: number) => () => void;
 }
 
+/** A board's status as compared for the page: without the poll times, which move on every poll (issue #232). */
+function shownKey(status: BoardRepoStatus): string {
+  const { lastPollAt: _last, nextPollAt: _next, ...rest } = status;
+  return JSON.stringify(rest);
+}
+
 /** Inbox items from the board: "board:<thread>". */
 export const BOARD_SOURCE = 'board';
 const HOUR = 3600_000;
@@ -96,6 +102,8 @@ export class Board {
   private failures = 0;
   private cancelTimer: (() => void) | null = null;
   private stopped = true;
+  /** The status the page was last sent, as shownKey gives it; null: none sent yet (issue #232). */
+  private shown: string | null = null;
   /** Sends and polls one at a time, so a poll never sees our own post before it is recorded as ours. */
   private chain: Promise<unknown> = Promise.resolve();
   /** Bursts: a manager's pending wake and when the burst began (decision 7). */
@@ -195,7 +203,16 @@ export class Board {
   }
 
   private publish(): void {
+    this.shown = shownKey(this.status());
     this.ctx.publish();
+  }
+
+  /**
+   * The end of a poll tells the page only what changed (issue #232): a board event per poll per page was twelve a
+   * minute with nothing new. A post stored or a file pruned in the poll has already been sent (receive, prune).
+   */
+  private publishIfChanged(): void {
+    if (shownKey(this.status()) !== this.shown) this.publish();
   }
 
   /** Who has access to this repo; lostAccess: logins of the given allowlist that no longer have it. */
@@ -288,7 +305,7 @@ export class Board {
       this.error = null;
       this.failures = 0;
       this.lastPollAt = this.now();
-      this.publish();
+      this.publishIfChanged();
       return result.nextPollMs;
     } catch (e) {
       const err = e instanceof BoardError ? e : new BoardError('unreachable', (e as Error).message);
@@ -297,7 +314,7 @@ export class Board {
       this.state = err.kind === 'signin' ? 'off' : 'error';
       this.error = err.message;
       if (err.kind === 'signin') this.identityLogin = null;
-      this.publish();
+      this.publishIfChanged();
       return Math.max(err.retryAfterMs ?? 0, backoff);
     }
   }

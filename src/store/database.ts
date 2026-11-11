@@ -711,6 +711,9 @@ const MIGRATIONS: string[] = [
   ALTER TABLE sessions ADD COLUMN requested_effort TEXT;
   ALTER TABLE sessions ADD COLUMN effort TEXT;
   `,
+  // The person's typed words in one session since a time, read on every manager tool call by the hooks that look
+  // for their word (issue #232): only user messages, so the read never walks the session's replies.
+  `CREATE INDEX messages_user_by_session ON messages(session_id, at) WHERE kind = 'user';`,
 ];
 
 export function databaseFile(dir = userDataDir()): string {
