@@ -70,8 +70,6 @@ let staleToolsExercised = false;
 let sourcesExercised = false;
 /** The EXERCISED line of issue #405, once per run. */
 let nudgesExercised = false;
-/** The EXERCISED line of issue #133, once per run. */
-let awayMergeExercised = false;
 /** The EXERCISED line of issues #143 and #144, once per run. */
 let pinnedMergeExercised = false;
 /** The EXERCISED line of issue #145, once per run. */
@@ -852,10 +850,6 @@ export class Session {
     this.keepAwayDecision(toolUseId, decision);
     this.record('event', { text: decision.reason });
     this.allowedBy.away(toolUseId, decision.reason);
-    if (!awayMergeExercised) {
-      awayMergeExercised = true;
-      exercisedLine('EXERCISED #133 an away merge allowed in the PreToolUse hook, ahead of the auto mode classifier');
-    }
     // What runs is the merge pinned to the PR read and its head (issues #143, #144), not the command as sent.
     if (!pinnedMergeExercised) {
       pinnedMergeExercised = true;

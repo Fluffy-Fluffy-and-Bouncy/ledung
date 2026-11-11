@@ -15,7 +15,6 @@ import type { ProjectConfig, WorkflowConfig } from '../config.ts';
 import { DEFAULT_FLOW, FLOW_FILE, FLOW_FOLDER, FLOW_IN_FOLDER, FLOW_TEXT_FOLDERS, FLOWS_FOLDER, linkedTexts, MANAGER_FILE, RULES_FILE, WRITABLE_FLOW_FILE, type Flow, type FlowEntry, type FlowFileWrite, type FlowProblem, type FlowView } from '../shared/flow.ts';
 import { FileError, readProjectBytes } from './files.ts';
 import { sameFolder } from '../accounts/store.ts';
-import { exercisedLine } from '../platform/exercised.ts';
 import { checkFlow, checkFlowCalls, inFolder, machinePathIn, parseFlow, personGatedFlows } from '../shared/flow-check.ts';
 import { projectWorkflow } from './workflow.ts';
 
@@ -309,8 +308,6 @@ async function refuseShared(projectFolder: string, files: readonly string[], wor
   }
 }
 
-let sharedExercised = false;
-
 /**
  * The places a project's flow may be, in the order they count: its own .ledung/workflow first, then the shared
  * workflow's folder it follows (question #1073). `workflows` are all the configured ones: a project whose folder is
@@ -320,8 +317,6 @@ export function flowPlaces(project: ProjectConfig, workflow: WorkflowConfig | un
   const places: FlowPlace[] = [];
   const shared = project.runner === 'local' ? sharedFolderOf(project.path, workflows) : undefined;
   if (project.runner === 'local' && shared) {
-    if (!sharedExercised) exercisedLine(`EXERCISED #109 project ${project.name}'s folder is workflow ${shared.name}'s, shown read-only`);
-    sharedExercised = true;
     places.push({
       kind: 'workflow', folder: path.join(project.path, ...FLOW_FOLDER.split('/')), workflow: shared.name,
       read: localReader(project.path, FLOW_FOLDER), list: localLister(project.path, FLOW_FOLDER),

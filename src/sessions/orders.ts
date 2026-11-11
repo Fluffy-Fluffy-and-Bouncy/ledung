@@ -15,7 +15,6 @@ import { CANCEL, CONFIRM, CONFIRM_ANSWERS, DROP, KEEP, inForce, picked, sourceTe
 import type { QuestionDetails } from '../shared/questions.ts';
 import type { QuestionInfo } from '../shared/protocol.ts';
 import { words as plainWords } from './away.ts';
-import { exercisedLine } from '../platform/exercised.ts';
 
 /** How far back the person's words count: two days, as for a merge or a Settings action on their word. */
 export const WORDS_WINDOW_MS = 2 * 24 * 3600 * 1000;
@@ -52,8 +51,6 @@ export interface Attested {
    */
   confirmed: boolean;
 }
-
-let exercised = false;
 
 const squash = (s: string) => s.replace(/\s+/g, ' ').trim();
 const hhmm = (ms: number) => {
@@ -334,10 +331,6 @@ export class Orders {
   take(o: OrderInfo, now = Date.now()): boolean {
     const ok = this.o.store.takeOrder(o.id, now);
     if (ok) {
-      if (!exercised) {
-        exercised = true;
-        exercisedLine('EXERCISED #105 an ordered command allowed by the order on record');
-      }
       this.changed();
     }
     return ok;
