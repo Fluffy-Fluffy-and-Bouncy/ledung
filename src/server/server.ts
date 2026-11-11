@@ -99,6 +99,34 @@ const PAIR_CODE_FORM = '<form method="get" action="/pair"><p><label>Pairing code
 const NO_PASSKEY_LOCKED = 'This device has no passkey, so it can only look from here; make changes on the computer.';
 /** Through the public name, the only changes a locked device may send (requireUnlocked). */
 const OPEN_WHILE_LOCKED = new Set(['/api/device-unlock', '/api/passkey-challenge', '/api/passkey-options', '/api/passkey', '/api/device-logout', '/api/passkey-enrol-link']);
+/**
+ * API reads that only read what Ledung already holds: its store, its memory, and files on this computer, with no
+ * process started and no network call. Every other GET under /api/ does work (GitHub, docker, claude, git, the relay)
+ * and must come from Ledung's own page (Guard.fromOwnPage, Project-Ledung#476). A route missing here is asked the
+ * page check, so a new route is checked until it is added on purpose.
+ */
+export const PLAIN_READS = new Set([
+  'GET state', 'GET devices', 'GET links', 'GET device', 'GET push', 'GET sessions/:id/messages', 'GET usage',
+  'GET sessions/:id/usage', 'GET overview', 'GET projects', 'GET accounts', 'GET browse', 'GET profiles',
+  // A project's workflow files: a read, though for a container project it goes through docker; the builder's own
+  // test has it answered for any origin (test/server-security.test.ts, "a project's flow needs the sign-in").
+  'GET projects/:id/flow',
+  'GET workflow-check', 'GET projects-folder', 'GET projects/:id/proposals/:id', 'GET projects/:id/runs', 'GET board',
+  'GET board-threads', 'GET board-thread', 'GET usage-publish', 'GET machine', 'GET sessions/:id/turns', 'GET typical-costs',
+  'GET sessions/:id/folders', 'GET questions/:id/evidence/:id', 'GET chats', 'GET sessions/:id/shell-check',
+  'GET sessions/:id/secrets', 'GET update', 'GET checkin', 'GET remote-link', 'GET relay-admin',
+  'GET sessions/:id/sent-images/:id', 'GET board-attachment',
+]);
+/** Where sign-ins are kept between restarts (Guard.useSignInStore), as hashes. */
+const SIGN_INS_KEY = 'sign-ins';
+/** Logged once, the first time a browser's old token cookie is swapped for a sign-in (Project-Ledung#476). */
+let exercised476 = false;
+
+/** An API request's route as the switch in api() names it: every second part after /api/ is an id. */
+export function apiRoute(method: string, pathname: string): string {
+  const parts = pathname.split('/').filter(Boolean).slice(1); // after "api"
+  return `${method} ${parts.map((p, i) => (i % 2 === 1 ? ':id' : p)).join('/')}`;
+}
 /** The header the page sends its live connection's key in (#104). */
 export const PAGE_KEY_HEADER = 'x-ledung-page';
 const CONTENT_TYPES: Record<string, string> = {
@@ -278,7 +306,8 @@ export class LedungServer {
       forward: (item) => this.forwardPush(item),
     }) : null;
     this.push?.seed(opts.manager.questions(), opts.store.pendingPermissions());
-    this.guard = new Guard<Device>(opts.token, opts.port, opts.lanNames ?? [], opts.lanOpen ?? false);
+    this.guard = new Guard<Device>(opts.token, opts.port, opts.lanNames ?? [], opts.lanOpen ?? false, null, opts.now ?? Date.now);
+    this.guard.useSignInStore({ get: () => opts.store.getMeta(SIGN_INS_KEY), set: (v) => opts.store.setMeta(SIGN_INS_KEY, v) });
     this.headers = {};
     this.webRoot = opts.webRoot ?? path.join(appDir(), 'web', 'dist');
     this.setPublicName(opts.publicName ?? null, opts.tunnelTls ?? null);
@@ -793,7 +822,7 @@ export class LedungServer {
       // The install token never signs in through the public name: a leaked link stays useless from outside.
       if (remote) throw new HttpError(403, 'Sign-in links work only on the computer Ledung runs on. Pair this device from Settings there.');
       if (!this.guard.tokenMatches(url.searchParams.get('token'))) throw new HttpError(403, 'This sign-in link is not valid.');
-      res.writeHead(302, { ...this.headersFor(res), 'Set-Cookie': this.guard.cookieHeader(), Location: '/' });
+      res.writeHead(302, { ...this.headersFor(res), 'Set-Cookie': this.guard.signInCookie(), Location: '/' });
       res.end();
       return;
     }
@@ -818,6 +847,9 @@ export class LedungServer {
     if (url.pathname.startsWith('/api/')) {
       if (!this.guard.mayUse(req)) throw new HttpError(401, remote ? NOT_PAIRED : 'Not signed in. Open Ledung through the link it prints when it starts.');
       if (req.method !== 'GET' && !this.guard.originAllowed(req)) throw new HttpError(403, 'Requests must come from Ledung\'s own page.');
+      if (req.method === 'GET' && !PLAIN_READS.has(apiRoute('GET', url.pathname)) && !this.guard.fromOwnPage(req)) {
+        throw new HttpError(403, 'Requests must come from Ledung\'s own page.');
+      }
       if (remote && req.method !== 'GET') await this.requireUnlocked(req, url);
       // An image is the one API answer that isn't JSON; errors still are.
       const image = req.method === 'GET' ? /^\/api\/sessions\/([^/]+)\/image$/.exec(url.pathname) : null;
@@ -840,6 +872,14 @@ export class LedungServer {
     }
 
     if (req.method !== 'GET') throw new HttpError(405, 'Method not allowed.');
+    // A page load still carrying the cookie that was the install token gets a sign-in in its place (Project-Ledung#476).
+    if (this.guard.oldTokenCookie(req)) {
+      res.setHeader('Set-Cookie', this.guard.signInCookie());
+      if (!exercised476) {
+        exercised476 = true;
+        exercisedLine('EXERCISED #476 an old token cookie was swapped for a sign-in on a page load');
+      }
+    }
     this.serveStatic(url.pathname, res, this.guard.mayUse(req), remote);
   }
 
@@ -1378,7 +1418,7 @@ export class LedungServer {
   private async api(method: string, url: URL, req: IncomingMessage): Promise<unknown> {
     const { manager, store } = this.opts;
     const parts = url.pathname.split('/').filter(Boolean).slice(1); // after "api"
-    const route = `${method} ${parts.map((p, i) => (i % 2 === 1 ? ':id' : p)).join('/')}`;
+    const route = apiRoute(method, url.pathname);
     const id = parts[1] ?? '';
 
     switch (route) {
