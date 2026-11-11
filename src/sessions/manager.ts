@@ -3105,7 +3105,7 @@ ${firstMessage}`);
       // Both checks below on the file's real path, so a link inside the folder can't lead around them (Project-Ledung#474).
       const real = realTarget(root, link);
       // Ledung's data folder stays shut to a project's session too, as it is to a chat's, wherever the project is.
-      if (real && info.project !== CHATS && within(userDataDir(), real)) {
+      if (real && info.project !== CHATS && nativeWithin(userDataDir(), real)) {
         if (!exercised474) {
           exercised474 = true;
           exercisedLine("EXERCISED #474 a file in Ledung's data folder refused to a project's session");
@@ -3113,7 +3113,7 @@ ${firstMessage}`);
         throw new UserError("That file is in Ledung's data folder, where its settings and sign-ins are kept; it is not shown.");
       }
       // Through the Files pane, a locked project's folder stays shut as in its tree (issue #225).
-      if (folder && real && this.lockedFoldersBesides(info.project).some((f) => within(f, real))) {
+      if (folder && real && this.lockedFoldersBesides(info.project).some((f) => nativeWithin(f, real))) {
         throw new UserError("That file is in a locked project's folder.");
       }
       // The session's own folder when it has one (decision of 2026-10-14): links in its chat are relative to it.
@@ -3484,10 +3484,23 @@ function realTarget(root: string, link: string): string | null {
     // Not encoded; used as is, as readProjectFile does.
   }
   try {
-    return fs.realpathSync.native(path.resolve(root, wanted));
+    // From the root's real path by the same call readProjectFile uses, so ".." in the link means the same folder to both.
+    return fs.realpathSync.native(path.resolve(fs.realpathSync(root), wanted));
   } catch {
     return null;
   }
+}
+
+/** Is the real path `real` the folder `folder` or inside it? Native real paths on both sides, as the tree compares. */
+function nativeWithin(folder: string, real: string): boolean {
+  let at: string;
+  try {
+    at = fs.realpathSync.native(folder);
+  } catch {
+    at = path.resolve(folder);
+  }
+  const rel = path.relative(at, real);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
 /** The permissions.allow rules in a profile's inline settings, for Settings (question #708). */

@@ -872,28 +872,50 @@ test("Project-Ledung#474: a project's Files pane and viewer keep Ledung's data f
   fs.symlinkSync(data, path.join(whole, 'notes', 'data-link'), 'junction');
   fs.symlinkSync(locked, path.join(whole, 'notes', 'locked-link'), 'junction');
   fs.symlinkSync(outside, path.join(whole, 'notes', 'out-link'), 'junction');
+  // The same project reached through a link to its folder, as a project under macOS's /tmp or /var is, one level
+  // deeper than the folder itself: "../user" climbs out of the link's real folder, not out of the path as written.
+  const via = path.join(top, 'deep', 'via');
+  fs.mkdirSync(path.dirname(via));
+  fs.symlinkSync(whole, via, 'junction');
   const before = process.env.LEDUNG_DATA_DIR;
-  const manager = refuseRealSignInStores(new SessionManager(parseConfig({
-    projects: [
-      { name: 'user', runner: 'local', path: whole },
-      { name: 'locked', runner: 'local', path: locked, lockdown: { level: 'A' } },
-    ],
-  }), new Store(openDatabase(':memory:')), () => {}));
+  const made: SessionManager[] = [];
+  const ledung = (lock: boolean) => {
+    const m = refuseRealSignInStores(new SessionManager(parseConfig({
+      projects: [
+        { name: 'user', runner: 'local', path: whole },
+        { name: 'via', runner: 'local', path: via },
+        { name: 'locked', runner: 'local', path: locked, ...(lock ? { lockdown: { level: 'A' } } : {}) },
+      ],
+    }), new Store(openDatabase(':memory:')), () => {}));
+    made.push(m);
+    const store = (m as unknown as { store: Store }).store;
+    store.createSession({ id: 's', project: 'user', runner: 'local', title: 't', parentId: null, permissionMode: 'default', role: 'session' });
+    store.createSession({ id: 'v', project: 'via', runner: 'local', title: 'v', parentId: null, permissionMode: 'default', role: 'session' });
+    return m;
+  };
   t.after(() => {
-    manager.detachAll();
+    for (const m of made) m.detachAll();
     if (before === undefined) delete process.env.LEDUNG_DATA_DIR;
     else process.env.LEDUNG_DATA_DIR = before;
     removeTemp(top);
   });
-  const store = (manager as unknown as { store: Store }).store;
-  store.createSession({ id: 's', project: 'user', runner: 'local', title: 't', parentId: null, permissionMode: 'default', role: 'session' });
-  const names = async (rel: string) => (await manager.listFolder('s', 'session', rel)).entries.map((e) => e.name);
 
-  // The premise: with Ledung's data folder elsewhere, the same probes find the folder and read its file.
+  // The premise: with nothing locked and Ledung's data folder elsewhere, the same probes find the folders, the links
+  // and their files, so each refusal below is the rule and not a probe that finds nothing.
   process.env.LEDUNG_DATA_DIR = path.join(top, 'elsewhere');
-  assert.ok((await names('')).includes('ledung-data'), 'listed while it is not the data folder');
-  assert.equal((await manager.readFile('s', 'ledung-data/auth-token', 'session')).content, 'secret');
-  assert.equal((await manager.readFile('s', 'notes/data-link/auth-token', 'session')).content, 'secret', 'through the link');
+  const open = ledung(false);
+  const openNames = async (rel: string) => (await open.listFolder('s', 'session', rel)).entries.map((e) => e.name);
+  assert.ok((await openNames('')).includes('ledung-data'), 'listed while it is not the data folder');
+  const openNotes = await openNames('notes');
+  assert.ok(openNotes.includes('data-link') && openNotes.includes('locked-link'), openNotes.join(', '));
+  assert.ok(!openNotes.includes('out-link'), 'a link out of the project is never listed');
+  assert.equal((await open.readFile('s', 'ledung-data/auth-token', 'session')).content, 'secret');
+  assert.equal((await open.readFile('s', 'notes/data-link/auth-token', 'session')).content, 'secret', 'through the link');
+  assert.equal((await open.readFile('s', 'notes/locked-link/secret.md', 'session')).content, 'locked', 'through the link, while not locked');
+  assert.equal((await open.readFile('v', '../user/ledung-data/auth-token', 'session')).content, 'secret', 'from the project reached through a link');
+
+  const manager = ledung(true);
+  const names = async (rel: string) => (await manager.listFolder('s', 'session', rel)).entries.map((e) => e.name);
 
   // The data folder inside the project: refused to the tree and the viewer, through the pane and from a chat link.
   process.env.LEDUNG_DATA_DIR = data;
@@ -904,6 +926,10 @@ test("Project-Ledung#474: a project's Files pane and viewer keep Ledung's data f
   await assert.rejects(manager.readFile('s', 'ledung-data/auth-token'), /Ledung's data folder/, 'a link in the chat');
   await assert.rejects(manager.readFile('s', 'ledung-data%2Fauth-token#x'), /Ledung's data folder/, 'encoded, with a fragment');
   await assert.rejects(manager.readFile('s', path.join(data, 'auth-token')), /Ledung's data folder/, 'an absolute path');
+  // A project whose folder is reached through a link, with ".." in the path: the same folder, the same answer.
+  await assert.rejects(manager.readFile('v', '../user/ledung-data/auth-token', 'session'), /Ledung's data folder/);
+  await assert.rejects(manager.readFile('v', '../user/ledung-data/auth-token'), /Ledung's data folder/);
+  await assert.rejects(manager.listFolder('v', 'session', 'ledung-data'), /settings and sign-ins/);
 
   // Links inside the project: into the data folder, a locked project's folder, or out of the project.
   const notes = await names('notes');
