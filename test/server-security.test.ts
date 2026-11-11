@@ -3011,13 +3011,18 @@ test('hello carries recent and named archived sessions, counts the older ones, a
   mk('arch229-old1', Date.now() - 3 * day);
   mk('arch229-old2', Date.now() - 4 * day);
   mk('arch229-asked', Date.now() - 5 * day);
+  mk('arch229-ordered', Date.now() - 6 * day);
   const q = paneStore.createQuestion({ sessionId: 'arch229-asked', question: 'still open?', options: null, addressedTo: 'user' });
+  // An open order has no time limit on the page, and its card names the session it went to.
+  const order = paneStore.addOrder({ managerId: 'm1', sessionId: 'arch229-ordered', command: 'npm test', match: 'exact', until: 'done',
+    source: { kind: 'typed', messageId: 1 }, words: 'run the tests', wordsAt: Date.now(), createdAt: Date.now(), awaySince: null }, 'open');
   try {
     for (const hello of [JSON.parse((await request({ path: '/api/state', headers: { cookie: COOKIE } })).body), await helloOf({ cookie: COOKIE, origin: ORIGIN })]) {
       const ids = (hello.sessions as { id: string }[]).map((s) => s.id);
       assert.ok(ids.includes('s1'), 'a session not archived');
       assert.ok(ids.includes('arch229-recent'), 'archived a minute ago');
       assert.ok(ids.includes('arch229-asked'), 'named by an open question');
+      assert.ok(ids.includes('arch229-ordered'), 'named by an open order');
       assert.ok(!ids.includes('arch229-old1') && !ids.includes('arch229-old2'), 'archived days ago');
       assert.equal((hello.olderArchived as Record<string, number>)['gone-229'], 2);
     }
@@ -3025,9 +3030,10 @@ test('hello carries recent and named archived sessions, counts the older ones, a
     const all = await request({ path: '/api/archived-sessions', headers: { cookie: COOKIE } });
     assert.equal(all.status, 200);
     const listed = JSON.parse(all.body) as { id: string; archivedAt: number | null }[];
-    assert.deepEqual(listed.filter((s) => s.id.startsWith('arch229-')).map((s) => s.id).sort(), ['arch229-asked', 'arch229-old1', 'arch229-old2', 'arch229-recent']);
+    assert.deepEqual(listed.filter((s) => s.id.startsWith('arch229-')).map((s) => s.id).sort(), ['arch229-asked', 'arch229-old1', 'arch229-old2', 'arch229-ordered', 'arch229-recent']);
     assert.ok(listed.every((s) => s.archivedAt), 'archived ones only');
   } finally {
     paneStore.withdrawQuestion(q.id, 'test');
+    paneStore.setOrderStatus(order.id, 'dropped', 'test', Date.now(), ['open']);
   }
 });

@@ -679,8 +679,14 @@ export class LedungServer {
     const { manager, store } = this.opts;
     const permissions = store.pendingPermissions();
     const questions = manager.questions();
-    // Not every session ever (issue #229): the archived ones come when the person opens an Archived list.
-    const named = [...permissions.map((p) => p.sessionId), ...questions.flatMap((q) => [q.sessionId, q.addressedTo, q.answeredBy ?? ''])];
+    const orders = manager.orders.list();
+    // Not every session ever (issue #229): the archived ones come when the person opens an Archived list. Those the
+    // prompts, questions and orders below name are kept, so their cards still show who.
+    const named = [
+      ...permissions.map((p) => p.sessionId),
+      ...questions.flatMap((q) => [q.sessionId, q.addressedTo, q.answeredBy ?? '']),
+      ...orders.flatMap((o) => [o.sessionId, o.managerId]),
+    ];
     const { sessions, olderArchived } = helloSessions(manager.sessions(), named, Date.now());
     if (!exercised229 && Object.keys(olderArchived).length) {
       exercised229 = true;
@@ -702,7 +708,7 @@ export class LedungServer {
       usageStops: manager.usageStopStates(),
       macros: manager.macros(),
       away: manager.away.current(),
-      orders: manager.orders.list(),
+      orders,
       profiles: manager.profileNames(),
       board: manager.boardStatus(),
       github: manager.githubBudget(),
