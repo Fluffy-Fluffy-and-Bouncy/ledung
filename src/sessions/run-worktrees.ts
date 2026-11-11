@@ -89,7 +89,8 @@ export function dockerWorktreeHost(project: DockerProjectConfig, shell: (command
     // The container's null device: it runs Linux, whatever this computer runs.
     git: (args, cwd) => exec('cd "$1" && shift && git "$@"', [cwd, ...RUN_GIT_HARDENING('/dev/null'), ...args]),
     exclude: async (line) => {
-      await exec('f=$(git -c core.fsmonitor=false -c core.hooksPath=/dev/null -c protocol.allow=never -C "$1" rev-parse --git-path info/exclude) && cd "$1" && mkdir -p "$(dirname "$f")" && { grep -qxF "$2" "$f" 2>/dev/null || printf "%s\\n" "$2" >> "$f"; }', [project.pathInContainer, line]);
+      // The switches as arguments 3 on, from the same list as git's above.
+      await exec('d=$1; l=$2; shift 2; f=$(git "$@" -C "$d" rev-parse --git-path info/exclude) && cd "$d" && mkdir -p "$(dirname "$f")" && { grep -qxF "$l" "$f" 2>/dev/null || printf "%s\\n" "$l" >> "$f"; }', [project.pathInContainer, line, ...RUN_GIT_HARDENING('/dev/null')]);
     },
     shell,
   };

@@ -396,7 +396,7 @@ const Config = z.object({
   windowsShell: z.enum(['bash', 'powershell']).default('bash'),
   /**
    * GitHub Enterprise hosts whose pull requests the page shows (audit L16), e.g. ["github.example.com"]. github.com is
-   * always one; a remote on any other host is not looked up, since the lookup sends gh's token for that host.
+   * always one; a remote on any other host is not looked up.
    */
   githubHosts: z.array(z.string().trim().toLowerCase().regex(/^[a-z0-9.-]+$/, 'Give a host name, such as github.example.com.')).max(20).default([]),
   board: BoardSetting,

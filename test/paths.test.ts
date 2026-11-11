@@ -53,3 +53,8 @@ test('audit L19: on Windows the folder\'s mode is left alone', { skip: process.p
     removeTemp(base);
   }
 });
+
+test('audit L19: a folder whose mode cannot be read or changed is used as it is, never a throw', () => {
+  // A folder that isn't there stands for one Ledung may not change: the stat fails as the chmod would.
+  assert.doesNotThrow(() => privateToUser(path.join(os.tmpdir(), `ledung-no-such-folder-${process.pid}`), 'linux'));
+});

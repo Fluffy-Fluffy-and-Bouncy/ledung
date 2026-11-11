@@ -32,11 +32,22 @@ export function userDataDir(): string {
   return dir;
 }
 
-/** Takes group and other access off a folder, on the platforms that have modes; once it is 0700, only a stat. */
+let toldNotPrivate = false;
+
+/**
+ * Takes group and other access off a folder, on the platforms that have modes; once it is 0700, only a stat. A folder
+ * whose mode can't be changed (another owner, a read-only or mode-less volume) is said once and used as it is, so
+ * Ledung still starts there.
+ */
 export function privateToUser(dir: string, platform: NodeJS.Platform = process.platform): void {
   if (platform === 'win32') return;
-  const mode = fs.statSync(dir).mode & 0o777;
-  if (mode & 0o077) fs.chmodSync(dir, mode & 0o700);
+  try {
+    const mode = fs.statSync(dir).mode & 0o777;
+    if (mode & 0o077) fs.chmodSync(dir, mode & 0o700);
+  } catch (e) {
+    if (!toldNotPrivate) console.warn(`Ledung's data folder ${dir} could not be made private to this user: ${(e as Error).message}`);
+    toldNotPrivate = true;
+  }
 }
 
 /**
