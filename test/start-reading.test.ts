@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { parseConfig, parseProject } from '../src/config.ts';
-import { configValues, moduleOn, parseStartReading, sessionStartText, startItems, type StartReading, type StartReadingList } from '../src/sessions/start-reading.ts';
+import { configValues, moduleOn, parseStartReading, readInsideProject, readStartReadingFile, sessionStartText, startItems, type StartReading, type StartReadingList } from '../src/sessions/start-reading.ts';
 import { projectWorkflow, type ProjectWorkflow } from '../src/sessions/workflow.ts';
 import { Management } from '../src/sessions/management.ts';
 import { Session } from '../src/sessions/session.ts';
@@ -176,6 +176,39 @@ test('with no list, or none for this role, nothing is added; a project file that
   const withFiles = (f: string) => parseStartReading(f, JSON.stringify({ version: 1, manager: { read: ['lead.md'], modules: [{ key: 'MODULE_ALPHA', is: 'on', read: 'a.md' }], projectFiles: [{ path: 'GOAL.md', print: true }] } }));
   const out = await sessionStartText(sr, { role: 'manager', title: 'M' }, failing, withFiles);
   assert.equal(out, `The workflow's start-reading list: read these in full before anything else, in this order.\n1. ${path.join(W, 'lead.md')}`);
+});
+
+test('audit L17: a list file or a printed project file whose real path leads outside its folder is refused with the problem line', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-start-reading-'));
+  try {
+    const [workflow, project, outside] = ['workflow', 'project', 'outside'].map((d) => path.join(dir, d)) as [string, string, string];
+    for (const d of [workflow, project, outside]) fs.mkdirSync(d);
+    fs.writeFileSync(path.join(outside, 'secret.md'), 'SECRET');
+    fs.writeFileSync(path.join(project, 'GOAL.md'), 'The goal.');
+    // Junctions: links to a folder that Windows makes without an administrator, as the chats test does.
+    fs.symlinkSync(outside, path.join(project, 'linked'), 'junction');
+    fs.symlinkSync(outside, path.join(workflow, 'linked'), 'junction');
+    const list = (files: string[]) => JSON.stringify({ version: 1, session: { read: ['worker.md'], projectFiles: files.map((p) => ({ path: p, print: true })) } });
+    const sr = (file: string): StartReading => ({ file, folder: workflow, projectFolder: project, projectConfig: path.join(project, 'CFG.md'), local: true });
+    const s = { role: 'session' as const, title: 'fix-1' };
+    // The readers the session passes (Session.startReadingContext): both check the real path.
+    const readProject = (f: string) => readInsideProject(project, f);
+    const listFile = path.join(workflow, 'list.json');
+    // The positive branch: a list inside the workflow's folder, and a project file inside the project, are read.
+    fs.writeFileSync(listFile, list(['GOAL.md']));
+    assert.match((await sessionStartText(sr(listFile), s, readProject, readStartReadingFile))!, /GOAL\.md, as it stands now:\nThe goal\.\n/);
+    // A printed project file through a link out of the project: the whole list is refused, nothing of it pasted.
+    fs.writeFileSync(listFile, list(['GOAL.md', 'linked/secret.md']));
+    const out = await sessionStartText(sr(listFile), s, readProject, readStartReadingFile);
+    assert.equal(out, `The workflow's start-reading list ${listFile} names ${path.join(project, 'linked', 'secret.md')}, which leads outside the project folder. No start-reading list is shown until it is fixed.`);
+    // The list file itself, through a link or "..": not read.
+    fs.writeFileSync(path.join(outside, 'list.json'), list(['GOAL.md']));
+    for (const file of [path.join(workflow, 'linked', 'list.json'), path.resolve(workflow, '../outside/list.json')]) {
+      assert.equal(await sessionStartText(sr(file), s, readProject, readStartReadingFile), `The workflow's start-reading list ${file} leads outside the workflow's folder ${workflow}, so it is not read. No start-reading list is shown until it is fixed.`, file);
+    }
+  } finally {
+    removeTemp(dir);
+  }
 });
 
 test("the config takes a workflow's startReadingFile, and the project's workflow carries it with its folders", () => {

@@ -248,6 +248,7 @@ export class SessionManager {
     this.pullRequests = new PullRequestPoller({
       show: (id, pr) => this.live.get(id)?.showPullRequest(pr),
       onBudget: (github) => this.publish({ type: 'github', github }),
+      enterpriseHosts: () => this.config.githubHosts,
     });
     const imported = this.projectStore.importFromConfig(config.projects);
     if (imported.length) console.log(`Copied ${imported.length} project(s) from the config into Ledung: ${imported.join(', ')}.`);

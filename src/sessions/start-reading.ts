@@ -155,15 +155,53 @@ export function startReadingProblemLine(problem: string, role: SessionRole): str
   return `${problem.replace(/\.?$/, '.')} No start-reading list is shown until it is fixed.${role === 'manager' ? ' Tell whoever you ask (ask_user) once.' : ''}`;
 }
 
-/** Reads a list file on this computer. */
-export function readStartReadingFile(file: string): StartReadingRead {
-  let text: string | null;
+/** A project file the list names whose real path is outside the project folder (audit L17): never read. */
+export class OutsideFolder extends Error {}
+
+/** A path with every link resolved (the native one, so a Windows short name is its long one), or null: not there. */
+const realOrNull = (p: string): string | null => {
   try {
-    text = fs.readFileSync(file, 'utf8');
+    return fs.realpathSync.native(p);
   } catch {
-    text = null;
+    return null;
+  }
+};
+const isInside = (root: string, real: string) => {
+  const rel = path.relative(root, real);
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+};
+
+/**
+ * Reads the list file on this computer. With `folder`, only when its real path is inside the folder's (audit L17): a
+ * link or ".." in the workflow's startReadingFile can't make Ledung read a file from elsewhere.
+ */
+export function readStartReadingFile(file: string, folder?: string): StartReadingRead {
+  const real = realOrNull(file);
+  if (real !== null && folder !== undefined) {
+    const root = realOrNull(folder);
+    if (root === null || !isInside(root, real)) return { problem: `The workflow's start-reading list ${file} leads outside the workflow's folder ${folder}, so it is not read.` };
+  }
+  let text: string | null = null;
+  if (real !== null) {
+    try {
+      text = fs.readFileSync(real, 'utf8');
+    } catch {
+      text = null;
+    }
   }
   return parseStartReading(file, text);
+}
+
+/**
+ * A project file of the list on this computer, by its real path: null when missing, OutsideFolder when a link leads
+ * outside the project folder (audit L17; the list's own check stops "..", not links).
+ */
+export async function readInsideProject(projectFolder: string, file: string): Promise<string | null> {
+  const root = realOrNull(projectFolder);
+  const real = realOrNull(file);
+  if (root === null || real === null) return null;
+  if (!isInside(root, real)) throw new OutsideFolder(`${file} leads outside the project folder`);
+  return fs.promises.readFile(real, 'utf8').catch(() => null);
 }
 
 /**
@@ -176,18 +214,27 @@ export async function sessionStartText(
   sr: StartReading | undefined,
   s: { role: SessionRole; title: string } | undefined,
   readProject: (file: string) => Promise<string | null>,
-  read: (file: string) => StartReadingRead = readStartReadingFile,
+  read: (file: string, folder: string) => StartReadingRead = (file) => readStartReadingFile(file),
 ): Promise<string | null> {
   if (!sr || !s) return null;
-  const r = read(sr.file);
+  const r = read(sr.file, sr.folder);
   if (r.problem !== null) return startReadingProblemLine(r.problem, s.role);
   const safeRead = (f: string) => readProject(f).catch(() => null);
   const own = s.role === 'manager' ? r.list.manager : r.list.session;
   const needsConfig = !!own && (own.modules.length > 0 || (s.role === 'session' && !!r.list.session?.byTitlePrefix.some((b) => b.when.length > 0)));
   const values = configValues(needsConfig ? await safeRead(sr.projectConfig) : null);
   const items = startItems(r.list, s, sr, values);
-  // Project files are looked at: a missing one is skipped without a word, a printed one goes in as it is.
+  // Project files are looked at: a missing one is skipped without a word, a printed one goes in as it is. One that
+  // leads outside the project folder stops the list, as a ".." in it does (audit L17).
   const texts = new Map<string, string | null>();
-  for (const i of items) if (i.project) texts.set(i.file, await safeRead(i.file));
+  for (const i of items) {
+    if (!i.project) continue;
+    try {
+      texts.set(i.file, await readProject(i.file));
+    } catch (e) {
+      if (e instanceof OutsideFolder) return startReadingProblemLine(`The workflow's start-reading list ${sr.file} names ${i.file}, which leads outside the project folder`, s.role);
+      texts.set(i.file, null);
+    }
+  }
   return startReadingText(items, texts);
 }

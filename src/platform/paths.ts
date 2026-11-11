@@ -19,12 +19,24 @@ function platformDataDir(): string {
       : path.join(process.env.XDG_DATA_HOME ?? path.join(os.homedir(), '.local', 'share'), APP_NAME.toLowerCase());
 }
 
-/** The platform's usual place for application data. LEDUNG_DATA_DIR overrides it (used by tests). */
+/**
+ * The platform's usual place for application data. LEDUNG_DATA_DIR overrides it (used by tests). Private to this user
+ * on macOS and Linux (audit L19): made 0700, and one made looser before is tightened. On Windows the profile's own
+ * permissions, as for auth-token.
+ */
 export function userDataDir(): string {
   const override = envSetting('DATA_DIR');
   const dir = override ? path.resolve(override) : platformDataDir();
-  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  privateToUser(dir);
   return dir;
+}
+
+/** Takes group and other access off a folder, on the platforms that have modes; once it is 0700, only a stat. */
+export function privateToUser(dir: string, platform: NodeJS.Platform = process.platform): void {
+  if (platform === 'win32') return;
+  const mode = fs.statSync(dir).mode & 0o777;
+  if (mode & 0o077) fs.chmodSync(dir, mode & 0o700);
 }
 
 /**

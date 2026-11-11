@@ -5,6 +5,7 @@
 // or pushed with nothing more; otherwise it keeps it and says why. A container project's goes through `docker exec`.
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import type { DockerProjectConfig } from '../config.ts';
@@ -31,6 +32,18 @@ export interface WorktreeHost {
   shell(command: string, cwd: string): ShellSpawn;
 }
 
+/**
+ * `-c` settings before every git command Ledung runs in a project for its runs (audit L15): the repository's own
+ * config could otherwise name a program for git to start in Ledung, as a hook or an fsmonitor. The command line wins
+ * over the repository's config. The same switches as the Files pane's (git-read.ts), without the ones that change
+ * what git prints, so a worktree made before them compares the same. No transport either: these calls never fetch.
+ */
+export const RUN_GIT_HARDENING = (devNull: string): string[] => [
+  '-c', 'core.fsmonitor=false',
+  '-c', `core.hooksPath=${devNull}`,
+  '-c', 'protocol.allow=never',
+];
+
 const run = promisify(execFile);
 const said = (e: unknown) => {
   const x = e as { stderr?: string; stdout?: string; message?: string };
@@ -44,13 +57,13 @@ export function localWorktreeHost(root: string, shell: (command: string, cwd: st
     join: (...parts) => path.join(...parts),
     git: async (args, cwd) => {
       try {
-        return (await run('git', ['-C', cwd, ...args], { windowsHide: true, timeout: GIT_MS, maxBuffer: 4 * 1024 * 1024 })).stdout;
+        return (await run('git', [...RUN_GIT_HARDENING(os.devNull), '-C', cwd, ...args], { windowsHide: true, timeout: GIT_MS, maxBuffer: 4 * 1024 * 1024 })).stdout;
       } catch (e) {
         throw new Error(said(e));
       }
     },
     exclude: async (line) => {
-      const file = path.resolve(root, (await run('git', ['-C', root, 'rev-parse', '--git-path', 'info/exclude'], { windowsHide: true, timeout: GIT_MS })).stdout.trim());
+      const file = path.resolve(root, (await run('git', [...RUN_GIT_HARDENING(os.devNull), '-C', root, 'rev-parse', '--git-path', 'info/exclude'], { windowsHide: true, timeout: GIT_MS })).stdout.trim());
       const now = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
       if (now.split(/\r?\n/).includes(line)) return;
       fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -73,9 +86,10 @@ export function dockerWorktreeHost(project: DockerProjectConfig, shell: (command
   return {
     root: project.pathInContainer,
     join: (...parts) => path.posix.join(...parts),
-    git: (args, cwd) => exec('cd "$1" && shift && git "$@"', [cwd, ...args]),
+    // The container's null device: it runs Linux, whatever this computer runs.
+    git: (args, cwd) => exec('cd "$1" && shift && git "$@"', [cwd, ...RUN_GIT_HARDENING('/dev/null'), ...args]),
     exclude: async (line) => {
-      await exec('f=$(git -C "$1" rev-parse --git-path info/exclude) && cd "$1" && mkdir -p "$(dirname "$f")" && { grep -qxF "$2" "$f" 2>/dev/null || printf "%s\\n" "$2" >> "$f"; }', [project.pathInContainer, line]);
+      await exec('f=$(git -c core.fsmonitor=false -c core.hooksPath=/dev/null -c protocol.allow=never -C "$1" rev-parse --git-path info/exclude) && cd "$1" && mkdir -p "$(dirname "$f")" && { grep -qxF "$2" "$f" 2>/dev/null || printf "%s\\n" "$2" >> "$f"; }', [project.pathInContainer, line]);
     },
     shell,
   };
