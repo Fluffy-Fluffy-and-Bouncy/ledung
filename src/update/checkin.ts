@@ -131,18 +131,20 @@ export class CheckIn {
   /**
    * Sends one check-in when it may and a day has passed since the last; returns whether it sent. The time is kept
    * before the send, so a failed or slow send still waits a day: at most one a day, never a retry storm.
+   * Never rejects: the timers call it unawaited, and an unhandled rejection (a busy or full database) would stop
+   * Ledung itself (privacy and security review of PR #223, S1).
    */
   async maybeSend(): Promise<boolean> {
     const url = this.url();
     if (!url || this.sending) return false;
-    if (!this.view().sends) return false;
-    const now = (this.opts.now ?? Date.now)();
-    const last = Date.parse(this.opts.meta.get(LAST_KEY) ?? '');
-    // A clock set back before the last send sends again rather than waiting out the gap, which could be months.
-    if (Number.isFinite(last) && now - last < DAY_MS && now >= last) return false;
-    this.opts.meta.set(LAST_KEY, new Date(now).toISOString());
     this.sending = true;
     try {
+      if (!this.view().sends) return false;
+      const now = (this.opts.now ?? Date.now)();
+      const last = Date.parse(this.opts.meta.get(LAST_KEY) ?? '');
+      // A clock set back before the last send sends again rather than waiting out the gap, which could be months.
+      if (Number.isFinite(last) && now - last < DAY_MS && now >= last) return false;
+      this.opts.meta.set(LAST_KEY, new Date(now).toISOString());
       await (this.opts.send ?? post)(url, this.payload());
       if (!traced) {
         traced = true;
@@ -150,7 +152,7 @@ export class CheckIn {
       }
       return true;
     } catch {
-      // Offline, or the endpoint is not there yet: nothing to tell anyone; the next try is a day away.
+      // Offline, the endpoint not there yet, or the database busy: nothing to tell anyone; the next look tries again.
       return false;
     } finally {
       this.sending = false;

@@ -95,6 +95,25 @@ test('a failed send still waits a day before the next try', async () => {
   assert.equal(tries, 2);
 });
 
+test('a database that throws (busy, disk full) makes the look return false, never reject; once it works it sends', async () => {
+  // The timers call maybeSend unawaited, so a rejection here would be unhandled and stop Ledung (review of PR #223, S1).
+  for (const failing of ['get', 'set'] as const) {
+    const meta = memory({ [NOTICE_KEY]: 'seen', [ID_KEY]: '11111111-1111-4111-8111-111111111111' });
+    let broken = true;
+    const real = meta[failing];
+    meta[failing] = ((k: string, v: string) => {
+      if (broken && k === LAST_KEY) throw new Error('SQLITE_BUSY: database is locked');
+      return real(k, v);
+    }) as never;
+    const s = setup({ meta });
+    assert.equal(await s.c.maybeSend(), false, `${failing} throwing`);
+    assert.equal(s.sent.length, 0);
+    broken = false;
+    assert.equal(await s.c.maybeSend(), true, `${failing} working again`);
+    assert.equal(s.sent.length, 1);
+  }
+});
+
 test('nothing is sent until the notice is answered; OK lets it send', async () => {
   const s = setup({ meta: memory() });
   assert.equal(s.c.view().notice, true);
