@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-12
+- Published usage: the account fingerprint is now keyed with your usage key, so the account's email can't be checked against it. Fingerprints change once: on the Shared tab an account may show twice until each computer has published again on this version. Computers that share the usage key (Settings → usage publishing) still show an account as one card; computers with different keys show it separately. (Fluffy-Fluffy-and-Bouncy/Project-Ledung#480)
+
 ## 2026-11-11
 - Your pinned latest message at the top of the chat no longer shows through a session's ⚙ menu (nor does the message box under it), and its bottom edge fades out softly instead of ending in a hard line. (#226)
 - An anonymous daily check-in counts how many people use Ledung: once a day an npm-installed Ledung sends a random install ID, its version, its update channel and the operating system, nothing else. A notice explains it the first time (and once after updating); Settings → About → Usage count turns it off, and `DO_NOT_TRACK=1` stops it too. (#220)
