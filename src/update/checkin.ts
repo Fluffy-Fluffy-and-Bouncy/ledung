@@ -3,7 +3,6 @@
 // clearly announced (FFBuddha 2026-11-11 15:32, his question #1871; Martin 2026-11-11 16:21, Ledung question #1992):
 // a notice on the page, a switch in Settings, and DO_NOT_TRACK=1 honoured. The endpoint is checkin-worker/.
 import crypto from 'node:crypto';
-import { exercisedLine } from '../platform/exercised.ts';
 import type { CheckInView } from '../shared/protocol.ts';
 import type { Channel } from '../shared/version.ts';
 
@@ -56,8 +55,6 @@ export function doNotTrack(env: NodeJS.ProcessEnv): boolean {
   const v = env.DO_NOT_TRACK?.trim().toLowerCase();
   return !!v && v !== '0' && v !== 'false';
 }
-
-let traced = false;
 
 export class CheckIn {
   private readonly opts: CheckInOptions;
@@ -146,10 +143,6 @@ export class CheckIn {
       if (Number.isFinite(last) && now - last < DAY_MS && now >= last) return false;
       this.opts.meta.set(LAST_KEY, new Date(now).toISOString());
       await (this.opts.send ?? post)(url, this.payload());
-      if (!traced) {
-        traced = true;
-        exercisedLine('EXERCISED #220 daily check-in sent');
-      }
       return true;
     } catch {
       // Offline, the endpoint not there yet, or the database busy: nothing to tell anyone; the next look tries again.
