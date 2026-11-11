@@ -8,6 +8,7 @@ import type {
   ProfilesView,
   SkillListView, SignInProblem,
   ShortcutAction, ShortcutsView,
+  CheckInAction, CheckInView,
 } from '../../src/shared/protocol.ts';
 import type { ProjectColours } from '../../src/shared/name-colours.ts';
 import type { ComputerColour, ComputerInfo } from '../../src/shared/computers.ts';
@@ -228,6 +229,9 @@ export const api = {
   /** The first-run question and Settings → Shortcuts (issue #415). */
   shortcuts: () => call<ShortcutsView>('GET', '/api/shortcuts'),
   shortcutsAct: (action: ShortcutAction) => call<ShortcutsView>('POST', '/api/shortcuts', { action }),
+  /** The anonymous daily check-in's notice and switch (#220). */
+  checkIn: () => call<CheckInView>('GET', '/api/checkin'),
+  checkInAct: (action: CheckInAction) => call<CheckInView>('POST', '/api/checkin', { action }),
   updateStatus: () => call<UpdateView>('GET', '/api/update'),
   updateCheck: () => call<UpdateView>('POST', '/api/update-check', {}),
   update: () => call<UpdateView>('POST', '/api/update', {}),

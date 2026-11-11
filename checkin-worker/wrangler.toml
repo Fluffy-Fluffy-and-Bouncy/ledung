@@ -1,0 +1,20 @@
+# The check-in endpoint (#220). Deploying it is a separate step; see README.md here.
+name = "ledung-checkin"
+main = "worker.ts"
+compatibility_date = "2026-11-01"
+# Cloudflare's own request logs would hold the IP address; the Worker keeps none and logs nothing.
+workers_dev = false
+
+[observability]
+enabled = false
+
+[[d1_databases]]
+binding = "DB"
+database_name = "ledung-checkin"
+# Filled in from `wrangler d1 create ledung-checkin` at deploy time.
+database_id = "REPLACE_AT_DEPLOY"
+
+# Ledung sends to https://checkin.projectledung.com/v1/checkin (src/update/checkin.ts).
+[[routes]]
+pattern = "checkin.projectledung.com"
+custom_domain = true

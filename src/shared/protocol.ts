@@ -1074,6 +1074,27 @@ export interface SignInStartView {
  */
 export type ShortcutAction = 'add' | 'remove' | 'decline' | 'sign-in-on' | 'sign-in-off';
 
+/** The anonymous daily check-in (#220): the notice on the page and Settings → Usage count (GET /api/checkin). */
+export interface CheckInView {
+  /** The Settings switch; on unless switched off. */
+  on: boolean;
+  /** DO_NOT_TRACK is set where Ledung runs: nothing is sent, whatever the switch says. */
+  doNotTrack: boolean;
+  /** The notice has not been answered yet: shown above the page, and nothing is sent until it is. */
+  notice: boolean;
+  /** Whether this Ledung sends a check-in once a day now. */
+  sends: boolean;
+  /** Installed from npm; a clone or a release built from one never checks in. */
+  fromPackage: boolean;
+  /** Exactly what is sent, these four fields. */
+  payload: { id: string; version: string; channel: 'public' | 'dev'; os: string };
+  url: string;
+  /** When the last check-in was sent or tried; null before the first. */
+  lastAt: string | null;
+}
+
+export type CheckInAction = 'on' | 'off' | 'seen';
+
 /** Settings' "Update Ledung" (GET /api/update, #100). */
 export interface UpdateView {
   /** False when Ledung runs straight from a source folder or from the npm package; `reason` says so. */

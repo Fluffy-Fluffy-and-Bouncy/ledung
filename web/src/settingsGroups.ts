@@ -91,6 +91,8 @@ export const LEDUNG_GROUPS: SettingsGroup[] = [
   { id: 'about', label: 'About', part: 'info', settings: [
     { label: 'About', about: 'Version and where Ledung runs from', keywords: ['version', 'licence', 'license'] },
     { label: 'Update channel', about: 'Public releases only, or dev builds too (npm installs)', keywords: ['channel', 'dev', 'public', 'npm', 'beta'] },
+    // The anonymous daily check-in (#220).
+    { label: 'Usage count', about: 'The anonymous daily check-in that counts Ledung users', keywords: ['telemetry', 'tracking', 'privacy', 'analytics', 'do not track', 'check-in', 'statistics', 'anonymous'] },
   ] },
 ];
 

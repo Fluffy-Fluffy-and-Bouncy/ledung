@@ -21,6 +21,7 @@ import { actionOf, DEVICE_LOCKED, PASSKEY_HEADER, PasskeyError, Passkeys } from 
 import { linkedPushItem, Push, PushError, type LinkedPushItem } from './push.ts';
 import type { UsageQueries } from '../usage/queries.ts';
 import { readRunningRelease, type Updater } from '../update/updater.ts';
+import type { CheckIn } from '../update/checkin.ts';
 import { capTurnCores, typicalCosts } from '../resources/typical.ts';
 import { BoardError } from '../board/types.ts';
 import type { ProjectConfig } from '../config.ts';
@@ -143,6 +144,8 @@ export interface ServerOptions {
   updater?: Updater;
   /** The first-run question and Settings → Shortcuts: a Ledung icon that starts Ledung (issue #415). */
   shortcuts?: Shortcuts;
+  /** The anonymous daily check-in: its notice and Settings switch (#220). */
+  checkIn?: CheckIn;
   /** Settings → Relay: inviting computers to a relay this Ledung is admin of (issue #237). */
   relayAdmin?: RelayAdmin;
   /** Publishing usage to a shared repo, and reading every computer's file there (issue #363). */
@@ -2091,6 +2094,15 @@ export class LedungServer {
           throw new HttpError(400, (e as Error).message);
         }
       }
+      // The anonymous daily check-in (#220): the notice's OK and the Settings switch, from the open page.
+      case 'GET checkin':
+        return this.checkIn().view();
+      case 'POST checkin': {
+        await this.requirePage(req, url);
+        const action = (await readJson(req)).action;
+        if (action !== 'on' && action !== 'off' && action !== 'seen') throw new HttpError(400, 'The action is on, off or seen.');
+        return this.checkIn().act(action);
+      }
       case 'POST certificate-check':
         if (this.opts.onCertificateCheck) this.opts.onCertificateCheck();
         else if (!this.remoteLink?.checkNow()) throw new HttpError(404, 'This Ledung gets no certificate by ACME.');
@@ -2204,6 +2216,11 @@ export class LedungServer {
   private requireThisComputer(req: IncomingMessage): void {
     this.requireLocal(req, 'Shortcuts are made');
     if (!fromThisComputer(req)) throw new HttpError(403, 'Shortcuts are made in Settings on the computer Ledung runs on.');
+  }
+
+  private checkIn(): CheckIn {
+    if (!this.opts.checkIn) throw new HttpError(404, 'The check-in is not available.');
+    return this.opts.checkIn;
   }
 
   private updater(): Updater {

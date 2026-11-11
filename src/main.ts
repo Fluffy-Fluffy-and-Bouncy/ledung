@@ -31,6 +31,7 @@ import { usageMark, usageSlices } from './usage/publish-source.ts';
 import { ProjectRemotes } from './usage/project-remotes.ts';
 import { DEFAULT_ACCOUNT } from './accounts/store.ts';
 import { Updater } from './update/updater.ts';
+import { CheckIn } from './update/checkin.ts';
 import { RemoteLink, savedRemote } from './remote/link.ts';
 import { RelayAdmin } from './remote/admin.ts';
 import { connectVia } from './remote/linked.ts';
@@ -102,6 +103,7 @@ async function main(): Promise<void> {
     shuttingDown = true;
     manager.boards?.stop();
     usagePublisher.stop();
+    checkIn.stop();
     watcher?.stop();
     if (restart) {
       console.log('Restarting; sessions keep running and reconnect after the restart...');
@@ -148,6 +150,16 @@ async function main(): Promise<void> {
       return remote ? { relay: remote.relay, name: remote.name } : null;
     },
   });
+  const updater = new Updater({
+    appDir: appDir(), dataDir: userDataDir(), configPath: configPath(), onRestart, npmVersion: PACKAGED ? appVersion() : undefined,
+    // The update channel (#461) is this computer's, like its shortcuts.
+    meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) },
+  });
+  // The anonymous daily check-in (#220): on by default, announced on the page, only from the npm package.
+  const checkIn = new CheckIn({
+    meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) },
+    version: appVersion(), channel: () => updater.channel(), packaged: PACKAGED,
+  });
   server = new LedungServer({
     port: config.port, token: loadOrCreateToken(), store, manager,
     onRestart,
@@ -155,11 +167,8 @@ async function main(): Promise<void> {
     onStop: () => void shutdown(false),
     // Made only when asked, in the first-run question or Settings (issue #415).
     shortcuts: new Shortcuts({ launch: launchTarget(), iconDir: userDataDir(), icons: iconFiles(), meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) } }),
-    updater: new Updater({
-      appDir: appDir(), dataDir: userDataDir(), configPath: configPath(), onRestart, npmVersion: PACKAGED ? appVersion() : undefined,
-      // The update channel (#461) is this computer's, like its shortcuts.
-      meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) },
-    }),
+    updater,
+    checkIn,
     lanNames: lan,
     lanBind: config.lan === true ? '0.0.0.0' : config.lan || undefined,
     lanOpen: !config.lanSignIn,
@@ -187,6 +196,7 @@ async function main(): Promise<void> {
   }
 
   manager.startMeasuring();
+  checkIn.start();
   // Old sessions' tool results, shrunk in the background in small steps (issue #349).
   const trimmer = new HistoryTrimmer(db, { days: () => manager.currentConfig.keepToolResultsDays, log: (line) => console.log(line) });
   trimmer.start();
