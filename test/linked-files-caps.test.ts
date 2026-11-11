@@ -102,7 +102,9 @@ test('Project-Ledung#479: a streamed offer above the cap per file or per message
   assert.equal(files.remote().length, 2);
 });
 
-test('Project-Ledung#479: a file recorded before a lower cap is refused at fetch, before the other computer is asked for a byte', async () => {
+test('Project-Ledung#479: a file recorded before a lower cap is refused at fetch, before the other computer is asked for a byte', async (t) => {
+  const logged: string[] = [];
+  t.mock.method(console, 'log', (line: string) => void logged.push(String(line)));
   let limits: StreamLimits = { maxFileBytes: 10 * MB, maxMessageBytes: 10 * MB };
   const dir = fs.mkdtempSync(path.join(base, 'copies-'));
   const files = new LinkedFiles(openDatabase(':memory:'), () => dir, () => 30, Date.now, () => limits);
@@ -114,14 +116,17 @@ test('Project-Ledung#479: a file recorded before a lower cap is refused at fetch
   assert.equal(result.ok, false);
   assert.match((result as { problem: string }).problem, /this computer takes streamed files up to 1(\.0)? MB each/);
   assert.equal(server.calls(), 0, 'not a byte asked for');
+  assert.ok(logged.some((l) => l.startsWith('Linked computers: linked file refused from link-a: talk.wav: it is ')), logged.join('\n'));
 });
 
-test('Project-Ledung#479: a zip is checked when it arrives; a broken, too large or escaping one is failed with the reason and nothing kept', async () => {
+test('Project-Ledung#479: a zip is checked when it arrives; a broken, too large or escaping one is failed with the reason and nothing kept', async (t) => {
+  const logged: string[] = [];
+  t.mock.method(console, 'log', (line: string) => void logged.push(String(line)));
   const { dir, files } = store({ maxFileBytes: 1024 * MB, maxMessageBytes: 1024 * MB });
   const fetchZip = async (bytes: Buffer) => {
     const [f] = files.expect('link-a', 'mgr-1', [{ ...offer('pack.zip', 'zip', bytes.length), sha: sha(bytes) }], 0);
     const result = await files.fetch(f!.id, serving(bytes).get, { tries: 1, backoffMs: 1 });
-    return { result, problem: result.ok ? null : result.problem };
+    return { result, problem: result.ok ? null : result.problem, handle: f!.handle };
   };
   const kept = () => (fs.existsSync(dir) ? fs.readdirSync(dir, { recursive: true }).map(String).filter((p) => fs.statSync(path.join(dir, p)).isFile()) : []);
   const small = (name: string) => ({ name, data: Buffer.from('hello') });
@@ -144,12 +149,20 @@ test('Project-Ledung#479: a zip is checked when it arrives; a broken, too large 
   ];
   assert.equal(MAX_ZIP_UNPACKED_BYTES, 16 * 1024 ** 3);
   for (const [what, bytes, why] of cases) {
-    const { result, problem } = await fetchZip(bytes);
+    const { result, problem, handle } = await fetchZip(bytes);
     assert.equal(result.ok, false, what);
     assert.match(problem!, why, what);
+    // Its row is failed with the reason, which is what the manager is told when it asks for the file.
+    assert.throws(() => files.source('mgr-1', handle), (e: Error) => e.message.includes('could not be fetched') && why.test(e.message), what);
+    assert.ok(logged.some((l) => l.startsWith('Linked computers: linked file refused from link-a: pack.zip: ') && why.test(l)), `${what}: logged`);
     assert.equal(kept().length, 1, `${what}: nothing of it kept, not even a part`);
   }
   // At the limit exactly, entries and unpacked size both pass.
   const atLimit = await fetchZip(zip(Array.from({ length: MAX_ZIP_ENTRIES }, (_, i) => ({ name: `${i}`, data: Buffer.alloc(0) }))));
   assert.equal(atLimit.result.ok, true, String(atLimit.problem));
+  // Four entries saying 4 GiB less a byte each: just under 16 GiB unpacked, so taken.
+  const justUnder = await fetchZip(zip(Array.from({ length: 4 }, (_, i) => ({ name: `${i}.bin`, data: Buffer.from('x'), unpacked: 0xffffffff - 1 }))));
+  assert.equal(justUnder.result.ok, true, String(justUnder.problem));
+  // The good ones were never logged as refused.
+  assert.equal(logged.filter((l) => l.includes('linked file refused')).length, cases.length);
 });

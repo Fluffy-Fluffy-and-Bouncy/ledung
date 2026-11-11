@@ -325,7 +325,11 @@ export class LinkedFiles {
       }
       // A row recorded before the cap (or under a larger one) is held to it too, before a byte is asked for.
       const maxFileBytes = this.limits().maxFileBytes;
-      if (size > maxFileBytes) throw new FetchRefused(`it is ${sizeLabel(size)}; this computer takes streamed files up to ${sizeLabel(maxFileBytes)} each`);
+      if (size > maxFileBytes) {
+        const why = `it is ${sizeLabel(size)}; this computer takes streamed files up to ${sizeLabel(maxFileBytes)} each`;
+        logRefused(r.link_id, r.name, why);
+        throw new FetchRefused(why);
+      }
       if (size === 0) fs.writeFileSync(part, Buffer.alloc(0), { mode: 0o600 });
       for (let attempt = 1; have < size; attempt++) {
         try {
