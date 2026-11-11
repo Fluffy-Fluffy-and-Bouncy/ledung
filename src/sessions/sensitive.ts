@@ -6,6 +6,8 @@
 import { suggestionName } from '../shared/sensitive-suggestions.ts';
 import { HOLDS_BACK, SETTINGS_RULE, settingsAction } from './word.ts';
 import { SECRET_FILE_PATTERN, SECRET_FILE_RULE } from '../shared/secrets.ts';
+import os from 'node:os';
+import { userDataDir } from '../platform/paths.ts';
 
 export interface SensitiveRules {
   /** Regular expressions (case-insensitive) matched against Bash and PowerShell commands. */
@@ -27,6 +29,65 @@ function filePaths(input: Record<string, unknown>): string[] {
 
 /** The rule named for a call that is always the user's to approve, whatever the lists say. */
 export const ALWAYS_ASKED_RULE = "a manager's project tool, always yours to approve";
+/** The rule named for a call that names Ledung's own data folder (Project-Ledung#473). */
+export const DATA_FOLDER_RULE = "Ledung's own data folder, always yours to approve";
+
+/** Where a data folder sits, and the folders a command may name it from. */
+export interface DataFolderPlaces {
+  dir: string;
+  home: string;
+  /** Windows' %APPDATA%. */
+  appData?: string;
+  /** Linux's $XDG_DATA_HOME. */
+  xdgData?: string;
+}
+
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** A path in one form for matching: forward slashes, one at a time, no slash at the end. */
+const slashes = (s: string) => s.replace(/\\/g, '/').replace(/\/{2,}/g, '/').replace(/(.)\/$/, '$1');
+
+/**
+ * A command or path as text to look for a folder in: quotes, backticks and cmd's ^ out, an escaped space as a
+ * space, and forward slashes, so `"C:\Users\x"`, `~/Library/Application\ Support` and `'Application Support'`
+ * read alike.
+ */
+export function pathText(text: string): string {
+  return slashes(text.replace(/\\ /g, ' ').replace(/['"`^]/g, ''));
+}
+
+/**
+ * The ways a command or a path names a data folder: written out (also as Git Bash's `/c/…`), or from the home
+ * folder, %APPDATA% or $XDG_DATA_HOME by their names in cmd, PowerShell and POSIX shells. Matched against pathText.
+ */
+export function dataFolderPattern(places: DataFolderPlaces): RegExp {
+  const dir = slashes(places.dir);
+  const written = (abs: string) => {
+    const drive = /^([a-z]):(\/.*)$/i.exec(abs);
+    return drive ? [escapeRegExp(abs), `/${drive[1]}${escapeRegExp(drive[2]!)}`] : [escapeRegExp(abs)];
+  };
+  const forms = written(dir);
+  const roots: [string | undefined, string[]][] = [
+    [places.home, ['~', '$HOME', '${HOME}', '%USERPROFILE%', '$env:USERPROFILE', '${env:USERPROFILE}']],
+    [places.appData, ['%APPDATA%', '$env:APPDATA', '${env:APPDATA}', '$APPDATA', '${APPDATA}']],
+    [places.xdgData, ['$XDG_DATA_HOME', '${XDG_DATA_HOME}']],
+  ];
+  for (const [root, names] of roots) {
+    if (!root) continue;
+    const r = slashes(root);
+    if (!dir.toLowerCase().startsWith(`${r.toLowerCase()}/`)) continue;
+    const tail = escapeRegExp(dir.slice(r.length));
+    forms.push(...names.map((n) => escapeRegExp(n) + tail));
+  }
+  // The folder itself or anything in it, not a sibling whose name only starts the same (Ledung-old).
+  return new RegExp(`(?:${forms.join('|')})(?![\\w.-])`, 'i');
+}
+
+let ownDataFolderPattern: RegExp | undefined;
+/** This Ledung's data folder (LEDUNG_DATA_DIR in a test Ledung), worked out once. */
+function ownDataFolder(): RegExp {
+  ownDataFolderPattern ??= dataFolderPattern({ dir: userDataDir(), home: os.homedir(), appData: process.env.APPDATA, xdgData: process.env.XDG_DATA_HOME });
+  return ownDataFolderPattern;
+}
 
 /**
  * The first sensitive rule a request matches in the given rules (global patterns plus the project's).
@@ -44,10 +105,19 @@ export function matchSensitive(
   // (issue #468, the manager's addition 2 on question #1565): the values reach commands through the environment.
   const named = [...((toolName === 'Bash' || toolName === 'PowerShell') && typeof input.command === 'string' ? [input.command] : []), ...filePaths(input)];
   if (named.some((t) => SECRET_FILE_PATTERN.test(t))) return { rule: SECRET_FILE_RULE };
-  if ((toolName === 'Bash' || toolName === 'PowerShell') && typeof input.command === 'string') {
-    // PowerShell quotes and escapes differently from a POSIX shell, so its commands are matched whole, line
-    // by line: more asked than needed rather than a gap (#213: `Start-Process … -Verb RunAs` comes this way).
-    const read = toolName === 'Bash' ? readBash(input.command) : readPowerShell(input.command);
+  // PowerShell quotes and escapes differently from a POSIX shell, so its commands are matched whole, line
+  // by line: more asked than needed rather than a gap (#213: `Start-Process … -Verb RunAs` comes this way).
+  const read = (toolName === 'Bash' || toolName === 'PowerShell') && typeof input.command === 'string'
+    ? (toolName === 'Bash' ? readBash(input.command) : readPowerShell(input.command))
+    : null;
+  // Ledung's own data folder is the person's in every project, whatever the lists say (Martin, 2026-11-12,
+  // Ledung question #2056; Project-Ledung#473).
+  const own = ownDataFolder();
+  // The command as written too, heredoc text included: a part-quoted path (`~/Library/"Application Support"/…`) is
+  // whole only there, and asking for a note that names the folder costs less than missing a read.
+  const texts = [...(read ? [input.command as string, ...read.lines, ...read.paths] : []), ...filePaths(input)];
+  if (texts.some((t) => own.test(pathText(t)))) return { rule: DATA_FOLDER_RULE };
+  if (read) {
     for (const p of rules.commandPatterns ?? []) {
       const re = new RegExp(p, 'i');
       if (read.lines.some((l) => re.test(l))) return { rule: suggestionName(p, 'command') ?? `command matches /${p}/` };

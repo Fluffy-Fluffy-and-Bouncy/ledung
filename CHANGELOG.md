@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-12
+- Ledung's own data folder is always yours to approve: a session's command or file tool call that names it asks you in every project, whatever its sensitive list says. (Fluffy-Fluffy-and-Bouncy/Project-Ledung#473)
 - Sensitive list: commands are checked as the shell reads them, quotes and all. **Pushing to main or master** now also asks for a push that names no branch (`git push`, `git push origin`, `git push -u origin HEAD`) and with git's options before `push`; **Publishing to npm** with npm's options before `publish`. A path entry (such as `.env` files) also asks when a Bash or PowerShell command names that file. Existing lists get the wider push and publish entries once, where they are unchanged. Push a named branch (`git push origin my-branch`) to go on unasked. (Fluffy-Fluffy-and-Bouncy/Project-Ledung#473)
 
 ## 2026-11-11
