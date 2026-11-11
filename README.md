@@ -82,7 +82,9 @@ Nothing else: no name, email, computer name, project, session, usage figure or e
 **Turning it off.** Any of these stops it; nothing is sent while it is off:
 
 - **Turn off** on the notice, or the **Usage count** switch in **Settings → About**, which also shows exactly what would be sent and when it last sent or tried.
-- The environment variable `DO_NOT_TRACK=1` where Ledung runs ([consoledonottrack.com](https://consoledonottrack.com)), whatever the switch says.
+- The environment variable `DO_NOT_TRACK=1` where Ledung runs ([consoledonottrack.com](https://consoledonottrack.com)), whatever the switch says. It must be in the environment Ledung itself starts in: Ledung started from a Desktop or Start-menu icon, or at sign-in, may not see a variable set only in a shell profile. Settings → About → Usage count says "DO_NOT_TRACK is set" when Ledung sees it.
+
+Turned off, the install ID stays in Ledung's data folder on your computer and is never sent; it is not deleted.
 
 ## Config
 
