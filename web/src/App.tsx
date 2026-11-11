@@ -41,7 +41,7 @@ import { conversationFromHash, conversationHash, conversationOf, messageFromHash
 const REMOVED_PROJECTS = 'Removed projects';
 
 /** Whether a session belongs to a sidebar group: its project, Chats (issue #211), or "Removed projects". */
-function inGroup(s: SessionInfo, group: string, known: Set<string>): boolean {
+function inGroup(s: Pick<SessionInfo, 'project'>, group: string, known: Set<string>): boolean {
   return group === REMOVED_PROJECTS ? !known.has(s.project) && s.project !== CHATS : s.project === group;
 }
 
@@ -82,6 +82,7 @@ import { useCompactSidebar } from './useCompactSidebar.ts';
 import { compactRows, rowTooltip } from './compactSidebar.ts';
 import { useArchivedLink } from './useArchivedLink.ts';
 import { showsArchivedLink } from './archivedLink.ts';
+import { archivedCount } from '../../src/shared/hello-sessions.ts';
 import { computerFrame, computerStyle, frameAnswer, inFrame, shownComputerOf } from './computerFrame.ts';
 import { ComputerFrames, ComputerTabs } from './components/ComputerTabs.tsx';
 import { useComputerLink } from './useComputerLink.ts';
@@ -409,6 +410,15 @@ export function App() {
 
   const session = ledung.sessions.find((s) => s.id === openId) ?? null;
 
+  // Hello carries only recent archived sessions (issue #229): an Archived list, or an archived session opened by its
+  // link, fetches the rest, again after each hello, which brings the short list back.
+  const { loadArchived, loaded, hellos } = ledung;
+  const olderLeft = Object.keys(ledung.olderArchived).length > 0;
+  const needsArchived = !!openId?.startsWith('a:') || (loaded && isSessionId(openId) && !session);
+  useEffect(() => {
+    if (needsArchived && olderLeft) loadArchived().catch(() => {});
+  }, [needsArchived, olderLeft, hellos, loadArchived]);
+
   // The pages inside the Settings frame (issue #365): the Ledung, Chats and project tabs, each with its side menu of
   // groups (#366), and the Add project page.
   const settingsTab = tabOf(openId);
@@ -518,6 +528,7 @@ export function App() {
         {openId === null && <div className="phone-banners">{banners}</div>}
         <Sidebar
           sessions={ledung.sessions}
+          olderArchived={ledung.olderArchived}
           projects={ledung.projects}
           chats={ledung.chats}
           pending={pendingBySession}
@@ -551,6 +562,7 @@ export function App() {
               sessionsOpen={openId === 'overview'}
               onSessions={(on) => open(on ? 'overview' : 'usage')}
               sessions={ledung.sessions}
+              olderArchived={ledung.olderArchived}
               overview={ledung.overview}
               machine={ledung.machine}
               waitingBySession={pendingBySession}
@@ -656,6 +668,8 @@ export function App() {
 
 function Sidebar(props: {
   sessions: SessionInfo[];
+  /** Archived sessions hello only counted, by project (issue #229), for the Archived (N) links. */
+  olderArchived: Record<string, number>;
   projects: ProjectInfo[];
   /** For the chats' name colour (issue #222). */
   chats: ChatsInfo | null;
@@ -706,7 +720,7 @@ function Sidebar(props: {
     { name: CHATS, project: null as ProjectInfo | null, rows: rowsFor((s) => s.project === CHATS, null, CHATS) },
     ...props.projects.map((p) => ({ name: p.name, project: p as ProjectInfo | null, rows: rowsFor((s) => s.project === p.name, p.managerId, p.name) })),
     { name: REMOVED_PROJECTS, project: null, rows: rowsFor((s) => !known.has(s.project) && s.project !== CHATS, null, null) },
-  ].map((g) => ({ ...g, archived: props.sessions.filter((s) => s.archivedAt && inGroup(s, g.name, known)).length }))
+  ].map((g) => ({ ...g, archived: archivedCount(props.sessions, props.olderArchived, (project) => inGroup({ project }, g.name, known)) }))
     .filter((g) => g.project || g.name === CHATS || g.rows.length || g.archived);
 
   // Folded projects and sessions, kept in this browser (issue #149); gone projects and sessions drop out on the next fold.

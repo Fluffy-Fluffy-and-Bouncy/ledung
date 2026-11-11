@@ -192,6 +192,8 @@ export const api = {
   /** The messages after `afterId`, oldest first, at most 500: what a reconnecting page missed. */
   messagesAfter: (sessionId: string, afterId: number) =>
     call<StoredMessage[]>('GET', `/api/sessions/${sessionId}/messages?limit=500&after=${afterId}`),
+  /** Every archived session: the live connection's hello carries only the recent ones (issue #229). */
+  archivedSessions: () => call<SessionInfo[]>('GET', '/api/archived-sessions'),
   start: (project: string, profile?: string) => call<SessionInfo>('POST', '/api/sessions', { project, role: 'session', ...(profile ? { profile } : {}) }),
   /** A chat (issue #211): left out, the chats' default folder and mode, Claude Code's model and the full profile. */
   startChat: (opts: { folder?: string; model?: string; effort?: EffortLevel; profile?: string; permissionMode?: PermissionMode; account?: string }) => call<SessionInfo>('POST', '/api/chats-new', opts),

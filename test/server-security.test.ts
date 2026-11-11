@@ -2920,3 +2920,114 @@ test("a container project's files: signed in, inside its folder, the approved ty
     removeTemp(dir);
   }
 });
+
+/** A page file as raw bytes, for the compressed ones (issue #229). */
+function rawGet(pathname: string, headers: Record<string, string>) {
+  return new Promise<{ status: number; headers: http.IncomingHttpHeaders; bytes: Buffer }>((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port: PORT, path: pathname, headers: { host: `127.0.0.1:${PORT}`, ...headers } }, (res) => {
+      const parts: Buffer[] = [];
+      res.on('data', (c: Buffer) => parts.push(c));
+      res.on('end', () => resolve({ status: res.statusCode!, headers: res.headers, bytes: Buffer.concat(parts) }));
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+test('hashed page files are kept by the browser for good; the page itself and the API stay no-store (issue #229)', async () => {
+  const assets = path.join(webRoot, 'assets');
+  fs.mkdirSync(assets, { recursive: true });
+  fs.writeFileSync(path.join(assets, 'index-Ab12Cd34.js'), 'console.log(1);\n'.repeat(500));
+  fs.writeFileSync(path.join(assets, 'logo-Ab12Cd34.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]));
+  fs.writeFileSync(path.join(webRoot, 'sw.js'), 'self.addEventListener("fetch", () => {});\n');
+  // Every other security header is as on an API answer from the same server.
+  const api = (await rawGet('/api/state', { cookie: COOKIE })).headers;
+  const names = Object.keys(securityHeaders(PORT)).map((n) => n.toLowerCase()).filter((n) => n !== 'cache-control');
+  assert.ok(names.includes('content-security-policy') && api['content-security-policy'], 'the reference carries them');
+  for (const file of ['/assets/index-Ab12Cd34.js', '/assets/logo-Ab12Cd34.png']) {
+    const res = await rawGet(file, {});
+    assert.equal(res.status, 200, file);
+    assert.equal(res.headers['cache-control'], 'public, max-age=31536000, immutable', file);
+    for (const name of names) assert.equal(res.headers[name], api[name], `${file} ${name}`);
+  }
+  // Not hashed: a new release must be picked up, so these are fetched every time.
+  for (const [file, headers] of [['/', { cookie: COOKIE }], ['/sw.js', {}], ['/assets/no-such-file.js', { cookie: COOKIE }], ['/api/state', { cookie: COOKIE }]] as const) {
+    const res = await rawGet(file, headers);
+    assert.equal(res.status, 200, file);
+    assert.equal(res.headers['cache-control'], 'no-store', file);
+  }
+});
+
+test('page text files go compressed by Accept-Encoding, plain without it; pictures as they are (issue #229)', async () => {
+  const zlib = await import('node:zlib');
+  const assets = path.join(webRoot, 'assets');
+  fs.mkdirSync(assets, { recursive: true });
+  const js = Buffer.from('export const answer = "the same line again";\n'.repeat(400));
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 9, 9, 9]);
+  fs.writeFileSync(path.join(assets, 'main-Zz99Yy88.js'), js);
+  fs.writeFileSync(path.join(assets, 'pic-Zz99Yy88.png'), png);
+  fs.writeFileSync(path.join(webRoot, 'icon.svg'), `<svg xmlns="http://www.w3.org/2000/svg">${'<g/>'.repeat(300)}</svg>`);
+
+  const br = await rawGet('/assets/main-Zz99Yy88.js', { 'accept-encoding': 'gzip, deflate, br' });
+  assert.equal(br.headers['content-encoding'], 'br');
+  assert.equal(br.headers.vary, 'Accept-Encoding');
+  assert.equal(Number(br.headers['content-length']), br.bytes.length);
+  assert.ok(br.bytes.length < js.length / 4, `compressed: ${br.bytes.length} of ${js.length}`);
+  assert.deepEqual(zlib.brotliDecompressSync(br.bytes), js);
+
+  const gz = await rawGet('/assets/main-Zz99Yy88.js', { 'accept-encoding': 'gzip' });
+  assert.equal(gz.headers['content-encoding'], 'gzip');
+  assert.deepEqual(zlib.gunzipSync(gz.bytes), js);
+  // Brotli refused with q=0: gzip.
+  assert.equal((await rawGet('/assets/main-Zz99Yy88.js', { 'accept-encoding': 'br;q=0, gzip' })).headers['content-encoding'], 'gzip');
+
+  const plain = await rawGet('/assets/main-Zz99Yy88.js', {});
+  assert.equal(plain.headers['content-encoding'], undefined);
+  assert.equal(plain.headers['content-type'], 'text/javascript; charset=utf-8');
+  assert.deepEqual(plain.bytes, js);
+
+  const page = await rawGet('/', { cookie: COOKIE, 'accept-encoding': 'br' });
+  assert.equal(page.headers['content-encoding'], 'br', 'the page itself too');
+  assert.equal(zlib.brotliDecompressSync(page.bytes).toString(), fs.readFileSync(path.join(webRoot, 'index.html'), 'utf8'));
+  assert.equal((await rawGet('/icon.svg', { 'accept-encoding': 'gzip' })).headers['content-encoding'], 'gzip', 'SVG is text');
+
+  const pic = await rawGet('/assets/pic-Zz99Yy88.png', { 'accept-encoding': 'gzip, br' });
+  assert.equal(pic.headers['content-encoding'], undefined);
+  assert.deepEqual(pic.bytes, png);
+
+  // A file rebuilt in place is compressed again, not served from the old copy.
+  const changed = Buffer.from('export const answer = "changed";\n'.repeat(400));
+  fs.writeFileSync(path.join(assets, 'main-Zz99Yy88.js'), changed);
+  assert.deepEqual(zlib.brotliDecompressSync((await rawGet('/assets/main-Zz99Yy88.js', { 'accept-encoding': 'br' })).bytes), changed);
+});
+
+test('hello carries recent and named archived sessions, counts the older ones, and the full list needs the sign-in (issue #229)', async () => {
+  const day = 24 * 60 * 60 * 1000;
+  const mk = (id: string, archivedAt: number) => {
+    paneStore.createSession({ id, project: 'gone-229', runner: 'local', title: id, parentId: null, permissionMode: 'default', role: 'session' });
+    paneStore.updateSession(id, { status: 'ended', archivedAt });
+  };
+  mk('arch229-recent', Date.now() - 60_000);
+  mk('arch229-old1', Date.now() - 3 * day);
+  mk('arch229-old2', Date.now() - 4 * day);
+  mk('arch229-asked', Date.now() - 5 * day);
+  const q = paneStore.createQuestion({ sessionId: 'arch229-asked', question: 'still open?', options: null, addressedTo: 'user' });
+  try {
+    for (const hello of [JSON.parse((await request({ path: '/api/state', headers: { cookie: COOKIE } })).body), await helloOf({ cookie: COOKIE, origin: ORIGIN })]) {
+      const ids = (hello.sessions as { id: string }[]).map((s) => s.id);
+      assert.ok(ids.includes('s1'), 'a session not archived');
+      assert.ok(ids.includes('arch229-recent'), 'archived a minute ago');
+      assert.ok(ids.includes('arch229-asked'), 'named by an open question');
+      assert.ok(!ids.includes('arch229-old1') && !ids.includes('arch229-old2'), 'archived days ago');
+      assert.equal((hello.olderArchived as Record<string, number>)['gone-229'], 2);
+    }
+    assert.equal((await request({ path: '/api/archived-sessions' })).status, 401);
+    const all = await request({ path: '/api/archived-sessions', headers: { cookie: COOKIE } });
+    assert.equal(all.status, 200);
+    const listed = JSON.parse(all.body) as { id: string; archivedAt: number | null }[];
+    assert.deepEqual(listed.filter((s) => s.id.startsWith('arch229-')).map((s) => s.id).sort(), ['arch229-asked', 'arch229-old1', 'arch229-old2', 'arch229-recent']);
+    assert.ok(listed.every((s) => s.archivedAt), 'archived ones only');
+  } finally {
+    paneStore.withdrawQuestion(q.id, 'test');
+  }
+});

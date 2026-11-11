@@ -45,6 +45,8 @@ import { relayCapSenderSentence, relayCapSentence } from '../remote/tunnel.ts';
 import { MAX_IMAGE_BYTES } from '../board/attachments.ts';
 import { ManagementError, type SettingsPort } from '../sessions/management.ts';
 import { waitingCount } from '../shared/waiting.ts';
+import { helloSessions } from '../shared/hello-sessions.ts';
+import { compressible, IMMUTABLE, isHashedAsset, PackedFiles, pickEncoding } from './static-files.ts';
 
 /** Calls a linked computer may make in a minute (#245). */
 const LINK_PER_MINUTE = 60;
@@ -76,6 +78,8 @@ const WAITING_POLL_MS = 30_000;
 const WAITING_PUSH_MS = 1000;
 /** Logged once, the first time a late answer after close is let go (#463). */
 let exercised463 = false;
+/** Logged once, the first time hello leaves archived sessions out (#229). */
+let exercised229 = false;
 
 /** Why linking refuses through the public name (#245 step 1: on the computer itself only). */
 const LINKED_HERE = 'Computers are linked and unlinked';
@@ -229,6 +233,8 @@ export class LedungServer {
   /** Responses to requests through the public name: they get publicHeaders. */
   private readonly publicResponses = new WeakSet<ServerResponse>();
   private readonly webRoot: string;
+  /** The page's text files, compressed once each (issue #229). */
+  private readonly packedFiles = new PackedFiles();
   private readonly opts: ServerOptions;
   /** The tunnel to the relay (issue #160); null: none is configured. */
   private remote: RemoteStatus | null = null;
@@ -671,6 +677,15 @@ export class LedungServer {
   /** viaPublic: the page came through the public name, so it draws the remote frame (issue #232). */
   private hello(viaPublic: boolean): ServerEvent {
     const { manager, store } = this.opts;
+    const permissions = store.pendingPermissions();
+    const questions = manager.questions();
+    // Not every session ever (issue #229): the archived ones come when the person opens an Archived list.
+    const named = [...permissions.map((p) => p.sessionId), ...questions.flatMap((q) => [q.sessionId, q.addressedTo, q.answeredBy ?? ''])];
+    const { sessions, olderArchived } = helloSessions(manager.sessions(), named, Date.now());
+    if (!exercised229 && Object.keys(olderArchived).length) {
+      exercised229 = true;
+      exercisedLine(`EXERCISED #229 hello left out ${Object.values(olderArchived).reduce((a, b) => a + b, 0)} older archived sessions`);
+    }
     return {
       type: 'hello',
       // A release is named by its folder; the npm package's folder never changes, so by its version (#105).
@@ -678,9 +693,10 @@ export class LedungServer {
       canRestart: !!this.opts.onRestart,
       source: this.source(),
       userName: manager.userName,
-      sessions: manager.sessions(),
-      permissions: store.pendingPermissions(),
-      questions: manager.questions(),
+      sessions,
+      olderArchived,
+      permissions,
+      questions,
       projects: manager.projects(),
       limits: store.latestLimits(),
       usageStops: manager.usageStopStates(),
@@ -840,7 +856,7 @@ export class LedungServer {
     }
 
     if (req.method !== 'GET') throw new HttpError(405, 'Method not allowed.');
-    this.serveStatic(url.pathname, res, this.guard.mayUse(req), remote);
+    await this.serveStatic(url.pathname, req, res, this.guard.mayUse(req), remote);
   }
 
   /**
@@ -1384,6 +1400,9 @@ export class LedungServer {
     switch (route) {
       case 'GET state':
         return this.hello(this.guard.isPublic(req));
+      // Every archived session, for an Archived list: hello carries only the recent ones (issue #229).
+      case 'GET archived-sessions':
+        return manager.sessions().filter((s) => s.archivedAt);
       // Paired devices (docs/steps/relay.md step 4): listed, paired and revoked on this computer only.
       case 'GET devices':
         this.requireLocal(req);
@@ -2228,7 +2247,7 @@ export class LedungServer {
     return this.opts.updater;
   }
 
-  private serveStatic(pathname: string, res: ServerResponse, signedIn: boolean, remote: boolean): void {
+  private async serveStatic(pathname: string, req: IncomingMessage, res: ServerResponse, signedIn: boolean, remote: boolean): Promise<void> {
     const root = path.resolve(this.webRoot);
     let file = path.resolve(root, '.' + decodeURIComponent(pathname));
     if (!file.startsWith(root + path.sep) && file !== root) throw new HttpError(404, 'Not found.');
@@ -2243,7 +2262,23 @@ export class LedungServer {
       if (!fs.existsSync(file)) throw new HttpError(500, 'The page has not been built. Run "npm run build".');
     }
     const type = CONTENT_TYPES[path.extname(file).toLowerCase()] ?? 'application/octet-stream';
-    res.writeHead(200, { ...this.headersFor(res), 'Content-Type': type });
+    // Issue #229: hashed assets are kept by the browser for good; everything else stays no-store, as the headers say.
+    const headers: Record<string, string | number> = {
+      ...this.headersFor(res),
+      'Content-Type': type,
+      ...(isHashedAsset(root, file) ? { 'Cache-Control': IMMUTABLE } : {}),
+    };
+    if (compressible(file)) {
+      headers.Vary = 'Accept-Encoding';
+      const encoding = pickEncoding(req.headers['accept-encoding']);
+      if (encoding) {
+        const bytes = await this.packedFiles.get(file, encoding);
+        res.writeHead(200, { ...headers, 'Content-Encoding': encoding, 'Content-Length': bytes.length });
+        res.end(bytes);
+        return;
+      }
+    }
+    res.writeHead(200, headers);
     fs.createReadStream(file).pipe(res);
   }
 
