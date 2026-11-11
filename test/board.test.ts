@@ -154,6 +154,34 @@ test('a poll that changes nothing the page shows sends no board event; one that 
   assert.equal(r.published[2]!.boards[0]!.state, 'error');
 });
 
+test('a board polled with nothing new is still sent once a minute, so the page can tell it is being checked (issue #232)', async () => {
+  const r = rig();
+  await r.board.pollOnce();
+  const first = r.clock.now;
+  r.published.length = 0;
+  // Polls every 5 s with nothing new: none sent until a minute has passed since the last one sent.
+  while (r.clock.now + 5_000 < first + 60_000) {
+    r.clock.now += 5_000;
+    await r.board.pollOnce();
+  }
+  assert.equal(r.published.length, 0, 'under a minute: nothing');
+  r.clock.now = first + 60_000;
+  await r.board.pollOnce();
+  assert.equal(r.published.length, 1, 'a minute on: one, with the time of that check');
+  assert.equal(r.published[0]!.boards[0]!.lastPollAt, first + 60_000);
+  // The minute counts from the last one sent: a change sent in between moves it on.
+  fromLedung(r.fake, 'alice', ['@me'], 'news');
+  r.clock.now += 30_000;
+  await r.board.pollOnce();
+  assert.equal(r.published.length, 2, 'the post');
+  r.clock.now += 55_000;
+  await r.board.pollOnce();
+  assert.equal(r.published.length, 2, '55 s after the post: nothing');
+  r.clock.now += 5_000;
+  await r.board.pollOnce();
+  assert.equal(r.published.length, 3, 'a minute after the post: the heartbeat');
+});
+
 test('addresses: @login, @login/Project and #channel; anything else is refused with the reason', () => {
   assert.deepEqual(parseAddress('@alice'), { kind: 'person', login: 'alice' });
   assert.deepEqual(parseAddress('@alice/Some Project'), { kind: 'project', login: 'alice', project: 'Some Project' });

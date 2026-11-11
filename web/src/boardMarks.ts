@@ -33,15 +33,36 @@ export function boardChip(b: BoardStatus | null | undefined, now = Date.now()): 
   const counts = [unread ? `${unread} unread` : '', ignored ? `${ignored} ignored` : '', paused ? `${paused} paused` : ''].filter(Boolean);
   const tail = counts.length ? ` · ${counts.join(' · ')}` : '';
   const repos = on.map((r) => r.repo).join(', ');
-  const failing = on.filter((r) => r.state === 'error');
+  // A repo not checked for over three minutes is a problem too, error or not, so a stalled poller can't look fine.
+  const failing = on.filter((r) => r.state === 'error' || boardStale(r, now));
   // Not signed in shows on every repo as off with the sign-in sentence.
   const signin = b.boards.find((r) => r.state === 'off' && r.error);
   if (!on.length) return { text: 'Board off', level: 'idle', title: signin?.error ?? 'No project has the board on.' };
-  if (failing.length) return { text: `Board: problem${tail}`, level: 'warn', title: `${failing.map((r) => `${r.repo}: ${r.error ?? 'the last check failed.'}`).join(' ')} Trying again.` };
+  if (failing.length) {
+    const why = (r: (typeof on)[number]) => r.state === 'error' ? r.error ?? 'the last check failed.' : `not checked for ${checkedAgo(r.lastPollAt!, now).replace(/ ago$/, '')}.`;
+    return { text: `Board: problem${tail}`, level: 'warn', title: `${failing.map((r) => `${r.repo}: ${why(r)}`).join(' ')} Trying again.` };
+  }
   if (on.some((r) => r.state === 'starting')) return { text: 'Board starting…', level: 'idle', title: `Connecting to ${repos}.` };
   const last = Math.min(...on.map((r) => r.lastPollAt ?? 0));
-  const polled = last ? `last checked ${Math.max(0, Math.round((now - last) / 1000))} s ago` : 'not checked yet';
+  const polled = last ? `last checked ${checkedAgo(last, now)}` : 'not checked yet';
   return { text: `Board${tail}`, level: 'ok', title: `${repos}${b.identity ? ` as @${b.identity}` : ''}; ${polled}.` };
+}
+
+/**
+ * Ledung sends the board's state when it changes and at least once a minute (issue #232; board thread 30), so the
+ * time of the last check is only known to the minute: "under a minute ago", then whole minutes, never seconds.
+ */
+export function checkedAgo(at: number, now = Date.now()): string {
+  const min = Math.floor(Math.max(0, now - at) / 60_000);
+  return min < 1 ? 'under a minute ago' : `${min} min ago`;
+}
+
+/** Past this, a repo that says it is fine but hasn't been checked shows as a problem (board thread 30). */
+export const BOARD_STALE_MS = 3 * 60_000;
+
+/** Whether a repo some project has on is fine by its state but its last check is too old to trust. */
+export function boardStale(r: { state: string; lastPollAt: number | null }, now = Date.now()): boolean {
+  return r.state === 'ok' && r.lastPollAt !== null && now - r.lastPollAt > BOARD_STALE_MS;
 }
 
 /** A board post as the chat shows it. */

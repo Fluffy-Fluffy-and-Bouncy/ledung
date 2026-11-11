@@ -20,7 +20,8 @@ test('the chip is absent without a board, and says off, starting, ok and problem
   assert.equal(boardChip(status({ state: 'starting' }))!.level, 'idle');
   const ok = boardChip(status(), 15_000)!;
   assert.deepEqual([ok.text, ok.level], ['Board', 'ok']);
-  assert.match(ok.title, /org\/board as @me; last checked 5 s ago/);
+  // To the minute, as often as Ledung sends it (issue #232; board thread 30).
+  assert.match(ok.title, /org\/board as @me; last checked under a minute ago\./);
   const bad = boardChip(status({ state: 'error', error: 'GitHub is unreachable.' }))!;
   assert.deepEqual([bad.text, bad.level], ['Board: problem', 'warn']);
   assert.match(bad.title, /org\/board: GitHub is unreachable/);
@@ -37,9 +38,29 @@ test('the chip counts unread, ignored (per project) and paused, over every repo'
   assert.equal(c.text, 'Board · 3 unread · 3 ignored · 1 paused');
   assert.match(c.title, /^org\/board, org\/two as @me/, 'only the repos some project has on');
   // One repo with a problem is enough for amber.
-  const mixed = boardChip({ ...status(), boards: [repo(), repo({ repo: 'org/two', state: 'error', error: 'down' })] })!;
+  const mixed = boardChip({ ...status(), boards: [repo(), repo({ repo: 'org/two', state: 'error', error: 'down' })] }, 15_000)!;
   assert.equal(mixed.level, 'warn');
   assert.match(mixed.title, /org\/two: down/);
+});
+
+test('the time of the last check is shown to the minute, and a check over three minutes old is a problem though nothing failed (issue #232)', () => {
+  const at = 10_000;
+  const title = (now: number) => boardChip(status(), now)!.title;
+  assert.match(title(at + 59_000), /last checked under a minute ago\.$/);
+  assert.match(title(at + 60_000), /last checked 1 min ago\.$/);
+  assert.match(title(at + 179_000), /last checked 2 min ago\.$/);
+  // Three minutes on the dot is still fine; past it, the chip says what an error says, in its words.
+  const fine = boardChip(status(), at + 180_000)!;
+  assert.deepEqual([fine.text, fine.level], ['Board', 'ok']);
+  const stale = boardChip(status(), at + 181_000)!;
+  assert.deepEqual([stale.text, stale.level], ['Board: problem', 'warn']);
+  assert.equal(stale.title, 'org/board: not checked for 3 min. Trying again.');
+  // A stale repo beside a failing one: both named.
+  const both = boardChip({ ...status(), boards: [repo(), repo({ repo: 'org/two', state: 'error', error: 'down' })] }, at + 600_000)!;
+  assert.equal(both.title, 'org/board: not checked for 10 min. org/two: down Trying again.');
+  // Only a repo that says it is fine can go stale: one starting, or with no check yet, is not a problem by age.
+  assert.equal(boardChip(status({ state: 'starting' }), at + 600_000)!.level, 'idle');
+  assert.equal(boardChip(status({ lastPollAt: null }), at + 600_000)!.level, 'ok');
 });
 
 const markOf = (s: DeliverySegment | undefined) => { assert.equal(s?.type, 'board'); return (s as Extract<DeliverySegment, { type: 'board' }>).mark; };
