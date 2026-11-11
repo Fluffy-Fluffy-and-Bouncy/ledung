@@ -2,17 +2,11 @@
 // the limit (editable), the line for a free place with Start now, and what one session's turns used.
 import { useEffect, useState } from 'react';
 import { projectLabel, type MachineInfo, type Priority, type SessionInfo, type TurnResource, type TypicalCost } from '../../../src/shared/protocol.ts';
+import { formatBytes, formatCores } from '../../../src/shared/machine-shown.ts';
 import { api } from '../api.ts';
 
-export function formatCores(n: number): string {
-  return `${n < 10 ? n.toFixed(1) : Math.round(n)} ${n >= 0.95 && n < 1.05 ? 'core' : 'cores'}`;
-}
-
-export function formatBytes(n: number): string {
-  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(n >= 10 * 1024 ** 3 ? 0 : 1)} GB`;
-  if (n >= 1024 ** 2) return `${Math.round(n / 1024 ** 2)} MB`;
-  return `${Math.round(n / 1024)} KB`;
-}
+// Shared with the server, which sends the machine's figures only when what they show here changes (#230).
+export { formatBytes, formatCores };
 
 export function formatDuration(ms: number): string {
   const s = Math.round(ms / 1000);

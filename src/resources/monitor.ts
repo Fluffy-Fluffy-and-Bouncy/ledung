@@ -61,12 +61,17 @@ export class ResourceMonitor {
   }
 
   start(): void {
-    this.sampler = new ProcessSampler(this.intervalSec, (list, at) => {
+    const guarded = (list: ProcessList | null, at: number) => {
       try {
         this.tick(list, at);
       } catch (e) {
         console.error(`Measuring: ${(e as Error).message}`);
       }
+    };
+    // The process list is only for local sessions' figures: with none live, none is read (#230).
+    this.sampler = new ProcessSampler(this.intervalSec, guarded, {
+      wanted: () => this.targets().some((t) => t.kind === 'local'),
+      onSkip: (at) => guarded(null, at),
     });
     this.sampler.start();
   }
@@ -99,7 +104,8 @@ export class ResourceMonitor {
     return { cpuSeconds: Math.max(0, (this.counters.get(id)?.cpu ?? 0) - t.startCpu), peakCores: t.peakCores, peakMem: t.peakMem, samples: t.samples };
   }
 
-  private tick(list: ProcessList, at: number): void {
+  /** One sample; `list` null when no process list was read (no local session was live). */
+  private tick(list: ProcessList | null, at: number): void {
     if (!this.memBusy) {
       this.memBusy = true;
       void memoryUsed()
@@ -120,9 +126,10 @@ export class ResourceMonitor {
 
     // Local sessions: the tree under the session's host process, turn or not, and what left it (#169).
     const dt = (at - this.prevAt) / 1000;
-    const hostPids = new Map(listHostRecords().map((r) => [r.sessionId, r.hostPid]));
+    const hostPids = new Map(list ? listHostRecords().map((r) => [r.sessionId, r.hostPid]) : []);
     for (const t of targets) {
-      if (t.kind !== 'local') continue;
+      // A local session that went live after the sampler chose not to read is measured from the next sample.
+      if (t.kind !== 'local' || !list) continue;
       const pid = hostPids.get(t.id);
       const s = treeSample(this.prevList, list, pid, dt, os.cpus().length, this.trees.get(t.id) ?? null);
       this.trees.set(t.id, s.memory);
