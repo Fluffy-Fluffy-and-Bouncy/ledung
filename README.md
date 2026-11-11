@@ -64,6 +64,26 @@ Set `"lan"` in the config to this computer's address on the local network (for e
 
 A relay ([relay/README.md](relay/README.md)) lets your phone reach Ledung from anywhere, end to end encrypted. If whoever runs the relay sends you a **join code**, paste it in **Settings → Remote & devices → Remote access → Join with a code**: Ledung makes its own secret and certificate account, joins and connects at once, with no config edit and no restart (its settings are kept in the data folder's `remote` folder). Once the relay's admin has approved it, Ledung gets its certificate within a minute; then pair your phone in **Settings → Remote & devices → Phones**, where you can also switch on push notifications. **Leave this relay** undoes it. A `"remote"` block in the config file does the same by hand, and while it is there it wins: Join and Leave are off. If you run a relay yourself, **Settings → Remote & devices → Relay** invites other people's computers to it (relay/README.md, Invite a computer).
 
+## Anonymous usage count
+
+Ledung counts how many people use it with an anonymous daily check-in. It is on by default and announced: a notice at the top of the page explains it the first time the page opens (and once to everyone who updates into it), and nothing is sent until that notice is answered.
+
+**What is sent.** Once a day, an npm-installed Ledung sends this, and only this, to `https://checkin.projectledung.com/v1/checkin`:
+
+```json
+{ "id": "<a random install ID>", "version": "2.1.0", "channel": "public", "os": "win32" }
+```
+
+- `id` is a random ID Ledung makes at first start and keeps in its data folder. It is not derived from anything about you or your computer.
+- `version` is Ledung's version, `channel` the update channel (`public` or `dev`, Settings → About), `os` the operating system as Node names it (`win32`, `darwin`, `linux`).
+
+Nothing else: no name, email, computer name, project, session, usage figure or error. The endpoint necessarily sees your IP address in transit, as any web request does; it does not store it. It keeps, per ID, the day it was first and last seen and the version, channel and OS last sent, and counts unique and active installs from that. Its code is in [`checkin-worker/`](checkin-worker/). A Ledung run from a source folder (a clone or a release built from one) never checks in.
+
+**Turning it off.** Any of these stops it; nothing is sent while it is off:
+
+- **Turn off** on the notice, or the **Usage count** switch in **Settings → About**, which also shows exactly what would be sent and when it last was.
+- The environment variable `DO_NOT_TRACK=1` where Ledung runs ([consoledonottrack.com](https://consoledonottrack.com)), whatever the switch says.
+
 ## Config
 
 The config file is `ledung.config.json` in the user data folder (see [Install and first start](#install-and-first-start)); **Settings → Config file** shows where it is, when it was last read and any problem in it. Every setting is described in `ledung.config.example.json`, which comes with the package (next to its `package.json`) and is in this repository. Most people need none of it at first: projects and accounts are added in the page.
