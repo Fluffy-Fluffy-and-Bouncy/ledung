@@ -90,10 +90,24 @@ export async function counts(db: D1Database, now: number): Promise<Counts> {
   return { day, unique, active, byVersion: await split('version'), byChannel: await split('channel'), byOs: await split('os') };
 }
 
+/**
+ * Compares two strings in time that doesn't depend on where they differ, so the token can't be guessed byte by
+ * byte from response times (privacy and security review of PR #223). Plain code: Node has no crypto.subtle one.
+ */
+export function sameText(a: string, b: string): boolean {
+  const x = new TextEncoder().encode(a);
+  const y = new TextEncoder().encode(b);
+  let diff = x.length ^ y.length;
+  for (let i = 0; i < Math.max(x.length, y.length); i++) diff |= (x[i] ?? 0) ^ (y[i] ?? 0);
+  return diff === 0;
+}
+
 export async function handle(request: Request, env: Env, now: number = Date.now()): Promise<Response> {
   const url = new URL(request.url);
   if (url.pathname === '/v1/checkin') {
     if (request.method !== 'POST') return new Response(null, { status: 405, headers: { Allow: 'POST' } });
+    // A declared size is refused before the body is read; a body sent without one is measured after.
+    if (Number(request.headers.get('Content-Length') ?? 0) > MAX_BODY) return new Response(null, { status: 413 });
     const text = await request.text();
     if (text.length > MAX_BODY) return new Response(null, { status: 413 });
     let body: unknown;
@@ -108,7 +122,7 @@ export async function handle(request: Request, env: Env, now: number = Date.now(
     return new Response(null, { status: 204 });
   }
   if (url.pathname === '/v1/counts') {
-    if (!env.COUNTS_TOKEN || request.headers.get('Authorization') !== `Bearer ${env.COUNTS_TOKEN}`) return new Response(null, { status: 404 });
+    if (!env.COUNTS_TOKEN || !sameText(request.headers.get('Authorization') ?? '', `Bearer ${env.COUNTS_TOKEN}`)) return new Response(null, { status: 404 });
     return Response.json(await counts(env.DB, now), { headers: { 'Cache-Control': 'no-store' } });
   }
   return new Response(null, { status: 404 });

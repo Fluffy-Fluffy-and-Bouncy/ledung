@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { dayOf, handle, parseCheckIn, type D1Database, type D1Statement, type Env } from '../checkin-worker/worker.ts';
+import { dayOf, handle, parseCheckIn, sameText, type D1Database, type D1Statement, type Env } from '../checkin-worker/worker.ts';
 
 const SCHEMA = fs.readFileSync(path.join(import.meta.dirname, '..', 'checkin-worker', 'schema.sql'), 'utf8');
 const DAY = 86_400_000;
@@ -73,6 +73,22 @@ test('anything but a check-in is refused and stores nothing', async () => {
   assert.equal((await checkIn(env, good, T0)).status, 204);
   assert.equal((db.prepare('SELECT COUNT(*) AS n FROM installs').get() as { n: number }).n, 1);
   assert.deepEqual(parseCheckIn(good), good);
+});
+
+test('a declared body over 1 KB is refused before it is read; the same small body without that size is stored', async () => {
+  const { db, env } = setup();
+  const body = JSON.stringify({ id: ids[0], version: '2.1.0', channel: 'public', os: 'linux' });
+  const post = (headers: Record<string, string>) => handle(new Request('https://checkin.example/v1/checkin', { method: 'POST', headers, body }), env, T0);
+  assert.equal((await post({ 'Content-Type': 'application/json', 'Content-Length': '5000' })).status, 413);
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM installs').get() as { n: number }).n, 0);
+  assert.equal((await post({ 'Content-Type': 'application/json' })).status, 204);
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM installs').get() as { n: number }).n, 1);
+});
+
+test('the token compare: equal strings match; a different, shorter or longer one does not', () => {
+  assert.equal(sameText('Bearer abc', 'Bearer abc'), true);
+  assert.equal(sameText('', ''), true);
+  for (const other of ['Bearer abd', 'Bearer ab', 'Bearer abcd', '', 'bearer abc']) assert.equal(sameText(other, 'Bearer abc'), false, other);
 });
 
 test('the counts: unique, active in 1/7/30 days, and the split of the 30-day active, only with the token', async () => {
