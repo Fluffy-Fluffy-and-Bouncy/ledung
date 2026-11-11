@@ -238,6 +238,11 @@ test('Project-Ledung#478: a save into Ledung\'s own data folder is refused, and 
     // A folder in it that isn't there yet, and the data folder spelled in another case where the disk ignores case.
     assert.throws(() => saveIntoWorktree(wt, 'LedungData/new/shot.png', 'png', PNG, NO_RULES), refused);
     if (process.platform === 'darwin' || process.platform === 'win32') assert.throws(() => saveIntoWorktree(wt, 'ledungdata/shot.png', 'png', PNG, NO_RULES), refused);
+    // A folder in the worktree that is a link (a junction on Windows) to the data folder: refused for the data folder,
+    // before the walk would refuse it as a link (self-check of this PR).
+    fs.symlinkSync(data, path.join(wt, 'via'), 'junction');
+    assert.throws(() => saveIntoWorktree(wt, 'via/shot.png', 'png', PNG, NO_RULES), refused);
+    fs.rmSync(path.join(wt, 'via'));
     // A worktree inside the data folder refuses every path.
     assert.throws(() => saveIntoWorktree(path.join(data, 'linked-files'), 'x.png', 'png', PNG, NO_RULES), refused);
     // Nothing landed: the only file is the EXERCISED trace the refusal wrote into this data folder (src/platform/exercised.ts).
