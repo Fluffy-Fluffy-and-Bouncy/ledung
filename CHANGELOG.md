@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-12
+- The page stays quicker with many sessions, especially on a phone: the sidebar no longer re-checks every session for each row, and isn't redrawn by a message that changes nothing in it; all the ships and timers share one clock; a long conversation draws its latest messages and earlier ones as you scroll up to them ("Show earlier messages" above them); the usage figures and panels stop refreshing while the page is in the background, and refresh at once when you come back. (#233)
+
 ## 2026-11-11
 - Your pinned latest message at the top of the chat no longer shows through a session's ⚙ menu (nor does the message box under it), and its bottom edge fades out softly instead of ending in a hard line. (#226)
 - An anonymous daily check-in counts how many people use Ledung: once a day an npm-installed Ledung sends a random install ID, its version, its update channel and the operating system, nothing else. A notice explains it the first time (and once after updating); Settings → About → Usage count turns it off, and `DO_NOT_TRACK=1` stops it too. (#220)

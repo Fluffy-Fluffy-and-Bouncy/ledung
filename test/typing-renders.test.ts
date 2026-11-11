@@ -9,6 +9,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build, stop } from 'esbuild';
 import { Window } from 'happy-dom';
+import { TAIL } from '../web/src/messageWindow.ts';
 
 const root = path.join(import.meta.dirname, '..');
 const MESSAGES = Number(process.env.TYPING_MESSAGES ?? 500);
@@ -150,7 +151,8 @@ test('typing in a conversation of 500 long messages draws no message again', asy
   localStorage.clear();
   const messages = Array.from({ length: MESSAGES }, (_, i) => assistant(i + 1, long(i + 1)));
   const view = await mount(ledung(messages));
-  assert.equal(drawn.length, MESSAGES, 'each message drawn once on opening');
+  // Only the latest TAIL are drawn on opening (issue #233), each once.
+  assert.equal(drawn.length, Math.min(MESSAGES, TAIL), 'each of the latest messages drawn once on opening');
   drawn.length = 0;
   const typed = 'Hello there, how is it going?';
   const start = performance.now();
