@@ -645,6 +645,12 @@ test('a browser still holding the old token cookie stays signed in, and a page l
   const api = await request({ path: '/api/state', headers: { cookie: COOKIE } });
   assert.equal(api.status, 200);
   assert.equal(api.headers['set-cookie'], undefined);
+  // A browser's fetch of a script with the page gets none either; the document from a browser does.
+  const script = await request({ path: '/', headers: { cookie: COOKIE, 'sec-fetch-dest': 'script' } });
+  assert.equal(script.status, 200);
+  assert.equal(script.headers['set-cookie'], undefined);
+  const doc = await request({ path: '/', headers: { cookie: COOKIE, 'sec-fetch-dest': 'document' } });
+  assert.match(String(doc.headers['set-cookie']), /^ledung_auth=[0-9a-f]{64};/);
   // Nothing swaps without a cookie that is the token.
   const none = await request({ path: '/', headers: { cookie: `ledung_auth=${'b'.repeat(64)}` } });
   assert.equal(none.status, 401);
@@ -661,7 +667,7 @@ test('API reads that do work need Ledung\'s own page; plain reads are unchanged 
   const elsewhere: Record<string, string>[] = [
     { origin: 'http://127.0.0.1:1' }, // another port of this computer
     { origin: 'https://evil.example' },
-    { 'sec-fetch-site': 'same-site' }, // another port: the same site to a browser, so SameSite lets it through
+    { 'sec-fetch-site': 'same-site' }, // not Ledung's own origin
     { 'sec-fetch-site': 'cross-site' },
     { origin: ORIGIN, 'sec-fetch-site': 'same-site' }, // both are asked
   ];

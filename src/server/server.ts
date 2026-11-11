@@ -873,7 +873,9 @@ export class LedungServer {
 
     if (req.method !== 'GET') throw new HttpError(405, 'Method not allowed.');
     // A page load still carrying the cookie that was the install token gets a sign-in in its place (Project-Ledung#476).
-    if (this.guard.oldTokenCookie(req)) {
+    // Only the page document, not each script or picture fetched with it, so one page load makes one sign-in.
+    const dest = req.headers['sec-fetch-dest'];
+    if (this.guard.oldTokenCookie(req) && (dest === undefined || dest === 'document')) {
       res.setHeader('Set-Cookie', this.guard.signInCookie());
       if (!exercised476) {
         exercised476 = true;
