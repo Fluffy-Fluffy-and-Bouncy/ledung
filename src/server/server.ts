@@ -108,15 +108,18 @@ const OPEN_WHILE_LOCKED = new Set(['/api/device-unlock', '/api/passkey-challenge
 export const PLAIN_READS = new Set([
   'GET state', 'GET devices', 'GET links', 'GET device', 'GET push', 'GET sessions/:id/messages', 'GET usage',
   'GET sessions/:id/usage', 'GET overview', 'GET projects', 'GET accounts', 'GET browse', 'GET profiles',
-  // A project's workflow files: a read, though for a container project it goes through docker; the builder's own
-  // test has it answered for any origin (test/server-security.test.ts, "a project's flow needs the sign-in").
-  'GET projects/:id/flow',
   'GET workflow-check', 'GET projects-folder', 'GET projects/:id/proposals/:id', 'GET projects/:id/runs', 'GET board',
   'GET board-threads', 'GET board-thread', 'GET usage-publish', 'GET machine', 'GET sessions/:id/turns', 'GET typical-costs',
   'GET sessions/:id/folders', 'GET questions/:id/evidence/:id', 'GET chats', 'GET sessions/:id/shell-check',
   'GET sessions/:id/secrets', 'GET update', 'GET checkin', 'GET remote-link', 'GET relay-admin',
   'GET sessions/:id/sent-images/:id', 'GET board-attachment',
 ]);
+/**
+ * Work reads asked only the browser's Sec-Fetch-Site label, not the Origin: a project's workflow view goes through
+ * docker for a container project, and the builder's test has it answered to a foreign Origin sent without that label
+ * (test/server-security.test.ts, "a project's flow needs the sign-in"; code review of PR #234, finding 1).
+ */
+export const SITE_ONLY_READS = new Set(['GET projects/:id/flow']);
 /** Where sign-ins are kept between restarts (Guard.useSignInStore), as hashes. */
 const SIGN_INS_KEY = 'sign-ins';
 /** Logged once, the first time a browser's old token cookie is swapped for a sign-in (Project-Ledung#476). */
@@ -847,7 +850,8 @@ export class LedungServer {
     if (url.pathname.startsWith('/api/')) {
       if (!this.guard.mayUse(req)) throw new HttpError(401, remote ? NOT_PAIRED : 'Not signed in. Open Ledung through the link it prints when it starts.');
       if (req.method !== 'GET' && !this.guard.originAllowed(req)) throw new HttpError(403, 'Requests must come from Ledung\'s own page.');
-      if (req.method === 'GET' && !PLAIN_READS.has(apiRoute('GET', url.pathname)) && !this.guard.fromOwnPage(req)) {
+      const read = req.method === 'GET' ? apiRoute('GET', url.pathname) : null;
+      if (read && !PLAIN_READS.has(read) && !this.guard.fromOwnPage(req, SITE_ONLY_READS.has(read))) {
         throw new HttpError(403, 'Requests must come from Ledung\'s own page.');
       }
       if (remote && req.method !== 'GET') await this.requireUnlocked(req, url);
@@ -873,9 +877,12 @@ export class LedungServer {
 
     if (req.method !== 'GET') throw new HttpError(405, 'Method not allowed.');
     // A page load still carrying the cookie that was the install token gets a sign-in in its place (Project-Ledung#476).
-    // Only the page document, not each script or picture fetched with it, so one page load makes one sign-in.
+    // Only a browser's page document, not each script or picture fetched with it, so one page load makes one sign-in.
+    // A browser without Sec-Fetch-Dest still asks for HTML; a script that asks for none gets no sign-ins to pile up
+    // past MAX_SIGN_INS (code review of PR #234, minor finding).
     const dest = req.headers['sec-fetch-dest'];
-    if (this.guard.oldTokenCookie(req) && (dest === undefined || dest === 'document')) {
+    const page = dest === undefined ? (req.headers.accept ?? '').includes('text/html') : dest === 'document';
+    if (this.guard.oldTokenCookie(req) && page) {
       res.setHeader('Set-Cookie', this.guard.signInCookie());
       if (!exercised476) {
         exercised476 = true;

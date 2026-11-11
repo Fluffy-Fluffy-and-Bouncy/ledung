@@ -259,10 +259,10 @@ export class Guard<D = unknown> {
    * As far as the browser tells, the request comes from Ledung's own page or the person's own address bar: an Origin,
    * when sent, is Ledung's (originAllowed), and Sec-Fetch-Site, when sent, is "same-origin" or "none" (a typed address
    * or a bookmark). Asked of API reads that do work (Project-Ledung#476). A client that sends neither header is taken
-   * as no browser page; it still needs the cookie.
+   * as no browser page; it still needs the cookie. `siteOnly`: ask only Sec-Fetch-Site (server.ts SITE_ONLY_READS).
    */
-  fromOwnPage(req: IncomingMessage): boolean {
-    if (req.headers.origin !== undefined && !this.originAllowed(req)) return false;
+  fromOwnPage(req: IncomingMessage, siteOnly = false): boolean {
+    if (!siteOnly && req.headers.origin !== undefined && !this.originAllowed(req)) return false;
     const site = req.headers['sec-fetch-site'];
     return site === undefined || site === 'same-origin' || site === 'none';
   }

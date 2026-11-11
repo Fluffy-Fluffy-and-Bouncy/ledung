@@ -629,8 +629,45 @@ test('sign-ins are random, kept as hashes, last through a restart, end when revo
   assert.equal(pub.signedIn(req(`ledung_auth=${pubValue}`)), true, 'the same sign-in counts locally');
 });
 
+// Test review of #234, finding 1: through the server's own database, not a stand-in store.
+test('a sign-in from the link lasts through a restart of the server on the same database, kept only as a hash', async (t) => {
+  const store = new Store(openDatabase(':memory:'));
+  const manager = refuseRealSignInStores(new SessionManager(parseConfig({ port: PORT, projects: [] }), store, () => {}));
+  const serve = async () => {
+    const port = await freePort();
+    const s = new LedungServer({ port, token: TOKEN, store, manager, webRoot });
+    await s.listen();
+    const get = (p: string, cookie?: string) => new Promise<{ status: number; headers: http.IncomingHttpHeaders }>((resolve, reject) => {
+      const req = http.request({ host: '127.0.0.1', port, path: p, headers: { host: `127.0.0.1:${port}`, ...(cookie ? { cookie } : {}) } }, (res) => {
+        res.resume();
+        res.on('end', () => resolve({ status: res.statusCode!, headers: res.headers }));
+      });
+      req.on('error', reject);
+      req.end();
+    });
+    return { s, get };
+  };
+  const first = await serve();
+  t.after(() => first.s.close());
+  const cookie = String((await first.get(`/login?token=${TOKEN}`)).headers['set-cookie']).split(';')[0]!;
+  const value = cookie.slice('ledung_auth='.length);
+  assert.match(value, /^[0-9a-f]{64}$/);
+  assert.equal((await first.get('/api/state', cookie)).status, 200);
+  await first.s.close();
+  // The database holds the hash, never the value.
+  const saved = store.getMeta('sign-ins') ?? '';
+  assert.ok(saved.includes(crypto.createHash('sha256').update(value).digest('hex')), 'the hash is in the database');
+  assert.ok(!saved.includes(value), 'the value is not');
+  // A new server on the same database: the cookie still signs in, a made-up one doesn't.
+  const second = await serve();
+  t.after(() => second.s.close());
+  assert.equal((await second.get('/api/state', cookie)).status, 200);
+  assert.equal((await second.get('/api/state', `ledung_auth=${'c'.repeat(64)}`)).status, 401);
+});
+
 test('a browser still holding the old token cookie stays signed in, and a page load swaps it for a sign-in', async () => {
-  const page = await request({ path: '/', headers: { cookie: COOKIE } });
+  // A browser too old to send Sec-Fetch-Dest: its page load asks for HTML.
+  const page = await request({ path: '/', headers: { cookie: COOKIE, accept: 'text/html,application/xhtml+xml,*/*;q=0.8' } });
   assert.equal(page.status, 200);
   const set = String(page.headers['set-cookie']);
   assert.match(set, /^ledung_auth=[0-9a-f]{64}; HttpOnly; SameSite=Strict; Path=\/; Max-Age=31536000$/, 'the same name and path, so it replaces the old one');
@@ -638,7 +675,7 @@ test('a browser still holding the old token cookie stays signed in, and a page l
   const cookie = set.split(';')[0]!;
   assert.equal((await request({ path: '/api/state', headers: { cookie } })).status, 200);
   // A page load with the new sign-in gets no further cookie; the swap is for the old cookie only.
-  const next = await request({ path: '/', headers: { cookie } });
+  const next = await request({ path: '/', headers: { cookie, 'sec-fetch-dest': 'document' } });
   assert.equal(next.status, 200);
   assert.equal(next.headers['set-cookie'], undefined);
   // An API call with the old cookie (a script, the launcher's stop) still works and is not handed sign-ins to pile up.
@@ -651,8 +688,12 @@ test('a browser still holding the old token cookie stays signed in, and a page l
   assert.equal(script.headers['set-cookie'], undefined);
   const doc = await request({ path: '/', headers: { cookie: COOKIE, 'sec-fetch-dest': 'document' } });
   assert.match(String(doc.headers['set-cookie']), /^ledung_auth=[0-9a-f]{64};/);
+  // A script loading the page (no Sec-Fetch-Dest, no HTML asked for) is answered and handed nothing (code review of #234).
+  const curl = await request({ path: '/', headers: { cookie: COOKIE, accept: '*/*' } });
+  assert.equal(curl.status, 200);
+  assert.equal(curl.headers['set-cookie'], undefined);
   // Nothing swaps without a cookie that is the token.
-  const none = await request({ path: '/', headers: { cookie: `ledung_auth=${'b'.repeat(64)}` } });
+  const none = await request({ path: '/', headers: { cookie: `ledung_auth=${'b'.repeat(64)}`, 'sec-fetch-dest': 'document' } });
   assert.equal(none.status, 401);
   assert.equal(none.headers['set-cookie'], undefined);
 });
@@ -685,6 +726,16 @@ test('API reads that do work need Ledung\'s own page; plain reads are unchanged 
   }
   // Still the sign-in first: a request from the page without one is not signed in.
   assert.equal((await request({ path: work.github, headers: { 'sec-fetch-site': 'same-origin' } })).status, 401);
+  // A project's workflow view (docker for a container project) is asked the browser's label only (code review of #234,
+  // finding 1): another page is refused, Ledung's page and the address bar are answered.
+  const flow = '/api/projects/p/flow';
+  for (const site of ['same-site', 'cross-site']) {
+    assert.equal((await request({ path: flow, headers: { cookie: COOKIE, 'sec-fetch-site': site } })).status, 403, `flow from ${site}`);
+    assert.equal((await request({ path: flow, headers: { cookie: COOKIE, origin: ORIGIN, 'sec-fetch-site': site } })).status, 403, `flow from ${site}, own Origin`);
+  }
+  for (const site of ['same-origin', 'none']) {
+    assert.equal((await request({ path: flow, headers: { cookie: COOKIE, 'sec-fetch-site': site } })).status, 200, `flow from ${site}`);
+  }
   // Plain reads answer as before, whoever asks (a browser shows another site nothing: no CORS header).
   for (const p of ['/api/state', '/api/projects', '/api/board-threads']) {
     for (const h of elsewhere) {
@@ -696,7 +747,7 @@ test('API reads that do work need Ledung\'s own page; plain reads are unchanged 
   // Every work route above is outside the plain reads, and the kinds named in the issue stay so.
   for (const route of ['GET board-owners', 'GET board-projects/:id/people', 'GET board-projects/:id/repos', 'GET usage-publish-repos', 'GET usage-shared',
     'GET containers', 'GET browse-container', 'GET skills', 'GET workflows', 'GET claude-code', 'GET sessions/:id/mcp', 'GET sessions/:id/changes',
-    'GET sessions/:id/tree', 'GET sessions/:id/file', 'GET sessions/:id/image', 'GET relay-computers', 'GET relay-owners', 'GET shortcuts']) {
+    'GET sessions/:id/tree', 'GET sessions/:id/file', 'GET sessions/:id/image', 'GET relay-computers', 'GET relay-owners', 'GET shortcuts', 'GET projects/:id/flow']) {
     assert.equal(PLAIN_READS.has(route), false, `${route} does work`);
   }
 });
