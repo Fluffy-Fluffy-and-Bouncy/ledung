@@ -10,6 +10,10 @@ One row per install ID: the day it was first seen, the day it was last seen, and
 system it last sent. Days, not times. No IP address: the Worker never reads it, and Workers observability is off in
 `wrangler.toml`. Any other field in a request is dropped before anything is stored.
 
+That covers this Worker only. Cloudflare, as host, still handles each request under its own privacy policy: before
+deploying, and after any change to the zone, make sure no Logpush job or other request logging is on for
+`checkin.projectledung.com` in the `projectledung.com` zone, so the README's promise holds.
+
 ## What it answers
 
 - `POST /v1/checkin` with the four fields: `204`. A malformed body: `400`.

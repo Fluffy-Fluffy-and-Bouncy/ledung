@@ -3,7 +3,7 @@ import type { CheckInView } from '../../src/shared/protocol.ts';
 
 /** What one check-in holds, in the words the README uses. */
 export const CHECKIN_WHAT =
-  'Once a day Ledung sends a random install ID, its version, its update channel and the operating system, so we can count how many people use it. Nothing else: no names, projects, sessions or usage. The server sees your IP address in transit and does not keep it.';
+  'Once a day Ledung sends a random install ID, its version, its update channel and the operating system, so we can count how many people use it. Nothing else: no names, projects, sessions or usage. Our server sees your IP address in transit and doesn't keep it.';
 
 /** The notice, shown until OK or Turn off (at first start, and once to everyone who updates into it). */
 export function noticeText(view: CheckInView): string {

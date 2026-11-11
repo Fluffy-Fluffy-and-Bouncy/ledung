@@ -77,7 +77,7 @@ Ledung counts how many people use it with an anonymous daily check-in. It is on 
 - `id` is a random ID Ledung makes at first start and keeps in its data folder. It is not derived from anything about you or your computer.
 - `version` is Ledung's version, `channel` the update channel (`public` or `dev`, Settings → About), `os` the operating system as Node names it (`win32`, `darwin`, `linux`).
 
-Nothing else: no name, email, computer name, project, session, usage figure or error. The endpoint necessarily sees your IP address in transit, as any web request does; it does not store it. It keeps, per ID, the day it was first and last seen and the version, channel and OS last sent, and counts unique and active installs from that. Its code is in [`checkin-worker/`](checkin-worker/). A Ledung run from a source folder (a clone or a release built from one) never checks in.
+Nothing else: no name, email, computer name, project, session, usage figure or error. The endpoint necessarily sees your IP address in transit, as any web request does; our endpoint does not store it. It runs on Cloudflare, which handles the request under [its own privacy policy](https://www.cloudflare.com/privacypolicy/). It keeps, per ID, the day it was first and last seen and the version, channel and OS last sent, and counts unique and active installs from that. Its code is in [`checkin-worker/`](checkin-worker/). A Ledung run from a source folder (a clone or a release built from one) never checks in.
 
 **Turning it off.** Any of these stops it; nothing is sent while it is off:
 
