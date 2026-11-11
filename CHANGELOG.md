@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-12
+- Relay and linked computers: a connection that keeps sending after it was asked to wait is cut off once 32 MiB of it is waiting, and the relay logs it (`stream reset`). A Ledung with the right secret, or the admin key or a valid join code, now gets into the relay even while others' failed attempts from the same address have it turned away; wrong ones still wait out the window. Audio and zip files from a linked computer are refused above 2 GB each or 4 GB for one message (new setting `linkedFiles`, `maxFileMB` and `maxMessageMB`) before any of it is fetched, and a zip's directory is checked when it arrives (at most 10,000 entries and 16 GB unpacked, no entry leading out of it); one that fails is not kept, and the manager is told why. (Project-Ledung#479)
+
 ## 2026-11-11
 - Your pinned latest message at the top of the chat no longer shows through a session's ⚙ menu (nor does the message box under it), and its bottom edge fades out softly instead of ending in a hard line. (#226)
 - An anonymous daily check-in counts how many people use Ledung: once a day an npm-installed Ledung sends a random install ID, its version, its update channel and the operating system, nothing else. A notice explains it the first time (and once after updating); Settings → About → Usage count turns it off, and `DO_NOT_TRACK=1` stops it too. (#220)

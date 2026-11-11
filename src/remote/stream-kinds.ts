@@ -108,7 +108,7 @@ export interface ZipChecks {
   text(entry: string, text: string): string | null;
 }
 
-interface Entry { name: string; flags: number; method: number; compressed: number; local: number; comment: string }
+interface Entry { name: string; flags: number; method: number; compressed: number; uncompressed: number; local: number; comment: string }
 
 /** The central directory's entries, where the directory starts, and the zip's comment. */
 interface Directory { list: Entry[]; at: number; comment: string }
@@ -202,12 +202,50 @@ async function entries(fd: fs.promises.FileHandle, size: number): Promise<Direct
       e += 4 + len;
     }
     const comment = dir.subarray(p + 46 + nameLen + extraLen, p + 46 + nameLen + extraLen + commentLen).toString(flags & 0x800 ? 'utf8' : 'latin1');
-    out.push({ name, flags, method, compressed, local, comment });
+    out.push({ name, flags, method, compressed, uncompressed, local, comment });
     p += 46 + nameLen + extraLen + commentLen;
   }
   if (out.length !== count) refuse('its central directory does not list the entries it says');
   if (p !== dir.length) unplaced(dirAt + p);
   return { list: out, at: dirAt, comment };
+}
+
+/** An entry name that is empty, absolute (a slash or a drive first) or climbs out with "..", either slash. */
+function leadsOut(entryName: string): boolean {
+  const name = entryName.replace(/\\/g, '/');
+  return !name || name.startsWith('/') || /^[A-Za-z]:/.test(name) || name.split('/').some((p) => p === '..');
+}
+
+/** A zip that arrives from a linked computer holds at most this many entries, and this much unpacked (Project-Ledung#479). */
+export const MAX_ZIP_ENTRIES = 10_000;
+export const MAX_ZIP_UNPACKED_BYTES = 16 * 1024 * 1024 * 1024;
+
+/**
+ * Why a zip that arrived from a linked computer can't be kept, or null (Project-Ledung#479): its central directory
+ * must parse and account for every byte, as the sender's check needs; it lists at most MAX_ZIP_ENTRIES entries and
+ * MAX_ZIP_UNPACKED_BYTES unpacked, as their directory records say; and no entry is absolute or climbs out with "..".
+ * The sender checked it entry by entry (zipProblem); this is the receiver's own check of what it is given, and it reads
+ * only the directory, never the entries' content.
+ */
+export async function zipArrivalProblem(file: string): Promise<string | null> {
+  let fd: fs.promises.FileHandle | null = null;
+  try {
+    fd = await fs.promises.open(file, 'r');
+    const dir = await entries(fd, (await fd.stat()).size);
+    if (dir.list.length > MAX_ZIP_ENTRIES) refuse(`it has ${dir.list.length} entries; this computer takes at most ${MAX_ZIP_ENTRIES}`);
+    let unpacked = 0;
+    for (const entry of dir.list) {
+      if (leadsOut(entry.name)) refuse(`entry ${entry.name} has a path that leads out of the zip`);
+      unpacked += entry.uncompressed;
+    }
+    if (unpacked > MAX_ZIP_UNPACKED_BYTES) refuse(`it unpacks to more than ${MAX_ZIP_UNPACKED_BYTES / 1024 ** 3} GB`);
+    return null;
+  } catch (e) {
+    if (e instanceof ZipRefusal) return e.message;
+    return `it can't be read as a zip: ${(e as Error).message}`;
+  } finally {
+    await fd?.close();
+  }
 }
 
 /**
@@ -297,7 +335,7 @@ export async function zipProblem(file: string, checks: ZipChecks): Promise<strin
     for (const entry of dir.list) {
       const name = entry.name.replace(/\\/g, '/');
       const shown = entry.name;
-      if (!name || name.startsWith('/') || /^[A-Za-z]:/.test(name) || name.split('/').some((p) => p === '..')) refuse(`entry ${shown} has a path that leads out of the zip`);
+      if (leadsOut(entry.name)) refuse(`entry ${shown} has a path that leads out of the zip`);
       if (entry.flags & 0x1 || entry.flags & 0x40 || entry.method === 99) refuse(`entry ${shown} is encrypted; Ledung can't check it`);
       const refused = REFUSED_ENTRIES.find(([re]) => re.test(name));
       if (refused) refuse(`entry ${shown} is ${refused[1]}, which never leaves`);

@@ -758,7 +758,7 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
         computer: z.string().min(1).optional().describe('The linked computer it runs on, as list_managers names it; leave out for this computer.'),
         text: z.string().min(1),
         attachments: z.array(z.string().min(1)).min(1).max(5).optional().describe(
-          'Only with computer: files from your project folder, relative to it, that the other manager gets with the message: PNG or JPEG images (at most 5 MB) or .txt, .log or .md text (at most 512 KB); or .wav, .mp3, .flac, .ogg or .m4a audio and .zip files of any size (a zip is checked entry by entry first). It gets images as files it can show in its questions, and text inline; audio and zips are fetched from here after the message, and it saves them with save_linked_file.',
+          'Only with computer: files from your project folder, relative to it, that the other manager gets with the message: PNG or JPEG images (at most 5 MB) or .txt, .log or .md text (at most 512 KB); or .wav, .mp3, .flac, .ogg or .m4a audio and .zip files (as large as the other computer takes, 2 GB each by default; a zip is checked entry by entry first). It gets images as files it can show in its questions, and text inline; audio and zips are fetched from here after the message, and it saves them with save_linked_file.',
         ),
       }, async (a) => safely(() => m.messageManager(a.id, a.text, a.computer, a.attachments))) as never,
       tool('list_projects', "List Ledung's projects: folder, settings and whether each one's manager runs. On a linked computer: names and managers only.", {
