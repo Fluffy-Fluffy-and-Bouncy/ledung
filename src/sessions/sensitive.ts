@@ -311,7 +311,8 @@ export function pinMergeRepo(command: string, own: OwnRepo | null, shellInProjec
   const at = merges.findIndex((m) => !!m);
   if (at < 0) return null;
   const words = segments[at]!.split(/\s+/);
-  const named = words.flatMap((w, k) => (/^(?:-R|--repo)$/i.test(w) ? [words[k + 1] ?? ''] : []));
+  // Case matters to gh: -r is --rebase, not the repository (self-check of Project-Ledung#475).
+  const named = words.flatMap((w, k) => (/^(?:-R|--repo)$/.test(w) ? [words[k + 1] ?? ''] : []));
   if (named.length > 1) return null;
   if (named.length === 1) {
     const parts = named[0]!.toLowerCase().split('/');

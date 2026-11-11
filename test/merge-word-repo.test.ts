@@ -26,6 +26,8 @@ test('a merge that names the project repository with -R runs as sent; one naming
   for (const command of ['gh pr merge 12 -R x/r --merge', 'gh pr merge 12 -R o/other', 'gh pr merge 12 -R ghe.example.com/o/r', 'gh pr merge 12 -R o/r -R x/y']) {
     assert.equal(pinMergeRepo(command, OWN, true), null, command);
   }
+  // To gh, -r is --rebase: its next word is not a repository, so this names none and the shell is outside.
+  assert.equal(pinMergeRepo('gh pr merge 12 -r o/r', OWN, false), null, 'lower-case -r');
   // A project on another host must name its host: without one, -R means github.com.
   const ghe: OwnRepo = { host: 'ghe.example.com', owner: 'o', name: 'r' };
   assert.equal(pinMergeRepo('gh pr merge 12 -R o/r', ghe, true), null);
