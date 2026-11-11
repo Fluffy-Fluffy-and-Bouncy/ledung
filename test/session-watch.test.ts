@@ -120,36 +120,36 @@ test('a page gets the messages of the session it shows only, none with none show
   }
 });
 
-test("opening a session misses none of its messages: stored before Ledung's answer, between it and the read, and while the read is on its way", async () => {
+test("opening a session misses none of its messages: stored before the read, after it while the watch is on its way, and while the read's answer is on its way", async () => {
   say('C', 'before');
   const live = await page();
   const views: OpenSessionView[] = [];
   const get = async (q: string) => (await fetch(`${origin}/api/sessions/C/messages?limit=500${q}`, { headers: { cookie: COOKIE } })).json() as Promise<StoredMessage[]>;
-  // Each message is stored at the step it is named after; the steps run exactly when the page reaches them.
-  let watchSent = false;
+  const shows = (text: string) => !!views.at(-1)?.messages.some((m) => m.data.text === text);
+  // Showing nothing before: a connection that never said would get every message, which would hide a gap.
+  watch(live.ws, null);
+  await live.next('watching');
+  // The watch is held back until the read is done, so Ledung takes it after the read: the worst order for the page.
+  const held: string[] = [];
   let reads = 0;
   const open = new OpenSession({
-    send: (text) => {
-      live.ws.send(text);
-      // Stored while the watch is on its way: Ledung has not read it, so this one is not sent to the page.
-      if (JSON.parse(text).sessionId === 'C' && !watchSent) {
-        watchSent = true;
-        say('C', 'in flight');
-      }
-    },
+    send: (text) => held.push(text),
     messages: async () => {
-      // After Ledung's answer and before the read: sent to the page and in the read too.
-      say('C', 'before the read');
-      const list = await get('');
-      // After the read and before the page has it: sent to the page only. Waits until the page shows it, so the
-      // read's answer lands after it.
-      say('C', 'during the read');
-      await until(() => !!views.at(-1)?.messages.some((m) => m.data.text === 'during the read'), 'the live message shown');
       reads++;
+      const list = await get('');
+      // After the read, before Ledung has the watch: not sent to the page, not in the read. Only the catch-up after
+      // Ledung's answer can bring it.
+      say('C', 'after the read');
+      held.splice(0).forEach((t) => live.ws.send(t));
+      await live.next('watching');
+      // After Ledung's answer, before the read's answer has reached the page: sent to the page only, and newer than
+      // the one above, so a catch-up from the last message shown would skip that one.
+      say('C', 'while the answer is on its way');
+      await until(() => shows('while the answer is on its way'), 'the live message shown');
       return list;
     },
     messagesBefore: async () => [],
-    messagesAfter: async (_id, afterId) => get(`&after=${afterId}`),
+    messagesAfter: (_id, afterId) => get(`&after=${afterId}`),
     changed: (v) => views.push(v),
   });
   live.ws.on('message', (data) => {
@@ -160,18 +160,17 @@ test("opening a session misses none of its messages: stored before Ledung's answ
   try {
     open.connected();
     open.open('C');
-    // The page reads once Ledung has answered; a timer's turn after the read's answer, the page has used it.
-    await until(() => reads === 1, 'the read');
-    await new Promise((r) => setTimeout(r, 5));
-    const want = store.listMessages('C', { limit: 500 }).map((m) => m.data.text);
-    assert.deepEqual(want, ['before', 'in flight', 'before the read', 'during the read'], 'the premise: every step stored its message');
+    const want = ['before', 'after the read', 'while the answer is on its way'];
+    await until(() => views.at(-1)?.messages.length === want.length, 'every message shown');
+    assert.deepEqual(store.listMessages('C', { limit: 500 }).map((m) => m.data.text), want, 'the premise: every step stored its message');
     assert.deepEqual(views.at(-1)!.messages.map((m) => m.data.text), want, 'each once, in order, none missed');
-    // A's messages never show, though B's page might still be sent one while its watch is on its way.
+    assert.equal(reads, 1, 'one read, then the catch-up');
+    // A's messages never show, though C's page might still be sent one before Ledung takes its watch.
     open.message(store.addMessage('A', 'user', { text: 'a3' }));
     assert.deepEqual(views.at(-1)!.messages.map((m) => m.data.text), want);
-    // After the read, new messages come on the connection.
+    // After the catch-up, new messages come on the connection.
     say('C', 'after');
-    await until(() => views.at(-1)!.messages.length > want.length, 'the message after the read');
+    await until(() => views.at(-1)!.messages.length > want.length, 'the message after the catch-up');
     assert.deepEqual(views.at(-1)!.messages.map((m) => m.data.text), [...want, 'after']);
   } finally {
     live.ws.close();

@@ -1,7 +1,7 @@
 // The page's live view of Ledung: sessions, pending permissions and the open session's messages,
 // kept up to date over the live connection.
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AccountChoices, AccountInfoView, ChatsInfo, AwayInfo, ConfigStatus, BoardStatus, GitHubBudget, LimitInfo, UsageStopInfo, SignInKind, SignInProblem, MachineInfo, Overview, PermissionInfo, ProjectInfo, QuestionInfo, NewComputerInfo, LinkPairingInfo, RemoteStatus, ServerEvent, SessionInfo, SourceOffer, StoredMessage } from '../../src/shared/protocol.ts';
+import type { AccountChoices, AccountInfoView, ChatsInfo, AwayInfo, ConfigStatus, BoardStatus, GitHubBudget, LimitInfo, UsageStopInfo, SignInKind, SignInProblem, MachineInfo, Overview, PermissionInfo, ProjectInfo, QuestionInfo, NewComputerInfo, LinkPairingInfo, RemoteStatus, ServerEvent, SessionInfo, SourceOffer } from '../../src/shared/protocol.ts';
 import type { OrderInfo } from '../../src/shared/orders.ts';
 import type { Macro } from '../../src/shared/macros.ts';
 import type { FlowRun } from '../../src/shared/flow-run.ts';
@@ -92,16 +92,18 @@ export function useLedung(openSessionId: string | null) {
     const connect = () => {
       setConnection('connecting');
       // Its key dies when it closes (api.ts); a change then waits for the next hello's key.
-      ws = openConnection(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+      const mine = openConnection(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+      ws = mine;
       // The new connection is told what the page shows once its hello has come.
-      liveRef.current = ws;
+      liveRef.current = mine;
       open.disconnected();
       ws.onopen = () => {
         retry = 500;
         setConnection('open');
       };
       ws.onclose = () => {
-        open.disconnected();
+        // A replaced connection's late close must not mark its successor as down (self-check of #231).
+        if (liveRef.current === mine) open.disconnected();
         setConnection('closed');
         if (!stopped) timer = setTimeout(connect, (retry = Math.min(retry * 2, 10000)));
       };
