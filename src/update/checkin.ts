@@ -138,6 +138,7 @@ export class CheckIn {
     if (!this.view().sends) return false;
     const now = (this.opts.now ?? Date.now)();
     const last = Date.parse(this.opts.meta.get(LAST_KEY) ?? '');
+    // A clock set back before the last send sends again rather than waiting out the gap, which could be months.
     if (Number.isFinite(last) && now - last < DAY_MS && now >= last) return false;
     this.opts.meta.set(LAST_KEY, new Date(now).toISOString());
     this.sending = true;

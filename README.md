@@ -81,7 +81,7 @@ Nothing else: no name, email, computer name, project, session, usage figure or e
 
 **Turning it off.** Any of these stops it; nothing is sent while it is off:
 
-- **Turn off** on the notice, or the **Usage count** switch in **Settings → About**, which also shows exactly what would be sent and when it last was.
+- **Turn off** on the notice, or the **Usage count** switch in **Settings → About**, which also shows exactly what would be sent and when it last sent or tried.
 - The environment variable `DO_NOT_TRACK=1` where Ledung runs ([consoledonottrack.com](https://consoledonottrack.com)), whatever the switch says.
 
 ## Config

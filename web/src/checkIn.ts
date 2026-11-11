@@ -17,5 +17,5 @@ export function statusLine(view: CheckInView): string {
   if (!view.on) return 'Off: nothing is sent.';
   if (!view.fromPackage) return 'Not sent: only Ledung installed from npm checks in, not one run from a source folder.';
   if (view.notice) return 'Not sent until the notice above the page is answered.';
-  return view.lastAt ? `On: last sent ${new Date(view.lastAt).toLocaleString()}.` : 'On: the first check-in goes out within the hour.';
+  return view.lastAt ? `On: last sent or tried ${new Date(view.lastAt).toLocaleString()}; the next goes a day after that.` : 'On: the first check-in goes out within the hour.';
 }
