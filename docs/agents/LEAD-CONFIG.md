@@ -25,8 +25,9 @@ it in the local file, and a row that points there with nothing written there is 
 Ledung config names the process folder, the file a manager reads first, the file every other
 session reads first, and the project's config for it (`projectConfig`), which for this project is
 this file, `docs/agents/LEAD-CONFIG.md`. Every session started or resumed is told to read its file
-and where this one is, and the workflow's start-reading list repeats it after every start, clear,
-compact and resume (`README.md`, "A workflow by default"). A computer's local, uncommitted
+and where this one is (`README.md`, "A workflow by default"). Where the workflow also names a
+start-reading list, the files on that list are named to the session again after every start, clear,
+compact and resume (`README.md`, "Start-reading list"). A computer's local, uncommitted
 `CLAUDE.local.md` next to the repo's `CLAUDE.md` holds that machine's own notes and says where its
 local file with the per-machine values is.
 
@@ -163,7 +164,7 @@ steward, miner and metrics runs are off, and that is not a stop.
 | `OWNER` | `Martin` |
 | `OWNER_LOGIN` | `Magto` — `OWNER`'s GitHub login; the lead assigns an issue to it before its first worker spawn, and never touches an issue assigned to another login |
 
-Every row is `OWNER` · `relay`: Martin's word in the Ledung page, typed or as an `ask_user` answer.
+Every row is `OWNER` · `relay`: Martin's word in the Ledung page, typed or as an `ask_user` answer. One exception, in the `SHIPPER` row: the public publish is either owner's word, Martin's or FFBuddha's (repo `CLAUDE.md`, "Commands").
 
 | Row (key) | Action |
 |---|---|
