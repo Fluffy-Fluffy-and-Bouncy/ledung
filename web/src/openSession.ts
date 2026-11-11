@@ -33,6 +33,10 @@ export class OpenSession {
   private upTo: number | null = null;
   /** Caught up on this connection: every message since came live, in order, so the last one shown is read up to. */
   private caughtUp = false;
+  /** Watches sent on this connection and not yet answered: answers come in order, so only the last one is current. */
+  private unanswered = 0;
+  /** Moves on with every watch sent and every connection lost: a catch-up that started before may not claim what came since. */
+  private generation = 0;
   private hasEarlier = false;
   /** The read started by the last open; the answer to a watch waits for it, then catches up from where it ended. */
   private reading: Promise<void> | null = null;
@@ -54,6 +58,7 @@ export class OpenSession {
     this.shown = [];
     this.upTo = null;
     this.caughtUp = false;
+    this.generation++;
     this.hasEarlier = false;
     this.emit();
     this.watch();
@@ -73,20 +78,29 @@ export class OpenSession {
     if (this.caughtUp) this.upTo = this.shown.at(-1)?.id ?? this.upTo;
     this.caughtUp = false;
     this.ready = false;
+    this.unanswered = 0;
+    this.generation++;
   }
 
   /** Ledung's answer to a watch: from here on the session's new messages come on the connection, so read the rest now. */
   async watching(sessionId: string | null): Promise<void> {
-    if (sessionId === null || sessionId !== this.id) return;
+    this.unanswered = Math.max(0, this.unanswered - 1);
+    // An answer to an earlier watch (A, then B, then A again quickly): the live feed it speaks of was cut off by the
+    // next watch, so only the latest answer catches up (self-check of #231).
+    if (this.unanswered > 0 || sessionId === null || sessionId !== this.id) return;
+    const generation = this.generation;
     await this.reading;
-    if (sessionId !== this.id) return;
-    if (this.upTo === null) return this.load(sessionId);
-    const newer = await fetchNewer(this.upTo, (after) => this.deps.messagesAfter(sessionId, after));
-    if (this.id !== sessionId) return;
-    this.set(withNewer(this.shown, newer));
+    if (sessionId !== this.id || generation !== this.generation) return;
+    if (this.upTo === null) await this.load(sessionId);
+    else {
+      const newer = await fetchNewer(this.upTo, (after) => this.deps.messagesAfter(sessionId, after));
+      if (this.id !== sessionId || generation !== this.generation) return;
+      this.set(withNewer(this.shown, newer));
+    }
+    if (this.id !== sessionId || generation !== this.generation) return;
     // Everything up to here is now shown: what was stored before the answer is in a read, and what after it came live.
     this.upTo = this.shown.at(-1)?.id ?? this.upTo;
-    this.caughtUp = this.ready;
+    this.caughtUp = true;
   }
 
   /** A message from the live connection; one of another session (sent before Ledung read a watch) is not shown. */
@@ -115,7 +129,10 @@ export class OpenSession {
   }
 
   private watch(): void {
-    if (this.ready) this.deps.send(watchFrame(this.id));
+    if (!this.ready) return;
+    this.unanswered++;
+    this.generation++;
+    this.deps.send(watchFrame(this.id));
   }
 
   private set(messages: StoredMessage[]): void {
