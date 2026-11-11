@@ -69,6 +69,23 @@ test('#473: the suggested publish entry holds npm options before publish, and no
   for (const c of ['npm run publish:dev', 'npm run publish:dev -- --dry-run', 'npm run publish:public -- --confirm 3']) assert.equal(bash(c), null, c);
 });
 
+test('#473: a long list of options is checked at once, not by trying every way of splitting it', () => {
+  // Commands that match no entry, so every pattern is tried to the end; before, 16 options took seconds.
+  const opts = (o: string, n: number) => Array.from({ length: n }, () => o).join(' ');
+  const slow = [
+    `git push ${opts('--a', 40)} x y z`, `git push ${opts('-a', 40)} x y z`, `git ${opts('--a', 40)} x`,
+    `git ${opts('-C', 40)} x`, `npm ${opts('--a', 40)} x`, `npm ${opts('-a', 40)} x`,
+  ];
+  for (const c of slow) {
+    const start = performance.now();
+    assert.equal(bash(c), null, c);
+    assert.ok(performance.now() - start < 250, `${c.slice(0, 30)}… took ${Math.round(performance.now() - start)} ms`);
+  }
+  // The same probe still finds a push when the options lead to one (positive branch).
+  assert.equal(bash(`git push ${opts('--a', 40)} origin`), PUSH);
+  assert.equal(bash(`npm ${opts('--a', 40)} publish`), PUBLISH);
+});
+
 test('#473: a project path pattern also holds a shell command that names the file', () => {
   const project: Partial<SensitiveRules> = { commandPatterns: [], pathPatterns: [String.raw`\.env$`], mcpTools: [] };
   // The issue's commands, with the project's own pattern and with the suggested one.

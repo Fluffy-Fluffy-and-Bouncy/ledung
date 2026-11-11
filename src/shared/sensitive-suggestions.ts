@@ -25,18 +25,23 @@ export const MERGE_PATTERN = String.raw`(?<![\w.-])gh(?:\.exe)?\s+pr\s+(?:(?:-R|
  * Publishing to npm (Project-Ledung#473): `npm publish`, also with npm's options before the word (`npm --tag dev
  * publish`). `npm run publish:dev` is a script, not this.
  */
-export const PUBLISH_PATTERN = String.raw`\bnpm(?:\s+-{1,2}[\w-]+(?:[=\s][^\s-]\S*)?)*\s+publish\b`;
+// Every word below can be read one way only (an option starts with "-" or "--" and a letter, a value or a remote
+// never with "-"): these patterns run on every command a session sends, so an option list must not make them
+// try every way of splitting it (self-check of Project-Ledung#473: seconds for 16 options before).
+/** An option: `-x`, `--name`, `--name=value`. */
+const OPTION = String.raw`--?\w[\w-]*(?:=\S+)?`;
+export const PUBLISH_PATTERN = String.raw`\bnpm(?:\s+${OPTION}(?:\s[^\s-]\S*)?)*\s+publish\b`;
 /** Options git takes before its command: `-C dir`, `-c key=value`, `--git-dir x`, `--no-pager` and the like. */
-const GIT_OPTIONS = String.raw`(?:\s+(?:-[Cc]\s+\S+|--(?:git-dir|work-tree|namespace|exec-path|config-env)\s+\S+|-{1,2}[\w-]+(?:=\S+)?))*`;
-/** A push option, with its value when written with "=". */
-const PUSH_OPTION = String.raw`(?:\s+-{1,2}[\w-]+(?:=\S+)?)*`;
+const GIT_OPTIONS = String.raw`(?:\s+(?:-[Cc]\s+[^\s-]\S*|--(?:git-dir|work-tree|namespace|exec-path|config-env)\s+[^\s-]\S*|${OPTION}))*`;
+/** Push options, with their values when written with "=". */
+const PUSH_OPTIONS = String.raw`(?:\s+${OPTION})*`;
 /**
  * Pushing to main or master, or force-pushing (Project-Ledung#473): with git's own options before `push`; a force
  * as `--force…`, a short `-f` among others (`-uf`) or a `+` refspec; and a push that names no branch (`git push`,
  * `git push origin`, `git push -u origin HEAD`), which pushes the current one, main included. A push of a named
  * branch other than main or master (`git push -u origin feature`) is not it.
  */
-export const PUSH_PATTERN = String.raw`\bgit${GIT_OPTIONS}\s+push\b(?:[^|;&]*(?:\s--force\b|\s-[A-Za-z]*f[A-Za-z]*\b|\s\+\S|\bmain\b|\bmaster\b)|${PUSH_OPTION}(?:\s+[^\s|;&<>-]\S*)?${PUSH_OPTION}(?:\s+(?:HEAD|@))?${PUSH_OPTION}(?:\s+\d*[<>]\S*)*\s*(?:$|[|;&)]))`;
+export const PUSH_PATTERN = String.raw`\bgit${GIT_OPTIONS}\s+push\b(?:[^|;&]*(?:\s--force\b|\s-[A-Za-z]*f[A-Za-z]*\b|\s\+\S|\bmain\b|\bmaster\b)|${PUSH_OPTIONS}(?:\s+[^\s|;&<>-]\S*${PUSH_OPTIONS}(?:\s+(?:HEAD|@)${PUSH_OPTIONS})?)?(?:\s+\d*[<>]\S*)*\s*(?:$|[|;&)]))`;
 
 /** The suggested patterns before Project-Ledung#473, replaced by the ones above in lists that still have them. */
 const OLD_PUBLISH_PATTERN = String.raw`\bnpm\s+publish\b`;
