@@ -1280,6 +1280,31 @@ export interface ConfigStatus {
   restartFor: string[];
 }
 
+/**
+ * The one thing a page sends on the live connection (issue #231): which session it shows, so Ledung sends it that
+ * session's messages and no other's. Null: none. Everything else the page does goes through the API.
+ */
+export type PageEvent = { type: 'watch'; sessionId: string | null };
+
+/** The longest session id a watch may name; Ledung's own ids are far shorter. */
+export const WATCH_ID_MAX = 200;
+
+/** A watch read from the live connection, or null for anything else (which closes the connection). */
+export function parseWatch(text: string): PageEvent | null {
+  let v: unknown;
+  try {
+    v = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return null;
+  const { type, sessionId, ...rest } = v as Record<string, unknown>;
+  if (type !== 'watch' || Object.keys(rest).length) return null;
+  if (sessionId === null) return { type, sessionId };
+  if (typeof sessionId !== 'string' || !sessionId || sessionId.length > WATCH_ID_MAX) return null;
+  return { type, sessionId };
+}
+
 export type ServerEvent =
   /** A session's locked secrets changed (issue #468): names and lifetimes, never a value. */
   | { type: 'secrets'; sessionId: string; secrets: SecretInfo[] }
@@ -1344,7 +1369,13 @@ export type ServerEvent =
   | { type: 'chats'; chats: ChatsInfo }
   | { type: 'computers'; computers: ComputerInfo[] }
   | { type: 'session'; session: SessionInfo }
+  /** A new message of a session: only to the pages that show that session, see PageEvent (issue #231). */
   | { type: 'message'; message: StoredMessage }
+  /**
+   * Ledung now sends this connection the messages of `sessionId` only (none for null): the answer to a watch, sent in
+   * order on the same connection, so a page that reads the session's messages after it misses none (issue #231).
+   */
+  | { type: 'watching'; sessionId: string | null }
   | { type: 'permission'; permission: PermissionInfo }
   | { type: 'question'; question: QuestionInfo }
   | { type: 'limits'; limits: LimitInfo[] }
