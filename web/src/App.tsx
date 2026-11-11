@@ -1306,22 +1306,26 @@ export function SessionView(props: {
           onToggleUsage={() => { setFiles([]); setPane(false); setFlowPane(false); setPaneFile(null); setShowUsage((v) => !v); }}
           onOpenWorkflow={() => props.onOpenWorkflow(session.project)}
         />
-        {controls.header.length > 0 && (
+        {controls.header.some((c) => c !== 'compacting') && (
           <div className="session-actions">
             {controls.header.includes('startNow') && (
               <button className="primary" title="Start this turn now, above the limit on working sessions" onClick={() => run(() => api.startNow(session.id))}>Start now</button>
             )}
             {controls.header.includes('clear') && <ClearCountdown due={session.clearDue!} onCancel={() => run(() => api.cancelClear(session.id))} />}
-            {controls.header.includes('compacting') && (
-              <Compacting
-                compacting={session.compacting!}
-                by={session.compacting!.requester === session.id ? 'the session itself' : `manager "${ledung.sessions.find((s) => s.id === session.compacting!.requester)?.title ?? 'a manager'}"`}
-              />
-            )}
             {controls.header.includes('resume') && <button className="primary" onClick={() => run(() => api.resume(session.id))}>Resume</button>}
             {controls.header.includes('archive') && (session.archivedAt
               ? <button title="Back into the sidebar, still ended" onClick={() => run(() => api.unarchive(session.id))}>Unarchive</button>
               : <button title="Out of the sidebar, listed under the project's Archived; nothing is deleted" onClick={() => run(() => api.archive(session.id))}>Archive</button>)}
+          </div>
+        )}
+        {controls.header.includes('compacting') && (
+          // A line of its own under the header, not in the actions column: a long note there widened that column and
+          // squeezed the title to one word per line (issue #214).
+          <div className="session-notice">
+            <Compacting
+              compacting={session.compacting!}
+              by={session.compacting!.requester === session.id ? 'the session itself' : `manager "${ledung.sessions.find((s) => s.id === session.compacting!.requester)?.title ?? 'a manager'}"`}
+            />
           </div>
         )}
       </header>

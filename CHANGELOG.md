@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-11
+- Session header while it compacts: the title and status line stay on their lines; "Compacting…" and the note for the summary are a line of their own under the header, instead of a wide column that squeezed the title to one word per line. On a phone the note is cut to one line (tap the header to read all of it). (#214)
+
 ## 2026-11-10
 - Waiting for you, the chat and the file viewer: a long command or table scrolled sideways (a refused call's command, a question's code block) no longer jumps back to the left whenever something else on the page updates, and images in a Markdown file are no longer loaded again each time the page updates. (#200)
 - Sensitive list: **Merging a pull request** (`gh pr merge`) is now one of the suggested entries, so a new project asks you before a session merges, with no setup step. Existing projects and the chats' list get the entry once; delete it in the project's settings if you don't want it, and it stays deleted. Away mode's merges and a merge you already said yes to go through as before. (#208)

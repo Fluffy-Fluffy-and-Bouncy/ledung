@@ -867,7 +867,7 @@ table.calls td { white-space: nowrap; }
 .sensitive-add input { flex: 1 1 12rem; min-width: 0; }
 
 /* A compact under way: says so with its time; the note wraps under it on a narrow screen. */
-.compacting { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; font-weight: 600; min-width: 0; }
+.compacting { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; font-weight: 600; min-width: 0; }
 .compacting-note { font-weight: normal; font-size: 0.9em; opacity: 0.85; overflow-wrap: anywhere; }
 
 /* A clear counting down (clear_session): stands out, since Cancel is the user's one chance to keep the conversation. */
@@ -890,11 +890,15 @@ table.calls td { white-space: nowrap; }
 .session-head > .session-corner { grid-column: 2; grid-row: 1; justify-self: end; }
 .session-head > .session-head-text { grid-column: 1; grid-row: 1 / span 2; align-self: center; }
 .session-head > .session-actions { grid-column: 2; grid-row: 2; justify-content: flex-end; }
+/* Nothing in the actions column may take more than half the header: an auto column grows to its widest line and
+   squeezed the title to one word per line (issues #74 and #214). The compacting notice takes the first free full row under it all (row 2 or 3). */
+.session-head > .session-actions { max-width: 50cqi; }
+.session-head > .session-notice { grid-column: 1 / -1; grid-row: auto; min-width: 0; font-size: 0.85em; }
 /* A narrow header (half a screen, issue #74): the actions column kept its full width and squeezed the text column to
    nothing, one word per line. Below 60rem the actions get their own row under the text; the ⚙ stays beside the title. */
 @container (max-width: 60rem) {
   .session-head > .session-head-text { grid-row: 1; }
-  .session-head > .session-actions { grid-column: 1 / -1; grid-row: 2; justify-content: flex-start; }
+  .session-head > .session-actions { grid-column: 1 / -1; grid-row: 2; justify-content: flex-start; max-width: none; }
 }
 /* On a phone (issue #171) the session header is one line: ←, the status dot and the title cut short, the ⚙. A tap
    on the title shows the rest; the urgent actions (Resume, Start now, …) keep their row under it. After the grid
@@ -908,6 +912,8 @@ table.calls td { white-space: nowrap; }
   .session-head h2 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .session-head .phone-dot { display: inline-block; margin-right: 0.4rem; vertical-align: 1px; }
   .session-head:not(.details) .session-head-text > .muted { display: none; }
+  .session-head:not(.details) .compacting { flex-wrap: nowrap; }
+  .session-head:not(.details) .compacting-note { flex: 1 1 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 }
 .session-corner { position: relative; display: flex; align-items: center; gap: 0.4rem; }
 .away-marker { background: var(--warn-bg); border-color: var(--warn-border); font-weight: 600; white-space: nowrap; }
