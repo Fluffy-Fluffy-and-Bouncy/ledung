@@ -461,7 +461,10 @@ a.file-link { text-decoration-style: dotted; }
    spans the scroller's padding and is opaque, so nothing scrolling under it shows through. Sticky stops at the
    scroller's padding, hence top -1rem: the strip meets its very top edge. */
 .pin-spot { position: sticky; top: -1rem; z-index: 2; height: 0; margin-bottom: -0.6rem; }
-.pinned-strip { margin: 0 -1rem; padding: 0.4rem 1rem 0.5rem; background: var(--bg); border-bottom: 1px solid var(--border); box-shadow: 0 4px 8px -6px rgb(0 0 0 / 0.5); }
+.pinned-strip { position: relative; margin: 0 -1rem; padding: 0.4rem 1rem 0.5rem; background: var(--bg); }
+/* A soft bottom edge instead of a line and a shadow (issue #226, Martin 2026-11-11): the strip stays opaque where its
+   text is, and a short fade below it lets the replies show through gradually. Clicks go through the fade. */
+.pinned-strip::after { content: ""; position: absolute; left: 0; right: 0; top: 100%; height: 0.9rem; background: linear-gradient(var(--bg), transparent); pointer-events: none; }
 .msg.pinned { cursor: pointer; }
 .msg.pinned:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; }
 .pinned-text { max-height: 4.2em; line-height: 1.4; overflow: hidden; }
@@ -887,6 +890,11 @@ table.calls td { white-space: nowrap; }
 /* Every session's header keeps its ⚙ in the top right corner, where a manager's away control was (issues #69, #81);
    what stays urgent (Interrupt, Start now, the clear and compact notices, Resume, Archive) sits under it. */
 .session-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; row-gap: 0.4rem; container-type: inline-size; }
+/* The header is one layer above the chat under it (issue #226). Its container query can make it a layer of its own
+   (layout containment, in browsers that still apply it), which shut the ⚙ menu's z-index inside it and drew the pinned
+   message (z-index 2) and the composer over the menu. Above the chat's own layers (pinned message, composer grip: 2)
+   and below everything that opens over the page (macro menu 5, phone file panel 10, row menu 60). */
+.session-head { position: relative; z-index: 3; }
 .session-head > .session-corner { grid-column: 2; grid-row: 1; justify-self: end; }
 .session-head > .session-head-text { grid-column: 1; grid-row: 1 / span 2; align-self: center; }
 .session-head > .session-actions { grid-column: 2; grid-row: 2; justify-content: flex-end; }
