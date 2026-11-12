@@ -42,10 +42,27 @@ export function resetsInText(resetsAt: number | null, now: number, kind: string)
   return `${lead} in ${parts.filter(Boolean).join(' ')}`;
 }
 
+/**
+ * The reset countdown from longest to shortest, for a narrow sidebar (issue #284, Martin: "maybe remove 'Weekly limit
+ * resets' if it doesnt fit"): "Weekly limit resets in 5 d 19 h", "resets in 5 d 19 h", "5 d 19 h". Empty without a reset time.
+ */
+export function resetsInVariants(resetsAt: number | null, now: number, kind: string): string[] {
+  const full = resetsInText(resetsAt, now, kind);
+  if (!full) return [];
+  const rest = full.slice(full.indexOf(' limit resets ') + ' limit '.length);
+  const bare = rest.startsWith('resets in ') ? rest.slice('resets in '.length) : rest;
+  return [...new Set([full, rest, bare])];
+}
+
+/** The part of a stop's line before its countdown: "93% · 2% to stop", or once held "Held at 95%". */
+export function meterStopHead(s: UsageStopInfo): string {
+  const note = stopNote(s);
+  return s.holding || s.utilization == null ? note[0]!.toUpperCase() + note.slice(1) : `${shownPercent(s.utilization)}% · ${note}`;
+}
+
 /** The line under a meter with a stop: "93% · 2% to stop · Weekly limit resets in 11 h 30 min", or once held "Held at 95% · Weekly limit resets in 9 h". */
 export function meterStopLine(s: UsageStopInfo, now: number): string {
-  const note = stopNote(s);
-  const head = s.holding || s.utilization == null ? note[0]!.toUpperCase() + note.slice(1) : `${shownPercent(s.utilization)}% · ${note}`;
+  const head = meterStopHead(s);
   const reset = resetsInText(s.resetsAt, now, s.kind);
   return reset ? `${head} · ${reset}` : head;
 }

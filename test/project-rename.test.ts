@@ -108,8 +108,8 @@ test('every column that holds a project name is one rename moves', () => {
     .filter((c) => c.name === 'project' || c.name.endsWith('_project') || c.name === 'front_desk' || (c.name === 'name' && /project/.test(t)))
     .map((c) => `${t}.${c.name}`)).sort();
   assert.deepEqual(found, [
-    'board_boards.front_desk', 'board_deliveries.project', 'board_outbox.project', 'board_posts.from_project', 'board_projects.name',
-    'flow_proposals.project', 'flow_runs.project', 'projects.name', 'sessions.project', 'turn_resources.project', 'usage.project', 'usage_daily.project',
+    'allowed_calls.project', 'board_boards.front_desk', 'board_deliveries.project', 'board_outbox.project', 'board_posts.from_project', 'board_projects.name',
+    'command_marks.project', 'flow_proposals.project', 'flow_runs.project', 'job_runs.project', 'projects.name', 'sessions.project', 'turn_resources.project', 'usage.project', 'usage_daily.project',
   ]);
 });
 

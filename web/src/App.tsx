@@ -1,4 +1,4 @@
-import { Component, Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from 'react';
+import { Component, Fragment, lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from 'react';
 import { CHATS, HELPER, PERMISSION_MODES, PRIORITIES, projectLabel, type ModelChoice, type AccountInfoView, type AwayInfo, type BoardStatus, type ChatsInfo, type GitHubBudget, type CompactingInfo, type MachineInfo, type McpServerInfo, type PermissionMode, type Priority, type ProjectInfo, type QuestionInfo, type RemoteControlInfo, type SessionInfo } from '../../src/shared/protocol.ts';
 import { AddProjectView, ProjectSettingsView, ProjectStartView } from './projects/ProjectViews.tsx';
 import { ChatsSettingsView, NewChatView } from './chats/ChatViews.tsx';
@@ -11,6 +11,8 @@ import { CHAT_IMAGE_TYPES, dataUrl, imageFiles, MAX_CHAT_IMAGES, prepareImage, S
 import { MessageList, formatTime } from './components/MessageList.tsx';
 import { WorkingIndicator } from './components/WorkingIndicator.tsx';
 import { SailingShip, shipMode } from './components/SailingShip.tsx';
+import { indexSessions, REMOVED_PROJECTS, sidebarTree, type Row, type SessionIndex } from './sessionTree.ts';
+import { useNow } from './clock.ts';
 import { FileViewer } from './components/FileViewer.tsx';
 import { FilesPane } from './components/FilesPane.tsx';
 import type { PaneFolderKey } from '../../src/shared/files-pane.ts';
@@ -41,16 +43,12 @@ import { settingsOf, toApi } from './projects/projectSettings.ts';
 import { foldRows, readFolded, readFoldedSessions, toggleFolded, writeFolded, writeFoldedSessions, type FoldedRow, type Hidden } from './sidebarFold.ts';
 import { conversationFromHash, conversationHash, conversationOf, messageFromHash, messageHash, type CameFrom } from './conversation.ts';
 
-/** The sidebar group for sessions of projects that were removed. */
-const REMOVED_PROJECTS = 'Removed projects';
 
 /** Whether a session belongs to a sidebar group: its project, Chats (issue #211), or "Removed projects". */
 function inGroup(s: SessionInfo, group: string, known: Set<string>): boolean {
   return group === REMOVED_PROJECTS ? !known.has(s.project) && s.project !== CHATS && s.project !== HELPER : s.project === group;
 }
 
-/** A session's row in the sidebar; drag: the siblings it can be dragged among, null when it stays put (issue #88). */
-type Row = { s: SessionInfo; depth: number; drag: string | null };
 import { projectAccountShown, stripAccount } from './limitAccount.ts';
 import { githubBudgetClass, githubBudgetLine, githubBudgetsShown } from './githubBudget.ts';
 import { escapeLeaves, isSettingsView, leaveSettings, stepsInto, type SettingsSteps } from './settingsNav.ts';
@@ -67,7 +65,7 @@ import { UsageView } from './usage/UsageView.tsx';
 import type { Overview } from '../../src/shared/protocol.ts';
 import type { HelperInfo } from '../../src/shared/setup.ts';
 import type { FlowRun } from '../../src/shared/flow-run.ts';
-import { workflowRow } from './flowRuns.ts';
+import { workflowButton } from './flowRuns.ts';
 import { bangAsk, bangCommand, bangHint } from '../../src/shared/bang.ts';
 import { SidebarResizer } from './components/SidebarResizer.tsx';
 import { useComposerHeight } from './components/ComposerResizer.tsx';
@@ -87,6 +85,7 @@ import { useCompactSidebar } from './useCompactSidebar.ts';
 import { compactRows, rowTooltip } from './compactSidebar.ts';
 import { useArchivedLink } from './useArchivedLink.ts';
 import { showsArchivedLink } from './archivedLink.ts';
+import { fetchesArchived } from '../../src/shared/hello-sessions.ts';
 import { computerFrame, computerStyle, frameAnswer, inFrame, shownComputerOf } from './computerFrame.ts';
 import { ComputerFrames, ComputerTabs } from './components/ComputerTabs.tsx';
 import { useComputerLink } from './useComputerLink.ts';
@@ -412,7 +411,17 @@ export function App() {
     return counts;
   }, [permissions, questions]);
 
-  const session = ledung.sessions.find((s) => s.id === openId) ?? null;
+  // The list indexed once per change (issue #233): rows, headers and lookups by id read it instead of scanning the list.
+  const index = useMemo(() => indexSessions(ledung.sessions), [ledung.sessions]);
+  const session = (openId && index.byId.get(openId)) || null;
+
+  // Hello carries only recent archived sessions (issue #229): an Archived list, or an archived session opened by its
+  // link, fetches the rest, again after each hello, which brings the short list back.
+  const { loadArchived, loaded, hellos } = ledung;
+  const fetchArchived = fetchesArchived({ openId, loaded, unknownSession: isSessionId(openId) && !session, olderArchived: ledung.olderArchived });
+  useEffect(() => {
+    if (fetchArchived) loadArchived().catch(() => {});
+  }, [fetchArchived, hellos, loadArchived]);
 
   // The Ledung Helper (docs/steps/ledung-helper.md): opened from the sidebar, Settings and New project; `text` is the
   // person's own words to it, such as "I want to create a new project".
@@ -478,6 +487,16 @@ export function App() {
       setError((e as Error).message);
     }
   };
+
+  // The sidebar is memoized (issue #233): a message or other live event that changes nothing it shows doesn't redraw
+  // it. Its handlers keep their identity for that; they are only called on a click.
+  const sidebarRun = useStableCallback(run);
+  const sidebarOpen = useStableCallback(open);
+  const sidebarCloseSettings = useStableCallback(closeSettings);
+  // The helper's entry and New project, stable so the memoized sidebar isn't drawn again for them (issue #233).
+  const sidebarOpenHelper = useStableCallback(() => void openHelper());
+  const sidebarNewProject = useStableCallback(() => void newProject());
+  const sidebarStart = useStableCallback((project: string, profile?: string) => run(async () => open((await api.start(project, profile)).id)));
 
   const banners = (
     <>
@@ -564,6 +583,8 @@ export function App() {
         {openId === null && <div className="phone-banners">{banners}</div>}
         <Sidebar
           sessions={ledung.sessions}
+          olderArchived={ledung.olderArchived}
+          index={index}
           projects={ledung.projects}
           chats={ledung.chats}
           pending={pendingBySession}
@@ -574,12 +595,12 @@ export function App() {
           stripAccount={stripAcc}
           overview={ledung.overview}
           machine={ledung.machine}
-          run={run}
+          run={sidebarRun}
           openId={openId}
-          onOpen={open}
-          onCloseSettings={closeSettings}
+          onOpen={sidebarOpen}
+          onCloseSettings={sidebarCloseSettings}
           profiles={ledung.profiles}
-          onStart={(project, profile) => run(async () => open((await api.start(project, profile)).id))}
+          onStart={sidebarStart}
           connection={ledung.connection}
           board={ledung.board}
           workflows={ledung.workflows}
@@ -587,8 +608,8 @@ export function App() {
           runs={ledung.runs}
           questions={ledung.questions}
           helper={ledung.helper}
-          onOpenHelper={() => void openHelper()}
-          onNewProject={() => void newProject()}
+          onOpenHelper={sidebarOpenHelper}
+          onNewProject={sidebarNewProject}
         />
         {!noSidebar && <SidebarResizer />}
         <main className="main">
@@ -600,6 +621,7 @@ export function App() {
               sessionsOpen={openId === 'overview'}
               onSessions={(on) => open(on ? 'overview' : 'usage')}
               sessions={ledung.sessions}
+              olderArchived={ledung.olderArchived}
               overview={ledung.overview}
               machine={ledung.machine}
               waitingBySession={pendingBySession}
@@ -705,8 +727,31 @@ export function App() {
   );
 }
 
-function Sidebar(props: {
+/**
+ * The Workflow button at the right end of a project's row (issue #289, Martin 2026-11-12: "D, looking really good!"): a
+ * one-colour flow symbol, blue with its count while runs are under way, grey and dimmed at none, and a yellow bubble for
+ * runs waiting on you. It stays on the row when the project is folded.
+ */
+function WorkflowButton({ counts, open, onClick }: { counts: { running: number; forYou: number; title: string }; open: boolean; onClick: () => void }) {
+  const { running, forYou, title } = counts;
+  return (
+    <button className={`workflow-button${running || forYou ? ' busy' : ' idle'}${open ? ' open' : ''}`} title={title} aria-label={title} aria-current={open ? 'page' : undefined} onClick={onClick}>
+      <svg className="workflow-glyph" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+        <circle cx="3.5" cy="3.5" r="2" /><circle cx="3.5" cy="12.5" r="2" /><circle cx="12.5" cy="8" r="2" />
+        <path d="M3.5 5.5v5M5.3 4.4 10.7 7.1M5.3 11.6l5.4-2.7" />
+      </svg>
+      {running ? <span className="workflow-count">{running}</span> : null}
+      {forYou ? <span className="workflow-for-you">{forYou}</span> : null}
+    </button>
+  );
+}
+
+const Sidebar = memo(function Sidebar(props: {
   sessions: SessionInfo[];
+  /** Archived sessions hello only counted, by project (issue #229), for the Archived (N) links. */
+  olderArchived: Record<string, number>;
+  /** The same list indexed (issue #233). */
+  index: SessionIndex;
   projects: ProjectInfo[];
   /** For the chats' name colour (issue #222). */
   chats: ChatsInfo | null;
@@ -728,7 +773,7 @@ function Sidebar(props: {
   onStart: (project: string, profile?: string) => void;
   connection: Connection;
   board: BoardStatus | null;
-  /** Which projects have a workflow, their runs and the open questions, for each one's Workflow row (2026-11-04). */
+  /** Which projects have a workflow, their runs and the open questions, for each one's Workflow button (#289). */
   workflows: Record<string, boolean>;
   /** The added Claude accounts, for a project heading's Account (2026-11-08). */
   accounts: AccountInfoView[];
@@ -743,26 +788,11 @@ function Sidebar(props: {
   // outside the manager (and earlier managers). Sessions of removed projects come last. Projects and
   // siblings keep the order they were dragged into (issue #88), else as before.
   // Archived sessions leave the tree; each project links to its own (idle stop and archive).
-  const shown = props.sessions.filter((s) => !s.archivedAt);
-  const childrenOf = (id: string) => shown.filter((s) => s.parentId === id).sort(siblingOrder);
-  const known = new Set(props.projects.map((p) => p.name));
-  // drag: the siblings a row can be dragged among (sidebarDrag.ts); null for the manager, which stays first,
-  // and in "Removed projects", whose rows belong to no one project.
-  const withChildren = (s: SessionInfo, drag: string | null, movable: boolean): Row[] =>
-    [{ s, depth: 0, drag }, ...childrenOf(s.id).map((c) => ({ s: c, depth: 1, drag: movable ? `c:${s.id}` : null }))];
-  const rowsFor = (inProject: (s: SessionInfo) => boolean, managerId: string | null, project: string | null) => {
-    const ids = new Set(shown.filter(inProject).map((s) => s.id));
-    const manager = managerId ? shown.find((s) => s.id === managerId) : undefined;
-    const top = shown.filter((s) => inProject(s) && s.id !== managerId && (!s.parentId || !ids.has(s.parentId))).sort(siblingOrder);
-    return [...(manager ? withChildren(manager, null, !!project) : []), ...top.flatMap((s) => withChildren(s, project ? `t:${project}` : null, !!project))];
-  };
-  // Chats first (issue #211), a group of their own apart from every project, always shown for its New chat.
-  const groups = [
-    { name: CHATS, project: null as ProjectInfo | null, rows: rowsFor((s) => s.project === CHATS, null, CHATS) },
-    ...props.projects.map((p) => ({ name: p.name, project: p as ProjectInfo | null, rows: rowsFor((s) => s.project === p.name, p.managerId, p.name) })),
-    { name: REMOVED_PROJECTS, project: null, rows: rowsFor((s) => !known.has(s.project) && s.project !== CHATS && s.project !== HELPER, null, null) },
-  ].map((g) => ({ ...g, archived: props.sessions.filter((s) => s.archivedAt && inGroup(s, g.name, known)).length }))
-    .filter((g) => g.project || g.name === CHATS || g.rows.length || g.archived);
+  // The rows of every group and their archived counts from one pass over the list, not a scan per project or row
+  // (issue #233); memoized, so a redraw for something else (a menu, a drag) doesn't rebuild them.
+  const known = useMemo(() => new Set(props.projects.map((p) => p.name)), [props.projects]);
+  const tree = useMemo(() => sidebarTree(props.sessions, props.projects, known, props.olderArchived), [props.sessions, props.projects, known, props.olderArchived]);
+  const groups = tree.groups;
 
   // Folded projects and sessions, kept in this browser (issue #149); gone projects and sessions drop out on the next fold.
   const [folded, setFolded] = useState(() => readFolded(localStorage));
@@ -773,7 +803,7 @@ function Sidebar(props: {
     return next;
   });
   const foldSession = (id: string) => setFoldedSessions((f) => {
-    const next = toggleFolded(f, id, (n) => shown.some((s) => s.id === n));
+    const next = toggleFolded(f, id, (n) => tree.shown.byId.has(n));
     writeFoldedSessions(localStorage, next);
     return next;
   });
@@ -940,7 +970,7 @@ function Sidebar(props: {
   const menuFor = (() => {
     if (!rowMenu) return null;
     if (rowMenu.target.startsWith('s:')) {
-      const s = shown.find((x) => x.id === rowMenu.target.slice(2));
+      const s = tree.shown.byId.get(rowMenu.target.slice(2));
       return s ? { label: `Menu of ${s.title}`, entries: sessionEntries(s) } : null;
     }
     const entries = groupEntries(rowMenu.target.slice(2));
@@ -967,6 +997,9 @@ function Sidebar(props: {
 
   // The status dot, or with it switched off the status as the row's tooltip (#151).
   const [dotShown] = useStatusDot();
+  // The memoized sidebar no longer redraws on every message; a budget past its reset still drops out within a minute
+  // (self-check 4 of #233).
+  const minute = useNow(60_000);
   // The Compact sidebar step (#153): which rows a card keeps; what it hides goes in its tooltip.
   const [compact] = useCompactSidebar();
   const shows = compactRows(compact);
@@ -979,7 +1012,7 @@ function Sidebar(props: {
       // Tokens today (a manager's includes its team) · context · branch.
       const own = props.overview?.sessions[s.id]?.today ?? 0;
       const team = s.role === 'manager'
-        ? props.sessions.filter((c) => c.parentId === s.id).reduce((n, c) => n + (props.overview?.sessions[c.id]?.today ?? 0), own)
+        ? props.index.childrenOf(s.id).reduce((n, c) => n + (props.overview?.sessions[c.id]?.today ?? 0), own)
         : own;
       const ctx = contextShare(s);
       const res = s.status !== 'ended' ? props.machine?.sessions[s.id] : undefined;
@@ -1018,14 +1051,14 @@ function Sidebar(props: {
           data-drag={group ?? undefined}
           data-drag-id={group ? s.id : undefined}
         >
-          {rowStatus(dotShown, s).dot && <span className={`dot ${statusLook(s)}`} title={STATUS_LABEL[s.status]} />}
+          {rowStatus(dotShown, s).dot && <span className={`dot ${waitingToStart(props.machine, s) ? 'queued' : statusLook(s)}`} title={waitingToStart(props.machine, s) ? 'Waiting to start' : STATUS_LABEL[s.status]} />}
           <span className="session-text">
             <span className="session-title">{s.role === 'manager' && <span className="chip">Manager</span>} <Named colour={sessionColour(s, withChatsColour(props.projects, props.chats))}>{s.title}</Named></span>
             {shows.time && <span className="session-sub">{time}</span>}
             {shows.usage && usage && <span className="session-sub usage-line">{usage}</span>}
           </span>
           {(() => {
-            const mode = shipMode(s, props.sessions);
+            const mode = shipMode(s, props.index.childrenOf(s.id));
             return mode && <span className={`session-ship ${statusLook(s)}`}><SailingShip mode={mode} width={10} sizeButton={false} hideWhenSunk maxSize={shows.shipMax} /></span>;
           })()}
           {hiddenChip(hidden, hidden?.count === 1 ? 'sub-session' : 'sub-sessions')}
@@ -1042,12 +1075,12 @@ function Sidebar(props: {
   return (
     <aside className="sidebar">
       <LimitMeters account={props.stripAccount} limits={props.limits} stops={props.usageStops} run={props.run} />
-      {githubBudgetsShown(props.github, Date.now()).map((b) => (
+      {githubBudgetsShown(props.github, minute).map((b) => (
         <div key={`${b.container ?? ''} ${b.host}`} className={`github-budget muted ${githubBudgetClass(b)}`} title="What is left of the GitHub budget Ledung's pull request checks use (the worst of GitHub's readings). Under 20 % left they run every 10 minutes, under 5 % not until the reset.">
           {githubBudgetLine(b, (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}
         </div>
       ))}
-      <MachinePanel machine={props.machine} sessions={props.sessions} onOpen={props.onOpen} run={props.run} />
+      <MachinePanel machine={props.machine} byId={props.index.byId} onOpen={props.onOpen} run={props.run} />
       <button className={`waiting-entry${isDeskView(props.openId) ? ' open' : ''}${props.waiting ? ' has-items' : ''}`} onClick={() => props.onOpen('waiting')}>
         <span>Waiting for you</span>
         {props.waiting ? <span className="badge">{props.waiting}</span> : <span className="muted">nothing</span>}
@@ -1090,6 +1123,13 @@ ${moreHint}`} onClick={() => props.onOpen('chat')}><Named colour={props.chats?.c
                   ) : <span className="project-name muted">{g.name}</span>}
                   {hiddenChip(g.view.project, g.view.project?.count === 1 ? 'session' : 'sessions')}
                   {g.view.project?.pending ? <span className="badge">{g.view.project.pending}</span> : null}
+                  {g.project && props.workflows[g.name] && (
+                    <WorkflowButton
+                      counts={workflowButton(props.runs[g.name] ?? [], (id) => props.questions[id]?.status === 'open')}
+                      open={props.openId === `wf:${g.name}`}
+                      onClick={() => props.onOpen(`wf:${g.name}`)}
+                    />
+                  )}
                 </div>
                 {/* Everything of the project one step in under its name, along a guide line from its ▾ (Simon, 2026-11-04:
                     the manager row sat left of the project's, so it didn't read as the project's). */}
@@ -1114,17 +1154,6 @@ ${moreHint}`} onClick={() => props.onOpen('chat')}><Named colour={props.chats?.c
                     <button className="small" onClick={() => setChoosing(null)}>Cancel</button>
                   </div>
                 )}
-                {g.project && props.workflows[g.name] && !g.isFolded && (() => {
-                  // The workflow's own row (Simon, 2026-11-04): under the project's name, above its manager, with what is going on.
-                  const row = workflowRow(props.runs[g.name] ?? [], (id) => props.questions[id]?.status === 'open');
-                  return (
-                    <div className="session-row">
-                      <button className={`session-item workflow-row${props.openId === `wf:${g.name}` ? ' open' : ''}`} title={row.title} onClick={() => props.onOpen(`wf:${g.name}`)}>
-                        <span className="session-text"><span className="session-title">{row.text}</span></span>
-                      </button>
-                    </div>
-                  );
-                })()}
                 {(() => {
                   const at = markerIn(g.view.rows);
                   return g.view.rows.map((r) => (
@@ -1170,7 +1199,7 @@ ${moreHint}`} onClick={() => props.onOpen('chat')}><Named colour={props.chats?.c
       </div>
     </aside>
   );
-}
+});
 
 export function SessionView(props: {
   session: SessionInfo;
@@ -1210,6 +1239,8 @@ export function SessionView(props: {
       onSend={(text) => void run(async () => { if (messageId !== undefined) await api.helperCardAnswered(session.id, messageId); await api.send(session.id, text); })} onOpen={(id) => openView?.(id)} />
     // eslint-disable-next-line react-hooks/exhaustive-deps
   ), [session.id, ledung.projects, openView]);
+  // Lookups by id and its own sessions from an index built once per list change (issue #233).
+  const index = useMemo(() => indexSessions(ledung.sessions), [ledung.sessions]);
   const [showTechnical, setShowTechnical] = useState(() => readTechnical(session.id));
   /** Files opened from links, newest last; empty when the file panel is closed. */
   const [files, setFiles] = useState<string[]>([]);
@@ -1267,9 +1298,9 @@ export function SessionView(props: {
   const tint = useMemo(() => nameTint(session, withChatsColour(ledung.projects, ledung.chats)), [session.project, session.role, ledung.projects, ledung.chats]);
   // The conversation is memoized (issue #323): what it is given keeps its identity unless what it shows changed.
   // Not a stable callback: MessageList calls it from its own layout effect, before this view's effects would have
-  // updated one, and ledung.loadEarlier works from the messages it was made with (review of #323).
+  // updated one (review of #323). ledung.loadEarlier itself keeps its identity and reads the shown messages when called (#231).
   const loadEarlier = useCallback(() => run(ledung.loadEarlier), [ledung.loadEarlier]);
-  const titleOf = useCallback((id: string) => ledung.sessions.find((s) => s.id === id)?.title ?? 'unknown', [ledung.sessions]);
+  const titleOf = useCallback((id: string) => index.byId.get(id)?.title ?? 'unknown', [index]);
   const openQuestion = useStableCallback(props.onOpenQuestion);
   const boardRepo = ledung.board?.projects[session.project]?.repo;
   const openBoardThread = useStableCallback((id: string) => props.onOpenBoardThread(boardRepo!, id));
@@ -1324,7 +1355,7 @@ export function SessionView(props: {
         <button className="phone-back" aria-label="Back to the list" title="Back to the list" onClick={props.onBack}>←</button>
         <div className="session-head-text" onClick={(e) => { if (!(e.target as HTMLElement).closest('a, button')) setHeadDetails((v) => !v); }}>
           <h2>
-            <span className={`dot ${statusLook(session)} phone-dot`} title={STATUS_LABEL[session.status]} />
+            <span className={`dot ${waitingToStart(ledung.machine, session) ? 'queued' : statusLook(session)} phone-dot`} title={waitingToStart(ledung.machine, session) ? 'Waiting to start' : STATUS_LABEL[session.status]} />
             {session.role === 'manager' && <span className="chip">Manager</span>}{' '}
             {renaming
               ? <NameEditor value={session.title} label={`New name for ${session.title}`} onDone={() => setRenaming(false)} onSave={(name) => run(() => api.rename(session.id, name))} />
@@ -1346,12 +1377,15 @@ export function SessionView(props: {
             <div className="muted started-by">
               Started by{' '}
               <button className="link" onClick={() => (location.hash = `#/s/${session.parentId}`)}>
-                {ledung.sessions.find((s) => s.id === session.parentId)?.title ?? 'a manager'}
+                {index.byId.get(session.parentId)?.title ?? 'a manager'}
               </button>
             </div>
           )}
           <div className="muted">
-            <span className={`dot ${statusLook(session)}`} /> {STATUS_LABEL[session.status]}
+            {/* A new session waiting for memory to start (resource limits): not "Ready" (acceptance test, finding 3). */}
+            {waitingToStart(ledung.machine, session)
+              ? <><span className="dot queued" /> Waiting to start: {waitingToStart(ledung.machine, session)}</>
+              : <><span className={`dot ${statusLook(session)}`} /> {STATUS_LABEL[session.status]}</>}
             {session.status === 'queued' && ledung.machine && ledung.machine.line.includes(session.id) ? `: number ${ledung.machine.line.indexOf(session.id) + 1} in line` : ''}
             {session.paused ? ' · Paused' : ''}
             {session.priority !== 'normal' ? <> · <span className={`chip prio-${session.priority}`} title={session.priorityNote ?? undefined}>{PRIORITY_LABEL[session.priority]}</span></> : null}
@@ -1409,7 +1443,7 @@ export function SessionView(props: {
           <div className="session-notice">
             <Compacting
               compacting={session.compacting!}
-              by={session.compacting!.requester === session.id ? 'the session itself' : `manager "${ledung.sessions.find((s) => s.id === session.compacting!.requester)?.title ?? 'a manager'}"`}
+              by={session.compacting!.requester === session.id ? 'the session itself' : `manager "${index.byId.get(session.compacting!.requester)?.title ?? 'a manager'}"`}
             />
           </div>
         )}
@@ -1449,7 +1483,7 @@ export function SessionView(props: {
             footer={stepCard ?? undefined}
             footerKey={stepCard ? `${ledung.helper?.setup.current}` : undefined}
           />
-          <WorkingIndicator key={session.id} session={session} sessions={ledung.sessions} messages={ledung.messages} plain={isHelper ? helperToolWords : undefined}
+          <WorkingIndicator key={session.id} session={session} children={index.childrenOf(session.id)} messages={ledung.messages} waitingToStart={waitingToStart(ledung.machine, session)} plain={isHelper ? helperToolWords : undefined}
             extra={<MacroChips key={session.id} macros={macros} onUse={fireMacro} onEdit={() => (location.hash = '#/settings/macros')}
               actions={[
                 { id: 'secret', label: '🔑 Lock a secret…', title: 'Type or paste it into a masked field; Claude gets only its name', disabled: composerClosed(session), onPick: () => composerActions.current?.secret() },
@@ -1986,11 +2020,8 @@ function Composer({ session, tint, run, quoteInto, actionsInto, bangShell }: {
 
 /** A clear (clear_session) counting down: the seconds left and Cancel, which keeps the conversation. */
 function ClearCountdown({ due, onCancel }: { due: number; onCancel: () => void }) {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 500);
-    return () => clearInterval(timer);
-  }, []);
+  // The page's shared clock (issue #233).
+  const now = useNow(500);
   const left = Math.max(0, Math.ceil((due - now) / 1000));
   return (
     <span className="clear-countdown" role="status">
@@ -2005,11 +2036,7 @@ function ClearCountdown({ due, onCancel }: { due: number; onCancel: () => void }
  * (decided 2026-10-13); Interrupt ends it. The note is shown as the requester's, never as the user's words.
  */
 function Compacting({ compacting, by }: { compacting: CompactingInfo; by: string }) {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
+  const now = useNow(1000);
   const secs = Math.max(0, Math.floor((now - compacting.startedAt) / 1000));
   const time = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
   const title = `Compact requested by ${by}${compacting.note ? `. Note for the summary: ${compacting.note}` : ''}`;
@@ -2027,4 +2054,10 @@ function RemoteControlLink({ rc }: { rc: RemoteControlInfo }) {
   if (!rc.url) return <span>Remote Control starting…</span>;
   const bridge = rc.bridge ? ` (bridge ${rc.bridge})` : '';
   return <a href={rc.url} target="_blank" rel="noreferrer noopener" title={`Remote Control on${bridge}: this manager in the Claude app or on claude.ai`}>Remote Control</a>;
+}
+
+/** Why a new session hasn't started yet, when it waits in the resource line for memory; null otherwise. */
+function waitingToStart(machine: MachineInfo | null, session: SessionInfo): string | null {
+  if (session.status !== 'starting') return null;
+  return machine?.resources?.line.find((l) => l.kind === 'session' && l.sessionId === session.id)?.reason ?? null;
 }

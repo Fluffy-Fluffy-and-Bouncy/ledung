@@ -8,6 +8,8 @@ export interface QuestionOption {
   key: string;
   text: string;
   cost?: string;
+  /** At a run's person step (#291): the block's outcome word this option's answer leads to. */
+  outcome?: string;
 }
 
 /**
@@ -163,6 +165,13 @@ export interface RefusalDetails {
   byHand?: 'protected' | 'retried';
   /** With `retried`: the question whose Allow once the retry used. */
   retryOf?: number;
+  /**
+   * Allow always was offered (issue #225): `plain`, or `sensitive` with its own button when the command is on the
+   * project's sensitive list. Absent: not offered (not a shell command, by hand, or asked before #225).
+   */
+  always?: 'plain' | 'sensitive';
+  /** With `sensitive`: the sensitive rule the command matched, as the question named it. */
+  sensitiveRule?: string;
 }
 
 /** The run and block a person block's question belongs to (workflow part 3b), with their titles as asked. */
@@ -175,6 +184,8 @@ export interface QuestionRun {
   person?: string;
   /** The flow it runs in, for the link to the workflow page (part 3c). */
   flow?: string;
+  /** The coordinator's own write-up (#291), not Ledung's card: its options carry their outcomes, and a note may follow a pick. */
+  writeUp?: boolean;
 }
 
 /** One option as the desk shows it. `answer` is the text the session gets when it is picked. */

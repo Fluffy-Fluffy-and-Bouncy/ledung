@@ -1,5 +1,7 @@
 # Ledung Helper and an AI first start — design
 
+Nov 12, 2026, 17:05 · **Accepted by Simon** after the try-outs, the acceptance tests and the security reviews: "I think that's good enough." It goes public.
+
 Nov 12, 2026 · **Building locally for Simon's try-out (Simon, 2026-11-12).** Nothing is pushed, no PR, until Simon has tried it. Simon's words: "I'd like to have the AI help setting up the project, etc, instead of doing it from a normal pop-up", "Only for new user, but accessible from settings. I think this should be used to create new projects", "Stay as a Ledung Helper, might be awesome if we could use that for quick help for things related to Ledung."
 
 **Done when:** a brand-new Ledung opens on a Welcome screen and a Claude check, then hands over to the Ledung Helper, a chat that walks through the setup step by step (Ledung, not the AI, keeps the steps) to a first project with a workflow; afterwards the helper stays in the sidebar and in Settings, creates projects and changes projects' settings on request, always through the approvals that exist today; all of it works at 390 px.

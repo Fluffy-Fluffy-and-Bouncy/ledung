@@ -6,6 +6,7 @@ import { formatTime } from '../components/MessageList.tsx';
 import { STATUS_LABEL, statusLook } from '../sessionStatus.ts';
 import { formatCost, formatTokens, pct, prLabel } from './charts.tsx';
 import { contextSize } from '../../../src/shared/context-size.ts';
+import { usageRows } from '../sessionTree.ts';
 
 const STATUS: Record<SessionInfo['status'], string> = { ...STATUS_LABEL, waiting: 'Needs an answer' };
 
@@ -15,18 +16,16 @@ export function contextShare(s: SessionInfo): number | null {
 
 export function SessionsTab(props: {
   sessions: SessionInfo[];
+  /** Archived sessions hello only counted (issue #229); an archived session has ended. */
+  olderArchived?: Record<string, number>;
   overview: Overview | null;
   machine: MachineInfo | null;
   waitingBySession: Record<string, number>;
   onOpenSession: (id: string) => void;
 }) {
-  const ids = new Set(props.sessions.map((s) => s.id));
-  // Ended sessions are left out; a manager stays while any of its sessions runs.
-  const live = (s: SessionInfo) => s.status !== 'ended';
-  const top = props.sessions.filter((s) => (!s.parentId || !ids.has(s.parentId)) && (live(s) || props.sessions.some((c) => c.parentId === s.id && live(c))));
-  const order = (a: SessionInfo, b: SessionInfo) => Number(b.role === 'manager') - Number(a.role === 'manager') || b.createdAt - a.createdAt;
-  const rows = top.sort(order).flatMap((s) => [s, ...props.sessions.filter((c) => c.parentId === s.id && live(c)).sort(order)]);
-  const ended = props.sessions.filter((s) => s.status === 'ended').length;
+  // Ended sessions are left out; a manager stays while any of its sessions runs. One pass over the list (issue #235).
+  const { index, rows } = usageRows(props.sessions);
+  const ended = props.sessions.filter((s) => s.status === 'ended').length + Object.values(props.olderArchived ?? {}).reduce((a, b) => a + b, 0);
 
   return (
     <div className="overview">
@@ -39,7 +38,7 @@ export function SessionsTab(props: {
         {rows.map((s) => {
           const u = props.overview?.sessions[s.id];
           const ctx = contextShare(s);
-          const child = !!s.parentId && ids.has(s.parentId);
+          const child = !!s.parentId && index.byId.has(s.parentId);
           return (
             // A clickable panel rather than a button: it contains links (pull request, tickets).
             <div

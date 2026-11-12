@@ -3,7 +3,7 @@
 // config file are copied in once each, by name, so a project removed in the page doesn't come back.
 import type { DatabaseSync } from 'node:sqlite';
 import { parseProject, type ProjectConfig } from '../config.ts';
-import { LATER_SUGGESTIONS, withSuggestions } from '../shared/sensitive-suggestions.ts';
+import { LATER_SUGGESTIONS, withLaterBatch, withSuggestions } from '../shared/sensitive-suggestions.ts';
 import { NO_COLOURS, parseColours, type ProjectColours } from '../shared/name-colours.ts';
 
 export interface StoredProject {
@@ -68,6 +68,8 @@ export class ProjectStore {
     const project = parseProject(config);
     if (this.get(project.name)) throw new Error(`There is already a project named "${project.name}".`);
     this.db.prepare('DELETE FROM projects WHERE name = ?').run(project.name);
+    // A removed project's Allow always rules don't come back with a new one of its name (issue #225).
+    this.db.prepare('DELETE FROM allowed_calls WHERE project = ?').run(project.name);
     this.db.prepare('INSERT INTO projects (name, data, manager_id, created_at) VALUES (?, ?, ?, ?)')
       .run(project.name, JSON.stringify(project), managerId, Date.now());
     return this.get(project.name)!;
@@ -111,11 +113,17 @@ export class ProjectStore {
       // Runs through its flows (workflow part 3).
       'UPDATE flow_runs SET project = ? WHERE project = ?',
       'UPDATE flow_proposals SET project = ? WHERE project = ?',
+      // What its reserved jobs used and its commands' marks (resource limits): the learning follows the project.
+      'UPDATE job_runs SET project = ? WHERE project = ?',
+      'UPDATE command_marks SET project = ? WHERE project = ?',
+      // Its Allow always rules (issue #225).
+      'UPDATE allowed_calls SET project = ? WHERE project = ?',
     ];
     this.db.exec('BEGIN');
     try {
       this.db.prepare('DELETE FROM projects WHERE name = ? AND removed_at IS NOT NULL').run(project.name);
       this.db.prepare('DELETE FROM board_projects WHERE name = ?').run(project.name);
+      this.db.prepare('DELETE FROM allowed_calls WHERE project = ?').run(project.name);
       this.db.prepare('UPDATE projects SET name = ?, data = ? WHERE name = ? AND removed_at IS NULL').run(project.name, JSON.stringify(project), from);
       // Its manager's title, while it is still the one Ledung gave it ("Manager: <project>", start).
       this.db.prepare(`UPDATE sessions SET title = ? WHERE project = ? AND role = 'manager' AND title = ?`).run(`Manager: ${project.name}`, from, `Manager: ${from}`);
@@ -141,8 +149,9 @@ export class ProjectStore {
       if (this.db.prepare('SELECT 1 FROM meta WHERE key = ?').get(key)) return;
       for (const p of this.list()) {
         const sensitive = add(p.config.sensitive);
-        if (sensitive.commandPatterns.length === p.config.sensitive.commandPatterns.length
-          && sensitive.pathPatterns.length === p.config.sensitive.pathPatterns.length) continue;
+        // Compared whole: a batch may replace a pattern in place (Project-Ledung#473), leaving the count as it was.
+        if (sensitive.commandPatterns.join('\n') === p.config.sensitive.commandPatterns.join('\n')
+          && sensitive.pathPatterns.join('\n') === p.config.sensitive.pathPatterns.join('\n')) continue;
         this.db.prepare('UPDATE projects SET data = ? WHERE name = ?').run(JSON.stringify({ ...p.config, sensitive }), p.config.name);
         changed.add(p.config.name);
       }
@@ -150,7 +159,7 @@ export class ProjectStore {
     };
     once(SUGGESTIONS_KEY, withSuggestions);
     for (const batch of LATER_SUGGESTIONS) {
-      once(batch.key, (s) => ({ ...s, commandPatterns: [...s.commandPatterns, ...batch.commandPatterns.filter((p) => !s.commandPatterns.includes(p))] }));
+      once(batch.key, (s) => ({ ...s, commandPatterns: withLaterBatch(s.commandPatterns, batch) }));
     }
     return changed.size;
   }

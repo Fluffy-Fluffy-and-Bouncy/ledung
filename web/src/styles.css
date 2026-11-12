@@ -547,6 +547,8 @@ a.file-link { text-decoration-style: dotted; }
 .ship-button { background: none; border: 0; padding: 0; margin: 0; color: inherit; cursor: pointer; flex-shrink: 0; line-height: 0; border-radius: 3px; }
 .ship-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .sailing-ship { margin: 0; flex-shrink: 0; font: 600 7px/1 ui-monospace, Menlo, Consolas, monospace; color: currentColor; white-space: pre; }
+/* The small boat and the water behind a stopped ship whose work goes on: the working colour (#270). */
+.sailing-ship .ship-behind { color: var(--accent); }
 .dot.running { animation: dot-pulse 1.4s infinite ease-in-out; }
 @keyframes dot-pulse { 50% { opacity: 0.3; } }
 @media (prefers-reduced-motion: reduce) {
@@ -650,7 +652,27 @@ button.on { border-color: var(--accent); background: var(--user-bg); }
 .limit.with-ship { grid-column: 1 / -1; }
 .limit-forecast { color: var(--muted); font-variant-numeric: tabular-nums; }
 .limit-forecast.over { color: var(--st-warning); font-weight: 600; }
-.limit-ship-box { margin: 0.15rem 0; min-width: 0; color: var(--accent); }
+.limit-ship-box { margin: 0.15rem 0; min-width: 0; color: var(--accent); position: relative; }
+.limit-ship-fit { min-width: 0; }
+/* A job on one line (issue #284): who, what, and its most-used reservation as a small bar; a click opens the card. */
+.job-row { font-size: 0.8em; }
+.job-row-button { all: unset; box-sizing: border-box; width: 100%; cursor: pointer; display: grid; grid-template-columns: auto minmax(0, max-content) minmax(0, 1fr) 3.5em; gap: 0.35rem; align-items: center; padding: 0.1rem 0.25rem; border-radius: 4px; }
+.job-row-button:hover { background: var(--panel-2); }
+.job-row-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.job-row-button > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-row-button > .job-row-track { overflow: visible; }
+.job-row-mark { color: var(--st-good); font-size: 0.8em; }
+.job-row.paused .job-row-mark { color: var(--muted); }
+.job-fold { margin-left: auto; }
+.machine-sub-toggle { all: unset; display: block; cursor: pointer; margin: 0.45rem 0.75rem 0; font-size: 0.78em; font-weight: 600; color: var(--muted); }
+.machine-sub-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* No room on the line under the ship: the forecast sits beside it on the water line's row, in the room the strip left (issue #284). */
+.limit-ship-box > .limit-forecast { position: absolute; right: 0; bottom: 0; font-size: 0.9em; white-space: nowrap; line-height: 1.1; }
+/* The line under a meter (issue #284): one line, its words chosen to fit; it wraps only between its parts. */
+.limit-sub-line { position: relative; overflow: clip; flex: 1; min-width: 0; display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
+.limit-line-text { min-width: 0; }
+.limit-sub-line > .limit-forecast { white-space: nowrap; margin-left: auto; }
+.limit-measure { position: absolute; left: 0; top: 0; visibility: hidden; pointer-events: none; white-space: nowrap; display: flex; flex-direction: column; align-items: flex-start; }
 
 /* The Usage page's Shared tab (issue #364): a card per account, its bars split by computer. */
 .shared-usage { display: flex; flex-direction: column; gap: 0.75rem; }
@@ -866,6 +888,8 @@ table.calls td { white-space: nowrap; }
 .sensitive-list li { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; border: 1px solid var(--border, #8884); border-radius: 6px; padding: 0.3rem 0.5rem; }
 .sensitive-entry { display: flex; flex-direction: column; min-width: 0; }
 .sensitive-entry code { font-size: 0.8em; overflow-wrap: anywhere; }
+/* Allow always rules (#225), under the sensitive list. */
+.allowed-calls { margin-top: 1rem; }
 .sensitive-add { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
 .sensitive-add input { flex: 1 1 12rem; min-width: 0; }
 
@@ -1282,6 +1306,10 @@ body.sidebar-dragging, body.sidebar-dragging * { cursor: grabbing !important; }
 .chip.lock.b { border-color: var(--danger); }
 /* Settings → Devices (#160). */
 .device-row { display: flex; justify-content: space-between; align-items: center; gap: 0.6rem; margin: 0.3rem 0; }
+/* Browsers and phones (Project-Ledung#482): Rename and Remove side by side, the browser this page runs in marked. */
+.device-actions { display: flex; align-items: center; gap: 0.4rem; flex-shrink: 0; }
+.device-rename input { flex: 1; min-width: 0; max-width: 20rem; }
+.this-device { color: var(--accent); font-size: 0.9em; }
 /* Settings → Computers (#240): a tab's name, then its colours. */
 .computer-row { margin: 0.5rem 0 0.8rem; }
 .computer-name { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
@@ -1867,10 +1895,25 @@ button.settings-menu-item.danger { color: var(--danger); }
 .order-card .order-command { margin: 0; padding: 0.35rem 0.5rem; background: var(--bg); border-radius: 4px; white-space: pre-wrap; word-break: break-all; font-size: 0.85em; }
 .order-card > button { align-self: flex-start; }
 
-/* The Workflow row under a project's name (2026-11-04), and the Workflow pane beside a chat. */
-.session-item.workflow-row .session-title { color: var(--muted); }
-.session-item.workflow-row.open .session-title { color: inherit; }
+/* The Workflow button at the right end of a project's row (#289, mockup D), and the Workflow pane beside a chat. */
+.workflow-button { flex-shrink: 0; display: inline-flex; align-items: center; gap: 0.2rem; background: none; border: 1px solid transparent; border-radius: 999px; padding: 0 0.35rem; font-size: 0.8em; line-height: 1.5; cursor: pointer; }
+.workflow-button:hover:not(:disabled) { background: color-mix(in srgb, var(--muted) 15%, transparent); border-color: transparent; }
+.workflow-button.open, .workflow-button.open:hover:not(:disabled) { border-color: var(--accent); }
+.workflow-button.busy { color: var(--dot-running); }
+.workflow-button.idle { color: var(--muted); opacity: 0.6; }
+.workflow-button.idle:hover, .workflow-button.idle.open { opacity: 1; }
+.workflow-glyph { fill: currentColor; stroke: currentColor; stroke-width: 1.3; }
+.workflow-glyph path { fill: none; }
+.workflow-count { font-weight: 600; font-variant-numeric: tabular-nums; }
+.workflow-for-you { background: var(--dot-waiting); color: #000; border-radius: 999px; font-size: 0.85em; font-weight: 700; padding: 0 0.35rem; margin-left: 0.1rem; font-variant-numeric: tabular-nums; }
 .workflow-pane .workflow-pane-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* workflow-origin.md: "based on Team process v3 by Ana", the "has changed since" notice and the offer for an older copy. */
+.flow-origin { color: var(--muted); font-size: 0.85em; overflow-wrap: anywhere; }
+.flow-origin strong { color: var(--text); font-weight: 600; }
+.workflow-pane .flow-origin { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.flow-origin-note { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.flow-origin-record { flex-basis: 100%; min-width: 0; overflow-wrap: anywhere; display: flex; flex-wrap: wrap; gap: 0.3rem 0.8rem; align-items: center; color: var(--muted); }
+.flow-origin-repo { display: inline-flex; gap: 0.35rem; align-items: center; color: var(--text); overflow-wrap: anywhere; }
 .workflow-pane .workflow-pane-full { white-space: nowrap; }
 .workflow-pane-body { overflow-y: auto; display: flex; flex-direction: column; min-height: 0; flex: 1; }
 .workflow-pane-diagram { display: flex; flex-direction: column; height: 42vh; min-height: 240px; flex-shrink: 0; border-bottom: 1px solid var(--border); }
@@ -1959,3 +2002,37 @@ button.link-button:hover:not(:disabled) { border: none; }
   .setup-card h1 { font-size: 1.3rem; }
 }
 .helper-approval-lines { margin: 0.3rem 0 0.4rem; padding-left: 1.2rem; overflow-wrap: anywhere; }
+/* Resource limits (docs/steps/resource-limits.md): a bar's limit line, what is reserved, the editor, the line and job cards. */
+.limit-button { all: unset; display: block; cursor: pointer; font-size: 0.78em; border-radius: 4px; padding: 0.05rem 0.1rem; margin: -0.05rem -0.1rem; }
+.limit-button:hover, .limit-button.open { background: var(--panel-2); }
+.limit-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.resource-track { position: relative; overflow: visible; }
+.resource-track .limit-fill { position: absolute; left: 0; top: 0; }
+.limit-reserved { position: absolute; top: 0; height: 100%; border-radius: 0 3px 3px 0; background: repeating-linear-gradient(135deg, var(--st-warning) 0 2px, transparent 2px 5px); opacity: 0.8; }
+.limit-line { position: absolute; top: -3px; width: 2px; height: calc(100% + 6px); background: var(--text); border-radius: 1px; }
+.limit-editor { margin: 0.4rem 0.75rem 0; padding: 0.45rem 0.55rem; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-2); font-size: 0.82em; }
+.limit-editor-label { display: block; font-weight: 600; margin-bottom: 0.25rem; }
+.limit-editor-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; }
+.limit-editor-row input { width: 4.5em; padding: 0.1rem 0.25rem; font: inherit; }
+.limit-editor details { margin-top: 0.3rem; }
+.limit-editor summary { cursor: pointer; }
+.small-print { font-size: 0.9em; margin: 0.25rem 0 0; }
+.other-gpus { margin: 0.3rem 0.75rem 0; font-size: 0.8em; }
+.other-gpus > .limits { margin: 0.3rem 0 0; }
+.machine-note { margin: 0.3rem 0.75rem 0; font-size: 0.78em; }
+.machine-sub { margin: 0.45rem 0.75rem 0; font-size: 0.78em; font-weight: 600; color: var(--muted); }
+.resource-reason { display: block; font-size: 0.92em; }
+.job-what { font-style: italic; overflow-wrap: anywhere; }
+.job-cards { list-style: none; margin: 0.25rem 0.75rem 0; padding: 0; display: grid; gap: 0.35rem; }
+.job-card { border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.8em; }
+.job-card.over { border-color: var(--st-warning); }
+.job-card-head { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: baseline; }
+.job-dim { display: grid; grid-template-columns: minmax(4.5em, auto) 1fr auto; gap: 0.35rem; align-items: center; margin-top: 0.2rem; }
+.job-track { position: relative; height: 5px; border-radius: 3px; background: var(--panel-2); }
+.job-fill { position: absolute; left: 0; top: 0; height: 100%; border-radius: 3px; background: var(--st-good); }
+.job-fill.over { background: var(--st-warning); }
+.job-mark { position: absolute; top: -2px; width: 2px; height: 9px; background: var(--text); }
+.job-state { margin-top: 0.25rem; }
+.job-actions { display: flex; gap: 0.35rem; margin-top: 0.3rem; }
+.job-actions .danger { color: var(--danger); }
+.resource-line .link, .job-card-head .link { text-align: left; }

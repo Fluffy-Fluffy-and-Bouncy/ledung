@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { EFFORT_LEVELS, PERMISSION_MODES, type AttachedSource, type PermissionMode, type QuestionInfo, type SessionRole } from '../shared/protocol.ts';
 import { failedSourcesNote, MAX_SOURCES, type SourceInput } from './sources.ts';
 import {
-  ACCEPTED, CHANGES_NEEDED, detailsProblem, hasDetails, MAX_REVIEW_EVIDENCE, optionAnswer, questionText, splitOption, type OrderCommandDetails, type Opinion, type QuestionDetails, type QuestionOption, type ReviewDetails,
+  ACCEPTED, CHANGES_NEEDED, detailsProblem, hasDetails, MAX_REVIEW_EVIDENCE, optionAnswer, questionText, splitOption, type OrderCommandDetails, type Opinion, type QuestionDetails, type QuestionOption, type QuestionRun, type ReviewDetails,
 } from '../shared/questions.ts';
 import type { ShotInput } from './management.ts';
 import { commandProblem, type OrderSpec } from './orders.ts';
@@ -17,7 +17,7 @@ import { SETTINGS_PATCH, type SettingsPatch } from '../projects/settings-tools.t
 
 export const LEDUNG_SERVER = 'ledung';
 // The run tools (workflow part 3) only record and report; any session of a project that follows its flow has them.
-const SESSION_TOOLS = ['ask_user', 'withdraw_question', 'compact_self', 'clear_self', 'flow_start', 'flow_step', 'flow_status'];
+const SESSION_TOOLS = ['ask_user', 'withdraw_question', 'compact_self', 'clear_self', 'flow_start', 'flow_step', 'flow_status', 'reserve', 'release'];
 const MANAGER_TOOLS = [
   'start_session', 'list_sessions', 'read_session', 'send_message', 'stop_session', 'archive_session', 'clear_session', 'compact_session',
   'answer_question', 'forward_answer', 'list_managers', 'message_manager',
@@ -25,6 +25,8 @@ const MANAGER_TOOLS = [
   'save_linked_file',
   'decide_permission', 'list_permissions',
   'machine_status', 'set_priority', 'pause_session', 'resume_session', 'list_projects', 'away_log', 'order_done',
+  // Reads the manager's own project's records only, as lockdown keeps them (issue #254).
+  'work_history',
   'mcp_status', 'reconnect_mcp_server',
   // Reads what Settings shows, nothing secret (issue #263); the Settings actions themselves are SETTINGS_TOOLS.
   'settings_status',
@@ -144,6 +146,8 @@ export interface ManagerHandlers {
   decidePermission(request: string, behavior: 'allow' | 'deny', scope: 'once' | 'session', message?: string): string;
   listPermissions(): string;
   machineStatus(): string;
+  /** The manager's own project's measured session durations and plan use (issue #254). */
+  workHistory(days?: number, limit?: number): string;
   setPriority(id: string, priority: 'normal' | 'high' | 'critical', userQuestion?: number): string;
   setPaused(id: string, paused: boolean): string;
   listProjects(computer?: string): Promise<string>;
@@ -179,6 +183,10 @@ export interface RunHandlers {
   start?(args: { title: string; ref?: string; flow?: string; again?: boolean }): Promise<string>;
   step(args: { run: string; outcome: string; note?: string; block?: string; stop?: boolean }): Promise<string>;
   status(run?: string): Promise<string>;
+  /** ask_user at a run's person step (#291): checked before anything is stored; the tag and the options as the flow spells them. */
+  writeUp?(args: { run: string; block: string; review: boolean; options?: (string | QuestionOption)[] }): Promise<{ tag: QuestionRun; options?: (string | QuestionOption)[] }>;
+  /** The write-up stored: the run waits for its answer; throws (the question withdrawn) when the run moved meanwhile. */
+  writeUpAsked?(q: QuestionInfo): void;
 }
 
 /** flow_propose (workflow part 3e), bound to a manager whose project follows its workflow. */
@@ -237,6 +245,14 @@ export interface ToolHandlers {
     compact(instructions?: string, then?: string): string;
     clear(handoffFile: string, then?: string, seconds?: number): string;
   };
+  /** Resource limits (docs/steps/resource-limits.md): a session on this computer reserves its heavy work. */
+  resources?: {
+    reserve(args: { what: string; cpu?: number; ram_gb?: number; gpu?: number; vram_gb?: number; minutes?: number; gpu_device?: string }): string;
+    release(): string;
+    /** This PC's threads, and its GPUs' names when it has more than one. */
+    threads: number;
+    gpus: string[];
+  };
 }
 
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] });
@@ -266,6 +282,9 @@ export interface AskArgs {
   sources?: SourceInput[];
   /** The exact command the question asks the person to confirm as an order (issue #105); Ledung adds the option that confirms it. */
   order_command?: { command: string; match?: 'exact' | 'pattern' };
+  /** A run's person step this question writes up (#291): the answer moves the run. */
+  run?: string;
+  block?: string;
 }
 
 /**
@@ -370,6 +389,8 @@ export function instructions(h: ToolHandlers): string {
     `You run inside Ledung, which manages several Claude Code sessions for ${who}.`,
     // Sessions held work back on a high figure although the usage stop exists for that (issue #284).
     `Plan usage figures are information only: don't delay or ration work for them; Ledung's usage stop holds work if needed.`,
+    // Sessions guessed days and weeks for work that takes them minutes (Simon, 2026-11-12, issue #254).
+    'Estimate in session time, never human days or weeks: small fix ≈ 10–20 min, feature with tests and review ≈ 30–90 min, large build ≈ 2–4 h; name the waits (review, CI, merge) apart from the work.',
     `Every question goes through ask_user, however small; never end a reply with a question in the chat: it notifies no one. Whenever you need a decision, approval or information to go on, ask ${h.asksWhom} with it, then end your turn: don't wait, poll, ask anything else or repeat it in the chat.`,
     // Sessions otherwise learn of the fields (#59) and screenshots (#60) only from the schema (issue #67).
     // The tier list itself is in ask_user's description: here it would take a session past Claude Code's limit (#32).
@@ -401,6 +422,7 @@ export function instructions(h: ToolHandlers): string {
         ? `Your project is in lockdown level B, nearly air-gapped: you have no tools for other managers, other projects or the board, and your sessions have no network unless ${who} let a host in.`
         : `Other managers: list_managers and message_manager, here and on ${who}'s linked computers, whose managers count as this computer's (give message_manager the computer); work on another computer goes through its manager. Other projects: list_projects; add_project, create_project, start_manager and stop_manager always wait for ${who}'s approval in Ledung, whatever your mode or grant, so call them only when your task needs it.`,
       `Away mode: while ${who} is away, a line in your prompt says until when and what is allowed. Then Ledung lets your own sensitive \`gh pr merge <number> -R <owner/name>\` or \`gh pr merge <PR link>\` (one plain command that names its repository; the PR open, mergeable, no check failing or still running) or your project's dev ship command (also from a session you started, and with \`cd <path> &&\` before it or an output redirect after it) through, if that kind is allowed, and holds everything else for ${who} as always. away_log explains "computer control" and lists each decision, for your morning report.`,
+      `Estimates: work_history gives your project's measured work time and plan use per kind of session; prefer it to the defaults above, and add the plan use when cost matters, e.g. "a typical build: about 35 min, about 2% of the weekly window".`,
       `Machine resources: only a limited number of sessions may work at once; above that, sessions wait in line for a free place. machine_status shows the load, the line and what your sessions use. set_priority puts one of your sessions ahead in the line: normal or high on your own judgement; critical only when ${who} said so in an answer to one of your questions, which you give as user_question. pause_session and resume_session pause one of your sessions by hand.`,
     );
   }
@@ -457,8 +479,43 @@ function projectArgs<T extends object>(a: ProjectSettingsInput, extra: T): Omit<
   };
 }
 
+/** An ask_user option as an object; its outcome is for a run's person step (#291). */
+const OPTION_OBJECT = z.object({
+  key: z.string().regex(/^[a-z0-9]{1,3}$/, 'a short key such as "a"').describe('A short key, e.g. "a".'),
+  text: z.string().min(1).describe('The option in Markdown; a **bold** start is its label, the rest explains it.'),
+  cost: z.string().min(1).optional().describe('What choosing it costs: session time (never human days), plan use, risk, what waits.'),
+  outcome: z.string().min(1).max(200).optional().describe("With run: the block's outcome word this option's answer leads to."),
+});
+
 export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstance {
   const who = h.userName;
+  // ask_user takes a run's person step (#291) only where the run tools are.
+  const step = h.runs?.writeUp && h.runs.writeUpAsked ? { writeUp: h.runs.writeUp, asked: h.runs.writeUpAsked } : null;
+  const stepAsk = !!step;
+  /**
+   * ask_user at a run's person step (#291): checked against the run first, asked as written with the run's tag on it,
+   * and linked to the run, whose answer then moves it. Nothing about the person's text is Ledung's.
+   */
+  const askStep = async (args: AskArgs): Promise<string> => {
+    if (!step) throw new Error('Your project follows no workflow here, so ask_user takes no run. Nothing was asked.');
+    if (!args.run?.trim() || !args.block?.trim()) throw new Error('Give both run and block: the run and the person block it waits at, as Ledung named them. Nothing was asked.');
+    const extra = (['about_question', 'about_request', 'order_command', 'screenshots'] as const).filter((k) => args[k] !== undefined);
+    if (extra.length) throw new Error(`A run's person step is asked without ${extra.join(', ')}. Nothing was asked.`);
+    const checked = await step.writeUp({ run: args.run.trim(), block: args.block.trim(), review: !!args.review, options: args.options });
+    const asked = askedQuestion({ ...args, options: checked.options as AskArgs['options'] });
+    const details: QuestionDetails = { ...asked.details, run: checked.tag };
+    const evidence = details.review?.evidence ?? [];
+    if (h.keepFiles && evidence.length) {
+      const kept = await h.keepFiles(evidence.map((e) => ({ file: e.file, as: 'evidence' as const })));
+      evidence.forEach((e, i) => { e.file = kept[i]!; });
+    }
+    const sources = args.sources?.length && h.attach ? await h.attach(args.sources) : null;
+    const q = h.ask(asked.question, asked.options, null, null, details, undefined, sources);
+    step.asked(q);
+    const kind = details.review ? 'Review' : 'Question';
+    return `${kind} #${q.id}, "${checked.tag.blockTitle}" of ${checked.tag.run}, is recorded and has gone to ${who}.${failedSourcesNote(q.sources)} ` +
+      `${who}'s answer moves the run by itself, and you are told where it went; don't report it with flow_step. End your turn now; don't wait or poll.`;
+  };
   const tools = [
     tool(
       'ask_user',
@@ -469,16 +526,14 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
         `${who}'s Waiting for you shows them as a question page, groups questions by tier and orders them by rank. ` +
         `Every question must be self-contained: fill issue with the context someone needs who has not followed your work, and evidence with what you checked, not just a bare question; it is read without the conversation, often later or on a phone. With issue you may leave out question. ` +
         `When it points at something said elsewhere (a session's report, a PR or review comment, an earlier question), attach it with sources: Ledung fetches it itself and shows it word for word on the question page, so you need not copy it into issue or evidence; a summary or "the 12 points in the attached report" is enough. ` +
-        `To have ${who} sign off a finished change (does it solve the problem, does it look right), give review instead: what we were solving, what was done, notes and evidence files.`,
+        `To have ${who} sign off a finished change (does it solve the problem, does it look right), give review instead: what we were solving, what was done, notes and evidence files.` +
+        (stepAsk ? ` At a run's person step, give run and block, and each option the outcome it leads to (a review step: review); ${who}'s answer then moves the run.` : ''),
       {
         question: z.string().min(1).optional().describe('The question in Markdown. Self-contained: what you are working on, what needs deciding, your recommendation. May be left out when issue is given.'),
         options: z.union([
           z.array(z.string().min(1)).min(2).max(5),
-          z.array(z.object({
-            key: z.string().regex(/^[a-z0-9]{1,3}$/, 'a short key such as "a"').describe('A short key, e.g. "a".'),
-            text: z.string().min(1).describe('The option in Markdown; a **bold** start is its label, the rest explains it.'),
-            cost: z.string().min(1).optional().describe('What choosing it costs: time, risk, what waits.'),
-          })).min(2).max(8),
+          // The outcome only where ask_user takes a run, so other sessions' schema stays as it was (#291).
+          z.array(stepAsk ? OPTION_OBJECT : OPTION_OBJECT.omit({ outcome: true }) as unknown as typeof OPTION_OBJECT).min(2).max(8),
         ]).optional().describe(
           'Optional suggested answers, shown as buttons in this order. Either labels (same order and names as any choices listed in the question; the recommended one first, ending in " (recommended)"), ' +
           'or objects {key, text, cost} with your pick in opinions.',
@@ -543,6 +598,12 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
           `What the question points at, each shown word for word in a folded box on its page, fetched by Ledung when you ask and kept: a session's reply ({reply, at}), ` +
           `a PR or review comment ({comment}: its link), or an earlier question ({question}: its number). One Ledung can't fetch doesn't stop the question; the reply says which and why.`,
         ),
+        ...(stepAsk
+          ? {
+            run: z.string().min(1).max(20).optional().describe('The run whose person step this asks, as Ledung named it, e.g. "run-3"; give block too.'),
+            block: z.string().min(1).max(80).optional().describe('The person block the run waits at, by id or title.'),
+          }
+          : {}),
         ...(h.role === 'manager'
           ? {
             about_question: z.number().int().positive().optional().describe("The number of the question from one of your sessions that this is about; later pass the answer on with forward_answer."),
@@ -560,6 +621,10 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
           : {}),
       },
       async (args: AskArgs) => {
+        if (args.run !== undefined || args.block !== undefined) return safely(() => askStep(args));
+        if (Array.isArray(args.options) && args.options.some((o) => typeof o !== 'string' && o.outcome !== undefined)) {
+          return safely(() => { throw new Error("An option's outcome goes with run and block, at a run's person step. Nothing was asked."); });
+        }
         if (args.about_request && !args.review) {
           return safely(() => {
             if (args.order_command) throw new Error('order_command goes with a question of your own, not with about_request. Nothing was asked.');
@@ -619,6 +684,24 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
         then: z.string().min(1).optional().describe('Also delivered after the clear, e.g. "Then continue with issue 12."'),
         countdown_seconds: z.number().int().min(10).max(600).optional().describe(`How long ${who} has to cancel it (default 30).`),
       }, async (a) => safely(() => own.clear(a.handoff_file, a.then, a.countdown_seconds))) as never,
+    );
+  }
+
+  const res = h.resources;
+  if (res) {
+    // Kept short: every session carries it (docs/steps/resource-limits.md, "The tools").
+    const several = res.gpus.length > 1;
+    tools.push(
+      tool('reserve', `Before heavy work (a long build, a big test suite, training, rendering: many cores for minutes, several GB of memory, or the GPU), reserve it. Light work needs none. Give what you expect at its busiest; what you leave out counts as almost nothing. The answer is go, or wait with your place in line: then don't start it; do other work, and Ledung tells you when you may go. Released when you call release, when the job's processes end, or at the end of your turn if none run.`, {
+        what: z.string().min(1).max(60).describe('A short name for this kind of job; use the same name next time.'),
+        cpu: z.number().min(0).max(100).optional().describe(`% of this PC${res.threads ? `, which has ${res.threads} threads` : ''}.`),
+        ram_gb: z.number().min(0).optional().describe('Memory in GB.'),
+        gpu: z.number().min(0).max(100).optional().describe('% GPU load.'),
+        vram_gb: z.number().min(0).optional().describe('GPU memory in GB.'),
+        minutes: z.number().min(0).optional().describe('How long you expect it to run.'),
+        ...(several ? { gpu_device: z.string().min(1).max(120).optional().describe(`Which GPU: ${res.gpus.join(', ')}; default the first.`) } : {}),
+      }, async (a) => safely(() => res.reserve(a as never))) as never,
+      tool('release', 'Release your reservation now, when the heavy job is done or dropped.', {}, async () => safely(() => res.release())) as never,
     );
   }
 
@@ -735,6 +818,10 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
       tool('list_permissions', 'List permission prompts from your sessions that wait for you.', {}, async () => safely(() => m.listPermissions())) as never,
       tool('machine_status', 'The machine\'s load, how many sessions work and the limit, the line for a free place, and CPU and memory per session of yours.', {},
         async () => safely(() => m.machineStatus())) as never,
+      tool('work_history', "How long your own project's sessions really took, for estimates: recent sessions with work time (time in turns, without waits for a person, a permission, a pause or a usage stop; waits inside a command, such as watching CI, count as work), wall time, tokens and plan use as a share of the account's 5-hour and weekly windows, plus medians and ranges by kind. Only your project.", {
+        days: z.number().int().min(1).max(90).optional().describe('How far back; default 30.'),
+        limit: z.number().int().min(0).max(50).optional().describe('How many recent sessions to list; default 10.'),
+      }, async (a) => safely(() => m.workHistory(a.days, a.limit))) as never,
       tool('set_priority', `Set the priority of one of your sessions in the line for a free place: normal or high. critical only on ${who}'s directive: give user_question, your question that ${who} answered asking for it.`, {
         id,
         priority: z.enum(['normal', 'high', 'critical']),
@@ -767,7 +854,7 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
         computer: z.string().min(1).optional().describe('The linked computer it runs on, as list_managers names it; leave out for this computer.'),
         text: z.string().min(1),
         attachments: z.array(z.string().min(1)).min(1).max(5).optional().describe(
-          'Only with computer: files from your project folder, relative to it, that the other manager gets with the message: PNG or JPEG images (at most 5 MB) or .txt, .log or .md text (at most 512 KB); or .wav, .mp3, .flac, .ogg or .m4a audio and .zip files of any size (a zip is checked entry by entry first). It gets images as files it can show in its questions, and text inline; audio and zips are fetched from here after the message, and it saves them with save_linked_file.',
+          'Only with computer: files from your project folder, relative to it, that the other manager gets with the message: PNG or JPEG images (at most 5 MB) or .txt, .log or .md text (at most 512 KB); or .wav, .mp3, .flac, .ogg or .m4a audio and .zip files (as large as the other computer takes, 2 GB each by default; a zip is checked entry by entry first). It gets images as files it can show in its questions, and text inline; audio and zips are fetched from here after the message, and it saves them with save_linked_file.',
         ),
       }, async (a) => safely(() => m.messageManager(a.id, a.text, a.computer, a.attachments))) as never,
       tool('list_projects', "List Ledung's projects: folder, settings and whether each one's manager runs. On a linked computer: names and managers only.", {

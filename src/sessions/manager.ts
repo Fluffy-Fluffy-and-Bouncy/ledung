@@ -4,7 +4,7 @@ import type { DockerProjectConfig, LedungConfig, LocalProjectConfig, ProjectConf
 import { ProjectStore, type StoredProject } from '../projects/store.ts';
 import { AccountError, AccountStore, DEFAULT_ACCOUNT, SIGN_IN_ENV, type AccountPlace } from '../accounts/store.ts';
 import { removeSignIn } from '../accounts/signin-store.ts';
-import type { AccountChoices, AccountInfoView, AwayInfo, AwayKind, SignInProblem } from '../shared/protocol.ts';
+import type { AccountChoices, AccountInfoView, AwayInfo, AwayKind, HeavyCommandInfo, JobKindInfo, SignInProblem } from '../shared/protocol.ts';
 import { Away } from './away.ts';
 import { Orders } from './orders.ts';
 import { ChatImageError, type ChatImages } from './chat-images.ts';
@@ -13,14 +13,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { boardConfig, DEFAULT_USER_NAME, parseProject, workflowsOf } from '../config.ts';
 import { checkFolder, chosenWorkflow, projectWorkflow, withProfilesWarning, type WorkflowCheck } from './workflow.ts';
-import { backToShared, findFlow, flowInstructions, flowPlaces, readFlows, readFlowView, saveFlowFiles, type FlowPlace } from './flow-files.ts';
+import { backToShared, findFlow, flowInstructions, flowPlaces, readFlows, readFlowView, saveFlowFiles, workflowPlace, type FlowPlace } from './flow-files.ts';
+import { originInfo } from './flow-origin.ts';
 import type { FlowView } from '../shared/flow.ts';
 import { remoteControlName } from './remote-control.ts';
 import { loosensGate } from '../projects/gate.ts';
 import { bangRefusal } from './bang.ts';
 import { matchSensitive } from './sensitive.ts';
 import { AIRGAP_PROFILE, isLocked, levelProblem, lockdownOf, opensUp, othersSettings, overlapProblem, projectFolders, within } from '../projects/lockdown.ts';
-import { LATER_SUGGESTIONS, withSuggestions } from '../shared/sensitive-suggestions.ts';
+import { LATER_SUGGESTIONS, withLaterBatch, withSuggestions } from '../shared/sensitive-suggestions.ts';
 import { isNameColour, parseNameColour } from '../shared/name-colours.ts';
 import { ACCEPTED, ledungTier, questionText, reviewAnswerProblem, tiersOf, type QuestionDetails } from '../shared/questions.ts';
 import {
@@ -29,6 +30,7 @@ import {
 } from '../projects/browse.ts';
 import { hostReachable, listHostRecords, removeHostRecord } from '../host/client.ts';
 import { pipePath } from '../host/protocol.ts';
+import { recordAllowAlways } from './refusals.ts';
 import { DockerRunner } from '../runners/docker-runner.ts';
 import { LocalRunner } from '../runners/local-runner.ts';
 import { chooseClaude } from '../runners/claude-program.ts';
@@ -36,6 +38,13 @@ import { sessionEnv, type Runner } from '../runners/runner.ts';
 import type { Store } from '../store/store.ts';
 import { lineOrder, mayStart, type LineEntry } from '../resources/line.ts';
 import { ResourceMonitor, type MonitorTarget } from '../resources/monitor.ts';
+import { ResourceBook, RESOURCE_SOURCE } from '../resources/book.ts';
+import { JobStore } from '../resources/jobs.ts';
+import { JobActions, jobTargetsNow } from '../resources/job-actions.ts';
+import { mainGpu } from '../platform/gpu.ts';
+import { actOn, type Target } from '../platform/process-control.ts';
+import { snapshotTree } from '../platform/process-tree.ts';
+import { machineSender } from '../shared/machine-shown.ts';
 import {
   CHATS,
   HELPER,
@@ -107,7 +116,7 @@ import type { SecretInfo, SecretLifetime } from '../shared/secrets.ts';
 import { FlowRunError, FlowRuns, lastReplyOf } from './flow-runs.ts';
 import { dockerWorktreeHost, localWorktreeHost } from './run-worktrees.ts';
 import { RunStore } from './run-store.ts';
-import type { FlowRun } from '../shared/flow-run.ts';
+import { STEP_QUESTIONS, type FlowRun, type StepQuestions } from '../shared/flow-run.ts';
 import type { RunBlock } from '../shared/protocol.ts';
 import type { ProposeHandlers, RunHandlers } from './tools.ts';
 import { buildProposal, ProposalStore, proposalSummary, type ProposedChange } from './flow-propose.ts';
@@ -133,6 +142,10 @@ const ANSWERED_CARDS_KEY = 'helper-answered-cards';
 
 /** A name given in Ledung: letters (any script), with spaces, ".", "'" or "-" between them. */
 const USER_NAME = /^[\p{L}\p{M}][\p{L}\p{M} .'’-]{0,39}$/u;
+/** The meta key, with the project's name, that says "Record where this came from" was dismissed (workflow-origin.md, section 4). */
+const ORIGIN_DISMISSED = 'flow-origin-dismissed:';
+/** Where Settings → Questions at a workflow step is kept (#291): this Ledung's own data, not the config file. */
+const STEP_QUESTIONS_KEY = 'step-questions';
 
 /** Ledung's own plugin with the "workflow building" skill (part 3e, #1577), shipped beside src/ and web/. */
 export const WORKFLOW_PLUGIN = () => path.join(appDir(), 'plugins', 'ledung-workflow');
@@ -143,6 +156,8 @@ export function workflowGuide(dir = WORKFLOW_PLUGIN()): string {
 }
 
 const LIMIT_KEY = 'max-working-sessions';
+/** New sessions waiting for memory to start, with their first message (resource limits, acceptance test finding 12). */
+const WAITERS_KEY = 'resource-waiters';
 /** Usage stops once set in Settings (issue #278), and the ones lifted by hand, by window; kept in meta, so no migration. */
 const USAGE_STOPS_KEY = 'usage-stops';
 const USAGE_LIFTED_KEY = 'usage-stops-lifted';
@@ -217,6 +232,11 @@ export class SessionManager {
   readonly projectStore: ProjectStore;
   readonly accounts: AccountStore;
   private readonly monitor: ResourceMonitor;
+  /** Resource limits and reservations (docs/steps/resource-limits.md). */
+  private readonly book: ResourceBook;
+  readonly jobs: JobStore;
+  /** One action at a time per job (Pause, Resume, Stop). */
+  private readonly jobActions = new JobActions();
   private readonly gate: TurnGate;
   /** Turns under way: when they started and what started them (step 6c). */
   private readonly turns = new Map<string, { at: number; trigger: string }>();
@@ -279,6 +299,7 @@ export class SessionManager {
     this.pullRequests = new PullRequestPoller({
       show: (id, pr) => this.live.get(id)?.showPullRequest(pr),
       onBudget: (github) => this.publish({ type: 'github', github }),
+      enterpriseHosts: () => this.config.githubHosts,
     });
     const imported = this.projectStore.importFromConfig(config.projects);
     if (imported.length) console.log(`Copied ${imported.length} project(s) from the config into Ledung: ${imported.join(', ')}.`);
@@ -356,7 +377,10 @@ export class SessionManager {
       },
     });
     this.proposals = new ProposalStore(store.database);
-    this.linkedFiles = new LinkedFiles(store.database, () => this.linkedFilesDir(), () => boardConfig(this.config).evidenceDays);
+    this.linkedFiles = new LinkedFiles(store.database, () => this.linkedFilesDir(), () => boardConfig(this.config).evidenceDays, Date.now, () => ({
+      maxFileBytes: this.config.linkedFiles.maxFileMB * 1024 * 1024,
+      maxMessageBytes: this.config.linkedFiles.maxMessageMB * 1024 * 1024,
+    }));
     this.linkedOutbox = new LinkedOutbox(store.database, () => this.linkedOutboxDir(), () => boardConfig(this.config).evidenceDays);
     this.flowRuns = new FlowRuns({
       runs: new RunStore(store.database),
@@ -444,6 +468,7 @@ export class SessionManager {
         if (this.store.withdrawQuestion(id, reason)) this.publish({ type: 'question', question: this.store.getQuestion(id)! });
       },
       tiers: (project) => tiersOf(this.projectStore.get(project)?.config.questionTiers),
+      stepQuestions: () => this.stepQuestions(),
       get userName() { return self.config.userName; },
     });
     this.gate = {
@@ -451,21 +476,64 @@ export class SessionManager {
       usageStops: () => this.usageStopStates(),
       freed: () => this.dispatch(),
       mayStart: (id) => this.store.getSession(id)?.role === 'manager' || mayStart(id, this.working(), this.limit, this.lineEntries()),
-      started: (id, trigger) => {
-        this.turns.set(id, { at: Date.now(), trigger });
+      started: (id, trigger, at) => {
+        this.turns.set(id, { at: at ?? Date.now(), trigger });
         this.monitor.beginTurn(id);
       },
-      ended: (id, commands) => {
-        this.recordTurn(id, commands);
+      ended: (id, commands, waits) => {
+        this.recordTurn(id, commands, waits);
+        this.book.turnEnded(id);
         this.dispatch();
         // A session waiting to take new lockdown settings may now be free (issue #109).
         if (this.relaunching.has(id)) setImmediate(() => void this.relaunchWaiting());
       },
     };
+    Object.assign(this.gate, {
+      reserve: (id: string, args: Parameters<ResourceBook['reserve']>[1]) => this.book.reserve(id, args),
+      release: (id: string) => this.book.release(id),
+      resourceFacts: () => {
+        const gpu = this.monitor.gpu;
+        const main = mainGpu(gpu);
+        const names = [...(gpu?.adapters ?? [])].sort((a, b) => (a.id === main ? -1 : b.id === main ? 1 : 0)).map((a) => a.name);
+        return { threads: os.cpus().length, gpus: names };
+      },
+      resourceHeld: (id: string) => this.book.isHeld(id),
+      commandCheck: (id: string, kinds: string[]) => {
+        this.book.noteCommands(id, kinds);
+        return this.book.commandRefusal(id, kinds);
+      },
+    } satisfies Partial<TurnGate>);
+    this.jobs = new JobStore(store.database);
+    this.book = new ResourceBook({
+      meta: { get: (key) => this.store.getMeta(key), set: (key, value) => this.store.setMeta(key, value) },
+      jobs: this.jobs,
+      session: (id) => {
+        const info = this.store.getSession(id);
+        if (!info || info.status === 'ended') return null;
+        return {
+          id, title: info.title, project: info.project, role: info.role, priority: info.priority, local: info.runner === 'local',
+          busy: info.status === 'running' || info.status === 'waiting',
+        };
+      },
+      // A paused job that ends is resumed, never left frozen (security review of the resource limits, finding 10).
+      resume: (targets) => void actOn(targets, 'resume').catch((e: Error) => console.error(`Resuming a job: ${e.message}`)),
+      tell: (id, text) => {
+        this.store.addInbox(id, RESOURCE_SOURCE, text);
+        this.live.get(id)?.deliver();
+      },
+      wake: (id) => this.live.get(id)?.deliver(),
+      // A limit set, a reservation, a go: always sent (#230's sender, without onlyIfChanged).
+      changed: () => this.publishMachine(),
+    });
     this.monitor = new ResourceMonitor({
       targets: () => this.targets(),
       withDocker: () => this.projectStore.list().some((p) => p.config.runner === 'docker'),
-      onSample: () => this.publish({ type: 'machine', machine: this.machine() }),
+      // Only what the page would show differently (#230): a sample every 5 s went to every page.
+      onSample: () => this.publishMachine(true),
+      onTick: (t) => {
+        const m = this.monitor.machine();
+        this.book.sample({ ...t, threads: m.cpus, cores: m.cores, memUsed: m.memUsed, memTotal: m.memTotal });
+      },
     });
     // A stop reached before a restart still holds, and its reset still lifts it (issue #278).
     this.refreshStops();
@@ -729,6 +797,8 @@ export class SessionManager {
       this.linkedFiles.prune();
       this.linkedOutbox.prune();
       void this.relaunchWaiting();
+      // A person step its coordinator gave no write-up for gets Ledung's own card (#291).
+      void this.flowRuns.overdue().catch((e: Error) => console.error(`Workflow: ${e.message}`));
     }, 60000);
     // Always on, as idleStopMinutes can change while Ledung runs (issue #353); checkIdle reads it each time.
     this.idleTimer = setInterval(() => void this.checkIdle(), 60000);
@@ -911,7 +981,7 @@ export class SessionManager {
   setLimit(n: number): void {
     if (!Number.isInteger(n) || n < 1 || n > 100) throw new UserError('The limit must be a whole number from 1 to 100.');
     this.store.setMeta(LIMIT_KEY, String(n));
-    this.publish({ type: 'machine', machine: this.machine() });
+    this.publishMachine();
     this.dispatch();
   }
 
@@ -943,11 +1013,134 @@ export class SessionManager {
     for (const id of lineOrder(this.lineEntries())) this.live.get(id)?.deliver();
   }
 
+  /** A sample that changes nothing on the page isn't sent (#230). */
+  private readonly sendMachine = machineSender((machine) => this.publish({ type: 'machine', machine }));
+
+  /** Sends the machine's figures to the pages; with `onlyIfChanged`, only when what they show differs from the last ones sent. */
+  private publishMachine(onlyIfChanged = false): void {
+    this.sendMachine(this.machine(), onlyIfChanged);
+  }
+
   machine(): MachineInfo {
     return {
       at: Date.now(), ...this.monitor.machine(), docker: this.monitor.docker, sessions: this.monitor.figures(),
-      working: this.working(), limit: this.limit, line: lineOrder(this.lineEntries()),
+      working: this.working(), limit: this.limit, line: lineOrder(this.lineEntries()), resources: this.book.info(),
     };
+  }
+
+  // --- Resource limits (docs/steps/resource-limits.md): from the page only ---------------------------------------
+
+  setResourceLimit(dim: string, value: unknown): void {
+    try {
+      this.book.setLimit(dim, value);
+    } catch (e) {
+      throw new UserError((e as Error).message);
+    }
+  }
+
+  /**
+   * Settings → Questions at a workflow step (#291, Martin 2026-11-12, Ledung questions #873 and #875): Ledung's card
+   * (the default, as before) or the manager's full write-up, kept in this Ledung's own data for all its projects.
+   */
+  stepQuestions(): StepQuestions {
+    const v = this.store.getMeta(STEP_QUESTIONS_KEY);
+    return v === 'write-up' ? 'write-up' : 'card';
+  }
+
+  setStepQuestions(value: unknown): StepQuestions {
+    if (!STEP_QUESTIONS.includes(value as StepQuestions)) throw new UserError(`Questions at a workflow step are ${STEP_QUESTIONS.map((s) => `"${s}"`).join(' or ')}.`);
+    this.store.setMeta(STEP_QUESTIONS_KEY, value as StepQuestions);
+    return this.stepQuestions();
+  }
+
+  setResourceSettings(body: Record<string, unknown>): void {
+    try {
+      this.book.setSettings(body);
+    } catch (e) {
+      throw new UserError((e as Error).message);
+    }
+  }
+
+  resourceStartNow(id: string): void {
+    try {
+      this.book.startNow(id);
+    } catch (e) {
+      throw new UserError((e as Error).message);
+    }
+  }
+
+  /**
+   * A job's processes to act on, found just now: the job's processes still under its session's host in a fresh list,
+   * plus what they started since the last sample (acceptance test, finding 5), with their start times, which Windows
+   * checks again on the handle it acts through (security review, finding 1).
+   */
+  private async freshJobTargets(id: string): Promise<{ sessionId: string; paused: boolean; targets: Target[] }> {
+    let job: ReturnType<ResourceBook['jobTargets']>;
+    try {
+      job = this.book.jobTargets(id);
+    } catch (e) {
+      throw new UserError((e as Error).message);
+    }
+    if (!job.host) throw new UserError("This job's session is not measured right now; try again in a few seconds.");
+    return { sessionId: job.sessionId, paused: job.paused, targets: jobTargetsNow(job.targets, await snapshotTree(job.host), job.host) };
+  }
+
+  /**
+   * The person's Pause or Resume on a job's card: suspends or resumes its processes. Never automatic. One action
+   * per job at a time, checked before anything is awaited (acceptance test, finding 1).
+   */
+  pauseJob(id: string, paused: boolean): Promise<void> {
+    return this.jobActions.run(id, async () => {
+      const job = await this.freshJobTargets(id);
+      // Windows counts suspends: a second Pause would need two Resumes.
+      if (job.paused === paused) throw new UserError(paused ? 'This job is already paused.' : 'This job is not paused.');
+      let done: number;
+      try {
+        done = (await actOn(job.targets, paused ? 'suspend' : 'resume')).done;
+      } catch (e) {
+        throw new UserError(`Could not ${paused ? 'pause' : 'resume'} the job: ${(e as Error).message}`);
+      }
+      if (!done) throw new UserError(`Could not ${paused ? 'pause' : 'resume'} the job: none of its processes could be reached.`);
+      this.book.setJobPaused(id, paused);
+      this.store.addInbox(job.sessionId, RESOURCE_SOURCE, `${this.config.userName} ${paused ? 'paused' : 'resumed'} your job (reservation ${id}) from its card${paused ? ': its processes are suspended until resumed; their memory stays taken' : ''}.`);
+      this.live.get(job.sessionId)?.deliver();
+    }).catch((e: Error) => {
+      throw e instanceof UserError ? e : new UserError(e.message);
+    });
+  }
+
+  /** The person's Stop on a job's card, after a confirm in the page: ends its processes. */
+  stopJob(id: string): Promise<void> {
+    return this.jobActions.run(id, async () => {
+      const job = await this.freshJobTargets(id);
+      let done: number;
+      try {
+        done = (await actOn(job.targets, 'end')).done;
+      } catch (e) {
+        throw new UserError(`Could not stop the job: ${(e as Error).message}`);
+      }
+      if (!done) throw new UserError('Could not stop the job: none of its processes could be reached.');
+      this.store.addInbox(job.sessionId, RESOURCE_SOURCE, `${this.config.userName} stopped your job (reservation ${id}) from its card: ${done} of its processes were ended.`);
+      this.live.get(job.sessionId)?.deliver();
+    }).catch((e: Error) => {
+      throw e instanceof UserError ? e : new UserError(e.message);
+    });
+  }
+
+  jobKinds(): JobKindInfo[] {
+    return this.jobs.kinds();
+  }
+
+  heavyCommands(): HeavyCommandInfo[] {
+    return this.jobs.heavyCommands();
+  }
+
+  forgetJobKind(project: string, kind: string): void {
+    this.jobs.forget(project, kind);
+  }
+
+  markCommand(project: string, command: string, never: boolean): void {
+    this.jobs.markNever(project, command, never);
   }
 
   private targets(): MonitorTarget[] {
@@ -962,7 +1155,7 @@ export class SessionManager {
     return out;
   }
 
-  private recordTurn(id: string, commands: string[]): void {
+  private recordTurn(id: string, commands: string[], waits?: [number, number][]): void {
     const turn = this.turns.get(id);
     this.turns.delete(id);
     const totals = this.monitor.endTurn(id);
@@ -973,7 +1166,7 @@ export class SessionManager {
       this.store.addTurnResource({
         sessionId: id, project: info.project, role: info.role, model: info.model, trigger: turn.trigger,
         startedAt: turn.at, durationMs, cpuSeconds: totals.cpuSeconds, samples: totals.samples,
-        avgCores: 0, peakCores: totals.peakCores, peakMem: totals.peakMem, commands,
+        avgCores: 0, peakCores: totals.peakCores, peakMem: totals.peakMem, commands, waits,
       });
     } catch (e) {
       console.error(`Turn record for ${id}: ${(e as Error).message}`);
@@ -1011,7 +1204,7 @@ export class SessionManager {
     this.store.updateSession(id, { priority, priorityNote: note });
     this.store.addMessage(id, 'event', { text: `Priority set to ${priority} by ${by}.${note && by !== this.config.userName ? ` (${note})` : ''}` });
     this.publish({ type: 'session', session: this.live.get(id)?.info ?? this.store.getSession(id)! });
-    this.publish({ type: 'machine', machine: this.machine() });
+    this.publishMachine();
     this.dispatch();
   }
 
@@ -1037,7 +1230,7 @@ export class SessionManager {
 
   setPaused(id: string, paused: boolean, by = this.config.userName): void {
     this.liveSession(id).setPaused(paused, by);
-    this.publish({ type: 'machine', machine: this.machine() });
+    this.publishMachine();
     // A paused session frees its place.
     this.dispatch();
   }
@@ -1299,6 +1492,7 @@ export class SessionManager {
     if (!this.store.answerQuestion(id, answer.trim(), 'user', null, here)) throw new UserError('This question is no longer open.');
     const q = this.store.getQuestion(id)!;
     this.publish({ type: 'question', question: q });
+    this.recordAllowAlways(q);
     // A question that went to a manager: tell the manager Simon answered it directly.
     this.management.onUserAnswered(q);
     // A proposed workflow change is saved on Accepted (part 3e), before the answer reaches the manager.
@@ -1318,6 +1512,15 @@ export class SessionManager {
     }
     this.live.get(q.sessionId)?.deliver();
     return this.store.getQuestion(id)!;
+  }
+
+  /**
+   * The person's Allow always on a refused call (issue #225): the exact command becomes a rule of the session's
+   * project, with who allowed it, when and on which question, before the answer reaches the session, so its retry is
+   * let through by the rule. Only the person's own tap on the button the question offered counts (allowsAlways).
+   */
+  private recordAllowAlways(q: QuestionInfo): void {
+    if (recordAllowAlways(this.store, q, this.config.userName)) this.publishProjects();
   }
 
   withdrawQuestion(id: number): void {
@@ -1386,6 +1589,21 @@ export class SessionManager {
       ...(this.store.getSession(sessionId)?.runBlock ? {} : { start: (a: Parameters<NonNullable<RunHandlers['start']>>[0]) => plain(() => this.flowRuns.start(sessionId, a)) }),
       step: (a) => plain(() => this.flowRuns.step(sessionId, a)),
       status: (run) => plain(() => this.flowRuns.status(sessionId, run)),
+      // ask_user at a run's person step (#291).
+      writeUp: async (a) => {
+        try {
+          return await this.flowRuns.writeUp(sessionId, a);
+        } catch (e) {
+          throw e instanceof FlowRunError ? new Error(e.message) : e;
+        }
+      },
+      writeUpAsked: (q) => {
+        try {
+          this.flowRuns.writeUpAsked(q);
+        } catch (e) {
+          throw e instanceof FlowRunError ? new Error(e.message) : e;
+        }
+      },
     };
   }
 
@@ -1409,7 +1627,8 @@ export class SessionManager {
     if (helper && !forProject) throw new Error('Name the project.');
     const project = this.project(helper ? forProject! : manager.project);
     if (helper && isLocked(project)) throw new Error(`The project "${project.name}" is locked: only ${this.config.userName} changes it, in the page.`);
-    const view = await this.flowView(project.name);
+    // A plain read: a proposal needs no origin parts (review of part b).
+    const view = await this.plainFlowView(project.name);
     let data;
     try {
       data = await buildProposal(view, changes, why, profileNames(this.profilesFor(project).profiles));
@@ -1430,9 +1649,11 @@ export class SessionManager {
       review: {
         solving: why.trim(),
         done: `${manager.title} proposes this change to ${project.name}'s workflow:\n\n${proposalSummary(data)}\n\nThe diagrams below show each flow before and after. Accepted saves it into the project's .ledung/workflow.`,
-        notes: faults.length
+        notes: (faults.length
           ? `The checks find ${faults.length === 1 ? 'one problem' : `${faults.length} problems`} in the workflow as it would be:\n\n${listed(faults)}`
-          : `The checks find no problems in the workflow as it would be.${hints.length ? ` Hints:\n\n${listed(hints)}` : ''}`,
+          : `The checks find no problems in the workflow as it would be.${hints.length ? ` Hints:\n\n${listed(hints)}` : ''}`)
+          // workflow-origin.md, section 5: only Ledung writes a copy's origin.
+          + (data.originKept ? '\n\nOrigin kept as recorded: the proposed flow.json left out or changed where this copy came from, and only Ledung writes that.' : ''),
       },
     };
     const q = this.store.createQuestion({ sessionId: managerId, question: questionText(undefined, details), options: null, addressedTo: 'user', details });
@@ -1471,7 +1692,7 @@ export class SessionManager {
     try {
       // What the person saw checked must still be the workflow it is saved into (review of 3e): any file changed since,
       // also one the proposal doesn't write (a flow it runs, a brief), and it is not saved.
-      const now = (await this.flowView(p.project)).versions;
+      const now = (await this.plainFlowView(p.project)).versions;
       const moved = [...new Set([...Object.keys(p.read ?? {}), ...Object.keys(now)])].filter((f) => (p.read ?? {})[f] !== now[f]);
       if (moved.length) throw new Error(`the workflow changed since it was proposed (${moved.slice(0, 5).join(', ')}), so what was checked is not what would be saved.`);
       await this.saveFlow(p.project, p.writes);
@@ -1546,8 +1767,28 @@ export class SessionManager {
   async flowView(name: string): Promise<FlowView> {
     const project = this.projectStore.get(name)?.config;
     if (!project) throw new UserError(`There is no project named "${name}".`);
+    const places = this.flowPlacesOf(project);
+    const view = await this.plainFlowView(name);
+    // workflow-origin.md: what a split-off records, whether a copy's original changed since, "Record where this came
+    // from". Each part fails on its own (originInfo), so a split-off never loses its origin to another part's error.
+    const workflows = workflowsOf(this.config).map((w) => ({ name: w.name, folder: w.folder, place: workflowPlace(w) }));
+    const origin = await originInfo(view, places, workflows, { dismissed: this.store.getMeta(`${ORIGIN_DISMISSED}${project.name}`) !== null });
+    return { ...view, ...origin };
+  }
+
+  /** The flow as read, with its checks, and none of the origin parts: for a proposal and its Accept (review of part b). */
+  private async plainFlowView(name: string): Promise<FlowView> {
+    const project = this.projectStore.get(name)?.config;
+    if (!project) throw new UserError(`There is no project named "${name}".`);
     // A block's profile is checked against what the project's sessions can use: the config and its workflow's profiles file (#298).
     return readFlowView(project.name, this.flowPlacesOf(project), profileNames(this.profilesFor(project).profiles));
+  }
+
+  /** The person dismissed "Record where this came from" for a project's older copy (workflow-origin.md, section 4). */
+  async dismissAdoptOrigin(name: string): Promise<FlowView> {
+    if (!this.projectStore.get(name)) throw new UserError(`There is no project named "${name}".`);
+    this.store.setMeta(`${ORIGIN_DISMISSED}${name}`, new Date().toISOString());
+    return this.flowView(name);
   }
 
   /**
@@ -1600,7 +1841,19 @@ export class SessionManager {
 
   /** A project as the page shows it, with the profiles its sessions can use (#298, review round 1). */
   private projectInfo(p: StoredProject): ProjectInfo {
-    return { ...projectInfo(p), profileNames: profileNames(this.profilesFor(p.config).profiles) };
+    return { ...projectInfo(p), profileNames: profileNames(this.profilesFor(p.config).profiles), allowedCalls: this.store.allowedCalls(p.config.name) };
+  }
+
+  /**
+   * Removes an Allow always rule (issue #225), from the project's settings. It only takes a permission away, and
+   * counts at the next call: the hook reads the rules at each call.
+   */
+  removeAllowedCall(project: string, id: number): ProjectInfo {
+    const p = this.projectStore.get(project);
+    if (!p) throw new UserError(`There is no project named "${project}".`);
+    if (!Number.isInteger(id) || !this.store.removeAllowedCall(project, id)) throw new UserError('That rule is not in this project any more.');
+    this.publishProjects();
+    return this.projectInfo(p);
   }
 
   /** The session profiles there are, "full" first (#20): this computer's and every workflow's (#298). */
@@ -2137,6 +2390,11 @@ export class SessionManager {
         throw e;
       }
     }
+    // "Record where this came from" stays dismissed under the new name (review of part d).
+    if (p.config.name !== name && this.store.getMeta(`${ORIGIN_DISMISSED}${name}`) !== null) {
+      this.store.setMeta(`${ORIGIN_DISMISSED}${p.config.name}`, this.store.getMeta(`${ORIGIN_DISMISSED}${name}`)!);
+      this.store.deleteMeta(`${ORIGIN_DISMISSED}${name}`);
+    }
     this.boards?.refresh();
     // The setup follows its project to the new name (ledung-helper.md).
     const setup = this.setupState();
@@ -2218,6 +2476,8 @@ export class SessionManager {
     for (const s of running) this.live.delete(s.id);
     this.projectStore.remove(name);
     this.flowRuns.stopProject(name, `the project "${name}" was removed`);
+    // A later project of the same name is offered "Record where this came from" afresh (review of part d).
+    this.store.deleteMeta(`${ORIGIN_DISMISSED}${name}`);
     // Its secrets, the project's and its sessions', go with it (issue #468).
     void this.secrets?.dropProject(name).catch((e) => console.error(`Secrets of ${name}: ${(e as Error).message}`));
     this.boards?.refresh();
@@ -2917,7 +3177,7 @@ export class SessionManager {
       const raw = this.store.getMeta(CHATS_SENSITIVE_KEY);
       if (raw) {
         const s = JSON.parse(raw) as ChatsInfo['sensitive'];
-        this.store.setMeta(CHATS_SENSITIVE_KEY, JSON.stringify({ ...s, commandPatterns: [...s.commandPatterns, ...batch.commandPatterns.filter((p) => !s.commandPatterns.includes(p))] }));
+        this.store.setMeta(CHATS_SENSITIVE_KEY, JSON.stringify({ ...s, commandPatterns: withLaterBatch(s.commandPatterns, batch) }));
       }
       this.store.setMeta(key, new Date().toISOString());
     }
@@ -3064,8 +3324,17 @@ export class SessionManager {
     const session = new Session({ info, ...this.sessionOptions(project, info) });
     this.noteLaunch(project, info);
     this.live.set(info.id, session);
-    await session.start();
-    if (opts.text?.trim() && this.store.getSession(info.id)?.status !== 'ended') session.send(opts.text);
+    let textHeld = false;
+    const now = await this.admitted(info.id, async () => {
+      if (this.store.getSession(info.id)?.status === 'ended') return;
+      await session.start();
+      if (!textHeld && opts.text?.trim() && this.store.getSession(info.id)?.status !== 'ended') session.send(opts.text);
+    });
+    // Waiting for memory: the chat's first message is held at once, as for a session (finding 3).
+    if (!now && opts.text?.trim()) {
+      session.send(opts.text);
+      textHeld = true;
+    }
     return session.info;
   }
 
@@ -3182,7 +3451,84 @@ export class SessionManager {
     const session = new Session({ info, ...this.sessionOptions(project, info) });
     this.noteLaunch(project, info);
     this.live.set(info.id, session);
-    await session.start();
+    // The person's first message, when the session has to wait for memory, is held at once: before anything typed
+    // while it waits, and naming it (acceptance test, finding 3).
+    let firstHeld = false;
+    const begin = async () => {
+      if (this.store.getSession(info.id)?.status === 'ended') return;
+      await session.start();
+      if (!firstHeld) this.deliverFirst(session, info.id, firstMessage, opts);
+    };
+    if (!(await this.admitted(info.id, begin, { text: firstMessage, parentId: opts.parentId })) && firstMessage?.trim() && !opts.parentId) {
+      session.send(firstMessage, opts.here === true);
+      firstHeld = true;
+    }
+    return session.info;
+  }
+
+  /**
+   * A new session starts at once, or under a memory limit waits in the resource line until it fits (resource limits,
+   * point 9): then the caller gets it back still "starting", and it starts when there is room. True: started.
+   */
+  private async admitted(id: string, begin: () => Promise<void>, first?: { text?: string; parentId?: string }): Promise<boolean> {
+    const session = this.live.get(id);
+    let started: Promise<void> = Promise.resolve();
+    const now = this.book.admitSession(id, () => {
+      this.forgetWaiter(id);
+      if (session) session.waitingToStart = false;
+      started = begin().then(() => session?.deliver());
+      started.catch((e: Error) => console.error(`Starting session ${id}: ${e.message}`));
+    });
+    if (!now) {
+      // While it waits, the person's messages are held for its start (acceptance test, finding 3), and it is kept on
+      // record so a restart of Ledung can say why it never ran and give its manager the task back (finding 12).
+      if (session) session.waitingToStart = true;
+      this.keepWaiter(id, first);
+      this.publish({ type: 'message', message: this.store.addMessage(id, 'event', { text: 'Waiting for memory before starting: see the line under the Machine bars. Messages you send now go in once it starts.' }) });
+      return false;
+    }
+    await started;
+    return true;
+  }
+
+  private waitersOnRecord(): { id: string; text?: string; parentId?: string }[] {
+    try {
+      const v = JSON.parse(this.store.getMeta(WAITERS_KEY) ?? '[]');
+      return Array.isArray(v) ? v : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private keepWaiter(id: string, first?: { text?: string; parentId?: string }): void {
+    this.store.setMeta(WAITERS_KEY, JSON.stringify([...this.waitersOnRecord().filter((w) => w.id !== id), { id, text: first?.text?.slice(0, 20000), parentId: first?.parentId }]));
+  }
+
+  private forgetWaiter(id: string): void {
+    const list = this.waitersOnRecord();
+    if (list.some((w) => w.id === id)) this.store.setMeta(WAITERS_KEY, JSON.stringify(list.filter((w) => w.id !== id)));
+  }
+
+  /**
+   * After a restart of Ledung: sessions that were still waiting for memory never ran, so they can't be resumed. Their
+   * end reason says so, and a manager that started one gets its task back to start it again (finding 12).
+   */
+  settleWaitersAfterRestart(): void {
+    for (const w of this.waitersOnRecord()) {
+      const info = this.store.getSession(w.id);
+      if (!info || info.claudeSessionId) continue;
+      this.store.updateSession(w.id, { status: 'ended', endReason: 'It was waiting for memory to start when Ledung restarted, so it never ran. Start a new one.' });
+      if (w.parentId && this.store.getSession(w.parentId)) {
+        this.store.addInbox(w.parentId, 'ledung', `Your session "${info.title}" (${w.id}) was still waiting for memory to start when Ledung restarted, so it never ran. Start it again if it is still needed.${w.text ? ` Its task was:\n\n${w.text}` : ''}`);
+        void this.resumeIfEnded(w.parentId).then(() => this.live.get(w.parentId!)?.deliver(), () => {});
+      }
+    }
+    this.store.setMeta(WAITERS_KEY, '[]');
+  }
+
+  /** The first message of a new session (start), once it runs. */
+  private deliverFirst(session: Session, id: string, firstMessage: string | undefined, opts: { parentId?: string; title?: string; before?: string; intro?: string; here?: boolean }): void {
+    const info = { id };
     if (firstMessage?.trim() && this.store.getSession(info.id)?.status !== 'ended') {
       if (opts.parentId) {
         // From a manager: delivered as context, so it never passes for the user's words (step 4).
@@ -3200,7 +3546,6 @@ ${firstMessage}`);
         session.send(firstMessage, opts.here === true);
       }
     }
-    return session.info;
   }
 
   /**
@@ -3625,9 +3970,10 @@ ${firstMessage}`);
     if (project.runner === 'docker') return this.fromContainer(() => listContainerFolder(this.containerAccess(project), root, rel));
     try {
       // A chat's folder can be anywhere under the browse roots, so it gets the viewer's chat rules (#211, question
-      // #317); a project's own folder may itself sit under AppData, as the viewer allows.
+      // #317); a project's own folder may itself sit under AppData, as the viewer allows, so a project keeps only
+      // Ledung's own data folder shut, for a project folder that holds it (Project-Ledung#474).
       const chat = info.project === CHATS;
-      const refused = [...(chat ? this.settingsFolders() : []), ...this.lockedFoldersBesides(info.project)];
+      const refused = [...(chat ? this.settingsFolders() : [userDataDir()]), ...this.lockedFoldersBesides(info.project)];
       return await listTree(root, rel, { refused, hiddenFrom: chat ? this.allowedFolders() : [] });
     } catch (e) {
       throw e instanceof FileError ? new UserError(e.message) : e;
@@ -3688,8 +4034,14 @@ ${firstMessage}`);
         const hidden = hiddenProblem(root, link, this.allowedFolders(), this.settingsFolders());
         if (hidden) throw new UserError(hidden);
       }
+      // Both checks below on the file's real path, so a link inside the folder can't lead around them (Project-Ledung#474).
+      const real = realTarget(root, link);
+      // Ledung's data folder stays shut to a project's session too, as it is to a chat's, wherever the project is.
+      if (real && info.project !== CHATS && nativeWithin(userDataDir(), real)) {
+        throw new UserError("That file is in Ledung's data folder, where its settings and sign-ins are kept; it is not shown.");
+      }
       // Through the Files pane, a locked project's folder stays shut as in its tree (issue #225).
-      if (folder && this.lockedFoldersBesides(info.project).some((f) => within(f, path.resolve(root, decodeURIComponent(link.replace(/[?#].*$/, '')))))) {
+      if (folder && real && this.lockedFoldersBesides(info.project).some((f) => nativeWithin(f, real))) {
         throw new UserError("That file is in a locked project's folder.");
       }
       // The session's own folder when it has one (decision of 2026-10-14): links in its chat are relative to it.
@@ -3907,6 +4259,15 @@ ${firstMessage}`);
 
   /** From the page unless a reason says otherwise: then it is the person using Ledung, by name. */
   async stop(id: string, reason = `Stopped by ${this.config.userName}.`): Promise<void> {
+    // One still waiting for memory to start is taken out of the line and ends; it never ran (resource limits).
+    if (this.book.dropWaiter(id)) {
+      this.forgetWaiter(id);
+      this.store.updateSession(id, { status: 'ended', endedAt: Date.now(), endReason: reason });
+      this.publish({ type: 'message', message: this.store.addMessage(id, 'event', { text: reason }) });
+      this.publish({ type: 'session', session: this.store.getSession(id)! });
+      this.live.delete(id);
+      return;
+    }
     await this.liveSession(id).stop(reason);
     this.live.delete(id);
     this.dispatch();
@@ -4056,6 +4417,38 @@ function projectInfo(p: StoredProject): ProjectInfo {
     lockdown: lockdownOf(c),
     skills: c.skills ?? {},
   };
+}
+
+/**
+ * The real path a viewer link in `root` leads to (as readProjectFile reads it: #fragment dropped, maybe URL-encoded),
+ * links resolved, or null when there is no such file; the read itself then says so. The native realpath gives the
+ * long name and the case on disk on Windows, as the tree's checks use (Project-Ledung#474).
+ */
+function realTarget(root: string, link: string): string | null {
+  let wanted = link.replace(/[?#].*$/, '');
+  try {
+    wanted = decodeURIComponent(wanted);
+  } catch {
+    // Not encoded; used as is, as readProjectFile does.
+  }
+  try {
+    // From the root's real path by the same call readProjectFile uses, so ".." in the link means the same folder to both.
+    return fs.realpathSync.native(path.resolve(fs.realpathSync(root), wanted));
+  } catch {
+    return null;
+  }
+}
+
+/** Is the real path `real` the folder `folder` or inside it? Native real paths on both sides, as the tree compares. */
+function nativeWithin(folder: string, real: string): boolean {
+  let at: string;
+  try {
+    at = fs.realpathSync.native(folder);
+  } catch {
+    at = path.resolve(folder);
+  }
+  const rel = path.relative(at, real);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
 /** The permissions.allow rules in a profile's inline settings, for Settings (question #708). */

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { SessionUsage as Usage } from '../../../src/shared/protocol.ts';
 import { api } from '../api.ts';
+import { pollWhileShown } from '../pollShown.ts';
 import { SessionTurns } from './MachinePanel.tsx';
 import { colorMap, formatCost, formatTokens, Legend, pct, StackedBars, Tile, TRIGGER_LABEL } from './charts.tsx';
 
@@ -12,12 +13,11 @@ export function SessionUsagePanel({ sessionId, onClose }: { sessionId: string; o
 
   useEffect(() => {
     let current = true;
-    const load = () => api.sessionUsage(sessionId).then((u) => current && setUsage(u), (e: Error) => current && setError(e.message));
-    void load();
-    const timer = setInterval(load, 15000);
+    // Not while the page is hidden (issue #233).
+    const stop = pollWhileShown(() => api.sessionUsage(sessionId).then((u) => current && setUsage(u), (e: Error) => current && setError(e.message)), 15000);
     return () => {
       current = false;
-      clearInterval(timer);
+      stop();
     };
   }, [sessionId]);
 

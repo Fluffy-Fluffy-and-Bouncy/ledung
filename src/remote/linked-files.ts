@@ -20,9 +20,9 @@ import path from 'node:path';
 import { Writable, type Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { DatabaseSync } from 'node:sqlite';
-import { bytesKind, contentProblem, MAX_ATTACHMENTS, MAX_IMAGE_BYTES, MAX_TEXT_BYTES, safeName, type AttachmentKind } from '../board/attachments.ts';
+import { bytesKind, contentProblem, MAX_ATTACHMENTS, MAX_IMAGE_BYTES, MAX_TEXT_BYTES, safeName, sizeLabel, type AttachmentKind } from '../board/attachments.ts';
 import { FileError } from '../sessions/files.ts';
-import { isStreamKind, KIND_HEAD_BYTES, linkedKindLabel, streamKindOf, type LinkedKind, type StreamKind } from './stream-kinds.ts';
+import { isStreamKind, KIND_HEAD_BYTES, linkedKindLabel, streamKindOf, zipArrivalProblem, type LinkedKind, type StreamKind } from './stream-kinds.ts';
 
 export const LINKED_FILE_PREFIX = 'linked:';
 /** A file no message claimed within this long is dropped: its message never came (the sender failed on the way). */
@@ -52,6 +52,16 @@ export type FetchResult = { ok: true; file: ReceivedFile } | { ok: false; file: 
 
 /** A fetch refused for good (403, 404, more bytes than said): trying again would not help. */
 export class FetchRefused extends Error {}
+
+/** The most a linked computer may stream here (Project-Ledung#479): per file, and for all of one message's files. */
+export interface StreamLimits { maxFileBytes: number; maxMessageBytes: number }
+/** The config's defaults, linkedFiles.maxFileMB and maxMessageMB. */
+export const DEFAULT_STREAM_LIMITS: StreamLimits = { maxFileBytes: 2048 * 1024 * 1024, maxMessageBytes: 4096 * 1024 * 1024 };
+
+/** One line in Ledung's log for each streamed file refused, so the reason can be found later (Project-Ledung#479). */
+function logRefused(linkId: string, name: string, why: string): void {
+  console.log(`Linked computers: linked file refused from ${linkId}: ${name}: ${why}`);
+}
 
 export interface ByteTotals { today: { sent: number; received: number }; month: { sent: number; received: number } }
 
@@ -90,17 +100,20 @@ export class LinkedFiles {
   private readonly dir: () => string;
   private readonly now: () => number;
   private readonly keepDays: () => number;
+  private readonly limits: () => StreamLimits;
   private prunedAt = 0;
 
   /**
    * `dir`: where the copies are kept, in the data folder; asked each time, so tests can move it. `keepDays`: how many
-   * days a copy is kept, the board's evidenceDays, read at each prune so a config change applies.
+   * days a copy is kept, the board's evidenceDays, read at each prune so a config change applies. `limits`: how much
+   * a linked computer may stream here, read for each message so a config change applies.
    */
-  constructor(db: DatabaseSync, dir: () => string, keepDays: () => number, now: () => number = Date.now) {
+  constructor(db: DatabaseSync, dir: () => string, keepDays: () => number, now: () => number = Date.now, limits: () => StreamLimits = () => DEFAULT_STREAM_LIMITS) {
     this.db = db;
     this.dir = dir;
     this.keepDays = keepDays;
     this.now = now;
+    this.limits = limits;
   }
 
   /** The copy's file: <dir>/<link id>/<file id>.<ext>, names Ledung made only. */
@@ -227,6 +240,20 @@ export class LinkedFiles {
     if (!Array.isArray(offers) || offers.length + pushed > MAX_ATTACHMENTS || !offers.every(ok)) {
       throw new LinkedFileError(400, `A message names at most ${MAX_ATTACHMENTS} files; a streamed one by its id, name, kind, size and SHA-256.`);
     }
+    // The caps before anything is recorded, so nothing of a refused message is fetched (Project-Ledung#479).
+    const { maxFileBytes, maxMessageBytes } = this.limits();
+    const big = (offers as { name: string; size: number }[]).find((o) => o.size > maxFileBytes);
+    if (big) {
+      const why = `it is ${sizeLabel(big.size)}; this computer takes streamed files up to ${sizeLabel(maxFileBytes)} each`;
+      logRefused(linkId, safeName(big.name), why);
+      throw new LinkedFileError(413, `${safeName(big.name)} is not taken: ${why}.`);
+    }
+    const total = (offers as { size: number }[]).reduce((sum, o) => sum + o.size, 0);
+    if (total > maxMessageBytes) {
+      const why = `the message's streamed files are ${sizeLabel(total)} in all; this computer takes up to ${sizeLabel(maxMessageBytes)} in one message`;
+      logRefused(linkId, `${offers.length} files`, why);
+      throw new LinkedFileError(413, `The files are not taken: ${why}.`);
+    }
     return (offers as { id: string; name: string; kind: StreamKind; size: number; sha: string }[]).map((o) => {
       const id = crypto.randomBytes(8).toString('hex');
       const name = safeName(o.name);
@@ -292,6 +319,13 @@ export class LinkedFiles {
         }
         if (have > size) restart();
       }
+      // A row recorded before the cap (or under a larger one) is held to it too, before a byte is asked for.
+      const maxFileBytes = this.limits().maxFileBytes;
+      if (size > maxFileBytes) {
+        const why = `it is ${sizeLabel(size)}; this computer takes streamed files up to ${sizeLabel(maxFileBytes)} each`;
+        logRefused(r.link_id, r.name, why);
+        throw new FetchRefused(why);
+      }
       if (size === 0) fs.writeFileSync(part, Buffer.alloc(0), { mode: 0o600 });
       for (let attempt = 1; have < size; attempt++) {
         try {
@@ -347,6 +381,14 @@ export class LinkedFiles {
       const read = fs.readSync(fd, head, 0, head.length, 0);
       fs.closeSync(fd);
       if (streamKindOf(head.subarray(0, read), `x.${EXT[r.kind as LinkedKind]}`) !== r.kind) throw new FetchRefused(`it is not really ${linkedKindLabel(r.kind)}`);
+      // A zip's own directory is checked before it counts as here (Project-Ledung#479); a failing one goes with its part.
+      if (r.kind === 'zip') {
+        const zip = await zipArrivalProblem(part);
+        if (zip) {
+          logRefused(r.link_id, r.name, zip);
+          throw new FetchRefused(zip);
+        }
+      }
       fs.renameSync(part, target);
       this.db.prepare(`UPDATE linked_files SET state = 'delivered' WHERE id = ?`).run(id);
       this.count(r.link_id, 'received', size);

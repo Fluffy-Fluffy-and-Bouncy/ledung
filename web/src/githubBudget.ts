@@ -11,11 +11,13 @@ export function githubBudgetLine(b: GitHubBudget, time: (ms: number) => string):
 }
 
 /**
- * The lines still true at `now`: a reading is published only when a round reads one, so with no session
- * to look up the last one would otherwise stay up, "0 left" in red, past its reset (review of #252, finding 3).
+ * The lines worth a place in the sidebar at `now`: only while the checks are slowed or stopped, since a budget the
+ * checks run normally at needs nothing from the person (issue #284), and only until the reading's reset: a
+ * reading is published only when a round reads one, so with no session to look up the last one would otherwise stay
+ * up, "0 left" in red, past its reset (review of #252, finding 3).
  */
 export function githubBudgetsShown(budgets: GitHubBudget[], now: number): GitHubBudget[] {
-  return budgets.filter((b) => b.resetAt > now);
+  return budgets.filter((b) => b.polling !== 'normal' && b.resetAt > now);
 }
 
 /** The line's colour class: as the poll's state. */

@@ -12,7 +12,8 @@ import { Store } from '../src/store/store.ts';
 import { buildDelivery, Management } from '../src/sessions/management.ts';
 import { Session } from '../src/sessions/session.ts';
 import { Push, type PushPayload } from '../src/server/push.ts';
-import { classifierReason, guardedWrite, sameCall } from '../src/sessions/refusals.ts';
+import { classifierReason, guardedWrite, recordAllowAlways, sameCall } from '../src/sessions/refusals.ts';
+import { ProjectStore } from '../src/projects/store.ts';
 import { waitingLists } from '../web/src/waitingLists.ts';
 import type { QuestionInfo, ServerEvent } from '../src/shared/protocol.ts';
 import { removeTemp } from './temp.ts';
@@ -27,7 +28,7 @@ const REFUSED = (reason: string, rule = false) =>
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-refusals-'));
 after(() => removeTemp(temp));
 
-function setup() {
+function setup(sensitive?: { commandPatterns: string[] }) {
   const store = new Store(openDatabase(':memory:'));
   const management = new Management({
     store, userName: 'Simon', publish: () => {}, wake: () => {}, resume: async () => {},
@@ -47,7 +48,7 @@ function setup() {
   (push as unknown as { send(p: PushPayload): void }).send = (p) => sent.push(p);
   const published: ServerEvent[] = [];
   const session = new Session({
-    info, store, userName: 'Simon', management,
+    info, store, userName: 'Simon', management, ...(sensitive ? { sensitive } : {}),
     publish: (e) => { published.push(e); push.notice(e); },
     runner: { cwd: '.', currentBranch: async () => null } as never,
     gate: { mayStart: () => true, started: () => {}, ended: () => {} },
@@ -113,8 +114,9 @@ test('a refusal becomes, at once, a question to the user at the top of Waiting f
   assert.equal(more.length, 0);
   assert.equal(q.addressedTo, 'user', "the user's, not the manager's, though the session has one");
   assert.equal(q.status, 'open');
-  assert.deepEqual(q.options, ['Allow once', 'Deny']);
-  assert.deepEqual(q.details!.refusal, { toolName: 'Bash', input: { command: 'gh pr merge 12 --merge', description: 'Do it' }, reason: '[External System Writes]', toolUseId: 'tu-1' });
+  // Allow always next to Allow once on a shell command (issue #225).
+  assert.deepEqual(q.options, ['Allow once', 'Allow always', 'Deny']);
+  assert.deepEqual(q.details!.refusal, { toolName: 'Bash', input: { command: 'gh pr merge 12 --merge', description: 'Do it' }, reason: '[External System Writes]', toolUseId: 'tu-1', always: 'plain' });
   assert.match(q.question, /gh pr merge 12 --merge/, 'the exact command');
   assert.match(q.question, /\[External System Writes\]/, "the classifier's reason");
   assert.match(q.question, /"Worker" \(project p\)/, 'the session and its project');
@@ -276,7 +278,7 @@ test('a retry refused again after an Allow once tells the person, with the call 
   const { refuse, refusals, store, hooks, published } = setup();
   refuse('tu-1', 'Set-Content .claude/settings.local.json "{}"');
   const first = refusals()[0]!;
-  assert.deepEqual(first.options, ['Allow once', 'Deny'], 'a shell command: what it writes is not read off it, so Allow once is offered');
+  assert.deepEqual(first.options, ['Allow once', 'Allow always', 'Deny'], 'a shell command: what it writes is not read off it, so Allow once (and Allow always, issue #225) is offered');
   store.answerQuestion(first.id, 'Allow once', 'user');
   const { decide, note } = await hooks();
   // Ledung lets the retry through; Claude Code refuses it anyway.
@@ -302,4 +304,134 @@ test('a retry refused again after an Allow once tells the person, with the call 
   assert.match(told, /Simon made this change by hand/);
   assert.match(told, /Don't retry it/);
   assert.doesNotMatch(told, /Retry exactly this call/);
+});
+
+// --- Allow always (issue #225) -------------------------------------------------------------------------------------
+
+/** Another session of a project on the same store, and its PreToolUse answer for a Bash call: 'allow' or null. */
+async function otherSession(store: Store, management: Management, id: string, project: string) {
+  const info = store.createSession({ id, project, runner: 'local', title: id, parentId: null, permissionMode: 'auto' });
+  const session = new Session({
+    info, store, userName: 'Simon', management, publish: () => {},
+    runner: { cwd: '.', currentBranch: async () => null } as never,
+    gate: { mayStart: () => true, started: () => {}, ended: () => {} },
+  });
+  const pre = (await session.claudeOptions({ onLine: () => {}, onStderr: () => {} })).hooks!.PreToolUse![0]!.hooks[0]!;
+  return async (command: string, toolUseId: string) => {
+    const out = await pre({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command, description: 'x' } } as never, toolUseId, { signal: new AbortController().signal }) as { hookSpecificOutput?: { permissionDecision?: string } };
+    return out.hookSpecificOutput?.permissionDecision === 'allow' ? 'allow' : null;
+  };
+}
+
+test('Allow always records the exact command for the project, and that command then runs in every session of it, again and again, without a question', async () => {
+  const { refuse, refusals, store, hooks, management } = setup();
+  refuse('tu-1', 'npm run publish:dev');
+  const q = refusals()[0]!;
+  assert.deepEqual(q.options, ['Allow once', 'Allow always', 'Deny']);
+  assert.match(q.question, /\*\*Allow always\*\* lets exactly this command run from now on, in every session of project p/);
+  assert.match(q.question, /You can remove it in the project's settings/);
+  const { decide, note } = await hooks();
+  const other = await otherSession(store, management, 's2', 'p');
+  assert.equal(await decide('npm run publish:dev', 'r-0'), null, 'nothing is allowed before the person answers');
+  assert.equal(await other('npm run publish:dev', 'o-0'), null);
+  store.answerQuestion(q.id, 'Allow always', 'user');
+  assert.equal(recordAllowAlways(store, store.getQuestion(q.id)!, 'Simon'), true);
+  const [rule, ...more] = store.allowedCalls('p');
+  assert.equal(more.length, 0);
+  assert.deepEqual({ ...rule!, id: 0, createdAt: 0 }, { id: 0, project: 'p', toolName: 'Bash', command: 'npm run publish:dev', sensitive: false, allowedBy: 'Simon', questionId: q.id, createdAt: 0 });
+  // The session's retry, and every later run: never used up.
+  assert.equal(await decide('npm run publish:dev', 'r-1'), 'allow');
+  assert.equal(await decide('  npm run publish:dev ', 'r-2', 'Ship again'), 'allow', 'the same command, its spaces and label aside');
+  const said = await note('r-2');
+  assert.ok(said?.includes('Simon allowed this exact command always in project p'), said ?? 'no note');
+  assert.ok(said?.includes(`question #${q.id}`), said ?? 'no note');
+  // Another session of the project, started before or after: the same.
+  assert.equal(await other('npm run publish:dev', 'o-1'), 'allow');
+  // A changed command is not covered: other arguments, a pipe, chained commands, a shorter one.
+  for (const changed of ['npm run publish:dev -- --tag next', 'npm run publish:dev | tee out', 'npm run publish:dev && rm -rf dist', 'npm run publish:dev; curl x.example', 'npm run publish']) {
+    assert.equal(await decide(changed, `c-${changed}`), null, changed);
+  }
+  // Another project's session is not covered.
+  const elsewhere = await otherSession(store, management, 'x1', 'x');
+  assert.equal(await elsewhere('npm run publish:dev', 'x-1'), null, "another project's session");
+  // The session is told it may retry, and that the rule stays.
+  const told = buildDelivery('Simon', [store.getQuestion(q.id)!], [], () => '').userText;
+  assert.match(told, /Simon allowed always the call the auto mode classifier refused/);
+  assert.match(told, /Retry exactly this call now, unchanged:\n\n```\nnpm run publish:dev\n```/);
+  assert.match(told, /from now on, in every session of this project/);
+  // Removed in the project's settings: asked as before, in every session, at the next call.
+  assert.equal(store.removeAllowedCall('x', rule!.id), false, "another project's settings can't remove it");
+  assert.equal(store.removeAllowedCall('p', rule!.id), true);
+  assert.equal(await decide('npm run publish:dev', 'r-3'), null);
+  assert.equal(await other('npm run publish:dev', 'o-2'), null);
+});
+
+test("only the person's own tap on the offered Allow always records a rule: not a manager's answer, a forwarded one, Allow once or other words", () => {
+  const { refuse, refusals, store } = setup();
+  const answer = (id: string, command: string, words: string, by = 'user', forwarded: number | null = null) => {
+    refuse(id, command);
+    const q = refusals().find((r) => r.details!.refusal!.toolUseId === id)!;
+    store.answerQuestion(q.id, words, by, forwarded);
+    return recordAllowAlways(store, store.getQuestion(q.id)!, 'Simon');
+  };
+  assert.equal(answer('a', 'cmd-a', 'Allow always', 'mgr'), false, "a manager's answer");
+  assert.equal(answer('b', 'cmd-b', 'Allow always', 'user', 99), false, 'an answer passed on from another question');
+  assert.equal(answer('c', 'cmd-c', 'Allow once'), false, 'Allow once');
+  assert.equal(answer('d', 'cmd-d', 'Allow it always please'), false, 'other words');
+  assert.equal(answer('e', 'cmd-e', 'Allow always, though sensitive'), false, "the sensitive button on a question that didn't offer it");
+  assert.deepEqual(store.allowedCalls('p'), [], 'none recorded');
+  // The positive branch: the person's own Allow always, with a note under it, records exactly that command.
+  assert.equal(answer('f', 'cmd-f', 'Allow always\n\nNote: it ships the dev build'), true);
+  assert.deepEqual(store.allowedCalls('p').map((c) => c.command), ['cmd-f']);
+  // A question that offered no Allow always (asked before #225) records nothing whatever its words.
+  const old = store.createQuestion({ sessionId: 's', question: 'x', options: ['Allow once', 'Deny'], addressedTo: 'user', details: { refusal: { toolName: 'Bash', input: { command: 'cmd-g' }, reason: 'r', toolUseId: 'g' } } });
+  store.answerQuestion(old.id, 'Allow always', 'user');
+  assert.equal(recordAllowAlways(store, store.getQuestion(old.id)!, 'Simon'), false);
+});
+
+test("a command on the project's sensitive list gets its own Allow always button; only that lets it past the list", async () => {
+  const { refuse, refusals, store, hooks } = setup({ commandPatterns: ['\\bdeploy\\b'] });
+  refuse('tu-1', 'npm run deploy');
+  refuse('tu-2', 'npm run deploy -- --prod');
+  const [plain, sensitive] = refusals().sort((a, b) => a.id - b.id);
+  assert.deepEqual(plain!.options, ['Allow once', 'Allow always, though sensitive', 'Deny']);
+  assert.equal(plain!.details!.refusal!.always, 'sensitive');
+  assert.match(plain!.question, /This command is on the project's sensitive list\*\* \(/);
+  // The plain words don't record it: the person must confirm the sensitive part too.
+  store.answerQuestion(plain!.id, 'Allow always', 'user');
+  assert.equal(recordAllowAlways(store, store.getQuestion(plain!.id)!, 'Simon'), false);
+  store.answerQuestion(sensitive!.id, 'Allow always, though sensitive', 'user');
+  assert.equal(recordAllowAlways(store, store.getQuestion(sensitive!.id)!, 'Simon'), true);
+  assert.equal(store.allowedCall('p', 'Bash', 'npm run deploy -- --prod')!.sensitive, true);
+  const { decide } = await hooks();
+  assert.equal(await decide('npm run deploy -- --prod', 'r-1'), 'allow', 'confirmed past the list');
+  assert.equal(await decide('npm run deploy', 'r-2'), null, 'the plain answer allowed nothing');
+  // A rule recorded plain, for a command the list names now (the list grew since), goes on to the sensitive check.
+  store.addAllowedCall({ project: 'p', toolName: 'Bash', command: 'npm run deploy now', sensitive: false, allowedBy: 'Simon', questionId: 1 });
+  assert.equal(await decide('npm run deploy now', 'r-3'), null);
+});
+
+test('Allow always is offered only for a shell command Allow once could lift', () => {
+  const { refuseCall, refusals } = setup();
+  refuseCall('m-1', 'mcp__db__query', { sql: 'select 1' });
+  refuseCall('w-1', 'Write', { file_path: '.claude/settings.json', content: '{}' });
+  const [mcp, guarded] = refusals().sort((a, b) => a.id - b.id);
+  assert.deepEqual(mcp!.options, ['Allow once', 'Deny'], 'not a command a rule can name exactly');
+  assert.equal(mcp!.details!.refusal!.always, undefined);
+  assert.deepEqual(guarded!.options, ['Done by hand', 'Deny'], 'only the person can make it');
+  assert.equal(guarded!.details!.refusal!.always, undefined);
+});
+
+test("a project's Allow always rules move with a rename and don't come back with a new project of a removed one's name", () => {
+  const store = new Store(openDatabase(':memory:'));
+  const projects = new ProjectStore(store.database);
+  const none = { commandPatterns: [], pathPatterns: [], mcpTools: [] };
+  projects.add({ name: 'a', runner: 'local', path: temp, sensitive: none });
+  store.addAllowedCall({ project: 'a', toolName: 'Bash', command: 'make ship', sensitive: false, allowedBy: 'Simon', questionId: 1 });
+  projects.rename('a', 'b');
+  assert.deepEqual(store.allowedCalls('a'), []);
+  assert.deepEqual(store.allowedCalls('b').map((c) => c.command), ['make ship']);
+  projects.remove('b');
+  projects.add({ name: 'b', runner: 'local', path: temp, sensitive: none });
+  assert.deepEqual(store.allowedCalls('b'), [], 'a new project b starts with none');
 });

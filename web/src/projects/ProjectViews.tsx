@@ -5,7 +5,7 @@ import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import {
   EFFORT_LEVELS, PERMISSION_MODES, type AccountInfoView, type BoardStatus, type ContainerInfoView, type FolderListingView, type PermissionMode, type ProfilesView, type ProjectInfo, type WorkflowCheckView,
 } from '../../../src/shared/protocol.ts';
-import { SUGGESTIONS, missingSuggestions, suggestionName, withSuggestions } from '../../../src/shared/sensitive-suggestions.ts';
+import { FILE_PATH_RULE, SUGGESTIONS, missingSuggestions, suggestionName, withSuggestions } from '../../../src/shared/sensitive-suggestions.ts';
 import { DEFAULT_TIERS } from '../../../src/shared/questions.ts';
 import { api } from '../api.ts';
 import { ProjectBoard, boardBlocked, boardChanges, boardFormOf, saveBoard } from '../components/BoardViews.tsx';
@@ -318,6 +318,35 @@ function TiersField(f: FieldProps) {
 }
 
 /**
+ * The commands the person allowed always after the classifier refused them (issue #225): each exact command, who
+ * allowed it, when and on which question. Removing one saves at once, as the name colours do: it only takes a
+ * permission away, and the next call of that command is refused or asked as before.
+ */
+export function AllowedCallsList({ project, run }: { project: ProjectInfo; run: Run }) {
+  const calls = project.allowedCalls ?? [];
+  return (
+    <div className="sensitive-list allowed-calls">
+      <p><strong>Allowed always</strong>{' '}<span className="muted">(commands you allowed always after auto mode refused them; each runs in every session of this project without asking, exactly as written)</span></p>
+      {calls.length === 0 && <p className="muted">None yet. A refused command's question offers Allow always.</p>}
+      <ul>
+        {calls.map((c) => (
+          <li key={c.id}>
+            <span className="sensitive-entry">
+              <code>{c.command}</code>
+              <span className="muted">
+                {c.toolName} · allowed by {c.allowedBy}, {new Date(c.createdAt).toLocaleString()}, question #{c.questionId}{c.sensitive ? ' · past the sensitive list too' : ''}
+              </span>
+            </span>
+            <button type="button" className="small deny" aria-label={`Remove: ${c.command}`}
+              onClick={() => void run(async () => { await api.removeAllowedCall(project.name, c.id); })}>Remove</button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/**
  * The project's sensitive list (sensitive-always): exactly what is shown is what is enforced, nothing
  * hidden in the code. A new project starts with the suggestions; they can be deleted like anything added.
  */
@@ -399,6 +428,7 @@ export function SensitiveList<T extends { commandPatterns: string[]; pathPattern
         <button type="button" className="small" onClick={add} disabled={!pattern.trim()}>Add</button>
       </div>
       {error && <p className="error">{error}</p>}
+      <p className="muted">{FILE_PATH_RULE}</p>
     </div>
   );
 }
@@ -804,6 +834,7 @@ export function ProjectSettingsView({ view, project, projects, run, onOpen, onRe
           <div className="safety">
             <SensitiveList value={settings} onChange={f.onChange} heading={false} />
           </div>
+          <AllowedCallsList project={project} run={run} />
         </section>
       )}
       {group === 'powers' && (

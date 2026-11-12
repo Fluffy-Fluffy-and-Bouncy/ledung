@@ -14,9 +14,9 @@ import { readRepository, sourceOffer } from './source.ts';
 import type { SessionManager } from '../sessions/manager.ts';
 import { UserError } from '../sessions/manager.ts';
 import type { Store } from '../store/store.ts';
-import { AWAY_DEFAULT, AWAY_KINDS, EFFORT_LEVELS, HELPER, type AwayKind, type PermissionDecision, type PermissionMode, type RemoteStatus, type ServerEvent } from '../shared/protocol.ts';
-import { deviceCookieHeader, Guard, readCookies, securityHeaders } from './security.ts';
-import { DEVICE_COOKIE, type Device, type DeviceKind, deviceName, Devices, deviceView } from './devices.ts';
+import { AWAY_DEFAULT, AWAY_KINDS, EFFORT_LEVELS, HELPER, type AwayKind, type PermissionDecision, type PermissionMode, type RemoteStatus, type ServerEvent, parseWatch } from '../shared/protocol.ts';
+import { browserCookieHeader, deviceCookieHeader, Guard, readCookies, securityHeaders } from './security.ts';
+import { browserName, DEVICE_COOKIE, type Device, type DeviceKind, deviceName, Devices, deviceView, LEGACY_BROWSER_NAME } from './devices.ts';
 import { actionOf, DEVICE_LOCKED, PASSKEY_HEADER, PasskeyError, Passkeys } from './passkeys.ts';
 import { linkedPushItem, Push, PushError, type LinkedPushItem } from './push.ts';
 import type { UsageQueries } from '../usage/queries.ts';
@@ -45,6 +45,8 @@ import { relayCapSenderSentence, relayCapSentence } from '../remote/tunnel.ts';
 import { MAX_IMAGE_BYTES } from '../board/attachments.ts';
 import { ManagementError, type SettingsPort } from '../sessions/management.ts';
 import { waitingCount } from '../shared/waiting.ts';
+import { helloSessions } from '../shared/hello-sessions.ts';
+import { compressible, IMMUTABLE, isHashedAsset, PackedFiles, pickEncoding } from './static-files.ts';
 
 /** Calls a linked computer may make in a minute (#245). */
 const LINK_PER_MINUTE = 60;
@@ -99,6 +101,33 @@ const PAIR_CODE_FORM = '<form method="get" action="/pair"><p><label>Pairing code
 const NO_PASSKEY_LOCKED = 'This device has no passkey, so it can only look from here; make changes on the computer.';
 /** Through the public name, the only changes a locked device may send (requireUnlocked). */
 const OPEN_WHILE_LOCKED = new Set(['/api/device-unlock', '/api/passkey-challenge', '/api/passkey-options', '/api/passkey', '/api/device-logout', '/api/passkey-enrol-link']);
+/**
+ * API reads that only read what Ledung already holds: its store, its memory, and files on this computer, with no
+ * process started and no network call. Every other GET under /api/ does work (GitHub, docker, claude, git, the relay)
+ * and must come from Ledung's own page (Guard.fromOwnPage, Project-Ledung#476). A route missing here is asked the
+ * page check, so a new route is checked until it is added on purpose.
+ */
+export const PLAIN_READS = new Set([
+  'GET state', 'GET devices', 'GET links', 'GET device', 'GET push', 'GET sessions/:id/messages', 'GET usage',
+  'GET sessions/:id/usage', 'GET overview', 'GET projects', 'GET accounts', 'GET browse', 'GET profiles',
+  'GET workflow-check', 'GET projects-folder', 'GET projects/:id/proposals/:id', 'GET projects/:id/runs', 'GET board',
+  'GET board-threads', 'GET board-thread', 'GET usage-publish', 'GET machine', 'GET sessions/:id/turns', 'GET typical-costs',
+  'GET sessions/:id/folders', 'GET questions/:id/evidence/:id', 'GET chats', 'GET sessions/:id/shell-check',
+  'GET sessions/:id/secrets', 'GET update', 'GET checkin', 'GET remote-link', 'GET relay-admin',
+  'GET sessions/:id/sent-images/:id', 'GET board-attachment',
+]);
+/**
+ * Work reads asked only the browser's Sec-Fetch-Site label, not the Origin: a project's workflow view goes through
+ * docker for a container project, and the builder's test has it answered to a foreign Origin sent without that label
+ * (test/server-security.test.ts, "a project's flow needs the sign-in"; code review of PR #234, finding 1).
+ */
+export const SITE_ONLY_READS = new Set(['GET projects/:id/flow']);
+
+/** An API request's route as the switch in api() names it: every second part after /api/ is an id. */
+export function apiRoute(method: string, pathname: string): string {
+  const parts = pathname.split('/').filter(Boolean).slice(1); // after "api"
+  return `${method} ${parts.map((p, i) => (i % 2 === 1 ? ':id' : p)).join('/')}`;
+}
 /** The header the page sends its live connection's key in (#104). */
 export const PAGE_KEY_HEADER = 'x-ledung-page';
 const CONTENT_TYPES: Record<string, string> = {
@@ -209,9 +238,12 @@ export class LedungServer {
   private readonly clients = new Set<WebSocket>();
   /**
    * Each live connection's page key (#104): only Ledung's open page has one; see requirePage. With the
-   * device it was opened by through the public name (null: locally), so a key only works where it was given.
+   * device it was opened by through the public name (null: locally), so a key only works where it was given, and
+   * locally the browser it was opened by (null: the old token cookie or the open local network), so Remove closes it.
    */
-  private readonly pageKeys = new Map<WebSocket, { key: string; device: string | null }>();
+  private readonly pageKeys = new Map<WebSocket, { key: string; device: string | null; browser: string | null }>();
+  /** The session each live connection shows (issue #231), null for none; a connection not in it has not said. */
+  private readonly watching = new Map<WebSocket, string | null>();
   private readonly guard: Guard<Device>;
   /** Paired devices and their passkeys (docs/steps/relay.md steps 4 and 5); passkeys only with a public name. */
   readonly devices: Devices;
@@ -229,6 +261,8 @@ export class LedungServer {
   /** Responses to requests through the public name: they get publicHeaders. */
   private readonly publicResponses = new WeakSet<ServerResponse>();
   private readonly webRoot: string;
+  /** The page's text files, compressed once each (issue #229). */
+  private readonly packedFiles = new PackedFiles();
   private readonly opts: ServerOptions;
   /** The tunnel to the relay (issue #160); null: none is configured. */
   private remote: RemoteStatus | null = null;
@@ -278,7 +312,9 @@ export class LedungServer {
       forward: (item) => this.forwardPush(item),
     }) : null;
     this.push?.seed(opts.manager.questions(), opts.store.pendingPermissions());
-    this.guard = new Guard<Device>(opts.token, opts.port, opts.lanNames ?? [], opts.lanOpen ?? false);
+    this.guard = new Guard<Device>(opts.token, opts.port, opts.lanNames ?? [], opts.lanOpen ?? false, null);
+    // A browser's sign-in is a devices row of kind 'browser' (Project-Ledung#482); #476's hashes were moved there.
+    this.guard.useBrowsers({ browser: (cookie) => this.devices.byCookie(cookie, 'local') });
     this.headers = {};
     this.webRoot = opts.webRoot ?? path.join(appDir(), 'web', 'dist');
     this.setPublicName(opts.publicName ?? null, opts.tunnelTls ?? null);
@@ -419,8 +455,9 @@ export class LedungServer {
       if (!url) return refuse('400 Bad Request');
       if (url.pathname !== '/ws' || !this.guard.hostAllowed(req) || !this.guard.originAllowed(req) || !this.guard.mayUse(req)) return refuse('403 Forbidden');
       const device = this.guard.deviceOf(req)?.id ?? null;
+      const browser = this.guard.browserOf(req)?.id ?? null;
       const viaPublic = this.guard.isPublic(req);
-      this.wss.handleUpgrade(req, socket, head, (ws) => this.onClient(ws, device, viaPublic));
+      this.wss.handleUpgrade(req, socket, head, (ws) => this.onClient(ws, device, browser, viaPublic));
     });
     return server;
   }
@@ -617,7 +654,22 @@ export class LedungServer {
     this.push?.notice(event);
     if (event.type === 'question' || event.type === 'permission') this.waitingChanged();
     const data = JSON.stringify(event);
-    for (const ws of this.clients) if (ws.readyState === ws.OPEN) ws.send(data);
+    // A session's messages go only to the pages that show it (issue #231); everything else to every page.
+    const only = event.type === 'message' ? event.message.sessionId : null;
+    for (const ws of this.clients) {
+      if (ws.readyState !== ws.OPEN) continue;
+      if (only !== null && !this.watches(ws, only)) continue;
+      ws.send(data);
+    }
+  }
+
+  /**
+   * Whether a connection gets this session's messages: the session it last watched, or every session while it has not
+   * said, as a page loaded from an earlier release never does (issue #231): it keeps working until it reloads.
+   */
+  private watches(ws: WebSocket, sessionId: string): boolean {
+    const watched = this.watching.get(ws);
+    return watched === undefined || watched === sessionId;
   }
 
   /** The relay admin's Approve cards changed (issue #237): to the pages open on this computer only, as in hello. */
@@ -638,18 +690,26 @@ export class LedungServer {
     this.broadcast({ type: 'remote', remote: this.remote });
   }
 
-  private onClient(ws: WebSocket, device: string | null, viaPublic: boolean): void {
+  private onClient(ws: WebSocket, device: string | null, browser: string | null, viaPublic: boolean): void {
     this.clients.add(ws);
     const key = crypto.randomBytes(32).toString('hex');
-    this.pageKeys.set(ws, { key, device });
+    this.pageKeys.set(ws, { key, device, browser });
     const gone = () => {
       this.clients.delete(ws);
       this.pageKeys.delete(ws);
+      this.watching.delete(ws);
     };
     ws.on('close', gone);
     ws.on('error', gone);
-    // The page sends nothing over this connection; everything it does goes through the API.
-    ws.on('message', () => ws.close(1008, 'Use the API.'));
+    // The page sends one thing over this connection, which session it shows (issue #231); everything it does goes
+    // through the API. The answer goes in order on this connection: messages stored after it reach the page here, and
+    // the page reads those before it from the API, so nothing falls between.
+    ws.on('message', (data, binary) => {
+      const watch = binary ? null : parseWatch(String(data));
+      if (!watch) return ws.close(1008, 'Use the API.');
+      this.watching.set(ws, watch.sessionId);
+      ws.send(JSON.stringify({ type: 'watching', sessionId: watch.sessionId } satisfies ServerEvent));
+    });
     // The key only ever goes out here, never in GET state.
     ws.send(JSON.stringify({ ...this.hello(viaPublic), pageKey: key }));
   }
@@ -671,6 +731,17 @@ export class LedungServer {
   /** viaPublic: the page came through the public name, so it draws the remote frame (issue #232). */
   private hello(viaPublic: boolean): ServerEvent {
     const { manager, store } = this.opts;
+    const permissions = store.pendingPermissions();
+    const questions = manager.questions();
+    const orders = manager.orders.list();
+    // Not every session ever (issue #229): the archived ones come when the person opens an Archived list. Those the
+    // prompts, questions and orders below name are kept, so their cards still show who.
+    const named = [
+      ...permissions.map((p) => p.sessionId),
+      ...questions.flatMap((q) => [q.sessionId, q.addressedTo, q.answeredBy ?? '']),
+      ...orders.flatMap((o) => [o.sessionId, o.managerId]),
+    ];
+    const { sessions, olderArchived } = helloSessions(manager.sessions(), named, Date.now());
     return {
       type: 'hello',
       // A release is named by its folder; the npm package's folder never changes, so by its version (#105).
@@ -678,15 +749,16 @@ export class LedungServer {
       canRestart: !!this.opts.onRestart,
       source: this.source(),
       userName: manager.userName,
-      sessions: manager.sessions(),
-      permissions: store.pendingPermissions(),
-      questions: manager.questions(),
+      sessions,
+      olderArchived,
+      permissions,
+      questions,
       projects: manager.projects(),
       limits: store.latestLimits(),
       usageStops: manager.usageStopStates(),
       macros: manager.macros(),
       away: manager.away.current(),
-      orders: manager.orders.list(),
+      orders,
       profiles: manager.profileNames(),
       board: manager.boardStatus(),
       github: manager.githubBudget(),
@@ -754,6 +826,19 @@ export class LedungServer {
         res.setHeader('Set-Cookie', deviceCookieHeader(renewed, device.partitioned));
         console.log(`Devices: renewed the cookie of "${device.name}"${device.partitioned ? ' (paired in a frame)' : ''}.`);
       } else if (!device && req.method === 'GET' && req.headers['sec-fetch-dest'] === 'iframe') this.noteFrameUnpaired(req);
+    } else {
+      // A browser's cookie is renewed daily like a computer's, so a copy of it stops working within a day, and a copy
+      // used after that removes the browser (Project-Ledung#482, design #477 section 3).
+      const browser = this.guard.browserOf(req);
+      if (browser) {
+        const renewed = this.devices.renewCookie(browser);
+        if (renewed) {
+          res.setHeader('Set-Cookie', browserCookieHeader(renewed));
+          console.log(`Browsers: renewed the cookie of "${browser.name}".`);
+        }
+        // Moved from #476's sign-ins with no name: named from what it is the first time it is used.
+        if (browser.name === LEGACY_BROWSER_NAME && req.headers['user-agent']) this.devices.rename(browser.id, browserName(req.headers['user-agent']));
+      }
     }
 
     // Pairing a device is the one way in through the public name (docs/steps/relay.md step 4).
@@ -794,7 +879,9 @@ export class LedungServer {
       // The install token never signs in through the public name: a leaked link stays useless from outside.
       if (remote) throw new HttpError(403, 'Sign-in links work only on the computer Ledung runs on. Pair this device from Settings there.');
       if (!this.guard.tokenMatches(url.searchParams.get('token'))) throw new HttpError(403, 'This sign-in link is not valid.');
-      res.writeHead(302, { ...this.headersFor(res), 'Set-Cookie': this.guard.cookieHeader(), Location: '/' });
+      // The launcher opens this link at every start: a browser already signed in keeps its row instead of adding one.
+      const cookie = this.guard.browserOf(req) ? null : this.addBrowser(req);
+      res.writeHead(302, { ...this.headersFor(res), ...(cookie ? { 'Set-Cookie': cookie } : {}), Location: '/' });
       res.end();
       return;
     }
@@ -819,6 +906,10 @@ export class LedungServer {
     if (url.pathname.startsWith('/api/')) {
       if (!this.guard.mayUse(req)) throw new HttpError(401, remote ? NOT_PAIRED : 'Not signed in. Open Ledung through the link it prints when it starts.');
       if (req.method !== 'GET' && !this.guard.originAllowed(req)) throw new HttpError(403, 'Requests must come from Ledung\'s own page.');
+      const read = req.method === 'GET' ? apiRoute('GET', url.pathname) : null;
+      if (read && !PLAIN_READS.has(read) && !this.guard.fromOwnPage(req, SITE_ONLY_READS.has(read))) {
+        throw new HttpError(403, 'Requests must come from Ledung\'s own page.');
+      }
       if (remote && req.method !== 'GET') await this.requireUnlocked(req, url);
       // An image is the one API answer that isn't JSON; errors still are.
       const image = req.method === 'GET' ? /^\/api\/sessions\/([^/]+)\/image$/.exec(url.pathname) : null;
@@ -841,7 +932,16 @@ export class LedungServer {
     }
 
     if (req.method !== 'GET') throw new HttpError(405, 'Method not allowed.');
-    this.serveStatic(url.pathname, res, this.guard.mayUse(req), remote);
+    // A page load still carrying the cookie that was the install token gets a sign-in in its place (Project-Ledung#476).
+    // Only a browser's page document, not each script or picture fetched with it, so one page load makes one sign-in.
+    // A browser without Sec-Fetch-Dest still asks for HTML; a script that asks for none gets no sign-ins to pile up
+    // past MAX_SIGN_INS (code review of PR #234, minor finding).
+    const dest = req.headers['sec-fetch-dest'];
+    const page = dest === undefined ? (req.headers.accept ?? '').includes('text/html') : dest === 'document';
+    if (this.guard.oldTokenCookie(req) && page) {
+      res.setHeader('Set-Cookie', this.addBrowser(req));
+    }
+    await this.serveStatic(url.pathname, req, res, this.guard.mayUse(req), remote);
   }
 
   /**
@@ -1369,28 +1469,40 @@ export class LedungServer {
       .some(({ key, device }) => device === where && key.length === given.length && crypto.timingSafeEqual(Buffer.from(key), Buffer.from(given)));
   }
 
-  /** Locks a device out: its cookie stops working at once and its open pages are closed. */
+  /** Locks a device or browser out: its cookie stops working at once and its open pages are closed. */
   revokeDevice(id: string): boolean {
     const revoked = this.devices.revoke(id);
     this.passkeys?.lock(id);
     this.push?.unsubscribe(id);
-    for (const [ws, { device }] of this.pageKeys) if (device === id) ws.close(1008, 'This device was removed from Ledung.');
+    for (const [ws, { device, browser }] of this.pageKeys) if (device === id || browser === id) ws.close(1008, 'This device was removed from Ledung.');
     return revoked;
+  }
+
+  /** A new browser row for this request's browser (Project-Ledung#482), as the Set-Cookie header that gives it its cookie. */
+  private addBrowser(req: IncomingMessage): string {
+    const { device, cookie, removed } = this.devices.addBrowser(browserName(req.headers['user-agent']));
+    for (const id of removed) this.revokeDevice(id);
+    console.log(`Browsers: "${device.name}" signed in.`);
+    return browserCookieHeader(cookie);
   }
 
   private async api(method: string, url: URL, req: IncomingMessage): Promise<unknown> {
     const { manager, store } = this.opts;
     const parts = url.pathname.split('/').filter(Boolean).slice(1); // after "api"
-    const route = `${method} ${parts.map((p, i) => (i % 2 === 1 ? ':id' : p)).join('/')}`;
+    const route = apiRoute(method, url.pathname);
     const id = parts[1] ?? '';
 
     switch (route) {
       case 'GET state':
         return this.hello(this.guard.isPublic(req));
+      // Every archived session, for an Archived list: hello carries only the recent ones (issue #229).
+      case 'GET archived-sessions':
+        return manager.sessions().filter((s) => s.archivedAt);
       // Paired devices (docs/steps/relay.md step 4): listed, paired and revoked on this computer only.
       case 'GET devices':
         this.requireLocal(req);
-        return { publicName: this.publicName, devices: this.devices.list() };
+        // `here`: the browser asking, so Settings can mark it (Project-Ledung#482).
+        return { publicName: this.publicName, devices: this.devices.list(), here: this.guard.browserOf(req)?.id ?? null };
       case 'POST devices-pair': {
         this.requireLocal(req);
         // A paired device with its passkey can allow sensitive calls, so making one needs the open page (#104):
@@ -1456,6 +1568,13 @@ export class LedungServer {
         this.requireLocal(req);
         if (!this.revokeDevice(decodeURIComponent(id))) throw new HttpError(400, 'No such device.');
         return;
+      // Renaming a browser or phone from this computer's list (Project-Ledung#482), like Remove above.
+      case 'POST devices/:id/rename': {
+        this.requireLocal(req);
+        const body = await readJson(req);
+        if (!this.devices.rename(decodeURIComponent(id), String(body.name ?? ''))) throw new HttpError(400, 'No such device.');
+        return;
+      }
       // This device and its passkey (step 5); locally there is no device and nothing changes.
       case 'GET device': {
         const device = this.guard.deviceOf(req);
@@ -1667,6 +1786,11 @@ export class LedungServer {
       // follows, so from the open page only, as the builder's save.
       case 'POST projects/:id/flow/:id':
       {
+        // workflow-origin.md, section 4: "Not now" on "Record where this came from", from the open page.
+        if (parts[3] === 'dismiss-origin') {
+          this.requireOpenPage(req);
+          return manager.dismissAdoptOrigin(decodeURIComponent(id));
+        }
         if (parts[3] !== 'back-to-shared') throw new HttpError(404, 'Not found.');
         this.requireOpenPage(req);
         // The versions the page read, as a save gives them: a file changed since is never removed unseen (final review, 6).
@@ -1708,6 +1832,12 @@ export class LedungServer {
       case 'POST projects/:id/colours': {
         const body = await readJson(req);
         return manager.setProjectColours(decodeURIComponent(id), { manager: body.manager, sessions: body.sessions });
+      }
+      // An Allow always rule removed (issue #225): it only takes a permission away, so the cookie and Origin of every
+      // change. Rules are only ever added by the person's own answer to a refused call's question, which needs the page.
+      case 'POST projects/:id/allowed-remove': {
+        const body = await readJson(req);
+        return manager.removeAllowedCall(decodeURIComponent(id), Number(body.id));
       }
       // A new name (issue #116): the user's alone, from the open page; no manager tool renames a project.
       case 'POST projects/:id/rename': {
@@ -1844,6 +1974,53 @@ export class LedungServer {
       case 'POST limit': {
         const body = await readJson(req);
         manager.setLimit(Number(body.limit));
+        return;
+      }
+      // Resource limits (docs/steps/resource-limits.md, Security): set only from the open page, never by a session's
+      // tool; acting on a job's processes also needs a signed request through the public name.
+      case 'POST resource-limits': {
+        await this.requirePage(req, url);
+        const body = await readJson(req);
+        manager.setResourceLimit(String(body.dim ?? ''), body.value);
+        return;
+      }
+      // Settings → Questions at a workflow step (#291).
+      case 'GET step-questions':
+        return { choice: manager.stepQuestions() };
+      case 'POST step-questions':
+        await this.requirePage(req, url);
+        return { choice: manager.setStepQuestions((await readJson(req)).choice) };
+      case 'POST resource-settings': {
+        await this.requirePage(req, url);
+        manager.setResourceSettings(await readJson(req));
+        return;
+      }
+      case 'POST resource-line/:id/start-now':
+        await this.requirePage(req, url);
+        manager.resourceStartNow(id);
+        return;
+      case 'POST jobs/:id/pause': {
+        await this.requireSignedPage(req, url);
+        const body = await readJson(req);
+        await manager.pauseJob(id, body.paused !== false);
+        return;
+      }
+      case 'POST jobs/:id/stop':
+        await this.requireSignedPage(req, url);
+        await manager.stopJob(id);
+        return;
+      case 'GET job-kinds':
+        return { kinds: manager.jobKinds(), commands: manager.heavyCommands() };
+      case 'POST job-kinds-forget': {
+        await this.requirePage(req, url);
+        const body = await readJson(req);
+        manager.forgetJobKind(String(body.project ?? ''), String(body.kind ?? ''));
+        return;
+      }
+      case 'POST heavy-commands-mark': {
+        await this.requirePage(req, url);
+        const body = await readJson(req);
+        manager.markCommand(String(body.project ?? ''), String(body.command ?? ''), body.never !== false);
         return;
       }
       case 'POST sessions/:id/priority': {
@@ -2264,7 +2441,7 @@ export class LedungServer {
     return this.opts.updater;
   }
 
-  private serveStatic(pathname: string, res: ServerResponse, signedIn: boolean, remote: boolean): void {
+  private async serveStatic(pathname: string, req: IncomingMessage, res: ServerResponse, signedIn: boolean, remote: boolean): Promise<void> {
     const root = path.resolve(this.webRoot);
     let file = path.resolve(root, '.' + decodeURIComponent(pathname));
     if (!file.startsWith(root + path.sep) && file !== root) throw new HttpError(404, 'Not found.');
@@ -2279,7 +2456,23 @@ export class LedungServer {
       if (!fs.existsSync(file)) throw new HttpError(500, 'The page has not been built. Run "npm run build".');
     }
     const type = CONTENT_TYPES[path.extname(file).toLowerCase()] ?? 'application/octet-stream';
-    res.writeHead(200, { ...this.headersFor(res), 'Content-Type': type });
+    // Issue #229: hashed assets are kept by the browser for good; everything else stays no-store, as the headers say.
+    const headers: Record<string, string | number> = {
+      ...this.headersFor(res),
+      'Content-Type': type,
+      ...(isHashedAsset(root, file) ? { 'Cache-Control': IMMUTABLE } : {}),
+    };
+    if (compressible(file)) {
+      headers.Vary = 'Accept-Encoding';
+      const encoding = pickEncoding(req.headers['accept-encoding']);
+      if (encoding) {
+        const bytes = await this.packedFiles.get(file, encoding);
+        res.writeHead(200, { ...headers, 'Content-Encoding': encoding, 'Content-Length': bytes.length });
+        res.end(bytes);
+        return;
+      }
+    }
+    res.writeHead(200, headers);
     fs.createReadStream(file).pipe(res);
   }
 

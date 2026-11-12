@@ -1,5 +1,6 @@
 // The line above the message box that says whether the session is working, waiting for Simon, or done.
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useMemo, type ReactNode } from 'react';
+import { useNow } from '../clock.ts';
 import type { SessionInfo, StoredMessage } from '../../../src/shared/protocol.ts';
 import { toolSummary } from './ToolPreview.tsx';
 import { formatTime } from './MessageList.tsx';
@@ -56,21 +57,21 @@ export function endedWithError(session: SessionInfo): boolean {
   return session.status === 'ended' && /exited with code [1-9]|stopped unexpectedly/.test(session.endReason ?? '');
 }
 
-/** extra: drawn at the bar's right end, the session's macro chips (issue #410). */
-/** plain: the session's tools said in plain words (the Ledung Helper's, acceptance round 1 check 16). */
-export function WorkingIndicator({ session, sessions, messages, extra, plain }: { session: SessionInfo; sessions: SessionInfo[]; messages: StoredMessage[]; extra?: ReactNode; plain?: (tool: string) => string }) {
+/**
+ * children: the sessions it started. extra: drawn at the bar's right end, the session's macro chips (issue #410).
+ * waitingToStart: a new session waiting for memory to start (resource limits), the reason, shown in place of "Ready".
+ * plain: the session's tools said in plain words (the Ledung Helper's, acceptance round 1 check 16).
+ */
+export function WorkingIndicator({ session, children, messages, extra, waitingToStart, plain }: {
+  session: SessionInfo; children: readonly SessionInfo[]; messages: StoredMessage[]; extra?: ReactNode; waitingToStart?: string | null; plain?: (tool: string) => string;
+}) {
   const activity = useMemo(() => currentActivity(messages, !!session.uac, plain), [messages, session.uac]);
-  const [now, setNow] = useState(Date.now());
   // 'starting' waits for its first message: not working (#97).
   const active = session.status === 'running' || session.status === 'stopping';
-  const childrenWorking = sessions.filter((s) => s.parentId === session.id && s.status === 'running').length;
-  const mode = shipMode(session, sessions);
-
-  useEffect(() => {
-    if (!active) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [active]);
+  // The seconds of the turn, from the page's shared clock (issue #233).
+  const now = useNow(1000, active);
+  const childrenWorking = children.filter((s) => s.status === 'running').length;
+  const mode = shipMode(session, children);
 
   // One element for every state, so the ship keeps its place and can animate from one state to the next.
   let kind: string;
@@ -89,6 +90,9 @@ export function WorkingIndicator({ session, sessions, messages, extra, plain }: 
         {session.status === 'running' && activity.since && <span className="muted"> · {elapsed(now - activity.since)}</span>}
       </>
     );
+  } else if (session.status === 'starting' && waitingToStart) {
+    kind = 'waiting';
+    content = <span className="working-label">Waiting to start: {waitingToStart}. A message you send now goes in once it starts.</span>;
   } else if (session.status === 'starting') {
     kind = 'done';
     content = <span className="working-label">Ready</span>;

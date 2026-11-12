@@ -54,6 +54,8 @@ export const LEDUNG_GROUPS: SettingsGroup[] = [
     settings: [
       { label: 'Skills', about: 'Which of your own skills managers and sessions get', keywords: ['skill', 'plugins', 'commands'] },
       { label: 'Session profiles', storedIn: 'config', about: 'Sets of tools and settings sessions start with', keywords: ['profile', 'tools', 'mcp'] },
+      // Issue #291: Ledung's card or the manager's full write-up.
+      { label: 'Questions at a workflow step', about: "Who writes the question when a run reaches a step where you decide: Ledung's card or the manager", keywords: ['workflow', 'run', 'question', 'write-up', 'merge', 'review', 'card', 'manager'] },
     ],
   },
   {
@@ -76,6 +78,8 @@ export const LEDUNG_GROUPS: SettingsGroup[] = [
       { label: 'Computers', about: "This computer's name and colour, and the others Ledung knows", keywords: ['machine', 'colour', 'color', 'name'] },
       { label: 'Remote access', about: 'Reach this Ledung from your phone, anywhere, through a relay', keywords: ['phone', 'mobile', 'tunnel', 'internet', 'away'] },
       { label: 'Phones', about: 'Phones that may open this Ledung', keywords: ['phone', 'mobile', 'device', 'pair'] },
+      // The browsers signed in here (Project-Ledung#482), listed above the phones under Browsers and phones.
+      { label: 'Browsers', about: 'Browsers signed in to this Ledung: rename or remove them', keywords: ['browser', 'sign-in', 'signed in', 'sign out', 'cookie'] },
       { label: 'Linked computers', about: 'Link this Ledung with another of yours', keywords: ['link', 'machine', 'pair', 'device'] },
       { label: 'Relay', about: 'Run a relay for other people', keywords: ['server', 'host', 'tunnel'] },
       { label: 'Message board', about: 'Managers post to each other on a shared board', keywords: ['board', 'posts', 'messages'] },

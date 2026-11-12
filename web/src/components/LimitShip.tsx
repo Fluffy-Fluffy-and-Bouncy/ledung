@@ -4,7 +4,9 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { BAR_WIDTHS, WRECK, barArriving, barLeaving, barScene, barValue, barX, damageStage, render, type Hull, type Mark, type Scene } from './shipFrames.ts';
 import { useShipSize } from './SailingShip.tsx';
+import { onTick } from '../clock.ts';
 import { shownPercent } from '../../../src/shared/usage-stop-text.ts';
+import { stripWidth } from '../usage/meterLine.ts';
 
 const STEP_MS = 180;
 
@@ -38,40 +40,57 @@ function charWidth(el: Element, size: number): number {
   return canvas.measureText('~'.repeat(50)).width / 50;
 }
 
-type Motion = { mode: 'leaving' | 'arriving' | null; x: number; stage: number; shown: number; at: number };
+type Motion = { mode: 'leaving' | 'arriving' | null; x: number; stage: number; shown: number; at: number; width: number };
 
-/** utilization: 0–1. hull: the ship, or a fleet's smaller boat. The strip takes the widest width that fits its box. */
-export function LimitShip({ utilization, label, hull = 'ship' }: { utilization: number; label: string; hull?: Hull }) {
+/**
+ * utilization: 0–1. hull: the ship, or a fleet's smaller boat. The strip takes the widest width that fits its box.
+ * `side` px beside it (the forecast, issue #284): `onSide` says whether the strip could leave that much and keep its
+ * figure, whether or not it is asked to; `useSide` asks it to.
+ */
+export function LimitShip({ utilization, label, hull = 'ship', side = 0, useSide = false, onSide }: { utilization: number; label: string; hull?: Hull; side?: number; useSide?: boolean; onSide?: (fits: boolean) => void }) {
   const { size, next, step: stepSize } = useShipSize('ledung.limitShipSize', 5);
   const box = useRef<HTMLButtonElement>(null);
   const [width, setWidth] = useState(BAR_WIDTHS.at(-1)!);
   const still = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
   const [step, setStep] = useState(0);
+  const figure = `${shownPercent(utilization)}%`;
 
   useLayoutEffect(() => {
     const el = box.current?.parentElement;
     if (!el || !box.current) return;
     const fit = () => {
       const cw = charWidth(box.current!, size);
-      setWidth(BAR_WIDTHS.find((w) => w * cw <= el.clientWidth) ?? BAR_WIDTHS.at(-1)!);
+      const figureAt = (cols: number) => barScene(cols, 0, barX(barValue(utilization * 100, cols, hull), cols, hull), figure, hull).number.length > 0;
+      const full = stripWidth({ widths: BAR_WIDTHS, charPx: cw, boxPx: el.clientWidth, roomPx: 0, figureAt });
+      const s = side > 0 ? stripWidth({ widths: BAR_WIDTHS, charPx: cw, boxPx: el.clientWidth, roomPx: side, figureAt }) : full;
+      // Reported apart from whether it is used, so the caller's choice never feeds back into the answer.
+      if (side > 0) onSide?.(s.roomMade);
+      setWidth(useSide && s.roomMade ? s.cols : full.cols);
     };
     fit();
     const ro = new ResizeObserver(fit);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [size]);
+    // onSide is the caller's setter; the figure is what can appear or vanish with the width.
+  }, [size, side, useSide, figure, hull]);
 
   const shown = barValue(utilization * 100, width, hull);
   const motion = useRef<Motion | null>(null);
-  const m = motion.current ?? (motion.current = { mode: null, x: barX(shown, width, hull), stage: damageStage(shown), shown, at: -1 });
+  const m = motion.current ?? (motion.current = { mode: null, x: barX(shown, width, hull), stage: damageStage(shown), shown, at: -1, width });
+  // A narrower strip steps the same usage to a lower value: that is no reset, so the ship stays (issue #284, where
+  // making room for the forecast narrows it).
+  if (m.width !== width) {
+    m.width = width;
+    if (m.mode === null) m.shown = shown;
+  }
   // Usage only goes down when the window resets: the old ship leaves and a new one comes.
   if (m.mode === null && shown < m.shown && !still) m.mode = 'leaving';
   if (m.mode === null) m.shown = shown;
 
   useEffect(() => {
     if (still) return;
-    const timer = setInterval(() => setStep((s) => s + 1), STEP_MS);
-    return () => clearInterval(timer);
+    // The page's shared clock (issue #233), not a timer of its own.
+    return onTick(STEP_MS, () => setStep((s) => s + 1));
   }, [still]);
 
   // Move one frame: fast off to the left on a reset, then in from the edge; otherwise a column every other frame toward the value.

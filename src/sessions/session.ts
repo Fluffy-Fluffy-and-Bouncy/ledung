@@ -23,7 +23,7 @@ import {
   buildDelivery, CLEAR_NOTE_SOURCE, COMPACT_ALERT_MINUTES, compactCommand, compactRequester, isClear, isCompact, parseClear, promptContextLine,
   type CompactOutcome, type Management, type ShotInput,
 } from './management.ts';
-import { mergeAnswered, routePermission, sensitiveHookOutput, type SensitiveRules } from './sensitive.ts';
+import { matchSensitive, mergeAnswered, pinMergeRepo, routePermission, sensitiveHookOutput, type SensitiveRules } from './sensitive.ts';
 import { promptTimeLine } from './elapsed.ts';
 import { settingsAction, wordsFor, type Word } from './word.ts';
 import { promptAwayLine, classify, CLASSIFIER_REFUSED, decide as awayDecide, KIND_NAMES, mergeWithoutReview, FLOOR_TIMEOUT_MS, formatLog, orderedMergeFloors, type Away, type AwayDecision, type Floor, type ViewPr } from './away.ts';
@@ -31,19 +31,20 @@ import type { AwayInfo } from '../shared/protocol.ts';
 import { deskQuestion, questionText, type QuestionDetails } from '../shared/questions.ts';
 import { compactionUsage, contextAfterCompact, UsageRecorder, type SessionFacts } from '../usage/recorder.ts';
 import { findTickets } from '../usage/links.ts';
-import type { PullRequestPoller } from './pr-poll.ts';
+import { projectRepo, type PullRequestPoller } from './pr-poll.ts';
 import { helperToolServer, type HelperHandlers } from './helper-tools.ts';
 import { helperInstructions, helperSkillAllowed } from './helper.ts';
 import { CONTEXT_TOOLS, instructions, LEDUNG_SERVER, LEDUNG_TOOLS, ledungToolServer, MCP_LIMIT_ENV, mcpLimitFor, BASICS_TOOLS, LEDUNG_SETTING_TOOLS, SETTINGS_CHANGE_RULE, SETTINGS_CHANGE_TOOLS, SETTINGS_TOOLS, USAGE_PUBLISH_TOOLS, USER_APPROVED_TOOLS, type BoardHandlers, type ManagerHandlers, type ProposeHandlers, type RunHandlers, type ToolHandlers } from './tools.ts';
 import type { Boards } from '../board/boards.ts';
-import { commandKinds } from '../resources/commands.ts';
+import { commandKinds, heavyKinds } from '../resources/commands.ts';
+import { RESOURCE_SOURCE, type ReserveArgs } from '../resources/book.ts';
 import { FRESH_FACTS, pauseReason, type IdleState } from './idle.ts';
 import { skillsFromFiles, skillsOff, withSkillsOff, type SkillChoices } from './skills.ts';
 import { needsPluginIds, parseSettingsFile, pluginIdsIn, profileOptions, settingsFilePath, type Profile } from './profiles.ts';
 import { workflowInstructions, type ProjectWorkflow } from './workflow.ts';
 import { workflowLines } from './flow-files.ts';
 import { promptNudges } from './workflow-nudges.ts';
-import { sessionStartText } from './start-reading.ts';
+import { readInsideProject, readStartReadingFile, sessionStartText } from './start-reading.ts';
 import { RemoteControl } from './remote-control.ts';
 import { McpError, mcpServers, reconnectMcp } from './mcp.ts';
 import { boundarySettings, withBoundary } from './boundary.ts';
@@ -60,7 +61,7 @@ import { attachSources, type SourceContext } from './sources.ts';
 import type { SessionRole, ShellBlock } from '../shared/protocol.ts';
 import { effortLevel, type EffortLevel } from '../shared/protocol.ts';
 import { exercisedLine } from '../platform/exercised.ts';
-import { classifierReason, guardedWrite, ONCE_ACTION, ONCE_GRANT_MS, onceGrant, refusalOf, refusalQuestion, sameCall } from './refusals.ts';
+import { alwaysOffer, classifierReason, guardedWrite, ONCE_ACTION, ONCE_GRANT_MS, onceGrant, refusalOf, refusalQuestion, sameCall } from './refusals.ts';
 import { orderNote, type Orders } from './orders.ts';
 import type { ChatImages, ImageBlock } from './chat-images.ts';
 import { heldImageNames, heldText } from '../store/store.ts';
@@ -130,15 +131,32 @@ export interface TurnGate {
   /** May this session start a turn now? If not, it waits in line (status 'queued'). */
   mayStart(id: string): boolean;
   /** A turn started or ended: for measuring, and to let the next in line start. */
-  started(id: string, trigger: string): void;
-  ended(id: string, commands: string[]): void;
+  started(id: string, trigger: string, at?: number): void;
+  /** waits: the spans a tool call waited on a pause or a usage stop, which are not work (issue #254). */
+  ended(id: string, commands: string[], waits?: [number, number][]): void;
   /** The usage stop holding this session's account (issue #278): no new turn starts, as when paused. */
   usageHold?(id: string): UsageStopInfo | undefined;
   /** A session stopped counting as working without ending its turn (held at a tool call): the line may move. */
   freed?(): void;
   /** Every usage stop and where it stands, for a manager's prompt line. */
   usageStops?(): UsageStopInfo[];
+  /** Resource limits (docs/steps/resource-limits.md): the reserve and release tools, for this session only. */
+  reserve?(id: string, args: ReserveArgs): string;
+  release?(id: string): string;
+  /** This PC's thread count and its GPUs' names, for reserve's description. */
+  resourceFacts?(): { threads: number; gpus: string[] };
+  /** A job of this session is over its share: no new turn from others, no new reservation (open choice 1). */
+  resourceHeld?(id: string): boolean;
+  /** The command kinds a Bash call runs; the reason to refuse it (a known heavy command with no reservation), or null. */
+  commandCheck?(id: string, kinds: string[]): string | null;
+  /** The command kinds of a shell call that ran long or in the background, for learning what is heavy. */
+  noteCommands?(id: string, kinds: string[]): void;
 }
+
+/** The tools that run shell commands, for the heavy-command check. */
+const SHELL_TOOLS = ['Bash', 'PowerShell', 'Monitor'];
+/** A shell call shorter than this can't be heavy work under the default settings (a minute over its share). */
+const LONG_CALL_MS = 10_000;
 
 export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
   default: 'Ask',
@@ -407,6 +425,10 @@ export class Session {
   private fileSettings: Record<string, unknown> | undefined;
   /** A turn is under way (between its start and its result). */
   private turnOpen = false;
+  /** This turn's spans waiting on a pause or a usage stop (issue #254). */
+  private turnWaits: [number, number][] = [];
+  /** A turn under way when Ledung restarted: when it began, for the turn record (issue #254, review of PR #260, finding 2). */
+  private resumedTurnAt: number | null = null;
   /** The kinds of command run this turn (step 6c). */
   private turnCommands: string[] = [];
   /** The usage stop window this session last said it is held for, so it says so once (issue #278). */
@@ -415,6 +437,20 @@ export class Session {
   private heldWaiters: (() => void)[] = [];
   /** When the current turn began, whoever started it; null between turns. */
   private turnStartedAt: number | null = null;
+  /** Shell calls under way with their command kinds (resource limits): noted for learning if they ran long. */
+  private readonly longCalls = new Map<string, { at: number; kinds: string[] }>();
+
+  /** A shell call ended: one that ran 10 s or more may have been the heavy work, and its kinds are noted. */
+  private longCallEnded(toolUseId: string | undefined): void {
+    const call = toolUseId ? this.longCalls.get(toolUseId) : undefined;
+    if (!call) return;
+    this.longCalls.delete(toolUseId!);
+    if (Date.now() - call.at >= LONG_CALL_MS) this.gate.noteCommands?.(this.id, call.kinds);
+  }
+
+  /** A new session waiting for memory to start (resource limits): messages sent to it are held until it runs. */
+  waitingToStart = false;
+
   /** Tool calls waiting while the session is paused. */
   private pauseWaiters: (() => void)[] = [];
   private readonly remote: RemoteControl | null;
@@ -467,7 +503,13 @@ export class Session {
     this.images = opts.images ?? null;
     if (this.attachTo) this.secrets?.attached();
     // Mid-turn when Ledung restarted: that turn began before any stop it now sees, so it finishes (review 2 of #278, finding 3).
-    if (opts.info.status === 'running' || opts.info.status === 'waiting') this.turnStartedAt = 0;
+    if (opts.info.status === 'running' || opts.info.status === 'waiting') {
+      this.turnStartedAt = 0;
+      // Its record goes on from when it really began, not from the first message after the restart. If the turn ended
+      // while Ledung was down, the replay ends it on arrival, so its record also counts that downtime: the seconds of a
+      // restart, accepted (review of PR #260, finding 2).
+      if (opts.attachTo) this.resumedTurnAt = opts.store.turnStart(opts.info.id);
+    }
     this.userName = opts.userName;
     this.management = opts.management;
     this.grant = opts.grant;
@@ -534,6 +576,7 @@ export class Session {
       decidePermission: (request, behavior, scope, message) => m.decidePermission(id, request, behavior, scope, message),
       listPermissions: () => m.listPermissions(id),
       machineStatus: () => m.machineStatus(id),
+      workHistory: (days, limit) => m.workHistory(id, days, limit),
       setPriority: (sid, priority, q) => m.setPriority(id, sid, priority, q),
       setPaused: (sid, paused) => m.setPaused(id, sid, paused),
       mcpStatus: (sid) => m.mcpStatus(id, sid),
@@ -704,27 +747,38 @@ export class Session {
    * A manager's `gh pr merge N` that the user already said yes to, as an answer to one of its own questions
    * about #N in the last two days: allowed without asking again, recorded with the question (decided
    * 2026-10-13; agent-manager's gate did the same with the owner's word in the lead pane). Not a subagent's call
-   * (issue #150). Null: as before.
+   * (issue #150). Only a merge in the project's own repository (Project-Ledung#475, pinMergeRepo). Null: as before.
    */
-  private mergeOnAnswer(toolName: string, input: Record<string, unknown>, toolUseId: string | undefined, agentId: unknown): Record<string, unknown> | null {
+  private async mergeOnAnswer(toolName: string, input: Record<string, unknown>, toolUseId: string | undefined, agentId: unknown): Promise<Record<string, unknown> | null> {
     if (toolName !== 'Bash' || typeof input.command !== 'string') return null;
     if (this.store.getSession(this.id)?.role !== 'manager') return null;
     const since = Date.now() - 2 * 24 * 3600 * 1000;
-    const own = this.store.listQuestions(500, false).filter((q) => q.sessionId === this.id && (q.answeredAt ?? 0) > since);
+    // Only this session's answers and typed words since then, read by a query with those conditions (issue #232).
+    // A withdrawn question has no answer and no answerer, so the answered ones are all mergeAnswered can use.
+    const own = this.store.answeredSince(this.id, since);
     // The user's own words typed into the manager count as well, as the lead pane did in agent-manager:
     // a stored user message without `from` is theirs; Ledung's deliveries carry from: 'ledung'. Ids < 0.
-    const typed = this.store.listMessages(this.id, { limit: 400 })
-      .filter((m) => m.kind === 'user' && !m.data.from && typeof m.data.text === 'string' && m.at > since)
+    // Only words typed on this computer, as for settings words (settingsOnWord; Project-Ledung#475).
+    const typed = this.store.userMessagesSince(this.id, since)
+      .filter((m) => !m.data.from && m.data.here === true && typeof m.data.text === 'string')
       .map((m, k) => ({ id: -(k + 1), question: m.data.text as string, answer: m.data.text as string, answeredBy: 'user', typed: true, at: m.at }));
     const hit = mergeAnswered(input.command, this.sensitiveRules, [...own, ...typed]);
     if (!hit || subagentCall(agentId, 'merge on an answer')) return null;
+    // The word names a PR of this project: the merge must be in its repository, read from its git remote.
+    const state = await Promise.resolve(this.runner.gitState?.()).catch(() => null);
+    const shellAt = toolUseId ? this.shellFolders.get(toolUseId) : undefined;
+    const inProject = shellAt !== undefined && (await shellFolderInside(this.runner.cwd, shellAt)) !== null;
+    const command = pinMergeRepo(input.command, state ? projectRepo(state) : null, inProject);
+    if (command === null) return null;
     const said = hit.questionId < 0
       ? `in what they typed at ${new Date(typed[-hit.questionId - 1]!.at).toLocaleTimeString()}`
       : `in their answer to question #${hit.questionId}`;
     const why = `${this.userName} said yes to merging #${hit.pr} ${said}`;
     this.record('event', { text: `Merge of #${hit.pr} allowed: ${why}.` });
     this.allowedBy.answered(toolUseId, why);
-    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: `Allowed by Ledung: ${why}.` } };
+    // A merge that named no repository runs pinned to the project's (pinMergeRepo).
+    const pinned = command === input.command ? {} : { updatedInput: { ...input, command } };
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: `Allowed by Ledung: ${why}.`, ...pinned } };
   }
 
   /**
@@ -740,8 +794,9 @@ export class Session {
     if (!action || this.store.getSession(this.id)?.role !== 'manager') return null;
     const since = Date.now() - 2 * 24 * 3600 * 1000;
     const said = new Map<string, string>();
-    const answers: Word[] = this.store.listQuestions(500, false)
-      .filter((q) => q.sessionId === this.id && q.answeredBy === 'user' && q.answer !== null && (q.answeredAt ?? 0) > since
+    // Only this session's answers and typed words since then, by a query with those conditions (issue #232).
+    const answers: Word[] = this.store.answeredSince(this.id, since)
+      .filter((q) => q.answeredBy === 'user' && q.answer !== null
         && !q.aboutRequest && !q.forwardedFrom && this.store.answeredHere(q.id))
       .map((q) => {
         said.set(`q${q.id}`, `in their answer to question #${q.id}`);
@@ -749,8 +804,8 @@ export class Session {
         // question's prose and the manager's recommendation never do (lead's review, rounds 3 and 4).
         return { key: `q${q.id}`, text: q.answer!, ask: { options: deskQuestion(q).options } };
       });
-    const typed: Word[] = this.store.listMessages(this.id, { limit: 400 })
-      .filter((m) => m.kind === 'user' && !m.data.from && m.data.here === true && typeof m.data.text === 'string' && m.at > since)
+    const typed: Word[] = this.store.userMessagesSince(this.id, since)
+      .filter((m) => !m.data.from && m.data.here === true && typeof m.data.text === 'string')
       .map((m) => {
         said.set(`m${m.id}`, `in what they typed at ${new Date(m.at).toLocaleTimeString()}`);
         return { key: `m${m.id}`, text: m.data.text as string };
@@ -788,6 +843,31 @@ export class Session {
     // settings files. If it does, raiseRefusal tells the person instead of offering Allow once again (Project-Ledung#470).
     if (toolUseId) {
       this.onceUsedBy.set(toolUseId, q.id);
+      if (this.onceUsedBy.size > 300) this.onceUsedBy.delete(this.onceUsedBy.keys().next().value!);
+    }
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: `Allowed by Ledung: ${why}.` } };
+  }
+
+  /**
+   * A command the person allowed always after the classifier refused it (issue #225): a rule of this session's
+   * project for exactly this command, read at each call, so a rule added or removed counts at once in running sessions
+   * too. An `allow` here gets past the classifier, as onceOnTap's does. A command on the sensitive list now is let
+   * through only when the person allowed it with the sensitive button; otherwise it goes on to the sensitive check.
+   * A subagent's identical call is covered too, as a Claude Code allow rule in the project's settings would be.
+   */
+  private alwaysOnRule(toolName: string, input: Record<string, unknown>, toolUseId: string | undefined): Record<string, unknown> | null {
+    if ((toolName !== 'Bash' && toolName !== 'PowerShell') || typeof input.command !== 'string') return null;
+    const project = this.store.getSession(this.id)?.project;
+    const rule = project === undefined ? null : this.store.allowedCall(project, toolName, input.command);
+    if (!rule) return null;
+    // A list that can't be read counts as sensitive: it asks (sensitiveHookOutput).
+    if (!rule.sensitive && 'hookSpecificOutput' in sensitiveHookOutput(toolName, input, this.sensitiveRules, this.alwaysAsked)) return null;
+    const why = `${rule.allowedBy} allowed this exact command always in project ${rule.project}, at ${new Date(rule.createdAt).toLocaleString()}, in their answer to question #${rule.questionId}`;
+    this.record('event', { text: `Refused call allowed always: ${why}.` });
+    this.allowedBy.alwaysAllowed(toolUseId, why);
+    // Should Claude Code refuse it anyway (its own safety checks come first), raiseRefusal asks for it by hand.
+    if (toolUseId) {
+      this.onceUsedBy.set(toolUseId, rule.questionId);
       if (this.onceUsedBy.size > 300) this.onceUsedBy.delete(this.onceUsedBy.keys().next().value!);
     }
     return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: `Allowed by Ledung: ${why}.` } };
@@ -946,7 +1026,8 @@ export class Session {
   private raiseRefusal(toolUseId: string, reason: string, byAgent = false): void {
     const call = this.toolCalls.get(toolUseId);
     if (!call) return;
-    const mine = this.store.listQuestions(500, false).filter((q) => q.sessionId === this.id && refusalOf(q));
+    // This session's refusal questions only, by a query (issue #232), not the newest 500 of every session.
+    const mine = this.store.refusalQuestions(this.id).filter((q) => refusalOf(q));
     if (mine.some((q) => refusalOf(q)!.toolUseId === toolUseId)) return;
     const retryOf = this.onceUsedBy.get(toolUseId);
     // The grant's note never reaches the session: the call it was for didn't run.
@@ -958,7 +1039,18 @@ export class Session {
     }
     const byHand = retryOf !== undefined ? 'retried' as const : guardedWrite(call.toolName, call.input) ? 'protected' as const : null;
     const info = this.store.getSession(this.id)!;
-    const refusal = { ...call, reason, toolUseId, ...(byAgent ? { byAgent } : {}), ...(byHand ? { byHand } : {}), ...(retryOf !== undefined ? { retryOf } : {}) };
+    // Allow always (issue #225): for a shell command Allow once could lift; its own button when the command is sensitive.
+    let sensitiveRule: string | null;
+    try {
+      sensitiveRule = matchSensitive(call.toolName, call.input, this.sensitiveRules, this.alwaysAsked)?.rule ?? null;
+    } catch {
+      sensitiveRule = 'a list Ledung could not check';
+    }
+    const always = alwaysOffer(call.toolName, call.input, byHand !== null, sensitiveRule);
+    const refusal = {
+      ...call, reason, toolUseId, ...(byAgent ? { byAgent } : {}), ...(byHand ? { byHand } : {}), ...(retryOf !== undefined ? { retryOf } : {}),
+      ...(always ? { always } : {}), ...(always === 'sensitive' && sensitiveRule ? { sensitiveRule } : {}),
+    };
     const asked = refusalQuestion(refusal, { title: info.title, project: info.project }, this.management.questionTiers(this.id)[0]);
     const q = this.store.createQuestion({ sessionId: this.id, question: asked.question, options: asked.options, addressedTo: 'user', details: asked.details });
     if (byHand) {
@@ -1148,6 +1240,12 @@ export class Session {
         compact: (note, then) => this.management.compactSelf(this.id, note, then),
         clear: (file, then, seconds) => this.management.clearSelf(this.id, file, then, seconds),
       },
+      // Resource limits: sessions on this computer reserve their heavy work; a session reserves only for itself.
+      resources: role !== 'manager' && this.store.getSession(this.id)!.runner === 'local' && this.gate.reserve && this.gate.release ? {
+        reserve: (args) => this.gate.reserve!(this.id, args),
+        release: () => this.gate.release!(this.id),
+        ...(this.gate.resourceFacts?.() ?? { threads: 0, gpus: [] }),
+      } : undefined,
     };
     // Level B's own temp folder; a reattached session already runs with it.
     const tmp = this.airgap?.sandbox ? this.airgapTmp ?? airgapTempFolder(this.id) : null;
@@ -1205,10 +1303,28 @@ export class Session {
         // never see them. "Ask" sends a match to onPermission, in every mode.
         PreToolUse: [{ timeout: 7 * 24 * 3600, hooks: [async (input, toolUseId) => {
           this.noteEffort(input as { agent_id?: string; effort?: { level?: unknown } });
+          const waitFrom = Date.now();
           await this.whilePaused();
           await this.whileHeld();
+          // A pause or a usage stop is no work: work_history leaves the span out (issue #254, review of PR #260, finding 1).
+          if (Date.now() - waitFrom >= 1000) this.turnWaits.push([waitFrom, Date.now()]);
           const i = input as { tool_name?: string; tool_input?: unknown };
           const toolName = i.tool_name ?? '';
+          // Resource limits: a known heavy command needs a reservation, and none while held (docs/steps/resource-limits.md).
+          if (SHELL_TOOLS.includes(toolName) && this.gate.commandCheck) {
+            const input = (i.tool_input ?? {}) as { command?: unknown; run_in_background?: unknown };
+            const kinds = heavyKinds(String(input.command ?? ''));
+            const why = this.gate.commandCheck(this.id, kinds);
+            if (why) return { hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'deny' as const, permissionDecisionReason: why } };
+            // Only a call that runs long or in the background can be the heavy work: it is noted when it has (finding 7).
+            if (kinds.length && toolUseId) {
+              if (input.run_in_background === true || toolName === 'Monitor') this.gate.noteCommands?.(this.id, kinds);
+              else {
+                this.longCalls.set(toolUseId, { at: Date.now(), kinds });
+                if (this.longCalls.size > 100) this.longCalls.delete(this.longCalls.keys().next().value!);
+              }
+            }
+          }
           // Compacting or clearing is for the main session only, never a subagent (decided 2026-10-13).
           if (CONTEXT_TOOLS.includes(toolName) && (input as { agent_id?: string }).agent_id) {
             return { hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'deny' as const, permissionDecisionReason: 'Only the main session can compact or clear, not a subagent.' } };
@@ -1235,12 +1351,14 @@ export class Session {
           }
           // A subagent's call: every grant on the person's word below is the session's own (issues #146, #150).
           const agentId = (input as { agent_id?: string }).agent_id;
-          const merge = this.mergeOnAnswer(toolName, toolInput, toolUseId, agentId);
+          const merge = await this.mergeOnAnswer(toolName, toolInput, toolUseId, agentId);
           if (merge) return merge;
           const named = this.settingsOnWord(toolName, toolInput, toolUseId, agentId);
           if (named) return named;
           const once = this.onceOnTap(toolName, toolInput, toolUseId, agentId);
           if (once) return once;
+          const always = this.alwaysOnRule(toolName, toolInput, toolUseId);
+          if (always) return always;
           const ordered = await this.onOrder(toolName, toolInput, toolUseId, agentId);
           if (ordered) return ordered;
           const awayMerge = await this.awayMergeHook(toolName, toolInput, toolUseId, agentId);
@@ -1251,6 +1369,7 @@ export class Session {
         // failed was allowed all the same, and without its note would read as allowed by the session's mode.
         PostToolUse: [{ hooks: [async (input) => {
           this.orderRunEnded((input as { tool_use_id?: string }).tool_use_id, true, null);
+          this.longCallEnded((input as { tool_use_id?: string }).tool_use_id);
           // And, after a Ledung call, that its Ledung tools are old (issue #164).
           const note = joinNotes(this.allowedBy.take((input as { tool_use_id?: string }).tool_use_id), this.staleToolsNote((input as { tool_name?: string }).tool_name));
           return note === undefined ? {} : { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: note } };
@@ -1258,6 +1377,7 @@ export class Session {
         PostToolUseFailure: [{ hooks: [async (input) => {
           const failed = input as { tool_use_id?: string; tool_name?: string; error?: unknown };
           this.orderRunEnded(failed.tool_use_id, false, typeof failed.error === 'string' ? failed.error : null);
+          this.longCallEnded(failed.tool_use_id);
           // A refused new parameter is the likeliest way old tools show (issue #164's evidence), so here too.
           const note = joinNotes(this.allowedBy.take(failed.tool_use_id), this.staleToolsNote(failed.tool_name));
           return note === undefined ? {} : { hookSpecificOutput: { hookEventName: 'PostToolUseFailure' as const, additionalContext: note } };
@@ -1339,7 +1459,8 @@ export class Session {
     try {
       const sr = this.workflow?.startReading;
       if (!sr) return null;
-      const text = await sessionStartText(sr, this.store.getSession(this.id), (file) => this.readForStart(file, sr.local));
+      // The list file only from inside the workflow's folder, by its real path (audit L17).
+      const text = await sessionStartText(sr, this.store.getSession(this.id), (file) => this.readForStart(file, sr.local, sr.projectFolder), readStartReadingFile);
       return text;
     } catch (e) {
       console.error(`Start-reading list for session ${this.id}: ${(e as Error).message}`);
@@ -1347,9 +1468,13 @@ export class Session {
     }
   }
 
-  /** A project file for the start-reading list (#469), as the session sees it: on this computer read here, in a container through the runner. */
-  private readForStart(file: string, local: boolean): Promise<string | null> {
-    if (local) return fs.promises.readFile(file, 'utf8').catch(() => null);
+  /**
+   * A project file for the start-reading list (#469), as the session sees it. On this computer read here by its real
+   * path, refused when a link leads out of the project folder (audit L17); in a container through the runner, inside
+   * the container, where the session can read the same files itself.
+   */
+  private readForStart(file: string, local: boolean, projectFolder: string): Promise<string | null> {
+    if (local) return readInsideProject(projectFolder, file);
     return this.runner.readProjectFile(path.posix.relative(this.runner.cwd, file));
   }
 
@@ -1797,7 +1922,8 @@ export class Session {
     const attached = !!sources?.some((s) => !('error' in s));
     const earlier = attached ? null : conversationBefore(this.store.listMessages(this.id, { limit: 300 }));
     const q = this.store.createQuestion({
-      sessionId: this.id, question, options, addressedTo: this.management.addresseeFor(this.id), aboutQuestion, aboutRequest, details, shots, earlier, sources,
+      // A run's person step is the person's to answer, whoever coordinates the run, as Ledung's own card was (#291).
+      sessionId: this.id, question, options, addressedTo: details.run ? 'user' : this.management.addresseeFor(this.id), aboutQuestion, aboutRequest, details, shots, earlier, sources,
     });
     if (attached && !sourcesExercised) {
       sourcesExercised = true;
@@ -1831,7 +1957,7 @@ export class Session {
     if (!q || q.sessionId !== this.id) return `There is no question #${id} from this session.`;
     if (q.status !== 'open') return `Question #${id} is already ${q.status}.`;
     // A person block's question moves its run when answered (workflow part 3b): the coordinator reports or stops instead.
-    if (q.details?.run) return `Question #${id} is "${q.details.run.blockTitle}" of ${q.details.run.run}, put to ${this.userName} by Ledung's workflow: it stays. Report the block's outcome with flow_step, or stop the run, and it is withdrawn.`;
+    if (q.details?.run) return `Question #${id} is "${q.details.run.blockTitle}" of ${q.details.run.run}, and its answer moves the run: it stays. Report the block's outcome with flow_step, or stop the run, and it is withdrawn.`;
     this.store.withdrawQuestion(id, reason);
     this.publish({ type: 'question', question: this.store.getQuestion(id)! });
     return `Question #${id} is withdrawn.`;
@@ -1840,19 +1966,27 @@ export class Session {
   private beginTurn(trigger: string): void {
     if (this.turnOpen) return;
     this.turnOpen = true;
-    this.turnStartedAt = Date.now();
+    this.turnStartedAt = this.resumedTurnAt ?? Date.now();
+    this.resumedTurnAt = null;
     this.turnBegan = this.turnStartedAt;
     this.turnCommands = [];
-    this.gate.started(this.id, trigger);
+    this.turnWaits = [];
+    this.store.setTurnStart(this.id, this.turnStartedAt);
+    this.gate.started(this.id, trigger, this.turnStartedAt);
   }
 
   private endTurn(): void {
     // The "once" secrets sent before this turn began had their turn (issue #468).
     void this.secrets?.turnEnded(this.turnBegan).catch((e) => console.error(`Secrets of ${this.id}: ${(e as Error).message}`));
+    // A result ends whatever turn was under way, even one that never opened here: after a restart the replay can bring
+    // only the result, and a start kept from before must not become the next turn's, hours later (review of PR #260, finding 6).
+    this.resumedTurnAt = null;
+    this.store.setTurnStart(this.id, null);
     if (!this.turnOpen) return;
     this.turnOpen = false;
-    this.gate.ended(this.id, [...new Set(this.turnCommands)]);
+    this.gate.ended(this.id, [...new Set(this.turnCommands)], this.turnWaits);
     this.turnCommands = [];
+    this.turnWaits = [];
   }
 
   /**
@@ -1879,13 +2013,24 @@ export class Session {
     const held = heldEntries.map(heldText);
     // A held message keeps its images (issue #128): they go in with it.
     const heldImages = heldEntries.flatMap(heldImageNames);
-    const answers = clearAt >= 0 ? [] : this.store.undeliveredAnswers(this.id);
-    const inbox = clearAt >= 0 ? waiting.slice(0, clearAt) : waiting;
+    let answers = clearAt >= 0 ? [] : this.store.undeliveredAnswers(this.id);
+    let inbox = clearAt >= 0 ? waiting.slice(0, clearAt) : waiting;
     if (!held.length && !answers.length && !inbox.length && !clearing && !compacting) {
       if (status === 'queued') this.update({ status: 'idle', queuedAt: null });
       return;
     }
     if (info!.paused && !force) return;
+    // A job over its share holds its session (resource limits, open choice 1): the person's own messages, the person's
+    // answers to its questions and Ledung's notices about the job still go in, so the session can act on them (security
+    // review, finding 8); the rest (a manager's message, a clear) waits until it is back within its share.
+    if (!force && !held.length && this.gate.resourceHeld?.(this.id)) {
+      answers = clearing || compacting ? [] : answers.filter((a) => a.answeredBy === 'user');
+      inbox = clearing || compacting ? [] : inbox.filter((i) => i.source === RESOURCE_SOURCE);
+      if (!answers.length && !inbox.length) {
+        if (status === 'queued') this.update({ status: 'idle', queuedAt: null });
+        return;
+      }
+    }
     // A usage stop holds Start now too: only Lift, a raised level or the reset release it (review 1 of #278, finding 6).
     const hold = this.gate.usageHold?.(this.id);
     if (hold) {
@@ -1895,16 +2040,17 @@ export class Session {
       return;
     }
     this.heldFor = null;
-    if (clearing && this.countingDown(waiting[0]!, info!)) return;
+    const heldByJob = !force && !held.length && !!this.gate.resourceHeld?.(this.id);
+    if (clearing && !heldByJob && this.countingDown(waiting[0]!, info!)) return;
     if (!force && !this.gate.mayStart(this.id)) {
       if (status !== 'queued') this.update({ status: 'queued', queuedAt: Date.now() });
       return;
     }
-    if (compacting) {
+    if (compacting && !heldByJob) {
       this.startCompact(waiting[0]!);
       return;
     }
-    if (clearing) {
+    if (clearing && !heldByJob) {
       this.store.markInboxDelivered([waiting[0]!.id]);
       this.record('event', { text: 'Conversation cleared.' });
       this.management.onCleared(this.id, parseClear(waiting[0]!.source).requester, waiting[0]!.text);
@@ -2013,7 +2159,8 @@ export class Session {
   /** here: typed on this computer (issue #263), kept with the message for settingsOnWord. */
   /** images: names of the person's images uploaded for this message (issue #128), checked by the manager. */
   send(text: string, here = false, images: string[] = []): void {
-    if (!this.q || this.stopping) throw new Error('The session is not running.');
+    // A new session waiting for memory to start holds the person's messages for its start (acceptance test, finding 3).
+    if (this.stopping || (!this.q && !this.waitingToStart)) throw new Error('The session is not running.');
     const info = this.store.getSession(this.id)!;
     // A chat starts as "New chat" (issue #211); either is named after the first message.
     // Claude reads a locked secret's token as its name and variable, never the value (issue #468).

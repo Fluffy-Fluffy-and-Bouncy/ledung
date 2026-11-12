@@ -68,6 +68,14 @@ export class RunStore {
       .all(project, project, ended).map(toRun);
   }
 
+  /**
+   * Runs of every project waiting with no question since `before` or earlier (#291): at a person block, those wait for
+   * their coordinator's write-up; a wait or a Run flow block waits the same way, and the caller tells them apart.
+   */
+  awaitingWriteUp(before: number): FlowRun[] {
+    return this.db.prepare(`SELECT * FROM flow_runs WHERE state = 'waiting' AND question IS NULL AND at IS NOT NULL AND at_since <= ? ORDER BY at_since, id`).all(before).map(toRun);
+  }
+
   /** The run a person block's question belongs to. */
   byQuestion(question: number): FlowRun | undefined {
     const row = this.db.prepare(`SELECT * FROM flow_runs WHERE question = ? AND state IN ('running', 'waiting')`).get(question);
