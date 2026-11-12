@@ -42,3 +42,18 @@ test('the helper\'s same words twice in a turn show once; a card stays in its ow
   // The same words in another turn do show.
   assert.deepEqual(shape(placeCards([said('Hi'), person('x'), said('Hi')])), ['assistant:Hi', 'user:x', 'assistant:Hi']);
 });
+
+test('a card waits for the end of its turn and a short line after it is narration (acceptance round 3, 20)', () => {
+  const turn = [person('New project'), said('Sure. What should it be called?'), card('Name'), said('Waiting for the name.')];
+  assert.deepEqual(shape(placeCards(turn, true)), ['user:New project', 'assistant:Sure. What should it be called?'], 'in the turn: no card yet');
+  assert.deepEqual(shape(placeCards(turn, false)), ['user:New project', 'assistant:Sure. What should it be called?', 'card:Name']);
+  // A real message after the card still shows, and the card goes under it.
+  const long = 'x'.repeat(150);
+  assert.deepEqual(shape(placeCards([person('a'), said('Hi'), card('C'), said(long)])), ['user:a', 'assistant:Hi', `assistant:${long}`, 'card:C']);
+});
+
+test('a card stands right under its turn\'s last words, before a later line such as "Session resumed"', () => {
+  const resumed = { type: 'event', text: 'Session resumed.' };
+  assert.deepEqual(shape(placeCards([person('a'), said('Pick the folder.'), card('Folder'), resumed, person('b')])),
+    ['user:a', 'assistant:Pick the folder.', 'card:Folder✓', 'event:Session resumed.', 'user:b']);
+});

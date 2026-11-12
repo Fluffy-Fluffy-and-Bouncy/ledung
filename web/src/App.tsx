@@ -1197,6 +1197,7 @@ export function SessionView(props: {
   const isHelper = session.project === HELPER;
   // The step's card waits for the helper's words on that step (acceptance round 1, 6.4 and check 14): a step moved on
   // in the page shows its card once the helper has said the new step's message.
+  const waitsForPersonNow = session.status === 'idle' || session.status === 'ended';
   const waitsForPerson = (session.status === 'idle' || session.status === 'ended') && helperHasSpoken(ledung.messages)
     && (ledung.helper?.spokeFor === undefined || ledung.helper.spokeFor === ledung.helper.setup.current);
   const stepCard = isHelper && waitsForPerson && ledung.helper?.setup.phase === 'helper' && ledung.helper.setup.current && ledung.helper.sessionId === session.id
@@ -1442,6 +1443,7 @@ export function SessionView(props: {
             assistantName={isHelper ? 'Ledung Helper' : undefined}
             noPin={isHelper}
             follow={isHelper}
+            turnOpen={isHelper && !waitsForPersonNow}
             // The setup step's own card, once, under the helper's latest words while it waits for the person.
             footer={stepCard ?? undefined}
             footerKey={stepCard ? `${ledung.helper?.setup.current}` : undefined}

@@ -2762,9 +2762,10 @@ export class SessionManager {
         const sv = this.setupView();
         if (sv.phase === 'helper' && sv.current) throw new Error("No card during the setup: Ledung shows the step's own card under your message. Write your short message and end your turn.");
         // The same card again in a turn is not shown twice (the same id, else the same kind and title).
-        if (this.cardShownThisTurn(id, parsed.data)) return 'That card is shown already. End your turn now, writing nothing more.';
+        // The model sometimes shows the same card again and then writes more: refused, so the turn ends (round 3, 20).
+        if (this.cardShownThisTurn(id, parsed.data)) throw new Error('That card is shown already, under your words. Your turn is over: write nothing more and call nothing more.');
         this.addCard(id, parsed.data);
-        return 'The card is shown under your words. End your turn now, writing nothing more; the pick comes back as their message.';
+        return 'The card is shown under your words. End your turn now and write nothing more (no "Waiting for…"); the pick comes back as their message.';
       },
     };
   }

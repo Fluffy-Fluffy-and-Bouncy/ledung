@@ -166,12 +166,14 @@ export const MessageList = memo(function MessageList(props: {
   noPin?: boolean;
   /** Every new message, card or approval brought into view (the helper's chat, acceptance round 2 check 17). */
   follow?: boolean;
+  /** The session is in a turn: its last turn's cards wait for the turn's end (the helper's chat, round 3 check 20). */
+  turnOpen?: boolean;
 }) {
   const { messages, permissions, showTechnical, sessionId, hasEarlier } = props;
   // A manager's conversation also shows the questions of its sessions it handles, by when they were asked (issue #61),
   // with technical messages or when opened at one (issue #112).
   const earliest = hasEarlier ? messages[0]?.at ?? null : null;
-  const base = useMemo(() => placeCards(toItems(messages)), [messages]);
+  const base = useMemo(() => placeCards(toItems(messages), props.turnOpen), [messages, props.turnOpen]);
   const focus = props.focusQuestion ?? null;
   const woven = useMemo(
     () => (sessionId ? shownWoven(wovenQuestions(Object.values(props.questions), sessionId, earliest), showTechnical, focus) : []),

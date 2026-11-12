@@ -15,13 +15,15 @@ const persons = (e: Entry) => e.type === 'user' && !e.byLedung;
 /** Any message given to the helper, the person's or Ledung's, starts a new turn. */
 const given = (e: Entry) => e.type === 'user';
 const words = (t: string) => t.replace(/\s+/g, ' ').trim();
+/** At most this long, a line after a turn's card is taken for narration and not shown. */
+const NARRATION = 100;
 
 /**
  * The entries with each turn's cards moved after its other entries, repeats of a card key and of the helper's own
  * words in a turn dropped (acceptance round 1, 6.1: a message twice), and cards answered marked. A card stays in its
  * own turn: it never moves under a later turn's message (6.3).
  */
-export function placeCards<T extends Entry>(raw: T[]): T[] {
+export function placeCards<T extends Entry>(raw: T[], turnOpen = false): T[] {
   const out: T[] = [];
   let held: T[] = [];
   // The last turn's cards wait until the helper has written in it: a card never shows before its words (round 2, 20).
@@ -36,23 +38,30 @@ export function placeCards<T extends Entry>(raw: T[]): T[] {
       last.delete(cardKey(c.card!));
       last.set(cardKey(c.card!), c);
     }
-    out.push(...last.values());
+    // Right under the turn's last words, before any later line such as "Session resumed".
+    out.splice(lastSaid >= 0 ? lastSaid + 1 : out.length, 0, ...last.values());
     held = [];
   };
+  let lastSaid = -1;
   let said = new Set<string>();
   for (const e of raw) {
     if (e.type === 'card') held.push(e);
     else if (given(e)) {
       flush(true);
       said = new Set();
+      lastSaid = -1;
       out.push(e);
     } else if (e.type === 'assistant' && !e.sub && e.text) {
       if (said.has(words(e.text))) continue;
+      // A short line after the turn's card is narration ("Waiting for the name."): the card says it (round 3, 20).
+      if (held.length && said.size && words(e.text).length <= NARRATION) continue;
       said.add(words(e.text));
       out.push(e);
+      lastSaid = out.length - 1;
     } else out.push(e);
   }
-  flush(said.size > 0);
+  // The last turn's card shows once that turn has ended, under its last words: it never jumps (round 3, 20).
+  flush(said.size > 0 && !turnOpen);
   // Answered once the person wrote anything after it (their pick is their message).
   let later = false;
   for (let i = out.length - 1; i >= 0; i--) {

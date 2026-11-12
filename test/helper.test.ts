@@ -303,6 +303,7 @@ test('cards are stored in the helper\'s chat; one that isn\'t valid is refused',
   // The same card twice in a turn is stored once (Simon's try-out, 2026-11-12: the model called show_card twice).
   const again = await run(id, 'show_card', { card: { kind: 'choice', title: 'Model', options: [{ label: 'Sonnet', hint: 'Everyday' }, { label: 'Opus' }] } });
   assert.match(again.text, /shown already/);
+  assert.equal(again.error, true, 'refused, so the turn ends');
   assert.equal(store.listMessages(id).filter((m) => m.kind === 'card').length, 1);
   // One voice: the card has no words of its own beyond its title.
   assert.equal((await run(id, 'show_card', { card: { kind: 'text', title: 'Name', text: 'Said twice' } })).error, true);
