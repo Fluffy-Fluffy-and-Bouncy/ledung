@@ -769,6 +769,37 @@ test('part 3f: a worktree per run: made from the base, set up, kept out of git\'
   removeTemp(dir);
 });
 
+test("audit L15: Ledung's git in a run's worktree starts none of the programs the repository's config names", async () => {
+  const dir = gitRepo();
+  // Markers outside the repository, so writing them changes nothing git looks at.
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-wt-markers-'));
+  const slash = (p: string) => p.split(path.sep).join('/');
+  const marker = (n: string) => slash(path.join(out, n));
+  const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, ...args], { windowsHide: true, stdio: 'pipe' }).toString().trim();
+  git(dir, 'config', 'core.fsmonitor', `sh -c 'echo x > "${marker('m-fsmonitor')}"'`);
+  const hooks = path.join(out, 'hooks');
+  fs.mkdirSync(hooks);
+  for (const h of ['post-checkout', 'reference-transaction']) fs.writeFileSync(path.join(hooks, h), `#!/bin/sh\necho x > "${marker(`m-${h}`)}"\n`, { mode: 0o755 });
+  git(dir, 'config', 'core.hooksPath', slash(hooks));
+  const markers = () => fs.readdirSync(out).filter((f) => f.startsWith('m-')).sort();
+  const clear = () => { for (const f of markers()) fs.rmSync(path.join(out, f)); };
+  // The positive branch: plain git does start them here, so none below means the switches held.
+  execFileSync('git', ['-C', dir, 'worktree', 'add', '-q', '-b', 'plain', path.join(out, 'plain')], { windowsHide: true, stdio: 'pipe' });
+  execFileSync('git', ['-C', path.join(out, 'plain'), 'status', '--porcelain'], { windowsHide: true, stdio: 'pipe' });
+  assert.deepEqual(markers(), ['m-fsmonitor', 'm-post-checkout', 'm-reference-transaction'], 'plain git ran all three');
+  clear();
+  const host = nodeShell(dir);
+  const made = await makeWorktree(host, { id: 'run-1', ref: null }, {}, undefined);
+  assert.equal(fs.existsSync(path.join(made.worktree.path, 'a.txt')), true, 'the worktree is made all the same');
+  assert.deepEqual(markers(), [], 'none while making it');
+  git(dir, 'merge', '-q', '--ff-only', 'run/run-1');
+  clear(); // that merge was the test's own plain git
+  assert.deepEqual(await removeWorktree(host, made.worktree), { removed: true }, 'status, remove and branch -d all ran');
+  assert.deepEqual(markers(), [], 'no hook and no fsmonitor ran');
+  removeTemp(dir);
+  removeTemp(out);
+});
+
 test('part 3f: a run gets its worktree, its sessions work there, and it goes when the run ends safely', async () => {
   const dir = gitRepo();
   const { runs, ports, started, store } = await engine({ flows: flowsOf3({ ...F3, limit: undefined, worktree: { remove: { on: ['Merged'] } } }), host: nodeShell(dir) });

@@ -41,7 +41,7 @@ import { needsPluginIds, parseSettingsFile, pluginIdsIn, profileOptions, setting
 import { workflowInstructions, type ProjectWorkflow } from './workflow.ts';
 import { workflowLines } from './flow-files.ts';
 import { promptNudges } from './workflow-nudges.ts';
-import { sessionStartText } from './start-reading.ts';
+import { readInsideProject, readStartReadingFile, sessionStartText } from './start-reading.ts';
 import { RemoteControl } from './remote-control.ts';
 import { McpError, mcpServers, reconnectMcp } from './mcp.ts';
 import { boundarySettings, withBoundary } from './boundary.ts';
@@ -1303,7 +1303,8 @@ export class Session {
     try {
       const sr = this.workflow?.startReading;
       if (!sr) return null;
-      const text = await sessionStartText(sr, this.store.getSession(this.id), (file) => this.readForStart(file, sr.local));
+      // The list file only from inside the workflow's folder, by its real path (audit L17).
+      const text = await sessionStartText(sr, this.store.getSession(this.id), (file) => this.readForStart(file, sr.local, sr.projectFolder), readStartReadingFile);
       return text;
     } catch (e) {
       console.error(`Start-reading list for session ${this.id}: ${(e as Error).message}`);
@@ -1311,9 +1312,13 @@ export class Session {
     }
   }
 
-  /** A project file for the start-reading list (#469), as the session sees it: on this computer read here, in a container through the runner. */
-  private readForStart(file: string, local: boolean): Promise<string | null> {
-    if (local) return fs.promises.readFile(file, 'utf8').catch(() => null);
+  /**
+   * A project file for the start-reading list (#469), as the session sees it. On this computer read here by its real
+   * path, refused when a link leads out of the project folder (audit L17); in a container through the runner, inside
+   * the container, where the session can read the same files itself.
+   */
+  private readForStart(file: string, local: boolean, projectFolder: string): Promise<string | null> {
+    if (local) return readInsideProject(projectFolder, file);
     return this.runner.readProjectFile(path.posix.relative(this.runner.cwd, file));
   }
 
