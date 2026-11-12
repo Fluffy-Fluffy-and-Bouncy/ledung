@@ -19,3 +19,14 @@ test('a card shows under the words of its turn, once, and is answered by the per
   // The same title in another turn is another card.
   assert.deepEqual(shape(placeCards([card('A'), person('1'), card('A')])), ['card:A✓', 'user:1', 'card:A']);
 });
+
+test("the step's card waits for the helper's words since the last message it was given", async () => {
+  const { helperHasSpoken } = await import('../web/src/helper/cardOrder.ts');
+  const said = (text: string) => ({ kind: 'sdk', data: { type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'text', text }] } } });
+  const tool = { kind: 'sdk', data: { type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'tool_use' }] } } };
+  const given = { kind: 'user', data: { text: 'Call me Ada.' } };
+  assert.equal(helperHasSpoken([]), false, 'nothing yet: no card at the top');
+  assert.equal(helperHasSpoken([{ kind: 'user', data: { from: 'ledung' } }, tool]), false);
+  assert.equal(helperHasSpoken([given, tool, said('Hi Ada. Next…'), { kind: 'event', data: {} }]), true);
+  assert.equal(helperHasSpoken([said('Hi'), given]), false, 'the person answered: the old card goes');
+});

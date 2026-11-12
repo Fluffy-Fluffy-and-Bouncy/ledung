@@ -4,6 +4,7 @@ import { AddProjectView, ProjectSettingsView, ProjectStartView } from './project
 import { ChatsSettingsView, NewChatView } from './chats/ChatViews.tsx';
 import { HelperCardView, HelperStepBar, SetupScreens, SetupStepCard } from './helper/HelperViews.tsx';
 import type { HelperCard } from '../../src/shared/helper-cards.ts';
+import { helperHasSpoken } from './helper/cardOrder.ts';
 import { api } from './api.ts';
 import { CHAT_IMAGE_TYPES, dataUrl, imageFiles, MAX_CHAT_IMAGES, prepareImage, SECRETS_HINT } from './chatImages.ts';
 import { MessageList, formatTime } from './components/MessageList.tsx';
@@ -426,7 +427,7 @@ export function App() {
   useEffect(() => {
     if (openedSetup.current || helper?.setup.phase !== 'helper' || !helper.sessionId) return;
     openedSetup.current = true;
-    if (openId === null && !window.matchMedia(NARROW_QUERY).matches) open(helper.sessionId);
+    if (openId === null) open(helper.sessionId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [helper?.setup.phase, helper?.sessionId]);
   const inSetup = helper?.setup.phase === 'helper';
@@ -1185,7 +1186,7 @@ export function SessionView(props: {
 }) {
   const { session, ledung, run } = props;
   const isHelper = session.project === HELPER;
-  const waitsForPerson = session.status === 'idle' || session.status === 'ended';
+  const waitsForPerson = (session.status === 'idle' || session.status === 'ended') && helperHasSpoken(ledung.messages);
   const stepCard = isHelper && waitsForPerson && ledung.helper?.setup.phase === 'helper' && ledung.helper.setup.current && ledung.helper.sessionId === session.id
     ? <SetupStepCard key={ledung.helper.setup.current} helper={ledung.helper} run={run} onOpen={(id) => props.onOpen?.(id)} />
     : null;

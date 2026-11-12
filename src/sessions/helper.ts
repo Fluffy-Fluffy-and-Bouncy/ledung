@@ -6,7 +6,7 @@ import { z } from 'zod';
 import type { ProjectConfig } from '../config.ts';
 import { EFFORT_LEVELS, PERMISSION_MODES, type EffortLevel, type PermissionMode } from '../shared/protocol.ts';
 import type { Profile } from './profiles.ts';
-import { stepLine, type SetupView } from '../shared/setup.ts';
+import { stepLine, type SetupStepId, type SetupView } from '../shared/setup.ts';
 
 /** Its own folder, in Ledung's data folder: never a project's. */
 export const helperFolder = (dataDir: string) => path.join(dataDir, 'helper');
@@ -99,7 +99,7 @@ export function helperInstructions(who: string): string {
     `Talk plainly and briefly; ${who} may be on a phone. One question at a time. For precise input use a card (show_card). Say what the step is about once, in your own short message; then call show_card last, with only a short title and the inputs (never the same words again), and end your turn without writing anything more: the card shows under your words, and ${who}'s pick arrives as their message. A folder: a folder card. A choice (model, effort, mode, yes/no): a choice card, each option with a plain-words hint. A name: a text card. Shortcuts, the check-in notice, phones and accounts: a step card with ${who}'s own controls. A page of Ledung's (a form, a settings group): a link card.`,
     `add_project and create_project always wait for ${who}'s approval card in this chat, and so does any change that loosens what reaches ${who} (a grant, a sensitive pattern removed, a looser permission mode, another account). Say in one sentence what you are about to do, then call the tool; never ask for that approval in words or present it as given.`,
     `A locked project (lockdown) is ${who}'s alone: you can't read or change it; say ${who} can, in the page.`,
-    `During setup Ledung keeps the steps; a "Setup:" line at each prompt says the current one, and Ledung itself shows that step's card under your message when you end your turn (show_card is off during setup). For each step write exactly one short visible message: what the step is about and the question, in one to three sentences (the first time, greet ${who} first). Never mention the card or where it is ("above", "below", "use the card"), and never repeat what you said. ${who}'s press arrives as their own message, such as "Call me Ada.", "Use the folder … as my first project." or "Set shop to Sonnet, high effort, and the Ask mode."; do what it asks with your tools (add_project, create_project, set_project_basics, set_project_settings, propose_workflow), call setup_step with done when the step is ${who}'s word (or skipped), and write the next step's message. ${who} may also use "Do it myself instead"; when they come back, call setup_status. Steps: name (ask what to call them; Ledung saves it) · accounts (the computer's own Claude login is enough to start; more accounts are for other subscriptions) · project (an existing folder or a new one; then add_project, or create_project with git and a private GitHub repository only if asked) · basics (model, effort and mode in plain words; then set_project_basics) · sensitive (read its list with project_settings and say in a few plain bullets what always reaches them; change only on request) · grant (what its manager may decide alone; set_project_settings managerGrant, or nothing) · workflow (when asked, propose a small first workflow with propose_workflow; ${who} reviews it; done once accepted) · shortcuts (a Ledung icon on the Desktop and Start menu, and starting Ledung at sign-in; not keyboard shortcuts), phone (reaching Ledung from a phone), checkin (the anonymous daily usage count; the card says exactly what is sent). When all are through, say so in a sentence: Ledung shows the hand-over card.`,
+    `During setup Ledung keeps the steps; a "Setup:" line at each prompt says the current one, and Ledung itself shows that step's card under your message when you end your turn (show_card is off during setup). For each step write exactly one short visible message: what the step is about and the question, in one to three sentences (the first time, greet ${who} first). Never mention the card or where it is ("above", "below", "use the card"), and never repeat what you said. ${who} may answer on the card or type it in the message box; either way do what the "Setup:" line says. A press arrives as their own message, such as "Call me Ada.", "Use the folder … as my first project." or "Set shop to Sonnet, high effort, and the Ask mode."; do what it asks with your tools (add_project, create_project, set_project_basics, set_project_settings, propose_workflow), call setup_step with done when the step is ${who}'s word (or skipped), and write the next step's message. ${who} may also use "Do it myself instead"; when they come back, call setup_status. Steps: name (ask what to call them; save a typed name with set_user_name; one from the card Ledung saves itself) · accounts (the computer's own Claude login is enough to start; more accounts are for other subscriptions) · project (an existing folder or a new one; then add_project, or create_project with git and a private GitHub repository only if asked) · basics (model, effort and mode in plain words; then set_project_basics) · sensitive (read its list with project_settings and say in a few plain bullets what always reaches them; change only on request) · grant (what its manager may decide alone; set_project_settings managerGrant, or nothing) · workflow (when asked, propose a small first workflow with propose_workflow; ${who} reviews it; done once accepted) · shortcuts (a Ledung icon on the Desktop and Start menu, and starting Ledung at sign-in; not keyboard shortcuts), phone (reaching Ledung from a phone), checkin (the anonymous daily usage count; the card says exactly what is sent). When all are through, say so in a sentence: Ledung shows the hand-over card.`,
   ].join('\n');
 }
 
@@ -107,8 +107,26 @@ export function helperInstructions(who: string): string {
 export function setupPromptLine(v: SetupView): string {
   if (v.phase !== 'helper') return '';
   const marks = v.steps.filter((s) => s.state !== 'open').map((s) => `${s.label}: ${s.state}`).join('; ');
-  return `Setup: ${stepLine(v)}${v.current ? ` (step id "${v.current}")` : ''}. Project: ${v.project ? `"${v.project}"` : 'none yet'}.${marks ? ` Through: ${marks}.` : ''}`;
+  const todo = v.current ? ` ${STEP_DO[v.current]}` : ' All steps are through: tell them in one sentence; Ledung shows the hand-over.';
+  return `Setup: ${stepLine(v)}${v.current ? ` (step id "${v.current}")` : ''}. Project: ${v.project ? `"${v.project}"` : 'none yet'}.${marks ? ` Through: ${marks}.` : ''}${todo}`;
 }
+
+/**
+ * What the current step's answer asks of the helper, said at each prompt: the person may answer on the step's card or
+ * type it in the message box, and either way the step moves on only when the helper does it (Simon, 2026-11-12).
+ */
+const STEP_DO: Record<SetupStepId, string> = {
+  name: 'If this message gives a name (typed, or "Call me …"), call set_user_name with it unless it is already saved, then write the next step\'s message.',
+  accounts: 'If they are fine with this computer\'s login or added an account, call setup_step accounts done (unless it is through) and go on.',
+  project: 'If they name an existing folder, call add_project with it (name: the folder\'s name unless they gave one); if they want a new project, create_project. Then go on.',
+  basics: 'If they give a model, effort or mode, call set_project_basics with what they gave, then setup_step basics done.',
+  sensitive: 'If they keep the list, call setup_step sensitive done (unless it is through); if they want changes, ask what, then set_project_settings.',
+  grant: 'If they give what the manager may decide, set_project_settings managerGrant with it; if nothing, setup_step grant done. Then go on.',
+  workflow: 'If they want a workflow, propose_workflow (it is done once they accept the review); if not, setup_step workflow skipped.',
+  shortcuts: 'Shortcuts are answered on the card (Ledung sees it); if they want to skip, setup_step shortcuts skipped.',
+  phone: 'If they are done or want to skip, setup_step phone done or skipped.',
+  checkin: 'The check-in notice is answered on the card (Ledung sees it); then go on.',
+};
 
 /** Ledung's own first message to the helper when the setup starts, or starts again. */
 export function setupKickoff(who: string, again: boolean): string {

@@ -100,9 +100,7 @@ export function SetupScreens({ helper, run }: { helper: HelperInfo; run: Run }) 
  */
 export function HelperStepBar({ helper, projects, run, onOpen }: { helper: HelperInfo; projects: ProjectInfo[]; run: Run; onOpen: (id: string) => void }) {
   const v = helper.setup;
-  const typing = usePlainTyping();
   const [open, setOpen] = useState(false);
-  const [name, setName] = useState('');
   if (v.phase !== 'helper') return null;
   const step = v.current ? SETUP_STEPS.find((s) => s.id === v.current)! : null;
   const project = v.project ? projects.find((p) => p.name === v.project) : undefined;
@@ -143,12 +141,8 @@ export function HelperStepBar({ helper, projects, run, onOpen }: { helper: Helpe
         </ol>
       )}
       <div className="helper-steps-actions">
-        {v.current === 'name' ? (
-          <form className="helper-name" onSubmit={(e) => { e.preventDefault(); if (name.trim()) void run(() => api.setupName(name)); }}>
-            <input {...typing} value={name} onChange={(e) => setName(e.target.value)} placeholder="Or type your name here" aria-label="Your name" maxLength={40} />
-            <button className="small" type="submit" disabled={!name.trim()}>Save</button>
-          </form>
-        ) : myself && <button className="small" onClick={() => onOpen(myself)}>Do it myself instead</button>}
+        {/* The name has no form of its own: the step's card or the message box gives it, and the helper hears it. */}
+        {myself && <button className="small" onClick={() => onOpen(myself)}>Do it myself instead</button>}
         {theirWord.includes(v.current) && (v.current === 'accounts' || v.current === 'phone' || v.project) && (
           <button className="small" onClick={() => void mark('done')}>Done</button>
         )}

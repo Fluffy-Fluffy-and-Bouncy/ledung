@@ -43,3 +43,20 @@ export function placeCards<T extends Entry>(raw: T[]): T[] {
   }
   return out;
 }
+
+type Stored = { kind: string; data: any };
+
+/**
+ * Whether the helper has said something since the last message it was given (the person's or Ledung's): the step's
+ * card shows only then, so it always stands under the helper's words for that step (Simon, 2026-11-12: the card stood
+ * above the greeting).
+ */
+export function helperHasSpoken(messages: Stored[]): boolean {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.kind === 'user') return false;
+    if (m.kind === 'sdk' && m.data?.type === 'assistant' && m.data.parent_tool_use_id == null
+      && (m.data.message?.content ?? []).some((b: { type?: string; text?: string }) => b?.type === 'text' && b.text?.trim())) return true;
+  }
+  return false;
+}
