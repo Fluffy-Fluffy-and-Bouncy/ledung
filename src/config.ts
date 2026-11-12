@@ -404,6 +404,15 @@ const Config = z.object({
   relayJoin: RelayJoinSetting,
   computers: ComputersSetting,
   /**
+   * Streamed files (audio and zip) a linked computer may send this one (Project-Ledung#479): a message naming a larger
+   * one, or more in all, is refused before a byte of it is fetched. In MB.
+   */
+  linkedFiles: z.object({
+    $comment: z.string().optional(),
+    maxFileMB: z.number().int().min(1).max(1024 * 1024).default(2048),
+    maxMessageMB: z.number().int().min(1).max(1024 * 1024).default(4096),
+  }).default({ maxFileMB: 2048, maxMessageMB: 4096 }),
+  /**
    * Chats (issue #211): sessions with no project. Where a new one starts (default: the home folder), its
    * permission mode (default: Auto, Martin 18:19 on question #297), and patterns always asked in chats on
    * top of the list edited in the page.
@@ -554,6 +563,7 @@ export const SETTING_RELOAD = {
   remote: 'restart',
   relayJoin: 'restart',
   computers: 'restart',
+  linkedFiles: 'live',
   chats: 'live',
 } as const satisfies Record<keyof LedungConfig, 'live' | 'restart'>;
 
