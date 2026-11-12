@@ -11,6 +11,7 @@ is nothing user-facing in it).
 
 ## 2026-11-12
 - Less background work on Windows: a `!` command no longer starts a new PowerShell every 2 seconds to watch what it starts (one stays open while commands run, and listings never pile up). The CPU and memory figures read no process list while no session runs on this computer, and the page is sent new figures only when something it shows has changed. (#230)
+- Standing grants are stricter: a "starts with" grant such as `git push:*` now covers only that command and its arguments, on one line; a command that spans several lines, or a longer word that merely starts the same, is asked about as if there were no grant. (Project-Ledung#472)
 
 ## 2026-11-11
 - Your pinned latest message at the top of the chat no longer shows through a session's ⚙ menu (nor does the message box under it), and its bottom edge fades out softly instead of ending in a hard line. (#226)
