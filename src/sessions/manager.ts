@@ -13,7 +13,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { boardConfig, parseProject, workflowsOf } from '../config.ts';
 import { checkFolder, chosenWorkflow, projectWorkflow, withProfilesWarning, type WorkflowCheck } from './workflow.ts';
-import { backToShared, findFlow, flowInstructions, flowPlaces, readFlows, readFlowView, saveFlowFiles, type FlowPlace } from './flow-files.ts';
+import { backToShared, findFlow, flowInstructions, flowPlaces, readFlows, readFlowView, saveFlowFiles, workflowPlace, type FlowPlace } from './flow-files.ts';
+import { originInfo } from './flow-origin.ts';
 import type { FlowView } from '../shared/flow.ts';
 import { remoteControlName } from './remote-control.ts';
 import { loosensGate } from '../projects/gate.ts';
@@ -111,6 +112,9 @@ import type { RunBlock } from '../shared/protocol.ts';
 import type { ProposeHandlers, RunHandlers } from './tools.ts';
 import { buildProposal, ProposalStore, proposalSummary, type ProposedChange } from './flow-propose.ts';
 import type { FlowProposal } from '../shared/flow-proposal.ts';
+
+/** The meta key, with the project's name, that says "Record where this came from" was dismissed (workflow-origin.md, section 4). */
+const ORIGIN_DISMISSED = 'flow-origin-dismissed:';
 
 /** Ledung's own plugin with the "workflow building" skill (part 3e, #1577), shipped beside src/ and web/. */
 export const WORKFLOW_PLUGIN = () => path.join(appDir(), 'plugins', 'ledung-workflow');
@@ -1353,7 +1357,8 @@ export class SessionManager {
     const manager = this.store.getSession(managerId);
     if (!manager || manager.role !== 'manager') throw new Error('Only a manager proposes workflow changes.');
     const project = this.project(manager.project);
-    const view = await this.flowView(project.name);
+    // A plain read: a proposal needs no origin parts (review of part b).
+    const view = await this.plainFlowView(project.name);
     let data;
     try {
       data = await buildProposal(view, changes, why, profileNames(this.profilesFor(project).profiles));
@@ -1372,9 +1377,11 @@ export class SessionManager {
       review: {
         solving: why.trim(),
         done: `${manager.title} proposes this change to ${project.name}'s workflow:\n\n${proposalSummary(data)}\n\nThe diagrams below show each flow before and after. Accepted saves it into the project's .ledung/workflow.`,
-        notes: faults.length
+        notes: (faults.length
           ? `The checks find ${faults.length === 1 ? 'one problem' : `${faults.length} problems`} in the workflow as it would be:\n\n${listed(faults)}`
-          : `The checks find no problems in the workflow as it would be.${hints.length ? ` Hints:\n\n${listed(hints)}` : ''}`,
+          : `The checks find no problems in the workflow as it would be.${hints.length ? ` Hints:\n\n${listed(hints)}` : ''}`)
+          // workflow-origin.md, section 5: only Ledung writes a copy's origin.
+          + (data.originKept ? '\n\nOrigin kept as recorded: the proposed flow.json left out or changed where this copy came from, and only Ledung writes that.' : ''),
       },
     };
     const q = this.store.createQuestion({ sessionId: managerId, question: questionText(undefined, details), options: null, addressedTo: 'user', details });
@@ -1408,7 +1415,7 @@ export class SessionManager {
     try {
       // What the person saw checked must still be the workflow it is saved into (review of 3e): any file changed since,
       // also one the proposal doesn't write (a flow it runs, a brief), and it is not saved.
-      const now = (await this.flowView(p.project)).versions;
+      const now = (await this.plainFlowView(p.project)).versions;
       const moved = [...new Set([...Object.keys(p.read ?? {}), ...Object.keys(now)])].filter((f) => (p.read ?? {})[f] !== now[f]);
       if (moved.length) throw new Error(`the workflow changed since it was proposed (${moved.slice(0, 5).join(', ')}), so what was checked is not what would be saved.`);
       await this.saveFlow(p.project, p.writes);
@@ -1482,8 +1489,28 @@ export class SessionManager {
   async flowView(name: string): Promise<FlowView> {
     const project = this.projectStore.get(name)?.config;
     if (!project) throw new UserError(`There is no project named "${name}".`);
+    const places = this.flowPlacesOf(project);
+    const view = await this.plainFlowView(name);
+    // workflow-origin.md: what a split-off records, whether a copy's original changed since, "Record where this came
+    // from". Each part fails on its own (originInfo), so a split-off never loses its origin to another part's error.
+    const workflows = workflowsOf(this.config).map((w) => ({ name: w.name, folder: w.folder, place: workflowPlace(w) }));
+    const origin = await originInfo(view, places, workflows, { dismissed: this.store.getMeta(`${ORIGIN_DISMISSED}${project.name}`) !== null });
+    return { ...view, ...origin };
+  }
+
+  /** The flow as read, with its checks, and none of the origin parts: for a proposal and its Accept (review of part b). */
+  private async plainFlowView(name: string): Promise<FlowView> {
+    const project = this.projectStore.get(name)?.config;
+    if (!project) throw new UserError(`There is no project named "${name}".`);
     // A block's profile is checked against what the project's sessions can use: the config and its workflow's profiles file (#298).
     return readFlowView(project.name, this.flowPlacesOf(project), profileNames(this.profilesFor(project).profiles));
+  }
+
+  /** The person dismissed "Record where this came from" for a project's older copy (workflow-origin.md, section 4). */
+  async dismissAdoptOrigin(name: string): Promise<FlowView> {
+    if (!this.projectStore.get(name)) throw new UserError(`There is no project named "${name}".`);
+    this.store.setMeta(`${ORIGIN_DISMISSED}${name}`, new Date().toISOString());
+    return this.flowView(name);
   }
 
   /**
@@ -2073,6 +2100,11 @@ export class SessionManager {
         throw e;
       }
     }
+    // "Record where this came from" stays dismissed under the new name (review of part d).
+    if (p.config.name !== name && this.store.getMeta(`${ORIGIN_DISMISSED}${name}`) !== null) {
+      this.store.setMeta(`${ORIGIN_DISMISSED}${p.config.name}`, this.store.getMeta(`${ORIGIN_DISMISSED}${name}`)!);
+      this.store.deleteMeta(`${ORIGIN_DISMISSED}${name}`);
+    }
     this.boards?.refresh();
     this.publishProjects();
     for (const s of this.sessions()) if (s.project === p.config.name) this.publish({ type: 'session', session: s });
@@ -2151,6 +2183,8 @@ export class SessionManager {
     for (const s of running) this.live.delete(s.id);
     this.projectStore.remove(name);
     this.flowRuns.stopProject(name, `the project "${name}" was removed`);
+    // A later project of the same name is offered "Record where this came from" afresh (review of part d).
+    this.store.deleteMeta(`${ORIGIN_DISMISSED}${name}`);
     // Its secrets, the project's and its sessions', go with it (issue #468).
     void this.secrets?.dropProject(name).catch((e) => console.error(`Secrets of ${name}: ${(e as Error).message}`));
     this.boards?.refresh();

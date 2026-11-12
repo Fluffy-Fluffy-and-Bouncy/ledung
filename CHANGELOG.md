@@ -11,6 +11,8 @@ is nothing user-facing in it).
 
 ## 2026-11-12
 - The page stays quicker with many sessions, especially on a phone: the sidebar no longer re-checks every session for each row, and isn't redrawn by a message that changes nothing in it; all the ships and timers share one clock; a long conversation draws its latest messages and earlier ones as you scroll up to them ("Show earlier messages" above them); the usage figures and panels stop refreshing while the page is in the background, and refresh at once when you come back. (#233)
+- Workflows: a project's own copy of a shared workflow now records where it came from, and the workflow page, the builder and the Workflow pane say "Based on Team process v3 by Ana" (and "first by …" for a copy of a copy). The confirm before the first Save shows what will be recorded, with **Leave the repository out**. When the original on this computer has changed since, the page says so; nothing is updated. An older copy is offered **Record where this came from** once. The builder has **Author** and **Release** fields; a manager's proposal can't change where a copy came from. (#256)
+- Standing grants are stricter: a "starts with" grant such as `git push:*` now covers only that command and its arguments, on one line; a command that spans several lines, or a longer word that merely starts the same, is asked about as if there were no grant. (Project-Ledung#472)
 
 ## 2026-11-11
 - Your pinned latest message at the top of the chat no longer shows through a session's ⚙ menu (nor does the message box under it), and its bottom edge fades out softly instead of ending in a hard line. (#226)
