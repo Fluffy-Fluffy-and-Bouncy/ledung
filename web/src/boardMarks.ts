@@ -60,9 +60,15 @@ export function checkedAgo(at: number, now = Date.now()): string {
 /** Past this, a repo that says it is fine but hasn't been checked shows as a problem (board thread 30). */
 export const BOARD_STALE_MS = 3 * 60_000;
 
-/** Whether a repo some project has on is fine by its state but its last check is too old to trust. */
-export function boardStale(r: { state: string; lastPollAt: number | null }, now = Date.now()): boolean {
-  return r.state === 'ok' && r.lastPollAt !== null && now - r.lastPollAt > BOARD_STALE_MS;
+/**
+ * Whether a repo some project has on is fine by its state but its last check is too old to trust: over three minutes
+ * past its last check or, when that is later, past the next check that was due. Checks can be further apart than three
+ * minutes (the config allows up to five, and GitHub can ask for longer), and a board checked slowly but on time must
+ * never show as a problem (self-check of the #232 PR).
+ */
+export function boardStale(r: { state: string; lastPollAt: number | null; nextPollAt: number | null }, now = Date.now()): boolean {
+  if (r.state !== 'ok' || r.lastPollAt === null) return false;
+  return now - Math.max(r.lastPollAt, r.nextPollAt ?? 0) > BOARD_STALE_MS;
 }
 
 /** A board post as the chat shows it. */

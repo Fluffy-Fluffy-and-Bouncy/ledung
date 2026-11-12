@@ -58,6 +58,13 @@ test('the time of the last check is shown to the minute, and a check over three 
   // A stale repo beside a failing one: both named.
   const both = boardChip({ ...status(), boards: [repo(), repo({ repo: 'org/two', state: 'error', error: 'down' })] }, at + 600_000)!;
   assert.equal(both.title, 'org/board: not checked for 10 min. org/two: down Trying again.');
+  // Checks five minutes apart (pollSeconds may be up to 300): fine until three minutes past the check that was due.
+  const slow = status({ nextPollAt: at + 300_000 });
+  assert.equal(boardChip(slow, at + 480_000)!.level, 'ok', 'on time, though over three minutes since the last check');
+  assert.match(boardChip(slow, at + 480_000)!.title, /last checked 8 min ago\.$/);
+  const late = boardChip(slow, at + 481_000)!;
+  assert.deepEqual([late.text, late.level], ['Board: problem', 'warn']);
+  assert.equal(late.title, 'org/board: not checked for 8 min. Trying again.');
   // Only a repo that says it is fine can go stale: one starting, or with no check yet, is not a problem by age.
   assert.equal(boardChip(status({ state: 'starting' }), at + 600_000)!.level, 'idle');
   assert.equal(boardChip(status({ lastPollAt: null }), at + 600_000)!.level, 'ok');

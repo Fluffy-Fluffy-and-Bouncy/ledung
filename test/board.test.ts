@@ -145,19 +145,26 @@ test('a poll that changes nothing the page shows sends no board event; one that 
   r.clock.now += 5_000;
   await r.board.pollOnce();
   assert.equal(r.inbox.length, 1);
-  assert.equal(r.published.length, 2);
+  // Two: the post at once (with the last poll's time), then this poll's time at its end, so the page never keeps
+  // an older check time than the newest it was sent.
+  assert.equal(r.published.length, 3);
+  assert.equal(r.published[1]!.boards[0]!.lastPollAt, r.clock.now - 5_000);
+  assert.equal(r.published[2]!.boards[0]!.lastPollAt, r.clock.now);
   // A status change with no post (the board's service fails) is sent too.
   r.backend.poll = async () => { throw new BoardError('unreachable', 'down'); };
   r.clock.now += 5_000;
   await r.board.pollOnce();
-  assert.equal(r.published.length, 3);
-  assert.equal(r.published[2]!.boards[0]!.state, 'error');
+  assert.equal(r.published.length, 4);
+  assert.equal(r.published[3]!.boards[0]!.state, 'error');
 });
 
 test('a board polled with nothing new is still sent once a minute, so the page can tell it is being checked (issue #232)', async () => {
   const r = rig();
+  // Polling, as in Ledung: the next check's time is part of what is sent (the page judges an overdue check by it).
+  r.boards.start();
   await r.board.pollOnce();
   const first = r.clock.now;
+  assert.equal(r.published.at(-1)!.boards[0]!.nextPollAt, first + r.backend.pollMs, 'the next check, set before sending');
   r.published.length = 0;
   // Polls every 5 s with nothing new: none sent until a minute has passed since the last one sent.
   while (r.clock.now + 5_000 < first + 60_000) {
@@ -173,13 +180,13 @@ test('a board polled with nothing new is still sent once a minute, so the page c
   fromLedung(r.fake, 'alice', ['@me'], 'news');
   r.clock.now += 30_000;
   await r.board.pollOnce();
-  assert.equal(r.published.length, 2, 'the post');
+  assert.equal(r.published.length, 3, 'the post, then that poll');
   r.clock.now += 55_000;
   await r.board.pollOnce();
-  assert.equal(r.published.length, 2, '55 s after the post: nothing');
+  assert.equal(r.published.length, 3, '55 s after the post: nothing');
   r.clock.now += 5_000;
   await r.board.pollOnce();
-  assert.equal(r.published.length, 3, 'a minute after the post: the heartbeat');
+  assert.equal(r.published.length, 4, 'a minute after the post: the heartbeat');
 });
 
 test('addresses: @login, @login/Project and #channel; anything else is refused with the reason', () => {

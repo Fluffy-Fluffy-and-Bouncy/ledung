@@ -219,8 +219,14 @@ export class Board {
    * once a minute at least, so the page's "checked under a minute ago" stays true and a stalled poller shows (board
    * thread 30: a heartbeat once a minute).
    */
-  private publishIfChanged(): void {
-    if (shownKey(this.status()) !== this.shown || this.now() - this.sentAt >= HEARTBEAT_MS) this.publish();
+  private publishIfChanged(startedAt: number, wait: number): void {
+    // The page judges a check overdue by when the next one is due (board thread 30), so that time is set before the
+    // status goes out; schedule() sets the same time again.
+    if (!this.stopped) this.nextPollAt = this.now() + wait;
+    // A post or prune sent during this poll went out with the last poll's times; this poll's follow, so the page
+    // never holds a check time older than the one it has been sent.
+    const sentDuring = this.sentAt >= startedAt;
+    if (sentDuring || shownKey(this.status()) !== this.shown || this.now() - this.sentAt >= HEARTBEAT_MS) this.publish();
   }
 
   /** Who has access to this repo; lostAccess: logins of the given allowlist that no longer have it. */
@@ -302,6 +308,7 @@ export class Board {
 
   /** One round: learns who we are if not yet known, then what is new. Returns when to ask again. */
   async pollOnce(): Promise<number> {
+    const startedAt = this.now();
     try {
       if (!this.identityLogin) this.identityLogin = (await this.ctx.backend.identity()).id;
       const result = await this.serial(() => this.ctx.backend.poll(this.store.cursor()));
@@ -313,7 +320,7 @@ export class Board {
       this.error = null;
       this.failures = 0;
       this.lastPollAt = this.now();
-      this.publishIfChanged();
+      this.publishIfChanged(startedAt, result.nextPollMs);
       return result.nextPollMs;
     } catch (e) {
       const err = e instanceof BoardError ? e : new BoardError('unreachable', (e as Error).message);
@@ -322,8 +329,9 @@ export class Board {
       this.state = err.kind === 'signin' ? 'off' : 'error';
       this.error = err.message;
       if (err.kind === 'signin') this.identityLogin = null;
-      this.publishIfChanged();
-      return Math.max(err.retryAfterMs ?? 0, backoff);
+      const wait = Math.max(err.retryAfterMs ?? 0, backoff);
+      this.publishIfChanged(startedAt, wait);
+      return wait;
     }
   }
 
