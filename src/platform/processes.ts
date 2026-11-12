@@ -6,6 +6,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { PowerShellWorker } from './powershell-worker.ts';
+import { parseWindowsGpu, WINDOWS_GPU_READ, WINDOWS_GPU_SETUP, type GpuRaw } from './gpu.ts';
 
 export interface ProcInfo {
   pid: number;
@@ -17,6 +18,8 @@ export interface ProcInfo {
   pgid?: number;
   /** Start time in Unix milliseconds, from Windows; ps gives none here (#169). */
   started?: number;
+  /** The program's name, from Windows ("conhost.exe"); ps gives none here. */
+  name?: string;
 }
 
 export type ProcessList = Map<number, ProcInfo>;
@@ -50,7 +53,7 @@ export function fileTimeToMs(fileTime: string): number | undefined {
   return Number(BigInt(fileTime) / 10000n - 11644473600000n);
 }
 
-/** Lines "pid,ppid,cpu100ns,workingSet[,creationFileTime]" from the PowerShell loop. */
+/** Lines "pid,ppid,cpu100ns,workingSet[,creationFileTime[,name]]" from the PowerShell loop. */
 export function parseWindowsLines(lines: string[]): ProcessList {
   const list: ProcessList = new Map();
   for (const line of lines) {
@@ -60,6 +63,8 @@ export function parseWindowsLines(lines: string[]): ProcessList {
     const p: ProcInfo = { pid, ppid: ppid ?? 0, cpuSeconds: (cpu ?? 0) / 1e7, memBytes: mem ?? 0 };
     const started = fields[4] === undefined ? undefined : fileTimeToMs(fields[4].trim());
     if (started !== undefined) p.started = started;
+    // The name last: everything after the fifth comma, so a comma in a name can't shift the numbers.
+    if (fields.length > 5) p.name = fields.slice(5).join(',').trim().slice(0, 100);
     list.set(pid, p);
   }
   return list;
@@ -70,14 +75,22 @@ export function parseWindowsLines(lines: string[]): ProcessList {
  * time, so a list is never asked for while the last one is still being read, and none while nothing
  * needs one (#230). Before, the PowerShell slept and listed in a loop of its own.
  */
-const WINDOWS_ANSWER = `  $p = Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,KernelModeTime,UserModeTime,WorkingSetSize,CreationDate
+const WINDOWS_ANSWER = `  # The GPU's setup (resource limits), once per PowerShell: its adapter list from DXGI.
+  if (-not $ledungGpuInit) {
+    $ledungGpuInit = $true
+${WINDOWS_GPU_SETUP}
+  }
+  $p = Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,KernelModeTime,UserModeTime,WorkingSetSize,CreationDate,Name
   # The time the list was read, in Unix milliseconds: Node may handle two lists back to back (#157).
   [Console]::Out.WriteLine("#BEGIN $([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())")
   # The start time tells a reused process id from the process that had it (#169, as #162); 0 when Windows gives none.
   foreach ($x in $p) {
     $c = 0; if ($x.CreationDate) { $c = $x.CreationDate.ToFileTimeUtc() }
-    [Console]::Out.WriteLine("$($x.ProcessId),$($x.ParentProcessId),$([long]$x.KernelModeTime + [long]$x.UserModeTime),$($x.WorkingSetSize),$c")
-  }`;
+    [Console]::Out.WriteLine("$($x.ProcessId),$($x.ParentProcessId),$([long]$x.KernelModeTime + [long]$x.UserModeTime),$($x.WorkingSetSize),$c,$($x.Name)")
+  }
+  # The GPU's counters in the same answer (resource limits): "G ..." lines, read by gpu.ts, timed by their own "G T".
+  [Console]::Out.WriteLine("G T,$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())")
+${WINDOWS_GPU_READ}`;
 
 /**
  * Turns the PowerShell loop's lines into one process list per batch, each with the time PowerShell
@@ -86,18 +99,25 @@ const WINDOWS_ANSWER = `  $p = Get-CimInstance Win32_Process -Property ProcessId
  * few milliseconds read as 26 cores on a 12-thread machine (#157). A `#BEGIN` without a time (an
  * older loop) falls back to the time of handling.
  */
-export function windowsBatchReader(onList: (list: ProcessList, at: number) => void, now: () => number = Date.now): (line: string) => void {
+export function windowsBatchReader(onList: (list: ProcessList, at: number, gpu?: { raw: GpuRaw; at: number }) => void, now: () => number = Date.now): (line: string) => void {
   let lines: string[] | null = null;
+  let gpuLines: string[] = [];
+  let gpuAt = 0;
   let at = 0;
   return (line) => {
     if (line.startsWith('#BEGIN')) {
       lines = [];
+      gpuLines = [];
+      gpuAt = 0;
       const read = Number(line.slice('#BEGIN'.length).trim());
       at = read > 0 ? read : now();
     } else if (line === '#END' && lines) {
-      onList(parseWindowsLines(lines), at);
+      // The GPU's lines (resource limits), timed by their own "G T" line: they are read after the process list.
+      onList(parseWindowsLines(lines), at, gpuAt > 0 ? { raw: parseWindowsGpu(gpuLines), at: gpuAt } : undefined);
       lines = null;
-    } else lines?.push(line);
+    } else if (lines && line.startsWith('G T,')) gpuAt = Number(line.slice(4)) || at;
+    else if (lines && line.startsWith('G ')) gpuLines.push(line);
+    else lines?.push(line);
   };
 }
 
@@ -112,10 +132,10 @@ export class ProcessSampler {
   private timer: NodeJS.Timeout | null = null;
   private stopped = false;
   private readonly intervalSec: number;
-  private readonly onList: (list: ProcessList, at: number) => void;
+  private readonly onList: (list: ProcessList, at: number, gpu?: { raw: GpuRaw; at: number }) => void;
   private readonly opts: SamplerOptions;
 
-  constructor(intervalSec: number, onList: (list: ProcessList, at: number) => void, opts: SamplerOptions = {}) {
+  constructor(intervalSec: number, onList: (list: ProcessList, at: number, gpu?: { raw: GpuRaw; at: number }) => void, opts: SamplerOptions = {}) {
     this.intervalSec = intervalSec;
     this.onList = onList;
     this.opts = opts;

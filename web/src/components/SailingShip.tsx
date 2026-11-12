@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { onTick } from '../clock.ts';
 import {
-  WIDTH, calmSea, depart, fleetLeaves, gather, leadX, render, sailing, sinking, standing, startAgain, turnAndStop,
+  WIDTH, calmSea, depart, fleetLeaves, gather, leadX, renderRuns, sailing, sinking, standing, startAgain, turnAndStop,
   watchArrives, watchChanges, watchStandsDown, type Timeline,
 } from './shipFrames.ts';
 import { shipMode, type ShipMode } from './shipMode.ts';
@@ -143,7 +143,9 @@ export function SailingShip({ mode, width = WIDTH, sizeButton = true, hideWhenSu
   const t = timeline.current!;
   if (hideWhenSunk && mode.kind === 'sunk' && index.current >= t.loopFrom) return null;
   const scene = t.scenes[index.current]!;
-  const drawing = <pre className="sailing-ship" style={{ fontSize: `${maxSize ? Math.min(size, maxSize) : size}px` }} aria-hidden="true">{render(scene, still ? 0 : step)}</pre>;
+  // Work going on behind a stopped ship is drawn in the working colour, the ship itself in the session's (#270).
+  const runs = renderRuns(scene, still ? 0 : step).map((r, i) => (r.back ? <span key={i} className="ship-behind">{r.text}</span> : r.text));
+  const drawing = <pre className="sailing-ship" style={{ fontSize: `${maxSize ? Math.min(size, maxSize) : size}px` }} aria-hidden="true">{runs}</pre>;
   if (!sizeButton) return drawing;
   return (
     <button type="button" className="ship-button" title={`Ship size ${size}px: click for ${nextSize}px`} onClick={stepSize}>

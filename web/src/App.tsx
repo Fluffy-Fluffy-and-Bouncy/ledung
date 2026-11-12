@@ -960,7 +960,7 @@ const Sidebar = memo(function Sidebar(props: {
           data-drag={group ?? undefined}
           data-drag-id={group ? s.id : undefined}
         >
-          {rowStatus(dotShown, s).dot && <span className={`dot ${statusLook(s)}`} title={STATUS_LABEL[s.status]} />}
+          {rowStatus(dotShown, s).dot && <span className={`dot ${waitingToStart(props.machine, s) ? 'queued' : statusLook(s)}`} title={waitingToStart(props.machine, s) ? 'Waiting to start' : STATUS_LABEL[s.status]} />}
           <span className="session-text">
             <span className="session-title">{s.role === 'manager' && <span className="chip">Manager</span>} <Named colour={sessionColour(s, withChatsColour(props.projects, props.chats))}>{s.title}</Named></span>
             {shows.time && <span className="session-sub">{time}</span>}
@@ -1241,7 +1241,7 @@ export function SessionView(props: {
         <button className="phone-back" aria-label="Back to the list" title="Back to the list" onClick={props.onBack}>←</button>
         <div className="session-head-text" onClick={(e) => { if (!(e.target as HTMLElement).closest('a, button')) setHeadDetails((v) => !v); }}>
           <h2>
-            <span className={`dot ${statusLook(session)} phone-dot`} title={STATUS_LABEL[session.status]} />
+            <span className={`dot ${waitingToStart(ledung.machine, session) ? 'queued' : statusLook(session)} phone-dot`} title={waitingToStart(ledung.machine, session) ? 'Waiting to start' : STATUS_LABEL[session.status]} />
             {session.role === 'manager' && <span className="chip">Manager</span>}{' '}
             {renaming
               ? <NameEditor value={session.title} label={`New name for ${session.title}`} onDone={() => setRenaming(false)} onSave={(name) => run(() => api.rename(session.id, name))} />
@@ -1268,7 +1268,10 @@ export function SessionView(props: {
             </div>
           )}
           <div className="muted">
-            <span className={`dot ${statusLook(session)}`} /> {STATUS_LABEL[session.status]}
+            {/* A new session waiting for memory to start (resource limits): not "Ready" (acceptance test, finding 3). */}
+            {waitingToStart(ledung.machine, session)
+              ? <><span className="dot queued" /> Waiting to start: {waitingToStart(ledung.machine, session)}</>
+              : <><span className={`dot ${statusLook(session)}`} /> {STATUS_LABEL[session.status]}</>}
             {session.status === 'queued' && ledung.machine && ledung.machine.line.includes(session.id) ? `: number ${ledung.machine.line.indexOf(session.id) + 1} in line` : ''}
             {session.paused ? ' · Paused' : ''}
             {session.priority !== 'normal' ? <> · <span className={`chip prio-${session.priority}`} title={session.priorityNote ?? undefined}>{PRIORITY_LABEL[session.priority]}</span></> : null}
@@ -1357,7 +1360,7 @@ export function SessionView(props: {
             onOpenBoardThread={boardRepo ? openBoardThread : undefined}
             tint={tint}
           />
-          <WorkingIndicator key={session.id} session={session} children={index.childrenOf(session.id)} messages={ledung.messages}
+          <WorkingIndicator key={session.id} session={session} children={index.childrenOf(session.id)} messages={ledung.messages} waitingToStart={waitingToStart(ledung.machine, session)}
             extra={<MacroChips key={session.id} macros={macros} onUse={fireMacro} onEdit={() => (location.hash = '#/settings/macros')}
               actions={[
                 { id: 'secret', label: '🔑 Lock a secret…', title: 'Type or paste it into a masked field; Claude gets only its name', disabled: composerClosed(session), onPick: () => composerActions.current?.secret() },
@@ -1926,4 +1929,10 @@ function RemoteControlLink({ rc }: { rc: RemoteControlInfo }) {
   if (!rc.url) return <span>Remote Control starting…</span>;
   const bridge = rc.bridge ? ` (bridge ${rc.bridge})` : '';
   return <a href={rc.url} target="_blank" rel="noreferrer noopener" title={`Remote Control on${bridge}: this manager in the Claude app or on claude.ai`}>Remote Control</a>;
+}
+
+/** Why a new session hasn't started yet, when it waits in the resource line for memory; null otherwise. */
+function waitingToStart(machine: MachineInfo | null, session: SessionInfo): string | null {
+  if (session.status !== 'starting') return null;
+  return machine?.resources?.line.find((l) => l.kind === 'session' && l.sessionId === session.id)?.reason ?? null;
 }

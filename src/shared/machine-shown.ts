@@ -30,10 +30,33 @@ const share = (used: number, total: number): number => (total > 0 ? used / total
  */
 export const METER_STEP = 0.05;
 
-/** The meters of the whole machine and Docker's VM, as shares of their total: CPU, memory, then Docker's CPU and memory. */
+/**
+ * The meters of the whole machine and Docker's VM, as shares of their total: CPU, memory, then Docker's CPU and memory,
+ * then each GPU's load and memory (resource limits).
+ */
 export function machineMeters(m: MachineInfo): number[] {
   const d = m.docker;
-  return [share(m.cores, m.cpus), share(m.memUsed, m.memTotal), ...(d ? [share(d.cores, d.cpus), share(d.memUsed, d.memTotal)] : [])];
+  const gpus = (m.resources?.gpus ?? []).flatMap((g) => [g.load / 100, g.vramTotal && g.vramUsed !== null ? share(g.vramUsed, g.vramTotal) : 0]);
+  return [share(m.cores, m.cpus), share(m.memUsed, m.memTotal), ...(d ? [share(d.cores, d.cpus), share(d.memUsed, d.memTotal)] : []), ...gpus];
+}
+
+/**
+ * What the Machine panel shows of resource limits (docs/steps/resource-limits.md), as it reads there: the limits and
+ * settings, the GPUs' names and sizes, the note, the line with its reasons, each job's card (its figures rounded as
+ * shown) and the unreserved cards. What going jobs reserve but don't use is drawn on the bars, to the percent.
+ */
+function resourcesExact(m: MachineInfo): unknown {
+  const r = m.resources;
+  if (!r) return null;
+  const pct = (x: number) => Math.round(x);
+  const amounts = (a: Record<string, number>) => Object.entries(a).sort(([x], [y]) => (x < y ? -1 : 1)).map(([d, v]) => [d, d === 'ram' || d.startsWith('vram:') ? formatBytes(v) : pct(v)]);
+  return [
+    amounts(r.limits), r.settings, r.gpus.map((g) => [g.id, g.name, g.vramTotal, g.main]), r.gpuNote,
+    amounts(r.reserved),
+    r.line.map((l) => [l.id, l.reason, l.place]),
+    r.jobs.map((j) => [j.id, j.what, j.state, j.lowered, j.loweredStays, j.processes, j.learnedRuns, amounts(j.granted), amounts(j.using), j.overSince !== null]),
+    r.unreserved.map((u) => [u.sessionId, u.overDims, u.lowered, amounts(u.using)]),
+  ];
 }
 
 /**
@@ -46,7 +69,7 @@ export function machineExact(m: MachineInfo): string {
   return JSON.stringify([
     m.cpus, formatBytes(m.memTotal), d && [d.cpus, formatBytes(d.memTotal)],
     Object.entries(m.sessions).sort(([a], [b]) => (a < b ? -1 : 1)).map(([id, f]) => [id, formatCores(f.cores), formatBytes(f.memBytes)]),
-    m.working, m.limit, m.line,
+    m.working, m.limit, m.line, resourcesExact(m),
   ]);
 }
 

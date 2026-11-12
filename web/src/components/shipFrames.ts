@@ -23,6 +23,8 @@ interface Sprite {
   shear?: number[];
   /** Draw rows that reach the water line instead of hiding them under the waves. */
   overWater?: boolean;
+  /** Part of the background layer: work going on behind a stopped ship, drawn in the working colour (#270). */
+  back?: boolean;
 }
 
 export interface Scene {
@@ -31,6 +33,8 @@ export interface Scene {
   /** Water-row characters by column: wakes, splashes, bubbles. */
   water?: Record<number, string>;
   marks?: { x: number; y: number; ch: string }[];
+  /** The water row, waves and wakes, is in the background layer (#270). */
+  backWater?: boolean;
 }
 
 /** A run of scenes; after the last one it repeats from loopFrom. */
@@ -41,11 +45,13 @@ export interface Timeline {
   oneShot?: boolean;
 }
 
-/** Draws one scene. The waves roll with the global step, independently of the timeline. */
-export function render(scene: Scene, step: number): string {
+/** One scene as a grid of characters, each marked with whether it is in the background layer. */
+function draw(scene: Scene, step: number): { grid: string[][]; back: boolean[][] } {
   const width = scene.width;
   const grid = Array.from({ length: ROWS }, () => Array<string>(width).fill(' '));
+  const back = Array.from({ length: ROWS }, () => Array<boolean>(width).fill(false));
   grid[ROWS - 1] = Array.from({ length: width }, (_, i) => WAVES[(i + step) % WAVES.length]!);
+  back[ROWS - 1]!.fill(!!scene.backWater);
   for (const [i, ch] of Object.entries(scene.water ?? {})) {
     const x = Number(i);
     if (x >= 0 && x < width) grid[ROWS - 1]![x] = ch;
@@ -57,12 +63,50 @@ export function render(scene: Scene, step: number): string {
       const x0 = s.x + (s.shear?.[r] ?? 0);
       for (let i = 0; i < line.length; i++) {
         const x = x0 + i;
-        if (line[i] !== ' ' && x >= 0 && x < width) grid[y]![x] = line[i]!;
+        if (line[i] !== ' ' && x >= 0 && x < width) {
+          grid[y]![x] = line[i]!;
+          back[y]![x] = !!s.back;
+        }
       }
     });
   }
-  for (const m of scene.marks ?? []) if (m.x >= 0 && m.x < width && m.y >= 0 && m.y < ROWS) grid[m.y]![m.x] = m.ch;
-  return grid.map((row) => row.join('')).join('\n');
+  for (const m of scene.marks ?? []) {
+    if (m.x >= 0 && m.x < width && m.y >= 0 && m.y < ROWS) {
+      grid[m.y]![m.x] = m.ch;
+      back[m.y]![m.x] = false;
+    }
+  }
+  return { grid, back };
+}
+
+/** Draws one scene. The waves roll with the global step, independently of the timeline. */
+export function render(scene: Scene, step: number): string {
+  return draw(scene, step).grid.map((row) => row.join('')).join('\n');
+}
+
+/** A run of the drawing in one layer; the runs joined are what render() gives. */
+export interface Run {
+  text: string;
+  back: boolean;
+}
+
+/**
+ * The drawing split into runs by layer, so the page can colour the background apart from the ship in front
+ * (#270). A space takes the layer of the run it is in, so a scene with no background is one run.
+ */
+export function renderRuns(scene: Scene, step: number): Run[] {
+  const { grid, back } = draw(scene, step);
+  const runs: Run[] = [];
+  grid.forEach((row, y) => {
+    row.forEach((ch, x) => {
+      const last = runs.at(-1);
+      const b = ch === ' ' && last ? last.back : back[y]![x]!;
+      if (last && last.back === b) last.text += ch;
+      else runs.push({ text: ch, back: b });
+    });
+    if (y < ROWS - 1) runs.at(-1)!.text += '\n';
+  });
+  return runs;
 }
 
 const wake = (x: number): Record<number, string> => ({ [x - 1]: '=', [x - 2]: '=' });
@@ -162,8 +206,11 @@ function stopped(s: Sea, behind: Behind): Scene[] {
   if (behind === 'fleet') return [s.gathered];
   if (behind === 'none') return [s.near];
   const scenes: Scene[] = [];
-  // The small boat comes first, so the stopped boat is drawn over it where they overlap.
-  for (let x = -5; x < s.width + 2; x++) scenes.push({ width: s.width, sprites: [{ rows: SMALL, x }, ...s.near.sprites!], water: { [x - 1]: '-' } });
+  // The small boat comes first, so the stopped boat is drawn over it where they overlap. The boat and the water
+  // are the background, in the working colour; the stopped boat keeps the session's (Martin, 2026-11-12, #270).
+  for (let x = -5; x < s.width + 2; x++) {
+    scenes.push({ width: s.width, sprites: [{ rows: SMALL, x, back: true }, ...s.near.sprites!], water: { [x - 1]: '-' }, backWater: true });
+  }
   return scenes;
 }
 
