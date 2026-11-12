@@ -7,6 +7,7 @@ import type { BoardOwnersView, BoardPeopleView, BoardRepoChoicesView, BoardRepoS
 import { api } from '../api.ts';
 import { boardChip, boardStale, checkedAgo, type BoardMark } from '../boardMarks.ts';
 import { pickerGroups, suggestBoardName } from '../boardRepos.ts';
+import { useNow } from '../clock.ts';
 import { usePlainTyping } from '../usePlainTyping.ts';
 
 type Run = (action: () => Promise<unknown>) => Promise<void>;
@@ -28,17 +29,11 @@ export function BoardChip({ board, open, connection, onClick }: { board: BoardSt
 }
 
 /**
- * Redraws every 30 s: the board's state arrives only when it changes and once a minute (issue #232), so the time of the
- * last check, and a check gone stale, must be worked out again without waiting for the next event.
+ * Redraws every 30 s, by the page's shared clock (issue #233): the board's state arrives only when it changes and once
+ * a minute (issue #232), so the time of the last check, and a check gone stale, must be worked out again without
+ * waiting for the next event.
  */
-function useMinuteClock(): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 30_000);
-    return () => clearInterval(t);
-  }, []);
-  return now;
-}
+const useMinuteClock = () => useNow(30_000);
 
 const ago = (at: number | null) => {
   if (!at) return 'not yet';
