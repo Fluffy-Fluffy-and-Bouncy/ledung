@@ -48,9 +48,12 @@ test('the shared lister never reads two lists at once, and a call made during a 
 test("a list still running when the recorder's next tick comes: no second one starts, and what the command left behind is still ended", { timeout: WAIT_MS * 3 }, async () => {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-230-')));
   const runner = new LocalRunner({ name: 'p', runner: 'local', path: dir } as never);
-  const marker = `ledung-230-left-${process.pid}-${Date.now()}`;
+  const half = `ledung-230-left-${process.pid}`;
+  const marker = `${half}-${Date.now()}`;
   const node = JSON.stringify(process.execPath).replace(/\\\\/g, '/');
-  const script = `require("child_process").spawn(process.execPath, ["-e", "setTimeout(()=>{}, 60000)", "${marker}"], { stdio: "ignore", detached: true }).unref(); setTimeout(()=>{}, 4000)`;
+  // The marker is joined inside the script, so only the child's command line carries it whole, not the
+  // command's own (self-check of #230, round 2): the probe then sees the child and nothing else.
+  const script = `require("child_process").spawn(process.execPath, ["-e", "setTimeout(()=>{}, 60000)", "${half}" + "${marker.slice(half.length)}"], { stdio: "ignore", detached: true }).unref(); setTimeout(()=>{}, 4000)`;
   let running = 0;
   let most = 0;
   let calls = 0;
