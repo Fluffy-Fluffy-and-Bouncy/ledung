@@ -138,7 +138,8 @@ export function UsagePublishSettings({ accounts: known, run }: { accounts: Accou
 }
 
 /**
- * The usage key labels projects not published by name; computers that share it label a project alike. Linked
+ * The usage key labels projects not published by name and keys the account fingerprints (Project-Ledung#480);
+ * computers that share it label a project alike and show an account as one card. Linked
  * computers share it by themselves when publishing is switched on; another computer can paste it here.
  */
 function UsageKey({ view, onView, run }: { view: UsagePublishView; onView: (v: UsagePublishView) => void; run: Run }) {
@@ -149,8 +150,9 @@ function UsageKey({ view, onView, run }: { view: UsagePublishView; onView: (v: U
     <div>
       <h4>Usage key</h4>
       <p className="muted">
-        Makes a project's <span className="mono">other#</span> label the same on all your computers, without its name. It stays on this computer,
-        next to the link keys. {view.hasKey ? 'This computer has one.' : 'This computer makes one, or takes a linked computer\'s, when publishing is switched on.'}
+        Makes a project's <span className="mono">other#</span> label, and each account's card on the Shared tab, the same on all your computers,
+        without the project's name or the account's email. Computers with another key show the same account as a card of their own. It stays on
+        this computer, next to the link keys. {view.hasKey ? 'This computer has one.' : 'This computer makes one, or takes a linked computer\'s, when publishing is switched on.'}
       </p>
       <div className="board-add">
         {view.hasKey && !shown && <button className="small" onClick={() => void run(async () => setShown((await api.revealUsageKey()).key))}>Show the key</button>}
