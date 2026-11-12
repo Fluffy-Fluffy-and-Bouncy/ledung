@@ -32,7 +32,9 @@ import { deskQuestion, questionText, type QuestionDetails } from '../shared/ques
 import { compactionUsage, contextAfterCompact, UsageRecorder, type SessionFacts } from '../usage/recorder.ts';
 import { findTickets } from '../usage/links.ts';
 import type { PullRequestPoller } from './pr-poll.ts';
-import { CONTEXT_TOOLS, instructions, LEDUNG_SERVER, LEDUNG_TOOLS, ledungToolServer, MCP_LIMIT_ENV, mcpLimitFor, SETTINGS_CHANGE_RULE, SETTINGS_CHANGE_TOOLS, SETTINGS_TOOLS, USAGE_PUBLISH_TOOLS, USER_APPROVED_TOOLS, type BoardHandlers, type ManagerHandlers, type ProposeHandlers, type RunHandlers, type ToolHandlers } from './tools.ts';
+import { helperToolServer, type HelperHandlers } from './helper-tools.ts';
+import { helperInstructions } from './helper.ts';
+import { CONTEXT_TOOLS, instructions, LEDUNG_SERVER, LEDUNG_TOOLS, ledungToolServer, MCP_LIMIT_ENV, mcpLimitFor, BASICS_TOOLS, SETTINGS_CHANGE_RULE, SETTINGS_CHANGE_TOOLS, SETTINGS_TOOLS, USAGE_PUBLISH_TOOLS, USER_APPROVED_TOOLS, type BoardHandlers, type ManagerHandlers, type ProposeHandlers, type RunHandlers, type ToolHandlers } from './tools.ts';
 import type { Boards } from '../board/boards.ts';
 import { commandKinds } from '../resources/commands.ts';
 import { FRESH_FACTS, pauseReason, type IdleState } from './idle.ts';
@@ -240,6 +242,11 @@ export interface SessionOptions {
   propose?: ProposeHandlers | null;
   /** Ledung's own plugin folders for this session (part 3e: the "workflow building" skill), loaded whatever its profile. */
   ledungPlugins?: string[];
+  /**
+   * The Ledung Helper (docs/steps/ledung-helper.md): its own tools in place of every session and manager tool, Claude
+   * Code's built-in tools cut to `builtInTools`, and a line at each prompt (the setup's step).
+   */
+  helper?: { handlers: HelperHandlers; builtInTools: string[]; promptLine: () => string } | null;
   /** The project's sensitive patterns (the built-in ones always apply too). */
   sensitive?: Partial<SensitiveRules>;
   /** The managers' project tools run unasked instead of always going to the user (issue #37; opt-in of 2026-10-14). */
@@ -329,6 +336,7 @@ export class Session {
   private readonly runs: (() => Promise<RunHandlers | null>) | null;
   private readonly propose: ProposeHandlers | null;
   private readonly ledungPlugins: string[];
+  private readonly helper: SessionOptions['helper'];
   private readonly sensitiveRules: Partial<SensitiveRules>;
   private readonly alwaysAsked: readonly string[];
   private readonly ticketConfig: { pattern: string; url: string } | undefined;
@@ -467,6 +475,7 @@ export class Session {
     this.runs = opts.runs ?? null;
     this.propose = opts.propose ?? null;
     this.ledungPlugins = opts.ledungPlugins ?? [];
+    this.helper = opts.helper ?? null;
     this.flow = opts.flow ?? null;
     this.sensitiveRules = opts.sensitive ?? {};
     // Settings' actions stay asked whatever projectToolsUnasked says (issue #263).
@@ -600,12 +609,12 @@ export class Session {
    */
   private async watchedToolServer(tools: ToolHandlers): Promise<McpSdkServerConfigWithInstance> {
     // A server of its own for the fingerprint: an MCP server takes one connection, and the SDK's comes later.
-    this.toolsCurrent = await toolSchemaHash(ledungToolServer(tools)).catch((e: Error) => {
+    this.toolsCurrent = await toolSchemaHash(this.toolServer(tools)).catch((e: Error) => {
       console.error(`Tool schema of session ${this.id}: ${e.message}`);
       return null;
     });
     if (this.toolsCurrent && !this.attachTo) this.store.setToolsSchema(this.id, this.toolsCurrent);
-    return onToolServerConnected(ledungToolServer(tools), (server) => {
+    return onToolServerConnected(this.toolServer(tools), (server) => {
       if (!this.attachTo || !this.toolsStale()) return;
       server.sendToolListChanged();
       if (!staleToolsExercised) {
@@ -613,6 +622,11 @@ export class Session {
         exercisedLine('EXERCISED #164 a reattached session told its Ledung tools changed');
       }
     });
+  }
+
+  /** Ledung's tool server for this session: the helper's own, or the session's and manager's tools. */
+  private toolServer(tools: ToolHandlers): McpSdkServerConfigWithInstance {
+    return this.helper ? helperToolServer(this.userName, this.helper.handlers) : ledungToolServer(tools);
   }
 
   /** Whether the session's Claude Code has an older Ledung tool list than this Ledung's; unknown (before #164) counts as older. */
@@ -1045,10 +1059,14 @@ export class Session {
    */
   private settingsChangeHook(toolName: string, raw: unknown): Record<string, unknown> {
     const out = (permissionDecision: 'allow' | 'ask' | 'deny', permissionDecisionReason: string) => ({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision, permissionDecisionReason } });
-    if (this.store.getSession(this.id)?.role !== 'manager') return out('deny', "Only a manager changes projects' settings.");
+    // The Ledung Helper changes projects' settings too, through this same hook (docs/steps/ledung-helper.md); not usage_publish.
+    const helper = this.management.isHelper(this.id);
+    if (helper ? USAGE_PUBLISH_TOOLS.includes(toolName) : this.store.getSession(this.id)?.role !== 'manager' || BASICS_TOOLS.includes(toolName)) {
+      return out('deny', "Only a manager changes projects' settings.");
+    }
     let decision: ReturnType<Management['settingsChange']>;
     try {
-      decision = USAGE_PUBLISH_TOOLS.includes(toolName) ? this.management.usagePublishChange(this.id, raw) : this.management.settingsChange(this.id, raw);
+      decision = this.settingsDecision(toolName, raw, true);
     } catch (e) {
       return out('ask', `Ledung could not check this change (${(e as Error).message}), so it asks.`);
     }
@@ -1061,10 +1079,17 @@ export class Session {
       : "Allowed by Ledung: a change to a project's settings that loosens nothing.");
   }
 
+  /** What the settings hook makes of a call: by tool, usage_publish, set_project_basics or set_project_settings. */
+  private settingsDecision(toolName: string, raw: unknown, note: boolean): ReturnType<Management['settingsChange']> {
+    if (USAGE_PUBLISH_TOOLS.includes(toolName)) return this.management.usagePublishChange(this.id, raw, note);
+    if (BASICS_TOOLS.includes(toolName)) return this.management.basicsChange(this.id, raw, note);
+    return this.management.settingsChange(this.id, raw, note);
+  }
+
   /** The rule a set_project_settings prompt names: what it loosens, with before and after (issue #306). */
   private settingsChangeRule(toolName: string, input: Record<string, unknown>): string {
     try {
-      const d = USAGE_PUBLISH_TOOLS.includes(toolName) ? this.management.usagePublishChange(this.id, input, false) : this.management.settingsChange(this.id, input, false);
+      const d = this.settingsDecision(toolName, input, false);
       if ('ask' in d) return d.ask;
     } catch {
       // The plain rule below.
@@ -1145,11 +1170,13 @@ export class Session {
       // None: left out, and Claude Code takes its own default as before.
       ...(this.askedEffort() ? { effort: this.askedEffort() } : {}),
       // Level B keeps only what Claude Code and a shell need of Ledung's environment (issue #109).
-      env: { ...claudeEnvironment(this.airgap ? airgapEnvironment(process.env, tmp) : process.env, this.account?.env, instructions(tools)), ...launched?.env },
+      env: { ...claudeEnvironment(this.airgap ? airgapEnvironment(process.env, tmp) : process.env, this.account?.env, this.helper ? helperInstructions(this.userName) : instructions(tools)), ...launched?.env },
       resume: this.attachTo ? undefined : this.resume,
       // Always explicit: without it a session may pick a mode from its settings (spike finding 1).
       permissionMode: this.store.getSession(this.id)!.permissionMode,
       systemPrompt: { type: 'preset', preset: 'claude_code' },
+      // The Ledung Helper keeps only the built-in tools it needs (Skill): no file, shell, web or agent tools.
+      ...(this.helper ? { tools: this.helper.builtInTools } : {}),
       // Ledung's own plugins (part 3e, #1577): passed for this session alone, whatever the profile turns off of the user's.
       ...(this.ledungPlugins.length ? { plugins: [...(profile.plugins ?? []), ...this.ledungPlugins.map((p) => ({ type: 'local' as const, path: p }))] } : {}),
       mcpServers: {
@@ -1159,7 +1186,8 @@ export class Session {
       },
       canUseTool: (toolName, input, opts) =>
         // Ledung's own tools never need a prompt; the project tools only when the project opted in (2026-10-14).
-        unaskedTool(toolName, this.alwaysAsked) ? Promise.resolve({ behavior: 'allow' as const, updatedInput: input }) : this.onPermission(toolName, input, opts),
+        // The Ledung Helper's Skill loads only Ledung's own two skills: it has no other plugins or user settings.
+        unaskedTool(toolName, this.alwaysAsked) || (this.helper && toolName === 'Skill') ? Promise.resolve({ behavior: 'allow' as const, updatedInput: input }) : this.onPermission(toolName, input, opts),
       // The user's own Claude Code, or the SDK's copy when the config says "bundled" (issue #341).
       pathToClaudeCodeExecutable: this.programPath(),
       spawnClaudeCodeProcess: (o) => {
@@ -1278,7 +1306,9 @@ export class Session {
           const now = new Date();
           // A message with a locked secret carries the rule for it (issue #468).
           const secret = prompt.includes(SECRET_FOR_CLAUDE_START) ? SECRET_RULE : '';
-          const time = [promptTimeLine(now, this.lastPromptAt, info?.createdAt ?? null), context, usage, away, secret].filter(Boolean).join('\n');
+          // The Ledung Helper's setup step, which Ledung keeps (docs/steps/ledung-helper.md).
+          const helperLine = this.helper?.promptLine() ?? '';
+          const time = [promptTimeLine(now, this.lastPromptAt, info?.createdAt ?? null), context, usage, away, secret, helperLine].filter(Boolean).join('\n');
           this.lastPromptAt = now.getTime();
           // A launch's own SessionStart never reaches Ledung's hook (Claude Code runs the startup hooks before the
           // SDK's are registered; loopback of #469), so the launch's first prompt carries the list instead.
@@ -1672,6 +1702,7 @@ export class Session {
       if (SETTINGS_CHANGE_TOOLS.includes(p.toolName)) {
         const shown = this.store.getPermission(permissionId)?.sensitive ?? null;
         if (USAGE_PUBLISH_TOOLS.includes(p.toolName)) this.management.noteApprovedUsagePublish(this.id, p.input, shown);
+        else if (BASICS_TOOLS.includes(p.toolName)) this.management.noteApprovedBasics(this.id, p.input, shown);
         else this.management.noteApprovedSettings(this.id, p.input, shown);
       }
       const updatedInput = decision.answers ? { ...p.input, answers: decision.answers } : p.input;

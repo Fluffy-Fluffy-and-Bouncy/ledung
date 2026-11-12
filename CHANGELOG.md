@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-12
+- **Ledung Helper**: a brand-new Ledung opens on a Welcome screen and a Claude check, then a chat with Ledung's own helper walks you through the setup step by step (your name, accounts, a first project with its model, mode, sensitive list, grant and workflow, shortcuts, phone, the check-in), with a step bar and "Do it myself instead" on every step. Afterwards the helper stays in the sidebar and Settings, creates projects and changes their settings when asked, always through the same approvals as before; it can't read project files and never touches a locked project. (no issue)
 - Standing grants are stricter: a "starts with" grant such as `git push:*` now covers only that command and its arguments, on one line; a command that spans several lines, or a longer word that merely starts the same, is asked about as if there were no grant. (Project-Ledung#472)
 
 ## 2026-11-11

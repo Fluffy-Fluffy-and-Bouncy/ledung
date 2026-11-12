@@ -5,7 +5,8 @@
 // questions. Nothing a session writes can reach another session as the user's words: forwardAnswer
 // copies the user's stored answer, never text the manager supplies (decision of 2026-10-10).
 import type { Store } from '../store/store.ts';
-import { effortLevel, unknownEffort } from '../shared/protocol.ts';
+import { effortLevel, HELPER, unknownEffort } from '../shared/protocol.ts';
+import { applyBasics, basicsKey, basicsLoosening, basicsRule, parseBasics, type BasicsPatch } from './helper.ts';
 import type { AttachedSource, AwayInfo, CompactingInfo, MachineInfo, McpServerInfo,PermissionDecision, PermissionInfo, PermissionMode, Priority, ProjectInfo, QuestionInfo, QuestionShot, ServerEvent, ShotVerdict, SessionInfo } from '../shared/protocol.ts';
 import { parseProject, type ProjectConfig, type WorkflowConfig } from '../config.ts';
 import type { NewProjectArgs, ProjectArgs } from './tools.ts';
@@ -1661,6 +1662,8 @@ ${note}`);
     const port = this.ctx.projectSettings;
     if (!port) throw new ManagementError("Projects' settings are not available in this Ledung.");
     const own = this.store.getSession(managerId)?.project;
+    // The Ledung Helper is the person's own, for Ledung's settings: no project's toggle stands for it (ledung-helper.md).
+    if (own === HELPER) return port;
     if (!this.ctx.projects().find((p) => p.name === own)?.projectSettingsTools) {
       throw new ManagementError(`Reading and changing projects' workflow settings is off for your project. ${this.ctx.userName} can switch it on in your project's settings ("Its manager reads and changes workflow settings of your projects").`);
     }
@@ -1794,6 +1797,77 @@ ${note}`);
       }
     }
     const changed = changedFields(before, after);
+    if (!changed.length) return `Nothing to change: "${patch.project}" has these settings already.`;
+    try {
+      port.update(patch.project, after);
+    } catch (e) {
+      throw new ManagementError(`These settings can't be saved: ${(e as Error).message}`);
+    }
+    return `Saved ${changed.join(', ')} for "${patch.project}". Its manager and sessions get them when they next start or resume; running ones keep theirs.`;
+  }
+
+  // --- The Ledung Helper's set_project_basics (docs/steps/ledung-helper.md) ------------------------------
+  // What a manager may not change: model, effort, permission mode, account. Through the same hook as
+  // set_project_settings: a looser mode or another account is asked of the person, the rest runs; never a locked project.
+
+  /** Whether this session is the Ledung Helper. */
+  isHelper(sessionId: string): boolean {
+    return this.store.getSession(sessionId)?.project === HELPER;
+  }
+
+  private basicsPatched(helperId: string, patch: BasicsPatch): { port: NonNullable<ManagementContext['projectSettings']>; before: ProjectConfig; after: ProjectConfig } {
+    if (!this.isHelper(helperId)) throw new ManagementError('Only the Ledung Helper changes these settings.');
+    const port = this.settingsTools(helperId);
+    const before = this.settingsTarget(port, patch.project);
+    let after: ProjectConfig;
+    try {
+      after = parseProject(applyBasics(before, patch));
+      port.check(patch.project, after);
+    } catch (e) {
+      throw new ManagementError(`These settings can't be saved: ${(e as Error).message}`);
+    }
+    return { port, before, after };
+  }
+
+  /** The hook's answer for set_project_basics, as settingsChange is set_project_settings'. */
+  basicsChange(helperId: string, raw: unknown, note = true): { deny: string } | { ask: string } | { allow: true } {
+    const parsed = parseBasics(raw);
+    if ('problem' in parsed) return { deny: `set_project_basics: ${parsed.problem}` };
+    let rule: string | null;
+    try {
+      const { before, after } = this.basicsPatched(helperId, parsed.patch);
+      rule = basicsRule(parsed.patch.project, basicsLoosening(before, after));
+    } catch (e) {
+      return { deny: (e as Error).message };
+    }
+    if (rule) return { ask: rule };
+    if (note) this.noteUnasked(basicsKey(helperId, parsed.patch));
+    return { allow: true };
+  }
+
+  noteApprovedBasics(helperId: string, raw: unknown, shown: string | null): void {
+    const parsed = parseBasics(raw);
+    if ('patch' in parsed) this.noteApproval(basicsKey(helperId, parsed.patch), shown);
+  }
+
+  /** set_project_basics: saved once what it loosens now is what the person allowed (or nothing, run unasked). */
+  setProjectBasics(helperId: string, patch: BasicsPatch): string {
+    const { port, before, after } = this.basicsPatched(helperId, patch);
+    const key = basicsKey(helperId, patch);
+    const now = basicsRule(patch.project, basicsLoosening(before, after));
+    const approved = this.takeApproval(key);
+    if (approved !== undefined) {
+      if (now !== null && now !== approved) throw new ManagementError(`The settings of "${patch.project}" changed while ${this.ctx.userName} was asked, so this is no longer what they allowed; nothing was saved. Call it again to ask.`);
+    } else {
+      const unasked = this.takeUnasked(key);
+      if (now !== null) {
+        throw new ManagementError(unasked
+          ? `The settings of "${patch.project}" changed meanwhile, and this change now lets more through; nothing was saved. Call it again to ask ${this.ctx.userName}.`
+          : `This change lets more through without ${this.ctx.userName} and they did not allow it; nothing was saved.`);
+      }
+    }
+    const keys = ['model', 'managerModel', 'effort', 'permissionMode', 'account'] as const;
+    const changed = keys.filter((k) => JSON.stringify(before[k] ?? null) !== JSON.stringify(after[k] ?? null));
     if (!changed.length) return `Nothing to change: "${patch.project}" has these settings already.`;
     try {
       port.update(patch.project, after);

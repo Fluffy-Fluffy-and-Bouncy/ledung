@@ -38,6 +38,7 @@ import { lineOrder, mayStart, type LineEntry } from '../resources/line.ts';
 import { ResourceMonitor, type MonitorTarget } from '../resources/monitor.ts';
 import {
   CHATS,
+  HELPER,
   PERMISSION_MODES,
   type ChatsInfo,
   MODEL_CHOICES,
@@ -111,6 +112,22 @@ import type { RunBlock } from '../shared/protocol.ts';
 import type { ProposeHandlers, RunHandlers } from './tools.ts';
 import { buildProposal, ProposalStore, proposalSummary, type ProposedChange } from './flow-propose.ts';
 import type { FlowProposal } from '../shared/flow-proposal.ts';
+
+import { helperFolder, HELPER_BUILT_IN_TOOLS, HELPER_DEFAULT_MODEL, HELPER_MODELS, HELPER_PROFILE, setupKickoff, setupPromptLine } from './helper.ts';
+import type { HelperHandlers } from './helper-tools.ts';
+import { CardSchema, type HelperCard } from '../shared/helper-cards.ts';
+import { isSetupStep, markProblem, setupView, type HelperInfo, type SetupFacts, type SetupPhase, type SetupState, type SetupStepId, type SetupView } from '../shared/setup.ts';
+import { ASKED_KEY as SHORTCUTS_ASKED_KEY } from '../platform/shortcuts.ts';
+import { NOTICE_KEY as CHECKIN_NOTICE_KEY } from '../update/checkin.ts';
+
+/** Ledung's own plugin with the Ledung Helper's "ledung-help" skill (docs/steps/ledung-helper.md). */
+export const HELP_PLUGIN = () => path.join(appDir(), 'plugins', 'ledung-help');
+/** The setup's state, the name given in it and the helper's model (docs/steps/ledung-helper.md); in meta, so no migration. */
+const SETUP_KEY = 'setup';
+const USER_NAME_KEY = 'user-name';
+const HELPER_MODEL_KEY = 'helper-model';
+/** The config's userName when it sets none (config.ts): then the name given in setup stands. */
+const DEFAULT_USER_NAME = 'the user';
 
 /** Ledung's own plugin with the "workflow building" skill (part 3e, #1577), shipped beside src/ and web/. */
 export const WORKFLOW_PLUGIN = () => path.join(appDir(), 'plugins', 'ledung-workflow');
@@ -222,6 +239,9 @@ export class SessionManager {
   private readonly pullRequests: PullRequestPoller;
 
   constructor(config: LedungConfig, store: Store, publish: (event: ServerEvent) => void) {
+    // The name given in the setup, when the config sets none: before anything takes the name (ledung-helper.md).
+    const given = config.userName === DEFAULT_USER_NAME ? store.getMeta(USER_NAME_KEY) : null;
+    if (given) config.userName = given;
     this.config = config;
     this.store = store;
     // New plan-limit figures may reach or pass a usage stop (issue #278).
@@ -254,9 +274,11 @@ export class SessionManager {
     const suggested = this.projectStore.addSuggestionsOnce();
     if (suggested) console.log(`Added the suggested sensitive patterns to ${suggested} project(s).`);
     this.addChatsSuggestionsOnce();
+    const self = this;
     this.management = new Management({
       store,
-      userName: config.userName,
+      // Read when used, so a name given in the setup reaches it at once.
+      get userName() { return self.config.userName; },
       publish,
       orders: this.orders,
       away: () => this.away.current(),
@@ -1025,7 +1047,11 @@ export class SessionManager {
     let profile: Profile | undefined;
     const profiles = this.profilesFor(project);
     const launch = this.launchSettings(project, info.role);
-    if (launch.airgap) {
+    const helper = info.project === HELPER;
+    if (helper) {
+      // Nothing of the person's own setup, whatever profile is named (ledung-helper.md).
+      profile = HELPER_PROFILE;
+    } else if (launch.airgap) {
       // Level B: the airgap profile, whatever profile it was started with (issue #109).
       profile = AIRGAP_PROFILE;
     } else {
@@ -1038,7 +1064,7 @@ export class SessionManager {
     return {
       account, profile, pluginsOff: profiles.pluginsOff,
       // The user's own skills it gets (#300); chats are the user's own and keep them all.
-      skills: info.project === CHATS ? null : { role: info.role, defaults: this.skillDefaults(), project: project.skills },
+      skills: info.project === CHATS || helper ? null : { role: info.role, defaults: this.skillDefaults(), project: project.skills },
       lockdown: launch.others,
       airgap: launch.airgap,
       // A reattached session runs on the account it started with, not a chats' choice changed since (review of #287).
@@ -1067,11 +1093,13 @@ export class SessionManager {
       // run tools' line when Ledung follows it (workflow part 3).
       flow: info.role === 'manager' && info.project !== CHATS ? () => flowInstructions(this.flowPlacesOf(project), project.followFlow !== false) : undefined,
       // The run tools only where there is a flow to follow (part 3, "keeping context small").
-      runs: info.project !== CHATS ? () => this.runHandlers(project, info.id) : undefined,
+      runs: info.project !== CHATS && !helper ? () => this.runHandlers(project, info.id) : undefined,
       // A manager whose project follows its workflow builds and changes it by proposing (part 3e); with the "workflow
       // building" skill as Ledung's own plugin where Claude Code runs on this computer, else the guide from the tool (#1577).
       propose: info.role === 'manager' && info.project !== CHATS && project.followFlow !== false ? this.proposeHandlers(project, info.id) : null,
-      ledungPlugins: info.role === 'manager' && info.project !== CHATS && project.followFlow !== false && project.runner === 'local' ? [WORKFLOW_PLUGIN()] : [],
+      ledungPlugins: helper ? [HELP_PLUGIN(), WORKFLOW_PLUGIN()]
+        : info.role === 'manager' && info.project !== CHATS && project.followFlow !== false && project.runner === 'local' ? [WORKFLOW_PLUGIN()] : [],
+      helper: helper ? { handlers: this.helperHandlers(info.id), builtInTools: HELPER_BUILT_IN_TOOLS, promptLine: () => setupPromptLine(this.setupView()) } : null,
       remoteControl: launch.remoteControl,
       sensitive: {
         commandPatterns: [...this.config.sensitive.commandPatterns, ...project.sensitive.commandPatterns],
@@ -1283,6 +1311,8 @@ export class SessionManager {
 
   private publishProjects(): void {
     this.publish({ type: 'projects', projects: this.projects() });
+    // A project added or removed may finish or reopen a setup step.
+    this.publishHelper();
   }
 
   // --- Projects (projects and accounts, P1) ------------------------------------------------------
@@ -1349,10 +1379,14 @@ export class SessionManager {
    * A manager's proposed workflow change (part 3e): checked as the builder checks a save, kept, and put to the person as
    * a review with the flows before and after; nothing is written until it is accepted.
    */
-  async proposeFlow(managerId: string, changes: ProposedChange[], why: string): Promise<string> {
+  async proposeFlow(managerId: string, changes: ProposedChange[], why: string, forProject?: string): Promise<string> {
     const manager = this.store.getSession(managerId);
-    if (!manager || manager.role !== 'manager') throw new Error('Only a manager proposes workflow changes.');
-    const project = this.project(manager.project);
+    // The Ledung Helper proposes for a project it names, never a locked one (ledung-helper.md); a manager for its own.
+    const helper = manager?.project === HELPER;
+    if (!manager || (manager.role !== 'manager' && !helper)) throw new Error('Only a manager proposes workflow changes.');
+    if (helper && !forProject) throw new Error('Name the project.');
+    const project = this.project(helper ? forProject! : manager.project);
+    if (helper && isLocked(project)) throw new Error(`The project "${project.name}" is locked: only ${this.config.userName} changes it, in the page.`);
     const view = await this.flowView(project.name);
     let data;
     try {
@@ -1380,6 +1414,8 @@ export class SessionManager {
     const q = this.store.createQuestion({ sessionId: managerId, question: questionText(undefined, details), options: null, addressedTo: 'user', details });
     this.proposals.setQuestion(proposal.id, q.id);
     this.publish({ type: 'question', question: q });
+    // In the helper's chat, a card opens the review (ledung-helper.md).
+    if (helper) this.addCard(managerId, { kind: 'review', title: `Review the workflow for ${project.name}`, question: q.id, project: project.name });
     return `Your change is put to ${this.config.userName} as review #${q.id}, with the flows before and after.${faults.length ? ` The checks find ${faults.length} problem${faults.length === 1 ? '' : 's'} (said in the review):\n${listed(faults)}\nIf they are real, propose again with them fixed and withdraw review #${q.id}.` : ''} ` +
       'Accepted saves it; Changes needed comes back with the note. End your turn now.';
   }
@@ -1413,6 +1449,7 @@ export class SessionManager {
       if (moved.length) throw new Error(`the workflow changed since it was proposed (${moved.slice(0, 5).join(', ')}), so what was checked is not what would be saved.`);
       await this.saveFlow(p.project, p.writes);
       this.proposals.setState(p.id, 'saved');
+      this.noteFlowSaved(p.project);
       this.store.addInbox(p.manager, 'ledung', `Ledung: ${this.config.userName} accepted review #${q.id}, and your workflow change is saved into ${p.project}'s .ledung/workflow (${p.writes.map((w) => w.path).join(', ')}). The workflow page shows it. Run tools added for a project that had no flow come with your next start.`);
     } catch (e) {
       this.proposals.setState(p.id, 'failed');
@@ -2074,6 +2111,9 @@ export class SessionManager {
       }
     }
     this.boards?.refresh();
+    // The setup follows its project to the new name (ledung-helper.md).
+    const setup = this.setupState();
+    if (setup.project === name && p.config.name !== name) this.store.setMeta(SETUP_KEY, JSON.stringify({ ...setup, project: p.config.name, ...(setup.flowSaved === name ? { flowSaved: p.config.name } : {}) }));
     this.publishProjects();
     for (const s of this.sessions()) if (s.project === p.config.name) this.publish({ type: 'session', session: s });
     return this.projectInfo(this.projectStore.get(p.config.name)!);
@@ -2236,11 +2276,13 @@ export class SessionManager {
 
   /** The settings a session runs with: its project's, or a chat's (issue #211) on its own account (issue #119). */
   private configOf(info: SessionInfo): ProjectConfig {
+    if (info.project === HELPER) return this.helperConfig();
     return info.project === CHATS ? this.chatConfig(info.workDir ?? this.chats().folder, info.account) : this.project(info.project);
   }
 
   /** configOf, or null for a session whose project is gone. */
   private configOrNull(info: SessionInfo): ProjectConfig | null {
+    if (info.project === HELPER) return this.helperConfig();
     return info.project === CHATS ? this.chatConfig(info.workDir ?? this.chats().folder, info.account) : this.projectStore.get(info.project)?.config ?? null;
   }
 
@@ -2308,6 +2350,266 @@ export class SessionManager {
     }
     const [files, texts] = await Promise.all([runner.skillFiles(null), runner.pluginSettingsTexts(null)]);
     return { skills: skillsFromFiles(files), plugins: pluginIdsIn(texts), defaults: this.skillDefaults() };
+  }
+
+  // --- The Ledung Helper and the first start (docs/steps/ledung-helper.md) ----------------------------
+  // Ledung keeps the setup's steps, in meta; a step that names a thing is done when the thing is there. The helper
+  // is one conversation (the newest not archived) in its own folder, with its own tools (helper-tools.ts).
+
+  private setupState(): SetupState {
+    const raw = this.store.getMeta(SETUP_KEY);
+    if (raw) {
+      try {
+        const j = JSON.parse(raw) as Partial<SetupState>;
+        const phases: SetupPhase[] = ['none', 'welcome', 'claude', 'helper', 'done'];
+        if (j && phases.includes(j.phase as SetupPhase)) {
+          const marks: SetupState['marks'] = {};
+          for (const [k, v] of Object.entries(j.marks ?? {})) if (isSetupStep(k) && (v === 'done' || v === 'skipped')) marks[k] = v;
+          return { phase: j.phase as SetupPhase, marks, project: typeof j.project === 'string' ? j.project : null, ...(typeof j.flowSaved === 'string' ? { flowSaved: j.flowSaved } : {}) };
+        }
+      } catch {
+        // A value a later version wrote that this one can't read: as if never set below.
+      }
+    }
+    // Never set: a brand-new Ledung starts with the welcome; one that already has projects or sessions never does.
+    const fresh = !this.projectStore.list().length && !this.store.listSessions().length;
+    const state: SetupState = { phase: fresh ? 'welcome' : 'none', marks: {}, project: null };
+    this.store.setMeta(SETUP_KEY, JSON.stringify(state));
+    return state;
+  }
+
+  private saveSetup(state: SetupState): void {
+    this.store.setMeta(SETUP_KEY, JSON.stringify(state));
+    this.publishHelper();
+  }
+
+  /** What Ledung sees for itself, for the steps that name a thing. */
+  private setupFacts(state: SetupState): SetupFacts {
+    const project = state.project ? this.projectStore.get(state.project)?.config : undefined;
+    const ownFlow = project?.runner === 'local' && fs.existsSync(path.join(project.path, '.ledung', 'workflow', 'flow.json'));
+    return {
+      named: this.config.userName !== DEFAULT_USER_NAME,
+      project: !!project,
+      workflow: !!project && (ownFlow || state.flowSaved === project.name),
+      // Shortcuts are made on Windows and macOS only; elsewhere there is nothing to answer.
+      shortcuts: this.store.getMeta(SHORTCUTS_ASKED_KEY) !== null || (process.platform !== 'win32' && process.platform !== 'darwin'),
+      checkin: this.store.getMeta(CHECKIN_NOTICE_KEY) !== null,
+    };
+  }
+
+  setupView(): SetupView {
+    const state = this.setupState();
+    return setupView(state, this.setupFacts(state));
+  }
+
+  /** A workflow review the person accepted, for the setup's project: its step is done, also for a container project. */
+  private noteFlowSaved(project: string): void {
+    const state = this.setupState();
+    if (state.project !== project) return;
+    this.saveSetup({ ...state, flowSaved: project });
+  }
+
+  helperModel(): string {
+    const m = this.store.getMeta(HELPER_MODEL_KEY);
+    return m && (HELPER_MODELS as readonly string[]).includes(m) ? m : HELPER_DEFAULT_MODEL;
+  }
+
+  /** Settings → Ledung Helper's model; its next start or resume uses it. */
+  setHelperModel(model: unknown): HelperInfo {
+    if (typeof model !== 'string' || !(HELPER_MODELS as readonly string[]).includes(model)) throw new UserError(`Choose ${HELPER_MODELS.join(', ')}.`);
+    this.store.setMeta(HELPER_MODEL_KEY, model);
+    this.publishHelper();
+    return this.helperInfo();
+  }
+
+  /** The helper's conversation: the newest helper session not archived. */
+  private helperSession(): SessionInfo | null {
+    return this.store.listSessions().filter((s) => s.project === HELPER && !s.archivedAt).sort((a, b) => b.createdAt - a.createdAt)[0] ?? null;
+  }
+
+  helperInfo(): HelperInfo {
+    return { sessionId: this.helperSession()?.id ?? null, model: this.helperModel(), setup: this.setupView(), userName: this.config.userName };
+  }
+
+  private publishHelper(): void {
+    this.publish({ type: 'helper', helper: this.helperInfo() });
+  }
+
+  /** Something the setup's steps look at changed outside the manager (the shortcuts question, the check-in notice). */
+  noteSetupFacts(): void {
+    this.publishHelper();
+  }
+
+  /** What the helper runs with: a local "project" in its own folder, no workflow or grant, the chats' account, Ask. */
+  private helperConfig(): LocalProjectConfig {
+    const folder = helperFolder(userDataDir());
+    fs.mkdirSync(folder, { recursive: true });
+    const account = this.accountChoices().chats;
+    return {
+      name: HELPER, runner: 'local', path: folder, workflow: { use: false }, permissionMode: 'default', model: this.helperModel(),
+      ...(account ? { account } : {}),
+      sensitive: { commandPatterns: [], pathPatterns: [], mcpTools: [] },
+    } as LocalProjectConfig;
+  }
+
+  private async startHelper(): Promise<SessionInfo> {
+    const project = this.helperConfig();
+    if (project.account) {
+      try {
+        this.accounts.envFor(project.account);
+      } catch (e) {
+        throw new UserError((e as Error).message);
+      }
+    }
+    const info = this.store.createSession({
+      id: randomUUID(), project: HELPER, runner: 'local', role: 'session', title: 'Ledung Helper', parentId: null, permissionMode: 'default',
+    });
+    if (project.account) this.store.updateSession(info.id, { account: project.account });
+    this.publish({ type: 'session', session: info });
+    const session = new Session({ info, ...this.sessionOptions(project, info) });
+    this.noteLaunch(project, info);
+    this.live.set(info.id, session);
+    await session.start();
+    this.publishHelper();
+    return session.info;
+  }
+
+  /**
+   * Opens the helper: its conversation, started when there is none; `text`, the person's own words from a button
+   * such as New project, goes to it as their message; `kickoff`, Ledung's own words, as a delivered message.
+   */
+  async openHelper(text?: string, kickoff?: string): Promise<HelperInfo> {
+    const info = this.helperSession() ?? await this.startHelper();
+    if (text?.trim()) await this.send(info.id, text.trim());
+    else if (kickoff) {
+      this.store.addInbox(info.id, 'ledung', kickoff);
+      await this.resumeIfEnded(info.id);
+      this.live.get(info.id)?.deliver();
+    }
+    return this.helperInfo();
+  }
+
+  /** Whether Claude Code is there and signed in on this computer's own login: the first start's gate. */
+  async claudeCheck(): Promise<{ problem: string | null; looked: string[]; signIn: 'in' | 'out' | 'unknown'; help: string | null }> {
+    await this.checkSignIns([DEFAULT_ACCOUNT]);
+    const account = this.accountChoices().chats ?? DEFAULT_ACCOUNT;
+    if (account !== DEFAULT_ACCOUNT) await this.checkSignIns([account]);
+    const found = this.signIns.get(account);
+    const state = found?.state === 'in' || found?.state === 'out' ? found.state : 'unknown';
+    return { problem: this.claudeProblem, looked: this.claudeProblem ? this.claudeLooked : [], signIn: state, help: state === 'in' ? null : this.signInHelpFor(account) };
+  }
+
+  /**
+   * The setup's page actions: welcome (on to the Claude check), claude (the check passed: the helper starts), again
+   * (Settings' Run setup again), finish (the hand-over card), leave (out of the setup, from any step).
+   */
+  async setupAction(action: unknown): Promise<HelperInfo> {
+    const state = this.setupState();
+    switch (action) {
+      case 'welcome':
+        if (state.phase !== 'welcome') throw new UserError('The welcome is over.');
+        this.saveSetup({ ...state, phase: 'claude' });
+        return this.helperInfo();
+      case 'claude': {
+        if (state.phase !== 'claude') throw new UserError('The Claude check is not where the setup is.');
+        const check = await this.claudeCheck();
+        if (check.problem || check.signIn !== 'in') throw new UserError(check.problem ?? check.help ?? 'Claude Code is not signed in yet.');
+        this.saveSetup({ ...state, phase: 'helper' });
+        return this.openHelper(undefined, setupKickoff(this.config.userName, false));
+      }
+      case 'again':
+        // The marks start over; what Ledung sees (the name, the notice) still counts.
+        this.saveSetup({ phase: 'helper', marks: {}, project: null });
+        return this.openHelper(undefined, setupKickoff(this.config.userName, true));
+      case 'finish':
+      case 'leave':
+        this.saveSetup({ ...state, phase: 'done' });
+        return this.helperInfo();
+      default:
+        throw new UserError('The action is welcome, claude, again, finish or leave.');
+    }
+  }
+
+  /** The name the person gave: kept in Ledung's data, used where the config names none (no API writes the config). */
+  setUserName(name: string): string {
+    const clean = name.replace(/\s+/g, ' ').trim();
+    if (!clean || clean.length > 60) throw new UserError('Give a name of 1 to 60 characters.');
+    if (this.config.userName !== DEFAULT_USER_NAME && this.store.getMeta(USER_NAME_KEY) === null) {
+      throw new UserError(`The config file names you "${this.config.userName}"; change it there (Settings → Config file).`);
+    }
+    this.store.setMeta(USER_NAME_KEY, clean);
+    this.config.userName = clean;
+    this.publishHelper();
+    return clean;
+  }
+
+  /** A card in the helper's chat (ledung-helper.md). */
+  private addCard(helperId: string, card: HelperCard): void {
+    this.publish({ type: 'message', message: this.store.addMessage(helperId, 'card', { card }) });
+  }
+
+  /** The helper's tools, bound to it. */
+  private helperHandlers(id: string): HelperHandlers {
+    const m = this.management;
+    const setupProject = (name: string) => {
+      const state = this.setupState();
+      if (state.phase === 'helper' && !state.project) this.saveSetup({ ...state, project: name });
+    };
+    return {
+      setupStatus: () => {
+        const v = this.setupView();
+        if (v.phase !== 'helper') return `No setup is under way (${v.phase}). ${this.config.userName} can run it again from Settings → Ledung Helper.`;
+        return [
+          `Step ${Math.min(v.index, v.total)} of ${v.total}${v.current ? `: ${v.steps.find((s) => s.id === v.current)!.label} ("${v.current}")` : ': all through'}.`,
+          `Project: ${v.project ? `"${v.project}"` : 'none yet'}.`,
+          ...v.steps.map((s) => `- ${s.id} (${s.label}): ${s.state}${s.skippable ? '' : ', not skippable'}`),
+        ].join('\n');
+      },
+      setupStep: (step: SetupStepId, mark: 'done' | 'skipped') => {
+        const state = this.setupState();
+        if (state.phase !== 'helper') throw new Error('No setup is under way.');
+        const problem = markProblem(step, mark, this.setupFacts(state));
+        if (problem) throw new Error(problem);
+        this.saveSetup({ ...state, marks: { ...state.marks, [step]: mark } });
+        const v = this.setupView();
+        return v.current
+          ? `Marked. Now step ${v.index} of ${v.total}: ${v.steps.find((s) => s.id === v.current)!.label} ("${v.current}").`
+          : `Marked. All steps are through: tell ${this.config.userName} in one sentence; Ledung shows the hand-over card.`;
+      },
+      setUserName: (name) => `Ledung calls them "${this.setUserName(name)}" now.`,
+      listProjects: () => m.listProjects(id),
+      addProject: async (args) => {
+        const out = await m.addProject(id, args);
+        setupProject(args.name);
+        return out;
+      },
+      createProject: async (args) => {
+        const out = await m.createProject(id, args);
+        setupProject(args.name);
+        return out;
+      },
+      projectSettings: (project) => m.projectSettings(id, project),
+      setProjectSettings: (patch) => m.setProjectSettings(id, patch),
+      setProjectBasics: (patch) => m.setProjectBasics(id, patch),
+      workflowFiles: async (name) => {
+        const project = this.projectStore.get(name)?.config;
+        if (!project) throw new Error(`There is no project named "${name}". Use list_projects.`);
+        if (isLocked(project)) throw new Error(`The project "${name}" is locked: only ${this.config.userName} reads it, in the page.`);
+        const view = await this.flowView(name);
+        const files: Record<string, string> = {};
+        if (view.raw !== null) files['flow.json'] = view.raw;
+        if (view.rules !== null) files['rules.md'] = view.rules;
+        Object.assign(files, view.texts);
+        return Object.keys(files).length ? JSON.stringify(files, null, 2) : `"${name}" has no workflow yet; it would go in ${view.expected}.`;
+      },
+      proposeWorkflow: (name, changes, why) => this.proposeFlow(id, changes, why, name),
+      showCard: (card) => {
+        const parsed = CardSchema.safeParse(card);
+        if (!parsed.success) throw new Error(`This card can't be shown: ${parsed.error.issues[0]?.message ?? 'not valid'}.`);
+        this.addCard(id, parsed.data);
+        return 'The card is shown. End your turn now; the pick comes back as their message.';
+      },
+    };
   }
 
   // --- Chats (issue #211) ---------------------------------------------------------------------------

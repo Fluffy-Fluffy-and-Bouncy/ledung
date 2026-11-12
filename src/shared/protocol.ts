@@ -8,6 +8,7 @@ import type { SkillChoices, SkillInfo } from './skills.ts';
 import type { Macro } from './macros.ts';
 import type { SecretInfo } from './secrets.ts';
 import type { OrderInfo } from './orders.ts';
+import type { HelperInfo } from './setup.ts';
 
 /**
  * The run and block a session serves (workflow part 3), with what its header shows: the run's and block's titles as they
@@ -80,9 +81,15 @@ export interface CompactingInfo {
  */
 export const CHATS = '~chats';
 
-/** How a session's project is shown: "Chats" for a chat, else the project's name. */
+/**
+ * The Ledung Helper's project (docs/steps/ledung-helper.md): Ledung's own helper, a chat-like session in its own
+ * folder that changes Ledung's settings only. Like CHATS, no project can be named this.
+ */
+export const HELPER = '~helper';
+
+/** How a session's project is shown: "Chats" for a chat, "Ledung Helper" for the helper, else the project's name. */
 export function projectLabel(project: string): string {
-  return project === CHATS ? 'Chats' : project;
+  return project === CHATS ? 'Chats' : project === HELPER ? 'Ledung Helper' : project;
 }
 
 /** The chats' settings (issue #211), for the page's New chat and Settings. */
@@ -530,7 +537,8 @@ export interface StoredMessage {
   id: number;
   sessionId: string;
   at: number;
-  kind: 'user' | 'sdk' | 'permission' | 'decision' | 'event' | 'question' | 'shell';
+  /** card: a card in the Ledung Helper's chat (src/shared/helper-cards.ts). */
+  kind: 'user' | 'sdk' | 'permission' | 'decision' | 'event' | 'question' | 'shell' | 'card';
   data: any;
 }
 
@@ -1329,6 +1337,8 @@ export type ServerEvent =
       linkPairings?: LinkPairingInfo[];
       /** The chats' settings (issue #211). */
       chats?: ChatsInfo;
+      /** The Ledung Helper and the setup (docs/steps/ledung-helper.md). */
+      helper?: HelperInfo;
       /** The GitHub budget the pull request poll sees (issue #252); empty or left out: no reading yet. */
       github?: GitHubBudget[];
       /** The config file's reloads (issue #353). */
@@ -1342,6 +1352,8 @@ export type ServerEvent =
   /** A project's flow was saved or taken away: the page reads again which projects have one (the sidebar's Workflow row). */
   | { type: 'workflows' }
   | { type: 'chats'; chats: ChatsInfo }
+  /** The Ledung Helper and the first start's setup (docs/steps/ledung-helper.md). */
+  | { type: 'helper'; helper: HelperInfo }
   | { type: 'computers'; computers: ComputerInfo[] }
   | { type: 'session'; session: SessionInfo }
   | { type: 'message'; message: StoredMessage }
