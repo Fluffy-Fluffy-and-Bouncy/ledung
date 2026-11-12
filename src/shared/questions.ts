@@ -119,6 +119,8 @@ export interface QuestionDetails {
   run?: QuestionRun;
   /** A manager's proposed workflow change (part 3e), by its number: the review page shows it before and after. */
   flowProposal?: number;
+  /** The project a Ledung Helper's proposal is for (docs/steps/ledung-helper.md); a manager's is its own project's. */
+  flowProject?: string;
   /**
    * A call the auto mode classifier refused, raised by Ledung itself (issue #104): never given by ask_user, which
    * builds its details from the fields above only. Answered "Allow once", it lets that exact call through one time.

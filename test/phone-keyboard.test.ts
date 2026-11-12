@@ -66,7 +66,9 @@ test('the message box asks the touch rule on every key, and says only "Message C
   const composer = app.slice(app.indexOf('function Composer('), app.indexOf('function ClearCountdown('));
   assert.match(composer, /onKeyDown=\{\(e\) => \{\s*if \(enterSends\(\{[^}]*\}, coarsePointer\(\)\)\)/);
   assert.doesNotMatch(composer, /e\.key === 'Enter'/, 'a second Enter rule beside enterSends');
-  assert.match(composer, /coarsePointer\(\) \? 'Message Claude' : 'Message Claude \(Enter to send, Shift\+Enter for a new line\)'/);
+  // "Claude", or "the Ledung Helper" in the helper's chat (docs/steps/ledung-helper.md).
+  assert.match(composer, /const to = session\.project === HELPER \? 'the Ledung Helper' : 'Claude';/);
+  assert.match(composer, /coarsePointer\(\) \? `Message \$\{to\}` : `Message \$\{to\} \(Enter to send, Shift\+Enter for a new line\)`/);
 });
 
 test('the keyboard inset is what the keyboard covers of the layout, and nothing for a toolbar or a zoom', () => {

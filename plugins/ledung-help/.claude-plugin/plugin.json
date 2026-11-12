@@ -1,0 +1,6 @@
+{
+  "name": "ledung-help",
+  "version": "1.0.0",
+  "description": "How Ledung works, for the Ledung Helper: the page, projects and managers, sessions and chats, accounts, approvals and the sensitive list, grants, workflows, phones, shortcuts, updates, the check-in.",
+  "author": { "name": "Ledung" }
+}

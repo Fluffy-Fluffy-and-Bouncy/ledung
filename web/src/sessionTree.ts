@@ -1,7 +1,7 @@
 // The session list indexed once per change (issue #233, audit O9): each sidebar row asked for its own sessions
 // by scanning the whole list (its ship, its team's tokens, its child rows), so 50 sessions cost 2,500 steps per
 // redraw. Built here in one pass, each row looks its own up.
-import { CHATS, type ProjectInfo, type SessionInfo } from '../../src/shared/protocol.ts';
+import { CHATS, HELPER, type ProjectInfo, type SessionInfo } from '../../src/shared/protocol.ts';
 import { siblingOrder } from './sidebarOrder.ts';
 
 const NONE: readonly SessionInfo[] = Object.freeze([]);
@@ -58,7 +58,8 @@ export interface SidebarGroup {
  * olderArchived: archived sessions hello only counted, by project (issue #229), added to each group's count.
  */
 export function sidebarTree(sessions: readonly SessionInfo[], projects: readonly ProjectInfo[], known: ReadonlySet<string>, olderArchived: Readonly<Record<string, number>> = {}): { shown: SessionIndex; groups: SidebarGroup[] } {
-  const groupOfProject = (project: string) => (project === CHATS || known.has(project) ? project : REMOVED_PROJECTS);
+  // The Ledung Helper's conversations have their own entry under Chats, never "Removed projects" (docs/steps/ledung-helper.md).
+  const groupOfProject = (project: string) => (project === CHATS || project === HELPER || known.has(project) ? project : REMOVED_PROJECTS);
   const groupOf = (s: SessionInfo) => groupOfProject(s.project);
   const live = sessions.filter((s) => !s.archivedAt);
   const byGroup = groupBy(live, groupOf);

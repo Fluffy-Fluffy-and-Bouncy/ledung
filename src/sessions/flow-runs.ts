@@ -109,8 +109,6 @@ function briefPlace(folder: string, brief: string): string {
 
 /** EXERCISED #142 is logged once per run of Ledung, not per step. */
 let exercised142 = false;
-/** EXERCISED #291 is logged once per run of Ledung. */
-let exercised291 = false;
 
 /** How long a person block waits for its coordinator's write-up before Ledung asks its own card (#291). */
 export const WRITE_UP_MINUTES = 10;
@@ -959,10 +957,6 @@ export class FlowRuns {
     }
     this.p.runs.update(run.id, { question: q.id }, this.now());
     this.p.changed(run.project);
-    if (!exercised291) {
-      exercised291 = true;
-      exercisedLine("EXERCISED #291 a person step asked with the manager's write-up");
-    }
   }
 
   /** A Run flow block (part 3b): a run of its own in the flow it names, which this one waits for. */

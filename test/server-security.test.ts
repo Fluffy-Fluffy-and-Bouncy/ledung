@@ -19,7 +19,7 @@ import { FakeBackend, FakeBoard } from '../src/board/fake.ts';
 import type { RepoDirectory } from '../src/board/repos.ts';
 import { BoardError } from '../src/board/types.ts';
 import { Updater } from '../src/update/updater.ts';
-import { CHATS } from '../src/shared/protocol.ts';
+import { CHATS, HELPER } from '../src/shared/protocol.ts';
 import { FakePasskey } from './fake-passkey.ts';
 import { RelayAdmin } from '../src/remote/admin.ts';
 import { RemoteLink } from '../src/remote/link.ts';
@@ -145,6 +145,8 @@ before(async () => {
   fs.mkdirSync(path.join(fixX, 'src'), { recursive: true });
   fs.writeFileSync(path.join(fixX, 'src', 'mine.ts'), 'export const mine = 1;\n');
   store.createSession({ id: 'w1', project: 'p', runner: 'local', title: 'fix-x', parentId: 'm1', permissionMode: 'default', role: 'session' });
+  // The Ledung Helper's conversation (docs/steps/ledung-helper.md): what reaches it is guarded as a manager's.
+  store.createSession({ id: 'h1', project: HELPER, runner: 'local', title: 'Ledung Helper', parentId: null, permissionMode: 'default', role: 'session' });
   store.addMessage('w1', 'sdk', { type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'tool_use', id: 'toolu_w1', name: 'EnterWorktree', input: { name: 'fix-x' } }] } });
   store.addMessage('w1', 'sdk', { type: 'user', parent_tool_use_id: null, message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_w1', content: `Created worktree at ${fixX} on branch worktree-fix-x.` }] } });
   paneStore = store;
@@ -1205,6 +1207,54 @@ test("words that reach a manager as the user's own need the live page", async ()
       const passed = await change(c.path, c.body, { 'x-ledung-page': page.key });
       assert.equal(passed.status, 400, c.name);
       assert.match(errorOf(passed), c.then, c.name);
+    }
+  } finally {
+    page.close();
+  }
+});
+
+// The Ledung Helper (docs/steps/ledung-helper.md, code review finding 1): its routes need the sign-in and the page's
+// Origin like every change; words that reach the helper as the person's own, the name and the setup's marks, and a
+// card answered also need the live page. Each case: refused without the key and with a made-up one, past the check
+// with it (the request then fails in the manager or does nothing, so nothing starts).
+function helperWords(): { name: string; path: string; body: unknown; then: number; error?: RegExp }[] {
+  return [
+    { name: 'a message to the helper', path: '/api/sessions/h1/messages', body: { text: ' ' }, then: 400, error: /empty/ },
+    { name: "the helper opened with the person's words", path: '/api/helper-open', body: { text: ' ' }, then: 200 },
+    { name: 'the setup started after the Claude check', path: '/api/setup', body: { action: 'claude' }, then: 400, error: /not where the setup is/ },
+    { name: 'the setup run again', path: '/api/setup', body: { action: 'again' }, then: -1 },
+    { name: 'the name given in the step bar', path: '/api/setup', body: { action: 'name', name: 'Mallory' }, then: 400, error: /first step/ },
+    { name: 'a setup step marked', path: '/api/setup', body: { action: 'mark', step: 'nope', mark: 'done' }, then: 400, error: /No setup|Name a step/ },
+    { name: "a reply's card answered", path: '/api/helper-card-answered', body: { session: 'h1', message: 'x' }, then: 400, error: /Not a card/ },
+  ];
+}
+
+test("the Ledung Helper's routes need the sign-in and the page's Origin", async () => {
+  const json = { 'content-type': 'application/json' };
+  assert.equal((await request({ path: '/api/helper' })).status, 401);
+  assert.equal((await request({ path: '/api/helper', headers: { cookie: COOKIE } })).status, 200);
+  for (const path of ['/api/setup', '/api/setup-claude', '/api/helper-open', '/api/helper-card-answered', '/api/helper-model', '/api/sessions/h1/messages']) {
+    assert.equal((await request({ method: 'POST', path, headers: { ...json, origin: ORIGIN }, body: '{}' })).status, 401, `${path} without the cookie`);
+    assert.equal((await request({ method: 'POST', path, headers: { ...json, cookie: COOKIE }, body: '{}' })).status, 403, `${path} without an Origin`);
+    assert.equal((await request({ method: 'POST', path, headers: { ...json, cookie: COOKIE, origin: 'http://evil.example' }, body: '{}' })).status, 403, `${path} with a foreign Origin`);
+  }
+});
+
+test("words that reach the Ledung Helper as the person's own, its name and its marks need the live page", async () => {
+  const cases = helperWords();
+  for (const c of cases) {
+    const refused = await change(c.path, c.body);
+    assert.equal(refused.status, 403, c.name);
+    assert.match(errorOf(refused), /open page/, c.name);
+    assert.equal((await change(c.path, c.body, { 'x-ledung-page': 'b'.repeat(64) })).status, 403, `${c.name}: a made-up key`);
+  }
+  const page = await livePage();
+  try {
+    // "Run setup again" with the key would start the helper's Claude Code; its refusal above is what this test is for.
+    for (const c of cases.filter((x) => x.then !== -1)) {
+      const passed = await change(c.path, c.body, { 'x-ledung-page': page.key });
+      assert.equal(passed.status, c.then, c.name);
+      if (c.error) assert.match(errorOf(passed), c.error, c.name);
     }
   } finally {
     page.close();

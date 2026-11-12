@@ -1949,6 +1949,73 @@ button.settings-menu-item.danger { color: var(--danger); }
 .flow-pin.lit .react-flow__handle.h-pin { background: var(--accent); }
 .flow-block.lit-dimmed, .react-flow__edge.flow-dimmed, .react-flow__edge.lit-out .react-flow__edge-path { transition: opacity 0.12s ease, stroke-width 0.12s ease; }
 
+/* The first start and the Ledung Helper (docs/steps/ledung-helper.md). */
+button.link-button { background: none; border: none; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; font: inherit; }
+button.link-button:hover:not(:disabled) { border: none; }
+.setup-page { display: flex; align-items: center; justify-content: center; min-height: 100vh; min-height: 100dvh; padding: 1rem; box-sizing: border-box; flex-direction: column; }
+.setup-screen { width: 100%; display: flex; justify-content: center; }
+.setup-card { width: min(34rem, 100%); background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 1.6rem 1.6rem 1.3rem; box-sizing: border-box; }
+.setup-card h1 { margin: 0.2rem 0 0.8rem; font-size: 1.5rem; }
+.setup-card p { line-height: 1.5; }
+.setup-mark { font-size: 1.8rem; color: var(--accent); }
+.setup-steps { font-size: 0.85em; }
+.setup-actions { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; margin-top: 1.2rem; }
+.setup-checklist { list-style: none; padding: 0; margin: 1rem 0 0; display: grid; gap: 0.6rem; }
+.setup-checklist li { border: 1px solid var(--border); border-radius: 8px; padding: 0.6rem 0.8rem 0.6rem 2rem; position: relative; }
+.setup-checklist li::before { content: '…'; position: absolute; left: 0.7rem; top: 0.55rem; color: var(--muted); }
+.setup-checklist li.good::before { content: '✓'; color: var(--ok); }
+.setup-checklist li.bad { border-color: var(--warn-border); background: var(--warn-bg); }
+.setup-checklist li.bad::before { content: '!'; color: var(--danger); font-weight: bold; }
+.setup-help { margin-top: 0.4rem; line-height: 1.5; overflow-wrap: anywhere; }
+.setup-help code { background: var(--code-bg); padding: 0.05rem 0.3rem; border-radius: 4px; }
+
+.helper-steps { border-bottom: 1px solid var(--border); background: var(--panel); padding: 0.45rem 0.8rem 0.5rem; display: grid; gap: 0.35rem; }
+.helper-steps.done { border-left: 3px solid var(--ok); }
+.helper-steps-line { display: flex; align-items: center; gap: 0.35rem; background: none; border: none; padding: 0; font: inherit; font-weight: 600; text-align: left; color: var(--text); cursor: pointer; min-width: 0; }
+.helper-steps-line:hover:not(:disabled) { border: none; }
+.helper-steps-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.helper-steps-mark, .helper-mark { color: var(--accent); }
+.helper-steps-caret { color: var(--muted); font-size: 0.8em; }
+.helper-progress { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; }
+.helper-progress span { display: block; height: 100%; background: var(--accent); transition: width 0.3s; }
+.helper-step-list { margin: 0.2rem 0 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr)); gap: 0.15rem 1rem; font-size: 0.9em; }
+.helper-step-list li { color: var(--muted); }
+.helper-step-list li.done { color: var(--text); }
+.helper-step-list li.current { color: var(--accent); font-weight: 600; }
+.helper-step-state { display: inline-block; width: 1.1em; }
+.helper-steps-actions { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+.helper-steps-actions .small-link { margin-left: auto; font-size: 0.85em; color: var(--muted); }
+.helper-name { display: flex; gap: 0.4rem; flex: 1 1 14rem; max-width: 22rem; }
+.helper-name input { flex: 1; min-width: 0; }
+
+.helper-card-row { display: flex; padding: 0 0.2rem; }
+.helper-card { border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 10px; background: var(--panel); padding: 0.7rem 0.8rem; width: min(36rem, 100%); box-sizing: border-box; display: grid; gap: 0.5rem; }
+.helper-card.answered { opacity: 0.65; border-left-color: var(--border); }
+.helper-card-title { font-weight: 600; }
+.helper-card-text { margin: 0; line-height: 1.45; }
+.helper-choices { display: grid; grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr)); gap: 0.4rem; }
+.helper-choice { display: grid; gap: 0.15rem; text-align: left; padding: 0.5rem 0.6rem; border-radius: 8px; }
+.helper-choice-label { font-weight: 600; }
+.helper-choice-hint { font-size: 0.85em; color: var(--muted); line-height: 1.35; }
+.helper-text { display: flex; gap: 0.4rem; }
+.helper-text input { flex: 1; min-width: 0; }
+.helper-card .banner { margin: 0; border-radius: 8px; }
+/* The folder browser inside a card stays inside it at 390 px (acceptance round 2, 17). */
+.helper-card { min-width: 0; overflow-wrap: anywhere; }
+.helper-card .browser, .helper-card .browser-head, .helper-card .browser-roots { min-width: 0; max-width: 100%; flex-wrap: wrap; }
+.helper-card .browser-path { min-width: 0; overflow-wrap: anywhere; white-space: normal; }
+.helper-step-controls { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+.helper-step-controls p { flex-basis: 100%; margin: 0; }
+.helper-entry .session-title { font-weight: 600; }
+.helper-sub { display: block; font-size: 0.8em; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.helper-offer { margin: 0 0 0.8rem; }
+@media (max-width: 700px) {
+  .helper-steps { padding: 0.4rem 0.6rem; }
+  .helper-choices { grid-template-columns: 1fr 1fr; }
+  .setup-card { padding: 1.2rem 1rem 1rem; border-radius: 10px; }
+  .setup-card h1 { font-size: 1.3rem; }
+}
+.helper-approval-lines { margin: 0.3rem 0 0.4rem; padding-left: 1.2rem; overflow-wrap: anywhere; }
 /* Resource limits (docs/steps/resource-limits.md): a bar's limit line, what is reserved, the editor, the line and job cards. */
 .limit-button { all: unset; display: block; cursor: pointer; font-size: 0.78em; border-radius: 4px; padding: 0.05rem 0.1rem; margin: -0.05rem -0.1rem; }
 .limit-button:hover, .limit-button.open { background: var(--panel-2); }

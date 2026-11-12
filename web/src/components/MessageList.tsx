@@ -1,7 +1,10 @@
 // A session's history, from Ledung's own copy of every message (want 10), each with its time (want 9).
 // Technical messages (tool calls, results, turn summaries) can be hidden per session (want 8).
-import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import type { PermissionInfo, QuestionInfo, ShellBlock, StoredMessage } from '../../../src/shared/protocol.ts';
+import type { HelperCard } from '../../../src/shared/helper-cards.ts';
+import { helperApprovalText, helperDeclinedText } from '../helper/helperNav.ts';
+import { helperTurns, placeCards } from '../helper/cardOrder.ts';
 import { shellFooter } from '../../../src/shared/bang.ts';
 import { quietTexts, type TurnEntry } from '../../../src/shared/quiet-reply.ts';
 import { compactedLabel } from '../../../src/shared/compact-label.ts';
@@ -24,13 +27,17 @@ const FROM_TOP = '\u0000top';
 type Item =
   | { key: string; at: number; type: 'user'; text: string; byLedung: boolean; context: string | null; images: string[] }
   | { key: string; at: number; type: 'question'; questionId: number }
-  | { key: string; at: number; type: 'assistant'; text: string; sub: boolean; quiet?: boolean; anchor?: number }
+  | { key: string; at: number; type: 'assistant'; text: string; sub: boolean; quiet?: boolean; anchor?: number; apiError?: boolean }
   | { key: string; at: number; type: 'event'; text: string }
   | { key: string; at: number; type: 'shell'; block: ShellBlock }
   | { key: string; at: number; type: 'divider'; text: string }
   | { key: string; at: number; type: 'tool'; name: string; input: Record<string, any>; result: ToolResult | null; sub: boolean }
   | { key: string; at: number; type: 'permission'; permissionId: string; toolName: string; input: Record<string, any> }
-  | { key: string; at: number; type: 'note'; text: string; technical: boolean };
+  | { key: string; at: number; type: 'note'; text: string; technical: boolean }
+  /** A card in the Ledung Helper's chat (docs/steps/ledung-helper.md); answered once the person wrote after it. */
+  | { key: string; at: number; type: 'card'; card: HelperCard; answered: boolean }
+  /** The Ledung Helper's one message of a turn, with its card (src/sessions/helper-tools.ts, reply). */
+  | { key: string; at: number; type: 'reply'; text: string; card: HelperCard | null; answered: boolean; messageId: number };
 
 interface ToolResult {
   text: string;
@@ -64,6 +71,8 @@ function toItems(messages: StoredMessage[]): Item[] {
     else if (m.kind === 'question') items.push({ ...base, key: `${m.id}`, type: 'question', questionId: m.data.questionId });
     else if (m.kind === 'event') items.push({ ...base, key: `${m.id}`, type: 'event', text: m.data.text });
     else if (m.kind === 'shell') items.push({ ...base, key: `${m.id}`, type: 'shell', block: m.data });
+    else if (m.kind === 'card') items.push({ ...base, key: `${m.id}`, type: 'card', card: m.data.card, answered: false });
+    else if (m.kind === 'reply') items.push({ ...base, key: `${m.id}`, type: 'reply', text: m.data.text, card: m.data.card ?? null, answered: false, messageId: m.id });
     else if (m.kind === 'permission') {
       items.push({ ...base, key: `${m.id}`, type: 'permission', permissionId: m.data.permissionId, toolName: m.data.toolName, input: m.data.input });
     } else if (m.kind === 'sdk') {
@@ -74,7 +83,7 @@ function toItems(messages: StoredMessage[]): Item[] {
         (s.message?.content ?? []).forEach((b: any, i: number) => {
           if (b.type === 'text' && b.text.trim()) {
             // The message's first text is where an attached reply's link lands (issue #369).
-            items.push({ ...base, key: `${m.id}.${i}`, type: 'assistant', text: b.text, sub, ...(anchored ? {} : { anchor: m.id }) });
+            items.push({ ...base, key: `${m.id}.${i}`, type: 'assistant', text: b.text, sub, ...(anchored ? {} : { anchor: m.id }), ...(s.error ? { apiError: true } : {}) });
             anchored = true;
           }
           if (b.type === 'tool_use') {
@@ -153,12 +162,26 @@ export const MessageList = memo(function MessageList(props: {
   onOpenBoardThread?: (threadId: string) => void;
   /** The session's name colour (issue #269): its own messages get the message box's tint; undefined: no tint. */
   tint?: CSSProperties;
+  /** Draws a Ledung Helper card (docs/steps/ledung-helper.md); none: cards are not shown. */
+  renderCard?: (card: HelperCard, answered: boolean, messageId?: number) => ReactNode;
+  /** Under the last message, kept at the end: the setup step's own card in the helper's chat; footerKey changes with it. */
+  footer?: ReactNode;
+  footerKey?: string;
+  /** Who the session's own messages are from: "Claude", or "Ledung Helper" in the helper's chat. */
+  assistantName?: string;
+  /** No pinned strip with the person's last message (the helper's chat on a phone, acceptance round 1 check 17). */
+  noPin?: boolean;
+  /** Every new message, card or approval brought into view (the helper's chat, acceptance round 2 check 17). */
+  follow?: boolean;
+  /** The session is in a turn: its last turn's cards wait for the turn's end (the helper's chat, round 3 check 20). */
+  turnOpen?: boolean;
 }) {
   const { messages, permissions, showTechnical, sessionId, hasEarlier } = props;
   // A manager's conversation also shows the questions of its sessions it handles, by when they were asked (issue #61),
   // with technical messages or when opened at one (issue #112).
   const earliest = hasEarlier ? messages[0]?.at ?? null : null;
-  const base = useMemo(() => toItems(messages), [messages]);
+  // The helper's chat shows a turn's reply only (acceptance round 4); every other chat as it was.
+  const base = useMemo(() => (props.renderCard ? helperTurns(toItems(messages), props.turnOpen) : placeCards(toItems(messages), props.turnOpen)), [messages, props.turnOpen, props.renderCard]);
   const focus = props.focusQuestion ?? null;
   const woven = useMemo(
     () => (sessionId ? shownWoven(wovenQuestions(Object.values(props.questions), sessionId, earliest), showTechnical, focus) : []),
@@ -198,6 +221,14 @@ export const MessageList = memo(function MessageList(props: {
   /** The first message "Load earlier" was asked from while looking for the question, so it is asked once per batch. */
   const loadingFrom = useRef<number | null>(null);
 
+  // The helper's chat keeps its newest thing in view, also as a card grows (a listing coming in) after it showed.
+  const lastKey = items.at(-1)?.key;
+  useEffect(() => {
+    if (!props.follow) return;
+    stick.current = true;
+    const timers = [0, 300, 900].map((ms) => setTimeout(() => { const el = scroller.current; if (el) el.scrollTop = el.scrollHeight; }, ms));
+    return () => timers.forEach(clearTimeout);
+  }, [props.follow, lastKey, props.footerKey, items.length]);
   // The question or reply it was opened at is always drawn, and so is everything after it.
   const mustShow = focus !== null
     ? items.findIndex((it) => it.type === 'question' && it.questionId === focus)
@@ -251,7 +282,7 @@ export const MessageList = memo(function MessageList(props: {
     }
     if (stick.current) el.scrollTop = el.scrollHeight;
     updatePinned();
-  }, [items, showTechnical, target, hasEarlier]);
+  }, [items, showTechnical, target, hasEarlier, props.footerKey]);
 
   useEffect(() => {
     // A conversation opened at a question stays there; any other opens at its end.
@@ -318,7 +349,7 @@ export const MessageList = memo(function MessageList(props: {
         <Fragment key={item.key}>
           {item === own && (
             <div className="pin-spot" ref={pinSpot}>
-              {pinned && <PinnedMessage text={own.text} at={own.at} userName={props.userName} onShowWhole={showWhole} />}
+              {pinned && !props.noPin && <PinnedMessage text={own.text} at={own.at} userName={props.userName} onShowWhole={showWhole} />}
             </div>
           )}
           <MessageItem
@@ -336,9 +367,12 @@ export const MessageList = memo(function MessageList(props: {
             focused={item.type === 'question' ? item.questionId === focus : item.type === 'assistant' && item.anchor !== undefined && item.anchor === focusMessage}
             live={item.type === 'permission' ? permissions[item.permissionId] : undefined}
             decision={item.type === 'permission' ? decisions.get(item.permissionId) : undefined}
+            renderCard={item.type === 'card' || item.type === 'reply' || item.type === 'permission' ? props.renderCard : undefined}
+            assistantName={props.assistantName}
           />
         </Fragment>
       ))}
+      {props.footer}
     </div>
   );
 });
@@ -404,6 +438,8 @@ interface ItemProps {
   live?: PermissionInfo;
   /** A permission item's decision, once made. */
   decision?: Decision;
+  renderCard?: (card: HelperCard, answered: boolean, messageId?: number) => ReactNode;
+  assistantName?: string;
 }
 
 /** Same keys with the same values; a tool's result one level down, since each history rebuild makes it anew. */
@@ -492,15 +528,27 @@ const MessageItem = memo(function MessageItem(props: ItemProps) {
           style={props.tint}
         >
           <div className="msg-meta">
-            <span className="who">{item.sub ? 'Subagent' : 'Claude'}</span>
+            <span className="who">{item.sub ? 'Subagent' : props.assistantName ?? 'Claude'}</span>
             {time}
-            {quote(item.sub ? 'Subagent' : 'Claude', item.text)}
+            {quote(item.sub ? 'Subagent' : props.assistantName ?? 'Claude', item.text)}
           </div>
           <div className="msg-body"><Markdown text={item.text} onOpenFile={props.onOpenFile} /></div>
         </div>
       );
     case 'event':
       return <div className="event">{item.text} {time}</div>;
+    case 'card':
+      return props.renderCard ? <div className="helper-card-row">{props.renderCard(item.card, item.answered)}</div> : null;
+    case 'reply':
+      return (
+        <>
+          <div className={`msg assistant${props.tint ? ' tinted' : ''}`} style={props.tint}>
+            <div className="msg-meta"><span className="who">{props.assistantName ?? 'Ledung Helper'}</span>{time}{quote(props.assistantName ?? 'Ledung Helper', item.text)}</div>
+            <div className="msg-body"><Markdown text={item.text} onOpenFile={props.onOpenFile} /></div>
+          </div>
+          {item.card && props.renderCard && <div className="helper-card-row">{props.renderCard(item.card, item.answered, item.messageId)}</div>}
+        </>
+      );
     // A "!" command and its output, as Claude got it (issue #212).
     case 'shell': {
       const b = item.block;
@@ -560,9 +608,12 @@ ${b.stderr.replace(/\s+$/, '')}`}</span> : null}</pre>
       );
     case 'permission': {
       const live = props.live;
-      if (live?.status === 'pending') return <PermissionCard permission={live} managerTitle={props.titleOf?.(live.addressedTo)} />;
+      // In the Ledung Helper's chat, in plain words (docs/steps/ledung-helper.md).
+      if (live?.status === 'pending') return <PermissionCard permission={live} managerTitle={props.titleOf?.(live.addressedTo)} plain={props.renderCard ? helperApprovalText(live.toolName, live.input, live.sensitive ?? null) : null} />;
       const d = props.decision;
       if (!showTechnical && d?.behavior !== 'denied') return null;
+      // In the helper's chat, a plain line, never a tool's name (acceptance round 6, 16).
+      if (props.renderCard && d?.behavior === 'denied') return <div className="note decision denied">{helperDeclinedText(item.toolName, item.input)} {time}</div>;
       const by = d && d.by !== 'user' && d.by !== 'simon' && d.by !== 'ledung' ? ` by manager "${props.titleOf?.(d.by) ?? 'manager'}"` : '';
       const label = d ? `${DECIDED[d.behavior] ?? d.behavior}${d.scope === 'session' ? ' for this session' : ''}${by}` : 'Asked';
       return (
