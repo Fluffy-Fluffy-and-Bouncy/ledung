@@ -21,7 +21,6 @@ import { Writable, type Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { DatabaseSync } from 'node:sqlite';
 import { bytesKind, contentProblem, MAX_ATTACHMENTS, MAX_IMAGE_BYTES, MAX_TEXT_BYTES, safeName, sizeLabel, type AttachmentKind } from '../board/attachments.ts';
-import { exercisedLine } from '../platform/exercised.ts';
 import { FileError } from '../sessions/files.ts';
 import { isStreamKind, KIND_HEAD_BYTES, linkedKindLabel, streamKindOf, zipArrivalProblem, type LinkedKind, type StreamKind } from './stream-kinds.ts';
 
@@ -58,9 +57,6 @@ export class FetchRefused extends Error {}
 export interface StreamLimits { maxFileBytes: number; maxMessageBytes: number }
 /** The config's defaults, linkedFiles.maxFileMB and maxMessageMB. */
 export const DEFAULT_STREAM_LIMITS: StreamLimits = { maxFileBytes: 2048 * 1024 * 1024, maxMessageBytes: 4096 * 1024 * 1024 };
-
-/** The EXERCISED line once per run (worker.md, "EXERCISED line"). */
-let exercised479 = false;
 
 /** One line in Ledung's log for each streamed file refused, so the reason can be found later (Project-Ledung#479). */
 function logRefused(linkId: string, name: string, why: string): void {
@@ -391,10 +387,6 @@ export class LinkedFiles {
         if (zip) {
           logRefused(r.link_id, r.name, zip);
           throw new FetchRefused(zip);
-        }
-        if (!exercised479) {
-          exercised479 = true;
-          exercisedLine('EXERCISED #479 a zip from a linked computer passed the arrival check of its directory');
         }
       }
       fs.renameSync(part, target);

@@ -15,6 +15,8 @@ export function contextShare(s: SessionInfo): number | null {
 
 export function SessionsTab(props: {
   sessions: SessionInfo[];
+  /** Archived sessions hello only counted (issue #229); an archived session has ended. */
+  olderArchived?: Record<string, number>;
   overview: Overview | null;
   machine: MachineInfo | null;
   waitingBySession: Record<string, number>;
@@ -26,7 +28,7 @@ export function SessionsTab(props: {
   const top = props.sessions.filter((s) => (!s.parentId || !ids.has(s.parentId)) && (live(s) || props.sessions.some((c) => c.parentId === s.id && live(c))));
   const order = (a: SessionInfo, b: SessionInfo) => Number(b.role === 'manager') - Number(a.role === 'manager') || b.createdAt - a.createdAt;
   const rows = top.sort(order).flatMap((s) => [s, ...props.sessions.filter((c) => c.parentId === s.id && live(c)).sort(order)]);
-  const ended = props.sessions.filter((s) => s.status === 'ended').length;
+  const ended = props.sessions.filter((s) => s.status === 'ended').length + Object.values(props.olderArchived ?? {}).reduce((a, b) => a + b, 0);
 
   return (
     <div className="overview">

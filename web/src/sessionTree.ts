@@ -55,12 +55,16 @@ export interface SidebarGroup {
  * The sidebar's groups: Chats, each project, then "Removed projects"; in each the manager with the sessions it runs,
  * then the sessions started outside it. Archived sessions leave the rows and are counted. Built from one pass over the
  * list (issue #233); the order within a level is the dragged one (issue #88). known: the projects' names.
+ * olderArchived: archived sessions hello only counted, by project (issue #229), added to each group's count.
  */
-export function sidebarTree(sessions: readonly SessionInfo[], projects: readonly ProjectInfo[], known: ReadonlySet<string>): { shown: SessionIndex; groups: SidebarGroup[] } {
-  const groupOf = (s: SessionInfo) => (s.project === CHATS || known.has(s.project) ? s.project : REMOVED_PROJECTS);
+export function sidebarTree(sessions: readonly SessionInfo[], projects: readonly ProjectInfo[], known: ReadonlySet<string>, olderArchived: Readonly<Record<string, number>> = {}): { shown: SessionIndex; groups: SidebarGroup[] } {
+  const groupOfProject = (project: string) => (project === CHATS || known.has(project) ? project : REMOVED_PROJECTS);
+  const groupOf = (s: SessionInfo) => groupOfProject(s.project);
   const live = sessions.filter((s) => !s.archivedAt);
   const byGroup = groupBy(live, groupOf);
   const archivedIn = groupBy(sessions.filter((s) => s.archivedAt), groupOf);
+  const countedIn = new Map<string, number>();
+  for (const [project, n] of Object.entries(olderArchived)) countedIn.set(groupOfProject(project), (countedIn.get(groupOfProject(project)) ?? 0) + n);
   const shown = indexSessions(live);
   // drag: the siblings a row can be dragged among (sidebarDrag.ts); null for the manager, which stays first,
   // and in "Removed projects", whose rows belong to no one project.
@@ -78,7 +82,7 @@ export function sidebarTree(sessions: readonly SessionInfo[], projects: readonly
     { name: CHATS, project: null as ProjectInfo | null, rows: rowsFor(CHATS, null, CHATS) },
     ...projects.map((p) => ({ name: p.name, project: p as ProjectInfo | null, rows: rowsFor(p.name, p.managerId, p.name) })),
     { name: REMOVED_PROJECTS, project: null, rows: rowsFor(REMOVED_PROJECTS, null, null) },
-  ].map((g) => ({ ...g, archived: archivedIn.get(g.name)?.length ?? 0 }))
+  ].map((g) => ({ ...g, archived: (archivedIn.get(g.name)?.length ?? 0) + (countedIn.get(g.name) ?? 0) }))
     .filter((g) => g.project || g.name === CHATS || g.rows.length || g.archived);
   return { shown, groups };
 }

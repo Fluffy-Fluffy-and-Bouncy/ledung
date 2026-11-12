@@ -31,6 +31,8 @@ export function UsageView(props: {
   /** Opens Usage on Sessions (true) or on one of the other tabs (false). */
   onSessions: (open: boolean) => void;
   sessions: SessionInfo[];
+  /** Archived sessions hello only counted (issue #229): ended, so counted among those not shown. */
+  olderArchived?: Record<string, number>;
   overview: Overview | null;
   machine: MachineInfo | null;
   waitingBySession: Record<string, number>;
@@ -58,7 +60,7 @@ export function UsageView(props: {
       </div>
       {tab === 'computer' ? <ComputerUsage onOpenSession={props.onOpenSession} />
         : tab === 'shared' ? <SharedUsage />
-          : <SessionsTab sessions={props.sessions} overview={props.overview} machine={props.machine} waitingBySession={props.waitingBySession} onOpenSession={props.onOpenSession} />}
+          : <SessionsTab sessions={props.sessions} olderArchived={props.olderArchived} overview={props.overview} machine={props.machine} waitingBySession={props.waitingBySession} onOpenSession={props.onOpenSession} />}
     </div>
   );
 }
