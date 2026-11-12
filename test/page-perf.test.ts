@@ -137,6 +137,27 @@ test('a poll loads at once and on its period while shown, not while hidden, and 
   assert.equal(loads, 3);
 });
 
+test('shown again between two rounds, the next round does not load a second time a moment later (review of #237)', (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'Date'] });
+  const page = fakePage();
+  let loads = 0;
+  const stop = pollWhileShown(() => loads++, 15000, page);
+  assert.equal(loads, 1);
+  // Hidden at once; shown again at 74 s, a second before the 75 s round: one load on being shown.
+  page.set('hidden');
+  t.mock.timers.tick(74000);
+  assert.equal(loads, 1);
+  page.set('visible');
+  assert.equal(loads, 2);
+  // The 75 s round, a second after that load: none.
+  t.mock.timers.tick(1000);
+  assert.equal(loads, 2);
+  // The 90 s round, 16 s after it: the regular load.
+  t.mock.timers.tick(15000);
+  assert.equal(loads, 3);
+  stop();
+});
+
 test('a long conversation is drawn from its end, a batch further up at a time, always with the message it was opened at', () => {
   // 5000 items: the last TAIL are drawn; a short one is drawn whole.
   assert.equal(tailStart(5000), 5000 - TAIL);

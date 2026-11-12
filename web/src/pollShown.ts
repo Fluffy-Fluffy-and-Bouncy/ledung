@@ -21,7 +21,9 @@ export function pollWhileShown(load: () => unknown, periodMs: number, page: Page
   };
   run();
   const timer = setInterval(() => {
-    if (page.visibilityState === 'visible') run();
+    // Not again just after the load on being shown (review of #237, finding 3): the timer keeps its own phase. Half a
+    // period, not a whole one, so a timer that fires a little early still loads on its regular round.
+    if (page.visibilityState === 'visible' && now() - last >= periodMs / 2) run();
   }, periodMs);
   const onShown = () => {
     if (page.visibilityState === 'visible' && now() - last >= periodMs) run();
