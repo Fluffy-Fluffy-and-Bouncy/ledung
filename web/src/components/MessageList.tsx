@@ -3,6 +3,7 @@
 import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import type { PermissionInfo, QuestionInfo, ShellBlock, StoredMessage } from '../../../src/shared/protocol.ts';
 import type { HelperCard } from '../../../src/shared/helper-cards.ts';
+import { helperApprovalText } from '../helper/helperNav.ts';
 import { shellFooter } from '../../../src/shared/bang.ts';
 import { quietTexts, type TurnEntry } from '../../../src/shared/quiet-reply.ts';
 import { compactedLabel } from '../../../src/shared/compact-label.ts';
@@ -51,7 +52,17 @@ function resultText(content: unknown): string {
 }
 
 /** A helper card is answered once the person wrote anything after it (their pick is their message). */
-function withAnswers(items: Item[]): Item[] {
+function withAnswers(raw: Item[]): Item[] {
+  // A card shows after the helper's words of its turn (Simon's try-out, 2026-11-12): moved past every item up to the
+  // person's next message, keeping the cards' own order.
+  const items: Item[] = [];
+  let held: Item[] = [];
+  for (const it of raw) {
+    if (it.type === 'card') held.push(it);
+    else if (it.type === 'user' && !it.byLedung) { items.push(...held, it); held = []; }
+    else items.push(it);
+  }
+  items.push(...held);
   let later = false;
   for (let i = items.length - 1; i >= 0; i--) {
     const it = items[i]!;
@@ -293,7 +304,7 @@ export const MessageList = memo(function MessageList(props: {
             focused={item.type === 'question' ? item.questionId === focus : item.type === 'assistant' && item.anchor !== undefined && item.anchor === focusMessage}
             live={item.type === 'permission' ? permissions[item.permissionId] : undefined}
             decision={item.type === 'permission' ? decisions.get(item.permissionId) : undefined}
-            renderCard={item.type === 'card' ? props.renderCard : undefined}
+            renderCard={item.type === 'card' || item.type === 'permission' ? props.renderCard : undefined}
           />
         </Fragment>
       ))}
@@ -521,7 +532,8 @@ ${b.stderr.replace(/\s+$/, '')}`}</span> : null}</pre>
       );
     case 'permission': {
       const live = props.live;
-      if (live?.status === 'pending') return <PermissionCard permission={live} managerTitle={props.titleOf?.(live.addressedTo)} />;
+      // In the Ledung Helper's chat, in plain words (docs/steps/ledung-helper.md).
+      if (live?.status === 'pending') return <PermissionCard permission={live} managerTitle={props.titleOf?.(live.addressedTo)} plain={props.renderCard ? helperApprovalText(live.toolName, live.input, live.sensitive ?? null) : null} />;
       const d = props.decision;
       if (!showTechnical && d?.behavior !== 'denied') return null;
       const by = d && d.by !== 'user' && d.by !== 'simon' && d.by !== 'ledung' ? ` by manager "${props.titleOf?.(d.by) ?? 'manager'}"` : '';

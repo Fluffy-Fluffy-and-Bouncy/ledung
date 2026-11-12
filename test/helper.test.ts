@@ -300,6 +300,8 @@ test('cards are stored in the helper\'s chat; one that isn\'t valid is refused',
   assert.equal(cards[0]!.data.card.title, 'Model');
   const bad = await run(id, 'show_card', { card: { kind: 'link', title: 'Out', to: 'https://example.com' } });
   assert.equal(bad.error, true);
+  // One voice: the card has no words of its own beyond its title (Simon's try-out, 2026-11-12).
+  assert.equal((await run(id, 'show_card', { card: { kind: 'text', title: 'Name', text: 'Said twice' } })).error, true);
   // A card can't look like Ledung's approval card.
   const fake = await run(id, 'show_card', { card: { kind: 'choice', title: 'Create the project?', options: [{ label: 'Allow' }, { label: 'Deny' }] } });
   assert.equal(fake.error, true);

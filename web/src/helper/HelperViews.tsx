@@ -166,11 +166,9 @@ export function HelperCardView({ card, answered, onSend, onOpen, projects, run }
   const typing = usePlainTyping();
   const [text, setText] = useState('');
   const [browsing, setBrowsing] = useState(false);
-  const body = card.text ? <p className="helper-card-text">{card.text}</p> : null;
   const wrap = (inner: ReactNode, extra = '') => (
     <div className={`helper-card ${card.kind}${answered ? ' answered' : ''}${extra}`}>
       <div className="helper-card-title">{card.title}</div>
-      {body}
       {inner}
     </div>
   );

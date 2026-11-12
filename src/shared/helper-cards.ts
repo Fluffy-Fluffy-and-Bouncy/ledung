@@ -11,22 +11,23 @@ export type CardLink = typeof CARD_LINKS[number];
 export const CARD_STEPS = ['shortcuts', 'checkin', 'phone', 'accounts'] as const;
 export type CardStep = typeof CARD_STEPS[number];
 
-const title = z.string().min(1).max(120);
-const text = z.string().min(1).max(1200).optional();
+// One voice (Simon's try-out, 2026-11-12): a card has a short title and its inputs; what it is about is the helper's own
+// message, said once, before it.
+const title = z.string().min(1).max(80);
 
 export const CardSchema = z.discriminatedUnion('kind', [
   z.object({
-    kind: z.literal('choice'), title, text,
+    kind: z.literal('choice'), title,
     options: z.array(z.object({ label: z.string().min(1).max(80), hint: z.string().min(1).max(240).optional() }).strict()).min(2).max(8),
   }).strict(),
-  z.object({ kind: z.literal('folder'), title, text, start: z.string().min(1).max(400).optional() }).strict(),
-  z.object({ kind: z.literal('text'), title, text, placeholder: z.string().min(1).max(80).optional() }).strict(),
-  z.object({ kind: z.literal('step'), title, text, step: z.enum(CARD_STEPS) }).strict(),
-  z.object({ kind: z.literal('link'), title, text, to: z.enum(CARD_LINKS), project: z.string().min(1).max(100).optional() }).strict(),
+  z.object({ kind: z.literal('folder'), title, start: z.string().min(1).max(400).optional() }).strict(),
+  z.object({ kind: z.literal('text'), title, placeholder: z.string().min(1).max(80).optional() }).strict(),
+  z.object({ kind: z.literal('step'), title, step: z.enum(CARD_STEPS) }).strict(),
+  z.object({ kind: z.literal('link'), title, to: z.enum(CARD_LINKS), project: z.string().min(1).max(100).optional() }).strict(),
 ]);
 export type HelperCard = z.infer<typeof CardSchema>
   /** Ledung's own: the review of a proposed workflow (propose_workflow). */
-  | { kind: 'review'; title: string; text?: string; question: number; project: string };
+  | { kind: 'review'; title: string; question: number; project: string };
 
 /** Words a card's title, option or hint may not use: they read as Ledung's own approval (reviews of parts 1 and 2). */
 const APPROVAL_WORDS = /\b(allow|approve|approved|deny|denied|confirm order)\b/i;

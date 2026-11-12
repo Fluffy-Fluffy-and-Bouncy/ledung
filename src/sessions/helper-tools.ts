@@ -68,7 +68,7 @@ export function helperToolServer(who: string, h: HelperHandlers): McpSdkServerCo
     tool('set_user_name', `Set the name Ledung and its sessions call ${who} by.`, {
       name: z.string().trim().min(1).max(60).describe('Their name, as they gave it.'),
     }, async (a) => safely(() => h.setUserName(a.name))) as never,
-    tool('show_card', `Show a card in this chat for precise input, then end your turn: ${who}'s pick comes back as their message. choice: buttons; folder: Ledung's folder browser; text: one field; step: ${who}'s own controls for shortcuts, the check-in notice, phones or accounts; link: a button that opens a page of Ledung's (add-project, project-settings, workflow, manager, accounts, settings, devices, helper-settings, shortcuts, checkin; project for the project ones).`, {
+    tool('show_card', `Show a card in this chat for precise input, under your words: only a short title and the inputs, since your message already said what it is about. Call it last and end your turn with no more text: ${who}'s pick comes back as their message. choice: buttons; folder: Ledung's folder browser; text: one field; step: ${who}'s own controls for shortcuts, the check-in notice, phones or accounts; link: a button that opens a page of Ledung's (add-project, project-settings, workflow, manager, accounts, settings, devices, helper-settings, shortcuts, checkin; project for the project ones).`, {
       card: CardSchema,
     }, async (a) => safely(() => h.showCard(a.card as HelperCard))) as never,
     tool('list_projects', "List Ledung's projects: folder, settings and whether each one's manager runs; a locked project shows its name only.", {}, async () => safely(() => h.listProjects())) as never,

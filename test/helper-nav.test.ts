@@ -29,3 +29,14 @@ test('every step but the name has a plain form; the project\'s steps wait for a 
   assert.equal(myselfView('sensitive', 'shop'), 'ps:shop/safety');
   assert.equal(myselfView('grant', null), 'add');
 });
+
+test('the helper chat\'s approval card says what happens in plain words, not the tool\'s name', async () => {
+  const { helperApprovalText } = await import('../web/src/helper/helperNav.ts');
+  assert.deepEqual(helperApprovalText('mcp__ledung__add_project', { name: 'my-app', folder: 'C:\home\my-app' }, "a manager's project tool, always yours to approve"),
+    { title: 'Add the project "my-app"?', lines: ['Folder: C:\home\my-app'] });
+  assert.deepEqual(helperApprovalText('mcp__ledung__create_project', { name: 'Atlas', github: true, permission_mode: 'auto' }, null),
+    { title: 'Create the project "Atlas"?', lines: ['A new folder with git in your projects folder, and a private GitHub repository', 'Permission mode: Auto'] });
+  assert.deepEqual(helperApprovalText('mcp__ledung__set_project_basics', { project: 'shop', permissionMode: 'auto' }, 'a change to "shop" that lets more through without you: permission mode for new sessions Ask → Auto'),
+    { title: 'Change "shop"?', lines: ['permission mode for new sessions Ask → Auto'] });
+  assert.equal(helperApprovalText('Bash', { command: 'ls' }, null), null, 'anything else: the usual card');
+});

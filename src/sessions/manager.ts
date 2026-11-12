@@ -2652,7 +2652,7 @@ export class SessionManager {
         const fake = cardLooksLikeApproval(parsed.data);
         if (fake) throw new Error(`This card can't be shown: "${fake}" reads as an approval, and approvals are Ledung's own cards. Call the tool that needs it; Ledung asks.`);
         this.addCard(id, parsed.data);
-        return 'The card is shown. End your turn now; the pick comes back as their message.';
+        return 'The card is shown under your words. End your turn now, writing nothing more; the pick comes back as their message.';
       },
     };
   }

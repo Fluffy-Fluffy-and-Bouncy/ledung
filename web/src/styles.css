@@ -1954,3 +1954,4 @@ button.link-button:hover:not(:disabled) { border: none; }
   .setup-card { padding: 1.2rem 1rem 1rem; border-radius: 10px; }
   .setup-card h1 { font-size: 1.3rem; }
 }
+.helper-approval-lines { margin: 0.3rem 0 0.4rem; padding-left: 1.2rem; overflow-wrap: anywhere; }
