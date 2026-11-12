@@ -23,7 +23,7 @@ import { matchSensitive } from './sensitive.ts';
 import { AIRGAP_PROFILE, isLocked, levelProblem, lockdownOf, opensUp, othersSettings, overlapProblem, projectFolders, within } from '../projects/lockdown.ts';
 import { LATER_SUGGESTIONS, withLaterBatch, withSuggestions } from '../shared/sensitive-suggestions.ts';
 import { isNameColour, parseNameColour } from '../shared/name-colours.ts';
-import { ACCEPTED, HISTORY_DAYS, HISTORY_PER_PROJECT, ledungTier, questionText, reviewAnswerProblem, tiersOf, type QuestionDetails } from '../shared/questions.ts';
+import { ACCEPTED, HISTORY_DAYS, HISTORY_PER_PROJECT, ledungTier, LINKED_MARK, questionText, reviewAnswerProblem, tiersOf, type QuestionDetails } from '../shared/questions.ts';
 import {
   BrowseError, createProjectFolder, defaultProjectsFolder, defaultRoots, isInside, listContainer, listContainers, listLocal,
   type ContainerInfo, type FolderListing,
@@ -3959,7 +3959,10 @@ ${firstMessage}`);
         : f.as === 'evidence' ? this.readFrom(sessionId, f.file, readEvidence)
         : (({ path: p, type, bytes }) => ({ path: p, kind: type === 'image/png' ? 'png' as const : 'jpeg' as const, bytes }))(this.readImageHere(sessionId, f.file));
       const kept = await this.keptBytes(read.bytes, read.kind, read.path);
-      const ref = keepCopy(this.containerCopiesDir(), project, read.path, kept, KEPT_FILE_PREFIX);
+      // A linked computer's file keeps its mark on the question page, "linked: shot.png" (issue #158; Martin, 23:02,
+      // Ledung question #2148: "a — Keep the mark"): kept under that name, which shownFile shows as it is.
+      const name = f.file.startsWith(LINKED_FILE_PREFIX) ? `${LINKED_MARK}${read.path}` : read.path;
+      const ref = keepCopy(this.containerCopiesDir(), project, name, kept, KEPT_FILE_PREFIX);
       if (!exercised306) {
         exercised306 = true;
         exercisedLine("EXERCISED #306 a question's file kept as Ledung's own copy, outside the project's folder");

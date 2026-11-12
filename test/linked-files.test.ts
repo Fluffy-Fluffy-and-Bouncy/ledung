@@ -15,6 +15,7 @@ import { Secrets } from '../src/secrets/secrets.ts';
 import type { Management } from '../src/sessions/management.ts';
 import { Session } from '../src/sessions/session.ts';
 import { LEDUNG_SERVER } from '../src/sessions/tools.ts';
+import { shownFile } from '../src/shared/questions.ts';
 import { COOKIE, keyFor, LinkedNodes, type Node } from './linked-nodes.ts';
 import { removeTemp } from './temp.ts';
 import { HANG_MS } from './limits.ts';
@@ -299,7 +300,10 @@ test("ledung#306: a linked computer's screenshot given to ask_user is kept as Le
   const asked = await ask.handler({ question: 'Does it show?', tier: 'Process', screenshots: [{ file: handle, look_for: 'the menu' }] }, {});
   assert.equal(asked.isError, undefined, asked.content[0]!.text);
   const stored = p.pc.store.listQuestions().find((q) => q.sessionId === 'pc-beta')!.shots![0]!.path;
-  assert.match(stored, /^kept:[0-9a-f]{32}\/shot\.png$/);
+  assert.match(stored, /^kept:[0-9a-f]{32}\/linked: shot\.png$/);
+  // It keeps its mark where it is shown (Martin, Ledung question #2148: "a — Keep the mark"), as the linked copy did.
+  assert.equal(shownFile(stored), 'linked: shot.png');
+  assert.equal(shownFile(handle), 'linked: shot.png');
   const served = () => nodes.local(p.pc, { path: `/api/sessions/pc-beta/image?path=${encodeURIComponent(stored)}`, headers: { cookie: COOKIE } });
   const before = await served();
   assert.equal(before.status, 200);

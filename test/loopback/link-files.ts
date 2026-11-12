@@ -176,7 +176,7 @@ async function main(): Promise<void> {
     const shotQ = await shotQuestion(pc, beta.id, pngHandle!, 'Screenshot from the Mac');
     // Kept as the question's own copy (issue #306), so it outlives the linked copy, as a lossless WebP.
     const shotRef = shotQ.shots![0]!.path;
-    check(/^kept:[0-9a-f]{32}\/shot\.png$/.test(shotRef), 'the question on the PC keeps the PNG as its own copy', shotRef);
+    check(/^kept:[0-9a-f]{32}\/linked: shot\.png$/.test(shotRef), 'the question on the PC keeps the PNG as its own copy, marked linked', shotRef);
     const image = await raw(pc, `sessions/${beta.id}/image?path=${encodeURIComponent(shotRef)}`);
     check(image.status === 200 && image.type === 'image/webp' && await samePixels(shotPng, image.bytes), 'the PC\'s page gets it through Beta as WebP, every pixel the PNG\'s', `${image.status} ${image.type} ${image.bytes.length} bytes`);
     const evidence = await pc.api('GET', `questions/${reviewQ.id}/evidence/0`);
@@ -187,7 +187,7 @@ async function main(): Promise<void> {
     const atAlpha = await until(async () => /"(linked:[0-9a-f]{16}\/cart\.png)"/.exec(await messages(mac, alpha.id))?.[1] ?? null, 'the cart at Alpha', TURN_MS);
     const macQ = await shotQuestion(mac, alpha.id, atAlpha, 'Screenshot from the PC');
     const cartRef = macQ.shots![0]!.path;
-    check(/^kept:[0-9a-f]{32}\/cart\.png$/.test(cartRef), 'the Mac\'s question keeps the PC worker\'s screenshot as its own copy', cartRef);
+    check(/^kept:[0-9a-f]{32}\/linked: cart\.png$/.test(cartRef), 'the Mac\'s question keeps the PC worker\'s screenshot as its own copy, marked linked', cartRef);
     const cart = await raw(mac, `sessions/${alpha.id}/image?path=${encodeURIComponent(cartRef)}`);
     check(cart.status === 200 && cart.type === 'image/webp' && await samePixels(cartPng, cart.bytes), 'the Mac\'s page gets it as WebP, every pixel the PNG\'s', `${cart.type} ${cart.bytes.length} bytes`);
     if (await shot(mac, `waiting/q/${macQ.id}`, 'mac-question-linked-shot.png')) check(true, 'shot: the Mac\'s question with the PC\'s screenshot (dark)', 'shots/mac-question-linked-shot.png');

@@ -72,8 +72,14 @@ export interface ReviewDetails {
  * issue #306) by its path in the project; a file from a linked computer (issue #158) by its name, marked as from there.
  */
 export function shownFile(file: string): string {
-  return file.replace(/^(?:container|kept):[0-9a-f]{32}\//, '').replace(/^linked:[0-9a-f]{16}\//, 'linked: ');
+  return file.replace(/^(?:container|kept):[0-9a-f]{32}\//, '').replace(/^linked:[0-9a-f]{16}\//, LINKED_MARK);
 }
+
+/**
+ * How a file from a linked computer is marked where it is shown, and the name its copy kept for a question has
+ * ("kept:<hash>/linked: shot.png"), so the mark stays (Martin, 2026-11-12 23:02, Ledung question #2148: "a — Keep the mark").
+ */
+export const LINKED_MARK = 'linked: ';
 
 /** Every kept copy a stored question names, by its hash, in the question's stored JSON (issues #122, #306). */
 export const COPY_REFS = /(?:container|kept):([0-9a-f]{32})\//g;
