@@ -83,3 +83,16 @@ test('a session started fresh never takes an old turn start', () => {
   turn(make()).beginTurn('user');
   assert.ok(started.at(-1)!.at! >= Date.now() - 1000);
 });
+
+test('a restart that replays only the result ends the kept turn: the next turn starts now (review finding 6)', () => {
+  const { store, make, started, ended } = setup('running');
+  store.setTurnStart('s', Date.now() - 3 * 60 * 60_000);
+  const session = make('pipe-of-a-running-host');
+  // The replay brings only the result: no assistant message, so no turn opened here.
+  turn(session).endTurn();
+  assert.equal(ended.length, 0, 'no turn was open to record');
+  assert.equal(store.turnStart('s'), null);
+  // Hours later, a person's answer starts the next turn.
+  turn(session).beginTurn('user');
+  assert.ok(started.at(-1)!.at! >= Date.now() - 1000, 'starts now, not at the kept start');
+});

@@ -466,7 +466,9 @@ export class Session {
     // Mid-turn when Ledung restarted: that turn began before any stop it now sees, so it finishes (review 2 of #278, finding 3).
     if (opts.info.status === 'running' || opts.info.status === 'waiting') {
       this.turnStartedAt = 0;
-      // Its record goes on from when it really began, not from the first message after the restart.
+      // Its record goes on from when it really began, not from the first message after the restart. If the turn ended
+      // while Ledung was down, the replay ends it on arrival, so its record also counts that downtime: the seconds of a
+      // restart, accepted (review of PR #260, finding 2).
       if (opts.attachTo) this.resumedTurnAt = opts.store.turnStart(opts.info.id);
     }
     this.userName = opts.userName;
@@ -1823,9 +1825,12 @@ export class Session {
   private endTurn(): void {
     // The "once" secrets sent before this turn began had their turn (issue #468).
     void this.secrets?.turnEnded(this.turnBegan).catch((e) => console.error(`Secrets of ${this.id}: ${(e as Error).message}`));
+    // A result ends whatever turn was under way, even one that never opened here: after a restart the replay can bring
+    // only the result, and a start kept from before must not become the next turn's, hours later (review of PR #260, finding 6).
+    this.resumedTurnAt = null;
+    this.store.setTurnStart(this.id, null);
     if (!this.turnOpen) return;
     this.turnOpen = false;
-    this.store.setTurnStart(this.id, null);
     this.gate.ended(this.id, [...new Set(this.turnCommands)], this.turnWaits);
     this.turnCommands = [];
     this.turnWaits = [];
