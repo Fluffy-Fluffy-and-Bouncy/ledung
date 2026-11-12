@@ -2,6 +2,7 @@
 // the page's question desk shows any question, structured or plain. Modelled on the Master Question Desk.
 // Every question has a tier from its project's list, which starts as the five below (issue #96).
 import type { OrderQuestionDetails } from './orders.ts';
+import type { QuestionInfo } from './protocol.ts';
 
 /** An option of a structured question: its key ("a"), its text in Markdown (a **bold** start is its label), its cost. */
 export interface QuestionOption {
@@ -67,11 +68,48 @@ export interface ReviewDetails {
 }
 
 /**
- * A stored screenshot or evidence file as people read it: a container file's kept copy (issue #122) by its path in the
- * project; a file from a linked computer (issue #158) by its name, marked as from there.
+ * A stored screenshot or evidence file as people read it: a kept copy (a container's, issue #122, or any project's,
+ * issue #306) by its path in the project; a file from a linked computer (issue #158) by its name, marked as from there.
  */
 export function shownFile(file: string): string {
-  return file.replace(/^container:[0-9a-f]{32}\//, '').replace(/^linked:[0-9a-f]{16}\//, 'linked: ');
+  return file.replace(/^(?:container|kept):[0-9a-f]{32}\//, '').replace(/^linked:[0-9a-f]{16}\//, LINKED_MARK);
+}
+
+/**
+ * How a file from a linked computer is marked where it is shown, and the name its copy kept for a question has
+ * ("kept:<hash>/linked: shot.png"), so the mark stays (Martin, 2026-11-12 23:02, Ledung question #2148: "a — Keep the mark").
+ */
+export const LINKED_MARK = 'linked: ';
+
+/** Every kept copy a stored question names, by its hash, in the question's stored JSON (issues #122, #306). */
+export const COPY_REFS = /(?:container|kept):([0-9a-f]{32})\//g;
+
+/**
+ * Waiting for you history (issue #306; Martin, 2026-11-12, Ledung question #2145): per project at least the last
+ * 100 answered questions, and every question of the last 30 days if that is more.
+ */
+export const HISTORY_PER_PROJECT = 100;
+export const HISTORY_DAYS = 30;
+/** In a light question, each text cut to this many characters: what the history list shows, an excerpt of 180. */
+export const LIGHT_TEXT_CHARS = 300;
+
+/**
+ * A question as Waiting for you history lists it (issue #306): without what it refers to, and every text of it, the
+ * question's, the answer's and each of its fields', cut to LIGHT_TEXT_CHARS. Marked `light`: the page asks for it
+ * whole when it is opened.
+ */
+export function lightQuestion(q: QuestionInfo): QuestionInfo {
+  // A file's name (a screenshot's path, an evidence file) is never cut: the page shows the image by it.
+  const cut = (v: unknown): unknown => {
+    if (typeof v === 'string') return v.length > LIGHT_TEXT_CHARS ? `${v.slice(0, LIGHT_TEXT_CHARS)}…` : v;
+    if (Array.isArray(v)) return v.map(cut);
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, k === 'path' || k === 'file' ? x : cut(x)]));
+    return v;
+  };
+  return {
+    ...q, question: cut(q.question) as string, answer: cut(q.answer) as string | null, withdrawnReason: cut(q.withdrawnReason) as string | null,
+    details: cut(q.details) as QuestionDetails | null, shots: cut(q.shots) as QuestionInfo['shots'], original: null, earlier: null, sources: null, light: true,
+  };
 }
 
 /** At most this many evidence files per review. */

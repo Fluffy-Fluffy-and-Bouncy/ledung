@@ -278,6 +278,10 @@ export const api = {
   overview: () => call<Overview>('GET', '/api/overview'),
   answerQuestion: (id: number, answer: string) => call<QuestionInfo>('POST', `/api/questions/${id}/answer`, { answer }),
   withdrawQuestion: (id: number) => call('POST', `/api/questions/${id}/withdraw`, {}),
+  /** One whole question: older Waiting for you history comes without what it refers to (issue #306). */
+  question: (id: number) => call<QuestionInfo>('GET', `/api/questions/${id}`),
+  /** Waiting for you history, light, and the sessions it names (issue #306): read when the view opens. */
+  questionHistory: () => call<{ questions: QuestionInfo[]; sessions: SessionInfo[] }>('GET', '/api/question-history'),
   /** A review's n-th evidence file, when it is text (docs/steps/pr-review.md). */
   evidenceText: (id: number, n: number) => call<{ file: string; content: string }>('GET', `/api/questions/${id}/evidence/${n}`),
   /** `folder`: which of the session's folders the Files pane means (issue #225); left out, as a chat link resolves. */

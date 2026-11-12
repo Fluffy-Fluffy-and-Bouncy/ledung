@@ -23,7 +23,7 @@ import { matchSensitive } from './sensitive.ts';
 import { AIRGAP_PROFILE, isLocked, levelProblem, lockdownOf, opensUp, othersSettings, overlapProblem, projectFolders, within } from '../projects/lockdown.ts';
 import { LATER_SUGGESTIONS, withLaterBatch, withSuggestions } from '../shared/sensitive-suggestions.ts';
 import { isNameColour, parseNameColour } from '../shared/name-colours.ts';
-import { ACCEPTED, ledungTier, questionText, reviewAnswerProblem, tiersOf, type QuestionDetails } from '../shared/questions.ts';
+import { ACCEPTED, HISTORY_DAYS, HISTORY_PER_PROJECT, ledungTier, LINKED_MARK, questionText, reviewAnswerProblem, tiersOf, type QuestionDetails } from '../shared/questions.ts';
 import {
   BrowseError, createProjectFolder, defaultProjectsFolder, defaultRoots, isInside, listContainer, listContainers, listLocal,
   type ContainerInfo, type FolderListing,
@@ -74,9 +74,10 @@ import { listTree, type TreeListing } from './tree.ts';
 import type { PaneFolderKey, PaneFolders } from '../shared/files-pane.ts';
 import { sessionChanges, type SessionChanges } from './changes.ts';
 import {
-  CONTAINER_FILE_PREFIX, CONTAINER_IMAGE_MAX_BYTES, containerGit, diffHidden, keepCopy, listContainerFolder, pruneCopies, readContainerBytes, readContainerImage, readContainerText, readCopy,
-  type ContainerAccess, type ContainerExec,
+  CONTAINER_IMAGE_MAX_BYTES, containerGit, diffHidden, isCopyRef, keepCopy, KEPT_FILE_PREFIX, listContainerFolder, moveCopies, pruneCopies, readContainerBytes, readContainerImage, readContainerText, readCopy,
+  type ContainerAccess, type ContainerExec, type CopyKind,
 } from './container-files.ts';
+import { toWebp } from './webp.ts';
 import { checkLineComments, formatLineComments, lineCommentsMessage, openReviewFor, reviewAnswerWithComments } from '../shared/line-comments.ts';
 import { Management, type LinkedMessage, type LinkedPort, type SettingsPort } from './management.ts';
 import { findTickets } from '../usage/links.ts';
@@ -208,6 +209,7 @@ export function resumedState(info: SessionInfo): {
 let exercised425 = false;
 let exercised96 = false;
 let exercised160 = false;
+let exercised306 = false;
 
 /** How long the sidebar's read of which projects have a flow waits for one project (a container's docker exec). */
 const WORKFLOWS_READ_MS = 5000;
@@ -371,11 +373,12 @@ export class SessionManager {
       handoffProblem: (id, file) => this.handoffProblem(id, file),
       // The file viewer's own image rules, so a shot that is attached can also be shown (issue #60).
       // A manager's board attachment ("board:...") is from its project's board cache instead.
-      // A container project's file is a copy Ledung kept when the question was asked (keepContainerFiles, issue #122).
-      // A file a manager on a linked computer sent this one ("linked:...") is the copy kept in the data folder (issue #158).
+      // A project's file is a copy Ledung kept when the question was asked (keepContainerFiles; a container's since
+      // issue #122, every project's since #306). A file a manager on a linked computer sent this one ("linked:...") is
+      // the copy kept in the data folder (issue #158); asked about, it is kept as a question's copy too.
       shotPath: (id, file) => file.startsWith(BOARD_FILE_PREFIX) ? this.readBoardShot(id, file)
         : file.startsWith(LINKED_FILE_PREFIX) ? (this.readLinkedCopy(id, file, ['png', 'jpeg']), file)
-        : file.startsWith(CONTAINER_FILE_PREFIX) ? (this.readContainerCopy(id, file, ['png', 'jpeg']), file) : this.readImageHere(id, file).path,
+        : isCopyRef(file) ? (this.readContainerCopy(id, file, ['png', 'jpeg']), file) : this.readImageHere(id, file).path,
       keepContainerFiles: (id, files) => this.keepContainerFiles(id, files),
       evidenceFile: (id, file) => {
         const ev = this.readEvidenceFile(id, file, true);
@@ -731,12 +734,12 @@ export class SessionManager {
    * rules, or a board attachment, which only a manager can give, from its own project's board when asked
    * (ownBoard) and from any board in use here when the page shows it, as board images are.
    */
-  private readEvidenceFile(sessionId: string, file: string, ownBoard: boolean): { file: string; kind: 'png' | 'jpeg' | 'text'; bytes: Buffer } {
+  private readEvidenceFile(sessionId: string, file: string, ownBoard: boolean): { file: string; kind: CopyKind; bytes: Buffer } {
     if (file.startsWith(LINKED_FILE_PREFIX)) {
       const copy = this.readLinkedCopy(sessionId, file, ['png', 'jpeg', 'text']);
       return { file, kind: copy.kind, bytes: copy.bytes };
     }
-    if (file.startsWith(CONTAINER_FILE_PREFIX)) {
+    if (isCopyRef(file)) {
       const copy = this.readContainerCopy(sessionId, file, ['png', 'jpeg', 'text']);
       if (copy.kind === 'text' && copy.bytes.length > EVIDENCE_TEXT_MAX_BYTES) throw new UserError(`${copy.path} is too large.`);
       return { file, kind: copy.kind, bytes: copy.bytes };
@@ -1503,8 +1506,27 @@ export class SessionManager {
     return this.config.userName;
   }
 
+  /** What the page gets with every load: the open questions and the 50 most recently closed, whole. */
   questions(): QuestionInfo[] {
     return this.store.listQuestions();
+  }
+
+  /**
+   * Waiting for you history (issue #306), read when it opens (GET /api/question-history): per project the last 100
+   * answered, or every one of the last 30 days if that is more, light; and the sessions they name, for their names and
+   * projects, which a page load carries only for recent ones (issue #229).
+   */
+  questionHistory(now = Date.now()): { questions: QuestionInfo[]; sessions: SessionInfo[] } {
+    const questions = this.store.questionHistory(HISTORY_PER_PROJECT, now - HISTORY_DAYS * 24 * 60 * 60 * 1000);
+    const named = new Set(questions.flatMap((q) => [q.sessionId, q.addressedTo, q.answeredBy ?? '']));
+    return { questions, sessions: this.sessions().filter((s) => named.has(s.id)) };
+  }
+
+  /** One whole question for the page (GET /api/questions/:id): a light one from history, opened (issue #306). */
+  question(id: number): QuestionInfo {
+    const q = Number.isInteger(id) ? this.store.getQuestion(id) : undefined;
+    if (!q) throw new UserError('No such question.');
+    return q;
   }
 
   /**
@@ -2414,6 +2436,14 @@ export class SessionManager {
       } catch (e) {
         if (p.config.name !== name) this.projectStore.rename(p.config.name, name);
         throw e;
+      }
+    }
+    // The copies kept for its questions follow it, so their pages still show them (issue #306).
+    if (p.config.name !== name) {
+      try {
+        moveCopies(this.containerCopiesDir(), name, p.config.name);
+      } catch (e) {
+        console.error(`File copies of ${name}'s questions were not moved to ${p.config.name}: ${(e as Error).message}`);
       }
     }
     // "Record where this came from" stays dismissed under the new name (review of part d).
@@ -3657,16 +3687,16 @@ ${firstMessage}`);
 
   /**
    * A PNG or JPEG from the session's project folder, read-only, for the file viewer; from its container for a
-   * container project. A copy Ledung kept for a question ("container:...") is read from the copies.
+   * container project. A copy Ledung kept for a question ("container:..." or "kept:...", issue #306) is read from the copies.
    */
   async readImage(sessionId: string, link: string, folder?: PaneFolderKey): Promise<ProjectImage> {
     if (link.startsWith(LINKED_FILE_PREFIX)) {
       const copy = this.readLinkedCopy(sessionId, link, ['png', 'jpeg']);
       return { path: copy.path, type: copy.kind === 'png' ? 'image/png' : 'image/jpeg', bytes: copy.bytes };
     }
-    if (link.startsWith(CONTAINER_FILE_PREFIX)) {
+    if (isCopyRef(link)) {
       const copy = this.readContainerCopy(sessionId, link, ['png', 'jpeg']);
-      return { path: copy.path, type: copy.kind === 'png' ? 'image/png' : 'image/jpeg', bytes: copy.bytes };
+      return { path: copy.path, type: copy.kind === 'webp' ? 'image/webp' : copy.kind === 'png' ? 'image/png' : 'image/jpeg', bytes: copy.bytes };
     }
     const { project, root } = this.paneRoot(sessionId, folder);
     if (project.runner === 'docker') return this.fromContainer(() => readContainerImage(this.containerAccess(project), root, link));
@@ -3862,7 +3892,7 @@ ${firstMessage}`);
   }
 
   /** A copy kept for one of the session's project's questions, by the name the question stores. */
-  private readContainerCopy(sessionId: string, ref: string, kinds: readonly ('png' | 'jpeg' | 'text')[]): { path: string; kind: 'png' | 'jpeg' | 'text'; bytes: Buffer } {
+  private readContainerCopy(sessionId: string, ref: string, kinds: readonly ('png' | 'jpeg' | 'text')[]): { path: string; kind: CopyKind; bytes: Buffer } {
     const info = this.store.getSession(sessionId);
     if (!info) throw new UserError('No such session.');
     try {
@@ -3873,26 +3903,27 @@ ${firstMessage}`);
   }
 
   /**
-   * ask_user's screenshots and a review's evidence from a container project: read from the container now, with the
-   * file viewer's rules and the attachment limits, and kept in Ledung, so the question's page shows them later with
-   * the container stopped too. Each comes back as the name the question stores; a local project's come back as given.
+   * ask_user's screenshots and a review's evidence, read now with the file viewer's rules and the attachment limits
+   * and kept in Ledung, so the question's page shows them later: a container's (issue #122) with the container
+   * stopped too, and since issue #306 every project's, once the worktree they came from is removed, and a file from a
+   * linked computer once its own copy there is pruned. Images are kept as WebP. Each comes back as the name the
+   * question stores. (Named for #122, which kept only a container's.)
    */
   private async keepContainerFiles(sessionId: string, files: { file: string; as: 'shot' | 'evidence' }[]): Promise<string[]> {
     const info = this.store.getSession(sessionId);
     if (!info) throw new UserError('No such session.');
     const project = this.configOf(info);
-    if (project.runner !== 'docker') return files.map((f) => f.file);
-    const access = this.containerAccess(project);
-    const root = info.workDir ?? project.pathInContainer;
+    const access = project.runner === 'docker' ? this.containerAccess(project) : null;
+    const root = project.runner === 'docker' ? info.workDir ?? project.pathInContainer : null;
     this.pruneContainerCopies(info.project);
     const kept: string[] = [];
     const count = { shot: 0, evidence: 0 };
     for (const f of files) {
       const n = ++count[f.as];
       try {
-        kept.push(await this.keepContainerFile(access, root, info.project, f));
+        kept.push(await this.keepContainerFile(sessionId, access && root !== null ? { access, root } : null, info.project, f));
       } catch (e) {
-        if (!(e instanceof FileError)) throw e;
+        if (!(e instanceof FileError) && !(e instanceof UserError)) throw e;
         // As ask's own checks say it (management.ts), so the session can fix it.
         throw new UserError(`${f.as === 'shot' ? 'Screenshot' : 'Evidence'} ${n} (${f.file}) can't be attached: ${e.message} Nothing was asked.`);
       }
@@ -3910,17 +3941,38 @@ ${firstMessage}`);
     if (now - (this.prunedCopies.get(project) ?? 0) < 60 * 60 * 1000) return;
     this.prunedCopies.set(project, now);
     try {
-      pruneCopies(this.containerCopiesDir(), project, this.store.containerCopyRefs(), now - 24 * 60 * 60 * 1000);
+      pruneCopies(this.containerCopiesDir(), project, this.store.keptCopyRefs(), now - 24 * 60 * 60 * 1000);
     } catch (e) {
-      console.error(`Container file copies of ${project}: ${(e as Error).message}`);
+      console.error(`File copies of ${project}'s questions: ${(e as Error).message}`);
     }
   }
 
-  private async keepContainerFile(access: ContainerAccess, root: string, project: string, f: { file: string; as: 'shot' | 'evidence' }): Promise<string> {
-    if (f.file.startsWith(BOARD_FILE_PREFIX) || f.file.startsWith(CONTAINER_FILE_PREFIX) || f.file.startsWith(LINKED_FILE_PREFIX)) return f.file;
+  /**
+   * One file kept for a question: a board attachment and a copy kept already as they are; a linked computer's copy
+   * and a local project's file read here and kept as "kept:"; a container's read in it and kept as "container:".
+   */
+  private async keepContainerFile(sessionId: string, box: { access: ContainerAccess; root: string } | null, project: string, f: { file: string; as: 'shot' | 'evidence' }): Promise<string> {
+    if (f.file.startsWith(BOARD_FILE_PREFIX) || isCopyRef(f.file)) return f.file;
+    const kinds: AttachmentKind[] = f.as === 'shot' ? ['png', 'jpeg'] : ['png', 'jpeg', 'text'];
+    if (f.file.startsWith(LINKED_FILE_PREFIX) || !box) {
+      const read: { path: string; kind: AttachmentKind; bytes: Buffer } = f.file.startsWith(LINKED_FILE_PREFIX) ? this.readLinkedCopy(sessionId, f.file, kinds)
+        : f.as === 'evidence' ? this.readFrom(sessionId, f.file, readEvidence)
+        : (({ path: p, type, bytes }) => ({ path: p, kind: type === 'image/png' ? 'png' as const : 'jpeg' as const, bytes }))(this.readImageHere(sessionId, f.file));
+      const kept = await this.keptBytes(read.bytes, read.kind, read.path);
+      // A linked computer's file keeps its mark on the question page, "linked: shot.png" (issue #158; Martin, 23:02,
+      // Ledung question #2148: "a — Keep the mark"): kept under that name, which shownFile shows as it is.
+      const name = f.file.startsWith(LINKED_FILE_PREFIX) ? `${LINKED_MARK}${read.path}` : read.path;
+      const ref = keepCopy(this.containerCopiesDir(), project, name, kept, KEPT_FILE_PREFIX);
+      if (!exercised306) {
+        exercised306 = true;
+        exercisedLine("EXERCISED #306 a question's file kept as Ledung's own copy, outside the project's folder");
+      }
+      return ref;
+    }
+    const { access, root } = box;
     if (f.as === 'shot') {
       const image = await readContainerImage(access, root, f.file, CONTAINER_IMAGE_MAX_BYTES);
-      return keepCopy(this.containerCopiesDir(), project, image.path, image.bytes);
+      return keepCopy(this.containerCopiesDir(), project, image.path, await this.keptBytes(image.bytes, image.type === 'image/png' ? 'png' : 'jpeg', image.path));
     }
     // Evidence: the kinds and limits of an attachment (src/board/attachments.ts), by the real file's name and first bytes;
     // a text file named as one is read only up to its own limit.
@@ -3929,7 +3981,21 @@ ${firstMessage}`);
     const kind = bytesKind(ev.bytes, ev.path);
     if (!kind) throw new FileError(/\.(png|jpe?g)$/i.test(ev.path) ? `${ev.path} is not really a ${/\.png$/i.test(ev.path) ? 'PNG' : 'JPEG'} image.` : `${ev.path} is not a text file.`);
     if (kind === 'text' && ev.bytes.length > EVIDENCE_TEXT_MAX_BYTES) throw new FileError(`${ev.path} is too large (${Math.round(ev.bytes.length / 1024)} KB; a text file is at most 512 KB).`);
-    return keepCopy(this.containerCopiesDir(), project, ev.path, ev.bytes);
+    return keepCopy(this.containerCopiesDir(), project, ev.path, await this.keptBytes(ev.bytes, kind, ev.path));
+  }
+
+  /**
+   * What is kept of a file (issue #306): a PNG or JPEG as WebP, text as it is. A conversion that fails keeps the image
+   * as it came, said in Ledung's log, so a question is never refused for it.
+   */
+  private async keptBytes(bytes: Buffer, kind: AttachmentKind, name: string): Promise<Buffer> {
+    if (kind === 'text') return bytes;
+    try {
+      return await toWebp(bytes, kind);
+    } catch (e) {
+      console.error(`Kept ${name} for a question as it came, not as WebP: ${(e as Error).message}`);
+      return bytes;
+    }
   }
 
   // --- The Files pane (issue #225, a test feature) --------------------------------------------------
