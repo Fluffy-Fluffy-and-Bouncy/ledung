@@ -61,6 +61,21 @@ export function parseRemoteUrl(url: string, enterpriseHosts: readonly string[] =
   return { host, owner: m[2]!, name: m[3]! };
 }
 
+/**
+ * The project's own GitHub repository, from its git remote: `origin`, or the only remote when there is no origin.
+ * Null when that is not a GitHub remote, or when several remotes and none is origin leave it unclear
+ * (Project-Ledung#475: a merge the person said yes to runs only there).
+ */
+export function projectRepo(state: GitState): { host: string; owner: string; name: string } | null {
+  const urls = new Map<string, string>();
+  for (const line of state.config.split(/\r?\n/)) {
+    const m = /^remote\.(.+)\.url (.+)$/.exec(line.trim());
+    if (m) urls.set(m[1]!, m[2]!);
+  }
+  const url = urls.get('origin') ?? (urls.size === 1 ? [...urls.values()][0]! : '');
+  return parseRemoteUrl(url);
+}
+
 /** Where to look for the branch's pull request, or why not to: decided from git alone, at no cost (issue #252). */
 export function prTarget(state: GitState, enterpriseHosts: readonly string[] = []): PrTarget | PrSkip {
   const branch = state.head.trim();

@@ -23,7 +23,7 @@ import {
   buildDelivery, CLEAR_NOTE_SOURCE, COMPACT_ALERT_MINUTES, compactCommand, compactRequester, isClear, isCompact, parseClear, promptContextLine,
   type CompactOutcome, type Management, type ShotInput,
 } from './management.ts';
-import { mergeAnswered, routePermission, sensitiveHookOutput, type SensitiveRules } from './sensitive.ts';
+import { mergeAnswered, pinMergeRepo, routePermission, sensitiveHookOutput, type SensitiveRules } from './sensitive.ts';
 import { promptTimeLine } from './elapsed.ts';
 import { settingsAction, wordsFor, type Word } from './word.ts';
 import { promptAwayLine, classify, CLASSIFIER_REFUSED, decide as awayDecide, KIND_NAMES, mergeWithoutReview, FLOOR_TIMEOUT_MS, formatLog, orderedMergeFloors, type Away, type AwayDecision, type Floor, type ViewPr } from './away.ts';
@@ -31,7 +31,7 @@ import type { AwayInfo } from '../shared/protocol.ts';
 import { deskQuestion, questionText, type QuestionDetails } from '../shared/questions.ts';
 import { compactionUsage, contextAfterCompact, UsageRecorder, type SessionFacts } from '../usage/recorder.ts';
 import { findTickets } from '../usage/links.ts';
-import type { PullRequestPoller } from './pr-poll.ts';
+import { projectRepo, type PullRequestPoller } from './pr-poll.ts';
 import { CONTEXT_TOOLS, instructions, LEDUNG_SERVER, LEDUNG_TOOLS, ledungToolServer, MCP_LIMIT_ENV, mcpLimitFor, SETTINGS_CHANGE_RULE, SETTINGS_CHANGE_TOOLS, SETTINGS_TOOLS, USAGE_PUBLISH_TOOLS, USER_APPROVED_TOOLS, type BoardHandlers, type ManagerHandlers, type ProposeHandlers, type RunHandlers, type ToolHandlers } from './tools.ts';
 import type { Boards } from '../board/boards.ts';
 import { commandKinds, heavyKinds } from '../resources/commands.ts';
@@ -733,9 +733,9 @@ export class Session {
    * A manager's `gh pr merge N` that the user already said yes to, as an answer to one of its own questions
    * about #N in the last two days: allowed without asking again, recorded with the question (decided
    * 2026-10-13; agent-manager's gate did the same with the owner's word in the lead pane). Not a subagent's call
-   * (issue #150). Null: as before.
+   * (issue #150). Only a merge in the project's own repository (Project-Ledung#475, pinMergeRepo). Null: as before.
    */
-  private mergeOnAnswer(toolName: string, input: Record<string, unknown>, toolUseId: string | undefined, agentId: unknown): Record<string, unknown> | null {
+  private async mergeOnAnswer(toolName: string, input: Record<string, unknown>, toolUseId: string | undefined, agentId: unknown): Promise<Record<string, unknown> | null> {
     if (toolName !== 'Bash' || typeof input.command !== 'string') return null;
     if (this.store.getSession(this.id)?.role !== 'manager') return null;
     const since = Date.now() - 2 * 24 * 3600 * 1000;
@@ -744,18 +744,27 @@ export class Session {
     const own = this.store.answeredSince(this.id, since);
     // The user's own words typed into the manager count as well, as the lead pane did in agent-manager:
     // a stored user message without `from` is theirs; Ledung's deliveries carry from: 'ledung'. Ids < 0.
+    // Only words typed on this computer, as for settings words (settingsOnWord; Project-Ledung#475).
     const typed = this.store.userMessagesSince(this.id, since)
-      .filter((m) => !m.data.from && typeof m.data.text === 'string')
+      .filter((m) => !m.data.from && m.data.here === true && typeof m.data.text === 'string')
       .map((m, k) => ({ id: -(k + 1), question: m.data.text as string, answer: m.data.text as string, answeredBy: 'user', typed: true, at: m.at }));
     const hit = mergeAnswered(input.command, this.sensitiveRules, [...own, ...typed]);
     if (!hit || subagentCall(agentId, 'merge on an answer')) return null;
+    // The word names a PR of this project: the merge must be in its repository, read from its git remote.
+    const state = await Promise.resolve(this.runner.gitState?.()).catch(() => null);
+    const shellAt = toolUseId ? this.shellFolders.get(toolUseId) : undefined;
+    const inProject = shellAt !== undefined && (await shellFolderInside(this.runner.cwd, shellAt)) !== null;
+    const command = pinMergeRepo(input.command, state ? projectRepo(state) : null, inProject);
+    if (command === null) return null;
     const said = hit.questionId < 0
       ? `in what they typed at ${new Date(typed[-hit.questionId - 1]!.at).toLocaleTimeString()}`
       : `in their answer to question #${hit.questionId}`;
     const why = `${this.userName} said yes to merging #${hit.pr} ${said}`;
     this.record('event', { text: `Merge of #${hit.pr} allowed: ${why}.` });
     this.allowedBy.answered(toolUseId, why);
-    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: `Allowed by Ledung: ${why}.` } };
+    // A merge that named no repository runs pinned to the project's (pinMergeRepo).
+    const pinned = command === input.command ? {} : { updatedInput: { ...input, command } };
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: `Allowed by Ledung: ${why}.`, ...pinned } };
   }
 
   /**
@@ -1268,7 +1277,7 @@ export class Session {
           }
           // A subagent's call: every grant on the person's word below is the session's own (issues #146, #150).
           const agentId = (input as { agent_id?: string }).agent_id;
-          const merge = this.mergeOnAnswer(toolName, toolInput, toolUseId, agentId);
+          const merge = await this.mergeOnAnswer(toolName, toolInput, toolUseId, agentId);
           if (merge) return merge;
           const named = this.settingsOnWord(toolName, toolInput, toolUseId, agentId);
           if (named) return named;
