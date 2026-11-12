@@ -57,7 +57,11 @@ export function endedWithError(session: SessionInfo): boolean {
 }
 
 /** extra: drawn at the bar's right end, the session's macro chips (issue #410). */
-export function WorkingIndicator({ session, sessions, messages, extra }: { session: SessionInfo; sessions: SessionInfo[]; messages: StoredMessage[]; extra?: ReactNode }) {
+export function WorkingIndicator({ session, sessions, messages, extra, waitingToStart }: {
+  session: SessionInfo; sessions: SessionInfo[]; messages: StoredMessage[]; extra?: ReactNode;
+  /** A new session waiting for memory to start (resource limits): the reason, shown in place of "Ready". */
+  waitingToStart?: string | null;
+}) {
   const activity = useMemo(() => currentActivity(messages, !!session.uac), [messages, session.uac]);
   const [now, setNow] = useState(Date.now());
   // 'starting' waits for its first message: not working (#97).
@@ -88,6 +92,9 @@ export function WorkingIndicator({ session, sessions, messages, extra }: { sessi
         {session.status === 'running' && activity.since && <span className="muted"> · {elapsed(now - activity.since)}</span>}
       </>
     );
+  } else if (session.status === 'starting' && waitingToStart) {
+    kind = 'waiting';
+    content = <span className="working-label">Waiting to start: {waitingToStart}. A message you send now goes in once it starts.</span>;
   } else if (session.status === 'starting') {
     kind = 'done';
     content = <span className="working-label">Ready</span>;

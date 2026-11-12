@@ -111,7 +111,7 @@ public static class LedungAct {
       long c, e, k, u;
       if (!GetProcessTimes(h, out c, out e, out k, out u)) return "unreadable";
       // The list's start time is rounded to milliseconds: within 1 ms (10000 units) is the same process.
-      if (created > 0 && Math.Abs(c - created) > 10000) return "another process";
+      if (created <= 0 || Math.Abs(c - created) > 10000) return "another process";
       if (action == "suspend") return NtSuspendProcess(h) == 0 ? "ok" : "refused";
       if (action == "resume") return NtResumeProcess(h) == 0 ? "ok" : "refused";
       return TerminateProcess(h, 1) ? "ok" : "refused";
@@ -134,7 +134,10 @@ export async function actOn(targets: Target[], action: 'suspend' | 'resume' | 'e
   const valid = targets.filter((t) => validPid(t.pid)).slice(0, MAX_TARGETS);
   if (!valid.length) return { done: 0, skipped: targets.length };
   if (process.platform === 'win32') {
-    const script = WINDOWS_ACT(valid.map((t) => ({ pid: t.pid, ft: t.started === null ? 0n : fileTime(t.started) })), action);
+    // No start time, no action: without it a reused pid can't be told from the job's process (acceptance test, finding 8).
+    const known = valid.filter((t) => t.started !== null);
+    if (!known.length) return { done: 0, skipped: targets.length };
+    const script = WINDOWS_ACT(known.map((t) => ({ pid: t.pid, ft: fileTime(t.started!) })), action);
     const { stdout } = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 60000 });
     const done = stdout.split(/\r?\n/).filter((l) => / ok$/.test(l.trim())).length;
     return { done, skipped: targets.length - done };

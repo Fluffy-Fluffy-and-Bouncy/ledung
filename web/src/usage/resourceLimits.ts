@@ -27,3 +27,9 @@ export function parseLimitInput(dim: string, text: string): number | undefined {
   if (isMemory(dim)) return n > 0 && n <= 65536 ? n : undefined;
   return n >= 1 && n <= 100 ? Math.round(n) : undefined;
 }
+
+/** How long a job has been over: seconds under a minute (acceptance test, finding 14), then minutes. */
+export function overFor(ms: number): string {
+  const sec = Math.max(1, Math.round(ms / 1000));
+  return sec < 60 ? `${sec} s` : `${Math.round(sec / 60)} min`;
+}

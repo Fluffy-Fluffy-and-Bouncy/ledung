@@ -435,6 +435,9 @@ export class Session {
     if (Date.now() - call.at >= LONG_CALL_MS) this.gate.noteCommands?.(this.id, call.kinds);
   }
 
+  /** A new session waiting for memory to start (resource limits): messages sent to it are held until it runs. */
+  waitingToStart = false;
+
   /** Tool calls waiting while the session is paused. */
   private pauseWaiters: (() => void)[] = [];
   private readonly remote: RemoteControl | null;
@@ -2034,7 +2037,8 @@ export class Session {
   /** here: typed on this computer (issue #263), kept with the message for settingsOnWord. */
   /** images: names of the person's images uploaded for this message (issue #128), checked by the manager. */
   send(text: string, here = false, images: string[] = []): void {
-    if (!this.q || this.stopping) throw new Error('The session is not running.');
+    // A new session waiting for memory to start holds the person's messages for its start (acceptance test, finding 3).
+    if (this.stopping || (!this.q && !this.waitingToStart)) throw new Error('The session is not running.');
     const info = this.store.getSession(this.id)!;
     // A chat starts as "New chat" (issue #211); either is named after the first message.
     // Claude reads a locked secret's token as its name and variable, never the value (issue #468).

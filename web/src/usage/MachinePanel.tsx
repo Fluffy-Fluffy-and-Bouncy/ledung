@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { projectLabel, type MachineInfo, type Priority, type ResourcesInfo, type SessionInfo, type TurnResource, type TypicalCost } from '../../../src/shared/protocol.ts';
 import { dimLabel, formatDim } from '../../../src/resources/limits.ts';
 import { api } from '../api.ts';
-import { limitShare, limitText, parseLimitInput } from './resourceLimits.ts';
+import { limitShare, limitText, overFor, parseLimitInput } from './resourceLimits.ts';
 
 export function formatCores(n: number): string {
   return `${n < 10 ? n.toFixed(1) : Math.round(n)} ${n >= 0.95 && n < 1.05 ? 'core' : 'cores'}`;
@@ -113,8 +113,15 @@ function LimitEditor({ dim, label, r, run, onClose }: { dim: string; label: stri
 function JobCard({ job, r, title, onOpen, run }: { job: ResourcesInfo['jobs'][number]; r: ResourcesInfo; title: string; onOpen: () => void; run: (action: () => Promise<unknown>) => Promise<void> }) {
   const label = (dim: string) => dimLabel(dim, (id) => r.gpus.find((g) => g.id === id && !g.main)?.name ?? null);
   const dims = Object.keys(job.granted);
+  // One request at a time from this card: a double-click on Pause suspended a job twice (acceptance test, finding 1).
+  const [busy, setBusy] = useState(false);
+  const act = (action: () => Promise<unknown>) => {
+    if (busy) return;
+    setBusy(true);
+    void run(action).finally(() => setBusy(false));
+  };
   const state = job.state === 'over'
-    ? `Over its share${job.overSince ? ` for ${Math.max(1, Math.round((Date.now() - job.overSince) / 60000))} min` : ''}: priority ${job.lowered ? 'lowered' : 'unchanged'}, session held, told`
+    ? `Over its share${job.overSince ? ` for ${overFor(Date.now() - job.overSince)}` : ''}: priority ${job.lowered ? 'lowered' : 'unchanged'}, session held, told`
     : job.state === 'paused' ? 'Paused by you: its processes are suspended; their memory stays taken' : 'Going';
   return (
     <li className={`job-card ${job.state}`}>
@@ -145,11 +152,12 @@ function JobCard({ job, r, title, onOpen, run }: { job: ResourcesInfo['jobs'][nu
       {job.state === 'over' && <div className="muted small-print">A lower priority only shares out CPU time; for memory and the GPU, the session's own cut-back is what helps.</div>}
       <div className="job-actions">
         {job.state === 'paused'
-          ? <button className="small" onClick={() => void run(() => api.pauseJob(job.id, false))}>Resume</button>
-          : <button className="small" title="Suspends the job's processes; their memory and GPU memory stay taken" onClick={() => void run(() => api.pauseJob(job.id, true))}>Pause</button>}
-        <button className="small danger" onClick={() => {
-          if (confirm(`Stop "${job.what}"? Its ${job.processes} process${job.processes === 1 ? '' : 'es'} will be ended, and the session told.`)) void run(() => api.stopJob(job.id));
+          ? <button className="small" disabled={busy} onClick={() => act(() => api.pauseJob(job.id, false))}>Resume</button>
+          : <button className="small" disabled={busy} title="Suspends the job's processes; their memory and GPU memory stay taken" onClick={() => act(() => api.pauseJob(job.id, true))}>Pause</button>}
+        <button className="small danger" disabled={busy} onClick={() => {
+          if (confirm(`Stop "${job.what}"? Its ${job.processes} process${job.processes === 1 ? '' : 'es'} will be ended, and the session told.`)) act(() => api.stopJob(job.id));
         }}>Stop</button>
+        {busy && <span className="muted">Working…</span>}
       </div>
     </li>
   );

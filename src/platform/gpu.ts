@@ -115,6 +115,8 @@ export const WINDOWS_GPU_SETUP = `
 $ledungGpuAdapters = @()
 $ledungGpuOk = $true
 $ledungGpuRound = 0
+$ledungGpuFails = 0
+$ledungGpuNext = 0
 try {
   Add-Type -ErrorAction Stop -TypeDefinition @'
 using System; using System.Runtime.InteropServices;
@@ -140,19 +142,23 @@ public static class LedungDxgi {
 `;
 
 export const WINDOWS_GPU_READ = `
-  # After a failed read, try again every 12th round rather than never (security review, finding 7); each read has a
-  # timeout so a stuck counter provider can't hang the loop and the CPU figures with it (finding 6).
+  # After a failed read, try again after 1, 2, 4 and 8 rounds, then every 12th (security review, finding 7): the
+  # first reads after a start can come back empty while Windows readies its counters (acceptance test, finding 4).
+  # Each read has a timeout so a stuck counter provider can't hang the loop and the CPU figures with it (finding 6).
   $ledungGpuRound++
-  if ($ledungGpuOk -or ($ledungGpuRound % 12 -eq 0)) {
+  if ($ledungGpuOk -or ($ledungGpuRound -ge $ledungGpuNext)) {
     # A driver update or reset gives a GPU a new id: the list is read again every 60th round (finding 8).
     if (($ledungGpuRound % 60 -eq 0) -and ([System.Management.Automation.PSTypeName]'LedungDxgi').Type) { $ledungGpuAdapters = [LedungDxgi]::List() }
     foreach ($a in $ledungGpuAdapters) { [Console]::Out.WriteLine("G A,$a") }
     $ge = Get-CimInstance Win32_PerfRawData_GPUPerformanceCounters_GPUEngine -Property Name,RunningTime -OperationTimeoutSec 10
     if ($null -eq $ge) {
       $ledungGpuOk = $false
+      $ledungGpuFails++
+      $ledungGpuNext = $ledungGpuRound + [Math]::Min(12, [Math]::Pow(2, $ledungGpuFails - 1))
       [Console]::Out.WriteLine('G X,Windows GPU performance counters returned nothing')
     } else {
       $ledungGpuOk = $true
+      $ledungGpuFails = 0
       foreach ($x in $ge) { if ([uint64]$x.RunningTime -gt 0) { [Console]::Out.WriteLine("G E,$($x.Name),$($x.RunningTime)") } }
       foreach ($x in (Get-CimInstance Win32_PerfRawData_GPUPerformanceCounters_GPUProcessMemory -Property Name,LocalUsage -OperationTimeoutSec 10)) { if ([uint64]$x.LocalUsage -gt 0) { [Console]::Out.WriteLine("G M,$($x.Name),$($x.LocalUsage)") } }
       foreach ($x in (Get-CimInstance Win32_PerfRawData_GPUPerformanceCounters_GPUAdapterMemory -Property Name,DedicatedUsage -OperationTimeoutSec 10)) { [Console]::Out.WriteLine("G D,$($x.Name),$($x.DedicatedUsage)") }
@@ -340,7 +346,16 @@ export class GpuTracker {
   private names = new Map<string, GpuAdapterInfo>();
 
   update(raw: GpuRaw, at: number): GpuReading {
-    for (const a of raw.adapters) this.names.set(a.id, a);
+    // Two cards of the same model get "#1", "#2" in the system's order, so each has its own limit and can be named
+    // in reserve (acceptance test, finding 10). Limits are kept by this name, which survives a reboot.
+    const count = new Map<string, number>();
+    for (const a of raw.adapters) count.set(a.name, (count.get(a.name) ?? 0) + 1);
+    const nth = new Map<string, number>();
+    for (const a of raw.adapters) {
+      const k = (nth.get(a.name) ?? 0) + 1;
+      nth.set(a.name, k);
+      this.names.set(a.id, count.get(a.name)! > 1 ? { ...a, name: `${a.name} #${k}` } : a);
+    }
     const times = new Map<string, number>();
     for (const e of raw.engines) times.set(`${e.pid}|${e.adapter}|${e.engine}`, (times.get(`${e.pid}|${e.adapter}|${e.engine}`) ?? 0) + e.busySeconds);
     const dt = (at - this.prevAt) / 1000;

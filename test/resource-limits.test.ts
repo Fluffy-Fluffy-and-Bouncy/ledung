@@ -13,7 +13,9 @@ import { ResourceBook, LAPSE_MS, RESOURCE_SOURCE, type BookSample, type BookSess
 import { JobStore, fromGeneric, toGeneric } from '../src/resources/jobs.ts';
 import { heavyKinds } from '../src/resources/commands.ts';
 import { LOWERED, type PriorityControl } from '../src/platform/process-control.ts';
-import { limitShare, limitText, parseLimitInput } from '../web/src/usage/resourceLimits.ts';
+import { limitShare, limitText, overFor, parseLimitInput } from '../web/src/usage/resourceLimits.ts';
+import { fileTimeMs, JOB_BUSY, JobActions, jobTargetsNow, type FreshProcess } from '../src/resources/job-actions.ts';
+import { hostStill } from '../src/resources/monitor.ts';
 
 // --- Decisions ------------------------------------------------------------------------------------------------------
 
@@ -54,7 +56,7 @@ test('the line goes by priority then age; a waiting entry holds back only later 
   assert.deepEqual(forced.waiting.get('cpu'), { kind: 'held' });
 });
 
-test('a running job counts as over only after its average stays above share plus margin for the whole time, and is back at once', () => {
+test('a running job counts as over only after its average stays above share plus margin for the whole time, and back only after the same time within it', () => {
   const s = { ...DEFAULT_SETTINGS, overSec: 60 };
   let st = NOT_OVER;
   let r = overStep(st, { cpu: 35 }, { cpu: 30 }, s, 0);
@@ -68,6 +70,15 @@ test('a running job counts as over only after its average stays above share plus
   assert.equal(r.change, 'over');
   assert.deepEqual(r.state.dims, ['cpu']);
   r = overStep(r.state, { cpu: 39 }, { cpu: 30 }, s, 62_000);
+  assert.equal(r.change, null, 'back only once within its share for the whole time too (acceptance test, finding 2)');
+  // Back over before that: the clock for "back" starts again, so it doesn't flap.
+  r = overStep(r.state, { cpu: 45 }, { cpu: 30 }, s, 90_000);
+  assert.equal(r.change, null);
+  assert.equal(r.state.over, true);
+  r = overStep(r.state, { cpu: 39 }, { cpu: 30 }, s, 100_000);
+  r = overStep(r.state, { cpu: 39 }, { cpu: 30 }, s, 159_000);
+  assert.equal(r.change, null, '59 s back is not yet a minute');
+  r = overStep(r.state, { cpu: 39 }, { cpu: 30 }, s, 160_000);
   assert.equal(r.change, 'back');
   // A spike that drops before the minute is up changes nothing.
   let spike = overStep(NOT_OVER, { cpu: 90 }, { cpu: 30 }, s, 0);
@@ -299,6 +310,7 @@ test('at the end of a turn a going reservation with no job running is released; 
   r.book.turnEnded('s1');
   r.tick({ s1: tree(proc(15, 11)) });
   assert.equal(r.book.info().jobs.length, 1, 'kept while its process runs');
+  r.tick({ s1: tree(proc(15, 11)), s2: tree2() });
   r.book.reserve('s2', { what: 'Nothing', cpu: 10 });
   r.book.turnEnded('s2');
   r.tick({ s1: tree(proc(15, 11)), s2: tree2() });
@@ -337,6 +349,8 @@ test('a job over its share: priority lowered, session held and told; when back, 
   r.tick({ s1: tree(proc(13, 11), proc(16, 13)) }, busy);
   assert.equal(r.priorities.get(16), LOWERED);
   r.tick({ s1: tree(proc(13, 11), proc(16, 13)) }, { cpuOf: { 13: 1 } });
+  r.tick({ s1: tree(proc(13, 11), proc(16, 13)) }, { cpuOf: { 13: 1 } });
+  r.tick({ s1: tree(proc(13, 11), proc(16, 13)) }, { cpuOf: { 13: 1 } });
   assert.equal(r.book.isHeld('s1'), false);
   assert.equal(r.priorities.get(13), 0, 'restored');
   assert.equal(r.priorities.get(16), 0);
@@ -354,6 +368,7 @@ test('on macOS and Linux a lowered priority that cannot be raised again is shown
   for (let i = 0; i < 3; i++) r.tick({ s1: tree(proc(13, 11)) }, { cpuOf: { 13: 8 } });
   assert.equal(r.priorities.get(13), LOWERED);
   r.tick({ s1: tree(proc(13, 11)) }, { cpuOf: { 13: 0.5 } });
+  r.tick({ s1: tree(proc(13, 11)) }, { cpuOf: { 13: 0.5 } });
   assert.equal(r.book.info().jobs[0]!.loweredStays, true);
 });
 
@@ -367,6 +382,7 @@ test('heavy work without a reservation is held and told to reserve next time; it
     assert.equal(r.book.isHeld('s1'), true);
     assert.match(r.told.at(-1)!.text, /without a reservation/);
     assert.match(r.told.at(-1)!.text, /call reserve before heavy work next time/);
+    r.tick({ s1: tree() });
     r.tick({ s1: tree() });
     assert.equal(r.book.isHeld('s1'), false);
   }
@@ -385,6 +401,7 @@ test('heavy work without a reservation is held and told to reserve next time; it
 test('after three runs the learned figure replaces the guess, and the answer says so', () => {
   const r = rig();
   for (let i = 0; i < 3; i++) r.jobs.add({ project: 'p', kind: 'render tiles', commands: [], asked: { cpu: 10 }, peak: { cpu: 30 + i }, mean: { cpu: 20 }, durationMs: 1000, over: false, undeclared: false, endedAt: i });
+  r.tick({ s1: tree() });
   const answer = r.book.reserve('s1', { what: 'Render  Tiles', cpu: 10 });
   // The 90th percentile of 30, 31, 32 is 32, plus the 10-point margin.
   assert.match(answer, /42% CPU \(learned from 3 runs; you asked 10% CPU\)/);
@@ -571,4 +588,112 @@ test("Claude Code's own console host on Windows is never a job, so a reservation
   r.tick({ s1: tree(conhost) });
   assert.equal(r.book.info().jobs.length, 0, 'ended: only the console host is left');
   assert.equal(parseWindowsLines(['100,50,0,2000,0,conhost.exe'])!.get(100)!.name, 'conhost.exe');
+});
+
+// --- Acceptance test of PR #261, round 1 ------------------------------------------------------------------------------
+
+test('two Pauses at once suspend once, and one Resume runs the job again (finding 1)', async () => {
+  // Windows counts suspends: a model of one process's suspend count, acted on after a slow fresh process list.
+  let count = 0;
+  let paused = false;
+  const actions = new JobActions();
+  const pause = (want: boolean) => actions.run('r1', async () => {
+    await new Promise((r) => setTimeout(r, 30)); // the fresh process list
+    if (paused === want) throw new Error(want ? 'This job is already paused.' : 'This job is not paused.');
+    count += want ? 1 : -1;
+    paused = want;
+  });
+  const results = await Promise.allSettled([pause(true), pause(true)]);
+  assert.deepEqual(results.map((r) => r.status), ['fulfilled', 'rejected']);
+  assert.equal((results[1] as PromiseRejectedResult).reason.message, JOB_BUSY);
+  assert.equal(count, 1, 'suspended once');
+  await pause(false);
+  assert.equal(count, 0, 'running again after one Resume');
+  // Stop waits its turn too, and the guard is free again after a failure.
+  const p = pause(true);
+  await assert.rejects(actions.run('r1', async () => {}), /still under way/);
+  await p;
+  await assert.rejects(pause(true), /already paused/);
+  assert.equal(actions.isBusy('r1'), false);
+});
+
+test("Pause and Stop act on the job's processes now: what they started since the last sample too, never the host, Claude Code or its console host (finding 5)", () => {
+  const ft = (ms: number) => String((BigInt(ms) + 11644473600000n) * 10000n);
+  const fresh: FreshProcess[] = [
+    { pid: 10, ppid: 1, started: ft(1000), name: 'node.exe' },
+    { pid: 11, ppid: 10, started: ft(2000), name: 'claude.exe' },
+    { pid: 19, ppid: 11, started: ft(2100), name: 'conhost.exe' },
+    { pid: 13, ppid: 11, started: ft(3000), name: 'bash.exe' },
+    { pid: 14, ppid: 13, started: ft(3100), name: 'make.exe' },
+    { pid: 15, ppid: 14, started: ft(9000), name: 'cc.exe' }, // started since the last sample
+    { pid: 16, ppid: 11, started: ft(9500), name: 'node.exe' }, // reused pid of a job process: another start time
+  ];
+  const out = jobTargetsNow([{ pid: 13, started: 3000 }, { pid: 14, started: 3100 }, { pid: 16, started: 4000 }, { pid: 11, started: 2000 }], fresh, 10);
+  assert.deepEqual(out.map((t) => t.pid).sort(), [13, 14, 15]);
+  assert.equal(out.find((t) => t.pid === 15)!.started, 9000);
+  assert.equal(fileTimeMs('0'), null);
+  assert.equal(fileTimeMs('Thu Nov 12 08:00:00 2026'), null);
+});
+
+test("no go before the session's processes are known, not even with Start now (finding 6)", () => {
+  const r = rig();
+  const answer = r.book.reserve('s1', { what: 'Early', cpu: 10 });
+  assert.match(answer, /^Wait: Waiting for its session's processes to be measured/);
+  r.book.startNow('r1');
+  assert.equal(r.book.info().jobs.length, 0);
+  r.tick({ s1: tree(proc(12, 11)) });
+  assert.equal(r.book.info().jobs.length, 1);
+  assert.match(r.told.at(-1)!.text, /^You may go: reservation r1/);
+  // The MCP server that was there is the baseline, not the job.
+  r.tick({ s1: tree(proc(12, 11)) });
+  assert.equal(r.book.info().jobs[0]!.processes, 0);
+});
+
+test("a host's pid is the session's host only while its start time fits the record (finding 7)", () => {
+  const list: ProcessList = new Map([[10, { pid: 10, ppid: 1, cpuSeconds: 0, memBytes: 0, started: 100_000 }], [20, { pid: 20, ppid: 1, cpuSeconds: 0, memBytes: 0 }]]);
+  assert.equal(hostStill(list, 10, 100_500), true);
+  assert.equal(hostStill(list, 10, 50_000), false, 'started long after the record: a reused pid');
+  assert.equal(hostStill(list, 10, 200_000), false, 'started long before the record');
+  assert.equal(hostStill(list, 20, 100_000), true, 'no start time (ps): trusted, as before');
+});
+
+test('a lowered process that left the session is put back by its start time; without one (macOS, Linux) it is left alone (findings 9, 11)', () => {
+  const r = rig();
+  r.book.setSettings({ overSec: 5, averageSec: 5 });
+  r.tick({ s1: tree() });
+  r.book.reserve('s1', { what: 'Crunch', cpu: 10 });
+  const job = proc(13, 11);
+  for (let i = 0; i < 3; i++) r.tick({ s1: tree(job) }, { cpuOf: { 13: 8 } });
+  assert.equal(r.priorities.get(13), LOWERED);
+  // It leaves the session's tree but runs on (here under another program): its reservation ends, and the next
+  // sample puts its priority back by its start time.
+  r.tick({ s1: tree(), other: [proc(70, 1), { ...job, ppid: 70 }] });
+  assert.equal(r.book.info().jobs.length, 0);
+  r.tick({ s1: tree(), other: [proc(70, 1), { ...job, ppid: 70 }] });
+  assert.equal(r.priorities.get(13), 0, 'put back by its start time');
+  // Without a start time: never put back once outside the session.
+  const r2 = rig();
+  r2.book.setSettings({ overSec: 5, averageSec: 5 });
+  r2.tick({ s1: tree() });
+  r2.book.reserve('s1', { what: 'Crunch', cpu: 10 });
+  const bare = { ...proc(13, 11), started: undefined };
+  for (let i = 0; i < 3; i++) r2.tick({ s1: tree(bare) }, { cpuOf: { 13: 8 } });
+  r2.tick({ s1: tree(), other: [proc(70, 1), { ...bare, ppid: 70 }] });
+  r2.tick({ s1: tree(), other: [proc(70, 1), { ...bare, ppid: 70 }] });
+  assert.equal(r2.priorities.get(13), LOWERED);
+});
+
+test('identical GPUs get their own names, so each has its own limit (finding 10)', () => {
+  const t = new GpuTracker();
+  const r = t.update(parseWindowsGpu(['G A,0x0_0x1,1000,0,RTX 4090', 'G A,0x0_0x2,1000,0,RTX 4090']), 0);
+  assert.deepEqual(r.adapters.map((a) => a.name), ['RTX 4090 #1', 'RTX 4090 #2']);
+  const b = rig();
+  b.tick({ s1: tree() }, { gpu: r });
+  b.book.setLimit('gpu:0x0_0x2', 40);
+  assert.deepEqual(b.book.info().limits, { 'gpu:0x0_0x2': 40 });
+});
+
+test('the card says seconds under a minute (finding 14)', () => {
+  assert.equal(overFor(20_000), '20 s');
+  assert.equal(overFor(90_000), '2 min');
 });

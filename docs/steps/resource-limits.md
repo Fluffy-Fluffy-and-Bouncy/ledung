@@ -96,7 +96,7 @@ Answers, one line each:
 
 - CPU and Memory as now, plus **GPU** and **GPU memory** for the PC's main GPU (open choice 6 for several).
 - Each bar shows **used** (solid), **reserved but not yet used** (hatched, after it) and the **limit as a line**.
-- **Click a bar** to set its limit: a small popover with a number, a slider and "No limit". On a narrow screen (phone) it opens full width under the bar. The bar's tooltip says "Limit 50% · 38% used · 12% reserved".
+- **Click a bar** to set its limit: a small panel with a number field, Set and "No limit" (no slider: dropped in the acceptance test of PR #261, finding 13). On a narrow screen (phone) it opens full width under the bar. The bar's tooltip says "Limit 50% · 38% used · 12% reserved".
 - **No GPU readings:** no GPU bars; one muted line instead, "GPU limits off: <why>" (for example "this PC's GPU readings aren't available: Windows' GPU performance counters returned nothing").
 
 **The line** (under the bars), each entry with its reason and place:
@@ -250,3 +250,15 @@ L1 can be built and released on its own (it only shows figures). L2 and L3 belon
 - GPU readings: both GPUs of this PC read in the loop (the 4090's load 7–20% and 5–7 GB, the integrated AMD), the software renderer left out.
 
 **Not checked:** a GPU job's own figures under real GPU load (no GPU load was started, as asked; only the PC's readings at its normal load); CPU over-share live (this PC's other load kept a CPU job to about 1.6 cores, so the over-share case was run with memory; CPU over-share is covered by the tests); Linux and macOS measuring and priorities (parsers and logic tested only); the learned figure and the heavy-command refusal live (unit tests only); the usage page's "Reserved jobs" in a browser.
+
+**Fixed after the acceptance test of PR #261, round 1** (`review-evidence/limits-acceptance-1.md`, 15 findings):
+
+- **One action at a time per job:** Pause, Resume and Stop are refused while another runs on the same job, checked before anything is awaited, and the card's buttons are off while a request is out. Two Pauses at once had suspended a job twice, and one Resume left it frozen (finding 1). Live: two Pauses sent together gave one "ok" and one "Another action on this job is still under way"; the job froze once and one Resume ran it again.
+- **"Back" needs the same time as "over":** within its share plus the margin for the whole of the "over for" time, so a job that its lowered priority pulls just under the line doesn't flap (finding 2).
+- **A session waiting for memory** shows "Waiting to start: <reason>" in its header, its status line and its dots, and holds what the person types for its start, after its first message (finding 3).
+- **GPU readings at start:** a failed read is tried again after 1, 2, 4 and 8 rounds before every 12th, and "GPU limits off" shows only after a minute without readings (finding 4).
+- **Pause and Stop act on the job's processes found just now**, with what they started since the last sample (finding 5); **no go before a session's processes are known**, not even with Start now (finding 6); **a host's pid counts only while its start time fits** Ledung's record (finding 7); **on Windows nothing is acted on without a start time** (finding 8); **a lowered process that left its session is put back by its start time** at the next sample, and **never without one** (macOS, Linux; findings 9, 11).
+- **Identical GPUs** get "#1", "#2" after their names, so each has its own limit (finding 10).
+- **A session still waiting for memory when Ledung restarts** ends with that reason, and the manager that started it gets its task back (finding 12).
+- **No slider** in the limit editor: a number field (finding 13, the spec above is updated).
+- **The card says seconds under a minute** (finding 14). **The heavy-command refusal quotes only the session's own command**; it already matched it exactly (finding 15).

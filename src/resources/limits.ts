@@ -113,9 +113,11 @@ export interface LineItem {
   forced?: boolean;
   /** Its session is held (a job over its share): no new reservation is granted (open choice 1). */
   held?: boolean;
+  /** Its session's processes aren't known yet: no go, since the job is what appears after it (acceptance test, finding 6). */
+  unmeasured?: boolean;
 }
 
-export type Waiting = { kind: 'room'; dims: string[] } | { kind: 'behind'; dims: string[]; behind: string } | { kind: 'held' };
+export type Waiting = { kind: 'room'; dims: string[] } | { kind: 'behind'; dims: string[]; behind: string } | { kind: 'held' } | { kind: 'unmeasured' };
 
 const RANK: Record<Priority, number> = { critical: 0, high: 1, normal: 2 };
 
@@ -133,6 +135,11 @@ export function grantPass(items: LineItem[], total: Amounts, unused: Amounts, li
   const blocked = new Map<string, string>();
   let held: Amounts = { ...unused };
   for (const item of lineSort(items)) {
+    // Not even Start now: until the session's processes are known, a go would make everything it runs the job.
+    if (item.unmeasured) {
+      waiting.set(item.id, { kind: 'unmeasured' });
+      continue;
+    }
     if (item.forced) {
       granted.push(item.id);
       held = addAmounts(held, item.need);
@@ -169,13 +176,16 @@ export interface OverState {
   over: boolean;
   /** The dims above, at the last step. */
   dims: string[];
+  /** While over: since when every dim has been back within share plus margin; null: not yet. */
+  backSince?: number | null;
 }
 
-export const NOT_OVER: OverState = { since: null, over: false, dims: [] };
+export const NOT_OVER: OverState = { since: null, over: false, dims: [], backSince: null };
 
 /**
  * One step of a running job's check against its own share (points 4–6): `using` its averages, `reserved` its share.
- * Over once above share plus margin for the whole of overSec; back as soon as every dim is within it again.
+ * Over once above share plus margin for the whole of overSec; back once within it for the whole of overSec again, so
+ * a job its lowered priority pulls just under the line doesn't flap between the two (acceptance test, finding 2).
  */
 export function overStep(state: OverState, using: Amounts, reserved: Amounts, s: LimitSettings, now: number): { state: OverState; change: 'over' | 'back' | null } {
   const dims = Object.entries(using).filter(([dim, v]) => {
@@ -183,11 +193,14 @@ export function overStep(state: OverState, using: Amounts, reserved: Amounts, s:
     return v > share + marginOf(dim, share, s);
   }).map(([dim]) => dim);
   if (!dims.length) {
-    return { state: NOT_OVER, change: state.over ? 'back' : null };
+    if (!state.over) return { state: NOT_OVER, change: null };
+    const backSince = state.backSince ?? now;
+    if (now - backSince >= s.overSec * 1000) return { state: NOT_OVER, change: 'back' };
+    return { state: { ...state, backSince }, change: null };
   }
   const since = state.since ?? now;
   const over = state.over || now - since >= s.overSec * 1000;
-  return { state: { since, over, dims }, change: over && !state.over ? 'over' : null };
+  return { state: { since, over, dims, backSince: null }, change: over && !state.over ? 'over' : null };
 }
 
 /** The 90th percentile of a list (learned figures, "Learning"). */

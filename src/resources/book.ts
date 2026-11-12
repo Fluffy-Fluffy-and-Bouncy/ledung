@@ -22,6 +22,8 @@ export const LAPSE_MS = 10 * 60_000;
 export const SESSION_FIRST_GUESS = 1 * GB;
 /** How long a new session's memory is watched for its footprint. */
 const FOOTPRINT_MS = 5 * 60_000;
+/** Samples (5 s each) with no GPU readings before the page says GPU limits are off: past the read's quick retries. */
+const NO_GPU_SAMPLES = 12;
 /** Inbox source of Ledung's notices about resources, so a held session still gets them (open choice 1). */
 export const RESOURCE_SOURCE = 'ledung:resources';
 
@@ -195,6 +197,8 @@ export class ResourceBook {
   private threads = 1;
   private memTotal = 0;
   private sampled = false;
+  /** Samples in a row with no GPU readings: "GPU limits off" only after several (acceptance test, finding 4). */
+  private noGpu = 0;
   private lastTrees = new Map<string, ProcInfo[]>();
   private lastList: ProcessList = new Map();
   private lastHosts = new Map<string, number>();
@@ -442,14 +446,17 @@ export class ResourceBook {
     const heavy = this.ctx.jobs.heavyCommands(s.project).filter((h) => !h.never && kinds.includes(h.command));
     if (!heavy.length) return null;
     const h = heavy[0]!;
+    // The command quoted is this session's own (the match is exact); the figures are numbers. No other session's
+    // words reach it (acceptance test, finding 15).
+    const own = kinds.find((k) => k === h.command)!;
     const gpu = mainGpu(this.gpu);
     const typical = Object.entries(fromGeneric(h.peak, gpu)).filter(([, v]) => v > 0).map(([d, v]) => `~${formatDim(d, v)} ${this.label(d)}`).join(' and ');
     if (this.isHeld(sessionId)) {
-      return `Not now: a job of yours is over its share and your session is held, so Ledung refuses new heavy work. "${h.command}" usually uses ${typical}. Reduce or stop the running job first.`;
+      return `Not now: a job of yours is over its share and your session is held, so Ledung refuses new heavy work. "${own}" usually uses ${typical}. Reduce or stop the running job first.`;
     }
     const going = [...this.reservations.values()].some((r) => r.sessionId === sessionId && r.state === 'going');
     if (going) return null;
-    return `This usually uses ${typical} ("${h.command}", seen ${h.runs} times). Call reserve first, then run it once Ledung says go.`;
+    return `This usually uses ${typical} ("${own}", seen ${h.runs} times). Call reserve first, then run it once Ledung says go.`;
   }
 
   /** Held: a job of this session is over its share. No new turns from others, no new reservation, no known heavy command. */
@@ -522,7 +529,7 @@ export class ResourceBook {
     for (const r of this.reservations.values()) {
       const s = this.ctx.session(r.sessionId);
       const priority = s?.priority ?? 'normal';
-      if (r.state === 'waiting') items.push({ id: r.id, priority, since: r.since, need: r.granted, forced: r.forced, held: this.isHeld(r.sessionId) });
+      if (r.state === 'waiting') items.push({ id: r.id, priority, since: r.since, need: r.granted, forced: r.forced, held: this.isHeld(r.sessionId), unmeasured: !this.lastTrees.has(r.sessionId) });
       else if (r.extra) items.push({ id: r.id, priority, since: r.since, need: r.extra, forced: r.forced, held: this.isHeld(r.sessionId) });
     }
     for (const w of this.waiters.values()) {
@@ -582,6 +589,7 @@ export class ResourceBook {
     const need = r ? r.extra ?? r.granted : { ram: this.waiters.get(id)?.need ?? 0 };
     if (!w) return 'Waiting';
     if (w.kind === 'held') return 'Held: a job of this session is over its share';
+    if (w.kind === 'unmeasured') return "Waiting for its session's processes to be measured (a few seconds)";
     if (w.kind === 'behind') {
       const other = this.reservations.get(w.behind);
       const who = !named ? (other ? 'another job' : 'a new session')
@@ -601,10 +609,11 @@ export class ResourceBook {
     this.threads = Math.max(1, x.threads);
     this.memTotal = x.memTotal;
     this.gpu = x.gpu;
+    this.noGpu = x.gpu?.adapters.length ? 0 : this.noGpu + 1;
     this.lastTrees = x.trees;
     this.lastList = x.list;
     this.lastHosts = x.hosts;
-    if (!this.sampled) this.restorePending();
+    this.restorePending();
     this.sampled = true;
     // The PC's totals.
     this.averages.add('pc|cpu', at, (x.cores / this.threads) * 100);
@@ -821,19 +830,35 @@ export class ResourceBook {
 
   private restoreAll(subject: { lowered: Lowered; loweredStays: boolean }, sessionId: string): void {
     let stays = false;
+    const tree = new Set((this.lastTrees.get(sessionId) ?? []).map((p) => p.pid));
     for (const [pid, l] of Object.entries(subject.lowered)) {
-      // A pid that is now someone else's is left alone (security review, finding 2).
-      if (!this.sameProcess(Number(pid), l.started, sessionId)) continue;
-      if (restore(Number(pid), l.was, this.control) === 'refused') stays = true;
+      const n = Number(pid);
+      if (tree.has(n) && this.sameProcess(n, l.started, sessionId)) {
+        if (restore(n, l.was, this.control) === 'refused') stays = true;
+      } else if (l.started !== null) {
+        // It left the session's tree, or the session ended: put back by its start time alone at the next sample
+        // (acceptance test, finding 9). Without a start time (macOS, Linux) it can't be told from a reused pid, so
+        // it is left lowered rather than risk raising someone else's (finding 11).
+        this.pendingRestore.push({ pid: n, was: l.was, started: l.started });
+      }
     }
     subject.lowered = {};
     subject.loweredStays = stays;
     this.persistLowered();
   }
 
-  /** After a restart of Ledung: priorities it had lowered are put back (their holds didn't survive). */
+  /**
+   * Priorities to put back by start time alone: lowered before a restart of Ledung, or of processes that have left
+   * their session. Each is settled at the next sample: put back if it is still the same process and still at
+   * Ledung's level, else forgotten. One with no start time is never put back (finding 11).
+   */
   private restorePending(): void {
-    for (const l of this.pendingRestore) if (this.sameProcess(l.pid, l.started, null)) restore(l.pid, l.was, this.control);
+    if (!this.pendingRestore.length) return;
+    for (const l of this.pendingRestore) {
+      const now = this.lastList.get(l.pid);
+      if (!now || l.started === null || now.started === undefined || now.started !== l.started) continue;
+      restore(l.pid, l.was, this.control);
+    }
     this.pendingRestore = [];
     this.persistLowered();
   }
@@ -954,7 +979,7 @@ export class ResourceBook {
       average: this.pcTotals(),
       reserved: this.unused(),
       gpus: (this.gpu?.adapters ?? []).map((g) => ({ id: g.id, name: g.name, vramTotal: g.vramTotal, load: g.load, vramUsed: g.vramUsed, main: g.id === main })),
-      gpuNote: !this.sampled ? null : this.gpu?.adapters.length ? null : `GPU limits off: ${this.gpu?.problem ?? 'no GPU readings on this PC'}.`,
+      gpuNote: this.noGpu < NO_GPU_SAMPLES ? null : `GPU limits off: ${this.gpu?.problem ?? 'no GPU readings on this PC'}.`,
       line,
       jobs,
       unreserved,

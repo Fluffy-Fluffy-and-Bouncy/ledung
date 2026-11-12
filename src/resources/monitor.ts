@@ -155,7 +155,10 @@ export class ResourceMonitor {
 
     // Local sessions: the tree under the session's host process, turn or not, and what left it (#169).
     const dt = (at - this.prevAt) / 1000;
-    const hostPids = new Map(listHostRecords().map((r) => [r.sessionId, r.hostPid]));
+    // A host only while its pid is still that host: where the list has start times (Windows), the process must have
+    // started when Ledung recorded it starting, or a reused pid would make another program's tree the session's
+    // (acceptance test, finding 7). Ledung writes the record just after the spawn.
+    const hostPids = new Map(listHostRecords().filter((r) => hostStill(list, r.hostPid, r.startedAt)).map((r) => [r.sessionId, r.hostPid]));
     const trees = new Map<string, ProcInfo[]>();
     for (const t of targets) {
       if (t.kind !== 'local') continue;
@@ -272,4 +275,11 @@ function cpuTimes(): { busy: number; total: number } {
     busy += t - c.times.idle;
   }
   return { busy, total };
+}
+
+/** The host's pid is still the host Ledung started: started no later than 5 s after its record, nor 30 s before. */
+export function hostStill(list: ProcessList, pid: number, recordedAt: number): boolean {
+  const started = list.get(pid)?.started;
+  if (started === undefined || !recordedAt) return true;
+  return started <= recordedAt + 5_000 && started >= recordedAt - 30_000;
 }
