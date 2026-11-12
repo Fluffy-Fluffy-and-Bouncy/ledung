@@ -12,6 +12,7 @@ import { blockRuns, followLine, pinCounts, runPath, type RunMarks } from '../flo
 import { workflowHash } from '../flowNav.ts';
 import { FlowTabs, useNarrow } from './FlowDiagram.tsx';
 import { RunsPanel } from './FlowRuns.tsx';
+import { OriginLine } from './OriginLine.tsx';
 import { usePaneWidth } from './PaneResizer.tsx';
 import { Diagram, flowsOf } from './WorkflowView.tsx';
 
@@ -75,6 +76,7 @@ export function WorkflowPane({ session, liveRuns, connected, onClose }: {
       <header className="file-head">
         <strong>Workflow</strong>
         {flow?.title && <span className="muted workflow-pane-title">{flow.title}</span>}
+        {view?.flow?.origin && <OriginLine origin={view.flow.origin} compact />}
         <span className="spacer" />
         <a className="workflow-pane-full" href={full} title="The workflow page: briefs, rules, the builder">Open full page</a>
         <button className="small" onClick={onClose} aria-label="Close the Workflow pane">Close</button>
