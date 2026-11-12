@@ -71,3 +71,9 @@ test("the helper's chat shows a turn's reply only; a turn with none shows its wo
   // A reply's card is answered by the person's next message.
   assert.deepEqual(view(helperTurns([reply('Pick'), person('x')])), ['reply:Pick✓', 'user:x']);
 });
+
+test("Claude Code's own error lines show in the helper's chat, reply or not (code review, finding 4)", async () => {
+  const { helperTurns } = await import('../web/src/helper/cardOrder.ts');
+  const out = helperTurns([person('a'), { type: 'reply', text: 'Done.' }, { type: 'assistant', text: 'API Error: overloaded', apiError: true }], true);
+  assert.deepEqual(out.map((x: { type: string; text?: string }) => `${x.type}:${x.text}`), ['user:a', 'reply:Done.', 'assistant:API Error: overloaded']);
+});

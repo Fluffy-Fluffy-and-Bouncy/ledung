@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { parseConfig } from '../src/config.ts';
+import { changedSettings, parseConfig } from '../src/config.ts';
 import { LocalRunner } from '../src/runners/local-runner.ts';
 import { SessionManager } from '../src/sessions/manager.ts';
 import { openDatabase } from '../src/store/database.ts';
@@ -172,6 +172,13 @@ test('the name given in the setup is kept in Ledung\'s data and used at the next
   assert.equal(manager.setUserName('  Ada   Lovelace '), 'Ada Lovelace');
   assert.equal(manager.userName, 'Ada Lovelace');
   assert.equal(manager.helperInfo().userName, 'Ada Lovelace');
+  // Away mode, orders and the runs read it when used: no restart (code review, finding 3).
+  const m = manager as unknown as { away: { opts: { userName: string } }; orders: { o: { userName: string } }; flowRuns: { p: { userName: string } } };
+  assert.equal(m.away.opts.userName, 'Ada Lovelace');
+  assert.equal(m.orders.o.userName, 'Ada Lovelace');
+  assert.equal(m.flowRuns.p.userName, 'Ada Lovelace');
+  // A config file that names no one asks for no restart over it.
+  assert.deepEqual(changedSettings({ ...parseConfig({}), userName: 'Ada Lovelace' }, parseConfig({})), []);
   const next = refuseRealSignInStores(new SessionManager(parseConfig({}), store, () => {}));
   made.push(next);
   assert.equal(next.userName, 'Ada Lovelace');
@@ -412,4 +419,8 @@ test("a double tap sends the same words to the helper once (acceptance round 2, 
   assert.deepEqual(calls, ['second-app']);
   await manager.send(id, 'third-app');
   assert.deepEqual(calls, ['second-app', 'third-app']);
+  // Once the helper has spoken, the same words are a new answer ("yes" to two quick questions; code review, finding 5).
+  store.addMessage(id, 'reply', { text: 'And this one?' });
+  await manager.send(id, 'third-app');
+  assert.deepEqual(calls, ['second-app', 'third-app', 'third-app']);
 });

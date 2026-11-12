@@ -72,7 +72,7 @@ export function placeCards<T extends Entry>(raw: T[], turnOpen = false): T[] {
   return out;
 }
 
-type Turned = { type: string; byLedung?: boolean; sub?: boolean; text?: string; answered?: boolean; card?: unknown };
+type Turned = { type: string; byLedung?: boolean; sub?: boolean; text?: string; answered?: boolean; card?: unknown; apiError?: boolean };
 
 /**
  * The Ledung Helper's chat, a turn at a time (acceptance round 4): a turn with a reply shows only that reply (the
@@ -86,7 +86,8 @@ export function helperTurns<T extends Turned>(raw: T[], turnOpen = false): T[] {
     const replied = turn.some((e) => e.type === 'reply');
     const seen = new Set<string>();
     for (const e of turn) {
-      if (e.type === 'assistant' && !e.sub) {
+      // Claude Code's own error and usage-limit lines always show (code review, finding 4).
+      if (e.type === 'assistant' && !e.sub && !e.apiError) {
         if (replied || !ended) continue;
         const w = (e.text ?? '').replace(/\s+/g, ' ').trim();
         if (seen.has(w)) continue;

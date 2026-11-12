@@ -93,8 +93,12 @@ export function helperApprovalText(toolName: string, input: Record<string, unkno
         lines: [`A new folder with git in ${str(input.parent) ?? 'your projects folder'}${input.github === true ? ', and a private GitHub repository' : ''}`, ...settings],
       };
     case 'set_project_settings':
-    case 'set_project_basics':
-      return { title: `Change "${name}"?`, lines: loosened().length ? loosened() : ['A change to its settings'] };
+    case 'set_project_basics': {
+      // Only a rule Ledung wrote ("a change to "X" that …: a; b") is said plainly; anything else (Ledung could not
+      // check the change, a sensitive pattern) gets the usual card with the input shown (code review, finding 2).
+      const lines = sensitive?.startsWith('a change to "') ? loosened().filter((l) => l.trim()) : [];
+      return lines.length ? { title: `Change "${name}"?`, lines } : null;
+    }
   }
   return null;
 }

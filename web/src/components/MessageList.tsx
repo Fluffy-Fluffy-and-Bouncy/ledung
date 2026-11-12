@@ -23,7 +23,7 @@ import { SENT_IMAGE_PREFIX, sentImageUrl } from '../chatImages.ts';
 type Item =
   | { key: string; at: number; type: 'user'; text: string; byLedung: boolean; context: string | null; images: string[] }
   | { key: string; at: number; type: 'question'; questionId: number }
-  | { key: string; at: number; type: 'assistant'; text: string; sub: boolean; quiet?: boolean; anchor?: number }
+  | { key: string; at: number; type: 'assistant'; text: string; sub: boolean; quiet?: boolean; anchor?: number; apiError?: boolean }
   | { key: string; at: number; type: 'event'; text: string }
   | { key: string; at: number; type: 'shell'; block: ShellBlock }
   | { key: string; at: number; type: 'divider'; text: string }
@@ -79,7 +79,7 @@ function toItems(messages: StoredMessage[]): Item[] {
         (s.message?.content ?? []).forEach((b: any, i: number) => {
           if (b.type === 'text' && b.text.trim()) {
             // The message's first text is where an attached reply's link lands (issue #369).
-            items.push({ ...base, key: `${m.id}.${i}`, type: 'assistant', text: b.text, sub, ...(anchored ? {} : { anchor: m.id }) });
+            items.push({ ...base, key: `${m.id}.${i}`, type: 'assistant', text: b.text, sub, ...(anchored ? {} : { anchor: m.id }), ...(s.error ? { apiError: true } : {}) });
             anchored = true;
           }
           if (b.type === 'tool_use') {

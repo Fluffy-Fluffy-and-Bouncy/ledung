@@ -11,7 +11,7 @@ import { ChatImageError, type ChatImages } from './chat-images.ts';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { boardConfig, parseProject, workflowsOf } from '../config.ts';
+import { boardConfig, DEFAULT_USER_NAME, parseProject, workflowsOf } from '../config.ts';
 import { checkFolder, chosenWorkflow, projectWorkflow, withProfilesWarning, type WorkflowCheck } from './workflow.ts';
 import { backToShared, findFlow, flowInstructions, flowPlaces, readFlows, readFlowView, saveFlowFiles, type FlowPlace } from './flow-files.ts';
 import type { FlowView } from '../shared/flow.ts';
@@ -129,7 +129,7 @@ const HELPER_MODEL_KEY = 'helper-model';
 /** The Ledung Helper's reply cards answered on the card (round 4, 21). */
 const ANSWERED_CARDS_KEY = 'helper-answered-cards';
 /** The config's userName when it sets none (config.ts): then the name given in setup stands. */
-const DEFAULT_USER_NAME = 'the user';
+
 /** A name given in Ledung: letters (any script), with spaces, ".", "'" or "-" between them. */
 const USER_NAME = /^[\p{L}\p{M}][\p{L}\p{M} .'’-]{0,39}$/u;
 
@@ -264,9 +264,11 @@ export class SessionManager {
     for (const a of this.accounts.list()) if (!config.claudeAccounts[a.name]) this.accounts.writeAbout(a.name);
     // When computer control or away mode ends, every manager hears it at once, an idle one too (issue #328).
     // When an away period ends, its orders that are not done ask whether they stay (issue #105).
-    this.away = new Away(store, publish, { userName: config.userName, notify: (text) => this.tellManagers(text), onEnded: (since, end) => void this.orders.settleAway(since, end) });
+    // The name is read when used, so one given in the setup reaches them at once (code review, finding 3).
+    const self = this;
+    this.away = new Away(store, publish, { get userName() { return self.config.userName; }, notify: (text) => this.tellManagers(text), onEnded: (since, end) => void this.orders.settleAway(since, end) });
     this.orders = new Orders({
-      store, userName: config.userName, publish,
+      store, get userName() { return self.config.userName; }, publish,
       tierOf: (managerId) => this.management.questionTiers(managerId)[0],
       tell: (id, text) => {
         this.store.addInbox(id, 'ledung', text);
@@ -282,7 +284,6 @@ export class SessionManager {
     const suggested = this.projectStore.addSuggestionsOnce();
     if (suggested) console.log(`Added the suggested sensitive patterns to ${suggested} project(s).`);
     this.addChatsSuggestionsOnce();
-    const self = this;
     this.management = new Management({
       store,
       // Read when used, so a name given in the setup reaches it at once.
@@ -430,7 +431,7 @@ export class SessionManager {
         if (this.store.withdrawQuestion(id, reason)) this.publish({ type: 'question', question: this.store.getQuestion(id)! });
       },
       tiers: (project) => tiersOf(this.projectStore.get(project)?.config.questionTiers),
-      userName: config.userName,
+      get userName() { return self.config.userName; },
     });
     this.gate = {
       usageHold: (id) => this.usageHold(id),
@@ -3651,8 +3652,12 @@ ${firstMessage}`);
     if (names.length && text.trimStart().startsWith('/')) throw new UserError('A command starting with "/" can\'t carry images; send them in a message of their own.');
     // The Ledung Helper: the same words twice within a few seconds are one message, a double tap (round 2, 19).
     if (!names.length && this.store.getSession(id)?.project === HELPER) {
-      const last = this.store.listMessages(id, { limit: 50 }).filter((m) => m.kind === 'user' && !m.data?.from && !m.data?.answerTo).at(-1);
-      if (last && last.data?.text === text && Date.now() - last.at < 5000) return;
+      // Only while the helper hasn't spoken since: "yes" to two quick questions is two answers (code review, finding 5).
+      const recent = this.store.listMessages(id, { limit: 50 });
+      const at = recent.map((m) => m.kind === 'user' && !m.data?.from && !m.data?.answerTo).lastIndexOf(true);
+      const last = at >= 0 ? recent[at]! : null;
+      const spokeSince = at >= 0 && recent.slice(at + 1).some((m) => m.kind === 'reply' || (m.kind === 'sdk' && m.data?.type === 'assistant'));
+      if (last && !spokeSince && last.data?.text === text && Date.now() - last.at < 5000) return;
     }
     await this.resumeIfEnded(id);
     this.liveSession(id).send(text, here, names);

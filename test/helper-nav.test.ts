@@ -40,3 +40,10 @@ test('the helper chat\'s approval card says what happens in plain words, not the
     { title: 'Change "shop"?', lines: ['permission mode for new sessions Ask → Auto'] });
   assert.equal(helperApprovalText('Bash', { command: 'ls' }, null), null, 'anything else: the usual card');
 });
+
+test("a change Ledung couldn't word plainly gets the usual card, with its input shown (code review, finding 2)", async () => {
+  const { helperApprovalText } = await import('../web/src/helper/helperNav.ts');
+  assert.equal(helperApprovalText('mcp__ledung__set_project_settings', { project: 'shop' }, 'Ledung could not check this change (x; y), so it asks'), null);
+  assert.equal(helperApprovalText('mcp__ledung__set_project_basics', { project: 'shop' }, 'a sensitive MCP tool'), null);
+  assert.equal(helperApprovalText('mcp__ledung__set_project_basics', { project: 'shop' }, null), null);
+});
