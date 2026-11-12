@@ -1830,6 +1830,12 @@ export class LedungServer {
         const body = await readJson(req);
         return manager.setProjectColours(decodeURIComponent(id), { manager: body.manager, sessions: body.sessions });
       }
+      // An Allow always rule removed (issue #225): it only takes a permission away, so the cookie and Origin of every
+      // change. Rules are only ever added by the person's own answer to a refused call's question, which needs the page.
+      case 'POST projects/:id/allowed-remove': {
+        const body = await readJson(req);
+        return manager.removeAllowedCall(decodeURIComponent(id), Number(body.id));
+      }
       // A new name (issue #116): the user's alone, from the open page; no manager tool renames a project.
       case 'POST projects/:id/rename': {
         await this.requirePage(req, url);

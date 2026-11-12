@@ -57,6 +57,8 @@ let chatImagesDir: string;
 let sessions: SessionManager;
 const questionAbout: Record<string, number> = {};
 let refusalQuestion = 0;
+let allowedRule = 0;
+let alwaysQuestion = 0;
 let keepQuestion = 0;
 /** Ledung's question to confirm a proposed order, and a manager's question carrying an order's exact command (#105). */
 let confirmQuestion = 0;
@@ -112,6 +114,10 @@ before(async () => {
   const rq = store.createQuestion({ sessionId: 's1', question: 'refused', options: ['Allow once', 'Deny'], addressedTo: 'user', details: { refusal: { toolName: 'Bash', input: { command: 'x' }, reason: 'r', toolUseId: 't' } } });
   store.withdrawQuestion(rq.id, 'test');
   refusalQuestion = rq.id;
+  // An Allow always rule of project p (issue #225), for the removal route.
+  allowedRule = store.addAllowedCall({ project: 'p', toolName: 'Bash', command: 'npm run publish:dev', sensitive: false, allowedBy: 'Simon', questionId: rq.id }).id;
+  // An open refused-call question that offers Allow always, for the answer route (issue #225).
+  alwaysQuestion = store.createQuestion({ sessionId: 's1', question: 'refused', options: ['Allow once', 'Allow always', 'Deny'], addressedTo: 'user', details: { refusal: { toolName: 'Bash', input: { command: 'gh pr comment 5 --body hi' }, reason: 'r', toolUseId: 't2', always: 'plain' } } }).id;
   // An order's keep-it question at the end of away, no longer open (issue #105): Keep puts the order back in force.
   const kq = store.createQuestion({ sessionId: 's1', question: 'keep?', options: ['Keep it', 'Drop it'], addressedTo: 'user', details: { order: { orderId: 1 } } });
   store.withdrawQuestion(kq.id, 'test');
@@ -277,6 +283,25 @@ test("project name colours need the sign-in and Ledung's own origin, like every 
   const ok = await request({ method: 'POST', path: p, headers: { cookie: COOKIE, origin: ORIGIN, 'content-type': 'application/json' }, body });
   assert.equal(ok.status, 200);
   assert.deepEqual(JSON.parse(ok.body).colours, { manager: 'teal', sessions: 'same' });
+});
+
+test("removing an Allow always rule needs the sign-in and Ledung's own origin, like every change (issue #225)", async () => {
+  const p = '/api/projects/p/allowed-remove';
+  const body = JSON.stringify({ id: allowedRule });
+  const listed = async () => (JSON.parse((await request({ path: '/api/projects', headers: { cookie: COOKIE } })).body) as { name: string; allowedCalls?: { id: number }[] }[])
+    .find((x) => x.name === 'p')!.allowedCalls!.map((c) => c.id);
+  assert.deepEqual(await listed(), [allowedRule], "the rule is listed with the project's settings");
+  assert.equal((await request({ method: 'POST', path: p, body })).status, 401);
+  assert.equal((await request({ method: 'POST', path: p, headers: { cookie: COOKIE }, body })).status, 403);
+  assert.equal((await request({ method: 'POST', path: p, headers: { cookie: COOKIE, origin: 'https://evil.example' }, body })).status, 403);
+  assert.deepEqual(await listed(), [allowedRule], 'still there after the refused requests');
+  const ok = await request({ method: 'POST', path: p, headers: { cookie: COOKIE, origin: ORIGIN, 'content-type': 'application/json' }, body });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(JSON.parse(ok.body).allowedCalls, []);
+  assert.deepEqual(await listed(), []);
+  // Gone already: the person's mistake, said in words.
+  const again = await request({ method: 'POST', path: p, headers: { cookie: COOKIE, origin: ORIGIN, 'content-type': 'application/json' }, body });
+  assert.equal(again.status, 400);
 });
 
 test("the chats' name colour needs the sign-in and Ledung's own origin, like a project's (issue #222)", async () => {
@@ -979,6 +1004,27 @@ test("answering Ledung's question about a refused call, whose Allow once lets th
   page.close();
   assert.equal(passed.status, 400);
   assert.match(errorOf(passed), /no longer open/);
+});
+
+test("the person's Allow always through the answer route records the exact command for the project, and only from the live page (issue #225)", async () => {
+  const commands = async () => (JSON.parse((await request({ path: '/api/projects', headers: { cookie: COOKIE } })).body) as { name: string; allowedCalls?: { command: string; questionId: number }[] }[])
+    .find((x) => x.name === 'p')!.allowedCalls!.filter((c) => c.questionId === alwaysQuestion).map((c) => c.command);
+  const answer = { answer: 'Allow always' };
+  assert.equal((await change(`/api/questions/${alwaysQuestion}/answer`, answer)).status, 403);
+  assert.deepEqual(await commands(), [], 'no rule without the live page');
+  // The session is not live here: resuming it would start Claude Code, which this test has no part in.
+  const m = sessions as unknown as { resumeIfEnded(id: string): Promise<void> };
+  const resume = m.resumeIfEnded;
+  m.resumeIfEnded = async () => {};
+  try {
+    const page = await livePage();
+    const passed = await change(`/api/questions/${alwaysQuestion}/answer`, answer, { 'x-ledung-page': page.key });
+    page.close();
+    assert.equal(passed.status, 200);
+  } finally {
+    m.resumeIfEnded = resume;
+  }
+  assert.deepEqual(await commands(), ['gh pr comment 5 --body hi'], 'recorded when the person answered');
 });
 
 test("answering an order's keep-it question, whose Keep puts the order back in force, needs the live page (issue #105)", async () => {

@@ -2,6 +2,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import type { LimitRecord, UsageRecord } from '../usage/recorder.ts';
 import type {
+  AllowedCall,
   LimitInfo,
   GrantInfo,
   PermissionInfo,
@@ -98,6 +99,13 @@ function toPermission(r: Row): PermissionInfo {
     decidedAt: r.decided_at == null ? null : Number(r.decided_at),
     message: r.message ?? null,
     uac: raisesUac(r.session_runner, process.platform) && elevates(r.tool_name, input),
+  };
+}
+
+function toAllowedCall(r: Row): AllowedCall {
+  return {
+    id: Number(r.id), project: r.project, toolName: r.tool_name, command: r.command, sensitive: r.sensitive === 1,
+    allowedBy: r.allowed_by, questionId: Number(r.question_id), createdAt: Number(r.created_at),
   };
 }
 
@@ -717,6 +725,41 @@ export class Store {
       .prepare(`UPDATE questions SET status = 'answered', answer = ?, answered_at = ?, answered_by = ?, forwarded_from = ?, answered_here = ? WHERE id = ? AND status = 'open'`)
       .run(this.blank.text(answer), Date.now(), by, forwardedFrom, here ? 1 : 0, id);
     return Number(r.changes) === 1;
+  }
+
+  // --- Allow always (issue #225) -------------------------------------------------------------------------------
+
+  /**
+   * Records a refused call the person allowed always: the exact command, trimmed, for the project. Blanked like the
+   * question it came from, so a locked secret's value is kept nowhere. The same command allowed again keeps its first
+   * record, except that a later sensitive allow marks it sensitive.
+   */
+  addAllowedCall(c: Omit<AllowedCall, 'id' | 'createdAt'>): AllowedCall {
+    const command = this.blank.text(c.command.trim());
+    this.db.prepare(`INSERT INTO allowed_calls (project, tool_name, command, sensitive, allowed_by, question_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (project, tool_name, command) DO UPDATE SET sensitive = MAX(sensitive, excluded.sensitive)`)
+      .run(c.project, c.toolName, command, c.sensitive ? 1 : 0, c.allowedBy, c.questionId, Date.now());
+    return toAllowedCall(this.db.prepare('SELECT * FROM allowed_calls WHERE project = ? AND tool_name = ? AND command = ?').get(c.project, c.toolName, command) as Row);
+  }
+
+  /** A project's always-allowed calls, newest first. */
+  allowedCalls(project: string): AllowedCall[] {
+    return this.db.prepare('SELECT * FROM allowed_calls WHERE project = ? ORDER BY created_at DESC, id DESC').all(project).map((r) => toAllowedCall(r as Row));
+  }
+
+  /**
+   * The rule that allows exactly this command in this project, if any: the same tool and the same command, trimmed,
+   * nothing more. No prefix, no wildcard: a changed argument, a pipe or a chained command is another command.
+   */
+  allowedCall(project: string, toolName: string, command: string): AllowedCall | null {
+    const r = this.db.prepare('SELECT * FROM allowed_calls WHERE project = ? AND tool_name = ? AND command = ?')
+      .get(project, toolName, this.blank.text(command.trim())) as Row | undefined;
+    return r ? toAllowedCall(r) : null;
+  }
+
+  /** Removes one, from the project's settings; false when it is not that project's (or gone already). */
+  removeAllowedCall(project: string, id: number): boolean {
+    return Number(this.db.prepare('DELETE FROM allowed_calls WHERE id = ? AND project = ?').run(id, project).changes) === 1;
   }
 
   /** The user answered this question on this computer (issue #263); false for any other answer. */

@@ -30,6 +30,7 @@ import {
 } from '../projects/browse.ts';
 import { hostReachable, listHostRecords, removeHostRecord } from '../host/client.ts';
 import { pipePath } from '../host/protocol.ts';
+import { recordAllowAlways } from './refusals.ts';
 import { DockerRunner } from '../runners/docker-runner.ts';
 import { LocalRunner } from '../runners/local-runner.ts';
 import { chooseClaude } from '../runners/claude-program.ts';
@@ -1422,6 +1423,7 @@ export class SessionManager {
     if (!this.store.answerQuestion(id, answer.trim(), 'user', null, here)) throw new UserError('This question is no longer open.');
     const q = this.store.getQuestion(id)!;
     this.publish({ type: 'question', question: q });
+    this.recordAllowAlways(q);
     // A question that went to a manager: tell the manager Simon answered it directly.
     this.management.onUserAnswered(q);
     // A proposed workflow change is saved on Accepted (part 3e), before the answer reaches the manager.
@@ -1441,6 +1443,15 @@ export class SessionManager {
     }
     this.live.get(q.sessionId)?.deliver();
     return this.store.getQuestion(id)!;
+  }
+
+  /**
+   * The person's Allow always on a refused call (issue #225): the exact command becomes a rule of the session's
+   * project, with who allowed it, when and on which question, before the answer reaches the session, so its retry is
+   * let through by the rule. Only the person's own tap on the button the question offered counts (allowsAlways).
+   */
+  private recordAllowAlways(q: QuestionInfo): void {
+    if (recordAllowAlways(this.store, q, this.config.userName)) this.publishProjects();
   }
 
   withdrawQuestion(id: number): void {
@@ -1732,7 +1743,19 @@ export class SessionManager {
 
   /** A project as the page shows it, with the profiles its sessions can use (#298, review round 1). */
   private projectInfo(p: StoredProject): ProjectInfo {
-    return { ...projectInfo(p), profileNames: profileNames(this.profilesFor(p.config).profiles) };
+    return { ...projectInfo(p), profileNames: profileNames(this.profilesFor(p.config).profiles), allowedCalls: this.store.allowedCalls(p.config.name) };
+  }
+
+  /**
+   * Removes an Allow always rule (issue #225), from the project's settings. It only takes a permission away, and
+   * counts at the next call: the hook reads the rules at each call.
+   */
+  removeAllowedCall(project: string, id: number): ProjectInfo {
+    const p = this.projectStore.get(project);
+    if (!p) throw new UserError(`There is no project named "${project}".`);
+    if (!Number.isInteger(id) || !this.store.removeAllowedCall(project, id)) throw new UserError('That rule is not in this project any more.');
+    this.publishProjects();
+    return this.projectInfo(p);
   }
 
   /** The session profiles there are, "full" first (#20): this computer's and every workflow's (#298). */

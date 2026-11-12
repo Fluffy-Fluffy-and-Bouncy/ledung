@@ -23,7 +23,7 @@ import {
   buildDelivery, CLEAR_NOTE_SOURCE, COMPACT_ALERT_MINUTES, compactCommand, compactRequester, isClear, isCompact, parseClear, promptContextLine,
   type CompactOutcome, type Management, type ShotInput,
 } from './management.ts';
-import { mergeAnswered, pinMergeRepo, routePermission, sensitiveHookOutput, type SensitiveRules } from './sensitive.ts';
+import { matchSensitive, mergeAnswered, pinMergeRepo, routePermission, sensitiveHookOutput, type SensitiveRules } from './sensitive.ts';
 import { promptTimeLine } from './elapsed.ts';
 import { settingsAction, wordsFor, type Word } from './word.ts';
 import { promptAwayLine, classify, CLASSIFIER_REFUSED, decide as awayDecide, KIND_NAMES, mergeWithoutReview, FLOOR_TIMEOUT_MS, formatLog, orderedMergeFloors, type Away, type AwayDecision, type Floor, type ViewPr } from './away.ts';
@@ -59,7 +59,7 @@ import { attachSources, type SourceContext } from './sources.ts';
 import type { SessionRole, ShellBlock } from '../shared/protocol.ts';
 import { effortLevel, type EffortLevel } from '../shared/protocol.ts';
 import { exercisedLine } from '../platform/exercised.ts';
-import { classifierReason, guardedWrite, ONCE_ACTION, ONCE_GRANT_MS, onceGrant, refusalOf, refusalQuestion, sameCall } from './refusals.ts';
+import { alwaysOffer, classifierReason, guardedWrite, ONCE_ACTION, ONCE_GRANT_MS, onceGrant, refusalOf, refusalQuestion, sameCall } from './refusals.ts';
 import { orderNote, type Orders } from './orders.ts';
 import type { ChatImages, ImageBlock } from './chat-images.ts';
 import { heldImageNames, heldText } from '../store/store.ts';
@@ -81,6 +81,8 @@ let kindDroppedExercised = false;
 let byHandExercised = false;
 /** The EXERCISED line of issue #150, once per run. */
 let subagentGrantExercised = false;
+/** The EXERCISED line of issue #225, once per run. */
+let allowAlwaysExercised = false;
 
 /** Notes for after a call, one per line; undefined when there are none. */
 function joinNotes(...notes: (string | undefined)[]): string | undefined {
@@ -835,6 +837,35 @@ export class Session {
   }
 
   /**
+   * A command the person allowed always after the classifier refused it (issue #225): a rule of this session's
+   * project for exactly this command, read at each call, so a rule added or removed counts at once in running sessions
+   * too. An `allow` here gets past the classifier, as onceOnTap's does. A command on the sensitive list now is let
+   * through only when the person allowed it with the sensitive button; otherwise it goes on to the sensitive check.
+   * A subagent's identical call is covered too, as a Claude Code allow rule in the project's settings would be.
+   */
+  private alwaysOnRule(toolName: string, input: Record<string, unknown>, toolUseId: string | undefined): Record<string, unknown> | null {
+    if ((toolName !== 'Bash' && toolName !== 'PowerShell') || typeof input.command !== 'string') return null;
+    const project = this.store.getSession(this.id)?.project;
+    const rule = project === undefined ? null : this.store.allowedCall(project, toolName, input.command);
+    if (!rule) return null;
+    // A list that can't be read counts as sensitive: it asks (sensitiveHookOutput).
+    if (!rule.sensitive && 'hookSpecificOutput' in sensitiveHookOutput(toolName, input, this.sensitiveRules, this.alwaysAsked)) return null;
+    const why = `${rule.allowedBy} allowed this exact command always in project ${rule.project}, at ${new Date(rule.createdAt).toLocaleString()}, in their answer to question #${rule.questionId}`;
+    this.record('event', { text: `Refused call allowed always: ${why}.` });
+    this.allowedBy.alwaysAllowed(toolUseId, why);
+    if (!allowAlwaysExercised) {
+      allowAlwaysExercised = true;
+      exercisedLine(`EXERCISED #225 a command let through by the person's Allow always rule (question #${rule.questionId})`);
+    }
+    // Should Claude Code refuse it anyway (its own safety checks come first), raiseRefusal asks for it by hand.
+    if (toolUseId) {
+      this.onceUsedBy.set(toolUseId, rule.questionId);
+      if (this.onceUsedBy.size > 300) this.onceUsedBy.delete(this.onceUsedBy.keys().next().value!);
+    }
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: `Allowed by Ledung: ${why}.` } };
+  }
+
+  /**
    * A command the person ordered (issue #105): an order in force for this session, as its manager or the session it
    * went to, covers exactly this call. Allowed past the sensitive list and the classifier, as the merge on an answer
    * is, with a note that quotes the words. While the person is away, an order recorded during the away period runs
@@ -1000,7 +1031,18 @@ export class Session {
     }
     const byHand = retryOf !== undefined ? 'retried' as const : guardedWrite(call.toolName, call.input) ? 'protected' as const : null;
     const info = this.store.getSession(this.id)!;
-    const refusal = { ...call, reason, toolUseId, ...(byAgent ? { byAgent } : {}), ...(byHand ? { byHand } : {}), ...(retryOf !== undefined ? { retryOf } : {}) };
+    // Allow always (issue #225): for a shell command Allow once could lift; its own button when the command is sensitive.
+    let sensitiveRule: string | null;
+    try {
+      sensitiveRule = matchSensitive(call.toolName, call.input, this.sensitiveRules, this.alwaysAsked)?.rule ?? null;
+    } catch {
+      sensitiveRule = 'a list Ledung could not check';
+    }
+    const always = alwaysOffer(call.toolName, call.input, byHand !== null, sensitiveRule);
+    const refusal = {
+      ...call, reason, toolUseId, ...(byAgent ? { byAgent } : {}), ...(byHand ? { byHand } : {}), ...(retryOf !== undefined ? { retryOf } : {}),
+      ...(always ? { always } : {}), ...(always === 'sensitive' && sensitiveRule ? { sensitiveRule } : {}),
+    };
     const asked = refusalQuestion(refusal, { title: info.title, project: info.project }, this.management.questionTiers(this.id)[0]);
     const q = this.store.createQuestion({ sessionId: this.id, question: asked.question, options: asked.options, addressedTo: 'user', details: asked.details });
     if (byHand) {
@@ -1283,6 +1325,8 @@ export class Session {
           if (named) return named;
           const once = this.onceOnTap(toolName, toolInput, toolUseId, agentId);
           if (once) return once;
+          const always = this.alwaysOnRule(toolName, toolInput, toolUseId);
+          if (always) return always;
           const ordered = await this.onOrder(toolName, toolInput, toolUseId, agentId);
           if (ordered) return ordered;
           const awayMerge = await this.awayMergeHook(toolName, toolInput, toolUseId, agentId);
