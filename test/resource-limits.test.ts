@@ -697,3 +697,13 @@ test('the card says seconds under a minute (finding 14)', () => {
   assert.equal(overFor(20_000), '20 s');
   assert.equal(overFor(90_000), '2 min');
 });
+
+test('a failed GPU read is no baseline: the next read is not a whole lifetime in one interval', () => {
+  const t = new GpuTracker();
+  const row = (v: number) => [`G A,${LUID},1,0,GPU`, `G E,pid_100_luid_${LUID}_phys_0_eng_0_engtype_3D,${v}`];
+  t.update(parseWindowsGpu([`G A,${LUID},1,0,GPU`, 'G X,Windows GPU performance counters returned nothing']), 0);
+  const first = t.update(parseWindowsGpu(row(9e9)), 5000);
+  assert.equal(first.adapters[0]!.load, 0, 'the first real read is the baseline');
+  const r = t.update(parseWindowsGpu(row(9e9 + 5e6)), 10000);
+  assert.equal(Math.round(r.adapters[0]!.load), 10);
+});

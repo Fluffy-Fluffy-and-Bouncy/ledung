@@ -392,9 +392,13 @@ export class GpuTracker {
         carried.add(key);
       }
     }
-    this.carried = carried;
-    this.prev = times;
-    this.prevAt = at;
+    // A read with no engine rows (failed, or the counters not ready yet) is no baseline: the next read would count
+    // every process's whole lifetime as one interval (seen in the merge check: 100% right after a failed first read).
+    if (raw.engines.length) {
+      this.carried = carried;
+      this.prev = times;
+      this.prevAt = at;
+    }
     for (const p of raw.processLoad) pidEntry(p.pid).engines.set(`${p.adapter}|load`, p.percent);
     for (const m of raw.processMem) pidEntry(m.pid).mem.set(m.adapter, (pidEntry(m.pid).mem.get(m.adapter) ?? 0) + m.bytes);
     // With an adapter list, only its GPUs: Windows' list leaves out the software renderer, which the counters include.
