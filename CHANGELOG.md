@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-12
+- Standing grants are stricter: a "starts with" grant such as `git push:*` now covers only that command and its arguments, on one line; a command that spans several lines, or a longer word that merely starts the same, is asked about as if there were no grant. (Project-Ledung#472)
 - Tighter defaults: Ledung's own git commands in a run's worktree no longer start the hooks or file monitor a repository's settings name; a pull request is looked up only for remotes on github.com or on a GitHub Enterprise host you list in the new `githubHosts` setting (`"githubHosts": ["github.example.com"]`; until you add one, an Enterprise remote's pull request no longer shows); a workflow's start-reading list and the project files it prints are read only from inside their own folders, links resolved; and on macOS and Linux Ledung's data folder is private to your user (0700), tightened at start if it was not. (Project-Ledung#481)
 
 ## 2026-11-11
