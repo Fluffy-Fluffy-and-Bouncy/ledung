@@ -947,24 +947,29 @@ export class Relay {
     };
     try {
       if (!this.config.adminKeySha256) throw new ApiError(404, 'Inviting computers is not set up on this relay.');
-      if (this.blocked(from)) throw new ApiError(429, 'Too many failed attempts; try again later.');
+      // The key or code before the lockout, as for agents (Project-Ledung#479): a right one passes even while others'
+      // failures block the address; a wrong one counts, and is answered 429 while blocked.
+      const tooMany = new ApiError(429, 'Too many failed attempts; try again later.');
       const route = `${req.method} ${pathname.replace(/^\/admin\/(invites|computers|owners)\/[^/]+/, '/admin/$1/:id')}`;
       if (route === 'POST /enrol') {
         try {
           return answer(200, this.enrol(await readApiBody(req)));
         } catch (e) {
           if (e instanceof ApiError && e.status === 401) {
+            const blocked = this.blocked(from);
             this.failed(from);
             this.event('enrol refused', { reason: 'bad code', from });
+            if (blocked) throw tooMany;
           }
           throw e;
         }
       }
       const key = /^Bearer (.+)$/.exec(String(req.headers.authorization ?? ''))?.[1] ?? '';
       if (!key || !crypto.timingSafeEqual(Buffer.from(hashSecret(key), 'hex'), Buffer.from(this.config.adminKeySha256, 'hex'))) {
+        const blocked = this.blocked(from);
         this.failed(from);
         this.event('admin refused', { reason: 'wrong key', from });
-        throw new ApiError(401, 'The admin key is not accepted.');
+        throw blocked ? tooMany : new ApiError(401, 'The admin key is not accepted.');
       }
       // Decoded only after the key check: a bad escape from anyone else would be a 500 and an "api error" line
       // per request, uncounted (PR #239 review, Minor 1).
@@ -1377,12 +1382,16 @@ export class Relay {
     };
     const url = new URL(req.url ?? '/', 'http://relay');
     if (url.pathname !== '/agent') return refuse(404, 'not /agent');
-    if (this.blocked(from)) return refuse(429, 'too many failed attempts');
     const name = String(req.headers[AGENT_NAME_HEADER] ?? '');
     const secret = /^Bearer (.+)$/.exec(String(req.headers.authorization ?? ''))?.[1] ?? '';
     const entry = this.byName.get(name);
+    // The secret before the lockout (Project-Ledung#479): failures from others at the same address (a shared NAT
+    // or proxy) must not keep out an agent with the right secret. A wrong one still counts, and is refused with 429
+    // while the address is blocked.
     if (!entry || !secret || !secretMatches(secret, entry)) {
+      const blocked = this.blocked(from);
       this.failed(from);
+      if (blocked) return refuse(429, 'too many failed attempts', name.slice(0, 64) || undefined);
       return refuse(401, entry ? 'wrong secret' : 'unknown name', name.slice(0, 64) || undefined);
     }
     this.wss.handleUpgrade(req, socket, head, (ws) => this.awaitHello(entry, ws, from));
@@ -1420,7 +1429,12 @@ export class Relay {
       previous.ws.close(4000, 'Replaced by a newer connection.');
     }
     // Counted on the agent whose host was dialled, for its owner (#161 refine notes).
-    const agent: Agent = { entry, ws, streams: new Streams(ws, { onBytes: (bytes) => this.countBytes(entry.owner, bytes) }), nextId: 1, alive: true, toldSenders: '' };
+    const streams = new Streams(ws, {
+      onBytes: (bytes) => this.countBytes(entry.owner, bytes),
+      // A stream the relay dropped because the far side kept sending after it was asked to hold (Project-Ledung#479).
+      onReset: (id, reason) => this.event('stream reset', { agent: entry.name, owner: entry.owner, stream: id, reason }),
+    });
+    const agent: Agent = { entry, ws, streams, nextId: 1, alive: true, toldSenders: '' };
     this.online.set(entry.name, agent);
     this.event('agent connected', { name: entry.name, owner: entry.owner, host: entry.host, tls: entry.tls, from });
     // The status message after the hello (#161): whether its owner is past the cap; the throttle with it if so.

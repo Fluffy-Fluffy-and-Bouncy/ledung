@@ -57,8 +57,13 @@ export function endedWithError(session: SessionInfo): boolean {
   return session.status === 'ended' && /exited with code [1-9]|stopped unexpectedly/.test(session.endReason ?? '');
 }
 
-/** children: the sessions it started. extra: drawn at the bar's right end, the session's macro chips (issue #410). */
-export function WorkingIndicator({ session, children, messages, extra }: { session: SessionInfo; children: readonly SessionInfo[]; messages: StoredMessage[]; extra?: ReactNode }) {
+/**
+ * children: the sessions it started. extra: drawn at the bar's right end, the session's macro chips (issue #410).
+ * waitingToStart: a new session waiting for memory to start (resource limits), the reason, shown in place of "Ready".
+ */
+export function WorkingIndicator({ session, children, messages, extra, waitingToStart }: {
+  session: SessionInfo; children: readonly SessionInfo[]; messages: StoredMessage[]; extra?: ReactNode; waitingToStart?: string | null;
+}) {
   const activity = useMemo(() => currentActivity(messages, !!session.uac), [messages, session.uac]);
   // 'starting' waits for its first message: not working (#97).
   const active = session.status === 'running' || session.status === 'stopping';
@@ -84,6 +89,9 @@ export function WorkingIndicator({ session, children, messages, extra }: { sessi
         {session.status === 'running' && activity.since && <span className="muted"> · {elapsed(now - activity.since)}</span>}
       </>
     );
+  } else if (session.status === 'starting' && waitingToStart) {
+    kind = 'waiting';
+    content = <span className="working-label">Waiting to start: {waitingToStart}. A message you send now goes in once it starts.</span>;
   } else if (session.status === 'starting') {
     kind = 'done';
     content = <span className="working-label">Ready</span>;

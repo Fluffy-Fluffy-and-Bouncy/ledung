@@ -1929,6 +1929,47 @@ export class LedungServer {
         manager.setLimit(Number(body.limit));
         return;
       }
+      // Resource limits (docs/steps/resource-limits.md, Security): set only from the open page, never by a session's
+      // tool; acting on a job's processes also needs a signed request through the public name.
+      case 'POST resource-limits': {
+        await this.requirePage(req, url);
+        const body = await readJson(req);
+        manager.setResourceLimit(String(body.dim ?? ''), body.value);
+        return;
+      }
+      case 'POST resource-settings': {
+        await this.requirePage(req, url);
+        manager.setResourceSettings(await readJson(req));
+        return;
+      }
+      case 'POST resource-line/:id/start-now':
+        await this.requirePage(req, url);
+        manager.resourceStartNow(id);
+        return;
+      case 'POST jobs/:id/pause': {
+        await this.requireSignedPage(req, url);
+        const body = await readJson(req);
+        await manager.pauseJob(id, body.paused !== false);
+        return;
+      }
+      case 'POST jobs/:id/stop':
+        await this.requireSignedPage(req, url);
+        await manager.stopJob(id);
+        return;
+      case 'GET job-kinds':
+        return { kinds: manager.jobKinds(), commands: manager.heavyCommands() };
+      case 'POST job-kinds-forget': {
+        await this.requirePage(req, url);
+        const body = await readJson(req);
+        manager.forgetJobKind(String(body.project ?? ''), String(body.kind ?? ''));
+        return;
+      }
+      case 'POST heavy-commands-mark': {
+        await this.requirePage(req, url);
+        const body = await readJson(req);
+        manager.markCommand(String(body.project ?? ''), String(body.command ?? ''), body.never !== false);
+        return;
+      }
       case 'POST sessions/:id/priority': {
         const body = await readJson(req);
         manager.setPriority(id, String(body.priority ?? '') as Priority, null, manager.userName);

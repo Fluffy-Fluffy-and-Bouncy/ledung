@@ -34,7 +34,8 @@ import { findTickets } from '../usage/links.ts';
 import type { PullRequestPoller } from './pr-poll.ts';
 import { CONTEXT_TOOLS, instructions, LEDUNG_SERVER, LEDUNG_TOOLS, ledungToolServer, MCP_LIMIT_ENV, mcpLimitFor, SETTINGS_CHANGE_RULE, SETTINGS_CHANGE_TOOLS, SETTINGS_TOOLS, USAGE_PUBLISH_TOOLS, USER_APPROVED_TOOLS, type BoardHandlers, type ManagerHandlers, type ProposeHandlers, type RunHandlers, type ToolHandlers } from './tools.ts';
 import type { Boards } from '../board/boards.ts';
-import { commandKinds } from '../resources/commands.ts';
+import { commandKinds, heavyKinds } from '../resources/commands.ts';
+import { RESOURCE_SOURCE, type ReserveArgs } from '../resources/book.ts';
 import { FRESH_FACTS, pauseReason, type IdleState } from './idle.ts';
 import { skillsFromFiles, skillsOff, withSkillsOff, type SkillChoices } from './skills.ts';
 import { needsPluginIds, parseSettingsFile, pluginIdsIn, profileOptions, settingsFilePath, type Profile } from './profiles.ts';
@@ -137,7 +138,23 @@ export interface TurnGate {
   freed?(): void;
   /** Every usage stop and where it stands, for a manager's prompt line. */
   usageStops?(): UsageStopInfo[];
+  /** Resource limits (docs/steps/resource-limits.md): the reserve and release tools, for this session only. */
+  reserve?(id: string, args: ReserveArgs): string;
+  release?(id: string): string;
+  /** This PC's thread count and its GPUs' names, for reserve's description. */
+  resourceFacts?(): { threads: number; gpus: string[] };
+  /** A job of this session is over its share: no new turn from others, no new reservation (open choice 1). */
+  resourceHeld?(id: string): boolean;
+  /** The command kinds a Bash call runs; the reason to refuse it (a known heavy command with no reservation), or null. */
+  commandCheck?(id: string, kinds: string[]): string | null;
+  /** The command kinds of a shell call that ran long or in the background, for learning what is heavy. */
+  noteCommands?(id: string, kinds: string[]): void;
 }
+
+/** The tools that run shell commands, for the heavy-command check. */
+const SHELL_TOOLS = ['Bash', 'PowerShell', 'Monitor'];
+/** A shell call shorter than this can't be heavy work under the default settings (a minute over its share). */
+const LONG_CALL_MS = 10_000;
 
 export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
   default: 'Ask',
@@ -412,6 +429,20 @@ export class Session {
   private heldWaiters: (() => void)[] = [];
   /** When the current turn began, whoever started it; null between turns. */
   private turnStartedAt: number | null = null;
+  /** Shell calls under way with their command kinds (resource limits): noted for learning if they ran long. */
+  private readonly longCalls = new Map<string, { at: number; kinds: string[] }>();
+
+  /** A shell call ended: one that ran 10 s or more may have been the heavy work, and its kinds are noted. */
+  private longCallEnded(toolUseId: string | undefined): void {
+    const call = toolUseId ? this.longCalls.get(toolUseId) : undefined;
+    if (!call) return;
+    this.longCalls.delete(toolUseId!);
+    if (Date.now() - call.at >= LONG_CALL_MS) this.gate.noteCommands?.(this.id, call.kinds);
+  }
+
+  /** A new session waiting for memory to start (resource limits): messages sent to it are held until it runs. */
+  waitingToStart = false;
+
   /** Tool calls waiting while the session is paused. */
   private pauseWaiters: (() => void)[] = [];
   private readonly remote: RemoteControl | null;
@@ -1137,6 +1168,12 @@ export class Session {
         compact: (note, then) => this.management.compactSelf(this.id, note, then),
         clear: (file, then, seconds) => this.management.clearSelf(this.id, file, then, seconds),
       },
+      // Resource limits: sessions on this computer reserve their heavy work; a session reserves only for itself.
+      resources: role !== 'manager' && this.store.getSession(this.id)!.runner === 'local' && this.gate.reserve && this.gate.release ? {
+        reserve: (args) => this.gate.reserve!(this.id, args),
+        release: () => this.gate.release!(this.id),
+        ...(this.gate.resourceFacts?.() ?? { threads: 0, gpus: [] }),
+      } : undefined,
     };
     // Level B's own temp folder; a reattached session already runs with it.
     const tmp = this.airgap?.sandbox ? this.airgapTmp ?? airgapTempFolder(this.id) : null;
@@ -1197,6 +1234,21 @@ export class Session {
           if (Date.now() - waitFrom >= 1000) this.turnWaits.push([waitFrom, Date.now()]);
           const i = input as { tool_name?: string; tool_input?: unknown };
           const toolName = i.tool_name ?? '';
+          // Resource limits: a known heavy command needs a reservation, and none while held (docs/steps/resource-limits.md).
+          if (SHELL_TOOLS.includes(toolName) && this.gate.commandCheck) {
+            const input = (i.tool_input ?? {}) as { command?: unknown; run_in_background?: unknown };
+            const kinds = heavyKinds(String(input.command ?? ''));
+            const why = this.gate.commandCheck(this.id, kinds);
+            if (why) return { hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'deny' as const, permissionDecisionReason: why } };
+            // Only a call that runs long or in the background can be the heavy work: it is noted when it has (finding 7).
+            if (kinds.length && toolUseId) {
+              if (input.run_in_background === true || toolName === 'Monitor') this.gate.noteCommands?.(this.id, kinds);
+              else {
+                this.longCalls.set(toolUseId, { at: Date.now(), kinds });
+                if (this.longCalls.size > 100) this.longCalls.delete(this.longCalls.keys().next().value!);
+              }
+            }
+          }
           // Compacting or clearing is for the main session only, never a subagent (decided 2026-10-13).
           if (CONTEXT_TOOLS.includes(toolName) && (input as { agent_id?: string }).agent_id) {
             return { hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'deny' as const, permissionDecisionReason: 'Only the main session can compact or clear, not a subagent.' } };
@@ -1232,6 +1284,7 @@ export class Session {
         // failed was allowed all the same, and without its note would read as allowed by the session's mode.
         PostToolUse: [{ hooks: [async (input) => {
           this.orderRunEnded((input as { tool_use_id?: string }).tool_use_id, true, null);
+          this.longCallEnded((input as { tool_use_id?: string }).tool_use_id);
           // And, after a Ledung call, that its Ledung tools are old (issue #164).
           const note = joinNotes(this.allowedBy.take((input as { tool_use_id?: string }).tool_use_id), this.staleToolsNote((input as { tool_name?: string }).tool_name));
           return note === undefined ? {} : { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: note } };
@@ -1239,6 +1292,7 @@ export class Session {
         PostToolUseFailure: [{ hooks: [async (input) => {
           const failed = input as { tool_use_id?: string; tool_name?: string; error?: unknown };
           this.orderRunEnded(failed.tool_use_id, false, typeof failed.error === 'string' ? failed.error : null);
+          this.longCallEnded(failed.tool_use_id);
           // A refused new parameter is the likeliest way old tools show (issue #164's evidence), so here too.
           const note = joinNotes(this.allowedBy.take(failed.tool_use_id), this.staleToolsNote(failed.tool_name));
           return note === undefined ? {} : { hookSpecificOutput: { hookEventName: 'PostToolUseFailure' as const, additionalContext: note } };
@@ -1869,13 +1923,24 @@ export class Session {
     const held = heldEntries.map(heldText);
     // A held message keeps its images (issue #128): they go in with it.
     const heldImages = heldEntries.flatMap(heldImageNames);
-    const answers = clearAt >= 0 ? [] : this.store.undeliveredAnswers(this.id);
-    const inbox = clearAt >= 0 ? waiting.slice(0, clearAt) : waiting;
+    let answers = clearAt >= 0 ? [] : this.store.undeliveredAnswers(this.id);
+    let inbox = clearAt >= 0 ? waiting.slice(0, clearAt) : waiting;
     if (!held.length && !answers.length && !inbox.length && !clearing && !compacting) {
       if (status === 'queued') this.update({ status: 'idle', queuedAt: null });
       return;
     }
     if (info!.paused && !force) return;
+    // A job over its share holds its session (resource limits, open choice 1): the person's own messages, the person's
+    // answers to its questions and Ledung's notices about the job still go in, so the session can act on them (security
+    // review, finding 8); the rest (a manager's message, a clear) waits until it is back within its share.
+    if (!force && !held.length && this.gate.resourceHeld?.(this.id)) {
+      answers = clearing || compacting ? [] : answers.filter((a) => a.answeredBy === 'user');
+      inbox = clearing || compacting ? [] : inbox.filter((i) => i.source === RESOURCE_SOURCE);
+      if (!answers.length && !inbox.length) {
+        if (status === 'queued') this.update({ status: 'idle', queuedAt: null });
+        return;
+      }
+    }
     // A usage stop holds Start now too: only Lift, a raised level or the reset release it (review 1 of #278, finding 6).
     const hold = this.gate.usageHold?.(this.id);
     if (hold) {
@@ -1885,16 +1950,17 @@ export class Session {
       return;
     }
     this.heldFor = null;
-    if (clearing && this.countingDown(waiting[0]!, info!)) return;
+    const heldByJob = !force && !held.length && !!this.gate.resourceHeld?.(this.id);
+    if (clearing && !heldByJob && this.countingDown(waiting[0]!, info!)) return;
     if (!force && !this.gate.mayStart(this.id)) {
       if (status !== 'queued') this.update({ status: 'queued', queuedAt: Date.now() });
       return;
     }
-    if (compacting) {
+    if (compacting && !heldByJob) {
       this.startCompact(waiting[0]!);
       return;
     }
-    if (clearing) {
+    if (clearing && !heldByJob) {
       this.store.markInboxDelivered([waiting[0]!.id]);
       this.record('event', { text: 'Conversation cleared.' });
       this.management.onCleared(this.id, parseClear(waiting[0]!.source).requester, waiting[0]!.text);
@@ -2003,7 +2069,8 @@ export class Session {
   /** here: typed on this computer (issue #263), kept with the message for settingsOnWord. */
   /** images: names of the person's images uploaded for this message (issue #128), checked by the manager. */
   send(text: string, here = false, images: string[] = []): void {
-    if (!this.q || this.stopping) throw new Error('The session is not running.');
+    // A new session waiting for memory to start holds the person's messages for its start (acceptance test, finding 3).
+    if (this.stopping || (!this.q && !this.waitingToStart)) throw new Error('The session is not running.');
     const info = this.store.getSession(this.id)!;
     // A chat starts as "New chat" (issue #211); either is named after the first message.
     // Claude reads a locked secret's token as its name and variable, never the value (issue #468).

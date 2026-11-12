@@ -99,13 +99,13 @@ const closed = (ws: WebSocket) => new Promise<number>((resolve) => {
 test('a browser signed in before the update stays signed in through it: its #476 sign-in becomes a browser row with the same hash, and no sign-in hash stays in meta', async () => {
   clock = 0;
   const file = path.join(dir, 'upgrade.db');
-  // A database as the release before left it (schema version 50), holding two #476 sign-ins and two entries that are
+  // A database as the release before left it (schema version 51), holding two #476 sign-ins and two entries that are
   // not sign-ins (a key that is no hash, a last use that is no number).
   const kept = crypto.randomBytes(32).toString('hex');
   const other = crypto.randomBytes(32).toString('hex');
   const usedAt = Date.now() - 2 * DAY;
   const before = openDatabase(file);
-  before.exec('PRAGMA user_version = 50');
+  before.exec('PRAGMA user_version = 51');
   const signIns = { [sha(kept)]: usedAt, [sha(other)]: usedAt - DAY, 'not-a-hash': usedAt, [sha('x')]: 'yesterday' };
   before.prepare("INSERT INTO meta (key, value) VALUES ('sign-ins', ?)").run(JSON.stringify(signIns));
   // The premise: the hash is in meta before the update.
@@ -113,7 +113,7 @@ test('a browser signed in before the update stays signed in through it: its #476
   before.close();
 
   const { store, request, list } = await serve(file);
-  assert.equal((store.database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 51);
+  assert.equal((store.database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 52);
   const rows = store.database.prepare('SELECT * FROM devices').all() as { cookie_hash: string; kind: string; name: string; revoked_at: number | null }[];
   assert.deepEqual(rows.map((r) => r.cookie_hash).sort(), [sha(kept), sha(other)].sort(), 'each sign-in is a row with the same hash; the two non-sign-ins are dropped');
   assert.ok(rows.every((r) => r.kind === 'browser' && r.revoked_at === null && r.name === 'Browser signed in before the update'));
@@ -226,4 +226,27 @@ test('the sign-in link opened in a browser already signed in keeps its row; a ne
   // Another browser, with no cookie: a row of its own.
   await signIn(CHROME_WIN);
   assert.equal((await list(cookie)).devices.length, 2);
+});
+
+test('a browser pushed out by the 200-browser limit is signed out and its open pages close, as with Remove (test review of PR #272)', async () => {
+  clock = 0;
+  const { request, signIn, page } = await serve(path.join(dir, 'cap.db'));
+  const oldest = await signIn(FIREFOX_MAC);
+  const kept = await signIn(CHROME_WIN);
+  const oldestPage = await page(oldest);
+  const keptPage = await page(kept);
+  // `kept` is used later than `oldest`, so `oldest` is the one used longest ago.
+  clock += 2 * MIN;
+  assert.equal((await request({ path: '/api/state', cookie: kept })).status, 200);
+  const gone = closed(oldestPage);
+  // 199 more make 201 browsers: one over the limit of 200 (#476's figure, which this step keeps).
+  for (let i = 0; i < 199; i++) {
+    clock += 1;
+    await signIn();
+  }
+  assert.equal(await Promise.race([gone, new Promise<number>((r) => setTimeout(() => r(0), WAIT_MS))]), 1008, 'its open page is closed');
+  assert.equal((await request({ path: '/api/state', cookie: oldest })).status, 401, 'its cookie no longer signs in');
+  assert.equal(keptPage.readyState, WebSocket.OPEN, 'a browser within the limit keeps its page');
+  assert.equal((await request({ path: '/api/state', cookie: kept })).status, 200);
+  keptPage.close();
 });

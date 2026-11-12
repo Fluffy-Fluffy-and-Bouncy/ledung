@@ -999,6 +999,32 @@ test('setting or lifting a usage stop needs the live page, so a session cannot f
   assert.match(errorOf(lift), /not holding/);
 });
 
+test('resource limits, their settings, Start now and acting on a job need the live page, so a session cannot raise its own room', async () => {
+  // docs/steps/resource-limits.md, Security: limits are set only from the open page.
+  assert.equal((await change('/api/resource-limits', { dim: 'cpu', value: 500 })).status, 403);
+  assert.equal((await change('/api/resource-settings', { averageSec: 30 })).status, 403);
+  assert.equal((await change('/api/resource-line/r1/start-now', {})).status, 403);
+  assert.equal((await change('/api/jobs/r1/pause', { paused: true })).status, 403);
+  assert.equal((await change('/api/jobs/r1/stop', {})).status, 403);
+  assert.equal((await change('/api/job-kinds-forget', { project: 'p', kind: 'k' })).status, 403);
+  assert.equal((await change('/api/heavy-commands-mark', { project: 'p', command: 'c', never: true })).status, 403);
+  const noCookie = await request({ method: 'POST', path: '/api/resource-limits', headers: { origin: ORIGIN, 'content-type': 'application/json' }, body: '{"dim":"cpu","value":50}' });
+  assert.equal(noCookie.status, 401);
+  const page = await livePage();
+  const bad = await change('/api/resource-limits', { dim: 'cpu', value: 500 }, { 'x-ledung-page': page.key });
+  const unknown = await change('/api/resource-limits', { dim: 'disk', value: 50 }, { 'x-ledung-page': page.key });
+  const noJob = await change('/api/jobs/r999/stop', {}, { 'x-ledung-page': page.key });
+  const set = await change('/api/resource-limits', { dim: 'cpu', value: null }, { 'x-ledung-page': page.key });
+  page.close();
+  assert.equal(bad.status, 400);
+  assert.match(errorOf(bad), /1 to 100/);
+  assert.equal(unknown.status, 400);
+  assert.match(errorOf(unknown), /Unknown resource/);
+  assert.equal(noJob.status, 400);
+  assert.match(errorOf(noJob), /No such job/);
+  assert.ok(set.status === 200 || set.status === 204, `status ${set.status}`);
+});
+
 test('saving macros needs the live page, so a session cannot put words in the person\'s chips (#410)', async () => {
   const body = { macros: [{ id: 'm-1', name: 'Go', text: 'Go.', send: true, key: null, chip: false, project: null }] };
   assert.equal((await change('/api/macros', body)).status, 403);

@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  ROWS, burstAndReplace, calmSea, depart, fleetLeaves, fogLifts, fogRollsIn, founderAndReplace, gather, radiating, render, rocking, sailing, sinking, standing,
+  ROWS, burstAndReplace, calmSea, depart, fleetLeaves, fogLifts, fogRollsIn, founderAndReplace, gather, radiating, render, renderRuns, rocking, sailing, sinking, standing,
   startAgain, turnAndStop, BAR_WIDTHS, WRECK, barArriving, barLeaving, barScene, barStepFor, barValue, barX, damageStage, watchArrives, watchChanges, watchStandsDown, type Behind, type Timeline,
 } from '../web/src/components/shipFrames.ts';
 
@@ -154,4 +154,54 @@ test('once the big number shows, it keeps showing as the value rises', () => {
   // Martin's example: on 33 columns the ship shows the big number from 44%.
   const firstBig = (width: number) => [...Array(101).keys()].find((v) => barScene(width, 0, barX(barValue(v, width), width), `${v}%`).number.some((m) => m.y > 0));
   assert.equal(firstBig(33), 44);
+});
+
+/** Each character's layer, as rows of 'b' (background), 'f' (front) and ' ' (a space, whose layer is not checked). */
+function layers(t: Timeline, i: number): string[] {
+  return renderRuns(t.scenes[i]!, i)
+    .flatMap((r) => [...r.text].map((ch) => (ch === '\n' ? '\n' : ch === ' ' ? ' ' : r.back ? 'b' : 'f')))
+    .join('')
+    .split('\n');
+}
+
+test('the scene with work behind a stopped ship puts the small boat and the water in the background layer (#270)', () => {
+  const busy = standing('busy');
+  // Scene 5: the small boat (x from -5) is at column 0, clear of the stopped boat, which is drawn from column 5
+  // (stop 6 on the 20-wide strip, one to the left as it is nearer), its hull on the water row.
+  assert.deepEqual(layers(busy, 5), [
+    '         f          ', // the stopped boat's mast, 5 + 4
+    ' bb     fff         ', // the small sail; the stopped boat's sail, 5 + 3
+    'bbbb   fffff        ', // the small hull; 5 + 2
+    'bbbbbbbfffffbbbbbbbb', // waves, behind the stopped boat's hull, 5 + 2 to 5 + 6
+  ]);
+  // The stopped boat's own cells, from the rows above: in front in every scene, however the small boat overlaps them.
+  const front = layers(busy, 5).flatMap((row, y) => [...row].flatMap((c, x) => (c === 'f' ? [[y, x] as const] : [])));
+  assert.equal(front.length, 1 + 3 + 5 + 5);
+  for (let i = 0; i < busy.scenes.length; i++) {
+    assert.equal(renderRuns(busy.scenes[i]!, i).map((r) => r.text).join(''), render(busy.scenes[i]!, i));
+    const l = layers(busy, i);
+    for (const [y, x] of front) assert.equal(l[y]![x], 'f', `scene ${i}, row ${y}, column ${x}`);
+    // Every other character is the small boat or the water: the background.
+    l.forEach((row, y) => [...row].forEach((c, x) => {
+      if (c === 'f') assert.ok(front.some(([fy, fx]) => fy === y && fx === x), `scene ${i}: front at row ${y}, column ${x}`);
+    }));
+  }
+});
+
+test('every other scene is drawn in one layer, as before (#270)', () => {
+  // On the status line's strip and the session list's narrow one.
+  const others: Timeline[] = [20, 10].flatMap((w) => {
+    // The turn into a busy stop keeps the session's own colour until the ship has stopped.
+    const turn = turnAndStop(3, 'busy', w);
+    return [
+      sailing(-6, 2, w), turnAndStop(3, 'none', w), turnAndStop(3, 'fleet', w), standing('none', w), standing('fleet', w), gather(w), fleetLeaves(w),
+      depart(2, w), startAgain(2, w), sinking(3, w), calmSea(w), watchArrives(w), watchChanges(w), watchStandsDown(w),
+      radiating(w), burstAndReplace(w), rocking(w), founderAndReplace(w), fogRollsIn(w), fogLifts(w),
+      { scenes: [barScene(w, 3, 2, '40%').scene, barLeaving(w, 3, 2), barArriving(w, 0)], loopFrom: 0 },
+      { scenes: turn.scenes.slice(0, turn.loopFrom), loopFrom: 0 },
+    ];
+  });
+  for (const t of others) t.scenes.forEach((s, i) => assert.deepEqual(renderRuns(s, i), [{ text: render(s, i), back: false }]));
+  // The same probe finds the background where there is one.
+  assert.ok(renderRuns(standing('busy').scenes[0]!, 0).some((r) => r.back));
 });

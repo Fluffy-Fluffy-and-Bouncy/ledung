@@ -17,7 +17,7 @@ import { SETTINGS_PATCH, type SettingsPatch } from '../projects/settings-tools.t
 
 export const LEDUNG_SERVER = 'ledung';
 // The run tools (workflow part 3) only record and report; any session of a project that follows its flow has them.
-const SESSION_TOOLS = ['ask_user', 'withdraw_question', 'compact_self', 'clear_self', 'flow_start', 'flow_step', 'flow_status'];
+const SESSION_TOOLS = ['ask_user', 'withdraw_question', 'compact_self', 'clear_self', 'flow_start', 'flow_step', 'flow_status', 'reserve', 'release'];
 const MANAGER_TOOLS = [
   'start_session', 'list_sessions', 'read_session', 'send_message', 'stop_session', 'archive_session', 'clear_session', 'compact_session',
   'answer_question', 'forward_answer', 'list_managers', 'message_manager',
@@ -231,6 +231,14 @@ export interface ToolHandlers {
   self?: {
     compact(instructions?: string, then?: string): string;
     clear(handoffFile: string, then?: string, seconds?: number): string;
+  };
+  /** Resource limits (docs/steps/resource-limits.md): a session on this computer reserves its heavy work. */
+  resources?: {
+    reserve(args: { what: string; cpu?: number; ram_gb?: number; gpu?: number; vram_gb?: number; minutes?: number; gpu_device?: string }): string;
+    release(): string;
+    /** This PC's threads, and its GPUs' names when it has more than one. */
+    threads: number;
+    gpus: string[];
   };
 }
 
@@ -620,6 +628,24 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
     );
   }
 
+  const res = h.resources;
+  if (res) {
+    // Kept short: every session carries it (docs/steps/resource-limits.md, "The tools").
+    const several = res.gpus.length > 1;
+    tools.push(
+      tool('reserve', `Before heavy work (a long build, a big test suite, training, rendering: many cores for minutes, several GB of memory, or the GPU), reserve it. Light work needs none. Give what you expect at its busiest; what you leave out counts as almost nothing. The answer is go, or wait with your place in line: then don't start it; do other work, and Ledung tells you when you may go. Released when you call release, when the job's processes end, or at the end of your turn if none run.`, {
+        what: z.string().min(1).max(60).describe('A short name for this kind of job; use the same name next time.'),
+        cpu: z.number().min(0).max(100).optional().describe(`% of this PC${res.threads ? `, which has ${res.threads} threads` : ''}.`),
+        ram_gb: z.number().min(0).optional().describe('Memory in GB.'),
+        gpu: z.number().min(0).max(100).optional().describe('% GPU load.'),
+        vram_gb: z.number().min(0).optional().describe('GPU memory in GB.'),
+        minutes: z.number().min(0).optional().describe('How long you expect it to run.'),
+        ...(several ? { gpu_device: z.string().min(1).max(120).optional().describe(`Which GPU: ${res.gpus.join(', ')}; default the first.`) } : {}),
+      }, async (a) => safely(() => res.reserve(a as never))) as never,
+      tool('release', 'Release your reservation now, when the heavy job is done or dropped.', {}, async () => safely(() => res.release())) as never,
+    );
+  }
+
   const r = h.runs;
   if (r) {
     const run = z.string().min(1).max(20).describe('The run, e.g. "run-3".');
@@ -769,7 +795,7 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
         computer: z.string().min(1).optional().describe('The linked computer it runs on, as list_managers names it; leave out for this computer.'),
         text: z.string().min(1),
         attachments: z.array(z.string().min(1)).min(1).max(5).optional().describe(
-          'Only with computer: files from your project folder, relative to it, that the other manager gets with the message: PNG or JPEG images (at most 5 MB) or .txt, .log or .md text (at most 512 KB); or .wav, .mp3, .flac, .ogg or .m4a audio and .zip files of any size (a zip is checked entry by entry first). It gets images as files it can show in its questions, and text inline; audio and zips are fetched from here after the message, and it saves them with save_linked_file.',
+          'Only with computer: files from your project folder, relative to it, that the other manager gets with the message: PNG or JPEG images (at most 5 MB) or .txt, .log or .md text (at most 512 KB); or .wav, .mp3, .flac, .ogg or .m4a audio and .zip files (as large as the other computer takes, 2 GB each by default; a zip is checked entry by entry first). It gets images as files it can show in its questions, and text inline; audio and zips are fetched from here after the message, and it saves them with save_linked_file.',
         ),
       }, async (a) => safely(() => m.messageManager(a.id, a.text, a.computer, a.attachments))) as never,
       tool('list_projects', "List Ledung's projects: folder, settings and whether each one's manager runs. On a linked computer: names and managers only.", {
