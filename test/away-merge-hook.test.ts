@@ -79,6 +79,9 @@ function setup(opts: Options = {}) {
       ...(opts.env ? { account: { name: 'a', env: opts.env } } : {}),
       runner: {
         cwd: opts.cwd ?? '.', currentBranch: async () => null,
+        // The project's git remote is o/r, the repository MERGE names (a merge on the person's word runs only there,
+        // Project-Ledung#475).
+        gitState: async () => ({ head: 'main', config: 'remote.origin.url https://github.com/o/r.git', refs: '' }),
         pullRequestView: async (...args: unknown[]) => {
           viewed.push(args);
           return { json: pinned((opts.gh ?? (() => GREEN))(args[0] as number, args[4] as string | undefined), args[0] as number) };
@@ -571,7 +574,7 @@ test("#150: a merge the person agreed to in their words is not a subagent's to r
   const t = setup();
   // Premise: without the person's word the merge is asked.
   assert.equal((await t.mgr.hook(MERGE, 'before')).decision, 'ask', 'no word yet: asked');
-  t.store.addMessage('mgr', 'user', { text: 'merge #2264' });
+  t.store.addMessage('mgr', 'user', { text: 'merge #2264', here: true });
   const sub = await t.mgr.hook(MERGE, 'sub', { agent_id: 'agent-1' });
   assert.equal(sub.decision, 'ask', "a subagent's identical call: asked as usual");
   assert.ok(!t.mgr.events().some((e) => e.startsWith('Merge of #2264 allowed')), 'not noted as allowed');
@@ -683,7 +686,7 @@ test('#208: with merges held by the suggested entry, an away merge that names it
 test("#208: with merges held by the suggested entry, a merge the person's words named still goes through, once named", async () => {
   const t = setup({ sensitive: SUGGESTED });
   assert.deepEqual(await t.mgr.hook(MERGE, 'before'), { decision: 'ask', reason: HELD_AS }, 'no word yet: asked');
-  t.store.addMessage('mgr', 'user', { text: 'merge #2264' });
+  t.store.addMessage('mgr', 'user', { text: 'merge #2264', here: true });
   const own = await t.mgr.hook(MERGE, 'own');
   assert.equal(own.decision, 'allow');
   assert.match(own.reason, /Martin said yes to merging #2264 in what they typed/);
@@ -695,13 +698,13 @@ test("#232: the merge hook reads this manager's own words since two days ago by 
   // Premise: without the person's word the merge is asked.
   assert.equal((await t.mgr.hook(MERGE, 'before')).decision, 'ask');
   // Another manager's words, typed and answered, never count for this one; nor do this manager's own words from three days ago.
-  t.store.addMessage('other', 'user', { text: 'merge #2264' });
+  t.store.addMessage('other', 'user', { text: 'merge #2264', here: true });
   const theirs = t.store.createQuestion({ sessionId: 'other', question: 'Merge PR #2264?', options: null, addressedTo: 'user' });
   t.store.answerQuestion(theirs.id, 'Yes, merge it', 'user');
-  t.store.addMessage('mgr', 'user', { text: 'merge #2264' }, Date.now() - 3 * 24 * 3600_000);
+  t.store.addMessage('mgr', 'user', { text: 'merge #2264', here: true }, Date.now() - 3 * 24 * 3600_000);
   assert.equal((await t.mgr.hook(MERGE, 'not-ours')).decision, 'ask', "another session's words, or this one's too old: asked");
   // The positive branch for typed words: today's, under 450 newer replies (the old read took the newest 400 messages of every kind).
-  t.store.addMessage('mgr', 'user', { text: 'merge #2264' });
+  t.store.addMessage('mgr', 'user', { text: 'merge #2264', here: true });
   for (let i = 0; i < 450; i++) t.store.addMessage('mgr', 'sdk', { type: 'assistant', message: { content: [{ type: 'text', text: `reply ${i}` }] } });
   const typed = await t.mgr.hook(MERGE, 'typed');
   assert.equal(typed.decision, 'allow');
