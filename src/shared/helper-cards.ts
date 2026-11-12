@@ -4,7 +4,12 @@
 import { z } from 'zod';
 
 /** Where a link card may lead: pages of Ledung's own, never an address. */
-export const CARD_LINKS = ['add-project', 'project-settings', 'workflow', 'manager', 'accounts', 'settings', 'devices', 'helper-settings', 'shortcuts', 'checkin'] as const;
+export const CARD_LINKS = [
+  'add-project', 'project-settings', 'workflow', 'manager', 'accounts', 'settings', 'devices', 'helper-settings', 'shortcuts', 'checkin',
+  // Settings' own sections, opened at the setting (acceptance round 6, 26).
+  'remote-access', 'join-code', 'relay', 'phones', 'linked-computers', 'usage-stops', 'publish-usage', 'claude-code', 'update', 'start-at-sign-in',
+  'macros', 'skills', 'profiles', 'look', 'notifications', 'install-app', 'config-file', 'about', 'board',
+] as const;
 export type CardLink = typeof CARD_LINKS[number];
 
 

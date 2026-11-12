@@ -102,16 +102,17 @@ const PROJECT_SETTINGS: SettingDef[] = [
 ];
 
 /** Never through the helper: the person types these in the page (class d). */
-export const SECRET_SETTINGS: { id: string; label: string; open: string }[] = [
-  { id: 'relayAdminKey', label: 'Relay admin key', open: 'settings:remote' },
-  { id: 'cloudflareToken', label: 'Cloudflare token', open: 'settings:remote' },
-  { id: 'joinCode', label: 'Join code for a relay', open: 'settings:remote' },
-  { id: 'linkCode', label: 'Link codes for linked computers', open: 'settings:remote' },
-  { id: 'invite', label: 'Relay invites', open: 'settings:remote' },
-  { id: 'phones', label: 'Phones and passkeys', open: 'settings:remote' },
-  { id: 'accountSignIn', label: 'Claude account sign-in', open: 'settings:claude' },
-  { id: 'remote', label: 'The remote block (relay secrets)', open: 'settings:remote' },
-  { id: 'relayJoin', label: 'Relay join settings', open: 'settings:remote' },
+/** open: the link card's target (helper-cards.ts CARD_LINKS), which opens Settings at that very section. */
+export const SECRET_SETTINGS: { id: string; label: string; open: string; where: string }[] = [
+  { id: 'relayAdminKey', label: 'Relay admin key', open: 'relay', where: 'Settings → Remote & devices → Relay' },
+  { id: 'cloudflareToken', label: 'Cloudflare token', open: 'relay', where: 'Settings → Remote & devices → Relay' },
+  { id: 'joinCode', label: 'Join code for a relay', open: 'join-code', where: 'Settings → Remote & devices → Remote access → Join with a code' },
+  { id: 'linkCode', label: 'Link codes for linked computers', open: 'linked-computers', where: 'Settings → Remote & devices → Linked computers' },
+  { id: 'invite', label: 'Relay invites', open: 'relay', where: 'Settings → Remote & devices → Relay' },
+  { id: 'phones', label: 'Phones and passkeys', open: 'phones', where: 'Settings → Remote & devices → Phones' },
+  { id: 'accountSignIn', label: 'Claude account sign-in', open: 'accounts', where: 'Settings → Claude & usage → Accounts' },
+  { id: 'remote', label: 'The remote block (relay secrets)', open: 'remote-access', where: 'Settings → Remote & devices → Remote access' },
+  { id: 'relayJoin', label: 'Relay join settings', open: 'join-code', where: 'Settings → Remote & devices → Remote access → Join with a code' },
 ];
 
 /** This browser's own: a card's button sets them in the person's browser (an apply card). */
@@ -442,7 +443,7 @@ function projectPlan(ctx: SettingsCtx, id: string, value: unknown, projectName: 
 /** The plan for a change; throws SettingRefused with the reason, or what to do instead for a secret or browser setting. */
 export function planSetting(ctx: SettingsCtx, id: string, value: unknown, project?: string): SettingPlan {
   const secret = SECRET_SETTINGS.find((s) => s.id === id);
-  if (secret) throw new SettingRefused(`${secret.label} holds a secret, which never passes through you: reply with a link card to ${secret.open === 'settings:claude' ? '"accounts"' : '"devices"'}, where they type it themselves.`);
+  if (secret) throw new SettingRefused(`${secret.label} holds a secret, which never passes through you: reply with a link card { kind: "link", to: "${secret.open}" }, which opens ${secret.where}, where they type it themselves.`);
   if ((BROWSER_SETTINGS as readonly string[]).includes(id)) throw new SettingRefused(`${id} is kept in their browser: reply with an apply card ({ kind: "apply", setting: "${id}", value }); its button sets it there.`);
   if (id === 'projects') throw new SettingRefused('Projects are added and changed with add_project, create_project and the project tools.');
   if (id === 'maxWorkingSessions') return pagePlan(ctx, 'workingLimit', value);

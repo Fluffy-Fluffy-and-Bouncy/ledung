@@ -3,7 +3,7 @@
 import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import type { PermissionInfo, QuestionInfo, ShellBlock, StoredMessage } from '../../../src/shared/protocol.ts';
 import type { HelperCard } from '../../../src/shared/helper-cards.ts';
-import { helperApprovalText } from '../helper/helperNav.ts';
+import { helperApprovalText, helperDeclinedText } from '../helper/helperNav.ts';
 import { helperTurns, placeCards } from '../helper/cardOrder.ts';
 import { shellFooter } from '../../../src/shared/bang.ts';
 import { quietTexts, type TurnEntry } from '../../../src/shared/quiet-reply.ts';
@@ -553,6 +553,8 @@ ${b.stderr.replace(/\s+$/, '')}`}</span> : null}</pre>
       if (live?.status === 'pending') return <PermissionCard permission={live} managerTitle={props.titleOf?.(live.addressedTo)} plain={props.renderCard ? helperApprovalText(live.toolName, live.input, live.sensitive ?? null) : null} />;
       const d = props.decision;
       if (!showTechnical && d?.behavior !== 'denied') return null;
+      // In the helper's chat, a plain line, never a tool's name (acceptance round 6, 16).
+      if (props.renderCard && d?.behavior === 'denied') return <div className="note decision denied">{helperDeclinedText(item.toolName, item.input)} {time}</div>;
       const by = d && d.by !== 'user' && d.by !== 'simon' && d.by !== 'ledung' ? ` by manager "${props.titleOf?.(d.by) ?? 'manager'}"` : '';
       const label = d ? `${DECIDED[d.behavior] ?? d.behavior}${d.scope === 'session' ? ' for this session' : ''}${by}` : 'Asked';
       return (

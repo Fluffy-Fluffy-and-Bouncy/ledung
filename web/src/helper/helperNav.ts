@@ -30,9 +30,41 @@ export function backToSetupMarked(): boolean {
   try { return sessionStorage.getItem(BACK_TO_SETUP_KEY) === '1'; } catch { return false; }
 }
 
+/**
+ * Settings' sections a link card opens at, by the setting's label as the group draws it, so the page scrolls to it and
+ * highlights it as a search hit does (acceptance round 6, 26).
+ */
+export const LINK_SECTIONS: Partial<Record<CardLink, { view: string; label: string }>> = {
+  'remote-access': { view: 'settings:remote', label: 'Remote access' },
+  'join-code': { view: 'settings:remote', label: 'Remote access' },
+  relay: { view: 'settings:remote', label: 'Relay' },
+  phones: { view: 'settings:remote', label: 'Phones' },
+  'linked-computers': { view: 'settings:remote', label: 'Linked computers' },
+  board: { view: 'settings:remote', label: 'Message board' },
+  accounts: { view: 'settings:claude', label: 'Accounts' },
+  'usage-stops': { view: 'settings:claude', label: 'Usage stops' },
+  'publish-usage': { view: 'settings:claude', label: 'Publish usage' },
+  'claude-code': { view: 'settings:claude', label: 'Claude Code' },
+  update: { view: 'settings:update', label: 'Update Ledung' },
+  shortcuts: { view: 'settings:update', label: 'Shortcuts' },
+  'start-at-sign-in': { view: 'settings:update', label: 'Start at sign-in' },
+  macros: { view: 'settings:macros', label: 'Macros' },
+  skills: { view: 'settings:sessions', label: 'Skills' },
+  profiles: { view: 'settings:sessions', label: 'Session profiles' },
+  look: { view: 'settings:look', label: 'Appearance' },
+  notifications: { view: 'settings:notifications', label: 'Notifications' },
+  'install-app': { view: 'settings:look', label: 'App' },
+  'config-file': { view: 'settings:config', label: 'Config file' },
+  about: { view: 'settings:about', label: 'About' },
+  checkin: { view: 'settings:about', label: 'Usage count' },
+  devices: { view: 'settings:remote', label: 'Phones' },
+};
+
 /** A link card's page; null when it names a project that isn't there. */
 export function helperLinkView(to: CardLink, project: string | null, projects: Pick<ProjectInfo, 'name' | 'managerId'>[]): string | null {
   const p = project ? projects.find((x) => x.name === project) : undefined;
+  const section = LINK_SECTIONS[to];
+  if (section) return section.view;
   switch (to) {
     case 'add-project': return 'add';
     case 'accounts': return 'settings:claude';
@@ -45,6 +77,40 @@ export function helperLinkView(to: CardLink, project: string | null, projects: P
     case 'workflow': return p ? `wf:${p.name}` : null;
     case 'manager': return p ? p.managerId ?? `p:${p.name}` : null;
   }
+  return null;
+}
+
+/** The pending setting to scroll to and highlight once its Settings group is on screen (SettingsFrame takes it). */
+let pendingFocus: { view: string; label: string } | null = null;
+export function focusSettingNext(to: CardLink): void {
+  pendingFocus = LINK_SECTIONS[to] ?? null;
+}
+export function takeSettingFocus(view: string): string | null {
+  if (!pendingFocus || pendingFocus.view !== view) return null;
+  const label = pendingFocus.label;
+  pendingFocus = null;
+  return label;
+}
+
+/**
+ * A request the person declined in the helper's chat, in plain words, never a tool's name (acceptance round 6, 16).
+ */
+export function helperDeclinedText(toolName: string, input: Record<string, unknown>): string {
+  const tool = toolName.replace(/^mcp__ledung__/, '');
+  const name = str(input.name) ?? str(input.project);
+  switch (tool) {
+    case 'add_project': return `You declined adding the project${name ? ` "${name}"` : ''}.`;
+    case 'create_project': return `You declined creating the project${name ? ` "${name}"` : ''}.`;
+    case 'set_project_basics': {
+      const what = [str(input.model) && `model ${str(input.model)}`, str(input.effort) && `effort ${str(input.effort)}`,
+        str(input.permissionMode) && `permission mode ${MODE[str(input.permissionMode)!] ?? str(input.permissionMode)}`, input.account !== undefined && 'its Claude account'].filter(Boolean).join(', ');
+      return `You declined changing${name ? ` "${name}"` : ''}${what ? `: ${what}` : ''}.`;
+    }
+    case 'set_project_settings': return `You declined changing${name ? ` "${name}"'s` : ' the'} settings.`;
+    case 'change_ledung_setting': return `You declined changing the setting ${str(input.setting) ?? ''}${name ? ` of "${name}"` : ''}.`.replace(' .', '.');
+    case 'usage_publish': return 'You declined publishing usage.';
+  }
+  return 'You declined that request.';
 }
 
 /** The plain form for a setup step; null: none (the name is typed in the step bar itself). */

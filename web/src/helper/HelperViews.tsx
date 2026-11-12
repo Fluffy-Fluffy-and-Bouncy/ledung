@@ -14,7 +14,7 @@ import { ShortcutNotice } from '../components/Shortcuts.tsx';
 import { useShortcuts } from '../useShortcuts.ts';
 import { useCheckIn } from '../useCheckIn.ts';
 import { statusLine } from '../checkIn.ts';
-import { helperLinkView, myselfView } from './helperNav.ts';
+import { focusSettingNext, helperLinkView, myselfView } from './helperNav.ts';
 import { useAutocorrect, usePlainTyping } from '../usePlainTyping.ts';
 import { useCompactSidebar } from '../useCompactSidebar.ts';
 import { useStatusDot } from '../useStatusDot.ts';
@@ -210,7 +210,7 @@ export function HelperCardView({ card, answered, onSend, onOpen, projects, run }
         : <button className="small primary" onClick={() => setBrowsing(true)}>Choose a folder</button>);
     case 'link': {
       const view = helperLinkView(card.to, card.project ?? null, projects);
-      return wrap(view ? <button className="small primary" onClick={() => onOpen(view)}>Open</button> : <p className="muted">That page isn't there.</p>);
+      return wrap(view ? <button className="small primary" onClick={() => { focusSettingNext(card.to); onOpen(view); }}>Open</button> : <p className="muted">That page isn't there.</p>);
     }
     case 'review':
       return wrap(<button className="small primary" onClick={() => onOpen(`q:${card.question}`)}>Open the review</button>);

@@ -58,3 +58,35 @@ test("a change to Ledung's settings reads plainly: what it opens, the risk, the 
   assert.match(t.lines[2]!, /^Narrower: a folder of its own/);
   assert.equal(helperApprovalText('mcp__ledung__change_ledung_setting', {}, 'something else'), null);
 });
+
+test('a link card opens Settings at the very section, by a label the group draws; every secret names one (acceptance round 6, 26)', async () => {
+  const { LINK_SECTIONS, focusSettingNext, takeSettingFocus } = await import('../web/src/helper/helperNav.ts');
+  const { LEDUNG_GROUPS } = await import('../web/src/settingsGroups.ts');
+  const { SECRET_SETTINGS } = await import('../src/sessions/helper-settings.ts');
+  for (const [to, s] of Object.entries(LINK_SECTIONS)) {
+    const group = LEDUNG_GROUPS.find((g) => `settings:${g.id}` === s!.view);
+    assert.ok(group, `${to}: ${s!.view} is a Settings group`);
+    assert.ok(group!.settings.some((x) => x.label === s!.label), `${to}: "${s!.label}" is drawn in ${group!.label}`);
+  }
+  for (const secret of SECRET_SETTINGS) {
+    assert.ok((CARD_LINKS as readonly string[]).includes(secret.open), secret.id);
+    assert.ok(LINK_SECTIONS[secret.open as keyof typeof LINK_SECTIONS], `${secret.id} opens a section`);
+  }
+  assert.equal(helperLinkView('join-code', null, []), 'settings:remote');
+  focusSettingNext('join-code');
+  assert.equal(takeSettingFocus('settings:claude'), null, 'only for its own page');
+  assert.equal(takeSettingFocus('settings:remote'), 'Remote access');
+  assert.equal(takeSettingFocus('settings:remote'), null, 'once');
+});
+
+test('a declined request in the helper chat reads plainly, with no tool name (acceptance round 6, 16)', async () => {
+  const { helperDeclinedText } = await import('../web/src/helper/helperNav.ts');
+  const lines = [
+    helperDeclinedText('mcp__ledung__change_ledung_setting', { setting: 'lanSignIn', value: false }),
+    helperDeclinedText('mcp__ledung__set_project_basics', { project: 'shop', permissionMode: 'auto' }),
+    helperDeclinedText('mcp__ledung__add_project', { name: 'shop', folder: '/x' }),
+    helperDeclinedText('mcp__ledung__whatever', {}),
+  ];
+  assert.deepEqual(lines.slice(1, 3), ['You declined changing "shop": permission mode Auto.', 'You declined adding the project "shop".']);
+  for (const l of lines) assert.ok(!/mcp__|_project|ledung__/.test(l), l);
+});
