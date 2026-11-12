@@ -50,7 +50,7 @@ test("a list still running when the recorder's next tick comes: no second one st
   const runner = new LocalRunner({ name: 'p', runner: 'local', path: dir } as never);
   const marker = `ledung-230-left-${process.pid}-${Date.now()}`;
   const node = JSON.stringify(process.execPath).replace(/\\\\/g, '/');
-  const script = `require("child_process").spawn(process.execPath, ["-e", "setTimeout(()=>{}, 60000)", "${marker}"], { stdio: "ignore", detached: true }).unref(); setTimeout(()=>{}, 2000)`;
+  const script = `require("child_process").spawn(process.execPath, ["-e", "setTimeout(()=>{}, 60000)", "${marker}"], { stdio: "ignore", detached: true }).unref(); setTimeout(()=>{}, 4000)`;
   let running = 0;
   let most = 0;
   let calls = 0;
@@ -67,15 +67,20 @@ test("a list still running when the recorder's next tick comes: no second one st
       running--;
     }
   };
+  const there = async () => (await commandLines()).some((l) => l.includes(marker) && !l.includes('commandLines'));
   try {
-    const r = await startShell(runner.shell(`${node} -e '${script}'`, 'bash', process.env as never), { list: slow, recordEveryMs: 25 }).done;
+    const run = startShell(runner.shell(`${node} -e '${script}'`, 'bash', process.env as never), { list: slow, recordEveryMs: 25 });
+    // The probe that later finds it gone first finds it running, so "gone" is not a probe that sees nothing.
+    let seen = false;
+    for (const end = Date.now() + WAIT_MS; !seen && Date.now() < end; await sleep(100)) seen = await there();
+    assert.equal(seen, true, 'the probe sees what the command started while it runs');
+    const r = await run.done;
     assert.equal(r.exitCode, 0, r.stderr);
     assert.ok(calls >= 2, `the recorder listed (${calls} lists)`);
     assert.equal(most, 1, `at most one list at a time (${calls} lists in ${r.durationMs} ms)`);
-    // ~2 s of command and lists of at least 300 ms: one after another, far fewer than the 80 ticks.
+    // ~4 s of command and lists of at least 300 ms: one after another, far fewer than the 160 ticks.
     assert.ok(calls <= Math.ceil(r.durationMs / 300) + 2, `${calls} lists in ${r.durationMs} ms`);
-    const left = (await commandLines()).some((l) => l.includes(marker) && !l.includes('commandLines'));
-    assert.equal(left, false, 'the process it left behind was ended');
+    assert.equal(await there(), false, 'the process it left behind was ended');
   } finally {
     try {
       removeTemp(dir);

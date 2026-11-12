@@ -32,7 +32,9 @@ export class SharedLister {
   }
 
   list(): Promise<ProcessInfo[]> {
-    if (!this.running) return this.start();
+    // Between one read ending and the queued one starting, `running` is already clear: join the queued one then.
+    if (!this.running && !this.next) return this.start();
+    if (!this.running) return this.next!;
     this.next ??= this.running.catch(() => {}).then(() => {
       this.next = null;
       return this.start();

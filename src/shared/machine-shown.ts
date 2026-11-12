@@ -14,10 +14,11 @@ export function formatBytes(n: number): string {
   return `${Math.round(n / 1024)} KB`;
 }
 
-/** A load meter's level as MachinePanel's Load colours it: busy from 80 %, full from 95 %. */
-function level(share: number): 0 | 1 | 2 {
-  return share >= 0.95 ? 2 : share >= 0.8 ? 1 : 0;
+/** A load meter's level, as MachinePanel's Load colours it: busy from 80 %, full from 95 %. */
+export function meterLevel(share: number): 'good' | 'warning' | 'critical' {
+  return share >= 0.95 ? 'critical' : share >= 0.8 ? 'warning' : 'good';
 }
+const level = meterLevel;
 
 const share = (used: number, total: number): number => (total > 0 ? used / total : 0);
 

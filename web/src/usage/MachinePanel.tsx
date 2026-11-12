@@ -2,7 +2,7 @@
 // the limit (editable), the line for a free place with Start now, and what one session's turns used.
 import { useEffect, useState } from 'react';
 import { projectLabel, type MachineInfo, type Priority, type SessionInfo, type TurnResource, type TypicalCost } from '../../../src/shared/protocol.ts';
-import { formatBytes, formatCores } from '../../../src/shared/machine-shown.ts';
+import { formatBytes, formatCores, meterLevel } from '../../../src/shared/machine-shown.ts';
 import { api } from '../api.ts';
 
 // Shared with the server, which sends the machine's figures only when what they show here changes (#230).
@@ -20,7 +20,7 @@ export const PRIORITY_LABEL: Record<Priority, string> = { normal: 'Normal', high
 /** A load meter: status colour with an icon and words, never colour alone. */
 function Load({ label, used, total, text }: { label: string; used: number; total: number; text: string }) {
   const share = total > 0 ? used / total : 0;
-  const cls = share >= 0.95 ? 'critical' : share >= 0.8 ? 'warning' : 'good';
+  const cls = meterLevel(share);
   const icon = { good: '●', warning: '▲', critical: '■' }[cls];
   return (
     <div className="limit" title={`${label}: ${text}${cls === 'good' ? '' : cls === 'warning' ? ' (busy)' : ' (full)'}`}>

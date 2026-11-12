@@ -135,7 +135,10 @@ export class ResourceMonitor {
       this.trees.set(t.id, s.memory);
       this.count(t.id, s.cpuSeconds, s.cores, s.memBytes);
     }
-    this.prevList = list;
+    // After a round with no list, an empty one: a session that went live meanwhile is counted from zero, as
+    // one that started between two lists always was (self-check of #230, finding 1). Not before the first
+    // list: a host that outlived a restart would bring its whole life's CPU.
+    this.prevList = list ?? (this.prevList && new Map());
     this.prevAt = at;
 
     void this.sampleContainers(targets.filter((t) => t.kind === 'docker') as Extract<MonitorTarget, { kind: 'docker' }>[], dt);
