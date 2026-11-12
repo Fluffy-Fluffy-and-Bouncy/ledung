@@ -475,6 +475,35 @@ test('the live connection needs both the cookie and Ledung\'s own origin', async
   assert.equal(await connect({ cookie: COOKIE, origin: ORIGIN }), 'open');
 });
 
+// Issue #231: the page says on the live connection which session it shows, and nothing else. Every other frame closes
+// it as before, so the connection stays no way in to anything the API guards.
+test('the live connection takes a watch of one session and nothing else: anything more closes it', async () => {
+  const frame = (send: string | Buffer): Promise<{ answer: unknown; code: number | null }> =>
+    new Promise((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`, { headers: { cookie: COOKIE, origin: ORIGIN } });
+      let answer: unknown = null;
+      ws.once('message', () => {
+        ws.send(send, { binary: Buffer.isBuffer(send) });
+        ws.on('message', (data) => {
+          answer = JSON.parse(String(data));
+          ws.close();
+        });
+      });
+      ws.on('close', (code) => resolve({ answer, code: code === 1005 ? null : code }));
+      ws.on('error', reject);
+    });
+  // The positive branch: a watch of a session, or of none, is answered and the connection stays until the page closes it.
+  assert.deepEqual(await frame('{"type":"watch","sessionId":"s1"}'), { answer: { type: 'watching', sessionId: 's1' }, code: null });
+  assert.deepEqual(await frame('{"type":"watch","sessionId":null}'), { answer: { type: 'watching', sessionId: null }, code: null });
+  for (const bad of [
+    'not json', '[]', 'null', '{"type":"watch"}', '{"type":"answer","sessionId":"s1"}', '{"type":"watch","sessionId":"s1","pageKey":"x"}',
+    '{"type":"watch","sessionId":1}', '{"type":"watch","sessionId":""}', JSON.stringify({ type: 'watch', sessionId: 'x'.repeat(201) }),
+    Buffer.from('{"type":"watch","sessionId":"s1"}'),
+  ]) {
+    assert.deepEqual(await frame(bad), { answer: null, code: 1008 }, String(bad).slice(0, 60));
+  }
+});
+
 /** Sends a request head as written, so no client tidies its path first; resolves with the reply's status line, empty
  * when no reply came within two seconds. */
 function rawRequest(head: string): Promise<string> {

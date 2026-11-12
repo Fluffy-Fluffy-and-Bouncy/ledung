@@ -1184,7 +1184,7 @@ export function SessionView(props: {
   const tint = useMemo(() => nameTint(session, withChatsColour(ledung.projects, ledung.chats)), [session.project, session.role, ledung.projects, ledung.chats]);
   // The conversation is memoized (issue #323): what it is given keeps its identity unless what it shows changed.
   // Not a stable callback: MessageList calls it from its own layout effect, before this view's effects would have
-  // updated one, and ledung.loadEarlier works from the messages it was made with (review of #323).
+  // updated one (review of #323). ledung.loadEarlier itself keeps its identity and reads the shown messages when called (#231).
   const loadEarlier = useCallback(() => run(ledung.loadEarlier), [ledung.loadEarlier]);
   const titleOf = useCallback((id: string) => index.byId.get(id)?.title ?? 'unknown', [index]);
   const openQuestion = useStableCallback(props.onOpenQuestion);
