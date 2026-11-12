@@ -11,6 +11,7 @@ is nothing user-facing in it).
 
 ## 2026-11-12
 - Less traffic to open pages and phones: a page now gets the live messages of the session it shows only, not every session's, so a phone on mobile data no longer downloads all the others' output to throw it away. Session lists, questions, permission prompts and phone notifications reach every page as before. A page loaded before this update still gets everything until it is reloaded. (#231)
+- Standing grants are stricter: a "starts with" grant such as `git push:*` now covers only that command and its arguments, on one line; a command that spans several lines, or a longer word that merely starts the same, is asked about as if there were no grant. (Project-Ledung#472)
 
 ## 2026-11-11
 - Your pinned latest message at the top of the chat no longer shows through a session's ⚙ menu (nor does the message box under it), and its bottom edge fades out softly instead of ending in a hard line. (#226)
