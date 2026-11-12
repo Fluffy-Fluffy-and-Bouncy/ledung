@@ -81,8 +81,6 @@ let kindDroppedExercised = false;
 let byHandExercised = false;
 /** The EXERCISED line of issue #150, once per run. */
 let subagentGrantExercised = false;
-/** The EXERCISED line of issue #225, once per run. */
-let allowAlwaysExercised = false;
 
 /** Notes for after a call, one per line; undefined when there are none. */
 function joinNotes(...notes: (string | undefined)[]): string | undefined {
@@ -853,10 +851,6 @@ export class Session {
     const why = `${rule.allowedBy} allowed this exact command always in project ${rule.project}, at ${new Date(rule.createdAt).toLocaleString()}, in their answer to question #${rule.questionId}`;
     this.record('event', { text: `Refused call allowed always: ${why}.` });
     this.allowedBy.alwaysAllowed(toolUseId, why);
-    if (!allowAlwaysExercised) {
-      allowAlwaysExercised = true;
-      exercisedLine(`EXERCISED #225 a command let through by the person's Allow always rule (question #${rule.questionId})`);
-    }
     // Should Claude Code refuse it anyway (its own safety checks come first), raiseRefusal asks for it by hand.
     if (toolUseId) {
       this.onceUsedBy.set(toolUseId, rule.questionId);
