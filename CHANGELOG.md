@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-12
+- The ship of an idle or waiting session with work still going on behind it: the stopped boat keeps the session's colour, and the small boat sailing behind it and the water are blue, the working colour. (#270)
 - Sign-in: the browser's sign-in cookie is now a sign-in of its own, never the install token, and stays valid through restarts. A browser or phone already signed in stays signed in: its next page load swaps the old cookie for a new one, nothing to do. API reads that reach GitHub, docker, Claude Code or the relay now answer only Ledung's own page. (Project-Ledung#476)
 - The page stays quicker with many sessions, especially on a phone: the sidebar no longer re-checks every session for each row, and isn't redrawn by a message that changes nothing in it; all the ships and timers share one clock; a long conversation draws its latest messages and earlier ones as you scroll up to them ("Show earlier messages" above them); the usage figures and panels stop refreshing while the page is in the background, and refresh at once when you come back. (#233)
 - Less background work on Windows: a `!` command no longer starts a new PowerShell every 2 seconds to watch what it starts (one stays open while commands run, and listings never pile up). The CPU and memory figures read no process list while no session runs on this computer, and the page is sent new figures only when something it shows has changed. (#230)

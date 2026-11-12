@@ -547,6 +547,8 @@ a.file-link { text-decoration-style: dotted; }
 .ship-button { background: none; border: 0; padding: 0; margin: 0; color: inherit; cursor: pointer; flex-shrink: 0; line-height: 0; border-radius: 3px; }
 .ship-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .sailing-ship { margin: 0; flex-shrink: 0; font: 600 7px/1 ui-monospace, Menlo, Consolas, monospace; color: currentColor; white-space: pre; }
+/* The small boat and the water behind a stopped ship whose work goes on: the working colour (#270). */
+.sailing-ship .ship-behind { color: var(--accent); }
 .dot.running { animation: dot-pulse 1.4s infinite ease-in-out; }
 @keyframes dot-pulse { 50% { opacity: 0.3; } }
 @media (prefers-reduced-motion: reduce) {
