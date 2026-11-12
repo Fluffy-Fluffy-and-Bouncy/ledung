@@ -17,7 +17,8 @@ import { addBlock, addEndings, addFlow, addFrame, addOutcome, addOverlay, addSub
 import { setLeaveGuard } from '../flowNav.ts';
 import { originName, withoutRepo } from '../../../src/shared/flow-origin.ts';
 import { OriginLine } from './OriginLine.tsx';
-import { ARROW_COLOUR, continueHandles, EDGE_TYPES, FlowMiniMap, FlowTabs, frameColour, frameNode, lightArrows, NODE_TYPES, useMeasured, useOpeningView, withLabelSpots, type BlockData } from './FlowDiagram.tsx';
+import { ARROW_COLOUR, continueHandles, EDGE_TYPES, FlowMiniMap, FlowTabs, frameColour, frameNode, lightArrows, NODE_TYPES, useMeasured, useOpeningView, useRefitOnResize, withLabelSpots, type BlockData } from './FlowDiagram.tsx';
+import { usePaneWidth } from './PaneResizer.tsx';
 
 /**
  * What the panel shows: a block, an overlay (#318), the manager's file (#322) or a comment frame (#446); none: the
@@ -59,6 +60,7 @@ export function FlowBuilder({ project, view, initial, shown, onShowFlow, onRenam
   onCancel: () => void; onSaved: (view: FlowView, files: number, shown: string) => void;
 }) {
   const [h, setH] = useState<History>({ past: [], present: initial, future: [], group: null });
+  const side = usePaneWidth<HTMLElement>('builder-panel');
   const ws = h.present;
   // The flow being edited (#447), by its key; one undo took away shows the default one.
   const [current, setCurrent] = useState(() => initial.flows.find((f) => f.name === shown)?.key ?? initial.flows[0]!.key);
@@ -368,7 +370,8 @@ export function FlowBuilder({ project, view, initial, shown, onShowFlow, onRenam
           <ReactFlowProvider>
             <Canvas key={entry.key} draft={draft} selection={selection} problems={problems} commit={commit} onSelect={setSelection} onFrame={newFrame} choices={choices} />
           </ReactFlowProvider>
-          <aside className="flow-panel">{panel}</aside>
+          {side.handle}
+          <aside className="flow-panel" ref={side.ref}>{panel}</aside>
         </div>
       )}
     </div>
@@ -592,12 +595,14 @@ function Canvas({ draft, selection, problems, commit, onSelect, onFrame, choices
   // on opening, so drawing never moves the view. A lower least zoom than the page's: drawing wants more of the flow
   // in view, and the canvas is narrower between palette and panel.
   const opening = useOpeningView(box, [...blockNodes.map((n) => ({ ...n.position, ...blockSize(n.data.block) })), ...draft.frames.map((f) => ({ ...f.frame.at, ...f.frame.size }))], blockNodes.find((n) => n.data.start)?.position, { padding: 0.2, minZoom: 0.5 });
+  const refit = useRefitOnResize(box, !!opening?.fit, 0.2);
   return (
     <div className="flow-canvas" ref={box} onDragOver={(e) => { if (e.dataTransfer.types.includes(DRAG_TYPE)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } }} onDrop={onDrop}>
       {!draft.blocks.length && <div className="flow-canvas-empty muted">Drag a block here from the left, or click one there.</div>}
       {opening && <ReactFlow
         nodes={lit.nodes} edges={lit.edges} nodeTypes={NODE_TYPES} edgeTypes={EDGE_TYPES} minZoom={0.2} maxZoom={2}
         {...(opening.fit ? { fitView: true, fitViewOptions: { padding: 0.2 } } : { defaultViewport: opening })}
+        {...refit.flow}
         nodesDraggable nodesConnectable elementsSelectable={false} edgesFocusable={false} deleteKeyCode={null} connectionRadius={40}
         isValidConnection={(c) => c.source !== c.target && !c.source.startsWith('frame:') && !c.target.startsWith('frame:')}
         onNodesChange={onNodesChange} onConnect={onConnect}
@@ -609,7 +614,7 @@ function Canvas({ draft, selection, problems, commit, onSelect, onFrame, choices
         onPaneClick={() => onSelect(null)}
       >
         <Background gap={24} />
-        <Controls showInteractive={false} />
+        <Controls showInteractive={false} {...refit.controls} />
         {!opening.fit && <FlowMiniMap />}
       </ReactFlow>}
     </div>

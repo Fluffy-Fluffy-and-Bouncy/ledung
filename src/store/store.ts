@@ -61,6 +61,8 @@ function toSession(r: Row): SessionInfo {
     queuedAt: r.queued_at == null ? null : Number(r.queued_at),
     account: r.account ?? null,
     requestedModel: r.requested_model ?? null,
+    requestedEffort: r.requested_effort ?? null,
+    effort: r.effort ?? null,
     profile: r.profile ?? null,
     clearDue: r.clear_due == null ? null : Number(r.clear_due),
     clearedAt: r.cleared_at == null ? null : Number(r.cleared_at),
@@ -166,12 +168,12 @@ export class Store {
   }
 
   createSession(
-    s: Pick<SessionInfo, 'id' | 'project' | 'runner' | 'title' | 'parentId' | 'permissionMode'> & { role?: SessionInfo['role']; requestedModel?: string | null; profile?: string | null; workDir?: string | null },
+    s: Pick<SessionInfo, 'id' | 'project' | 'runner' | 'title' | 'parentId' | 'permissionMode'> & { role?: SessionInfo['role']; requestedModel?: string | null; requestedEffort?: SessionInfo['requestedEffort']; profile?: string | null; workDir?: string | null },
   ): SessionInfo {
     const now = Date.now();
     this.db
-      .prepare('INSERT INTO sessions (id, project, runner, title, status, permission_mode, created_at, status_since, parent_id, role, requested_model, profile, work_dir) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(s.id, s.project, s.runner, s.title, 'starting', s.permissionMode, now, now, s.parentId, s.role ?? 'session', s.requestedModel ?? null, s.profile ?? null, s.workDir ?? null);
+      .prepare('INSERT INTO sessions (id, project, runner, title, status, permission_mode, created_at, status_since, parent_id, role, requested_model, requested_effort, profile, work_dir) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(s.id, s.project, s.runner, s.title, 'starting', s.permissionMode, now, now, s.parentId, s.role ?? 'session', s.requestedModel ?? null, s.requestedEffort ?? null, s.profile ?? null, s.workDir ?? null);
     return this.getSession(s.id)!;
   }
 
@@ -201,7 +203,7 @@ export class Store {
     id: string,
     fields: Partial<Pick<SessionInfo,
       'status' | 'title' | 'permissionMode' | 'claudeSessionId' | 'model' | 'claudeVersion' | 'claudeProgram' | 'cwd' | 'endedAt' | 'endReason' | 'branch' | 'contextTokens' | 'contextWindow' | 'pr'
-      | 'priority' | 'priorityNote' | 'paused' | 'queuedAt' | 'account' | 'archivedAt' | 'clearDue' | 'clearedAt' | 'compacting' | 'runBlock' | 'requestedModel'>>,
+      | 'priority' | 'priorityNote' | 'paused' | 'queuedAt' | 'account' | 'archivedAt' | 'clearDue' | 'clearedAt' | 'compacting' | 'runBlock' | 'requestedModel' | 'requestedEffort' | 'effort'>>,
   ): void {
     const columns: Record<string, string> = {
       pr: 'pr',
@@ -229,6 +231,8 @@ export class Store {
       endedAt: 'ended_at',
       endReason: 'end_reason',
       requestedModel: 'requested_model',
+      requestedEffort: 'requested_effort',
+      effort: 'effort',
     };
     const entries = Object.entries(fields).filter(([k]) => k in columns);
     if (entries.length === 0) return;

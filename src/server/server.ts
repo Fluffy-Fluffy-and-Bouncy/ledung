@@ -14,13 +14,14 @@ import { readRepository, sourceOffer } from './source.ts';
 import type { SessionManager } from '../sessions/manager.ts';
 import { UserError } from '../sessions/manager.ts';
 import type { Store } from '../store/store.ts';
-import { AWAY_DEFAULT, AWAY_KINDS, type AwayKind, type PermissionDecision, type PermissionMode, type RemoteStatus, type ServerEvent } from '../shared/protocol.ts';
+import { AWAY_DEFAULT, AWAY_KINDS, EFFORT_LEVELS, type AwayKind, type PermissionDecision, type PermissionMode, type RemoteStatus, type ServerEvent } from '../shared/protocol.ts';
 import { deviceCookieHeader, Guard, readCookies, securityHeaders } from './security.ts';
 import { DEVICE_COOKIE, type Device, type DeviceKind, deviceName, Devices, deviceView } from './devices.ts';
 import { actionOf, DEVICE_LOCKED, PASSKEY_HEADER, PasskeyError, Passkeys } from './passkeys.ts';
 import { linkedPushItem, Push, PushError, type LinkedPushItem } from './push.ts';
 import type { UsageQueries } from '../usage/queries.ts';
 import { readRunningRelease, type Updater } from '../update/updater.ts';
+import type { CheckIn } from '../update/checkin.ts';
 import { capTurnCores, typicalCosts } from '../resources/typical.ts';
 import { BoardError } from '../board/types.ts';
 import type { ProjectConfig } from '../config.ts';
@@ -143,6 +144,8 @@ export interface ServerOptions {
   updater?: Updater;
   /** The first-run question and Settings → Shortcuts: a Ledung icon that starts Ledung (issue #415). */
   shortcuts?: Shortcuts;
+  /** The anonymous daily check-in: its notice and Settings switch (#220). */
+  checkIn?: CheckIn;
   /** Settings → Relay: inviting computers to a relay this Ledung is admin of (issue #237). */
   relayAdmin?: RelayAdmin;
   /** Publishing usage to a shared repo, and reading every computer's file there (issue #363). */
@@ -1924,6 +1927,8 @@ export class LedungServer {
         const text = (v: unknown) => (typeof v === 'string' && v.trim() ? v : undefined);
         return manager.startChat({
           folder: text(body.folder), model: text(body.model), profile: text(body.profile), text: text(body.text),
+          // As sent: anything but a level's name is refused by startChat, not dropped (issue #202).
+          effort: body.effort,
           permissionMode: text(body.permissionMode) as PermissionMode | undefined,
           // New chat's account (issue #119): checked against the known ones by name, never a token.
           account: body.account,
@@ -1998,6 +2003,12 @@ export class LedungServer {
         // null is the project's default; left out is no choice at all, not a reset.
         if (!('model' in body)) throw new HttpError(400, "Send model: opus, sonnet, haiku or null for the project's default.");
         return manager.setModel(id, body.model);
+      }
+      // The sidebar menu's Effort (issue #202): as the model's, with the same checks.
+      case 'POST sessions/:id/effort': {
+        const body = await readJson(req);
+        if (!('effort' in body)) throw new HttpError(400, `Send effort: ${EFFORT_LEVELS.join(', ')} or null for the project's default.`);
+        return manager.setEffort(id, body.effort);
       }
       case 'POST sessions/:id/interrupt':
         return manager.interrupt(id);
@@ -2087,6 +2098,15 @@ export class LedungServer {
         } catch (e) {
           throw new HttpError(400, (e as Error).message);
         }
+      }
+      // The anonymous daily check-in (#220): the notice's OK and the Settings switch, from the open page.
+      case 'GET checkin':
+        return this.checkIn().view();
+      case 'POST checkin': {
+        await this.requirePage(req, url);
+        const action = (await readJson(req)).action;
+        if (action !== 'on' && action !== 'off' && action !== 'seen') throw new HttpError(400, 'The action is on, off or seen.');
+        return this.checkIn().act(action);
       }
       case 'POST certificate-check':
         if (this.opts.onCertificateCheck) this.opts.onCertificateCheck();
@@ -2201,6 +2221,11 @@ export class LedungServer {
   private requireThisComputer(req: IncomingMessage): void {
     this.requireLocal(req, 'Shortcuts are made');
     if (!fromThisComputer(req)) throw new HttpError(403, 'Shortcuts are made in Settings on the computer Ledung runs on.');
+  }
+
+  private checkIn(): CheckIn {
+    if (!this.opts.checkIn) throw new HttpError(404, 'The check-in is not available.');
+    return this.opts.checkIn;
   }
 
   private updater(): Updater {

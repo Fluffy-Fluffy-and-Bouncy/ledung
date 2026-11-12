@@ -1,7 +1,7 @@
 // The workflow diagram's pieces (issues #310, #311): a block with its outcomes' pins (#446), a comment frame (#446), an
 // arrow and how arrows meet blocks, shared by the workflow page (read-only) and the builder (editing).
-import { useEffect, useLayoutEffect, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
-import { BaseEdge, EdgeLabelRenderer, getSmoothStepPath, Handle, MiniMap, NodeResizer, Position, useInternalNode, type Edge, type EdgeProps, type Node, type NodeChange, type NodeProps } from '@xyflow/react';
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
+import { BaseEdge, EdgeLabelRenderer, getSmoothStepPath, Handle, MiniMap, NodeResizer, Position, useInternalNode, type Edge, type EdgeProps, type Node, type NodeChange, type NodeProps, type ReactFlowInstance } from '@xyflow/react';
 import { DEFAULT_FLOW, FLOW_FILE, outcomeName, type FlowBlock, type FlowFrame } from '../../../src/shared/flow.ts';
 import { NAME_COLOURS } from '../../../src/shared/name-colours.ts';
 import { NARROW_QUERY } from '../sidebarSize.ts';
@@ -253,6 +253,46 @@ export function useOpeningView(box: RefObject<HTMLDivElement | null>, blocks: Po
     setView(openingView(blocks, start, width, height, options));
   });
   return view;
+}
+
+/**
+ * A flow that opened fitted is fitted again when its canvas changes size, as when a side panel is dragged wider
+ * (issue #198), until the reader pans or zooms it; then, like a large flow's view, it stays where they left it, until
+ * they press the fit button. `flow` goes on the ReactFlow, `controls` on its Controls; `fit`: it opened fitted.
+ */
+export function useRefitOnResize(box: RefObject<HTMLDivElement | null>, fit: boolean, padding: number) {
+  const flow = useRef<ReactFlowInstance<any, any> | null>(null);
+  const moved = useRef(false);
+  useEffect(() => {
+    const el = box.current;
+    if (!el || !fit) return;
+    let last = { w: el.clientWidth, h: el.clientHeight };
+    let frame = 0;
+    const ro = new ResizeObserver(() => {
+      const w = el.clientWidth;
+      const h = el.clientHeight;
+      // Hidden (a phone showing a block's panel) or not changed: nothing to fit to.
+      if (!w || !h || (w === last.w && h === last.h)) return;
+      last = { w, h };
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => { if (!moved.current) void flow.current?.fitView({ padding }); });
+    });
+    ro.observe(el);
+    return () => { ro.disconnect(); cancelAnimationFrame(frame); };
+  }, [box, fit, padding]);
+  return {
+    flow: {
+      onInit: (instance: ReactFlowInstance<any, any>) => { flow.current = instance; },
+      // A move with an event is the reader's (a drag, the wheel, a pinch); fitting and the buttons have none. Not
+      // onMoveStart, which comes with a mere click on a block or the pane.
+      onMove: (event: MouseEvent | TouchEvent | null) => { if (event) moved.current = true; },
+    },
+    controls: {
+      onZoomIn: () => { moved.current = true; },
+      onZoomOut: () => { moved.current = true; },
+      onFitView: () => { moved.current = false; },
+    },
+  };
 }
 
 /**

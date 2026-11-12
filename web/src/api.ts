@@ -2,12 +2,13 @@
 import type { Macro } from '../../src/shared/macros.ts';
 import type {
   AwayInfo, AwayKind, BoardOwnersView, BoardPeopleView, BoardRepoChoicesView, BoardStatus, BoardThreadsView, BoardThreadView, ProjectBoardView,
-  AccountChoices, AccountInfoView, ChatsInfo, ContainerInfoView, FolderListingView, MachineInfo, McpServerInfo, ModelChoice, Overview, ProjectInfo, PermissionDecision, PermissionMode, Priority, ProjectFileView, TurnResource, TypicalCost, QuestionInfo, SessionInfo, SessionUsage, StoredMessage, UpdateView, UsageFilter, UsageReport, WorkflowCheckView,
+  AccountChoices, AccountInfoView, ChatsInfo, ContainerInfoView, EffortLevel, FolderListingView, MachineInfo, McpServerInfo, ModelChoice, Overview, ProjectInfo, PermissionDecision, PermissionMode, Priority, ProjectFileView, TurnResource, TypicalCost, QuestionInfo, SessionInfo, SessionUsage, StoredMessage, UpdateView, UsageFilter, UsageReport, WorkflowCheckView,
   NewComputerInfo, RelayAdminView, RelayInviteInfo, RelayOwnersView,
   ClaudeCodeView,
   ProfilesView,
   SkillListView, SignInProblem,
   ShortcutAction, ShortcutsView,
+  CheckInAction, CheckInView,
 } from '../../src/shared/protocol.ts';
 import type { ProjectColours } from '../../src/shared/name-colours.ts';
 import type { ComputerColour, ComputerInfo } from '../../src/shared/computers.ts';
@@ -193,7 +194,7 @@ export const api = {
     call<StoredMessage[]>('GET', `/api/sessions/${sessionId}/messages?limit=500&after=${afterId}`),
   start: (project: string, profile?: string) => call<SessionInfo>('POST', '/api/sessions', { project, role: 'session', ...(profile ? { profile } : {}) }),
   /** A chat (issue #211): left out, the chats' default folder and mode, Claude Code's model and the full profile. */
-  startChat: (opts: { folder?: string; model?: string; profile?: string; permissionMode?: PermissionMode; account?: string }) => call<SessionInfo>('POST', '/api/chats-new', opts),
+  startChat: (opts: { folder?: string; model?: string; effort?: EffortLevel; profile?: string; permissionMode?: PermissionMode; account?: string }) => call<SessionInfo>('POST', '/api/chats-new', opts),
   updateChats: (sensitive: ChatsInfo['sensitive']) => call<ChatsInfo>('POST', '/api/chats', { sensitive }),
   setChatsColour: (colour: ChatsInfo['colour']) => call<ChatsInfo>('POST', '/api/chats-colour', { colour }),
   /** A computer tab's name or colour (issue #240); null: the config's again. */
@@ -228,6 +229,9 @@ export const api = {
   /** The first-run question and Settings → Shortcuts (issue #415). */
   shortcuts: () => call<ShortcutsView>('GET', '/api/shortcuts'),
   shortcutsAct: (action: ShortcutAction) => call<ShortcutsView>('POST', '/api/shortcuts', { action }),
+  /** The anonymous daily check-in's notice and switch (#220). */
+  checkIn: () => call<CheckInView>('GET', '/api/checkin'),
+  checkInAct: (action: CheckInAction) => call<CheckInView>('POST', '/api/checkin', { action }),
   updateStatus: () => call<UpdateView>('GET', '/api/update'),
   updateCheck: () => call<UpdateView>('POST', '/api/update-check', {}),
   update: () => call<UpdateView>('POST', '/api/update', {}),
@@ -336,6 +340,7 @@ export const api = {
   setPriority: (sessionId: string, priority: Priority) => call('POST', `/api/sessions/${sessionId}/priority`, { priority }),
   /** null: the project's default model. */
   setModel: (sessionId: string, model: ModelChoice | null) => call<SessionInfo>('POST', `/api/sessions/${sessionId}/model`, { model }),
+  setEffort: (sessionId: string, effort: EffortLevel | null) => call<SessionInfo>('POST', `/api/sessions/${sessionId}/effort`, { effort }),
   setPaused: (sessionId: string, paused: boolean) => call('POST', `/api/sessions/${sessionId}/pause`, { paused }),
   cancelClear: (sessionId: string) => call('POST', `/api/sessions/${sessionId}/cancel-clear`, {}),
   startNow: (sessionId: string) => call('POST', `/api/sessions/${sessionId}/start-now`, {}),

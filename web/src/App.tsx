@@ -30,7 +30,7 @@ import { Named, sessionColour } from './components/ProjectName.tsx';
 import { NameEditor } from './components/NameEditor.tsx';
 import { siblingOrder } from './sidebarOrder.ts';
 import { useSidebarDrag } from './sidebarDrag.ts';
-import { groupActions, modelChoices, opensMenu, sessionActions } from './sidebarMenu.ts';
+import { EFFORT_LABEL, effortChoices, effortShown, groupActions, modelChoices, opensMenu, projectEffort, sessionActions } from './sidebarMenu.ts';
 import { RowMenu, type MenuEntry } from './components/RowMenu.tsx';
 import { copyText } from './components/Markdown.tsx';
 import { settingsOf, toApi } from './projects/projectSettings.ts';
@@ -88,6 +88,7 @@ import { useComputerLink } from './useComputerLink.ts';
 import { useInstallApp } from './useInstallApp.ts';
 import { InstallNotice } from './components/InstallApp.tsx';
 import { ShortcutNotice } from './components/Shortcuts.tsx';
+import { CheckInNotice } from './components/CheckIn.tsx';
 import { caretPoint, MaskedSecret, SecretChips, SecretEditor, SelectionKey, SessionSecretsMenu } from './components/SecretLock.tsx';
 import { chipsFor, insertToken, lockInDraft, lockRange, renameToken } from './secretLock.ts';
 import { useSessionSecrets } from './useSessionSecrets.ts';
@@ -456,6 +457,7 @@ export function App() {
       {ledung.away && awayBannerShown(ledung.away, session) && <AwayBanner away={ledung.away} run={run} />}
       {installApp.notice && <InstallNotice app={installApp} run={run} />}
       <ShortcutNotice run={run} />
+      <CheckInNotice run={run} />
       {ledung.usageStops.filter((s) => s.holding).map((s) => (
         <div key={`${s.account}:${s.kind}`} className="banner updated">
           <span>{usageStopLine(s)}</span>
@@ -796,6 +798,21 @@ function Sidebar(props: {
             label: m.model === null && projectDefault ? `${m.label} (${projectDefault})` : m.label,
             checked: m.model === s.requestedModel,
             onPick: () => void props.run(() => api.setModel(s.id, m.model as ModelChoice | null)),
+          })),
+        });
+        // Effort beside the model (issue #202), the same way: "Effort ▸ High".
+        const effortDefault = projectEffort(project, s.role);
+        const asked = s.requestedEffort ?? null;
+        entries.push({
+          kind: 'submenu',
+          label: 'Effort',
+          value: asked ? EFFORT_LABEL[asked] : 'Default',
+          note: s.status === 'ended' ? 'When it is resumed' : 'From its next reply',
+          entries: effortChoices().map((e) => ({
+            kind: 'radio' as const,
+            label: e.effort === null && effortDefault ? `${e.label} (${EFFORT_LABEL[effortDefault]})` : e.label,
+            checked: e.effort === asked,
+            onPick: () => void props.run(() => api.setEffort(s.id, e.effort)),
           })),
         });
         continue;
@@ -1161,6 +1178,8 @@ export function SessionView(props: {
   const ended = session.status === 'ended';
   const controls = sessionControls(session);
   const lock = frameLevel(ledung.projects.find((p) => p.name === session.project));
+  // The effort it runs with, beside its model (issue #202).
+  const effort = effortShown(session, projectEffort(ledung.projects.find((p) => p.name === session.project), session.role));
   // The session's name colour: its message box (#133) and its own messages (#269).
   const tint = useMemo(() => nameTint(session, withChatsColour(ledung.projects, ledung.chats)), [session.project, session.role, ledung.projects, ledung.chats]);
   // The conversation is memoized (issue #323): what it is given keeps its identity unless what it shows changed.
@@ -1262,6 +1281,7 @@ export function SessionView(props: {
               : null}
             {session.account ? <> · <span className="chip" title="The Claude account this session runs under">{session.account}</span></> : null}
             {session.model ? ` · ${session.model}` : ''}
+            {effort ? <> · <span title={effort.hint}>{effort.text}</span></> : null}
             {session.profile && session.profile !== 'full'
               ? <> · <span className="chip" title="Its session profile: what it gets of your own plugins, MCP servers and tools">{session.profile}</span></>
               : null}
@@ -1288,22 +1308,26 @@ export function SessionView(props: {
           onToggleUsage={() => { setFiles([]); setPane(false); setFlowPane(false); setPaneFile(null); setShowUsage((v) => !v); }}
           onOpenWorkflow={() => props.onOpenWorkflow(session.project)}
         />
-        {controls.header.length > 0 && (
+        {controls.header.some((c) => c !== 'compacting') && (
           <div className="session-actions">
             {controls.header.includes('startNow') && (
               <button className="primary" title="Start this turn now, above the limit on working sessions" onClick={() => run(() => api.startNow(session.id))}>Start now</button>
             )}
             {controls.header.includes('clear') && <ClearCountdown due={session.clearDue!} onCancel={() => run(() => api.cancelClear(session.id))} />}
-            {controls.header.includes('compacting') && (
-              <Compacting
-                compacting={session.compacting!}
-                by={session.compacting!.requester === session.id ? 'the session itself' : `manager "${ledung.sessions.find((s) => s.id === session.compacting!.requester)?.title ?? 'a manager'}"`}
-              />
-            )}
             {controls.header.includes('resume') && <button className="primary" onClick={() => run(() => api.resume(session.id))}>Resume</button>}
             {controls.header.includes('archive') && (session.archivedAt
               ? <button title="Back into the sidebar, still ended" onClick={() => run(() => api.unarchive(session.id))}>Unarchive</button>
               : <button title="Out of the sidebar, listed under the project's Archived; nothing is deleted" onClick={() => run(() => api.archive(session.id))}>Archive</button>)}
+          </div>
+        )}
+        {controls.header.includes('compacting') && (
+          // A line of its own under the header, not in the actions column: a long note there widened that column and
+          // squeezed the title to one word per line (issue #214).
+          <div className="session-notice">
+            <Compacting
+              compacting={session.compacting!}
+              by={session.compacting!.requester === session.id ? 'the session itself' : `manager "${ledung.sessions.find((s) => s.id === session.compacting!.requester)?.title ?? 'a manager'}"`}
+            />
           </div>
         )}
       </header>

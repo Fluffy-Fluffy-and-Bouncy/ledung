@@ -1,8 +1,9 @@
 // Claude's replies as Markdown. Every code block gets a copy button that copies its plain text (want 12).
-import { useState, type ReactNode } from 'react';
-import ReactMarkdown from 'react-markdown';
+import { createContext, memo, useContext, useMemo, useState, type ReactNode } from 'react';
+import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { isImagePath, ProjectImage } from './ProjectImage.tsx';
+import { useStableCallback } from '../useStableCallback.ts';
 
 /** Copies plain text. Browsers only allow the clipboard API on secure pages, which a page opened from
  *  another computer over plain HTTP is not, so there is a fallback for that case. */
@@ -67,59 +68,78 @@ function resolveLink(baseDir: string, href: string): string {
  * `onOpenFile`: when given, links to files open in the file viewer instead of navigating away.
  * `baseDir`: the project-relative folder links are relative to (empty for chat messages).
  */
-export function Markdown({ text, baseDir = '', onOpenFile, sessionId }: { text: string; baseDir?: string; onOpenFile?: (path: string) => void; sessionId?: string }) {
+export const Markdown = memo(function Markdown({ text, baseDir = '', onOpenFile, sessionId }: { text: string; baseDir?: string; onOpenFile?: (path: string) => void; sessionId?: string }) {
+  // Callers often pass a new closure each render; the links only call it on a click.
+  const open = useStableCallback((path: string) => onOpenFile?.(path));
+  const where = useMemo(() => ({ baseDir, sessionId, onOpenFile: onOpenFile ? open : undefined }), [baseDir, sessionId, !!onOpenFile, open]);
   return (
     <div className="markdown">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          pre: ({ children }) => {
-            const code = textOf(children).replace(/\n$/, '');
-            return (
-              <div className="code-block">
-                <CopyButton text={code} />
-                <pre>{children}</pre>
-              </div>
-            );
-          },
-          a: ({ href, children }) =>
-            onOpenFile && href && isFileLink(href) ? (
-              <a
-                href={href}
-                className="file-link"
-                onClick={(e) => {
-                  e.preventDefault();
-                  onOpenFile(resolveLink(baseDir, href));
-                }}
-              >
-                {children}
-              </a>
-            ) : (
-              <a href={href} target="_blank" rel="noreferrer noopener">
-                {children}
-              </a>
-            ),
-          // In the file viewer, only project images are shown; remote ones are never fetched.
-          img: ({ src, alt }) => {
-            const href = typeof src === 'string' ? src : '';
-            if (!sessionId || !href || !isFileLink(href) || href.startsWith('file:')) {
-              return <span className="image-note">[image not shown{alt ? `: ${alt}` : ''}]</span>;
-            }
-            const path = resolveLink(baseDir, href.replace(/[?#].*$/, ''));
-            if (!isImagePath(path) || path.startsWith('..')) {
-              return <span className="image-note">[image not shown{alt ? `: ${alt}` : ''}: only PNG and JPEG images inside the project]</span>;
-            }
-            return <ProjectImage sessionId={sessionId} path={path} alt={alt} onClick={() => onOpenFile?.(path)} />;
-          },
-          table: ({ children }) => (
-            <div className="table-scroll">
-              <table>{children}</table>
-            </div>
-          ),
-        }}
-      >
-        {text}
-      </ReactMarkdown>
+      <Where.Provider value={where}>
+        <ReactMarkdown remarkPlugins={PLUGINS} components={COMPONENTS}>
+          {text}
+        </ReactMarkdown>
+      </Where.Provider>
+    </div>
+  );
+});
+
+/** What the links and images in a Markdown text need: where it is, and how to open a file. */
+const Where = createContext<{ baseDir: string; sessionId?: string; onOpenFile?: (path: string) => void }>({ baseDir: '' });
+
+function CodeBlock({ children }: { children?: ReactNode }) {
+  const code = textOf(children).replace(/\n$/, '');
+  return (
+    <div className="code-block">
+      <CopyButton text={code} />
+      <pre>{children}</pre>
     </div>
   );
 }
+
+function Link({ href, children }: { href?: string; children?: ReactNode }) {
+  const { baseDir, onOpenFile } = useContext(Where);
+  return onOpenFile && href && isFileLink(href) ? (
+    <a
+      href={href}
+      className="file-link"
+      onClick={(e) => {
+        e.preventDefault();
+        onOpenFile(resolveLink(baseDir, href));
+      }}
+    >
+      {children}
+    </a>
+  ) : (
+    <a href={href} target="_blank" rel="noreferrer noopener">
+      {children}
+    </a>
+  );
+}
+
+// In the file viewer, only project images are shown; remote ones are never fetched.
+function Image({ src, alt }: { src?: unknown; alt?: string }) {
+  const { baseDir, sessionId, onOpenFile } = useContext(Where);
+  const href = typeof src === 'string' ? src : '';
+  if (!sessionId || !href || !isFileLink(href) || href.startsWith('file:')) {
+    return <span className="image-note">[image not shown{alt ? `: ${alt}` : ''}]</span>;
+  }
+  const path = resolveLink(baseDir, href.replace(/[?#].*$/, ''));
+  if (!isImagePath(path) || path.startsWith('..')) {
+    return <span className="image-note">[image not shown{alt ? `: ${alt}` : ''}: only PNG and JPEG images inside the project]</span>;
+  }
+  return <ProjectImage sessionId={sessionId} path={path} alt={alt} onClick={() => onOpenFile?.(path)} />;
+}
+
+function Table({ children }: { children?: ReactNode }) {
+  return (
+    <div className="table-scroll">
+      <table>{children}</table>
+    </div>
+  );
+}
+
+// Made once, not in the render: React takes a component made anew as a new kind of element, and throws the old one
+// away for a new one on every redraw. Every live update then drew each code block and table anew, back at the left
+// of their sideways scroll, and loaded each image again (issue #200).
+const COMPONENTS: Components = { pre: CodeBlock, a: Link, img: Image, table: Table };
+const PLUGINS = [remarkGfm];

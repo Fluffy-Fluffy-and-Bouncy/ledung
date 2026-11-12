@@ -37,6 +37,7 @@ import { useArchivedLink } from '../useArchivedLink.ts';
 import { COMPACT_STEPS, type CompactStep } from '../compactSidebar.ts';
 import { InstallSettings } from './InstallApp.tsx';
 import { ShortcutSettings, StopSettings } from './Shortcuts.tsx';
+import { CheckInSettings } from './CheckIn.tsx';
 import { AccountsSettings, type DefaultIdentity } from '../projects/AccountsView.tsx';
 import { RestartButton, SettingsSplit, Where, useNarrow, type UpdateState } from './SettingsFrame.tsx';
 import { LEDUNG_GROUPS, groupOf, groupView, remoteFeatures, remoteWord, tabGroupView, updateTexts, updateWord, type FeatureState } from '../settingsGroups.ts';
@@ -164,7 +165,7 @@ function GroupContent(props: GroupProps) {
     case 'config':
       return props.config ? <ConfigFileSettings config={props.config} /> : <p className="muted">…</p>;
     default:
-      return <About source={props.source} update={props.update} />;
+      return <About source={props.source} update={props.update} run={props.run} />;
   }
 }
 
@@ -522,7 +523,7 @@ function CertificateSettings({ cert }: { cert: CertificateStatus }) {
 }
 
 /** The license, Anthropic's software, and the source of the running version: AGPL section 13 asks that everyone using it over a network is offered that source (#332). */
-function About({ source, update }: { source: SourceOffer | null; update: UpdateState }) {
+function About({ source, update, run }: { source: SourceOffer | null; update: UpdateState; run: GroupProps['run'] }) {
   return (
     <section>
       <h3>About</h3>
@@ -538,6 +539,7 @@ function About({ source, update }: { source: SourceOffer | null; update: UpdateS
         </p>
       )}
       {update.view && <ChannelChoice update={update} />}
+      <CheckInSettings run={run} />
     </section>
   );
 }

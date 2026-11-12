@@ -6,16 +6,30 @@ from this file. It is
 committed so that a clone on any computer comes up set right in Ledung (Martin, 2026-10-13, issue
 #22).
 
+**This file is the source.** It is the one place the project's facts are kept, and the one the
+process tools read. A computer's local, uncommitted file only adds the per-machine values a row
+here points to (a path, a port); it repeats no row, and where it and this file differ, this file is
+right. A fact that changes is changed here, in a PR (Martin, 2026-11-10, Ledung question #1816:
+"a — Project Ledung makes one source", issue #207).
+
 **A value that is not here is a stop, not a guess.** A cell reading `unknown — needs Martin` is
 such a stop until Martin fills it.
 
 **Per-machine rows.** A value that differs between computers is written per machine, as
-`<machine> <value>`, separated by ` · `. A machine with no entry in such a row is a stop: add its
-value in a PR before a lead runs there.
+`<machine> <value>`, separated by ` · `, in a generic form (`%USERPROFILE%\…`, `~/…`). A machine
+with no entry in such a row is a stop: add its value in a PR before a lead runs there. A row that
+says its value is kept in the computer's local file names no path here: that computer's lead writes
+it in the local file, and a row that points there with nothing written there is the same stop.
 
-**How sessions find this file.** Until issue #21 is built, Ledung does not point sessions at the
-process by itself: a local, uncommitted `CLAUDE.local.md` next to the repo's `CLAUDE.md` tells
-Ledung sessions where the process is and that this file is the project's LEAD-CONFIG.
+**How sessions find this file.** Ledung points them at it: the `"workflow"` block in a computer's
+Ledung config names the process folder, the file a manager reads first, the file every other
+session reads first, and the project's config for it (`projectConfig`), which for this project is
+this file, `docs/agents/LEAD-CONFIG.md`. Every session started or resumed is told to read its file
+and where this one is (`README.md`, "A workflow by default"). Where the workflow also names a
+start-reading list, the files on that list are named to the session again after every start, clear,
+compact and resume (`README.md`, "Start-reading list"). A computer's local, uncommitted
+`CLAUDE.local.md` next to the repo's `CLAUDE.md` holds that machine's own notes and says where its
+local file with the per-machine values is.
 
 ## Repo
 
@@ -23,7 +37,7 @@ Ledung sessions where the process is and that this file is the project's LEAD-CO
 |---|---|
 | `REPO` | `Fluffy-Fluffy-and-Bouncy/ledung` (public): issues, PRs and code. Code and PRs have been there since 2026-10-29 (question #487); new issues are filed there since 2026-11-02 (Ledung questions #491–#493 and #508: "new issues go on the public repo"). **The open issues were moved to `ledung` on 2026-11-02**, 61 in two batches, each with a "Moved from Project-Ledung#N" line; the old issue is closed with a "Moved to" link, so anyone citing an old number follows that link. Project-Ledung keeps history, its Testing cards and #464, #465, #451, #455, #456, #459, #461, #463, which finish there; refer to those as `Fluffy-Fluffy-and-Bouncy/Project-Ledung#N`. Open and merge PRs with `gh pr … -R Fluffy-Fluffy-and-Bouncy/ledung` |
 | `DEFAULT_BRANCH` | `main` |
-| `WIN_CLONE` | per machine: the clone releases are built from; sessions work in worktrees only — Martin's Windows PC `%USERPROFILE%\claude-project\ledung` · Martin's Mac `~/claude-project/project-ledung` |
+| `WIN_CLONE` | per machine: the project's clone, the folder Ledung starts the project's sessions in; sessions work in worktrees only — Martin's Windows PC `%USERPROFILE%\claude-project\ledung` · Martin's Mac `~/claude-project/project-ledung` |
 
 ## Board
 
@@ -102,9 +116,9 @@ steward, miner and metrics runs are off, and that is not a stop.
 | `METRICS_CMD` | none |
 | `LOGCHECK_TAGS_CMD` | none |
 | `DOC_RULES_CHECK` | the CI workflow on `Fluffy-Fluffy-and-Bouncy/ledung` (`npm run check` and the package build): Windows on every PR update and push to `main`, macOS weekly and by hand, nothing for docs-only or site-only changes; read it with `gh pr checks <n> -R Fluffy-Fluffy-and-Bouncy/ledung` |
-| `SHIP_CMD` | none — nothing is published; `npm run release` builds a release on the machine it runs on and is Martin's call, as is the restart that loads it |
-| `DEV_SHIP_CMD` | none |
-| `PROMOTE_CMD` | none |
+| `SHIP_CMD` | `npm run publish:public -- --confirm <version>` — publishes the next public release to npm's `latest`: the owners' word only (Martin or FFBuddha, both publishers on npm), version included; no session runs it otherwise (repo `CLAUDE.md`, "Commands"). Never `npm publish` or `npm dist-tag` by hand. The restart that loads an update into a running Ledung is the person's, never a session's |
+| `DEV_SHIP_CMD` | `npm run publish:dev` — publishes the next dev build to npm's `dev` tag, never `latest`, from a clean `main` that is `origin/main`; the manager may run it after merges (`Fluffy-Fluffy-and-Bouncy/Project-Ledung#461`), and `-- --dry-run` checks, builds and packs without publishing. Per machine: where a computer runs it from a publishing clone of its own, that clone's path is kept in the computer's local file, not here; the command is the same |
+| `PROMOTE_CMD` | none — a public release is published from `main` by `SHIP_CMD`, not promoted from a dev build |
 | `BUILD_CMD` | `npm run build` |
 | `TEST_CMD` | `npm run check` (type check, core and page, and every test) |
 | `TEST_LIST_CMD` | `node --test --test-reporter=spec test/` count, or the `ℹ tests` line of `npm run check` |
@@ -150,7 +164,7 @@ steward, miner and metrics runs are off, and that is not a stop.
 | `OWNER` | `Martin` |
 | `OWNER_LOGIN` | `Magto` — `OWNER`'s GitHub login; the lead assigns an issue to it before its first worker spawn, and never touches an issue assigned to another login |
 
-Every row is `OWNER` · `relay`: Martin's word in the Ledung page, typed or as an `ask_user` answer.
+Every row is `OWNER` · `relay`: Martin's word in the Ledung page, typed or as an `ask_user` answer. One exception, in the `SHIPPER` row: the public publish is either owner's word, Martin's or FFBuddha's (repo `CLAUDE.md`, "Commands").
 
 | Row (key) | Action |
 |---|---|
@@ -158,7 +172,7 @@ Every row is `OWNER` · `relay`: Martin's word in the Ledung page, typed or as a
 | `READY_MOVER` | Triage → Ready |
 | `MERGER` | merge a PR |
 | `PUSHER` | push anywhere but the session's own `agent/<name>` branch (`am/<name>` for a branch made before agent-workflow v111) |
-| `SHIPPER` | `npm run release`, and restarting or stopping the real Ledung |
+| `SHIPPER` | `npm run publish:public -- --confirm <version>` (`SHIP_CMD`; Martin's or FFBuddha's word, version included), and restarting or stopping the real Ledung, the Restart that loads an update with it. Also `npm run release` on a computer whose real Ledung runs from the clone's releases, where it sets what the next Restart loads; where Ledung runs from the npm package it changes nothing that runs. `npm run publish:dev` (`DEV_SHIP_CMD`) is not a row: it needs no decider |
 | `DELETER` | delete a branch not the session's own, an issue, data |
 | `VERDICT_OWNER` | rule and practice verdicts |
 | `REVIEW_POSTER` | posting an approving or change-requesting review |
@@ -168,4 +182,4 @@ Every row is `OWNER` · `relay`: Martin's word in the Ledung page, typed or as a
 | Key | Value |
 |---|---|
 | `PROCESS_REPO` | `Magto/agent-workflow` |
-| `PROCESS_VERSION_FILE` | `docs/VERSION` in `Magto/agent-workflow` (v94) |
+| `PROCESS_VERSION_FILE` | `docs/VERSION` in `Magto/agent-workflow` |

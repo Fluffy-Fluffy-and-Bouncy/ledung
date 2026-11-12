@@ -2491,8 +2491,6 @@ test("a project whose folder is a shared workflow's, or links to it, shows that 
     assert.equal(shown.source.workflow, 'proc', how);
     assert.equal(shown.flow.title, 'Own', `${how}: the flow in the folder is still shown`);
   }
-  // And the fix ran where a log watcher looks for it.
-  assert.match(fs.readFileSync(path.join(data, 'exercised.log'), 'utf8'), /EXERCISED #109 /);
 });
 
 // The same before either side has a flow folder (review of PR #116): a workflow's repository with no drawn flow yet,

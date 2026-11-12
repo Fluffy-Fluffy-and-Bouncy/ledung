@@ -12,9 +12,10 @@ import { actorLine, arrowsFrom, flowLine, frameOf, KIND_LABEL, layoutFlow, outco
 import { amendedBy, newDraft, single, withOrigin, workspaceFromView, workspaceWrites, type Workspace } from '../flowEdit.ts';
 import { originName, withoutRepo } from '../../../src/shared/flow-origin.ts';
 import { OriginLine } from './OriginLine.tsx';
-import { ARROW_COLOUR, continueHandles, EDGE_TYPES, FlowMiniMap, FlowTabs, frameColour, frameNode, lightArrows, NODE_TYPES, useEscapeClears, useMeasured, useNarrow, useOpeningView, withLabelSpots, type BlockData } from './FlowDiagram.tsx';
+import { ARROW_COLOUR, continueHandles, EDGE_TYPES, FlowMiniMap, FlowTabs, frameColour, frameNode, lightArrows, NODE_TYPES, useEscapeClears, useMeasured, useNarrow, useOpeningView, useRefitOnResize, withLabelSpots, type BlockData } from './FlowDiagram.tsx';
 import { FlowBuilder } from './FlowBuilder.tsx';
 import { Markdown } from './Markdown.tsx';
+import { usePaneWidth } from './PaneResizer.tsx';
 import type { FlowRun } from '../../../src/shared/flow-run.ts';
 import { RunsPanel } from './FlowRuns.tsx';
 import { blockRuns, followLine, openRun, pinCounts, runPath, type RunMarks } from '../flowRuns.ts';
@@ -85,19 +86,21 @@ export function Diagram({ flow, layout, texts, selected, lit: lighting, onSelect
   const startId = flow.start && layout.blocks.some((p) => p.block.id === flow.start) ? flow.start : layout.blocks[0]?.block.id;
   const read = useOpeningView(box, [...layout.blocks, ...flow.frames.map((f) => ({ ...f.at, ...f.size }))], layout.blocks.find((p) => p.block.id === startId));
   const opening = read && fit ? { fit: true as const } : read;
+  const refit = useRefitOnResize(box, !!opening?.fit, 0.15);
   return (
     <div className="flow-canvas" ref={box}>
       {opening && (
         <ReactFlow
           nodes={lit.nodes} edges={lit.edges} nodeTypes={NODE_TYPES} edgeTypes={EDGE_TYPES} minZoom={0.2} maxZoom={2}
           {...(opening.fit ? { fitView: true, fitViewOptions: { padding: 0.15 } } : { defaultViewport: opening })}
+          {...refit.flow}
           nodesDraggable={false} nodesConnectable={false} edgesFocusable={false} elementsSelectable={false}
           {...(still ? { panOnDrag: false, zoomOnScroll: false, zoomOnPinch: false, preventScrolling: false } : {})}
           onNodeClick={(_, n) => n.type === 'block' && onSelect(n.id)} onNodesChange={onMeasured} onPaneClick={() => onClear?.()}
         >
           <Background gap={24} />
           {/* A phone zooms with two fingers; the buttons would cover the drawing there. */}
-          {!narrow && <Controls showInteractive={false} />}
+          {!narrow && <Controls showInteractive={false} {...refit.controls} />}
           {!opening.fit && <FlowMiniMap small={narrow} />}
         </ReactFlow>
       )}
@@ -262,6 +265,7 @@ export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowF
   shownFlow: string | null; onShowFlow: (name: string) => void; onRenamedFlow: (name: string) => void;
 }) {
   const [view, setView] = useState<FlowView | null>(null);
+  const side = usePaneWidth<HTMLElement>('flow-panel');
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   // The manager's file in the panel (#322); choosing a block shows the block instead.
@@ -460,7 +464,8 @@ export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowF
               ? <Diagram key={`${view.project}:${shown?.name}`} flow={flow!} layout={layout} texts={view.texts} selected={selected} onSelect={choose} onClear={() => select(null)} narrow={narrow} flowTitle={flowTitle} marks={marks} />
               : <BlockList flow={flow!} layout={layout} texts={view.texts} onSelect={choose} flowTitle={flowTitle} marks={marks} />}
           </div>
-          <aside className="flow-panel">
+          {side.handle}
+          <aside className="flow-panel" ref={side.ref}>
             {block
               ? <BlockPanel block={block} flow={flow!} layout={layout} texts={view.texts} onBlock={select} onClose={() => select(null)} flowTitle={flowTitle} onFlow={show} />
               : managerShown

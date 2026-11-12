@@ -103,6 +103,22 @@ export interface ChatsInfo {
 export type ModelChoice = 'opus' | 'sonnet' | 'haiku';
 export const MODEL_CHOICES: readonly ModelChoice[] = ['opus', 'sonnet', 'haiku'];
 
+/**
+ * How much reasoning a session's Claude Code puts into its replies (issue #202): Claude Code's own effort levels, lowest
+ * first. None chosen anywhere: Claude Code's own default, as before.
+ */
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+/** An effort as typed or sent, by its level: case and spaces around it don't matter. Null: not one of the levels. */
+export function effortLevel(value: unknown): EffortLevel | null {
+  const v = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return EFFORT_LEVELS.includes(v as EffortLevel) ? (v as EffortLevel) : null;
+}
+
+/** The refusal of an unknown effort: what was given and the levels there are. */
+export const unknownEffort = (value: unknown) => `Unknown effort ${JSON.stringify(value)}. Choose ${EFFORT_LEVELS.join(', ')}.`;
+
 /** Who goes first when sessions wait for a free place (step 6). */
 export type Priority = 'normal' | 'high' | 'critical';
 export const PRIORITIES: readonly Priority[] = ['normal', 'high', 'critical'];
@@ -121,6 +137,13 @@ export interface SessionInfo {
   model: string | null;
   /** The model its manager started it with (start_session); null: the project's model. */
   requestedModel: string | null;
+  /** The effort it was started with or set to (start_session, the sidebar menu; issue #202); null or absent: the project's. */
+  requestedEffort?: EffortLevel | null;
+  /**
+   * The effort Claude Code says it runs with, after its own step down for the model; known from its first tool call.
+   * Null or absent: not known yet, or the model has no effort levels.
+   */
+  effort?: EffortLevel | null;
   /** The session profile it runs with (#20); null: full, the user's whole setup. */
   profile: string | null;
   /** A clear (clear_session) counting down: when it happens. Null: none, or not started yet. Cancel stops it. */
@@ -326,6 +349,10 @@ export interface ProjectInfo {
   model: string | null;
   /** Its manager's model; null: the same as its sessions. */
   managerModel: string | null;
+  /** The default effort of its sessions (issue #202); null or absent: Claude Code's own. */
+  effort?: EffortLevel | null;
+  /** Its manager's effort; null or absent: the same as its sessions. */
+  managerEffort?: EffortLevel | null;
   permissionMode: PermissionMode | null;
   managerGrant: string | null;
   /** Its manager's project tools run without asking the user (decision of 2026-10-14). */
@@ -1046,6 +1073,27 @@ export interface SignInStartView {
  * (POST /api/shortcuts).
  */
 export type ShortcutAction = 'add' | 'remove' | 'decline' | 'sign-in-on' | 'sign-in-off';
+
+/** The anonymous daily check-in (#220): the notice on the page and Settings → Usage count (GET /api/checkin). */
+export interface CheckInView {
+  /** The Settings switch; on unless switched off. */
+  on: boolean;
+  /** DO_NOT_TRACK is set where Ledung runs: nothing is sent, whatever the switch says. */
+  doNotTrack: boolean;
+  /** The notice has not been answered yet: shown above the page, and nothing is sent until it is. */
+  notice: boolean;
+  /** Whether this Ledung sends a check-in once a day now. */
+  sends: boolean;
+  /** Installed from npm; a clone or a release built from one never checks in. */
+  fromPackage: boolean;
+  /** Exactly what is sent, these four fields. */
+  payload: { id: string; version: string; channel: 'public' | 'dev'; os: string };
+  url: string;
+  /** When the last check-in was sent or tried; null before the first. */
+  lastAt: string | null;
+}
+
+export type CheckInAction = 'on' | 'off' | 'seen';
 
 /** Settings' "Update Ledung" (GET /api/update, #100). */
 export interface UpdateView {

@@ -5,6 +5,7 @@
 // questions. Nothing a session writes can reach another session as the user's words: forwardAnswer
 // copies the user's stored answer, never text the manager supplies (decision of 2026-10-10).
 import type { Store } from '../store/store.ts';
+import { effortLevel, unknownEffort } from '../shared/protocol.ts';
 import type { AttachedSource, AwayInfo, CompactingInfo, MachineInfo, McpServerInfo,PermissionDecision, PermissionInfo, PermissionMode, Priority, ProjectInfo, QuestionInfo, QuestionShot, ServerEvent, ShotVerdict, SessionInfo } from '../shared/protocol.ts';
 import { parseProject, type ProjectConfig, type WorkflowConfig } from '../config.ts';
 import type { NewProjectArgs, ProjectArgs } from './tools.ts';
@@ -99,7 +100,7 @@ export interface ManagementContext {
   /** Starts an ended session again; what waits for it is delivered once it is up (idle stop and archive). */
   resume(sessionId: string): Promise<void>;
   /** `before`: what goes before the task's own header, an order's words (issue #105). */
-  startSession(project: string, task: string, opts: { parentId: string; title?: string; permissionMode?: PermissionMode; model?: string; profile?: string; cwd?: string; before?: string }): Promise<SessionInfo>;
+  startSession(project: string, task: string, opts: { parentId: string; title?: string; permissionMode?: PermissionMode; model?: string; effort?: string; profile?: string; cwd?: string; before?: string }): Promise<SessionInfo>;
   /** A session finished a turn with nothing running: runs through a flow tell their coordinator (workflow part 3b). */
   onRunSessionTurn?(sessionId: string, lastReply: string): void;
   /** Why the project's workflow profiles file can't be used, or null (#298); the start_session reply says so. */
@@ -592,17 +593,19 @@ export class Management {
   }
 
   /** Always in the manager's own project, so its sessions use its account (decided 2026-10-11). */
-  async startSession(managerId: string, args: { task: string; title?: string; permissionMode?: PermissionMode; model?: string; profile?: string; cwd?: string; order?: OrderSpec }): Promise<string> {
+  async startSession(managerId: string, args: { task: string; title?: string; permissionMode?: PermissionMode; model?: string; effort?: string; profile?: string; cwd?: string; order?: OrderSpec }): Promise<string> {
     const manager = this.store.getSession(managerId)!;
     const project = manager.project;
     if (!this.ctx.projectNames().includes(project)) throw new ManagementError(`Your project "${project}" has been removed.`);
+    // Refused here, before an order is recorded or anything starts, with the levels there are (issue #202).
+    if (args.effort !== undefined && !effortLevel(args.effort)) throw new ManagementError(unknownEffort(args.effort));
     // An order is checked before the session starts, so a refused one starts nothing; it gets the session once there is one.
     const order = args.order ? this.recordOrder(managerId, null, args.order) : null;
     let s: SessionInfo;
     try {
       // The words go before the task's header, so the session's task starts with them; the title stays the task's.
       s = await this.ctx.startSession(project, args.task, {
-        parentId: managerId, title: args.title, permissionMode: args.permissionMode, model: args.model, profile: args.profile, cwd: args.cwd,
+        parentId: managerId, title: args.title, permissionMode: args.permissionMode, model: args.model, effort: args.effort, profile: args.profile, cwd: args.cwd,
         ...(order ? { before: orderPreamble(order, this.ctx.userName) } : {}),
       });
     } catch (e) {
@@ -1458,7 +1461,7 @@ ${note}`);
       if (this.lockedAgainst(managerId, p.name)) return `- "${p.name}": locked`;
       const mgr = p.managerId ? this.store.getSession(p.managerId) : undefined;
       const manager = mgr ? `manager "${mgr.title}" (${mgr.id}) ${mgr.status}` : 'no manager yet';
-      const settings = [p.model && `model ${p.model}`, p.managerModel && `manager's model ${p.managerModel}`, p.permissionMode && `mode ${p.permissionMode}`, p.account && `account ${p.account}`].filter(Boolean).join(', ');
+      const settings = [p.model && `model ${p.model}`, p.managerModel && `manager's model ${p.managerModel}`, p.effort && `effort ${p.effort}`, p.managerEffort && `manager's effort ${p.managerEffort}`, p.permissionMode && `mode ${p.permissionMode}`, p.account && `account ${p.account}`].filter(Boolean).join(', ');
       return `- "${p.name}"${p.name === own ? ' (yours)' : ''}: ${p.where}${settings ? `; ${settings}` : ''}; ${manager}`;
     }).join('\n');
   }
@@ -1817,7 +1820,9 @@ ${note}`);
 /** A project's settings from a manager's tool call; a sensitive list left out gets the suggestions. */
 function projectConfig(args: Omit<ProjectArgs, 'folder'>, folder: string): ProjectConfig {
   const config: Record<string, unknown> = { name: args.name, runner: 'local', path: folder };
-  for (const [k, v] of Object.entries({ model: args.model, permissionMode: args.permissionMode, managerGrant: args.managerGrant, account: args.account, tickets: args.tickets })) {
+  // A level by its name whatever its case; an unknown one is refused with the levels there are (issue #202).
+  if (args.effort !== undefined && !effortLevel(args.effort)) throw new ManagementError(unknownEffort(args.effort));
+  for (const [k, v] of Object.entries({ model: args.model, effort: effortLevel(args.effort) ?? undefined, permissionMode: args.permissionMode, managerGrant: args.managerGrant, account: args.account, tickets: args.tickets })) {
     if (v !== undefined) config[k] = v;
   }
   // Anyone may lock a project (issue #109); only the user opens one up, in the page.

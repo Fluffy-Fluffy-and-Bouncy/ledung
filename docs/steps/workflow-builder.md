@@ -41,7 +41,7 @@ Optional: **overlays**, switchable additions that change several blocks at once 
 | `kind` | work, check, person, fork/join, timer, flow (a Run flow block, #447, with `flow`: the flow it runs), wait (part 3d: on something outside the flow) | check |
 | `title` | its name in the diagram | Code review |
 | `runs` | who does it (#322): `manager`, `person`, `new-session`, or `continue` with `continues`, the earlier block whose session takes it | new-session |
-| `model`, `profile` | for a session: which model and profile it starts with | opus, review |
+| `model`, `profile` | for a session: which model and profile it starts with. A block has no `effort` of its own yet (follow-up of #112): its session gets the project's default effort, which `start_session` and the project's settings do take (issue #202) | opus, review |
 | `brief` | how the one doing it acts: what makes it a builder or a reviewer, what counts as done | briefs/reviewer.md |
 | `substeps` | the subagents its one starts, in order (#322) | Self-review, when done |
 | `outcomes` | where the work goes next, by its result: a word, the block it leads to, optionally on which time of the word (#1184); each is a pin on the block (#446) | Approved → Merge; Changes requested → Fix; Changes requested, 3rd time → Person |
