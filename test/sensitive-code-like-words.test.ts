@@ -38,6 +38,8 @@ test('#278: .env in every path form is still asked', () => {
     assert.ok(ps('Get-Content .env', r));
     assert.ok(ps('Get-Content config\\.env', r));
   }
+  // A colon or a leading option dash marks a file argument, never code (self-check of #278).
+  for (const c of ['scp host:.env .', 'docker cp app:.env .', 'tool -f.env', 'type C:.env']) assert.ok(bash(c, own), c);
   assert.ok(bash('less .env.local', suggested), 'the suggested entry also takes .env.local');
 });
 
@@ -54,7 +56,7 @@ test('#278: the cost: a bare dotted file name in a command is not matched; the f
 });
 
 test('#278: the settings docs name the rule', () => {
-  for (const word of ['slash', 'dot inside', 'process.env', 'import.meta.env', 'config.prod.env', './server.key']) {
+  for (const word of ['slash', 'colon', 'dot inside', 'process.env', 'import.meta.env', 'config.prod.env', './server.key']) {
     assert.ok(FILE_PATH_RULE.includes(word), word);
   }
   const page = readFileSync(new URL('../web/src/projects/ProjectViews.tsx', import.meta.url), 'utf8');

@@ -28,12 +28,13 @@ function filePaths(input: Record<string, unknown>): string[] {
 }
 
 /**
- * A shell word that reads as code, not a file: no slash, and a dot inside it, not at its start (`process.env`,
- * `import.meta.env`). It is not matched against the path entries, so `grep -rn process.env src` is not asked
+ * A shell word that reads as code, not a file: it starts with a letter, `_` or `$`, has no slash or colon, and has a
+ * dot inside it (`process.env`, `import.meta.env`). A colon or a leading `-`/`@` marks a file argument
+ * (`host:.env`, `C:.env`, `-f.env`; self-check of #278). It is not matched against the path entries, so `grep -rn process.env src` is not asked
  * (Martin, 2026-11-12, Ledung question #838: "b — Skip code-like words"; #278). The cost: a bare file argument
  * such as `config.prod.env` or `server.key` is not matched either; `.env`, `./server.key` and `config/.env` are.
  */
-export const CODE_LIKE_WORD = /^[^/\\.][^/\\]*\.[^/\\]+$/;
+export const CODE_LIKE_WORD = /^[A-Za-z_$][^/\\:]*\.[^/\\:]+$/;
 
 /** The rule named for a call that is always the user's to approve, whatever the lists say. */
 export const ALWAYS_ASKED_RULE = "a manager's project tool, always yours to approve";
