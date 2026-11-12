@@ -1,7 +1,7 @@
-// What the page shows of the machine's figures (#230, audit O6). The server sends a `machine` event only
-// when this changes: it measured every 5 s and sent each sample to every page, though a figure that moved
-// in a digit the page doesn't show changed nothing on screen. The formatters live here so that the page
-// and this comparison can't drift apart (web/src/usage/MachinePanel.tsx re-exports them).
+// When the machine's figures are worth sending to the pages (#230, audit O6). The server measured every 5 s
+// and sent each sample to every page, though most samples changed nothing a person would notice. The
+// formatters live here so that the page and this comparison can't drift apart (web/src/usage/MachinePanel.tsx
+// re-exports them).
 import type { MachineInfo } from './protocol.ts';
 
 export function formatCores(n: number): string {
@@ -14,37 +14,61 @@ export function formatBytes(n: number): string {
   return `${Math.round(n / 1024)} KB`;
 }
 
-/** A load meter as MachinePanel's Load shows it: its percentage and its colour (busy from 80 %, full from 95 %). */
-function percent(used: number, total: number): string {
-  const share = total > 0 ? used / total : 0;
-  return `${Math.round(share * 100)}${share >= 0.95 ? '!' : share >= 0.8 ? '^' : ''}`;
+/** A load meter's level as MachinePanel's Load colours it: busy from 80 %, full from 95 %. */
+function level(share: number): 0 | 1 | 2 {
+  return share >= 0.95 ? 2 : share >= 0.8 ? 1 : 0;
+}
+
+const share = (used: number, total: number): number => (total > 0 ? used / total : 0);
+
+/**
+ * A whole-machine meter is sent again once it moves this far (5 points of 100) or changes level. Shown to
+ * 0.1 core, a computer's own CPU moved on 12 of 12 samples with nothing working, so an idle Ledung sent a
+ * `machine` event every 5 s anyway; 5 points is a change a person reading a load gauge notices (decided by
+ * the lead on Ledung question #2064, option a).
+ */
+export const METER_STEP = 0.05;
+
+/** The meters of the whole machine and Docker's VM, as shares of their total: CPU, memory, then Docker's CPU and memory. */
+export function machineMeters(m: MachineInfo): number[] {
+  const d = m.docker;
+  return [share(m.cores, m.cpus), share(m.memUsed, m.memTotal), ...(d ? [share(d.cores, d.cpus), share(d.memUsed, d.memTotal)] : [])];
 }
 
 /**
- * Everything of `m` that reaches the screen, as it reads there; two infos with the same key look the
- * same on the page. Its time (`at`) is left out: no page shows it.
+ * Everything else of `m` that reaches the screen, as it reads there: each session's figures, the
+ * working count, the limit and the line exactly, and of the meters what doesn't move with load (the
+ * totals, whether Docker runs). Its time (`at`) is left out: no page shows it.
  */
-export function machineShown(m: MachineInfo): string {
+export function machineExact(m: MachineInfo): string {
   const d = m.docker;
   return JSON.stringify([
-    m.cpus, formatCores(m.cores), percent(m.cores, m.cpus),
-    formatBytes(m.memUsed), formatBytes(m.memTotal), percent(m.memUsed, m.memTotal),
-    d && [formatCores(d.cores), formatBytes(d.memUsed), formatBytes(d.memTotal), percent(d.memUsed, d.memTotal)],
+    m.cpus, formatBytes(m.memTotal), d && [d.cpus, formatBytes(d.memTotal)],
     Object.entries(m.sessions).sort(([a], [b]) => (a < b ? -1 : 1)).map(([id, f]) => [id, formatCores(f.cores), formatBytes(f.memBytes)]),
     m.working, m.limit, m.line,
   ]);
 }
 
+/** Whether a meter moved far enough since the last one sent to be sent again: METER_STEP, or a new level. */
+export function meterMoved(was: number, now: number): boolean {
+  // A hair under the step, so a move of exactly 5 points isn't lost to floating point.
+  return Math.abs(now - was) >= METER_STEP - 1e-9 || level(now) !== level(was);
+}
+
 /**
- * Wraps `send` for the machine's figures: with `onlyIfChanged` (a sample) it sends only when what the
- * page shows differs from the last one sent; without (the limit or a pause changed), always.
+ * Wraps `send` for the machine's figures. With `onlyIfChanged` (a sample) it sends only when a session's
+ * figures, the working count, the limit or the line show differently, or a whole-machine meter moved
+ * (meterMoved) since the last one sent; without (the limit or a pause changed by hand), always.
  */
 export function machineSender(send: (m: MachineInfo) => void): (m: MachineInfo, onlyIfChanged?: boolean) => void {
-  let last: string | null = null;
+  let last: { exact: string; meters: number[] } | null = null;
   return (m, onlyIfChanged = false) => {
-    const shown = machineShown(m);
-    if (onlyIfChanged && shown === last) return;
-    last = shown;
+    const exact = machineExact(m);
+    const meters = machineMeters(m);
+    const same = last !== null && exact === last.exact && meters.length === last.meters.length
+      && meters.every((v, i) => !meterMoved(last!.meters[i]!, v));
+    if (onlyIfChanged && same) return;
+    last = { exact, meters };
     send(m);
   };
 }

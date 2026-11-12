@@ -166,27 +166,63 @@ test('the sampler reads no process list while none is wanted, and reads again on
   }
 });
 
+const MB = 1024 ** 2;
 const info = (over: Partial<MachineInfo> = {}): MachineInfo => ({
-  at: 1, cpus: 12, cores: 0.40, memTotal: 16e9, memUsed: 8.2e9, docker: null,
-  sessions: { s1: { cores: 0.01, memBytes: 300 * 1024 ** 2 } }, working: 0, limit: 4, line: [], ...over,
+  at: 1, cpus: 12, cores: 1.2, memTotal: 16e9, memUsed: 8e9, docker: null,
+  sessions: { s1: { cores: 0.01, memBytes: 300 * MB } }, working: 0, limit: 4, line: [], ...over,
+});
+/** A sender, and how many it has sent; each `sample` returns whether that one was sent. */
+const sender = () => {
+  let n = 0;
+  const send = machineSender(() => n++);
+  return { sample: (m: MachineInfo) => { const before = n; send(m, true); return n > before; }, byHand: (m: MachineInfo) => send(m), count: () => n };
+};
+
+test("the machine's own meters are sent again only once they move 5 points from the last one sent, or turn busy or full (#2064 a)", () => {
+  const s = sender();
+  assert.equal(s.sample(info()), true, 'the first is sent');
+  // CPU of 12 threads: 1.2 cores is 10 %. 1.7 is 14.2 % (4.2 points), 1.8 is 15 % (5 points).
+  assert.equal(s.sample(info({ at: 2, cores: 1.7 })), false, '4.2 points: not sent, though "1.7 cores" reads differently from "1.2 cores"');
+  assert.equal(s.sample(info({ cores: 1.8 })), true, '5 points: sent');
+  // Measured from the last one sent (15 %), not from the sample before: 17.5 % no, 20 % yes.
+  assert.equal(s.sample(info({ cores: 1.9 })), false);
+  assert.equal(s.sample(info({ cores: 2.1 })), false);
+  assert.equal(s.sample(info({ cores: 2.4 })), true, 'drift that adds up to 5 points is sent');
+  // Memory of 16 GB: 8 GB is 50 %; 8.7 GB 54.4 %, 8.8 GB 55 %.
+  assert.equal(s.sample(info({ cores: 2.4, memUsed: 8.7e9 })), false);
+  assert.equal(s.sample(info({ cores: 2.4, memUsed: 8.8e9 })), true, 'memory 5 points: sent');
+
+  // Busy from 80 %, full from 95 %: one point across either is sent.
+  const b = sender();
+  b.sample(info({ cores: 9.5 })); // 79.2 %
+  assert.equal(b.sample(info({ cores: 9.62 })), true, '79.2 → 80.2 %: turned busy');
+  b.sample(info({ cores: 11.3 })); // 94.2 %, sent: 14 points
+  assert.equal(b.sample(info({ cores: 11.42 })), true, '94.2 → 95.2 %: turned full');
+
+  // Docker's VM, 4 CPUs and 8 GB: memory 25 → 28.75 % no, → 30 % yes; its CPU 5 → 10 % yes.
+  const d = sender();
+  const vm = { cpus: 4, cores: 0.2, memTotal: 8e9, memUsed: 2e9 };
+  assert.equal(d.sample(info()), true);
+  assert.equal(d.sample(info({ docker: vm })), true, 'Docker coming up is sent');
+  assert.equal(d.sample(info({ docker: { ...vm, memUsed: 2.3e9 } })), false);
+  assert.equal(d.sample(info({ docker: { ...vm, memUsed: 2.4e9 } })), true);
+  assert.equal(d.sample(info({ docker: { ...vm, memUsed: 2.4e9, cores: 0.4 } })), true);
 });
 
-test('a machine sample is sent only when what the page shows changed; a change made by hand is always sent', () => {
-  const sent: MachineInfo[] = [];
-  const send = machineSender((m) => sent.push(m));
-  send(info(), true);
-  assert.equal(sent.length, 1, 'the first is sent');
-  // A later time, 0.40 → 0.41 cores (both "0.4 cores", 3 % of 12), 8.2 → 8.21 GB used (both "7.6 GB", 51 %),
-  // a session's memory 300 → 300.4 MB (both "300 MB"): nothing on the page changes.
-  send(info({ at: 2, cores: 0.41, memUsed: 8.21e9, sessions: { s1: { cores: 0.02, memBytes: 300.4 * 1024 ** 2 } } }), true);
-  assert.equal(sent.length, 1, 'an idle sample is not sent');
-  send(info({ cores: 0.48 }), true);
-  assert.equal(sent.length, 2, '"0.5 cores" is sent');
-  send(info({ cores: 0.48, sessions: { s1: { cores: 0.01, memBytes: 300 * 1024 ** 2 }, s2: { cores: 0, memBytes: 1024 ** 2 } } }), true);
-  assert.equal(sent.length, 3, 'a session that joined is sent');
-  send(info({ cores: 0.48, sessions: { s1: { cores: 0.01, memBytes: 300 * 1024 ** 2 }, s2: { cores: 0, memBytes: 1024 ** 2 } }, line: ['s2'] }), true);
-  assert.equal(sent.length, 4, 'a place in line is sent');
-  const same = sent[3]!;
-  send(same);
-  assert.equal(sent.length, 5, 'a change by hand (the limit, a pause) is sent even when the figures are the same');
+test('per-session figures, the working count, the limit and the line are sent on any change the page shows; a change by hand always', () => {
+  const s = sender();
+  s.sample(info());
+  // A later time, a session's 0.01 → 0.02 cores (both "0.0 cores") and 300 → 300.4 MB (both "300 MB"): the same on the page.
+  assert.equal(s.sample(info({ at: 2, sessions: { s1: { cores: 0.02, memBytes: 300.4 * MB } } })), false, 'an idle sample is not sent');
+  assert.equal(s.sample(info({ sessions: { s1: { cores: 0.06, memBytes: 300 * MB } } })), true, '"0.1 cores" is sent');
+  assert.equal(s.sample(info({ sessions: { s1: { cores: 0.06, memBytes: 301 * MB } } })), true, '"301 MB" is sent');
+  const two = { s1: { cores: 0.06, memBytes: 301 * MB }, s2: { cores: 0, memBytes: MB } };
+  assert.equal(s.sample(info({ sessions: two })), true, 'a session that joined is sent');
+  assert.equal(s.sample(info({ sessions: two, working: 1 })), true, 'the working count is sent');
+  assert.equal(s.sample(info({ sessions: two, working: 1, limit: 5 })), true, 'the limit is sent');
+  assert.equal(s.sample(info({ sessions: two, working: 1, limit: 5, line: ['s2'] })), true, 'a place in line is sent');
+  assert.equal(s.sample(info({ sessions: two, working: 1, limit: 5, line: ['s2'] })), false, 'the same again is not');
+  const before = s.count();
+  s.byHand(info({ sessions: two, working: 1, limit: 5, line: ['s2'] }));
+  assert.equal(s.count(), before + 1, 'a change by hand (the limit, a pause) is sent even when the figures are the same');
 });
