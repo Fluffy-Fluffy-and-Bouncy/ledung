@@ -5,8 +5,9 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import type { BoardOwnersView, BoardPeopleView, BoardRepoChoicesView, BoardRepoStatus, BoardStatus, ProjectInfo } from '../../../src/shared/protocol.ts';
 import { api } from '../api.ts';
-import { boardChip, type BoardMark } from '../boardMarks.ts';
+import { boardChip, boardStale, checkedAgo, type BoardMark } from '../boardMarks.ts';
 import { pickerGroups, suggestBoardName } from '../boardRepos.ts';
+import { useNow } from '../clock.ts';
 import { usePlainTyping } from '../usePlainTyping.ts';
 
 type Run = (action: () => Promise<unknown>) => Promise<void>;
@@ -17,7 +18,8 @@ type Run = (action: () => Promise<unknown>) => Promise<void>;
  * The tooltip starts with the chip's own text: a narrow footer cuts it with "…" (issue #403).
  */
 export function BoardChip({ board, open, connection, onClick }: { board: BoardStatus | null; open?: boolean; connection?: { className: string; text: string }; onClick: () => void }) {
-  const chip = boardChip(board);
+  const now = useMinuteClock();
+  const chip = boardChip(board, now);
   if (!chip) return null;
   return (
     <button className={`board-chip ${chip.level}${connection ? ` ${connection.className}` : ''}${open ? ' on' : ''}`} title={`${connection ? `${connection.text} ` : ''}${chip.text} — ${chip.title}`} aria-pressed={open} onClick={onClick}>
@@ -25,6 +27,13 @@ export function BoardChip({ board, open, connection, onClick }: { board: BoardSt
     </button>
   );
 }
+
+/**
+ * Redraws every 30 s, by the page's shared clock (issue #233): the board's state arrives only when it changes and once
+ * a minute (issue #232), so the time of the last check, and a check gone stale, must be worked out again without
+ * waiting for the next event.
+ */
+const useMinuteClock = () => useNow(30_000);
 
 const ago = (at: number | null) => {
   if (!at) return 'not yet';
@@ -64,14 +73,17 @@ export function BoardSettings({ board }: { board: BoardStatus | null }) {
 }
 
 function RepoState({ repo: r, board }: { repo: BoardRepoStatus; board: BoardStatus }) {
-  const level = r.state === 'ok' ? 'ok' : r.state === 'error' ? 'warn' : 'idle';
+  const now = useMinuteClock();
+  // Not checked for over three minutes shows as a problem, as the chip does (board thread 30).
+  const stale = boardStale(r, now);
+  const level = r.state === 'ok' && !stale ? 'ok' : r.state === 'error' || stale ? 'warn' : 'idle';
   return (
     <div className="board-block">
       <p className="board-state">
         <span className={`board-dot ${level}`} aria-hidden="true" />
         <span>
-          <span className="mono">{r.repo}</span>{' · '}{stateWord(r)}
-          {r.state === 'ok' || r.state === 'error' ? <> · checked {ago(r.lastPollAt)}</> : null}
+          <span className="mono">{r.repo}</span>{' · '}{stale ? 'Problem' : stateWord(r)}
+          {r.state === 'ok' || r.state === 'error' ? <> · checked {r.lastPollAt ? checkedAgo(r.lastPollAt, now) : 'not yet'}</> : null}
         </span>
       </p>
       {r.error && <p className="board-error">{r.error}</p>}

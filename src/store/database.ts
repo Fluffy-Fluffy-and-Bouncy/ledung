@@ -718,6 +718,9 @@ const MIGRATIONS: string[] = [
   ALTER TABLE turn_resources ADD COLUMN waits TEXT;
   ALTER TABLE sessions ADD COLUMN turn_started_at INTEGER;
   `,
+  // The person's typed words in one session since a time, read on every manager tool call by the hooks that look
+  // for their word (issue #232): only user messages, so the read never walks the session's replies.
+  `CREATE INDEX messages_user_by_session ON messages(session_id, at) WHERE kind = 'user';`,
   // Resource limits' learning (docs/steps/resource-limits.md, "Learning"): one row per finished reserved job, per
   // stretch of unreserved heavy work, and per new session's first minutes (kind "session:<role>"); amounts are JSON
   // by resource ("cpu", "ram", "gpu", "vram"; the GPU's id left out, so a figure outlives a reboot). And the command
