@@ -5,9 +5,10 @@
 // requests through those addresses need no sign-in: the network itself is trusted. Every request must:
 // - name Ledung itself in its Host header, which stops DNS rebinding;
 // - carry the sign-in cookie, set by opening the one-time /login link Ledung prints and opens. The cookie is a
-//   sign-in of its own, random, kept here only as a hash and revocable, never the install token
-//   (Project-Ledung#476). A browser still holding the older cookie that was the token is let in, and its next
-//   page load swaps that cookie for a sign-in (oldTokenCookie), so nobody is signed out by the change;
+//   paired browser's (Project-Ledung#482, step 1 of #477): a row of kind 'browser' in the devices table, random,
+//   kept only as a hash, renewed daily and removable in Settings, never the install token (Project-Ledung#476).
+//   A browser still holding the older cookie that was the token is let in, and its next page load swaps that
+//   cookie for a browser of its own (oldTokenCookie), so nobody is signed out by the change;
 // - for anything that changes something, for the live connection, and for API reads that do work, come from
 //   Ledung's own page (Origin header, and Sec-Fetch-Site where the browser sends it), which stops other pages
 //   from sending requests in the background.
@@ -28,21 +29,6 @@ import { DEVICE_COOKIE } from './devices.ts';
 
 export const COOKIE_NAME = 'ledung_auth';
 
-/** Where sign-ins are kept between restarts: one JSON text (the store's meta table, in the server). */
-export interface SignInStore {
-  get(): string | null;
-  set(value: string): void;
-}
-
-/** How many sign-ins are kept; past it the one used longest ago goes (each sign-in link opened adds one). */
-export const MAX_SIGN_INS = 200;
-/** A sign-in's last use is written down at most this often, so a busy page doesn't write on every request. */
-const USE_NOTED_MS = 86_400_000;
-/** A sign-in unused this long ends, as its cookie does (Max-Age a year). */
-const SIGN_IN_UNUSED_MS = 365 * 86_400_000;
-
-const hashOf = (value: string): string => crypto.createHash('sha256').update(value).digest('hex');
-
 /** The per-install secret, created on first run and kept in the user data folder. */
 export function loadOrCreateToken(file = path.join(userDataDir(), 'auth-token')): string {
   if (fs.existsSync(file)) {
@@ -60,6 +46,11 @@ export interface PublicAccess<D> {
   device(cookie: string | null): D | null;
 }
 
+/** On this computer and the local network: the live browser a sign-in cookie belongs to (Project-Ledung#482). */
+export interface LocalAccess<D> {
+  browser(cookie: string): D | null;
+}
+
 export class Guard<D = unknown> {
   private readonly token: Buffer;
   private readonly port: number;
@@ -71,19 +62,15 @@ export class Guard<D = unknown> {
   private remote: PublicAccess<D> | null = null;
   /** Sockets that came through the relay tunnel; see isPublic. */
   private readonly tunnel = new WeakSet<object>();
-  /** Live sign-ins: the hash of each cookie value and when it was last used (ms); never the values themselves. */
-  private signIns = new Map<string, number>();
-  private signInStore: SignInStore | null = null;
-  private readonly now: () => number;
+  private browsers: LocalAccess<D> | null = null;
 
   /**
    * `lanNames`: extra names Ledung answers to on the local network (empty when it isn't opened to it).
    * `lanOpen`: requests through those names need no sign-in.
    * `remote`: the public name and how a device cookie is checked; null: no public name.
    */
-  constructor(token: string, port: number, lanNames: string[] = [], lanOpen = false, remote: PublicAccess<D> | null = null, now: () => number = Date.now) {
+  constructor(token: string, port: number, lanNames: string[] = [], lanOpen = false, remote: PublicAccess<D> | null = null) {
     this.token = Buffer.from(token);
-    this.now = now;
     this.port = port;
     this.lanNames = lanNames.map((n) => n.toLowerCase());
     this.lanOpen = lanOpen;
@@ -166,93 +153,36 @@ export class Guard<D = unknown> {
   }
 
   /**
-   * A live sign-in's cookie, or the older cookie that was the install token (oldTokenCookie); never through the
+   * A live browser's cookie, or the older cookie that was the install token (oldTokenCookie); never through the
    * public name. A browser can send two values under the name (two paths or spellings), so each is tried.
    */
   signedIn(req: IncomingMessage): boolean {
     if (this.isPublic(req)) return false;
-    return readCookies(req, COOKIE_NAME).some((value) => this.tokenMatches(value) || this.useSignIn(value));
+    return readCookies(req, COOKIE_NAME).some((value) => this.tokenMatches(value)) || this.browserOf(req) !== null;
+  }
+
+  /** The live browser a local request's sign-in cookie belongs to, or null (always null through the public name). */
+  browserOf(req: IncomingMessage): D | null {
+    if (!this.browsers || this.isPublic(req)) return null;
+    for (const cookie of readCookies(req, COOKIE_NAME)) {
+      const browser = this.browsers.browser(cookie);
+      if (browser) return browser;
+    }
+    return null;
   }
 
   /**
    * The request carries the cookie set before Project-Ledung#476, whose value was the install token. It still signs
-   * in, so the change signs nobody out; the server answers a page load that carries it with a sign-in cookie, which
+   * in, so the change signs nobody out; the server answers a page load that carries it with a browser's cookie, which
    * replaces it in that browser (same name, host and path).
    */
   oldTokenCookie(req: IncomingMessage): boolean {
     return !this.isPublic(req) && readCookies(req, COOKIE_NAME).some((value) => this.tokenMatches(value));
   }
 
-  /** Where sign-ins are kept between restarts; loads the ones it holds. Without one they last until Ledung stops. */
-  useSignInStore(store: SignInStore): void {
-    this.signInStore = store;
-    const loaded = new Map<string, number>();
-    try {
-      const saved = JSON.parse(store.get() ?? '{}') as Record<string, unknown>;
-      for (const [hash, used] of Object.entries(saved)) if (/^[0-9a-f]{64}$/.test(hash) && typeof used === 'number') loaded.set(hash, used);
-    } catch {
-      // Unreadable: no sign-in cookie counts; the sign-in link still works.
-    }
-    this.signIns = loaded;
-    if (this.prune()) this.save();
-  }
-
-  /** A new sign-in, as the Set-Cookie header that gives it to the browser. */
-  signInCookie(): string {
-    const value = crypto.randomBytes(32).toString('hex');
-    this.signIns.set(hashOf(value), this.now());
-    this.prune();
-    this.save();
-    return `${COOKIE_NAME}=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000`;
-  }
-
-  /** Ends one sign-in (by its cookie's value), or with none given every one; returns how many ended. */
-  revokeSignIns(value?: string): number {
-    const before = this.signIns.size;
-    if (value === undefined) this.signIns.clear();
-    else this.signIns.delete(hashOf(value));
-    const ended = before - this.signIns.size;
-    if (ended) this.save();
-    return ended;
-  }
-
-  signInCount(): number {
-    return this.signIns.size;
-  }
-
-  /** Whether a cookie value is a live sign-in; notes its use at most once a day. Looked up by hash, so no timing tells. */
-  private useSignIn(value: string): boolean {
-    if (!/^[0-9a-f]{64}$/.test(value)) return false;
-    const hash = hashOf(value);
-    const used = this.signIns.get(hash);
-    if (used === undefined) return false;
-    const now = this.now();
-    if (now - used > SIGN_IN_UNUSED_MS) {
-      this.signIns.delete(hash);
-      this.save();
-      return false;
-    }
-    if (now - used > USE_NOTED_MS) {
-      this.signIns.set(hash, now);
-      this.save();
-    }
-    return true;
-  }
-
-  /** Drops sign-ins unused for a year, then the least recently used past MAX_SIGN_INS; true when any went. */
-  private prune(): boolean {
-    const before = this.signIns.size;
-    const now = this.now();
-    for (const [hash, used] of this.signIns) if (now - used > SIGN_IN_UNUSED_MS) this.signIns.delete(hash);
-    if (this.signIns.size > MAX_SIGN_INS) {
-      const oldest = [...this.signIns].sort((a, b) => a[1] - b[1]).slice(0, this.signIns.size - MAX_SIGN_INS);
-      for (const [hash] of oldest) this.signIns.delete(hash);
-    }
-    return this.signIns.size !== before;
-  }
-
-  private save(): void {
-    this.signInStore?.set(JSON.stringify(Object.fromEntries(this.signIns)));
+  /** Where browsers are looked up (src/server/devices.ts); without it only the old token cookie signs in. */
+  useBrowsers(browsers: LocalAccess<D>): void {
+    this.browsers = browsers;
   }
 
   /**
@@ -266,6 +196,11 @@ export class Guard<D = unknown> {
     const site = req.headers['sec-fetch-site'];
     return site === undefined || site === 'same-origin' || site === 'none';
   }
+}
+
+/** A browser's sign-in cookie (Project-Ledung#482), as #476 set it: never sent to scripts or other sites. */
+export function browserCookieHeader(value: string): string {
+  return `${COOKIE_NAME}=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000`;
 }
 
 /**

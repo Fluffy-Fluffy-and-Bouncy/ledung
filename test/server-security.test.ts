@@ -608,54 +608,70 @@ test('without LAN sign-in, only the network names skip sign-in; this computer st
   assert.equal(closed.mayUse(req('192.168.1.20:4317')), false);
 });
 
-// Project-Ledung#476: the sign-in cookie is a sign-in of its own, kept here only as a hash, and revocable.
-test('sign-ins are random, kept as hashes, last through a restart, end when revoked or unused for a year', async () => {
-  const { Guard, MAX_SIGN_INS } = await import('../src/server/security.ts');
-  const held = { saved: null as string | null };
-  const store = { get: () => held.saved, set: (v: string) => { held.saved = v; } };
+// Project-Ledung#476: the sign-in cookie is a sign-in of its own, kept only as a hash, and revocable. Since
+// Project-Ledung#482 each one is a devices row of kind 'browser' (the meta store is gone): the same properties, through
+// the rows.
+test('browser sign-ins are random, kept as hashes, last through a restart, end when removed or unused for a year', async () => {
+  const { Guard } = await import('../src/server/security.ts');
+  const { Devices, MAX_BROWSERS } = await import('../src/server/devices.ts');
+  const db = openDatabase(':memory:');
   let now = 1_000_000;
+  const DAY = 86_400_000;
   const req = (cookie?: string) => ({ headers: { host: '127.0.0.1:4317', cookie } }) as any;
-  const guard = new Guard(TOKEN, 4317, [], false, null, () => now);
-  guard.useSignInStore(store);
-  const set = guard.signInCookie();
-  const value = /^ledung_auth=([0-9a-f]{64});/.exec(set)![1]!;
+  const guardOn = (devices: InstanceType<typeof Devices>, remote: { publicName: string; device: (c: string | null) => unknown } | null = null) => {
+    const guard = new Guard<unknown>(TOKEN, 4317, [], false, remote);
+    guard.useBrowsers({ browser: (cookie) => devices.byCookie(cookie, 'local') });
+    return guard;
+  };
+  const devices = new Devices(db, () => now);
+  const guard = guardOn(devices);
+  const { device, cookie: value } = devices.addBrowser('Firefox on macOS');
+  assert.match(value, /^[0-9a-f]{64}$/);
   assert.notEqual(value, TOKEN);
   assert.equal(guard.signedIn(req(`ledung_auth=${value}`)), true);
   assert.equal(guard.signedIn(req(`ledung_auth=${'c'.repeat(64)}`)), false, 'a made-up value is no sign-in');
   assert.equal(guard.signedIn(req()), false);
-  // Kept as a hash: the store never holds the cookie's value.
-  assert.ok(held.saved && !held.saved.includes(value), 'only the hash is stored');
-  assert.ok(held.saved.includes(crypto.createHash('sha256').update(value).digest('hex')));
-  // A restart: a new guard on the same store still knows it.
-  const restarted = new Guard(TOKEN, 4317, [], false, null, () => now);
-  restarted.useSignInStore(store);
+  // Kept as a hash: the database never holds the cookie's value.
+  const rows = JSON.stringify(db.prepare('SELECT * FROM devices').all());
+  assert.ok(!rows.includes(value), 'only the hash is stored');
+  assert.ok(rows.includes(crypto.createHash('sha256').update(value).digest('hex')));
+  // A restart: new Devices and a new guard on the same database still know it.
+  const restarted = guardOn(new Devices(db, () => now));
   assert.equal(restarted.signedIn(req(`ledung_auth=${value}`)), true);
-  // Revoked: that one ends, another stays; then every one.
-  const other = /^ledung_auth=([0-9a-f]{64});/.exec(restarted.signInCookie())![1]!;
-  assert.equal(restarted.revokeSignIns(value), 1);
+  // Removed: that one ends at once, another stays.
+  const other = devices.addBrowser('Chrome on Windows').cookie;
+  assert.equal(devices.revoke(device.id), true);
   assert.equal(restarted.signedIn(req(`ledung_auth=${value}`)), false);
   assert.equal(restarted.signedIn(req(`ledung_auth=${other}`)), true);
-  assert.equal(restarted.revokeSignIns(), 1);
-  assert.equal(restarted.signedIn(req(`ledung_auth=${other}`)), false);
   // Unused for over a year (the cookie's own Max-Age): it ends; used within it, it stays.
-  const kept = /^ledung_auth=([0-9a-f]{64});/.exec(restarted.signInCookie())![1]!;
-  const idle = /^ledung_auth=([0-9a-f]{64});/.exec(restarted.signInCookie())![1]!;
-  now += 200 * 86_400_000;
+  const kept = devices.addBrowser('Safari on macOS').cookie;
+  const idle = devices.addBrowser('Edge on Windows').cookie;
+  devices.addBrowser('Opera on Linux');
+  now += 200 * DAY;
   assert.equal(restarted.signedIn(req(`ledung_auth=${kept}`)), true);
-  now += 200 * 86_400_000;
+  now += 200 * DAY;
   assert.equal(restarted.signedIn(req(`ledung_auth=${kept}`)), true, 'used 200 days ago: still live');
   assert.equal(restarted.signedIn(req(`ledung_auth=${idle}`)), false, 'unused for 400 days: ended');
-  // At most MAX_SIGN_INS are kept; the least recently used goes first.
-  for (let i = 0; i < MAX_SIGN_INS; i++) { now += 1; restarted.signInCookie(); }
-  assert.equal(restarted.signInCount(), MAX_SIGN_INS);
+  // One whose cookie never comes back leaves the list too; the one in use stays (self-check of #482, finding 2).
+  const names = devices.list().map((d) => d.name);
+  assert.ok(!names.includes('Opera on Linux'), names.join(', '));
+  assert.ok(names.includes('Safari on macOS'), names.join(', '));
+  // At most MAX_BROWSERS are kept; the least recently used go first (here `other`, then `kept`).
+  for (let i = 0; i < MAX_BROWSERS; i++) { now += 1; devices.addBrowser('Browser'); }
+  assert.equal(devices.list().filter((d) => d.kind === 'browser').length, MAX_BROWSERS);
   assert.equal(restarted.signedIn(req(`ledung_auth=${kept}`)), false, 'the oldest went');
-  // The install token's cookie never counts through the public name, nor does a sign-in.
-  const pub = new Guard(TOKEN, 4317, [], false, { publicName: PUBLIC, device: () => null }, () => now);
-  const pubValue = /^ledung_auth=([0-9a-f]{64});/.exec(pub.signInCookie())![1]!;
+  // Neither the install token's cookie nor a browser's counts through the public name, and a browser's cookie is no
+  // device cookie there either; the same browser counts locally.
+  const pub = guardOn(devices, { publicName: PUBLIC, device: (c) => devices.byCookie(c) });
+  const fresh = devices.addBrowser('Firefox on Linux').cookie;
   const viaPublic = (cookie: string) => ({ headers: { host: PUBLIC, cookie } }) as any;
-  assert.equal(pub.signedIn(viaPublic(`ledung_auth=${pubValue}`)), false);
+  assert.equal(pub.signedIn(viaPublic(`ledung_auth=${fresh}`)), false);
   assert.equal(pub.signedIn(viaPublic(COOKIE)), false);
-  assert.equal(pub.signedIn(req(`ledung_auth=${pubValue}`)), true, 'the same sign-in counts locally');
+  assert.equal(pub.deviceOf(viaPublic(`__Host-ledung_device=${fresh}`)), null, 'a browser is no phone through the public name');
+  const phone = devices.pair(devices.newPairCode('phone').code, 'Phone')!.cookie;
+  assert.notEqual(pub.deviceOf(viaPublic(`__Host-ledung_device=${phone}`)), null, 'a phone is, so the lookup itself works');
+  assert.equal(guard.signedIn(req(`ledung_auth=${phone}`)), false, 'and a phone is no browser here');
+  assert.equal(pub.signedIn(req(`ledung_auth=${fresh}`)), true, 'the same browser counts locally');
 });
 
 // Test review of #234, finding 1: through the server's own database, not a stand-in store.
@@ -683,8 +699,8 @@ test('a sign-in from the link lasts through a restart of the server on the same 
   assert.match(value, /^[0-9a-f]{64}$/);
   assert.equal((await first.get('/api/state', cookie)).status, 200);
   await first.s.close();
-  // The database holds the hash, never the value.
-  const saved = store.getMeta('sign-ins') ?? '';
+  // The database holds the hash, never the value: a browser's row (Project-Ledung#482).
+  const saved = JSON.stringify(store.database.prepare("SELECT * FROM devices WHERE kind = 'browser'").all());
   assert.ok(saved.includes(crypto.createHash('sha256').update(value).digest('hex')), 'the hash is in the database');
   assert.ok(!saved.includes(value), 'the value is not');
   // A new server on the same database: the cookie still signs in, a made-up one doesn't.
