@@ -221,9 +221,21 @@ test('switching A, B and back to A before any answer: a message of A stored betw
   const get = async (id: string, q: string) => (await fetch(`${origin}/api/sessions/${id}/messages?limit=500${q}`, { headers: { cookie: COOKIE } })).json() as Promise<StoredMessage[]>;
   // The watches are held, so the test decides when Ledung takes each one.
   const held: string[] = [];
+  // E's reads are taken at once but answered only after the message between B and E is stored, so they cannot carry
+  // it: only the catch-up after Ledung's answer can (test review of fix round 1).
+  const taken: Promise<StoredMessage[]>[] = [];
+  let release!: () => void;
+  const released = new Promise<void>((r) => (release = r));
   const open = new OpenSession({
     send: (text) => held.push(text),
-    messages: (id) => get(id, ''),
+    messages: async (id) => {
+      if (id !== 'E') return get(id, '');
+      const read = get(id, '');
+      taken.push(read);
+      const list = await read;
+      await released;
+      return list;
+    },
     messagesBefore: async () => [],
     messagesAfter: (id, afterId) => get(id, `&after=${afterId}`),
     changed: (v) => views.push(v),
@@ -242,8 +254,12 @@ test('switching A, B and back to A before any answer: a message of A stored betw
     // Ledung takes the watches up to B, so the page gets no message of E for a while...
     held.splice(0, 3).forEach((t) => live.ws.send(t));
     for (let i = 0; i < 3; i++) await live.next('watching');
-    // ...and this one is stored then: not sent live, and only a read after it can bring it.
+    // ...and this one is stored then, after both of E's reads were taken: not sent live, not in a read.
+    const reads = await Promise.all(taken);
+    assert.equal(reads.length, 2, 'the premise: one read per opening of E');
+    for (const list of reads) assert.deepEqual(list.map((m) => m.data.text), ['e0'], 'the premise: the reads were taken before the message');
     say('E', 'between B and E');
+    release();
     held.splice(0).forEach((t) => live.ws.send(t));
     await live.next('watching');
     say('E', 'after');
