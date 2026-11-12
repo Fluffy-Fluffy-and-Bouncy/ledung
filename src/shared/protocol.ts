@@ -393,6 +393,28 @@ export interface ProjectInfo {
    * Level B: the hosts its shell may reach (none: no network) and, for a container, its marked island network.
    */
   lockdown: { level: 'off' | 'A' | 'B'; board: boolean; remoteControl: boolean; network?: string[]; dockerNetwork?: string | null };
+  /** Commands the person allowed always after the classifier refused them (issue #225), newest first. */
+  allowedCalls?: AllowedCall[];
+}
+
+/**
+ * A refused call the person allowed always (issue #225): that exact command runs in every session of the project
+ * without the classifier and without a question, until it is removed in the project's settings.
+ */
+export interface AllowedCall {
+  id: number;
+  project: string;
+  /** Bash or PowerShell. */
+  toolName: string;
+  /** The exact command, as the question showed it. */
+  command: string;
+  /** The person also let it past the project's sensitive list, with its own button. */
+  sensitive: boolean;
+  /** Who allowed it: the user's name. */
+  allowedBy: string;
+  /** The question they answered. */
+  questionId: number;
+  createdAt: number;
 }
 
 /**

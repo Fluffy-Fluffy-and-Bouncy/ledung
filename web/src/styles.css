@@ -868,6 +868,8 @@ table.calls td { white-space: nowrap; }
 .sensitive-list li { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; border: 1px solid var(--border, #8884); border-radius: 6px; padding: 0.3rem 0.5rem; }
 .sensitive-entry { display: flex; flex-direction: column; min-width: 0; }
 .sensitive-entry code { font-size: 0.8em; overflow-wrap: anywhere; }
+/* Allow always rules (#225), under the sensitive list. */
+.allowed-calls { margin-top: 1rem; }
 .sensitive-add { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
 .sensitive-add input { flex: 1 1 12rem; min-width: 0; }
 

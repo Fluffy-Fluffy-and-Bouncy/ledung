@@ -57,6 +57,7 @@ let chatImagesDir: string;
 let sessions: SessionManager;
 const questionAbout: Record<string, number> = {};
 let refusalQuestion = 0;
+let allowedRule = 0;
 let keepQuestion = 0;
 /** Ledung's question to confirm a proposed order, and a manager's question carrying an order's exact command (#105). */
 let confirmQuestion = 0;
@@ -112,6 +113,8 @@ before(async () => {
   const rq = store.createQuestion({ sessionId: 's1', question: 'refused', options: ['Allow once', 'Deny'], addressedTo: 'user', details: { refusal: { toolName: 'Bash', input: { command: 'x' }, reason: 'r', toolUseId: 't' } } });
   store.withdrawQuestion(rq.id, 'test');
   refusalQuestion = rq.id;
+  // An Allow always rule of project p (issue #225), for the removal route.
+  allowedRule = store.addAllowedCall({ project: 'p', toolName: 'Bash', command: 'npm run publish:dev', sensitive: false, allowedBy: 'Simon', questionId: rq.id }).id;
   // An order's keep-it question at the end of away, no longer open (issue #105): Keep puts the order back in force.
   const kq = store.createQuestion({ sessionId: 's1', question: 'keep?', options: ['Keep it', 'Drop it'], addressedTo: 'user', details: { order: { orderId: 1 } } });
   store.withdrawQuestion(kq.id, 'test');
@@ -277,6 +280,25 @@ test("project name colours need the sign-in and Ledung's own origin, like every 
   const ok = await request({ method: 'POST', path: p, headers: { cookie: COOKIE, origin: ORIGIN, 'content-type': 'application/json' }, body });
   assert.equal(ok.status, 200);
   assert.deepEqual(JSON.parse(ok.body).colours, { manager: 'teal', sessions: 'same' });
+});
+
+test("removing an Allow always rule needs the sign-in and Ledung's own origin, like every change (issue #225)", async () => {
+  const p = '/api/projects/p/allowed-remove';
+  const body = JSON.stringify({ id: allowedRule });
+  const listed = async () => (JSON.parse((await request({ path: '/api/projects', headers: { cookie: COOKIE } })).body) as { name: string; allowedCalls?: { id: number }[] }[])
+    .find((x) => x.name === 'p')!.allowedCalls!.map((c) => c.id);
+  assert.deepEqual(await listed(), [allowedRule], "the rule is listed with the project's settings");
+  assert.equal((await request({ method: 'POST', path: p, body })).status, 401);
+  assert.equal((await request({ method: 'POST', path: p, headers: { cookie: COOKIE }, body })).status, 403);
+  assert.equal((await request({ method: 'POST', path: p, headers: { cookie: COOKIE, origin: 'https://evil.example' }, body })).status, 403);
+  assert.deepEqual(await listed(), [allowedRule], 'still there after the refused requests');
+  const ok = await request({ method: 'POST', path: p, headers: { cookie: COOKIE, origin: ORIGIN, 'content-type': 'application/json' }, body });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(JSON.parse(ok.body).allowedCalls, []);
+  assert.deepEqual(await listed(), []);
+  // Gone already: the person's mistake, said in words.
+  const again = await request({ method: 'POST', path: p, headers: { cookie: COOKIE, origin: ORIGIN, 'content-type': 'application/json' }, body });
+  assert.equal(again.status, 400);
 });
 
 test("the chats' name colour needs the sign-in and Ledung's own origin, like a project's (issue #222)", async () => {

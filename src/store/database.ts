@@ -762,6 +762,22 @@ const MIGRATIONS: string[] = [
       AND s.key NOT IN (SELECT cookie_hash FROM devices);
   DELETE FROM meta WHERE key = 'sign-ins';
   `,
+  // Allow always (issue #225): a refused call the person allowed for good, per project, as the exact command; who
+  // allowed it, when and on which question, and whether they also let it past the project's sensitive list. Removed
+  // from the project's settings by deleting the row. One rule per project, tool and command.
+  `
+  CREATE TABLE allowed_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    command TEXT NOT NULL,
+    sensitive INTEGER NOT NULL DEFAULT 0,
+    allowed_by TEXT NOT NULL,
+    question_id INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE (project, tool_name, command)
+  );
+  `,
 ];
 
 export function databaseFile(dir = userDataDir()): string {
