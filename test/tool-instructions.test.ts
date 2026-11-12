@@ -13,8 +13,9 @@ const LONG_GRANT = 'G'.repeat(1000);
 // Room for the paragraph a project's workflow adds after Ledung's own instructions (issue #21).
 const WORKFLOW_ROOM = 1000;
 // How far Ledung may raise the limit: it applies to the session's other tool servers too.
-// Raised from 8192 by the file-link sentence (#325); the worst case here is a 1000-character grant and a 40-character name.
-const RAISE_BUDGET = 8704;
+// Raised from 8192 by the file-link sentence (#325), and from 8704 by the estimates rule and work_history (#254); the
+// worst case here is a 1000-character grant and a 40-character name.
+const RAISE_BUDGET = 9216;
 
 function handlers(role: 'manager' | 'session'): ToolHandlers {
   return {
@@ -53,10 +54,15 @@ test("a manager's instructions arrive whole: the limit covers them, standing gra
   assert.match(s.split('\n').at(-1)!, /^Machine resources: .* pause_session and resume_session pause one of your sessions by hand\.$/);
 });
 
-test("a manager's environment raises Claude Code's limit to cover its instructions; a session's stays at the default", () => {
+test("a manager's environment raises Claude Code's limit to cover its instructions; a session's stays at the default with ordinary names", () => {
   const manager = instructions(handlers('manager'));
   assert.equal(claudeEnvironment({ PATH: 'p' }, undefined, manager)[MCP_LIMIT_ENV], String(manager.length));
-  assert.equal(claudeEnvironment({ PATH: 'p' }, undefined, instructions(handlers('session')))[MCP_LIMIT_ENV], '2048');
+  // A managed session with ordinary names fits the default; the estimates rule (#254) took the rest of the room, so a
+  // 40-character name and a 120-character title raise it, only as far as the text needs.
+  const ordinary = { ...handlers('session'), userName: 'Simon', asksWhom: 'your manager "Manager: Project Ledung"' };
+  assert.equal(claudeEnvironment({ PATH: 'p' }, undefined, instructions(ordinary))[MCP_LIMIT_ENV], '2048');
+  const long = instructions(handlers('session'));
+  assert.equal(claudeEnvironment({ PATH: 'p' }, undefined, long)[MCP_LIMIT_ENV], String(Math.max(2048, long.length)));
 });
 
 test('the environment keeps the rest as before: Ledung\'s own, with an account\'s login instead of any other', () => {

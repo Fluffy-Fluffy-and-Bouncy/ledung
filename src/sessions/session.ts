@@ -128,8 +128,9 @@ export interface TurnGate {
   /** May this session start a turn now? If not, it waits in line (status 'queued'). */
   mayStart(id: string): boolean;
   /** A turn started or ended: for measuring, and to let the next in line start. */
-  started(id: string, trigger: string): void;
-  ended(id: string, commands: string[]): void;
+  started(id: string, trigger: string, at?: number): void;
+  /** waits: the spans a tool call waited on a pause or a usage stop, which are not work (issue #254). */
+  ended(id: string, commands: string[], waits?: [number, number][]): void;
   /** The usage stop holding this session's account (issue #278): no new turn starts, as when paused. */
   usageHold?(id: string): UsageStopInfo | undefined;
   /** A session stopped counting as working without ending its turn (held at a tool call): the line may move. */
@@ -399,6 +400,10 @@ export class Session {
   private fileSettings: Record<string, unknown> | undefined;
   /** A turn is under way (between its start and its result). */
   private turnOpen = false;
+  /** This turn's spans waiting on a pause or a usage stop (issue #254). */
+  private turnWaits: [number, number][] = [];
+  /** A turn under way when Ledung restarted: when it began, for the turn record (issue #254, review of PR #260, finding 2). */
+  private resumedTurnAt: number | null = null;
   /** The kinds of command run this turn (step 6c). */
   private turnCommands: string[] = [];
   /** The usage stop window this session last said it is held for, so it says so once (issue #278). */
@@ -459,7 +464,13 @@ export class Session {
     this.images = opts.images ?? null;
     if (this.attachTo) this.secrets?.attached();
     // Mid-turn when Ledung restarted: that turn began before any stop it now sees, so it finishes (review 2 of #278, finding 3).
-    if (opts.info.status === 'running' || opts.info.status === 'waiting') this.turnStartedAt = 0;
+    if (opts.info.status === 'running' || opts.info.status === 'waiting') {
+      this.turnStartedAt = 0;
+      // Its record goes on from when it really began, not from the first message after the restart. If the turn ended
+      // while Ledung was down, the replay ends it on arrival, so its record also counts that downtime: the seconds of a
+      // restart, accepted (review of PR #260, finding 2).
+      if (opts.attachTo) this.resumedTurnAt = opts.store.turnStart(opts.info.id);
+    }
     this.userName = opts.userName;
     this.management = opts.management;
     this.grant = opts.grant;
@@ -525,6 +536,7 @@ export class Session {
       decidePermission: (request, behavior, scope, message) => m.decidePermission(id, request, behavior, scope, message),
       listPermissions: () => m.listPermissions(id),
       machineStatus: () => m.machineStatus(id),
+      workHistory: (days, limit) => m.workHistory(id, days, limit),
       setPriority: (sid, priority, q) => m.setPriority(id, sid, priority, q),
       setPaused: (sid, paused) => m.setPaused(id, sid, paused),
       mcpStatus: (sid) => m.mcpStatus(id, sid),
@@ -1174,8 +1186,11 @@ export class Session {
         // never see them. "Ask" sends a match to onPermission, in every mode.
         PreToolUse: [{ timeout: 7 * 24 * 3600, hooks: [async (input, toolUseId) => {
           this.noteEffort(input as { agent_id?: string; effort?: { level?: unknown } });
+          const waitFrom = Date.now();
           await this.whilePaused();
           await this.whileHeld();
+          // A pause or a usage stop is no work: work_history leaves the span out (issue #254, review of PR #260, finding 1).
+          if (Date.now() - waitFrom >= 1000) this.turnWaits.push([waitFrom, Date.now()]);
           const i = input as { tool_name?: string; tool_input?: unknown };
           const toolName = i.tool_name ?? '';
           // Compacting or clearing is for the main session only, never a subagent (decided 2026-10-13).
@@ -1803,19 +1818,27 @@ export class Session {
   private beginTurn(trigger: string): void {
     if (this.turnOpen) return;
     this.turnOpen = true;
-    this.turnStartedAt = Date.now();
+    this.turnStartedAt = this.resumedTurnAt ?? Date.now();
+    this.resumedTurnAt = null;
     this.turnBegan = this.turnStartedAt;
     this.turnCommands = [];
-    this.gate.started(this.id, trigger);
+    this.turnWaits = [];
+    this.store.setTurnStart(this.id, this.turnStartedAt);
+    this.gate.started(this.id, trigger, this.turnStartedAt);
   }
 
   private endTurn(): void {
     // The "once" secrets sent before this turn began had their turn (issue #468).
     void this.secrets?.turnEnded(this.turnBegan).catch((e) => console.error(`Secrets of ${this.id}: ${(e as Error).message}`));
+    // A result ends whatever turn was under way, even one that never opened here: after a restart the replay can bring
+    // only the result, and a start kept from before must not become the next turn's, hours later (review of PR #260, finding 6).
+    this.resumedTurnAt = null;
+    this.store.setTurnStart(this.id, null);
     if (!this.turnOpen) return;
     this.turnOpen = false;
-    this.gate.ended(this.id, [...new Set(this.turnCommands)]);
+    this.gate.ended(this.id, [...new Set(this.turnCommands)], this.turnWaits);
     this.turnCommands = [];
+    this.turnWaits = [];
   }
 
   /**
