@@ -33,15 +33,19 @@ const OPTION = String.raw`--?\w[\w-]*(?:=\S+)?`;
 export const PUBLISH_PATTERN = String.raw`\bnpm(?:\s+${OPTION}(?:\s[^\s-]\S*)?)*\s+publish\b`;
 /** Options git takes before its command: `-C dir`, `-c key=value`, `--git-dir x`, `--no-pager` and the like. */
 const GIT_OPTIONS = String.raw`(?:\s+(?:-[Cc]\s+[^\s-]\S*|--(?:git-dir|work-tree|namespace|exec-path|config-env)\s+[^\s-]\S*|${OPTION}))*`;
-/** Push options, with their values when written with "=". */
-const PUSH_OPTIONS = String.raw`(?:\s+${OPTION})*`;
+/** Push options that take their value as the next word (`-o ci.skip`, `--repo origin`), so it is not read as the remote. */
+const PUSH_VALUED = String.raw`(?:-o|--push-option|--repo|--receive-pack|--exec)\s+[^\s-]\S*`;
+/** Push options, with their values; a valued one is read only with its value, keeping one way of reading each word. */
+const PUSH_OPTIONS = String.raw`(?:\s+(?:${PUSH_VALUED}|(?!${PUSH_VALUED})${OPTION}))*`;
+/** Output and input redirection, with or without a space before its target (`2>&1`, `> /dev/null`, `&> log`). */
+const REDIRECTS = String.raw`(?:\s+\d*(?:>>?|<|&>>?)(?:&[\d-]|\s*[^\s|;&<>]+))*`;
 /**
  * Pushing to main or master, or force-pushing (Project-Ledung#473): with git's own options before `push`; a force
  * as `--force…`, a short `-f` among others (`-uf`) or a `+` refspec; and a push that names no branch (`git push`,
  * `git push origin`, `git push -u origin HEAD`), which pushes the current one, main included. A push of a named
  * branch other than main or master (`git push -u origin feature`) is not it.
  */
-export const PUSH_PATTERN = String.raw`\bgit${GIT_OPTIONS}\s+push\b(?:[^|;&]*(?:\s--force\b|\s-[A-Za-z]*f[A-Za-z]*\b|\s\+\S|\bmain\b|\bmaster\b)|${PUSH_OPTIONS}(?:\s+[^\s|;&<>-]\S*${PUSH_OPTIONS}(?:\s+(?:HEAD|@)${PUSH_OPTIONS})?)?(?:\s+\d*[<>]\S*)*\s*(?:$|[|;&)]))`;
+export const PUSH_PATTERN = String.raw`\bgit${GIT_OPTIONS}\s+push\b(?:[^|;&]*(?:\s--force\b|\s-[A-Za-z]*f[A-Za-z]*\b|\s\+\S|\bmain\b|\bmaster\b)|${PUSH_OPTIONS}(?:\s+[^\s|;&<>-]\S*${PUSH_OPTIONS}(?:\s+(?:HEAD|@)${PUSH_OPTIONS})?)?${REDIRECTS}\s*(?:$|[|;&)]))`;
 
 /** The suggested patterns before Project-Ledung#473, replaced by the ones above in lists that still have them. */
 const OLD_PUBLISH_PATTERN = String.raw`\bnpm\s+publish\b`;

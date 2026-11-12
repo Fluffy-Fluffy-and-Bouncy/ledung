@@ -54,12 +54,16 @@ test('#473: the suggested push entry holds a push that names no branch, and git 
     'git push -q', 'git --no-pager push origin main', 'git -C x push origin main', 'git --git-dir=.git push',
     'git -c core.askPass=x --no-pager push', 'git push -uf origin feature', 'git push origin +feature',
     'git push --force-if-includes origin feature',
+    // Review round 1: redirection with a space before its target, and options that take the next word as their value.
+    'git push > /dev/null 2>&1', 'git push origin > out.txt', 'git push 2> err.txt', 'git push &> log.txt', 'git push origin HEAD >> log.txt 2>&1',
+    'git push -o ci.skip', 'git push -o ci.skip origin', 'git push --push-option ci.skip origin HEAD', 'git push --repo origin',
   ];
   for (const c of loud) assert.equal(bash(c), PUSH, c);
   // A named branch other than main or master is not held, with or without options (positive branch above).
   const quiet = [
     'git push -u origin agent/sensitive-473', 'git push origin feature/login', 'git -C repo push origin feature',
     'git --no-pager push origin fix-123', 'git push origin HEAD:agent/x', 'git push --follow-tags origin feature',
+    'git push origin feature > out.txt', 'git push -u origin feature 2>&1 | tail -3', 'git push -o ci.skip origin feature',
   ];
   for (const c of quiet) assert.equal(bash(c), null, c);
 });
@@ -75,6 +79,7 @@ test('#473: a long list of options is checked at once, not by trying every way o
   const slow = [
     `git push ${opts('--a', 40)} x y z`, `git push ${opts('-a', 40)} x y z`, `git ${opts('--a', 40)} x`,
     `git ${opts('-C', 40)} x`, `npm ${opts('--a', 40)} x`, `npm ${opts('-a', 40)} x`,
+    `git push ${opts('-o x', 40)} y z`, `git push ${opts('-o', 40)} y z w`, `git push x ${opts('> y', 40)} z`,
   ];
   for (const c of slow) {
     const start = performance.now();
@@ -112,21 +117,25 @@ test('#473: existing lists get the wider push and publish entries in place, once
   const batch = LATER_SUGGESTIONS.find((b) => b.replaces && Object.keys(b.replaces).length > 0)!;
   assert.ok(batch, 'a later batch carries the replacement');
   assert.equal(LATER_SUGGESTIONS.filter((b) => b.key === batch.key).length, 1, 'under a key of its own');
-  const [oldPush, oldPublish] = Object.keys(batch.replaces!).sort((a, b) => b.length - a.length);
+  // The entries as existing lists hold them: the suggestions on main before #473, copied here as text (test review,
+  // round 1), so a slip in the code's copy of them can't make the replacement quietly match nothing.
+  const oldPush = String.raw`\bgit\s+(?:-[Cc]\s+\S+\s+)*push\b[^|;&]*(\s--force\b|\s-f\b|\s--force-with-lease\b|\bmain\b|\bmaster\b)`;
+  const oldPublish = String.raw`\bnpm\s+publish\b`;
+  assert.deepEqual(Object.keys(batch.replaces!).sort(), [oldPush, oldPublish].sort(), 'the batch replaces exactly the old entries');
   const now = (name: string) => SUGGESTIONS.find((s) => s.name === name)!.pattern;
-  assert.equal(batch.replaces![oldPush!], now(PUSH));
-  assert.equal(batch.replaces![oldPublish!], now(PUBLISH));
+  assert.equal(batch.replaces![oldPush], now(PUSH));
+  assert.equal(batch.replaces![oldPublish], now(PUBLISH));
 
   const db = new Store(openDatabase(':memory:')).database;
   const projects = new ProjectStore(db);
   for (const key of ['sensitive-suggestions-added', ...LATER_SUGGESTIONS.filter((b) => b !== batch).map((b) => b.key)]) {
     db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run(key, 'before');
   }
-  const older = ['mine', oldPublish!, 'other', oldPush!];
+  const older = ['mine', oldPublish, 'other', oldPush];
   const add = (name: string, commandPatterns: string[]) => projects.add({ name, runner: 'local', path: `C:/p/${name}`, sensitive: { commandPatterns, pathPatterns: [], mcpTools: [] } });
   add('old', older);
   add('deleted', ['mine']);
-  add('edited', ['mine', `${oldPush!}|deploy`]);
+  add('edited', ['mine', `${oldPush}|deploy`]);
   const list = (name: string) => projects.get(name)!.config.sensitive;
   assert.equal(bash('git push', list('old')), null, 'premise: the old entry lets a bare push by');
   assert.equal(projects.addSuggestionsOnce(), 1, 'only the list that had the old entries changes');
@@ -134,11 +143,11 @@ test('#473: existing lists get the wider push and publish entries in place, once
   assert.equal(bash('git push', list('old')), PUSH);
   assert.equal(bash('npm --tag dev publish', list('old')), PUBLISH);
   assert.deepEqual(list('deleted').commandPatterns, ['mine']);
-  assert.deepEqual(list('edited').commandPatterns, ['mine', `${oldPush!}|deploy`]);
+  assert.deepEqual(list('edited').commandPatterns, ['mine', `${oldPush}|deploy`]);
   assert.ok(db.prepare('SELECT 1 FROM meta WHERE key = ?').get(batch.key), 'recorded under its key');
   assert.equal(projects.addSuggestionsOnce(), 0, 'once');
   // A list that has both the old and the new entry keeps one.
-  assert.deepEqual(withLaterBatch([oldPush!, now(PUSH)], batch), [now(PUSH)]);
+  assert.deepEqual(withLaterBatch([oldPush, now(PUSH)], batch), [now(PUSH)]);
   // A pattern that is only text is kept as it is, whatever it is called (positive branch: oldPush above is replaced).
-  assert.deepEqual(withLaterBatch(['constructor', 'toString', '__proto__', oldPush!], batch), ['constructor', 'toString', '__proto__', now(PUSH)]);
+  assert.deepEqual(withLaterBatch(['constructor', 'toString', '__proto__', oldPush], batch), ['constructor', 'toString', '__proto__', now(PUSH)]);
 });
