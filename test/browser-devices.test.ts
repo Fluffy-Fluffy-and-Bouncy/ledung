@@ -99,13 +99,13 @@ const closed = (ws: WebSocket) => new Promise<number>((resolve) => {
 test('a browser signed in before the update stays signed in through it: its #476 sign-in becomes a browser row with the same hash, and no sign-in hash stays in meta', async () => {
   clock = 0;
   const file = path.join(dir, 'upgrade.db');
-  // A database as the release before left it (schema version 48), holding two #476 sign-ins and two entries that are
+  // A database as the release before left it (schema version 49), holding two #476 sign-ins and two entries that are
   // not sign-ins (a key that is no hash, a last use that is no number).
   const kept = crypto.randomBytes(32).toString('hex');
   const other = crypto.randomBytes(32).toString('hex');
   const usedAt = Date.now() - 2 * DAY;
   const before = openDatabase(file);
-  before.exec('PRAGMA user_version = 48');
+  before.exec('PRAGMA user_version = 49');
   const signIns = { [sha(kept)]: usedAt, [sha(other)]: usedAt - DAY, 'not-a-hash': usedAt, [sha('x')]: 'yesterday' };
   before.prepare("INSERT INTO meta (key, value) VALUES ('sign-ins', ?)").run(JSON.stringify(signIns));
   // The premise: the hash is in meta before the update.
@@ -113,7 +113,7 @@ test('a browser signed in before the update stays signed in through it: its #476
   before.close();
 
   const { store, request, list } = await serve(file);
-  assert.equal((store.database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 49);
+  assert.equal((store.database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 50);
   const rows = store.database.prepare('SELECT * FROM devices').all() as { cookie_hash: string; kind: string; name: string; revoked_at: number | null }[];
   assert.deepEqual(rows.map((r) => r.cookie_hash).sort(), [sha(kept), sha(other)].sort(), 'each sign-in is a row with the same hash; the two non-sign-ins are dropped');
   assert.ok(rows.every((r) => r.kind === 'browser' && r.revoked_at === null && r.name === 'Browser signed in before the update'));

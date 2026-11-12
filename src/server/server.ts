@@ -120,8 +120,6 @@ export const PLAIN_READS = new Set([
  * (test/server-security.test.ts, "a project's flow needs the sign-in"; code review of PR #234, finding 1).
  */
 export const SITE_ONLY_READS = new Set(['GET projects/:id/flow']);
-/** Logged once, the first time a browser's old token cookie is swapped for a sign-in (Project-Ledung#476). */
-let exercised476 = false;
 /** Logged once, the first time a browser signs in through its devices row (Project-Ledung#482). */
 let exercised482 = false;
 
@@ -906,10 +904,6 @@ export class LedungServer {
     const page = dest === undefined ? (req.headers.accept ?? '').includes('text/html') : dest === 'document';
     if (this.guard.oldTokenCookie(req) && page) {
       res.setHeader('Set-Cookie', this.addBrowser(req));
-      if (!exercised476) {
-        exercised476 = true;
-        exercisedLine('EXERCISED #476 an old token cookie was swapped for a sign-in on a page load');
-      }
     }
     this.serveStatic(url.pathname, res, this.guard.mayUse(req), remote);
   }

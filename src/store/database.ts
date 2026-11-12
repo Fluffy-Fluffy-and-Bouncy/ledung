@@ -711,6 +711,13 @@ const MIGRATIONS: string[] = [
   ALTER TABLE sessions ADD COLUMN requested_effort TEXT;
   ALTER TABLE sessions ADD COLUMN effort TEXT;
   `,
+  // Work time for work_history (issue #254, review of PR #260): the spans inside a turn a tool call waited on a pause or
+  // a usage stop, as JSON [[start, end], ...] (null: none, or a turn recorded before this); and when the turn now under
+  // way began, so a turn that runs across Restart Ledung is measured whole (null: none under way).
+  `
+  ALTER TABLE turn_resources ADD COLUMN waits TEXT;
+  ALTER TABLE sessions ADD COLUMN turn_started_at INTEGER;
+  `,
   // Browsers become devices (Project-Ledung#482, step 1 of #477): a browser's sign-in is a devices row of kind
   // 'browser' (kind is free text, so no column changes). Each of #476's sign-ins, the meta entry 'sign-ins' holding
   // {cookie hash: last use in ms}, becomes such a row with the same hash, so the same cookie keeps signing in and nobody
