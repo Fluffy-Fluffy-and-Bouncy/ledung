@@ -27,6 +27,14 @@ function filePaths(input: Record<string, unknown>): string[] {
   return ['file_path', 'path', 'notebook_path'].map((k) => input[k]).filter((v): v is string => typeof v === 'string');
 }
 
+/**
+ * A shell word that reads as code, not a file: no slash, and a dot inside it, not at its start (`process.env`,
+ * `import.meta.env`). It is not matched against the path entries, so `grep -rn process.env src` is not asked
+ * (Martin, 2026-11-12, Ledung question #838: "b — Skip code-like words"; #278). The cost: a bare file argument
+ * such as `config.prod.env` or `server.key` is not matched either; `.env`, `./server.key` and `config/.env` are.
+ */
+export const CODE_LIKE_WORD = /^[^/\\.][^/\\]*\.[^/\\]+$/;
+
 /** The rule named for a call that is always the user's to approve, whatever the lists say. */
 export const ALWAYS_ASKED_RULE = "a manager's project tool, always yours to approve";
 /** The rule named for a call that names Ledung's own data folder (Project-Ledung#473). */
@@ -123,8 +131,9 @@ export function matchSensitive(
       if (read.lines.some((l) => re.test(l))) return { rule: suggestionName(p, 'command') ?? `command matches /${p}/` };
     }
     // The files a command names meet the path patterns too, as a file tool's path does (Project-Ledung#473):
-    // a shell reads a file as well as the Read tool.
+    // a shell reads a file as well as the Read tool. A word that reads as code is not a file here (#278).
     for (const file of read.paths) {
+      if (CODE_LIKE_WORD.test(file)) continue;
       for (const p of rules.pathPatterns ?? []) {
         if (new RegExp(p, 'i').test(file)) return { rule: suggestionName(p, 'path') ?? `path matches /${p}/` };
       }
