@@ -199,6 +199,22 @@ function rawAgent(port: number, name: string, secret: string, hello: string | nu
   });
 }
 
+/**
+ * The kind of the next frame the relay sends an agent. Text messages are skipped: right after its
+ * hello the relay sends its cap status as text (`{...`), and it can arrive after the caller starts
+ * waiting, which read its `{` (123) as the frame kind (issue #228).
+ */
+function nextFrameKind(ws: WebSocket): Promise<number> {
+  return new Promise((resolve) => {
+    const onMessage = (data: Buffer, isBinary: boolean) => {
+      if (!isBinary) return;
+      ws.off('message', onMessage);
+      resolve(decodeFrame(data)!.kind);
+    };
+    ws.on('message', onMessage);
+  });
+}
+
 test('the link starts with a versioned hello each way; phones reach the Ledung only after it (review 165, plan step 1)', T, async () => {
   const { port, relay, lines } = await startRelay();
   // Signed in, no hello yet: not reachable.
@@ -219,7 +235,7 @@ test('the link starts with a versioned hello each way; phones reach the Ledung o
   // The right hello: answered with the relay's, and phones reach it.
   const good = await rawAgent(port, 'pc', SECRET);
   assert.deepEqual(relay.connected(), ['pc']);
-  const opened = new Promise<number>((resolve) => good.ws!.once('message', (data: Buffer) => resolve(decodeFrame(data)!.kind)));
+  const opened = nextFrameKind(good.ws!);
   const socket = net.connect(port, '127.0.0.1', () => socket.write(`GET / HTTP/1.1\r\nHost: ${HOST}\r\n\r\n`));
   socket.on('error', () => {});
   assert.equal(await opened, FRAME.open);
@@ -325,7 +341,7 @@ test('a second connection with the same name replaces the first', T, async () =>
   assert.equal(await closed, 4000);
   assert.deepEqual(relay.connected(), ['pc']);
   // Phones now reach the second: it gets the stream.
-  const opened = new Promise<number>((resolve) => second.ws!.once('message', (data: Buffer) => resolve(decodeFrame(data)!.kind)));
+  const opened = nextFrameKind(second.ws!);
   const socket = net.connect(port, '127.0.0.1', () => socket.write(`GET / HTTP/1.1\r\nHost: ${HOST}\r\n\r\n`));
   socket.on('error', () => {});
   assert.equal(await opened, FRAME.open);
@@ -336,10 +352,10 @@ test('a second connection with the same name replaces the first', T, async () =>
 test('phone connections beyond the per-agent limit are refused', T, async () => {
   const { port, lines } = await startRelay({ maxStreamsPerAgent: 1 });
   const agent = await rawAgent(port, 'pc', SECRET);
-  const opened = new Promise<void>((resolve) => agent.ws!.once('message', () => resolve()));
+  const opened = nextFrameKind(agent.ws!);
   const held = net.connect(port, '127.0.0.1', () => held.write(`GET / HTTP/1.1\r\nHost: ${HOST}\r\n\r\n`));
   held.on('error', () => {});
-  await opened;
+  assert.equal(await opened, FRAME.open);
   const second = (await phone(port, Buffer.from(`GET / HTTP/1.1\r\nHost: ${HOST}\r\n\r\n`))).toString();
   assert.match(second, /^HTTP\/1\.1 503/);
   assert.match(second, /Too many connections/);
@@ -681,10 +697,10 @@ test('the default senders are loopback and the private ranges, IPv4-mapped forms
 test('passed-through connections beyond the per-agent limit are closed', T, async () => {
   const { port, passPort, lines } = await startPassRelay({ maxStreamsPerAgent: 1 });
   const agent = await rawAgent(port, 'e2e', SECRET);
-  const opened = new Promise<void>((resolve) => agent.ws!.once('message', () => resolve()));
+  const opened = nextFrameKind(agent.ws!);
   const held = net.connect(passPort, '127.0.0.1', () => held.write(Buffer.concat([proxyV4('198.51.100.9'), browserHello(PASS_HOST)])));
   held.on('error', () => {});
-  await opened;
+  assert.equal(await opened, FRAME.open);
   assert.equal((await passPhone(passPort, Buffer.concat([proxyV4('198.51.100.10'), browserHello(PASS_HOST)]))).length, 0);
   assert.ok(lines.some((l) => l.includes('stream refused') && l.includes('"198.51.100.10"')));
   held.destroy();
