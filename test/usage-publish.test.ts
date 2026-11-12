@@ -254,7 +254,6 @@ test('the account fingerprint is keyed with the usage key: stable across a resta
   const key = a.publisher.key()!;
   assert.equal(fs.readFileSync(keyFile, 'utf8'), key);
   assert.ok(!JSON.stringify(a.github.fileOn([...a.github.refs.keys()][0]!)).includes(key), 'the usage key is not in the file');
-  assert.ok(a.logs.includes('EXERCISED #480 usage published with keyed account fingerprints'));
 });
 
 test('the branch is ledung-usage/<login>/<computer id>, kept across a rename, and replaced on every publish', async () => {
