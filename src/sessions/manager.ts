@@ -115,7 +115,7 @@ import type { SecretInfo, SecretLifetime } from '../shared/secrets.ts';
 import { FlowRunError, FlowRuns, lastReplyOf } from './flow-runs.ts';
 import { dockerWorktreeHost, localWorktreeHost } from './run-worktrees.ts';
 import { RunStore } from './run-store.ts';
-import type { FlowRun } from '../shared/flow-run.ts';
+import { STEP_QUESTIONS, type FlowRun, type StepQuestions } from '../shared/flow-run.ts';
 import type { RunBlock } from '../shared/protocol.ts';
 import type { ProposeHandlers, RunHandlers } from './tools.ts';
 import { buildProposal, ProposalStore, proposalSummary, type ProposedChange } from './flow-propose.ts';
@@ -123,6 +123,8 @@ import type { FlowProposal } from '../shared/flow-proposal.ts';
 
 /** The meta key, with the project's name, that says "Record where this came from" was dismissed (workflow-origin.md, section 4). */
 const ORIGIN_DISMISSED = 'flow-origin-dismissed:';
+/** Where Settings → Questions at a workflow step is kept (#291): this Ledung's own data, not the config file. */
+const STEP_QUESTIONS_KEY = 'step-questions';
 
 /** Ledung's own plugin with the "workflow building" skill (part 3e, #1577), shipped beside src/ and web/. */
 export const WORKFLOW_PLUGIN = () => path.join(appDir(), 'plugins', 'ledung-workflow');
@@ -423,6 +425,7 @@ export class SessionManager {
         if (this.store.withdrawQuestion(id, reason)) this.publish({ type: 'question', question: this.store.getQuestion(id)! });
       },
       tiers: (project) => tiersOf(this.projectStore.get(project)?.config.questionTiers),
+      stepQuestions: () => this.stepQuestions(),
       userName: config.userName,
     });
     this.gate = {
@@ -990,6 +993,21 @@ export class SessionManager {
     } catch (e) {
       throw new UserError((e as Error).message);
     }
+  }
+
+  /**
+   * Settings → Questions at a workflow step (#291, Martin 2026-11-12, Ledung questions #873 and #875): Ledung's card
+   * (the default, as before) or the manager's full write-up, kept in this Ledung's own data for all its projects.
+   */
+  stepQuestions(): StepQuestions {
+    const v = this.store.getMeta(STEP_QUESTIONS_KEY);
+    return v === 'write-up' ? 'write-up' : 'card';
+  }
+
+  setStepQuestions(value: unknown): StepQuestions {
+    if (!STEP_QUESTIONS.includes(value as StepQuestions)) throw new UserError(`Questions at a workflow step are ${STEP_QUESTIONS.map((s) => `"${s}"`).join(' or ')}.`);
+    this.store.setMeta(STEP_QUESTIONS_KEY, value as StepQuestions);
+    return this.stepQuestions();
   }
 
   setResourceSettings(body: Record<string, unknown>): void {

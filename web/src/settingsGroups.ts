@@ -54,6 +54,8 @@ export const LEDUNG_GROUPS: SettingsGroup[] = [
     settings: [
       { label: 'Skills', about: 'Which of your own skills managers and sessions get', keywords: ['skill', 'plugins', 'commands'] },
       { label: 'Session profiles', storedIn: 'config', about: 'Sets of tools and settings sessions start with', keywords: ['profile', 'tools', 'mcp'] },
+      // Issue #291: Ledung's card or the manager's full write-up.
+      { label: 'Questions at a workflow step', about: "Who writes the question when a run reaches a step where you decide: Ledung's card or the manager", keywords: ['workflow', 'run', 'question', 'write-up', 'merge', 'review', 'card', 'manager'] },
     ],
   },
   {

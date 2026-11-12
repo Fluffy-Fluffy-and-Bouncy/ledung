@@ -15,6 +15,7 @@ import type { AccountChoices, AccountInfoView, BoardStatus, CertificateStatus, C
 import { UsageStopsSettings } from './UsageStopsSettings.tsx';
 import { SkillDefaults } from './SkillPicker.tsx';
 import { ProfilesSettings } from './ProfilesSettings.tsx';
+import { StepQuestionsSettings } from './StepQuestionsSettings.tsx';
 import { ClaudeCodeSettings } from './ClaudeCodeSettings.tsx';
 import { CopyButton } from './Markdown.tsx';
 import { certificateLine, remoteLine } from '../remoteStatus.ts';
@@ -129,6 +130,7 @@ function GroupContent(props: GroupProps) {
         <>
           <SkillDefaults run={props.run} />
           <ProfilesSettings />
+          <StepQuestionsSettings run={props.run} />
         </>
       );
     case 'macros':
