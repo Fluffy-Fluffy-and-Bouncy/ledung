@@ -1,13 +1,13 @@
 // The page's live view of Ledung: sessions, pending permissions and the open session's messages,
 // kept up to date over the live connection.
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AccountChoices, AccountInfoView, ChatsInfo, AwayInfo, ConfigStatus, BoardStatus, GitHubBudget, LimitInfo, UsageStopInfo, SignInKind, SignInProblem, MachineInfo, Overview, PermissionInfo, ProjectInfo, QuestionInfo, NewComputerInfo, LinkPairingInfo, RemoteStatus, ServerEvent, SessionInfo, SourceOffer, StoredMessage } from '../../src/shared/protocol.ts';
+import type { AccountChoices, AccountInfoView, ChatsInfo, AwayInfo, ConfigStatus, BoardStatus, GitHubBudget, LimitInfo, UsageStopInfo, SignInKind, SignInProblem, MachineInfo, Overview, PermissionInfo, ProjectInfo, QuestionInfo, NewComputerInfo, LinkPairingInfo, RemoteStatus, ServerEvent, SessionInfo, SourceOffer } from '../../src/shared/protocol.ts';
 import type { OrderInfo } from '../../src/shared/orders.ts';
 import type { Macro } from '../../src/shared/macros.ts';
 import type { FlowRun } from '../../src/shared/flow-run.ts';
 import type { ComputerInfo } from '../../src/shared/computers.ts';
 import { api, connectionHello, openConnection, setReconnect } from './api.ts';
-import { fetchNewer, PAGE, withNewer } from './catchUp.ts';
+import { OpenSession, type OpenSessionView } from './openSession.ts';
 import { secretsChanged } from './secretLock.ts';
 import { pollWhileShown } from './pollShown.ts';
 
@@ -20,8 +20,7 @@ export function useLedung(openSessionId: string | null) {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [permissions, setPermissions] = useState<Record<string, PermissionInfo>>({});
-  const [messages, setMessages] = useState<StoredMessage[]>([]);
-  const [hasEarlier, setHasEarlier] = useState(false);
+  const [{ messages, hasEarlier }, setView] = useState<OpenSessionView>({ messages: [], hasEarlier: false });
   const [canRestart, setCanRestart] = useState(false);
   /** How many times hello has arrived: a new one after a restart means Ledung is back. */
   const [hellos, setHellos] = useState(0);
@@ -64,46 +63,26 @@ export function useLedung(openSessionId: string | null) {
   /** The config file's reloads (issue #353). */
   const [configStatus, setConfigStatus] = useState<ConfigStatus | null>(null);
   const buildRef = useRef<string | null>(null);
-  const openRef = useRef(openSessionId);
-  openRef.current = openSessionId;
-  /** The shown messages and the session they belong to, for the catch-up after a reconnect. */
-  const shownRef = useRef<{ sessionId: string | null; messages: StoredMessage[] }>({ sessionId: null, messages: [] });
-  shownRef.current.messages = messages;
+  /** The live connection, while it is open: the open session is watched on it (issue #231). */
+  const liveRef = useRef<WebSocket | null>(null);
+  const openRef = useRef<OpenSession | null>(null);
+  openRef.current ??= new OpenSession({
+    send: (text) => {
+      const ws = liveRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(text);
+    },
+    messages: (id) => api.messages(id),
+    messagesBefore: (id, before) => api.messages(id, before),
+    messagesAfter: (id, after) => api.messagesAfter(id, after),
+    changed: setView,
+  });
+  const open = openRef.current;
 
-  const loadMessages = useCallback(async (sessionId: string) => {
-    const list = await api.messages(sessionId);
-    if (openRef.current !== sessionId) return;
-    shownRef.current = { sessionId, messages: list };
-    setMessages(list);
-    setHasEarlier(list.length >= PAGE);
-  }, []);
-
-  // After a reconnect only what was missed is added, so earlier messages and the reader's place stay (issue #178).
-  const catchUp = useCallback(async (sessionId: string) => {
-    const shown = shownRef.current;
-    const last = shown.messages.at(-1);
-    if (shown.sessionId !== sessionId || !last) return loadMessages(sessionId);
-    const newer = await fetchNewer(last.id, (after) => api.messagesAfter(sessionId, after));
-    if (openRef.current !== sessionId) return;
-    setMessages((m) => withNewer(m, newer));
-  }, [loadMessages]);
-
-  const loadEarlier = useCallback(async () => {
-    const sessionId = openRef.current;
-    const first = messages[0];
-    if (!sessionId || !first) return;
-    const list = await api.messages(sessionId, first.id);
-    if (openRef.current !== sessionId) return;
-    setMessages((m) => [...list, ...m]);
-    setHasEarlier(list.length >= PAGE);
-  }, [messages]);
+  const loadEarlier = useCallback(() => open.loadEarlier().catch(() => {}), [open]);
 
   useEffect(() => {
-    shownRef.current = { sessionId: null, messages: [] };
-    setMessages([]);
-    setHasEarlier(false);
-    if (openSessionId) loadMessages(openSessionId).catch(() => {});
-  }, [openSessionId, loadMessages]);
+    open.open(openSessionId);
+  }, [openSessionId, open]);
 
   useEffect(() => {
     let ws: WebSocket | null = null;
@@ -114,12 +93,18 @@ export function useLedung(openSessionId: string | null) {
     const connect = () => {
       setConnection('connecting');
       // Its key dies when it closes (api.ts); a change then waits for the next hello's key.
-      ws = openConnection(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+      const mine = openConnection(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+      ws = mine;
+      // The new connection is told what the page shows once its hello has come.
+      liveRef.current = mine;
+      open.disconnected();
       ws.onopen = () => {
         retry = 500;
         setConnection('open');
       };
       ws.onclose = () => {
+        // A replaced connection's late close must not mark its successor as down (self-check of #231).
+        if (liveRef.current === mine) open.disconnected();
         setConnection('closed');
         if (!stopped) timer = setTimeout(connect, (retry = Math.min(retry * 2, 10000)));
       };
@@ -164,8 +149,9 @@ export function useLedung(openSessionId: string | null) {
             setThroughPublicName(event.throughPublicName ?? false);
             setConfigStatus(event.config ?? null);
             setPermissions(Object.fromEntries(event.permissions.map((p) => [p.id, p])));
-            // After a reconnect, catch up on anything missed.
-            if (openRef.current) catchUp(openRef.current).catch(() => {});
+            // Tells this connection what the page shows; Ledung's answer starts the read (or after a reconnect the
+            // catch-up on anything missed).
+            open.connected();
             api.machine().then(setMachine, () => {});
             api.accounts().then((a) => {
               setAccounts(a.accounts);
@@ -251,10 +237,11 @@ export function useLedung(openSessionId: string | null) {
           case 'permission':
             setPermissions((p) => ({ ...p, [event.permission.id]: event.permission }));
             break;
+          case 'watching':
+            open.watching(event.sessionId).catch(() => {});
+            break;
           case 'message':
-            if (event.message.sessionId === openRef.current) {
-              setMessages((m) => (m.some((x) => x.id === event.message.id) ? m : [...m, event.message]));
-            }
+            open.message(event.message);
             break;
         }
       };
@@ -278,7 +265,7 @@ export function useLedung(openSessionId: string | null) {
       clearTimeout(timer);
       ws?.close();
     };
-  }, [catchUp]);
+  }, [open]);
 
   // Which projects have a workflow, and their runs, for the sidebar's Workflow row: read on each hello (a reconnect
   // cleared the runs), when the projects change, and when the page is shown again (a flow.json written by hand).
