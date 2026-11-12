@@ -92,6 +92,7 @@ import { useComputerLink } from './useComputerLink.ts';
 import { useInstallApp } from './useInstallApp.ts';
 import { InstallNotice } from './components/InstallApp.tsx';
 import { ShortcutNotice } from './components/Shortcuts.tsx';
+import { StepQuestionsPicker } from './components/StepQuestionsPicker.tsx';
 import { CheckInNotice } from './components/CheckIn.tsx';
 import { caretPoint, MaskedSecret, SecretChips, SecretEditor, SelectionKey, SessionSecretsMenu } from './components/SecretLock.tsx';
 import { chipsFor, insertToken, lockInDraft, lockRange, renameToken } from './secretLock.ts';
@@ -512,6 +513,8 @@ export function App() {
       {backToSetup}
       {/* During the setup the helper shows these as steps of their own. */}
       {!inSetup && <ShortcutNotice run={run} />}
+      {/* The first-run picker for workflow-step questions (#293) comes after the setup too. */}
+      {!inSetup && <StepQuestionsPicker run={run} />}
       {!inSetup && <CheckInNotice run={run} />}
       {ledung.usageStops.filter((s) => s.holding).map((s) => (
         <div key={`${s.account}:${s.kind}`} className="banner updated">

@@ -35,6 +35,16 @@ export interface RunStep {
 export type StepQuestions = 'card' | 'write-up';
 export const STEP_QUESTIONS: readonly StepQuestions[] = ['card', 'write-up'];
 
+/**
+ * Settings → Questions at a workflow step as the page reads it (#291), with the first-run picker (#293): `picker`
+ * when the config's testFeatures turns it on, `ask` while this Ledung has neither a saved choice nor a Skip.
+ */
+export interface StepQuestionsView {
+  choice: StepQuestions;
+  picker: boolean;
+  ask: boolean;
+}
+
 export interface FlowRun {
   /** Ledung's own, e.g. "run-12". */
   id: string;
