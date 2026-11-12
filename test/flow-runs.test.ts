@@ -137,9 +137,11 @@ async function engine(opts: { following?: boolean; flows?: Awaited<ReturnType<ty
     await runs.overdue();
   };
   /** A session calls the real ask_user tool, as a manager writing up a person step does (#291). */
-  const askUser = async (caller: string, input: Record<string, unknown>) => {
+  const askUser = async (caller: string, input: Record<string, unknown>, attaching?: () => Promise<void>) => {
     const h: ToolHandlers = {
       userName: 'Simon', role: store.getSession(caller)!.role, asksWhom: 'Simon',
+      // Fetching the sources it attaches, held open by a test that wants something to happen meanwhile.
+      ...(attaching ? { attach: async () => { await attaching(); return []; } } : {}),
       ask: (question, options, _about, _request, details) => store.createQuestion({ sessionId: caller, question, options, addressedTo: 'user', details: details ?? null }),
       withdraw: () => '',
       runs: {
@@ -630,6 +632,39 @@ test('#291 write-up: the late card leaves the block brief out, and a write-up li
   await checking;
   assert.equal(e.ports.runs.get('run-2')!.question, mine);
   assert.equal(e.store.listQuestions().filter((q) => q.details?.run?.run === 'run-2').length, 1);
+  // The other way round: the late card lands while the write-up fetches its sources; the write-up is withdrawn and its
+  // asker told, and the run keeps the card.
+  await e.runs.start('manager-1', { title: 'Cart 3' });
+  for (const w of ['Ready', 'PR opened', 'Approved']) await e.runs.step('manager-1', { run: 'run-3', outcome: w });
+  let open!: () => void;
+  const fetched = new Promise<void>((r) => { open = r; });
+  const writing = e.askUser('manager-1', { run: 'run-3', block: 'functional-review', tier: 'Process', title: 'Cart 3', review: { solving: 's', done: 'd' }, sources: [{ question: 1 }] }, () => fetched);
+  await new Promise((r) => setImmediate(r));
+  await e.late();
+  const card3 = e.ports.runs.get('run-3')!.question!;
+  assert.match(e.store.getQuestion(card3)!.details!.title!, /^The manager gave no write-up for this step/);
+  open();
+  const late3 = await writing;
+  assert.equal(late3.error, true);
+  assert.match(late3.text, /^run-3 "Cart 3" moved on while question #\d+ was being asked, so it is withdrawn/);
+  const theirs = e.store.listQuestions().find((q) => q.details?.run?.run === 'run-3' && q.id !== card3)!;
+  assert.equal(theirs.status, 'withdrawn');
+  assert.equal(e.ports.runs.get('run-3')!.question, card3);
+});
+
+test('#291 write-up: an answer that is none of its outcomes goes to the manager, and the run waits', async () => {
+  const e = await engine({ questions: 'write-up' });
+  await toDecide(e);
+  const asked = await e.askUser('manager-1', { run: 'run-1', block: 'decide', tier: 'Process', issue: 'Why.', options: [{ key: 'a', text: '**On**', outcome: 'Go on' }, { key: 'b', text: '**Again**', outcome: 'Fix again' }] });
+  assert.equal(asked.error, false, asked.text);
+  // Typed "Other" text (a button press moving the run is the "Ledung hands the step" test's).
+  await e.answer(1, 'Let me look at the rounding first');
+  const run = e.ports.runs.get('run-1')!;
+  assert.deepEqual([run.at, run.state, run.question], ['decide', 'running', null]);
+  assert.equal(e.told.at(-1)!.id, 'manager-1');
+  assert.match(e.told.at(-1)!.text, /with an answer that is none of its outcomes: read it and report the outcome with flow_step\..*\n\nThe answer:\n\nLet me look at the rounding first$/s);
+  await e.runs.step('manager-1', { run: 'run-1', outcome: 'Go on' });
+  assert.equal(e.ports.runs.get('run-1')!.at, 'functional-review');
 });
 
 test(`part 3b: a session's last reply is its last text of its own, not a subagent's`, () => {

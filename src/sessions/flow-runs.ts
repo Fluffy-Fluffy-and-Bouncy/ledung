@@ -897,7 +897,7 @@ export class FlowRuns {
     const caller = this.p.getSession(callerId);
     if (!caller) throw new FlowRunError('Your session is not known to Ledung.');
     if (this.p.stepQuestions() !== 'write-up') {
-      throw new FlowRunError(`This Ledung asks a run's person steps with Ledung's own card (${this.p.userName}'s Settings, Questions at a workflow step), so there is no write-up to give: the run's question is already asked. Nothing was asked.`);
+      throw new FlowRunError(`This Ledung asks a run's person steps with Ledung's own card (${this.p.userName}'s Settings, Questions at a workflow step), so there is no write-up to give: Ledung asks its card when a run reaches the step, or within ${WRITE_UP_MINUTES} minutes for one that got there before the setting changed. Nothing was asked.`);
     }
     const waiting = () => {
       const open = this.p.runs.list(caller.project, { open: true, limit: 10000 })
