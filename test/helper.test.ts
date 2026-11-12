@@ -334,6 +334,7 @@ test('the step bar marks the person\'s own steps and takes their name; Leave and
   await assert.rejects(manager.setupAction('mark', { step: 'project', mark: 'done' }), /No project/);
   await assert.rejects(manager.setupAction('mark', { step: 'nope', mark: 'done' }), /Name a step/);
   assert.equal((await manager.setupAction('name', { name: 'Ada' })).userName, 'Ada');
+  await assert.rejects(manager.setupAction('name', { name: 'Eve' }), /first step/, 'only in the name step');
   const v = (await manager.setupAction('mark', { step: 'accounts', mark: 'skipped' })).setup;
   assert.equal(v.current, 'project');
   assert.equal((await manager.setupAction('leave')).setup.phase, 'done');

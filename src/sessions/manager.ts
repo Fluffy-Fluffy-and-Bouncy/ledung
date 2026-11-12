@@ -2519,10 +2519,14 @@ export class SessionManager {
         this.saveSetup({ ...state, marks: { ...state.marks, [body.step]: body.mark } });
         return this.helperInfo();
       }
-      case 'name':
+      case 'name': {
+        // Only in the setup's name step, as the helper's set_user_name (review of part 2, finding 1).
+        const v = setupView(state, this.setupFacts(state));
+        if (v.phase !== 'helper' || v.current !== 'name') throw new UserError('The name is given in the setup\'s first step; afterwards, in the config file\'s "userName".');
         if (typeof body.name !== 'string') throw new UserError('Give a name.');
         this.setUserName(body.name);
         return this.helperInfo();
+      }
       case 'welcome':
         if (state.phase !== 'welcome') throw new UserError('The welcome is over.');
         this.saveSetup({ ...state, phase: 'claude' });
@@ -2568,7 +2572,7 @@ export class SessionManager {
 
   /** A change the helper made, said in its chat as an event, and the tool's answer passed on. */
   private helperNoted(helperId: string, out: string): string {
-    if (out.startsWith('Saved ')) this.publish({ type: 'message', message: this.store.addMessage(helperId, 'event', { text: `Ledung Helper: ${out.split('. ')[0]}.` }) });
+    if (/^(Saved|Added|Created) /.test(out)) this.publish({ type: 'message', message: this.store.addMessage(helperId, 'event', { text: `Ledung Helper: ${out.split('. ')[0]}.` }) });
     return out;
   }
 
@@ -2609,18 +2613,20 @@ export class SessionManager {
       setUserName: (name) => {
         const v = this.setupView();
         if (v.phase !== 'helper' || v.current !== 'name') throw new Error(`Only during the setup's name step. ${this.config.userName} can set "userName" in the config file (Settings → Config file).`);
-        return `Ledung calls them "${this.setUserName(name)}" now.`;
+        const out = `Ledung calls them "${this.setUserName(name)}" now.`;
+        this.publish({ type: 'message', message: this.store.addMessage(id, 'event', { text: `Ledung Helper: the name is now "${this.config.userName}".` }) });
+        return out;
       },
       listProjects: () => m.listProjects(id),
       addProject: async (args) => {
         const out = await m.addProject(id, args);
         setupProject(args.name);
-        return out;
+        return this.helperNoted(id, out);
       },
       createProject: async (args) => {
         const out = await m.createProject(id, args);
         setupProject(args.name);
-        return out;
+        return this.helperNoted(id, out);
       },
       projectSettings: (project) => m.projectSettings(id, project),
       // Each change shows in the helper's chat, asked or not, so nothing changes unseen (review of part 1, finding 4).

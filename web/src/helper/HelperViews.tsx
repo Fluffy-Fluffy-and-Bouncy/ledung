@@ -139,7 +139,7 @@ export function HelperStepBar({ helper, projects, run, onOpen }: { helper: Helpe
       <div className="helper-steps-actions">
         {v.current === 'name' ? (
           <form className="helper-name" onSubmit={(e) => { e.preventDefault(); if (name.trim()) void run(() => api.setupName(name)); }}>
-            <input {...typing} value={name} onChange={(e) => setName(e.target.value)} placeholder="Or type your name here" aria-label="Your name" maxLength={60} />
+            <input {...typing} value={name} onChange={(e) => setName(e.target.value)} placeholder="Or type your name here" aria-label="Your name" maxLength={40} />
             <button className="small" type="submit" disabled={!name.trim()}>Save</button>
           </form>
         ) : myself && <button className="small" onClick={() => onOpen(myself)}>Do it myself instead</button>}

@@ -1929,7 +1929,8 @@ export class LedungServer {
       case 'POST setup': {
         const body = await readJson(req);
         // Starting the helper sends it Ledung's first message: from the open page, as a message to it would be.
-        if (body.action === 'claude' || body.action === 'again') this.requireOpenPage(req);
+        // The name and the marks too: the name goes into every session's instructions (review of part 2, finding 1).
+        if (body.action === 'claude' || body.action === 'again' || body.action === 'name' || body.action === 'mark') this.requireOpenPage(req);
         return manager.setupAction(body.action, { step: body.step, mark: body.mark, name: body.name });
       }
       case 'POST helper-open': {

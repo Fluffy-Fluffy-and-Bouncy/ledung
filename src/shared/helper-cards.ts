@@ -28,12 +28,12 @@ export type HelperCard = z.infer<typeof CardSchema>
   /** Ledung's own: the review of a proposed workflow (propose_workflow). */
   | { kind: 'review'; title: string; text?: string; question: number; project: string };
 
-/** Words a card may not start a title or option with: they read as Ledung's own approval (review of part 1). */
-const APPROVAL_WORDS = /^\s*\**\s*(allow|approve|approved|deny|denied|confirm order)\b/i;
+/** Words a card's title, option or hint may not use: they read as Ledung's own approval (reviews of parts 1 and 2). */
+const APPROVAL_WORDS = /\b(allow|approve|approved|deny|denied|confirm order)\b/i;
 
 /** The words of a card that read as an approval, or null. */
 export function cardLooksLikeApproval(card: z.infer<typeof CardSchema>): string | null {
-  const words = [card.title, ...(card.kind === 'choice' ? card.options.map((o) => o.label) : [])];
+  const words = [card.title, ...(card.kind === 'choice' ? card.options.flatMap((o) => [o.label, o.hint ?? '']) : [])];
   return words.find((w) => APPROVAL_WORDS.test(w)) ?? null;
 }
 
