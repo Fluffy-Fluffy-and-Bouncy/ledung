@@ -231,10 +231,12 @@ const step = (item: unknown, i: number) => (item && typeof item === 'object' && 
  * What changes between two values, one readable line per changed place, secrets masked (round 7, 24 and 26), and
  * whether any hidden value changed; at most `max` lines.
  */
-export function changeLines(label: string, before: unknown, after: unknown, max = 8): { lines: string[]; secretChanged: boolean; secretsKept: boolean } {
+export function changeLines(label: string, before: unknown, after: unknown, max = 8): { lines: string[]; secretChanged: boolean; secretsKept: boolean; risky: string[] } {
   const mb = masked(before), ma = masked(after);
   const lines: string[] = [];
-  let secretChanged = false;
+  // Places whose change can send traffic elsewhere or run code: env, headers, urls, a profile's settings (R7-1).
+  const risky: string[] = [];
+  const secretChanged = false;
   let secretsKept = false;
   const leaf = (v: unknown) => v === undefined ? 'none' : typeof v === 'string' ? JSON.stringify(v) : JSON.stringify(v);
   const walk = (path: string, b: unknown, a: unknown, xb: unknown, xa: unknown) => {
@@ -245,7 +247,11 @@ export function changeLines(label: string, before: unknown, after: unknown, max 
       const bm = new Map(b.map((x, i) => [key(x, i), i]));
       a.forEach((x, i) => {
         const j = bm.get(key(x, i));
-        if (j === undefined) lines.push(`${path} ${key(x, i)} added: ${leaf((xa as unknown[])[i])}`);
+        // A new item is the helper's own text: shown in clear (R7-1).
+        if (j === undefined) {
+          lines.push(`${path} ${key(x, i)} added: ${leaf(x)}`);
+          if (RISKY_PLACE.test(JSON.stringify(x))) risky.push(`${path} ${key(x, i)}`.trim());
+        }
         else walk(`${path} ${key(x, i)}`, b[j], x, (xb as unknown[])[j], (xa as unknown[])[i]);
       });
       b.forEach((x, j) => { if (!a.some((y, i) => key(y, i) === key(x, j))) lines.push(`${path} ${key(x, j)} removed`); });
@@ -261,14 +267,29 @@ export function changeLines(label: string, before: unknown, after: unknown, max 
       if (masks) secretsKept = true;
       return;
     }
-    if (masks && JSON.stringify(xb) === JSON.stringify(xa)) secretChanged = true;
-    else lines.push(`${path || label}: ${leaf(xb)} → ${leaf(xa)}`);
+    // The before side keeps the person's secrets hidden; the after side is what the helper sent, shown in clear, so
+    // the person never approves a value they can't see (R7-1). Only a value equal to the saved one stays masked.
+    lines.push(`${path || label}: ${leaf(xb)} → ${leaf(a)}`);
+    if (RISKY_PLACE.test(path) || (a && typeof a === 'object' && RISKY_PLACE.test(JSON.stringify(Object.keys(a as object))))) risky.push(path || label);
   };
   walk('', before, after, mb, ma);
+
   // "Laptop".port reads as Laptop's port (round 10).
   const shown = lines.slice(0, max).map((l) => l.trim().replace(/"([^"]+)"\.(\w+)/g, "$1's $2")).map((l) => (l.startsWith(label) ? l : `${label}: ${l}`));
   if (lines.length > max) shown.push(`${label}: and ${lines.length - max} more`);
-  return { lines: shown, secretChanged, secretsKept };
+  return { lines: shown, secretChanged, secretsKept, risky };
+}
+
+/** A changed place that can send traffic elsewhere or run code (R7-1). */
+const RISKY_PLACE = /(^|[."\[])(env|headers|url|settings|args)([."\]]|$)/;
+/** Names especially risky in an env: where API traffic goes, code run at start, proxies, certificates. */
+const ESPECIALLY_RISKY = /ANTHROPIC_BASE_URL|ANTHROPIC_[A-Z_]*URL|NODE_OPTIONS|_PROXY|PROXY_|NODE_EXTRA_CA_CERTS|SSL_CERT|LD_PRELOAD|DYLD_|PYTHONPATH|PATH\b/i;
+
+/** The risk line for changes at such places, naming the especially risky ones. */
+export function riskyChanges(paths: string[], lines: string[]): string | null {
+  if (!paths.length) return null;
+  const named = [...new Set(lines.flatMap((l) => l.match(new RegExp(ESPECIALLY_RISKY.source, 'gi')) ?? []))];
+  return `It changes what a server or session runs with (env, headers, a url, settings)${named.length ? `; especially risky: ${named.join(', ')}` : ''}. Values there can send its traffic, your sign-in included, elsewhere or run any code.`;
 }
 const MODE_ORDER: Record<PermissionMode, number> = { plan: 0, default: 1, acceptEdits: 2, auto: 3 };
 
@@ -407,9 +428,10 @@ function configPlan(ctx: SettingsCtx, key: SettingName, value: unknown): Setting
         // Only a masked value changed: the card says so rather than showing the same before and after (R4-4).
         // What changes, place by place, secrets masked; a change of hidden values alone is said as such (round 7).
         const diff = changeLines(def.label, before[key], after[key]);
-        opens.push(...diff.lines, ...(diff.secretChanged ? [`${def.label}: a value hidden as secret changed`] : []));
-        if (diff.secretsKept && !diff.secretChanged) opens.push(`${def.label}: hidden values (secrets) unchanged`);
-        risk = key === 'board' ? 'Managers then post to the board, outside this computer.' : key === 'claudeExecutable' ? 'Sessions then run another program.' : 'This changes what sessions may use or what managers follow.';
+        opens.push(...diff.lines);
+        if (diff.secretsKept) opens.push(`${def.label}: your hidden values (secrets) unchanged`);
+        risk = riskyChanges(diff.risky, diff.lines)
+          ?? (key === 'board' ? 'Managers then post to the board, outside this computer.' : key === 'claudeExecutable' ? 'Sessions then run another program.' : 'This changes what sessions may use or what managers follow.');
       }
       break;
   }

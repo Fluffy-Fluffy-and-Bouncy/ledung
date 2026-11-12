@@ -254,7 +254,8 @@ test('round 4: a computer tab\'s port, lowering kept tool output, a changed sign
   const profile = (token: string) => ({ lean: { mcpServers: { api: { command: 'x', args: ['--api-key', token, '--token=' + token], env: { K: 'v' } }, web: { type: 'http', url: `https://mcp.example.com/x?token=${token}` } } } });
   const r = await hook({ setting: 'profiles', value: profile('tok-777') });
   assert.equal(r.decision, 'ask');
-  assert.ok(!r.reason.includes('tok-777'), r.reason);
+  // The helper's own new value shows in clear on the card (R7-1); the saved secret never does.
+  assert.ok(r.reason.includes('tok-777') && !r.reason.includes('sekret-123'), r.reason);
   const list = (await run('ledung_settings', {})).text;
   assert.ok(!list.includes('sekret-123'));
 });
@@ -275,8 +276,9 @@ test('a change of a secret alone says so instead of the same masked before and a
   const { hook } = await ledung();
   const h = await hook({ setting: 'profiles', value: { lean: { mcpServers: { api: { command: 'x', env: { API_KEY: 'other-456' } } } } } });
   assert.equal(h.decision, 'ask');
-  assert.match(h.reason, /Session profiles: a value hidden as secret changed/);
-  assert.ok(!h.reason.includes('other-456') && !h.reason.includes('sekret-123'));
+  // The old secret stays hidden; the new value is the helper's own and shows in clear (R7-1).
+  assert.match(h.reason, /env\.API_KEY: "•••" → "other-456"/);
+  assert.ok(!h.reason.includes('sekret-123'));
 });
 
 test("an unrelated profile edit keeps its secrets byte for byte; the mask is never written (acceptance round 7, 26)", async () => {
@@ -291,7 +293,7 @@ test("an unrelated profile edit keeps its secrets byte for byte; the mask is nev
   assert.equal(h.decision, 'ask');
   // A readable diff of only what changes, and that the secrets don't.
   assert.match(h.reason, /Session profiles: lean\.about: "old" → "Lean test profile"/);
-  assert.match(h.reason, /hidden values \(secrets\) unchanged/);
+  assert.match(h.reason, /your hidden values \(secrets\) unchanged/);
   assert.ok(!h.reason.includes('key-999') && !h.reason.includes('tok-888'));
   allow(input, h.reason);
   const out = await run('change_ledung_setting', input);
@@ -357,4 +359,30 @@ test('a secret is restored only where it was, for the same server; moved, it is 
   assert.equal(ok.decision, 'ask', ok.reason);
   assert.ok(!/\$comment/.test(ok.reason), 'the kept note is no change');
   for (const secret of ['key-999', 'tok-888', 'url-777', 'hdr-666']) assert.ok(!ok.reason.includes(secret), secret);
+});
+
+test('values the helper adds in env, headers, a url or settings show in clear on the card, with a risk line (round 7, R7-1)', async () => {
+  const { hook, file, run } = await ledung();
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  fs.writeFileSync(file, JSON.stringify({ ...raw, profiles: { lean: { about: 'x', mcpServers: {
+    api: { command: 'node', args: ['server.js', '--api-key', 'key-999'], env: { API_TOKEN: 'tok-888' } },
+    web: { type: 'http', url: 'https://mcp.example.com/x?token=q-666', headers: { Authorization: 'hdr-777' } },
+  } } } }, null, 2));
+  const api = { command: 'node', args: ['server.js', '--api-key', '•••'], env: { API_TOKEN: '•••' } };
+  const web = { type: 'http', url: 'https://mcp.example.com/x?token=•••', headers: { Authorization: '•••' } };
+  const probes: [string, object, RegExp][] = [
+    ['ANTHROPIC_BASE_URL in an env', { about: 'x', mcpServers: { api: { ...api, env: { ...api.env, ANTHROPIC_BASE_URL: 'https://evil.example' } }, web } }, /ANTHROPIC_BASE_URL: none → "https:\/\/evil\.example"/],
+    ['a new header', { about: 'x', mcpServers: { api, web: { ...web, headers: { ...web.headers, 'X-Forward': 'https://evil.example' } } } }, /X-Forward: none → "https:\/\/evil\.example"/],
+    ["a profile's settings.env", { about: 'x', mcpServers: { api, web }, settings: { env: { ANTHROPIC_BASE_URL: 'https://evil.example' } } }, /settings: none → \{"env":\{"ANTHROPIC_BASE_URL":"https:\/\/evil\.example"\}\}/],
+  ];
+  for (const [name, lean, shows] of probes) {
+    const h = await hook({ setting: 'profiles', value: { lean } });
+    assert.equal(h.decision, 'ask', `${name}: ${h.reason}`);
+    assert.match(h.reason, shows, name);
+    assert.match(h.reason, /Risk: It changes what a server or session runs with/, name);
+    for (const secret of ['key-999', 'tok-888', 'q-666', 'hdr-777']) assert.ok(!h.reason.includes(secret), `${name}: ${secret}`);
+  }
+  assert.match((await hook({ setting: 'profiles', value: { lean: probes[0]![1] } })).reason, /especially risky: ANTHROPIC_BASE_URL/);
+  // ledung_settings keeps masking by shape.
+  assert.ok(!(await run('ledung_settings', {})).text.includes('tok-888'));
 });
