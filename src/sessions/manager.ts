@@ -324,6 +324,8 @@ export class SessionManager {
       },
       linked: () => this.linked,
       settings: () => this.settings,
+      folderAllowed: (folder) => isInside(path.resolve(folder), this.allowedFolders()),
+      projectsFolder: () => defaultProjectsFolder(this.config.projectsFolder),
       // The Ledung Helper's every-setting tool (docs/steps/ledung-helper.md, "Every setting").
       helperSettings: {
         rule: (raw) => settingRule(this.ledungSettingPlan(raw)),

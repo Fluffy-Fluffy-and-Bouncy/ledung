@@ -77,3 +77,10 @@ test("Claude Code's own error lines show in the helper's chat, reply or not (cod
   const out = helperTurns([person('a'), { type: 'reply', text: 'Done.' }, { type: 'assistant', text: 'API Error: overloaded', apiError: true }], true);
   assert.deepEqual(out.map((x: { type: string; text?: string }) => `${x.type}:${x.text}`), ['user:a', 'reply:Done.', 'assistant:API Error: overloaded']);
 });
+
+test("Ledung's own card of a turn (Restart Ledung) shows after the helper's reply, once the turn ends", async () => {
+  const { helperTurns } = await import('../web/src/helper/cardOrder.ts');
+  const turn = [person('port 4395'), card('Restart'), { type: 'event', text: 'Saved' }, { type: 'reply', text: 'Done.' }];
+  assert.deepEqual(helperTurns(turn, false).map((x: { type: string }) => x.type), ['user', 'event', 'reply', 'card']);
+  assert.deepEqual(helperTurns(turn, true).map((x: { type: string }) => x.type), ['user', 'event', 'reply']);
+});

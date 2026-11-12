@@ -85,6 +85,9 @@ export function helperTurns<T extends Turned>(raw: T[], turnOpen = false): T[] {
   const close = (ended: boolean) => {
     const replied = turn.some((e) => e.type === 'reply');
     const seen = new Set<string>();
+    // Ledung's own cards of the turn (Restart Ledung, a review) go after its words (round 4, 20).
+    const ledungCards = turn.filter((e) => e.type === 'card');
+    turn = [...turn.filter((e) => e.type !== 'card'), ...(ended ? ledungCards : [])];
     for (const e of turn) {
       // Claude Code's own error and usage-limit lines always show (code review, finding 4).
       if (e.type === 'assistant' && !e.sub && !e.apiError) {

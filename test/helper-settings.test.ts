@@ -174,3 +174,17 @@ test("the config writer keeps the file's own keys and refuses a value the schema
   assert.throws(() => configWith(file, 'port', -1), /can't be used/);
   assert.throws(() => configWith(file, '$comment' as never, 'x'), /not a setting/);
 });
+
+test('a project outside the folders Ledung may use is refused before any approval card, saying how to allow it', async () => {
+  const { manager, id } = await ledung();
+  const live = (manager as unknown as { live: Map<string, { claudeOptions(h: object): Promise<Opts> }> }).live.get(id)!;
+  const o = await live.claudeOptions({ onLine: () => {}, onStderr: () => {} });
+  const hook = o.hooks!.PreToolUse![0]!.hooks[0]!;
+  const wide = path.parse(base).root;
+  const out = await hook({ tool_name: 'mcp__ledung__create_project', tool_input: { name: 'x', parent: wide } }, 'tu');
+  assert.equal(out.hookSpecificOutput?.permissionDecision, 'deny');
+  assert.match(out.hookSpecificOutput?.permissionDecisionReason ?? '', /outside the folders Ledung may use.*change_ledung_setting browseRoots/);
+  // Inside them: asked of the person as always.
+  const inside = await hook({ tool_name: 'mcp__ledung__add_project', tool_input: { name: 'shop2', folder: path.join(base) } }, 'tu');
+  assert.equal(inside.hookSpecificOutput?.permissionDecision, 'deny', 'base itself is outside the roots too');
+});

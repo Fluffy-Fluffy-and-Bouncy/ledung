@@ -1215,6 +1215,9 @@ export class Session {
           }
           if (unaskedTool(toolName, this.alwaysAsked)) return {};
           if (SETTINGS_CHANGE_TOOLS.includes(toolName)) return this.settingsChangeHook(toolName, i.tool_input);
+          // The helper's project tools are checked before the person is asked: an approval that can't work is never shown.
+          const projectProblem = this.helper ? this.management.helperProjectProblem(this.id, toolName, i.tool_input) : null;
+          if (projectProblem) return { hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'deny' as const, permissionDecisionReason: projectProblem } };
           // The Ledung Helper loads Ledung's own two skills and no other (review of part 1, finding 3).
           if (this.helper && toolName === 'Skill' && !helperSkillAllowed(i.tool_input)) {
             return { hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'deny' as const, permissionDecisionReason: 'The Ledung Helper loads only the ledung-help and workflow-building skills.' } };

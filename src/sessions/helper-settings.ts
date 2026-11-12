@@ -143,8 +143,9 @@ function newlyAllowed(roots: string[], before: string[]): string[] {
 /** A narrower choice for a folder that opens a lot: a folder of its own under it. */
 function narrowerFor(folder: string): string {
   const root = path.parse(folder).root;
-  const atTop = path.resolve(folder) === path.resolve(root) || path.dirname(path.resolve(folder)) === path.resolve(root);
-  return atTop ? `a folder of its own instead, e.g. ${path.join(root, 'Dev')}` : `only the folder you need inside ${folder}`;
+  // A whole drive (or /): a folder of its own under it; anything narrower is offered as it is.
+  if (path.resolve(folder) === path.resolve(root)) return `a folder of its own instead, e.g. ${path.join(root, 'Dev')}`;
+  return '';
 }
 
 function configPlan(ctx: SettingsCtx, key: SettingName, value: unknown): SettingPlan {
@@ -162,7 +163,7 @@ function configPlan(ctx: SettingsCtx, key: SettingName, value: unknown): Setting
       if (added.length) {
         opens.push(`folders Ledung may use ${defaultRoots(before.browseRoots).join(', ')} → ${defaultRoots(after.browseRoots).join(', ')}`);
         risk = `The folder browser, chats and new projects may then reach everything under ${added.join(', ')}, other programs' and users' files too.`;
-        narrower = narrowerFor(added[0]!);
+        narrower = narrowerFor(added[0]!) || undefined;
       }
       break;
     }
@@ -171,7 +172,7 @@ function configPlan(ctx: SettingsCtx, key: SettingName, value: unknown): Setting
       if (newlyAllowed([now], allowedBefore).length) {
         opens.push(`where new projects go ${defaultProjectsFolder(before.projectsFolder)} → ${now}, a folder Ledung didn't use before`);
         risk = `Ledung may then use everything under ${now}.`;
-        narrower = narrowerFor(now);
+        narrower = narrowerFor(now) || undefined;
       }
       break;
     }

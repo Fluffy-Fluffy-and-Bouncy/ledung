@@ -191,6 +191,10 @@ export interface ManagementContext {
   away?(): AwayInfo | null;
   /** The Ledung Helper's settings (src/sessions/helper-settings.ts): the rule a change would ask with, and applying it. */
   helperSettings?: { rule(raw: unknown): string | null; apply(helperId: string, raw: unknown): string };
+  /** Whether Ledung may use this folder (its browse roots and projects folder), for the helper's early check. */
+  folderAllowed?(folder: string): boolean;
+  /** The projects folder, where create_project goes when it names no parent. */
+  projectsFolder?(): string;
 }
 
 /** A screenshot as ask_user takes it (issue #60). */
@@ -1858,6 +1862,19 @@ ${note}`);
       }
     }
     return this.ctx.helperSettings!.apply(helperId, raw);
+  }
+
+  /**
+   * Why the helper's add_project or create_project can't work as given, before anything is asked of the person: a
+   * folder outside the folders Ledung may use would be refused after their approval (Simon's demo, 2026-11-12).
+   */
+  helperProjectProblem(helperId: string, toolName: string, raw: unknown): string | null {
+    if (!this.isHelper(helperId) || !this.ctx.folderAllowed) return null;
+    const input = (raw ?? {}) as { folder?: unknown; parent?: unknown };
+    const tool = toolName.replace(/^mcp__ledung__/, '');
+    const folder = tool === 'add_project' ? input.folder : tool === 'create_project' ? input.parent ?? this.ctx.projectsFolder?.() : undefined;
+    if (typeof folder !== 'string' || this.ctx.folderAllowed(folder)) return null;
+    return `${folder} is outside the folders Ledung may use, so this would be refused even after their approval; nothing was asked. Offer to allow it (or a narrower folder) with change_ledung_setting browseRoots, then call this again.`;
   }
 
   /** Whether this session is the Ledung Helper. */
