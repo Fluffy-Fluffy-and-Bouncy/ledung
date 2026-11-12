@@ -708,11 +708,13 @@ export class Session {
     if (toolName !== 'Bash' || typeof input.command !== 'string') return null;
     if (this.store.getSession(this.id)?.role !== 'manager') return null;
     const since = Date.now() - 2 * 24 * 3600 * 1000;
-    const own = this.store.listQuestions(500, false).filter((q) => q.sessionId === this.id && (q.answeredAt ?? 0) > since);
+    // Only this session's answers and typed words since then, read by a query with those conditions (issue #232).
+    // A withdrawn question has no answer and no answerer, so the answered ones are all mergeAnswered can use.
+    const own = this.store.answeredSince(this.id, since);
     // The user's own words typed into the manager count as well, as the lead pane did in agent-manager:
     // a stored user message without `from` is theirs; Ledung's deliveries carry from: 'ledung'. Ids < 0.
-    const typed = this.store.listMessages(this.id, { limit: 400 })
-      .filter((m) => m.kind === 'user' && !m.data.from && typeof m.data.text === 'string' && m.at > since)
+    const typed = this.store.userMessagesSince(this.id, since)
+      .filter((m) => !m.data.from && typeof m.data.text === 'string')
       .map((m, k) => ({ id: -(k + 1), question: m.data.text as string, answer: m.data.text as string, answeredBy: 'user', typed: true, at: m.at }));
     const hit = mergeAnswered(input.command, this.sensitiveRules, [...own, ...typed]);
     if (!hit || subagentCall(agentId, 'merge on an answer')) return null;
@@ -738,8 +740,9 @@ export class Session {
     if (!action || this.store.getSession(this.id)?.role !== 'manager') return null;
     const since = Date.now() - 2 * 24 * 3600 * 1000;
     const said = new Map<string, string>();
-    const answers: Word[] = this.store.listQuestions(500, false)
-      .filter((q) => q.sessionId === this.id && q.answeredBy === 'user' && q.answer !== null && (q.answeredAt ?? 0) > since
+    // Only this session's answers and typed words since then, by a query with those conditions (issue #232).
+    const answers: Word[] = this.store.answeredSince(this.id, since)
+      .filter((q) => q.answeredBy === 'user' && q.answer !== null
         && !q.aboutRequest && !q.forwardedFrom && this.store.answeredHere(q.id))
       .map((q) => {
         said.set(`q${q.id}`, `in their answer to question #${q.id}`);
@@ -747,8 +750,8 @@ export class Session {
         // question's prose and the manager's recommendation never do (lead's review, rounds 3 and 4).
         return { key: `q${q.id}`, text: q.answer!, ask: { options: deskQuestion(q).options } };
       });
-    const typed: Word[] = this.store.listMessages(this.id, { limit: 400 })
-      .filter((m) => m.kind === 'user' && !m.data.from && m.data.here === true && typeof m.data.text === 'string' && m.at > since)
+    const typed: Word[] = this.store.userMessagesSince(this.id, since)
+      .filter((m) => !m.data.from && m.data.here === true && typeof m.data.text === 'string')
       .map((m) => {
         said.set(`m${m.id}`, `in what they typed at ${new Date(m.at).toLocaleTimeString()}`);
         return { key: `m${m.id}`, text: m.data.text as string };
@@ -944,7 +947,8 @@ export class Session {
   private raiseRefusal(toolUseId: string, reason: string, byAgent = false): void {
     const call = this.toolCalls.get(toolUseId);
     if (!call) return;
-    const mine = this.store.listQuestions(500, false).filter((q) => q.sessionId === this.id && refusalOf(q));
+    // This session's refusal questions only, by a query (issue #232), not the newest 500 of every session.
+    const mine = this.store.refusalQuestions(this.id).filter((q) => refusalOf(q));
     if (mine.some((q) => refusalOf(q)!.toolUseId === toolUseId)) return;
     const retryOf = this.onceUsedBy.get(toolUseId);
     // The grant's note never reaches the session: the call it was for didn't run.

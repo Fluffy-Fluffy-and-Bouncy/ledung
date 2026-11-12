@@ -689,3 +689,35 @@ test("#208: with merges held by the suggested entry, a merge the person's words 
   assert.match(own.reason, /Martin said yes to merging #2264 in what they typed/);
   assert.deepEqual(await t.mgr.hook('gh pr merge 2265 -R o/r --merge', 'other'), { decision: 'ask', reason: HELD_AS }, 'another PR: asked');
 });
+
+test("#232: the merge hook reads this manager's own words since two days ago by a query, however many newer rows other sessions or its own replies add", async () => {
+  const t = setup({ managers: { other: 'q' } });
+  // Premise: without the person's word the merge is asked.
+  assert.equal((await t.mgr.hook(MERGE, 'before')).decision, 'ask');
+  // Another manager's words, typed and answered, never count for this one; nor do this manager's own words from three days ago.
+  t.store.addMessage('other', 'user', { text: 'merge #2264' });
+  const theirs = t.store.createQuestion({ sessionId: 'other', question: 'Merge PR #2264?', options: null, addressedTo: 'user' });
+  t.store.answerQuestion(theirs.id, 'Yes, merge it', 'user');
+  t.store.addMessage('mgr', 'user', { text: 'merge #2264' }, Date.now() - 3 * 24 * 3600_000);
+  assert.equal((await t.mgr.hook(MERGE, 'not-ours')).decision, 'ask', "another session's words, or this one's too old: asked");
+  // The positive branch for typed words: today's, under 450 newer replies (the old read took the newest 400 messages of every kind).
+  t.store.addMessage('mgr', 'user', { text: 'merge #2264' });
+  for (let i = 0; i < 450; i++) t.store.addMessage('mgr', 'sdk', { type: 'assistant', message: { content: [{ type: 'text', text: `reply ${i}` }] } });
+  const typed = await t.mgr.hook(MERGE, 'typed');
+  assert.equal(typed.decision, 'allow');
+  assert.match(typed.reason, /Martin said yes to merging #2264 in what they typed/);
+
+  // The positive branch for an answer: this manager's question, answered before 600 answered questions of another
+  // session (the old read took the newest 500 questions of every session).
+  const u = setup({ managers: { other: 'q' } });
+  const mine = u.store.createQuestion({ sessionId: 'mgr', question: 'Merge PR #2264?', options: null, addressedTo: 'user' });
+  u.store.answerQuestion(mine.id, 'Yes, merge it', 'user');
+  await new Promise((r) => setTimeout(r, 5));
+  for (let i = 0; i < 600; i++) {
+    const q = u.store.createQuestion({ sessionId: 'other', question: `Other ${i}?`, options: null, addressedTo: 'user' });
+    u.store.answerQuestion(q.id, 'No', 'user');
+  }
+  const answered = await u.mgr.hook(MERGE, 'answered');
+  assert.equal(answered.decision, 'allow');
+  assert.match(answered.reason, new RegExp(`Martin said yes to merging #2264 in their answer to question #${mine.id}`));
+});

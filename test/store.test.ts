@@ -142,3 +142,32 @@ test('last reply: the short line after ask_user shows the question instead', () 
   say([{ type: 'text', text: 'Done.' }]);
   assert.equal(store.lastReply('s1')!.text, 'Done.');
 });
+
+test("#232: the word hooks' queries read one session's user messages since a time, and its refusal questions, nothing else", () => {
+  const store = new Store(openDatabase(':memory:'));
+  for (const id of ['s1', 's2']) store.createSession({ id, project: 'p', runner: 'local', title: id, parentId: null, permissionMode: 'default' });
+  const t0 = Date.parse('2026-11-10T12:00:00Z');
+  store.addMessage('s1', 'user', { text: 'old' }, t0 - 1);
+  const a = store.addMessage('s1', 'user', { text: 'first' }, t0 + 1);
+  store.addMessage('s1', 'sdk', { type: 'assistant' }, t0 + 2);
+  store.addMessage('s1', 'event', { text: 'note' }, t0 + 3);
+  store.addMessage('s2', 'user', { text: "another session's" }, t0 + 4);
+  const b = store.addMessage('s1', 'user', { text: 'second', from: 'ledung' }, t0 + 5);
+  // Only s1's user messages after t0, oldest first; a delivery is a user message too, which the hooks then leave out by `from`.
+  assert.deepEqual(store.userMessagesSince('s1', t0).map((m) => m.id), [a.id, b.id]);
+  assert.deepEqual(store.userMessagesSince('s2', t0).map((m) => m.data.text), ["another session's"]);
+  assert.deepEqual(store.userMessagesSince('s1', t0 + 5), [], 'since is exclusive, as the hooks compared');
+
+  const refusal = (toolUseId: string) => ({ title: 'Refused', issue: 'x', rank: 0, refusal: { toolName: 'Bash', input: { command: 'ls' }, reason: 'r', toolUseId } });
+  const plain = store.createQuestion({ sessionId: 's1', question: 'plain', options: null, addressedTo: 'user' });
+  const closed = store.createQuestion({ sessionId: 's1', question: 'r1', options: null, addressedTo: 'user', details: refusal('t1') as never });
+  store.answerQuestion(closed.id, 'Deny', 'user');
+  const open1 = store.createQuestion({ sessionId: 's1', question: 'r2', options: null, addressedTo: 'user', details: refusal('t2') as never });
+  const open2 = store.createQuestion({ sessionId: 's1', question: 'r3', options: null, addressedTo: 'user', details: refusal('t3') as never });
+  store.createQuestion({ sessionId: 's2', question: 'theirs', options: null, addressedTo: 'user', details: refusal('t4') as never });
+  // s1's refusal questions only, open ones first (oldest first), then the rest; never the plain question or s2's.
+  const got = store.refusalQuestions('s1');
+  assert.deepEqual(got.map((q) => q.id), [open1.id, open2.id, closed.id]);
+  assert.ok(!got.some((q) => q.id === plain.id));
+  assert.equal(got[2]!.details!.refusal!.toolUseId, 't1');
+});

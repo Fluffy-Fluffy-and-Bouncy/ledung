@@ -718,6 +718,9 @@ const MIGRATIONS: string[] = [
   ALTER TABLE turn_resources ADD COLUMN waits TEXT;
   ALTER TABLE sessions ADD COLUMN turn_started_at INTEGER;
   `,
+  // The person's typed words in one session since a time, read on every manager tool call by the hooks that look
+  // for their word (issue #232): only user messages, so the read never walks the session's replies.
+  `CREATE INDEX messages_user_by_session ON messages(session_id, at) WHERE kind = 'user';`,
   // Browsers become devices (Project-Ledung#482, step 1 of #477): a browser's sign-in is a devices row of kind
   // 'browser' (kind is free text, so no column changes). Each of #476's sign-ins, the meta entry 'sign-ins' holding
   // {cookie hash: last use in ms}, becomes such a row with the same hash, so the same cookie keeps signing in and nobody
