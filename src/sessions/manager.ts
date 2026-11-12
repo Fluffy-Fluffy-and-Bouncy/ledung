@@ -37,6 +37,7 @@ import { sessionEnv, type Runner } from '../runners/runner.ts';
 import type { Store } from '../store/store.ts';
 import { lineOrder, mayStart, type LineEntry } from '../resources/line.ts';
 import { ResourceMonitor, type MonitorTarget } from '../resources/monitor.ts';
+import { machineSender } from '../shared/machine-shown.ts';
 import {
   CHATS,
   PERMISSION_MODES,
@@ -425,7 +426,8 @@ export class SessionManager {
     this.monitor = new ResourceMonitor({
       targets: () => this.targets(),
       withDocker: () => this.projectStore.list().some((p) => p.config.runner === 'docker'),
-      onSample: () => this.publish({ type: 'machine', machine: this.machine() }),
+      // Only what the page would show differently (#230): a sample every 5 s went to every page.
+      onSample: () => this.publishMachine(true),
     });
     // A stop reached before a restart still holds, and its reset still lifts it (issue #278).
     this.refreshStops();
@@ -871,7 +873,7 @@ export class SessionManager {
   setLimit(n: number): void {
     if (!Number.isInteger(n) || n < 1 || n > 100) throw new UserError('The limit must be a whole number from 1 to 100.');
     this.store.setMeta(LIMIT_KEY, String(n));
-    this.publish({ type: 'machine', machine: this.machine() });
+    this.publishMachine();
     this.dispatch();
   }
 
@@ -901,6 +903,14 @@ export class SessionManager {
   /** Lets the sessions in line start, in order, as long as there is room. */
   private dispatch(): void {
     for (const id of lineOrder(this.lineEntries())) this.live.get(id)?.deliver();
+  }
+
+  /** A sample that changes nothing on the page isn't sent (#230). */
+  private readonly sendMachine = machineSender((machine) => this.publish({ type: 'machine', machine }));
+
+  /** Sends the machine's figures to the pages; with `onlyIfChanged`, only when what they show differs from the last ones sent. */
+  private publishMachine(onlyIfChanged = false): void {
+    this.sendMachine(this.machine(), onlyIfChanged);
   }
 
   machine(): MachineInfo {
@@ -971,7 +981,7 @@ export class SessionManager {
     this.store.updateSession(id, { priority, priorityNote: note });
     this.store.addMessage(id, 'event', { text: `Priority set to ${priority} by ${by}.${note && by !== this.config.userName ? ` (${note})` : ''}` });
     this.publish({ type: 'session', session: this.live.get(id)?.info ?? this.store.getSession(id)! });
-    this.publish({ type: 'machine', machine: this.machine() });
+    this.publishMachine();
     this.dispatch();
   }
 
@@ -997,7 +1007,7 @@ export class SessionManager {
 
   setPaused(id: string, paused: boolean, by = this.config.userName): void {
     this.liveSession(id).setPaused(paused, by);
-    this.publish({ type: 'machine', machine: this.machine() });
+    this.publishMachine();
     // A paused session frees its place.
     this.dispatch();
   }
