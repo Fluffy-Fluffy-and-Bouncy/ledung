@@ -33,4 +33,6 @@ export interface FlowProposal {
   /** What the checks find in the workflow as it would be; hints apart. */
   problems: FlowProblem[];
   createdAt: number;
+  /** The proposed flow.json left out or changed the copy's origin, and has the recorded one back (workflow-origin.md, section 5). */
+  originKept?: true;
 }

@@ -11,6 +11,7 @@ is nothing user-facing in it).
 
 ## 2026-11-12
 - Less background work on Windows: a `!` command no longer starts a new PowerShell every 2 seconds to watch what it starts (one stays open while commands run, and listings never pile up). The CPU and memory figures read no process list while no session runs on this computer, and the page is sent new figures only when something it shows has changed. (#230)
+- Workflows: a project's own copy of a shared workflow now records where it came from, and the workflow page, the builder and the Workflow pane say "Based on Team process v3 by Ana" (and "first by …" for a copy of a copy). The confirm before the first Save shows what will be recorded, with **Leave the repository out**. When the original on this computer has changed since, the page says so; nothing is updated. An older copy is offered **Record where this came from** once. The builder has **Author** and **Release** fields; a manager's proposal can't change where a copy came from. (#256)
 - Standing grants are stricter: a "starts with" grant such as `git push:*` now covers only that command and its arguments, on one line; a command that spans several lines, or a longer word that merely starts the same, is asked about as if there were no grant. (Project-Ledung#472)
 
 ## 2026-11-11
