@@ -16,7 +16,7 @@ import { ProjectStore } from '../src/projects/store.ts';
 import { flowInstructions, flowPlaces, FOLLOW_LINE, readFlows } from '../src/sessions/flow-files.ts';
 import { decideStep, countBadge } from '../src/shared/flow-run.ts';
 import { checkFlow, checkFlowCalls, parseFlow } from '../src/shared/flow-check.ts';
-import { answerWord, FlowRuns, lastReplyOf, type BlockSessionStart, type FlowRunsPorts } from '../src/sessions/flow-runs.ts';
+import { answerWord, FlowRuns, LATE_HEAD, lastReplyOf, WRITE_UP_MINUTES, type BlockSessionStart, type FlowRunsPorts } from '../src/sessions/flow-runs.ts';
 import type { WorktreeHost } from '../src/sessions/run-worktrees.ts';
 import { RunStore, runNumber } from '../src/sessions/run-store.ts';
 import { ledungToolServer, type RunHandlers, type ToolHandlers } from '../src/sessions/tools.ts';
@@ -128,7 +128,27 @@ async function engine(opts: { following?: boolean; flows?: Awaited<ReturnType<ty
     await runs.onAnswered(store.getQuestion(id)!);
   };
   const runs = new FlowRuns(ports);
-  return { runs, ports, store, told, changed, started, continued, replies, withdrawn, stopped, archived, answer };
+  /** Ten minutes pass with no write-up, and Ledung's minute check runs (#291). */
+  const late = async () => {
+    clock += WRITE_UP_MINUTES * 60_000;
+    await runs.overdue();
+  };
+  /** A session calls the real ask_user tool, as a manager writing up a person step does (#291). */
+  const askUser = async (caller: string, input: Record<string, unknown>) => {
+    const h: ToolHandlers = {
+      userName: 'Simon', role: store.getSession(caller)!.role, asksWhom: 'Simon',
+      ask: (question, options, _about, _request, details) => store.createQuestion({ sessionId: caller, question, options, addressedTo: 'user', details: details ?? null }),
+      withdraw: () => '',
+      runs: {
+        step: (a) => runs.step(caller, a), status: (r) => runs.status(caller, r),
+        writeUp: (a) => runs.writeUp(caller, a), writeUpAsked: (q) => runs.writeUpAsked(q),
+      },
+    };
+    const tool = (ledungToolServer(h).instance as unknown as { _registeredTools: Record<string, { handler(i: unknown): Promise<{ content: { text: string }[]; isError?: boolean }> }> })._registeredTools.ask_user!;
+    const r = await tool.handler(input);
+    return { text: r.content[0]!.text, error: !!r.isError };
+  };
+  return { runs, ports, store, told, changed, started, continued, replies, withdrawn, stopped, archived, answer, late, askUser };
 }
 
 test('part 3a: a run started by the manager moves through the example flow, the 3rd "Changes requested" taking the counted outcome', async () => {
@@ -143,7 +163,7 @@ test('part 3a: a run started by the manager moves through the example flow, the 
     assert.match(await runs.step('manager-1', { run: 'run-1', outcome: 'Fixed', block: 'fix' }), /goes to "Code review"/);
   }
   const third = await runs.step('manager-1', { run: 'run-1', outcome: 'changes requested' });
-  assert.match(third, /Recorded "Changes requested" for "Code review" \(its 3rd time\): run-1 "Fix the cart total" \(#142\) goes to "Person decides"\. At "Person decides" \(decide\), a person's step: Ledung put it to Simon as question #1\./);
+  assert.match(third, /Recorded "Changes requested" for "Code review" \(its 3rd time\): run-1 "Fix the cart total" \(#142\) goes to "Person decides"\. At "Person decides" \(decide\), a person's step: Simon decides\. Ledung has asked nothing: write it up and ask it now with ask_user, giving run "run-1" and block "decide"\./);
   const run = ports.runs.get('run-1')!;
   // Taken its last counted time, the word's count starts again (review of 3a).
   assert.deepEqual(run.counts['code-review'], { 'changes requested': 0 });
@@ -264,7 +284,7 @@ test('part 3a: a session remembers the run and block it serves', () => {
 });
 
 test('part 3b: blocks act: Build gets a new session with its settings, Fix continues it, the person answers move the run', async () => {
-  const { runs, ports, store, told, started, continued, replies, withdrawn, answer } = await engine();
+  const { runs, ports, store, told, started, continued, replies, withdrawn, answer, askUser } = await engine();
   await runs.start('manager-1', { title: 'Fix the cart total', ref: '#142' });
   await runs.step('manager-1', { run: 'run-1', outcome: 'Ready', note: 'The total adds VAT twice.' });
   // Build: a new session under the coordinator, with the block's model, its brief, sub-steps, the handoff and the words.
@@ -292,30 +312,68 @@ test('part 3b: blocks act: Build gets a new session with its settings, Fix conti
   // Back to Code review: a new-session block starts a session each time it is reached.
   await runs.step('manager-1', { run: 'run-1', outcome: 'Fixed' });
   assert.equal(started.length, 3);
-  // The 3rd "Changes requested" puts "Person decides" to Simon as a question with its words as the answers.
+  // The 3rd "Changes requested" reaches "Person decides": Ledung asks nothing, and tells the manager to write it up
+  // (#291), with the words its answer must lead to, what a write-up holds, the handoff, and the brief for the manager.
   await runs.step('manager-1', { run: 'run-1', outcome: 'Changes requested' });
   await runs.step('manager-1', { run: 'run-1', outcome: 'Fixed' });
+  replies.set(ports.runs.get('run-1')!.sessions['code-review']!, 'Two findings still open: rounding, and the VAT line.');
   const third = await runs.step('manager-1', { run: 'run-1', outcome: 'Changes requested' });
-  assert.match(third, /Ledung put it to Simon as question #1\. The answer moves the run by itself \("Go on" → Functional review; "Fix again" → Fix\); you are told then/);
-  const q = store.getQuestion(1)!;
-  assert.equal(q.addressedTo, 'user');
-  assert.equal(q.sessionId, 'manager-1');
-  assert.deepEqual(q.options, ['Go on', 'Fix again']);
-  assert.deepEqual(q.details!.run, { run: 'run-1', block: 'decide', runTitle: 'Fix the cart total', blockTitle: 'Person decides', flow: 'main' });
-  assert.deepEqual(q.details!.refs, ['#142']);
-  assert.equal(q.details!.tier, 'Blocks a finished PR');
+  assert.match(third, /Ledung has asked nothing: write it up and ask it now with ask_user, giving run "run-1" and block "decide"\. Simon's answer then moves the run by itself/);
+  assert.match(third, /each option's outcome one of the block's words: "Go on" → Functional review; "Fix again" → Fix\./);
+  assert.match(third, /the backstory .*what was done, the evidence .*the options with their cost, your recommendation as an opinion, and other sessions' views/);
+  assert.match(third, /If you have not asked within 10 minutes, Ledung asks its own short card instead/);
+  assert.match(third, /"Code review" handed on:\n\nTwo findings still open: rounding, and the VAT line\./);
+  assert.match(third, /For you, not for Simon: The brief \(briefs\/decide\.md\):\n\n# Person decides/);
+  assert.equal(store.listQuestions().length, 0);
   assert.equal(ports.runs.get('run-1')!.state, 'waiting');
-  // Simon answers: the run moves by itself, the coordinator is told, and the answer isn't delivered again as a plain one.
-  await answer(1, 'Go on');
+  assert.equal(ports.runs.get('run-1')!.question, null);
+  // The manager asks it as written, its options leading to the block's words; Simon sees exactly that, with the run's tag.
+  const write = {
+    run: 'run-1', block: 'decide', tier: 'Blocks a finished PR', refs: ['#142'], title: 'Cart total: a 4th review round, or on?',
+    issue: 'The cart adds VAT twice (#142). Three review rounds ended with rounding still open.',
+    evidence: 'npm run check: 0. Reviewer round 3: two findings.',
+    options: [
+      { key: 'a', text: '**Go on** to your sign-off: rounding is filed apart.', cost: 'none now', outcome: 'go on' },
+      { key: 'b', text: '**Fix again**: one more round on rounding.', cost: 'about 30 min', outcome: 'Fix again' },
+    ],
+    opinions: [{ who: 'Manager', pick: 'a', why: 'Rounding is a separate bug.' }, { who: 'Code reviewer', pick: 'b', why: 'It is in the same function.' }],
+  };
+  const asked = await askUser('manager-1', write);
+  assert.equal(asked.error, false, asked.text);
+  assert.match(asked.text, /^Question #1, "Person decides" of run-1, is recorded and has gone to Simon\. .*Simon's answer moves the run by itself/);
+  const q = store.getQuestion(1)!;
+  assert.equal(q.sessionId, 'manager-1');
+  assert.equal(q.details!.issue, write.issue);
+  assert.equal(q.details!.evidence, write.evidence);
+  assert.deepEqual(q.details!.opinions, write.opinions);
+  // The outcome in the flow's own spelling; the brief (process text) nowhere on the question.
+  assert.deepEqual(q.details!.options!.map((o) => [o.key, o.outcome]), [['a', 'Go on'], ['b', 'Fix again']]);
+  assert.doesNotMatch(JSON.stringify(q), /Two review rounds ended without a pass/);
+  assert.deepEqual(q.details!.run, { run: 'run-1', block: 'decide', runTitle: 'Fix the cart total', blockTitle: 'Person decides', flow: 'main' });
+  assert.equal(ports.runs.get('run-1')!.question, 1);
+  // Asked once: a second write-up of the same step is refused.
+  assert.match((await askUser('manager-1', write)).text, /"Person decides" of run-1 "Fix the cart total" \(#142\) is already asked, as question #1/);
+  // Simon picks an option and adds a note: the run moves by itself, the coordinator is told, and the answer isn't
+  // delivered again as a plain one.
+  await answer(1, 'a — Go on\n\nNote: file the rounding.');
   let run = ports.runs.get('run-1')!;
   assert.equal(run.at, 'functional-review');
+  assert.equal(run.history.at(-1)!.word, 'Go on');
   assert.equal(run.history.at(-1)!.by, 'Simon');
   assert.ok(store.getQuestion(1)!.deliveredAt);
-  assert.match(told.at(-1)!.text, /^Ledung: Simon answered "Person decides" of run-1 "Fix the cart total" \(#142\) \(question #1\): Go on\n\nRecorded "Go on" .* goes to "Functional review"\. At "Functional review" \(functional-review\), a person's step: Ledung put it to Simon as review #2/);
-  // The functional review is a review page; "Changes needed:" takes the "Changes needed" outcome, the note handed on.
+  assert.match(told.at(-1)!.text, /^Ledung: Simon answered "Person decides" of run-1 "Fix the cart total" \(#142\) \(question #1\): a — Go on\n\nNote: file the rounding\.\n\nRecorded "Go on" .* goes to "Functional review"\. At "Functional review" \(functional-review\), a person's step: Simon decides\. Ledung has asked nothing/);
+  assert.match(told.at(-1)!.text, /Ask it as a review .*"Accepted\." takes "Accepted", "Changes needed: …" takes "Changes needed"\./);
+  // The functional review is a review: a question there is refused, a review asked as written; "Changes needed:" takes
+  // the "Changes needed" outcome, the note handed on.
+  assert.match((await askUser('manager-1', { ...write, block: 'functional-review' })).text, /"Functional review" is a review: give review/);
+  const signOff = await askUser('manager-1', {
+    run: 'run-1', block: 'Functional review', tier: 'Blocks a finished PR', title: 'Cart total',
+    review: { solving: 'The cart added VAT twice.', done: 'VAT is added once; rounding filed as #150.' },
+  });
+  assert.match(signOff.text, /^Review #2, "Functional review" of run-1/);
   const review = store.getQuestion(2)!;
-  assert.equal(review.details!.review!.solving, `Fix the cart total (#142), in the flow "Ledung's own process".`);
-  assert.match(review.details!.review!.notes!, /^Your answer moves run-1 by itself: "Accepted" → Merge \+ release; "Changes needed" → Fix\./);
+  assert.equal(review.details!.review!.solving, 'The cart added VAT twice.');
+  assert.equal(review.details!.run!.block, 'functional-review');
   await answer(2, 'Changes needed: the total is still off by a cent.');
   run = ports.runs.get('run-1')!;
   assert.equal(run.at, 'fix');
@@ -324,6 +382,7 @@ test('part 3b: blocks act: Build gets a new session with its settings, Fix conti
   // The manager reports a person block itself (the person's word in chat): the open question is withdrawn.
   await runs.step('manager-1', { run: 'run-1', outcome: 'Fixed' });
   await runs.step('manager-1', { run: 'run-1', outcome: 'Approved' });
+  await askUser('manager-1', { run: 'run-1', block: 'functional-review', tier: 'Process', title: 'Again', review: { solving: 's', done: 'd' } });
   const open = ports.runs.get('run-1')!.question!;
   await runs.step('manager-1', { run: 'run-1', outcome: 'Accepted' });
   assert.deepEqual(withdrawn, [open]);
@@ -334,7 +393,7 @@ test('part 3b: blocks act: Build gets a new session with its settings, Fix conti
 });
 
 test(`part 3b: a Run flow block runs its flow as a child run; the way that ends is the block's outcome`, async () => {
-  const { runs, ports, store, started, answer, told } = await engine();
+  const { runs, ports, store, started, answer, told, late } = await engine();
   await runs.start('manager-1', { title: 'New logo' });
   const at = await runs.step('manager-1', { run: 'run-1', outcome: 'Needs an asset' });
   assert.match(at, /At "Make the asset" \(asset\): Ledung started run-2 in the flow "Asset" for it, and run-1 waits; the way run-2 ends is "Make the asset"'s outcome\.\n\nrun-2: At "Produce" \(produce\): Ledung started session "Produce: New logo"/);
@@ -345,6 +404,7 @@ test(`part 3b: a Run flow block runs its flow as a child run; the way that ends 
   assert.equal(ports.runs.get('run-1')!.state, 'waiting');
   await runs.step('manager-1', { run: 'run-2', outcome: 'Done', note: 'logo.svg' });
   // The asset review has no "Accepted": Accepted takes its first outcome, Ready, which ends the child; the parent goes on.
+  await late();
   const q = ports.runs.get('run-2')!.question!;
   await answer(q, 'Accepted.');
   assert.equal(ports.runs.get('run-2')!.state, 'ended');
@@ -359,9 +419,10 @@ test(`part 3b: a Run flow block runs its flow as a child run; the way that ends 
 });
 
 test('part 3b: an answer that is none of the words is left for the coordinator; a session coordinator hears of block turns', async () => {
-  const { runs, ports, answer, told } = await engine();
+  const { runs, ports, answer, told, late } = await engine();
   await runs.start('session-1', { title: 'Decide', flow: 'asset' });
   await runs.step('session-1', { run: 'run-1', outcome: 'Done' });
+  await late();
   const q = ports.runs.get('run-1')!.question!;
   await answer(q, 'Let me think about the colours first');
   assert.equal(ports.runs.get('run-1')!.at, 'review');
@@ -393,6 +454,88 @@ test(`part 3b: the words a person's answer gives`, () => {
   assert.equal(answerWord(question, 'Accepted.'), null);
 });
 
+test(`#291: a write-up's option leads to its outcome, with or without the page's note; "Other" text stays the coordinator's`, () => {
+  const question = { id: 'q', kind: 'person' as const, title: 'Q', ask: 'question' as const, outcomes: [{ word: 'Merge', end: true as const }, { word: 'Fix', to: 'f' }] };
+  const options = [
+    { key: 'a', text: '**Merge now**: the PR is green.', outcome: 'Merge' },
+    { key: 'b', text: '**Hold it** for one more round.', outcome: 'Fix' },
+  ];
+  assert.equal(answerWord(question, 'a — Merge now', options), 'Merge');
+  assert.equal(answerWord(question, 'b — Hold it\n\nNote: the colour first.', options), 'Fix');
+  // Typed text that is no button: none, even when it names an option.
+  assert.equal(answerWord(question, 'a — Merge now, but after lunch', options), null);
+  assert.equal(answerWord(question, 'Hold it', options), null);
+  // Without the write-up's options the same answer leads nowhere: the outcome came from the option.
+  assert.equal(answerWord(question, 'a — Merge now'), null);
+  // Plain labels: the word, marked recommended or with a note.
+  assert.equal(answerWord(question, 'Merge (recommended)'), 'Merge');
+  assert.equal(answerWord(question, 'Fix\n\nNote: rounding.'), 'Fix');
+});
+
+test('#291: ask_user at a person step is refused for a wrong run, block or outcome, with the valid ones named', async () => {
+  const { runs, ports, store, askUser } = await engine();
+  await runs.start('manager-1', { title: 'Cart', ref: '#142' });
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Ready' });
+  const base = { tier: 'Process', issue: 'Why.', options: [{ key: 'a', text: '**On**', outcome: 'Go on' }, { key: 'b', text: '**Again**', outcome: 'Fix again' }] };
+  // The run is at Build, no person's step.
+  assert.match((await askUser('manager-1', { ...base, run: 'run-1', block: 'decide' })).text, /run-1 "Cart" \(#142\) is at "Build", which is no person's step waiting for a write-up\. No run of yours waits for a write-up now\. Nothing was asked\./);
+  for (const w of ['PR opened', 'Changes requested', 'Fixed', 'Changes requested', 'Fixed', 'Changes requested']) await runs.step('manager-1', { run: 'run-1', outcome: w });
+  assert.equal(ports.runs.get('run-1')!.at, 'decide');
+  const refused = async (input: Record<string, unknown>, why: RegExp) => {
+    const r = await askUser('manager-1', { ...base, ...input });
+    assert.equal(r.error, true, r.text);
+    assert.match(r.text, why);
+  };
+  await refused({ run: 'run-9', block: 'decide' }, /There is no run "run-9" in your project; flow_status lists them\. Runs waiting for your write-up: run-1 at block "decide"\. Nothing was asked\./);
+  await refused({ run: 'run-1', block: 'merge' }, /is at "Person decides" \(block decide\), not "merge"\. Nothing was asked\./);
+  await refused({ run: 'run-1' }, /Give both run and block/);
+  await refused({ run: 'run-1', block: 'decide', options: [{ key: 'a', text: '**On**', outcome: 'Ship it' }, { key: 'b', text: '**Again**', outcome: 'Fix again' }] },
+    /Option "a" leads to "Ship it", which is no outcome of "Person decides": .*The block's outcomes: "Go on" → Functional review; "Fix again" → Fix\. Nothing was asked\./);
+  await refused({ run: 'run-1', block: 'decide', options: [{ key: 'a', text: '**On**' }, { key: 'b', text: '**Again**', outcome: 'Fix again' }] }, /Option "a" has no outcome/);
+  await refused({ run: 'run-1', block: 'decide', options: ['Go on', 'Later'] }, /Option 2, "Later", is not one of the block's outcome words/);
+  await refused({ run: 'run-1', block: 'decide', options: undefined }, /Give options, each leading to one of the block's outcomes/);
+  await refused({ run: 'run-1', block: 'decide', review: { solving: 's', done: 'd' }, options: undefined, issue: undefined, title: 'T' }, /"Person decides" is a question, not a review/);
+  // Another session is not its coordinator; a block's own session can't ask it either.
+  const other = await askUser('session-2', { ...base, run: 'run-1', block: 'decide' });
+  assert.match(other.text, /run-1 "Cart" \(#142\) is coordinated by manager "Manager: shop", not by you\./);
+  // An outcome without a run is refused, so a manager never thinks an ordinary question moves a run.
+  assert.match((await askUser('manager-1', base)).text, /An option's outcome goes with run and block/);
+  assert.equal(store.listQuestions().length, 0);
+  assert.equal(ports.runs.get('run-1')!.question, null);
+  // Plain labels that are the block's words are taken as they are.
+  const plain = await askUser('manager-1', { run: 'run-1', block: 'decide', tier: 'Process', issue: 'Why.', options: ['Go on (recommended)', 'Fix again'] });
+  assert.equal(plain.error, false, plain.text);
+  assert.deepEqual(store.getQuestion(1)!.options, ['Go on (recommended)', 'Fix again']);
+});
+
+test('#291: no write-up within 10 minutes: Ledung asks its own card, headed so, without the brief, linked to the run', async () => {
+  const { runs, ports, store, told, answer, late, askUser } = await engine();
+  await runs.start('manager-1', { title: 'Logo', ref: '#7', flow: 'asset' });
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Done', note: 'logo.svg is in the PR.' });
+  // Before the 10 minutes: nothing.
+  await runs.overdue();
+  assert.equal(store.listQuestions().length, 0);
+  await late();
+  const run = ports.runs.get('run-1')!;
+  assert.equal(run.state, 'waiting');
+  const card = store.getQuestion(run.question!)!;
+  assert.equal(card.addressedTo, 'user');
+  assert.equal(card.sessionId, 'manager-1');
+  assert.equal(card.details!.title, `${LATE_HEAD}: Review the asset, Logo`);
+  assert.match(card.details!.review!.solving, /^\*\*The manager gave no write-up for this step\.\*\* Ledung wrote this card from the run alone/);
+  assert.equal(card.details!.review!.done, 'Produce: logo.svg is in the PR.');
+  assert.deepEqual(card.details!.run, { run: 'run-1', block: 'review', runTitle: 'Logo', blockTitle: 'Review the asset', flow: 'asset' });
+  assert.deepEqual(card.details!.refs, ['#7']);
+  // Linked as a write-up is; the coordinator told, and its own write-up now refused.
+  assert.match(told.at(-1)!.text, /^Ledung: no write-up came for "Review the asset" of run-1 "Logo" \(#7\) within 10 minutes, so Ledung asked Simon its own card, review #1\./);
+  assert.match((await askUser('manager-1', { run: 'run-1', block: 'review', tier: 'Process', title: 'T', review: { solving: 's', done: 'd' } })).text, /already asked, as question #1/);
+  // Only once: a later minute asks nothing more.
+  await late();
+  assert.equal(store.listQuestions().length, 1);
+  await answer(card.id, 'Accepted.');
+  assert.equal(ports.runs.get('run-1')!.state, 'ended');
+});
+
 test(`part 3b: a session's last reply is its last text of its own, not a subagent's`, () => {
   const m = (id: number, data: unknown) => ({ id, sessionId: 's', at: id, kind: 'sdk' as const, data });
   const reply = lastReplyOf([
@@ -404,9 +547,10 @@ test(`part 3b: a session's last reply is its last text of its own, not a subagen
 });
 
 test('part 3b review: the answer is delivered at once, only in the run note; a withdrawn person question goes back to the coordinator', async () => {
-  const { runs, ports, store, answer, told } = await engine();
+  const { runs, ports, store, answer, told, late } = await engine();
   await runs.start('manager-1', { title: 'Logo', flow: 'asset' });
   await runs.step('manager-1', { run: 'run-1', outcome: 'Done' });
+  await late();
   const q = ports.runs.get('run-1')!.question!;
   store.answerQuestion(q, 'Accepted.', 'user');
   const moving = runs.onAnswered(store.getQuestion(q)!);
@@ -417,11 +561,13 @@ test('part 3b review: the answer is delivered at once, only in the run note; a w
   // An answer none of the words is still said in full in the note, as it no longer arrives on its own.
   await runs.start('manager-1', { title: 'Logo 2', flow: 'asset' });
   await runs.step('manager-1', { run: 'run-2', outcome: 'Done' });
+  await late();
   await answer(ports.runs.get('run-2')!.question!, 'Make it bluer first');
   assert.match(told.at(-1)!.text, /The answer:\n\nMake it bluer first$/);
   // Withdrawn on the page: the run is running again and its coordinator told.
   await runs.step('manager-1', { run: 'run-2', outcome: 'Changes needed' });
   await runs.step('manager-1', { run: 'run-2', outcome: 'Done' });
+  await late();
   const again = store.getQuestion(ports.runs.get('run-2')!.question!)!;
   store.withdrawQuestion(again.id, 'Withdrawn by Simon.');
   runs.onWithdrawn(store.getQuestion(again.id)!);
@@ -462,12 +608,16 @@ test('part 3b review: stopping a run stops its child runs; a child stopped leave
 });
 
 test('part 3b review: a person block answered with its word alone passes on what it was handed', async () => {
-  const { runs, ports, replies, answer, told } = await engine();
+  const { runs, ports, store, replies, answer, told, late } = await engine();
   await runs.start('manager-1', { title: 'Cart' });
   await runs.step('manager-1', { run: 'run-1', outcome: 'Ready' });
   await runs.step('manager-1', { run: 'run-1', outcome: 'PR opened' });
   replies.set(ports.runs.get('run-1')!.sessions['code-review']!, 'Approved: PR #143 reads well.');
   await runs.step('manager-1', { run: 'run-1', outcome: 'Approved' });
+  await late();
+  // Ledung's own card leaves the block's brief, process text for the manager, out (#291); the brief is really there.
+  assert.match((await (await example()).text('briefs/functional-review.md')) ?? '', /The person's own sign-off/);
+  assert.doesNotMatch(JSON.stringify(store.getQuestion(ports.runs.get('run-1')!.question!)), /The person's own sign-off/);
   await answer(ports.runs.get('run-1')!.question!, 'Accepted.');
   assert.equal(ports.runs.get('run-1')!.at, 'merge');
   assert.match(told.at(-1)!.text, /At "Merge \+ release" \(merge\): your own step\.\n\n"Code review" handed on:\n\nApproved: PR #143 reads well\./);
@@ -535,7 +685,7 @@ async function phases() {
 }
 
 test('part 3d: followed: a wait waits, sub-steps at once, the caller\'s session goes on in the called flow, the owner\'s call is said', async () => {
-  const { runs, ports, store, started, continued, answer } = await engine({ flows: await phases() });
+  const { runs, ports, store, started, continued, answer, late } = await engine({ flows: await phases() });
   await runs.start('manager-1', { title: 'Speed up the cart' });
   assert.equal(started[0]!.title, 'Build: Speed up the cart');
   // The wait: the run waits there, with what it waits for, until the coordinator reports how it came out.
@@ -561,6 +711,7 @@ test('part 3d: followed: a wait waits, sub-steps at once, the caller\'s session 
   // Polish ends; the owner is asked, the question saying whose call it is.
   await runs.step('manager-1', { run: 'run-2', outcome: 'Polished' });
   assert.equal(started.length, before);
+  await late();
   const q = store.getQuestion(ports.runs.get('run-1')!.question!)!;
   assert.equal(q.details!.run!.person, 'the owner');
   assert.match(q.details!.issue!, /It is the owner's call\./);
@@ -848,6 +999,7 @@ test('final review of part 3: who may start runs, who is told, and runs held rat
   await assert.rejects(e.runs.stopByPerson('shop', 'run-2', 'Simon'), /been stopped already/);
   // An answer that comes after the coordinator moved the run: still told, nothing recorded from it.
   for (const outcome of ['Done', 'Changes', 'Fixed', 'Changes', 'Fixed', 'Changes']) await e.runs.step('manager-1', { run: 'run-1', outcome });
+  await e.late();
   const q = e.ports.runs.get('run-1')!.question!;
   assert.ok(q);
   const stepped = e.runs.step('manager-1', { run: 'run-1', outcome: 'Fix' });

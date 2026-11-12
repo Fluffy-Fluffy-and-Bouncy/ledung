@@ -751,6 +751,8 @@ export class SessionManager {
       this.linkedFiles.prune();
       this.linkedOutbox.prune();
       void this.relaunchWaiting();
+      // A person step its coordinator gave no write-up for gets Ledung's own card (#291).
+      void this.flowRuns.overdue().catch((e: Error) => console.error(`Workflow: ${e.message}`));
     }, 60000);
     // Always on, as idleStopMinutes can change while Ledung runs (issue #353); checkIdle reads it each time.
     this.idleTimer = setInterval(() => void this.checkIdle(), 60000);
@@ -1518,6 +1520,21 @@ export class SessionManager {
       ...(this.store.getSession(sessionId)?.runBlock ? {} : { start: (a: Parameters<NonNullable<RunHandlers['start']>>[0]) => plain(() => this.flowRuns.start(sessionId, a)) }),
       step: (a) => plain(() => this.flowRuns.step(sessionId, a)),
       status: (run) => plain(() => this.flowRuns.status(sessionId, run)),
+      // ask_user at a run's person step (#291).
+      writeUp: async (a) => {
+        try {
+          return await this.flowRuns.writeUp(sessionId, a);
+        } catch (e) {
+          throw e instanceof FlowRunError ? new Error(e.message) : e;
+        }
+      },
+      writeUpAsked: (q) => {
+        try {
+          this.flowRuns.writeUpAsked(q);
+        } catch (e) {
+          throw e instanceof FlowRunError ? new Error(e.message) : e;
+        }
+      },
     };
   }
 

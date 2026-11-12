@@ -8,6 +8,8 @@ export interface QuestionOption {
   key: string;
   text: string;
   cost?: string;
+  /** At a run's person step (#291): the block's outcome word this option's answer leads to. */
+  outcome?: string;
 }
 
 /**

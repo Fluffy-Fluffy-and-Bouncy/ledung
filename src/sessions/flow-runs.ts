@@ -9,7 +9,7 @@ import { makeWorktree, removeWorktree, type WorktreeHost } from './run-worktrees
 import { decideStep, OPEN_STATES, outcomeList, runLabel, startBlock, type FlowRun, type RunStep } from '../shared/flow-run.ts';
 import { inFolder, sessionOf } from '../shared/flow-check.ts';
 import { exercisedLine } from '../platform/exercised.ts';
-import { ACCEPTED, CHANGES_NEEDED, questionText, type QuestionDetails } from '../shared/questions.ts';
+import { ACCEPTED, CHANGES_NEEDED, optionAnswer, questionText, type QuestionDetails, type QuestionOption, type QuestionRun } from '../shared/questions.ts';
 import type { RunStore } from './run-store.ts';
 
 /** A project's flows as they read now: by name ("main" for flow.json), and the folder they are in. */
@@ -107,6 +107,14 @@ function briefPlace(folder: string, brief: string): string {
 
 /** EXERCISED #142 is logged once per run of Ledung, not per step. */
 let exercised142 = false;
+/** EXERCISED #291 is logged once per run of Ledung. */
+let exercised291 = false;
+
+/** How long a person block waits for its coordinator's write-up before Ledung asks its own card (#291). */
+export const WRITE_UP_MINUTES = 10;
+/** The head of that card (#291, Done looks like). */
+export const LATE_HEAD = 'The manager gave no write-up for this step';
+const RECOMMENDED = /\s*\(recommended\)\s*$/i;
 
 type Handoff = { from: string; text: string } | null;
 
@@ -733,36 +741,176 @@ export class FlowRuns {
     return `Ledung started session "${s.title}" (${s.id})${settings ? ` with ${settings}` : ''}${block.runs === 'continue' ? `, as no session of "${from.title}" was there to continue` : ''}`;
   }
 
-  /** A person block (part 3b): a review page or a question whose answers are its outcomes' words; the answer moves the run. */
-  private async askPerson(flows: ProjectFlows, run: FlowRun, flow: Flow, block: FlowBlock, handoff: Handoff): Promise<string> {
+  /** The outcome words of a block, once each, in the flow's spelling. */
+  private static words(block: FlowBlock): string[] {
+    return [...new Map((block.outcomes ?? []).map((o) => [endingKey(o.word), o.word])).values()];
+  }
+
+  /** Where each of a person block's outcomes takes the run, for the one who asks and the one who answers. */
+  private static whereTo(flow: Flow, block: FlowBlock): string {
     const titleOf = (id: string | undefined) => flow.blocks.find((b) => b.id === id)?.title ?? id;
-    const words = [...new Map((block.outcomes ?? []).map((o) => [endingKey(o.word), o.word])).values()];
-    const where = (block.outcomes ?? []).map((o) => `"${o.word}"${o.times ? ` (${ordinal(o.times)} time)` : ''} → ${o.end ? 'the flow ends' : titleOf(o.to)}`).join('; ') || 'the flow ends';
+    return (block.outcomes ?? []).map((o) => `"${o.word}"${o.times ? ` (${ordinal(o.times)} time)` : ''} → ${o.end ? 'the flow ends' : titleOf(o.to)}`).join('; ') || 'the flow ends';
+  }
+
+  /** The outcome an answer takes at a block, said for the one who asks. */
+  private static mapped(block: FlowBlock, answer: string): string {
+    const w = answerWord(block, answer);
+    return w ? `"${w}"` : 'no outcome (it comes back to you)';
+  }
+
+  /**
+   * A person block (part 3b) reached (#291, Martin 2026-11-12, Ledung question #872): Ledung asks nothing itself. The
+   * coordinator writes it up and asks it with ask_user, naming the run and block, and the person's answer moves the run
+   * as before. Ledung's own card comes only when none was asked in time (overdue). The words that say how, and what a
+   * good write-up holds, are Ledung's own, so every manager gets them whatever its workflow files say.
+   */
+  private async askPerson(flows: ProjectFlows, run: FlowRun, flow: Flow, block: FlowBlock, handoff: Handoff): Promise<string> {
+    this.p.runs.update(run.id, { state: 'waiting', question: null, atSince: this.now() }, this.now());
+    this.p.changed(run.project);
+    const user = this.p.userName;
+    const whose = block.person ? ` It is ${block.person}'s call; ${user} is asked all the same.` : '';
     const brief = await this.briefOf(flows, block);
-    const tag = { run: run.id, block: block.id, runTitle: run.title, blockTitle: block.title, flow: run.flow, ...(block.person ? { person: block.person } : {}) };
+    const words = FlowRuns.words(block);
+    const how = block.ask === 'review'
+      ? `Ask it as a review (review with solving, done, notes and evidence; title, tier and refs): "${ACCEPTED}" takes ${FlowRuns.mapped(block, ACCEPTED)}, "${CHANGES_NEEDED} …" takes ${FlowRuns.mapped(block, `${CHANGES_NEEDED} x`)}.`
+      : words.length
+        ? `Ask it as a question with options, each option's outcome one of the block's words: ${FlowRuns.whereTo(flow, block)}. An answer that is none of them comes back to you to report.`
+        : 'The block has no outcomes, so any answer ends the flow; ask it as a question.';
+    return [
+      `At "${block.title}" (${block.id}), a person's step: ${user} decides.${whose} Ledung has asked nothing: write it up and ask it now with ask_user, giving run "${run.id}" and block "${block.id}". ${user}'s answer then moves the run by itself, and you are told where it went; you need not report it.`,
+      how,
+      `Write it for someone who has not followed the work and reads it on a phone: the backstory (what the work is and why, each decision quoted with who made it and when), what was done, the evidence (what ran and its results), the options with their cost, your recommendation as an opinion, and other sessions' views (the reviewers') as their own opinions. Not the flow's process text: that is for you.`,
+      `If you have not asked within ${WRITE_UP_MINUTES} minutes, Ledung asks its own short card instead, marked as having no write-up from you.`,
+      run.worktree ? `The run's worktree: ${run.worktree.path} (branch ${run.worktree.branch}).` : '',
+      handoff ? `"${handoff.from}" handed on:\n\n${handoff.text}` : '',
+      brief ? `For you, not for ${user}: ${brief}` : '',
+    ].filter(Boolean).join('\n\n');
+  }
+
+  /**
+   * Ledung's own card for a person block whose coordinator gave no write-up in time (#291): the run and what was handed
+   * on, headed so the person knows it is Ledung's, and without the block's brief, which is process text for the manager.
+   */
+  private lateCard(run: FlowRun, flow: Flow, flowTitle: string, block: FlowBlock, handoff: Handoff): QuestionInfo {
+    const words = FlowRuns.words(block);
+    const where = FlowRuns.whereTo(flow, block);
+    const tag: QuestionRun = { run: run.id, block: block.id, runTitle: run.title, blockTitle: block.title, flow: run.flow, ...(block.person ? { person: block.person } : {}) };
     // Part 3d: whose call it is; this computer's person is asked all the same.
     const whose = block.person ? ` It is ${block.person}'s call.` : '';
     const refs = run.ref ? { refs: [run.ref] } : {};
-    const title = short(`${block.title}: ${run.title}`, 200);
-    const flowTitle = flows.titles.get(run.flow) ?? run.flow;
+    const title = short(`${LATE_HEAD}: ${block.title}, ${run.title}`, 200);
+    const head = `**${LATE_HEAD}.** Ledung wrote this card from the run alone, ${WRITE_UP_MINUTES} minutes after the run got here, so it has no backstory, evidence or recommendation.`;
     const details: QuestionDetails = block.ask === 'review'
       ? {
         title, tier: this.p.tiers(run.project)[0], ...refs, run: tag,
         review: {
-          solving: `${run.title}${run.ref ? ` (${run.ref})` : ''}, in the flow "${flowTitle}".`,
+          solving: `${head}\n\n${run.title}${run.ref ? ` (${run.ref})` : ''}, in the flow "${flowTitle}".`,
           done: handoff ? `${handoff.from}: ${handoff.text}` : `See ${run.id}'s history on the workflow page.`,
-          notes: `Your answer moves ${run.id} by itself: ${where}.${whose}${brief ? `\n\n${brief}` : ''}`,
+          notes: `Your answer moves ${run.id} by itself: ${where}.${whose}`,
         },
       }
       : {
         title, tier: this.p.tiers(run.project)[0], ...refs, run: tag,
-        issue: [`${run.title}${run.ref ? ` (${run.ref})` : ''} is at "${block.title}" in the flow "${flowTitle}". Your answer moves it: ${where}.${whose}`, handoff ? `"${handoff.from}" handed on:\n\n${handoff.text}` : '', brief].filter(Boolean).join('\n\n'),
+        issue: [head, `${run.title}${run.ref ? ` (${run.ref})` : ''} is at "${block.title}" in the flow "${flowTitle}". Your answer moves it: ${where}.${whose}`, handoff ? `"${handoff.from}" handed on:\n\n${handoff.text}` : ''].filter(Boolean).join('\n\n'),
       };
-    const q = this.p.ask({ coordinator: run.coordinator, question: questionText(undefined, details), options: block.ask === 'review' || !words.length ? null : words.slice(0, 8), details });
-    this.p.runs.update(run.id, { state: 'waiting', question: q.id }, this.now());
+    return this.p.ask({ coordinator: run.coordinator, question: questionText(undefined, details), options: block.ask === 'review' || !words.length ? null : words.slice(0, 8), details });
+  }
+
+  /**
+   * Person blocks left without a write-up (#291): each run that has waited at one for WRITE_UP_MINUTES with no question
+   * gets Ledung's own card, linked to it as a write-up is, and its coordinator is told. Called every minute.
+   */
+  async overdue(): Promise<void> {
+    const cutoff = this.now() - WRITE_UP_MINUTES * 60_000;
+    for (const due of this.p.runs.awaitingWriteUp(cutoff)) {
+      await this.one(due.project, async () => {
+        const run = this.p.runs.get(due.id);
+        if (!run || run.state !== 'waiting' || run.question !== null || run.at !== due.at || run.atSince > cutoff) return;
+        if (!this.p.following(run.project)) return;
+        const flows = await this.p.flows(run.project).catch(() => null);
+        const flow = flows?.flows.get(run.flow);
+        const block = flow?.blocks.find((b) => b.id === run.at);
+        if (!flows || !flow || !block || block.kind !== 'person') return;
+        const q = this.lateCard(run, flow, flows.titles.get(run.flow) ?? run.flow, block, this.lastHandoff(run, flow));
+        this.p.runs.update(run.id, { question: q.id }, this.now());
+        this.p.changed(run.project);
+        this.tellCoordinator(run, `Ledung: no write-up came for "${block.title}" of ${runLabel(run)} within ${WRITE_UP_MINUTES} minutes, so Ledung asked ${this.p.userName} its own card, ${block.ask === 'review' ? 'review' : 'question'} #${q.id}. Its answer moves the run by itself; don't ask it again.`);
+      }).catch((e) => console.error(`Workflow: ${(e as Error).message}`));
+    }
+  }
+
+  /**
+   * ask_user giving a run and block (#291): checks that the caller may ask that step now and that its options lead to
+   * the block's outcomes, before anything is stored. The tag goes on the question; the options come back with each
+   * outcome in the flow's own spelling. Refused with the valid runs, blocks or words listed.
+   */
+  async writeUp(callerId: string, args: { run: string; block: string; review: boolean; options?: (string | QuestionOption)[] }): Promise<{ tag: QuestionRun; options?: (string | QuestionOption)[] }> {
+    const caller = this.p.getSession(callerId);
+    if (!caller) throw new FlowRunError('Your session is not known to Ledung.');
+    const waiting = () => {
+      const open = this.p.runs.list(caller.project, { open: true, limit: 10000 })
+        .filter((r) => r.state === 'waiting' && r.question === null && (r.coordinator === callerId || this.p.managerOf(r.project) === callerId));
+      return open.length ? `Runs waiting for your write-up: ${open.map((r) => `${r.id} at block "${r.at}"`).join(', ')}.` : 'No run of yours waits for a write-up now.';
+    };
+    let run: FlowRun;
+    try {
+      run = this.ownRun(callerId, args.run);
+    } catch (e) {
+      throw new FlowRunError(`${(e as Error).message} ${waiting()} Nothing was asked.`);
+    }
+    const flows = await this.flowsOf(run.project);
+    const flow = this.flowOf(flows, run);
+    const block = flow.blocks.find((b) => b.id === run.at);
+    if (!block || run.state !== 'waiting' || block.kind !== 'person') {
+      throw new FlowRunError(`${runLabel(run)} is ${block ? `at "${block.title}"` : run.state === 'ended' || run.state === 'stopped' ? run.state : `at "${run.at}"`}, which is no person's step waiting for a write-up. ${waiting()} Nothing was asked.`);
+    }
+    const want = args.block.trim().toLowerCase();
+    if (want !== block.id && want !== block.title.toLowerCase()) {
+      throw new FlowRunError(`${runLabel(run)} is at "${block.title}" (block ${block.id}), not "${args.block.trim()}". Nothing was asked.`);
+    }
+    if (run.question !== null) throw new FlowRunError(`"${block.title}" of ${runLabel(run)} is already asked, as question #${run.question}; its answer moves the run. Nothing was asked.`);
+    const review = block.ask === 'review';
+    if (review !== args.review) {
+      throw new FlowRunError(review
+        ? `"${block.title}" is a review: give review (solving, done, notes, evidence), not a question. "${ACCEPTED}" takes ${FlowRuns.mapped(block, ACCEPTED)}, "${CHANGES_NEEDED}" takes ${FlowRuns.mapped(block, `${CHANGES_NEEDED} x`)}. Nothing was asked.`
+        : `"${block.title}" is a question, not a review: give issue, evidence, options (each with its outcome) and opinions. Nothing was asked.`);
+    }
+    const tag: QuestionRun = { run: run.id, block: block.id, runTitle: run.title, blockTitle: block.title, flow: run.flow, ...(block.person ? { person: block.person } : {}) };
+    const words = FlowRuns.words(block);
+    if (review || !words.length) return { tag, options: args.options };
+    const list = `The block's outcomes: ${FlowRuns.whereTo(flow, block)}.`;
+    if (!args.options?.length) throw new FlowRunError(`Give options, each leading to one of the block's outcomes, so the answer can move the run. ${list} Nothing was asked.`);
+    const wordOf = (w: string | undefined) => (w === undefined ? undefined : words.find((x) => endingKey(x) === endingKey(w.replace(RECOMMENDED, '').replace(/[.!]+$/, ''))));
+    const options = args.options.map((o, i) => {
+      if (typeof o === 'string') {
+        if (!wordOf(o)) throw new FlowRunError(`Option ${i + 1}, "${o}", is not one of the block's outcome words: give it as one, or give options as objects with an outcome each. ${list} Nothing was asked.`);
+        return o;
+      }
+      const w = wordOf(o.outcome);
+      if (!w) throw new FlowRunError(`Option "${o.key}" ${o.outcome ? `leads to "${o.outcome}", which is no outcome of "${block.title}"` : 'has no outcome'}: give each option the outcome its answer leads to. ${list} Nothing was asked.`);
+      return { ...o, outcome: w };
+    });
+    return { tag, options };
+  }
+
+  /**
+   * The write-up was stored (#291): the run waits for its answer as it did for Ledung's own question. When the run moved
+   * while it was being asked, the question is withdrawn and the asker told.
+   */
+  writeUpAsked(q: QuestionInfo): void {
+    const tag = q.details?.run;
+    const run = tag ? this.p.runs.get(tag.run) : undefined;
+    if (!tag || !run) return;
+    if (run.state !== 'waiting' || run.at !== tag.block || run.question !== null) {
+      this.p.withdraw(q.id, `${tag.run} moved on while it was being asked.`);
+      throw new FlowRunError(`${runLabel(run)} moved on while question #${q.id} was being asked, so it is withdrawn; flow_status shows where the run is.`);
+    }
+    this.p.runs.update(run.id, { question: q.id }, this.now());
     this.p.changed(run.project);
-    return `At "${block.title}" (${block.id}), a person's step: Ledung put it to ${this.p.userName} as ${block.ask === 'review' ? 'review' : 'question'} #${q.id}${block.person ? ` (${block.person}'s call)` : ''}. ` +
-      `The answer moves the run by itself (${where}); you are told then, and need not report it.`;
+    if (!exercised291) {
+      exercised291 = true;
+      exercisedLine("EXERCISED #291 a person step asked with the manager's write-up");
+    }
   }
 
   /** A Run flow block (part 3b): a run of its own in the flow it names, which this one waits for. */
@@ -825,7 +973,7 @@ export class FlowRuns {
         const flow = this.flowOf(flows, now);
         const block = flow.blocks.find((b) => b.id === now.at);
         if (!block) throw new FlowRunError(`it is at "${now.at}", which is no block of its flow any more.`);
-        const word = answerWord(block, answer);
+        const word = answerWord(block, answer, q.details?.options);
         if (!word) {
           this.p.runs.update(now.id, { question: null, state: 'running' }, this.now());
           this.p.changed(now.project);
@@ -872,16 +1020,24 @@ export class FlowRuns {
  * the block has no such word, its first outcome for Accepted and its second for Changes needed), a question's answer
  * one of the block's words. A block with no outcomes ends the flow whatever the answer.
  */
-export function answerWord(block: FlowBlock, answer: string): string | null {
+export function answerWord(block: FlowBlock, answer: string, options?: QuestionOption[]): string | null {
   if (!block.outcomes?.length) return 'done';
   const words = [...new Map(block.outcomes.map((o) => [endingKey(o.word), o.word])).values()];
   const a = answer.trim();
   const verdict = a === ACCEPTED || /^Accepted\.\s/.test(a) ? 'accepted' : a.startsWith(CHANGES_NEEDED) ? 'changes needed' : null;
   if (verdict) return words.find((w) => endingKey(w) === verdict) ?? (block.ask === 'review' ? (verdict === 'accepted' ? words[0] : words[1]) ?? null : null);
+  // The button the person pressed, with or without the page's note under it (#291): a write-up's option leads to the
+  // outcome its asker gave it. "Other" text is no button, so it stays the coordinator's to read (#1184).
+  const picked = a.split(NOTE_SEP)[0]!;
+  const option = options?.find((o) => o.outcome && optionAnswer(o) === picked);
+  if (option) return words.find((w) => endingKey(w) === endingKey(option.outcome!)) ?? null;
   // Only the word itself, as its button gives it: anything more is the coordinator's to read (#1184, review of 3b).
-  const key = endingKey(a.replace(/[.!]+$/, ''));
+  const key = endingKey(picked.replace(RECOMMENDED, '').replace(/[.!]+$/, ''));
   return words.find((w) => endingKey(w) === key) ?? null;
 }
+
+/** What the question page puts between the picked option and the person's note (WaitingView). */
+const NOTE_SEP = '\n\nNote: ';
 
 /** A session's last reply as text, from its stored messages (oldest first): what a finished block hands on (part 3b). */
 export function lastReplyOf(messages: StoredMessage[]): string {

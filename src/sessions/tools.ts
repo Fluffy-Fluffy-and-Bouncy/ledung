@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { EFFORT_LEVELS, PERMISSION_MODES, type AttachedSource, type PermissionMode, type QuestionInfo, type SessionRole } from '../shared/protocol.ts';
 import { failedSourcesNote, MAX_SOURCES, type SourceInput } from './sources.ts';
 import {
-  ACCEPTED, CHANGES_NEEDED, detailsProblem, hasDetails, MAX_REVIEW_EVIDENCE, optionAnswer, questionText, splitOption, type OrderCommandDetails, type Opinion, type QuestionDetails, type QuestionOption, type ReviewDetails,
+  ACCEPTED, CHANGES_NEEDED, detailsProblem, hasDetails, MAX_REVIEW_EVIDENCE, optionAnswer, questionText, splitOption, type OrderCommandDetails, type Opinion, type QuestionDetails, type QuestionOption, type QuestionRun, type ReviewDetails,
 } from '../shared/questions.ts';
 import type { ShotInput } from './management.ts';
 import { commandProblem, type OrderSpec } from './orders.ts';
@@ -174,6 +174,10 @@ export interface RunHandlers {
   start?(args: { title: string; ref?: string; flow?: string; again?: boolean }): Promise<string>;
   step(args: { run: string; outcome: string; note?: string; block?: string; stop?: boolean }): Promise<string>;
   status(run?: string): Promise<string>;
+  /** ask_user at a run's person step (#291): checked before anything is stored; the tag and the options as the flow spells them. */
+  writeUp?(args: { run: string; block: string; review: boolean; options?: (string | QuestionOption)[] }): Promise<{ tag: QuestionRun; options?: (string | QuestionOption)[] }>;
+  /** The write-up stored: the run waits for its answer; throws (the question withdrawn) when the run moved meanwhile. */
+  writeUpAsked?(q: QuestionInfo): void;
 }
 
 /** flow_propose (workflow part 3e), bound to a manager whose project follows its workflow. */
@@ -269,6 +273,9 @@ export interface AskArgs {
   sources?: SourceInput[];
   /** The exact command the question asks the person to confirm as an order (issue #105); Ledung adds the option that confirms it. */
   order_command?: { command: string; match?: 'exact' | 'pattern' };
+  /** A run's person step this question writes up (#291): the answer moves the run. */
+  run?: string;
+  block?: string;
 }
 
 /**
@@ -463,8 +470,43 @@ function projectArgs<T extends object>(a: ProjectSettingsInput, extra: T): Omit<
   };
 }
 
+/** An ask_user option as an object; its outcome is for a run's person step (#291). */
+const OPTION_OBJECT = z.object({
+  key: z.string().regex(/^[a-z0-9]{1,3}$/, 'a short key such as "a"').describe('A short key, e.g. "a".'),
+  text: z.string().min(1).describe('The option in Markdown; a **bold** start is its label, the rest explains it.'),
+  cost: z.string().min(1).optional().describe('What choosing it costs: session time (never human days), plan use, risk, what waits.'),
+  outcome: z.string().min(1).max(200).optional().describe("With run: the block's outcome word this option's answer leads to."),
+});
+
 export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstance {
   const who = h.userName;
+  // ask_user takes a run's person step (#291) only where the run tools are.
+  const step = h.runs?.writeUp && h.runs.writeUpAsked ? { writeUp: h.runs.writeUp, asked: h.runs.writeUpAsked } : null;
+  const stepAsk = !!step;
+  /**
+   * ask_user at a run's person step (#291): checked against the run first, asked as written with the run's tag on it,
+   * and linked to the run, whose answer then moves it. Nothing about the person's text is Ledung's.
+   */
+  const askStep = async (args: AskArgs): Promise<string> => {
+    if (!step) throw new Error('Your project follows no workflow here, so ask_user takes no run. Nothing was asked.');
+    if (!args.run?.trim() || !args.block?.trim()) throw new Error('Give both run and block: the run and the person block it waits at, as Ledung named them. Nothing was asked.');
+    const extra = (['about_question', 'about_request', 'order_command', 'screenshots'] as const).filter((k) => args[k] !== undefined);
+    if (extra.length) throw new Error(`A run's person step is asked without ${extra.join(', ')}. Nothing was asked.`);
+    const checked = await step.writeUp({ run: args.run.trim(), block: args.block.trim(), review: !!args.review, options: args.options });
+    const asked = askedQuestion({ ...args, options: checked.options as AskArgs['options'] });
+    const details: QuestionDetails = { ...asked.details, run: checked.tag };
+    const evidence = details.review?.evidence ?? [];
+    if (h.keepFiles && evidence.length) {
+      const kept = await h.keepFiles(evidence.map((e) => ({ file: e.file, as: 'evidence' as const })));
+      evidence.forEach((e, i) => { e.file = kept[i]!; });
+    }
+    const sources = args.sources?.length && h.attach ? await h.attach(args.sources) : null;
+    const q = h.ask(asked.question, asked.options, null, null, details, undefined, sources);
+    step.asked(q);
+    const kind = details.review ? 'Review' : 'Question';
+    return `${kind} #${q.id}, "${checked.tag.blockTitle}" of ${checked.tag.run}, is recorded and has gone to ${who}.${failedSourcesNote(q.sources)} ` +
+      `${who}'s answer moves the run by itself, and you are told where it went; don't report it with flow_step. End your turn now; don't wait or poll.`;
+  };
   const tools = [
     tool(
       'ask_user',
@@ -475,16 +517,14 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
         `${who}'s Waiting for you shows them as a question page, groups questions by tier and orders them by rank. ` +
         `Every question must be self-contained: fill issue with the context someone needs who has not followed your work, and evidence with what you checked, not just a bare question; it is read without the conversation, often later or on a phone. With issue you may leave out question. ` +
         `When it points at something said elsewhere (a session's report, a PR or review comment, an earlier question), attach it with sources: Ledung fetches it itself and shows it word for word on the question page, so you need not copy it into issue or evidence; a summary or "the 12 points in the attached report" is enough. ` +
-        `To have ${who} sign off a finished change (does it solve the problem, does it look right), give review instead: what we were solving, what was done, notes and evidence files.`,
+        `To have ${who} sign off a finished change (does it solve the problem, does it look right), give review instead: what we were solving, what was done, notes and evidence files.` +
+        (stepAsk ? ` At a run's person step, give run and block, and each option the outcome it leads to (a review step: review); ${who}'s answer then moves the run.` : ''),
       {
         question: z.string().min(1).optional().describe('The question in Markdown. Self-contained: what you are working on, what needs deciding, your recommendation. May be left out when issue is given.'),
         options: z.union([
           z.array(z.string().min(1)).min(2).max(5),
-          z.array(z.object({
-            key: z.string().regex(/^[a-z0-9]{1,3}$/, 'a short key such as "a"').describe('A short key, e.g. "a".'),
-            text: z.string().min(1).describe('The option in Markdown; a **bold** start is its label, the rest explains it.'),
-            cost: z.string().min(1).optional().describe('What choosing it costs: session time (never human days), plan use, risk, what waits.'),
-          })).min(2).max(8),
+          // The outcome only where ask_user takes a run, so other sessions' schema stays as it was (#291).
+          z.array(stepAsk ? OPTION_OBJECT : OPTION_OBJECT.omit({ outcome: true }) as unknown as typeof OPTION_OBJECT).min(2).max(8),
         ]).optional().describe(
           'Optional suggested answers, shown as buttons in this order. Either labels (same order and names as any choices listed in the question; the recommended one first, ending in " (recommended)"), ' +
           'or objects {key, text, cost} with your pick in opinions.',
@@ -549,6 +589,12 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
           `What the question points at, each shown word for word in a folded box on its page, fetched by Ledung when you ask and kept: a session's reply ({reply, at}), ` +
           `a PR or review comment ({comment}: its link), or an earlier question ({question}: its number). One Ledung can't fetch doesn't stop the question; the reply says which and why.`,
         ),
+        ...(stepAsk
+          ? {
+            run: z.string().min(1).max(20).optional().describe('The run whose person step this asks, as Ledung named it, e.g. "run-3"; give block too.'),
+            block: z.string().min(1).max(80).optional().describe('The person block the run waits at, by id or title.'),
+          }
+          : {}),
         ...(h.role === 'manager'
           ? {
             about_question: z.number().int().positive().optional().describe("The number of the question from one of your sessions that this is about; later pass the answer on with forward_answer."),
@@ -566,6 +612,10 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
           : {}),
       },
       async (args: AskArgs) => {
+        if (args.run !== undefined || args.block !== undefined) return safely(() => askStep(args));
+        if (Array.isArray(args.options) && args.options.some((o) => typeof o !== 'string' && o.outcome !== undefined)) {
+          return safely(() => { throw new Error("An option's outcome goes with run and block, at a run's person step. Nothing was asked."); });
+        }
         if (args.about_request && !args.review) {
           return safely(() => {
             if (args.order_command) throw new Error('order_command goes with a question of your own, not with about_request. Nothing was asked.');
