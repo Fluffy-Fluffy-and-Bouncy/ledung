@@ -60,6 +60,15 @@ export interface BoardContext {
   setTimer?: (fn: () => void, ms: number) => () => void;
 }
 
+/** A board's status as compared for the page: without the poll times, which move on every poll (issue #232). */
+function shownKey(status: BoardRepoStatus): string {
+  const { lastPollAt: _last, nextPollAt: _next, ...rest } = status;
+  return JSON.stringify(rest);
+}
+
+/** The page is sent a board's status at least this often while it is polled, changed or not (issue #232). */
+export const HEARTBEAT_MS = 60_000;
+
 /** Inbox items from the board: "board:<thread>". */
 export const BOARD_SOURCE = 'board';
 const HOUR = 3600_000;
@@ -96,6 +105,10 @@ export class Board {
   private failures = 0;
   private cancelTimer: (() => void) | null = null;
   private stopped = true;
+  /** The status the page was last sent, as shownKey gives it; null: none sent yet (issue #232). */
+  private shown: string | null = null;
+  /** When the page was last sent this board's status (issue #232). */
+  private sentAt = 0;
   /** Sends and polls one at a time, so a poll never sees our own post before it is recorded as ours. */
   private chain: Promise<unknown> = Promise.resolve();
   /** Bursts: a manager's pending wake and when the burst began (decision 7). */
@@ -195,7 +208,25 @@ export class Board {
   }
 
   private publish(): void {
+    this.shown = shownKey(this.status());
+    this.sentAt = this.now();
     this.ctx.publish();
+  }
+
+  /**
+   * The end of a poll tells the page only what changed (issue #232): a board event per poll per page was twelve a
+   * minute with nothing new. A post stored or a file pruned in the poll has already been sent (receive, prune). And
+   * once a minute at least, so the page's "checked under a minute ago" stays true and a stalled poller shows (board
+   * thread 30: a heartbeat once a minute).
+   */
+  private publishIfChanged(startedAt: number, wait: number): void {
+    // The page judges a check overdue by when the next one is due (board thread 30), so that time is set before the
+    // status goes out; schedule() sets the same time again.
+    if (!this.stopped) this.nextPollAt = this.now() + wait;
+    // A post or prune sent during this poll went out with the last poll's times; this poll's follow, so the page
+    // never holds a check time older than the one it has been sent.
+    const sentDuring = this.sentAt >= startedAt;
+    if (sentDuring || shownKey(this.status()) !== this.shown || this.now() - this.sentAt >= HEARTBEAT_MS) this.publish();
   }
 
   /** Who has access to this repo; lostAccess: logins of the given allowlist that no longer have it. */
@@ -277,6 +308,7 @@ export class Board {
 
   /** One round: learns who we are if not yet known, then what is new. Returns when to ask again. */
   async pollOnce(): Promise<number> {
+    const startedAt = this.now();
     try {
       if (!this.identityLogin) this.identityLogin = (await this.ctx.backend.identity()).id;
       const result = await this.serial(() => this.ctx.backend.poll(this.store.cursor()));
@@ -288,7 +320,7 @@ export class Board {
       this.error = null;
       this.failures = 0;
       this.lastPollAt = this.now();
-      this.publish();
+      this.publishIfChanged(startedAt, result.nextPollMs);
       return result.nextPollMs;
     } catch (e) {
       const err = e instanceof BoardError ? e : new BoardError('unreachable', (e as Error).message);
@@ -297,8 +329,9 @@ export class Board {
       this.state = err.kind === 'signin' ? 'off' : 'error';
       this.error = err.message;
       if (err.kind === 'signin') this.identityLogin = null;
-      this.publish();
-      return Math.max(err.retryAfterMs ?? 0, backoff);
+      const wait = Math.max(err.retryAfterMs ?? 0, backoff);
+      this.publishIfChanged(startedAt, wait);
+      return wait;
     }
   }
 

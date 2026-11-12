@@ -4,7 +4,8 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { killRecorded, listAll, treeFrom, type ProcessInfo } from '../platform/process-tree.ts';
+import { listShared } from '../platform/process-lister.ts';
+import { killRecorded, treeFrom, type ProcessInfo } from '../platform/process-tree.ts';
 
 /** Like Claude Code's Bash tool: two minutes. */
 export const SHELL_TIMEOUT_MS = 2 * 60 * 1000;
@@ -97,8 +98,16 @@ class Capped {
 }
 
 /** Starts the command; see ShellRun. */
-export function startShell(spec: ShellSpawn, opts: { timeoutMs?: number; maxChars?: number } = {}): ShellRun {
+export function startShell(
+  spec: ShellSpawn,
+  opts: {
+    timeoutMs?: number; maxChars?: number;
+    /** For tests: how processes are listed, and how often (the shared lister and RECORD_EVERY_MS otherwise). */
+    list?: () => Promise<ProcessInfo[]>; recordEveryMs?: number;
+  } = {},
+): ShellRun {
   const timeoutMs = opts.timeoutMs ?? SHELL_TIMEOUT_MS;
+  const list = opts.list ?? listShared;
   const started = Date.now();
   const out = new Capped(opts.maxChars ?? SHELL_MAX_CHARS);
   const err = new Capped(opts.maxChars ?? SHELL_MAX_CHARS);
@@ -121,7 +130,7 @@ export function startShell(spec: ShellSpawn, opts: { timeoutMs?: number; maxChar
   const record = async (): Promise<ProcessInfo[] | null> => {
     if (!child.pid) return null;
     try {
-      const all = await listAll();
+      const all = await list();
       root ??= all.find((p) => p.pid === child.pid) ?? null;
       const r = root ?? standIn(child.pid);
       // The root stays in the list after it has exited, so what it left behind is still found by its parent id.
@@ -133,8 +142,16 @@ export function startShell(spec: ShellSpawn, opts: { timeoutMs?: number; maxChar
       return null;
     }
   };
-  void record();
-  const recorder = setInterval(() => void record(), RECORD_EVERY_MS);
+  // One record at a time: under load a list takes longer than RECORD_EVERY_MS, and the ticks piled up (#230).
+  let recording: Promise<unknown> | null = null;
+  const tick = () => {
+    if (recording) return;
+    recording = record().finally(() => {
+      recording = null;
+    });
+  };
+  tick();
+  const recorder = setInterval(tick, opts.recordEveryMs ?? RECORD_EVERY_MS);
   child.stdout?.on('data', (c) => out.add(c));
   child.stderr?.on('data', (c) => err.add(c));
 
@@ -143,7 +160,9 @@ export function startShell(spec: ShellSpawn, opts: { timeoutMs?: number; maxChar
     if (why && !cut && exitCode === undefined) cut = why;
     ending ??= (async () => {
       clearInterval(recorder);
-      // Its list also tells what still runs, so ending takes one list, not two (#251).
+      // Its list also tells what still runs, so ending takes one list, not two (#251); taken after a record
+      // still under way, so there is never more than one (#230).
+      await recording;
       const now = await record();
       if (process.platform !== 'win32' && child.pid) {
         try {

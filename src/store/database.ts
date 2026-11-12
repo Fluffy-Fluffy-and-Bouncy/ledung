@@ -711,6 +711,16 @@ const MIGRATIONS: string[] = [
   ALTER TABLE sessions ADD COLUMN requested_effort TEXT;
   ALTER TABLE sessions ADD COLUMN effort TEXT;
   `,
+  // Work time for work_history (issue #254, review of PR #260): the spans inside a turn a tool call waited on a pause or
+  // a usage stop, as JSON [[start, end], ...] (null: none, or a turn recorded before this); and when the turn now under
+  // way began, so a turn that runs across Restart Ledung is measured whole (null: none under way).
+  `
+  ALTER TABLE turn_resources ADD COLUMN waits TEXT;
+  ALTER TABLE sessions ADD COLUMN turn_started_at INTEGER;
+  `,
+  // The person's typed words in one session since a time, read on every manager tool call by the hooks that look
+  // for their word (issue #232): only user messages, so the read never walks the session's replies.
+  `CREATE INDEX messages_user_by_session ON messages(session_id, at) WHERE kind = 'user';`,
 ];
 
 export function databaseFile(dir = userDataDir()): string {

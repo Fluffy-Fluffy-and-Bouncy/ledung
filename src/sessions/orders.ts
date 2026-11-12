@@ -137,8 +137,9 @@ export function attest(store: Store, managerId: string, spec: Pick<OrderSpec, 'c
   if (want.length < 3) return { error: 'Ledung can\'t attest this order: give the person\'s typed words, as they typed them.' };
   const when = typedAt(t.at ?? '');
   if (!when) return { error: `Ledung can't attest this order: "${t.at}" is not a time; give it as HH:MM, as the message shows it.` };
-  const hit = store.listMessages(managerId, { limit: 400 }).reverse()
-    .find((m) => m.kind === 'user' && !m.data.from && m.data.here === true && typeof m.data.text === 'string' && m.at > since && when(m.at)
+  // Only this manager's typed messages since then, by a query with those conditions (issue #232); newest first.
+  const hit = store.userMessagesSince(managerId, since).reverse()
+    .find((m) => !m.data.from && m.data.here === true && typeof m.data.text === 'string' && when(m.at)
       && squash(m.data.text as string).includes(want));
   if (!hit) {
     return { error: `Ledung can't attest this order: no message the person typed into you on this computer at ${t.at}, in the last two days, has those words.` };

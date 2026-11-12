@@ -94,10 +94,21 @@ const THROTTLE_SLACK_MS = 1000;
  * about a minute at 64 KiB/s.
  */
 const THROTTLE_MAX_DEBT_MS = 5 * 60_000;
+/**
+ * A stream whose socket holds more than this, waiting to be written, is reset (Project-Ledung#479): we asked the other
+ * side to pause long before it got here, and it kept sending. An honest peer stops within what it had in flight when
+ * our pause reached it: its own agent socket's high water and the network between, a few MiB.
+ */
+export const MAX_STREAM_BACKLOG = 8 * SOCKET_HIGH_WATER;
+
+/** Why a stream was reset by this side rather than closed by its socket. */
+export type ResetReason = 'ignored pause' | 'throttle debt';
 
 export interface StreamsOptions {
   /** Each stream byte that crosses, either way (issue #161): the relay counts them per owner. Never the bytes themselves. */
   onBytes?: (bytes: number) => void;
+  /** A stream this side reset because the other side would not hold it (Project-Ledung#479): the relay logs each. */
+  onReset?: (id: number, reason: ResetReason) => void;
 }
 
 export function encodeFrame(kind: number, id: number, payload?: Buffer): Buffer {
@@ -145,6 +156,7 @@ export class Streams {
   private readonly streams = new Map<number, Stream>();
   private waiting = false;
   private readonly onBytes: ((bytes: number) => void) | undefined;
+  private readonly onReset: ((id: number, reason: ResetReason) => void) | undefined;
   /** Bytes a second for all streams together, or null: no throttle (issue #161). */
   private rate: number | null = null;
   /** When the bytes so far have been paid for at the rate. */
@@ -159,6 +171,7 @@ export class Streams {
   constructor(ws: FrameSocket, options: StreamsOptions = {}) {
     this.ws = ws;
     this.onBytes = options.onBytes;
+    this.onReset = options.onReset;
   }
 
   /**
@@ -245,6 +258,11 @@ export class Streams {
           stream.sentPause = true;
           this.ws.send(encodeFrame(FRAME.pause, id));
         }
+        // Asked to pause and still sending: what waits for the socket would grow without end (Project-Ledung#479).
+        if (stream.socket.writableLength > MAX_STREAM_BACKLOG) {
+          this.resetStream(id, stream, 'ignored pause');
+          return true;
+        }
         this.charge(id, stream, payload.length, 'out');
         return true;
       case FRAME.end:
@@ -315,9 +333,7 @@ export class Streams {
     }
     if (way === 'out' && ahead > THROTTLE_MAX_DEBT_MS && stream.heldOut) {
       // Asked to hold and still sending: the throttle would not hold, so the stream goes.
-      this.streams.delete(id);
-      stream.socket.destroy();
-      this.ws.send(encodeFrame(FRAME.reset, id));
+      this.resetStream(id, stream, 'throttle debt');
       return;
     }
     if (ahead <= THROTTLE_SLACK_MS) return;
@@ -335,6 +351,14 @@ export class Streams {
       }, Math.max(0, ahead - THROTTLE_SLACK_MS / 2));
       this.release.unref();
     }
+  }
+
+  /** Drops stream `id` here, tells the other side, and reports why. */
+  private resetStream(id: number, stream: Stream, reason: ResetReason): void {
+    this.streams.delete(id);
+    stream.socket.destroy();
+    this.ws.send(encodeFrame(FRAME.reset, id));
+    this.onReset?.(id, reason);
   }
 
   /** Every stream the throttle holds goes again, unless backpressure holds it too. */
