@@ -86,3 +86,17 @@ export function sidebarTree(sessions: readonly SessionInfo[], projects: readonly
     .filter((g) => g.project || g.name === CHATS || g.rows.length || g.archived);
   return { shown, groups };
 }
+
+/**
+ * Usage → Sessions' rows (issue #235): each top-level session that runs, or that started one that runs, managers
+ * first and then newest first, each followed by the running sessions it started in the same order; ended sessions are
+ * left out. Built from the index, not a scan of the list per row. index: for the rows' own lookups.
+ */
+export function usageRows(sessions: readonly SessionInfo[]): { index: SessionIndex; rows: SessionInfo[] } {
+  const index = indexSessions(sessions);
+  const live = (s: SessionInfo) => s.status !== 'ended';
+  const order = (a: SessionInfo, b: SessionInfo) => Number(b.role === 'manager') - Number(a.role === 'manager') || b.createdAt - a.createdAt;
+  const top = sessions.filter((s) => (!s.parentId || !index.byId.has(s.parentId)) && (live(s) || index.childrenOf(s.id).some(live)));
+  const rows = top.sort(order).flatMap((s) => [s, ...index.childrenOf(s.id).filter(live).sort(order)]);
+  return { index, rows };
+}

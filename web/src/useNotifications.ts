@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { PermissionInfo, QuestionInfo, SessionInfo, UsageStopInfo } from '../../src/shared/protocol.ts';
 import { planNotifications, stopItems, waitingItems } from './notify.ts';
+import { indexSessions } from './sessionTree.ts';
 
 /** Notifications work only in a secure context (this computer at 127.0.0.1) where the API exists. */
 const notificationsPossible = (): boolean => window.isSecureContext && 'Notification' in window;
@@ -34,7 +35,9 @@ export function useNotifications(args: {
   useEffect(() => {
     // Until the first full list arrives, the lists are empty and nothing may count as "closed".
     if (!args.loaded) return;
-    const titleOf = (id: string) => args.sessions.find((s) => s.id === id)?.title ?? 'a session';
+    // One pass over the list, not one per notification (issue #235).
+    const { byId } = indexSessions(args.sessions);
+    const titleOf = (id: string) => byId.get(id)?.title ?? 'a session';
     const plan = planNotifications(previous.current, [...waitingItems(args.questions, args.permissions, titleOf), ...stopItems(args.usageStops)]);
     previous.current = plan.open;
     for (const id of plan.close) {
