@@ -6,6 +6,8 @@
 import { suggestionName } from '../shared/sensitive-suggestions.ts';
 import { HOLDS_BACK, SETTINGS_RULE, settingsAction } from './word.ts';
 import { SECRET_FILE_PATTERN, SECRET_FILE_RULE } from '../shared/secrets.ts';
+import os from 'node:os';
+import { userDataDir } from '../platform/paths.ts';
 
 export interface SensitiveRules {
   /** Regular expressions (case-insensitive) matched against Bash and PowerShell commands. */
@@ -27,6 +29,65 @@ function filePaths(input: Record<string, unknown>): string[] {
 
 /** The rule named for a call that is always the user's to approve, whatever the lists say. */
 export const ALWAYS_ASKED_RULE = "a manager's project tool, always yours to approve";
+/** The rule named for a call that names Ledung's own data folder (Project-Ledung#473). */
+export const DATA_FOLDER_RULE = "Ledung's own data folder, always yours to approve";
+
+/** Where a data folder sits, and the folders a command may name it from. */
+export interface DataFolderPlaces {
+  dir: string;
+  home: string;
+  /** Windows' %APPDATA%. */
+  appData?: string;
+  /** Linux's $XDG_DATA_HOME. */
+  xdgData?: string;
+}
+
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** A path in one form for matching: forward slashes, one at a time, no slash at the end. */
+const slashes = (s: string) => s.replace(/\\/g, '/').replace(/\/{2,}/g, '/').replace(/(.)\/$/, '$1');
+
+/**
+ * A command or path as text to look for a folder in: quotes, backticks and cmd's ^ out, an escaped space as a
+ * space, and forward slashes, so `"C:\Users\x"`, `~/Library/Application\ Support` and `'Application Support'`
+ * read alike.
+ */
+export function pathText(text: string): string {
+  return slashes(text.replace(/\\ /g, ' ').replace(/['"`^]/g, ''));
+}
+
+/**
+ * The ways a command or a path names a data folder: written out (also as Git Bash's `/c/…`), or from the home
+ * folder, %APPDATA% or $XDG_DATA_HOME by their names in cmd, PowerShell and POSIX shells. Matched against pathText.
+ */
+export function dataFolderPattern(places: DataFolderPlaces): RegExp {
+  const dir = slashes(places.dir);
+  const written = (abs: string) => {
+    const drive = /^([a-z]):(\/.*)$/i.exec(abs);
+    return drive ? [escapeRegExp(abs), `/${drive[1]}${escapeRegExp(drive[2]!)}`] : [escapeRegExp(abs)];
+  };
+  const forms = written(dir);
+  const roots: [string | undefined, string[]][] = [
+    [places.home, ['~', '$HOME', '${HOME}', '%USERPROFILE%', '$env:USERPROFILE', '${env:USERPROFILE}']],
+    [places.appData, ['%APPDATA%', '$env:APPDATA', '${env:APPDATA}', '$APPDATA', '${APPDATA}']],
+    [places.xdgData, ['$XDG_DATA_HOME', '${XDG_DATA_HOME}']],
+  ];
+  for (const [root, names] of roots) {
+    if (!root) continue;
+    const r = slashes(root);
+    if (!dir.toLowerCase().startsWith(`${r.toLowerCase()}/`)) continue;
+    const tail = escapeRegExp(dir.slice(r.length));
+    forms.push(...names.map((n) => escapeRegExp(n) + tail));
+  }
+  // The folder itself or anything in it, not a sibling whose name only starts the same (Ledung-old).
+  return new RegExp(`(?:${forms.join('|')})(?![\\w.-])`, 'i');
+}
+
+let ownDataFolderPattern: RegExp | undefined;
+/** This Ledung's data folder (LEDUNG_DATA_DIR in a test Ledung), worked out once. */
+function ownDataFolder(): RegExp {
+  ownDataFolderPattern ??= dataFolderPattern({ dir: userDataDir(), home: os.homedir(), appData: process.env.APPDATA, xdgData: process.env.XDG_DATA_HOME });
+  return ownDataFolderPattern;
+}
 
 /**
  * The first sensitive rule a request matches in the given rules (global patterns plus the project's).
@@ -44,13 +105,29 @@ export function matchSensitive(
   // (issue #468, the manager's addition 2 on question #1565): the values reach commands through the environment.
   const named = [...((toolName === 'Bash' || toolName === 'PowerShell') && typeof input.command === 'string' ? [input.command] : []), ...filePaths(input)];
   if (named.some((t) => SECRET_FILE_PATTERN.test(t))) return { rule: SECRET_FILE_RULE };
-  if ((toolName === 'Bash' || toolName === 'PowerShell') && typeof input.command === 'string') {
-    // PowerShell quotes and escapes differently from a POSIX shell, so its commands are matched whole, line
-    // by line: more asked than needed rather than a gap (#213: `Start-Process … -Verb RunAs` comes this way).
-    const lines = toolName === 'Bash' ? runnableLines(input.command) : input.command.split(/\r?\n/);
+  // PowerShell quotes and escapes differently from a POSIX shell, so its commands are matched whole, line
+  // by line: more asked than needed rather than a gap (#213: `Start-Process … -Verb RunAs` comes this way).
+  const read = (toolName === 'Bash' || toolName === 'PowerShell') && typeof input.command === 'string'
+    ? (toolName === 'Bash' ? readBash(input.command) : readPowerShell(input.command))
+    : null;
+  // Ledung's own data folder is the person's in every project, whatever the lists say (Martin, 2026-11-12,
+  // Ledung question #2056; Project-Ledung#473).
+  const own = ownDataFolder();
+  // The command as written too, heredoc text included: a part-quoted path (`~/Library/"Application Support"/…`) is
+  // whole only there, and asking for a note that names the folder costs less than missing a read.
+  const texts = [...(read ? [input.command as string, ...read.lines, ...read.paths] : []), ...filePaths(input)];
+  if (texts.some((t) => own.test(pathText(t)))) return { rule: DATA_FOLDER_RULE };
+  if (read) {
     for (const p of rules.commandPatterns ?? []) {
       const re = new RegExp(p, 'i');
-      if (lines.some((l) => re.test(l))) return { rule: suggestionName(p, 'command') ?? `command matches /${p}/` };
+      if (read.lines.some((l) => re.test(l))) return { rule: suggestionName(p, 'command') ?? `command matches /${p}/` };
+    }
+    // The files a command names meet the path patterns too, as a file tool's path does (Project-Ledung#473):
+    // a shell reads a file as well as the Read tool.
+    for (const file of read.paths) {
+      for (const p of rules.pathPatterns ?? []) {
+        if (new RegExp(p, 'i').test(file)) return { rule: suggestionName(p, 'path') ?? `path matches /${p}/` };
+      }
     }
   }
   for (const file of filePaths(input)) {
@@ -128,19 +205,75 @@ const RUN_OPTION = /^(?:-[a-z]*c|-command|--command|\/c|-e|--eval)$/i;
 const RUNS_ARGUMENTS = /^(?:.*[\\/])?(?:ssh|eval|watch|xargs)(?:\.exe)?$/i;
 
 /**
- * The lines of a command that run, with text that is only read (heredoc bodies, quoted strings, comments)
- * blanked out. On anything it can't follow (an unclosed quote or heredoc) it gives back the whole command.
+ * The lines of a command that run, with text that is only read (heredoc bodies, quoted prose, comments)
+ * blanked out and a quoted single word without its quotes. On anything it can't follow (an unclosed quote or
+ * heredoc) it gives back the whole command.
  */
 export function runnableLines(command: string): string[] {
   try {
-    return blankUnrun(command).replace(/\\\r?\n/g, ' ').split(/\r?\n/);
+    return blankUnrun(command).text.replace(/\\\r?\n/g, ' ').split(/\r?\n/);
   } catch {
     return command.split(/\r?\n/);
   }
 }
 
-function blankUnrun(src: string): string {
+/** What a command is matched by: the lines it runs, and the words in it that may name a file. */
+interface ReadCommand { lines: string[]; paths: string[] }
+
+/**
+ * A Bash command as the patterns see it (Project-Ledung#473): its runnable lines, each also with its backslash
+ * escapes taken out as the shell takes them out, and the words that may name a file.
+ */
+function readBash(command: string): ReadCommand {
+  let text = command;
+  let quotedPaths: string[] = [];
+  try {
+    ({ text, quotedPaths } = blankUnrun(command));
+  } catch {
+    // Matched whole, as runnableLines does.
+  }
+  const lines = text.replace(/\\\r?\n/g, ' ').split(/\r?\n/).flatMap((l) => (/\\./.test(l) ? [l, l.replace(/\\(.)/g, '$1')] : [l]));
+  return { lines, paths: [...commandWords(lines), ...quotedPaths] };
+}
+
+/**
+ * A PowerShell command: matched whole, line by line (#213), each line also without its quotes and backtick
+ * escapes, as PowerShell runs it (Project-Ledung#473). Its quoted strings with a slash in them may name a file.
+ */
+function readPowerShell(command: string): ReadCommand {
+  const raw = command.split(/\r?\n/);
+  const lines = raw.flatMap((l) => (/['"`]/.test(l) ? [l, l.replace(/['"`]/g, '')] : [l]));
+  const quoted = [...command.matchAll(/'([^'\n]*)'|"([^"\n]*)"/g)].map((m) => m[1] ?? m[2] ?? '').filter((q) => /[\\/]/.test(q));
+  return { lines, paths: [...commandWords(lines), ...quoted] };
+}
+
+/**
+ * The words of command lines that may name a file: split where a shell splits words, quotes taken off, plus the
+ * part after `--option=`, `-Option:` and curl's `@`. Every word is a candidate, options and the program too:
+ * asked more than needed rather than a file read unasked.
+ */
+function commandWords(lines: string[]): string[] {
+  const words = lines.flatMap((l) => l.split(/[\s;&|()<>`,]+/)).map((w) => w.replace(/^['"]+|['"]+$/g, '')).filter(Boolean);
+  return words.flatMap((w) => {
+    const forms = [w];
+    if (w.includes('=')) forms.push(w.slice(w.indexOf('=') + 1));
+    if (/^-[\w-]+:./.test(w)) forms.push(w.slice(w.indexOf(':') + 1));
+    if (w.startsWith('@')) forms.push(w.slice(1));
+    return forms;
+  });
+}
+
+/**
+ * A quoted word with nothing in it a shell would split on or run: matched without its quotes, as the shell runs
+ * it, so `"git" push` is a git push (Project-Ledung#473). Quoted text with spaces or shell characters in it is
+ * prose or a message, and stays blanked.
+ */
+const PLAIN_WORD = /^[^\s;&|()<>`]*$/;
+
+function blankUnrun(src: string): { text: string; quotedPaths: string[] } {
   let out = '';
+  // Blanked quoted text with a slash in it: it may still be a file the command reads (a path with spaces).
+  const quotedPaths: string[] = [];
   let i = 0;
   // Words of the current simple command so far, to tell whether a quote or heredoc is run.
   let words: string[] = [];
@@ -202,8 +335,17 @@ function blankUnrun(src: string): string {
       const end = c === "'" ? src.indexOf("'", i + 1) : closingDouble(src, i + 1);
       if (end < 0) throw new Error('unclosed quote');
       const body = src.slice(i + 1, end);
-      out += c + (quoteRuns(body) ? body : c === '"' ? keepSubstitutions(body) : ' '.repeat(body.length)) + c;
-      word += 'Q';
+      // The word as the shell has it, so a quoted program (`"bash" -c '…'`) is still recognised.
+      const value = c === '"' ? body.replace(/\\([\\"$`])/g, '$1') : body;
+      if (quoteRuns(body)) out += c + body + c;
+      else if (PLAIN_WORD.test(value)) out += value;
+      else {
+        // Blanked to an empty pair, so an option's quoted value (`git -C "my dir" push`) still reads as one word.
+        const kept = c === '"' ? keepSubstitutions(body) : '';
+        out += c + (kept.trim() ? kept : '') + c;
+        if (/[\\/]/.test(value)) quotedPaths.push(value);
+      }
+      word += value;
       i = end + 1;
       continue;
     }
@@ -214,7 +356,7 @@ function blankUnrun(src: string): string {
     i++;
   }
   if (pendingHeredocs.length) throw new Error('unclosed heredoc');
-  return out;
+  return { text: out, quotedPaths };
 }
 
 /** The index of the `"` that closes a double-quoted string starting at `from`, -1 if none. */
