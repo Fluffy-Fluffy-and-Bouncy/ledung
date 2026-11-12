@@ -538,7 +538,8 @@ export interface StoredMessage {
   sessionId: string;
   at: number;
   /** card: a card in the Ledung Helper's chat (src/shared/helper-cards.ts). */
-  kind: 'user' | 'sdk' | 'permission' | 'decision' | 'event' | 'question' | 'shell' | 'card';
+  /** reply: the Ledung Helper's one message of a turn, with its card (src/sessions/helper-tools.ts, reply). */
+  kind: 'user' | 'sdk' | 'permission' | 'decision' | 'event' | 'question' | 'shell' | 'card' | 'reply';
   data: any;
 }
 

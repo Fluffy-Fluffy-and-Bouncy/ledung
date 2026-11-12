@@ -1939,6 +1939,12 @@ export class LedungServer {
         if (text !== undefined && (typeof text !== 'string' || text.length > 2000)) throw new HttpError(400, 'The text is a message of at most 2000 characters.');
         return manager.openHelper(text);
       }
+      case 'POST helper-card-answered': {
+        const body = await readJson(req);
+        this.requirePageForManager(req, String(body.session ?? ''));
+        manager.noteCardAnswered(String(body.session ?? ''), body.message);
+        return { ok: true };
+      }
       case 'POST helper-model':
         return manager.setHelperModel((await readJson(req)).model);
       case 'POST chats-new': {

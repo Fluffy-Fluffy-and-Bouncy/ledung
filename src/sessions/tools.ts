@@ -44,7 +44,7 @@ const USER_APPROVED = ['add_project', 'create_project', 'start_manager', 'stop_m
  * The Ledung Helper's tools that run without a prompt (helper-tools.ts): reading, the setup's marks, the name, cards,
  * and a workflow proposal, which is itself the person's review. Its project tools keep the managers' names below.
  */
-const HELPER_TOOLS = ['setup_status', 'setup_step', 'set_user_name', 'list_projects', 'project_settings', 'workflow_files', 'propose_workflow', 'show_card'];
+const HELPER_TOOLS = ['setup_status', 'setup_step', 'set_user_name', 'list_projects', 'project_settings', 'workflow_files', 'propose_workflow', 'reply'];
 const fullNames = (tools: string[]) => tools.map((t) => `mcp__${LEDUNG_SERVER}__${t}`);
 /** Ledung's tools never need a permission prompt of their own, except the ones the user approves. */
 export const LEDUNG_TOOLS = fullNames([...SESSION_TOOLS, ...MANAGER_TOOLS, ...HELPER_TOOLS]);

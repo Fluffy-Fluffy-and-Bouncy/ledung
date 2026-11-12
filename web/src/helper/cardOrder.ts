@@ -3,7 +3,7 @@
 // same key in the same turn replaces the earlier one, so each shows once. Pure, so it can be tested.
 import type { HelperCard } from '../../../src/shared/helper-cards.ts';
 
-type Entry = { type: string; byLedung?: boolean; card?: HelperCard; answered?: boolean; text?: string; sub?: boolean };
+type Entry = { type: string; byLedung?: boolean; card?: HelperCard | null; answered?: boolean; text?: string; sub?: boolean };
 
 /** A card's key: its id, else its kind and title. */
 export function cardKey(card: HelperCard): string {
@@ -72,6 +72,46 @@ export function placeCards<T extends Entry>(raw: T[], turnOpen = false): T[] {
   return out;
 }
 
+type Turned = { type: string; byLedung?: boolean; sub?: boolean; text?: string; answered?: boolean; card?: unknown };
+
+/**
+ * The Ledung Helper's chat, a turn at a time (acceptance round 4): a turn with a reply shows only that reply (the
+ * helper's other words are its own, not shown); a turn with none shows its words once it has ended, as a fallback.
+ * A reply's card is answered once the person wrote anything after it.
+ */
+export function helperTurns<T extends Turned>(raw: T[], turnOpen = false): T[] {
+  const out: T[] = [];
+  let turn: T[] = [];
+  const close = (ended: boolean) => {
+    const replied = turn.some((e) => e.type === 'reply');
+    const seen = new Set<string>();
+    for (const e of turn) {
+      if (e.type === 'assistant' && !e.sub) {
+        if (replied || !ended) continue;
+        const w = (e.text ?? '').replace(/\s+/g, ' ').trim();
+        if (seen.has(w)) continue;
+        seen.add(w);
+      }
+      out.push(e);
+    }
+    turn = [];
+  };
+  for (const e of raw) {
+    if (e.type === 'user') {
+      close(true);
+      out.push(e);
+    } else turn.push(e);
+  }
+  close(!turnOpen);
+  let later = false;
+  for (let i = out.length - 1; i >= 0; i--) {
+    const e = out[i]!;
+    if (e.type === 'user' && !e.byLedung) later = true;
+    else if ((e.type === 'reply' || e.type === 'card') && later) out[i] = { ...e, answered: true };
+  }
+  return out;
+}
+
 type Stored = { kind: string; data: any };
 
 /**
@@ -83,6 +123,7 @@ export function helperHasSpoken(messages: Stored[]): boolean {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]!;
     if (m.kind === 'user') return false;
+    if (m.kind === 'reply') return true;
     if (m.kind === 'sdk' && m.data?.type === 'assistant' && m.data.parent_tool_use_id == null
       && (m.data.message?.content ?? []).some((b: { type?: string; text?: string }) => b?.type === 'text' && b.text?.trim())) return true;
   }

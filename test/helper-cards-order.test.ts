@@ -57,3 +57,17 @@ test('a card stands right under its turn\'s last words, before a later line such
   assert.deepEqual(shape(placeCards([person('a'), said('Pick the folder.'), card('Folder'), resumed, person('b')])),
     ['user:a', 'assistant:Pick the folder.', 'card:Folder✓', 'event:Session resumed.', 'user:b']);
 });
+
+test("the helper's chat shows a turn's reply only; a turn with none shows its words once ended (acceptance round 4)", async () => {
+  const { helperTurns } = await import('../web/src/helper/cardOrder.ts');
+  const reply = (text: string) => ({ type: 'reply', text });
+  const view = (xs: { type: string; text?: string; answered?: boolean }[]) => xs.map((x) => `${x.type}:${x.text}${x.answered ? '✓' : ''}`);
+  // Step 8 twice in one turn (text, a tool, the same reworded): only the reply shows.
+  assert.deepEqual(view(helperTurns([person('No'), said('Next are shortcuts…'), said('Shortcuts are next…'), reply('Next are shortcuts.')])),
+    ['user:No', 'reply:Next are shortcuts.']);
+  // No reply: the words show once the turn has ended, once each; not while it runs.
+  assert.deepEqual(view(helperTurns([person('a'), said('Hi'), said('Hi')], true)), ['user:a']);
+  assert.deepEqual(view(helperTurns([person('a'), said('Hi'), said('Hi')], false)), ['user:a', 'assistant:Hi']);
+  // A reply's card is answered by the person's next message.
+  assert.deepEqual(view(helperTurns([reply('Pick'), person('x')])), ['reply:Pick✓', 'user:x']);
+});

@@ -24,7 +24,8 @@ export interface HelperHandlers {
   setProjectBasics(patch: BasicsPatch): string;
   workflowFiles(project: string): Promise<string>;
   proposeWorkflow(project: string, changes: { file: string; text?: string; remove?: boolean }[], why: string): Promise<string>;
-  showCard(card: HelperCard): string;
+  /** The turn's one message to the person, with its card if any (acceptance round 4: structural, not by instruction). */
+  reply(text: string, card: HelperCard | undefined): string;
 }
 
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] });
@@ -68,9 +69,10 @@ export function helperToolServer(who: string, h: HelperHandlers): McpSdkServerCo
     tool('set_user_name', `Set the name Ledung and its sessions call ${who} by.`, {
       name: z.string().trim().min(1).max(60).describe('Their name, as they gave it.'),
     }, async (a) => safely(() => h.setUserName(a.name))) as never,
-    tool('show_card', `Show a card in this chat for precise input, under your words: only a short title and the inputs, since your message already said what it is about. Call it last and end your turn with no more text: ${who}'s pick comes back as their message. choice: buttons; folder: Ledung's folder browser; text: one field; step: ${who}'s own controls for shortcuts, the check-in notice, phones or accounts; link: a button that opens a page of Ledung's (add-project, project-settings, workflow, manager, accounts, settings, devices, helper-settings, shortcuts, checkin; project for the project ones).`, {
-      card: CardSchema,
-    }, async (a) => safely(() => h.showCard(a.card as HelperCard))) as never,
+    tool('reply', `Your one message to ${who} in this turn, and the only way to speak to them: Ledung shows exactly this text, once, with its card under it. Anything else you write is not shown. Call it once, last, then end your turn. card (optional, not while a setup step is open: Ledung shows the step's own card): choice (buttons), folder (Ledung's folder browser), text (one field), link (a button to a page of Ledung's: add-project, project-settings, workflow, manager, accounts, settings, devices, helper-settings, shortcuts, checkin; project for the project ones). Its pick, or what they write instead, comes back as their message.`, {
+      text: z.string().trim().min(1).max(2000).describe('The message, in plain Markdown: short, one question at a time.'),
+      card: CardSchema.optional(),
+    }, async (a) => safely(() => h.reply(a.text, a.card as HelperCard | undefined))) as never,
     tool('list_projects', "List Ledung's projects: folder, settings and whether each one's manager runs; a locked project shows its name only.", {}, async () => safely(() => h.listProjects())) as never,
     tool('add_project', `Add an existing folder on this computer as a project. ${who} approves it on a card in this chat first. Its sensitive list starts with Ledung's suggestions.`, {
       ...projectFields,

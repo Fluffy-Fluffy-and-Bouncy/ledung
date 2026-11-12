@@ -206,6 +206,7 @@ export const api = {
   setupClaude: () => call<ClaudeCheck>('POST', '/api/setup-claude'),
   /** text: the person's own words to the helper (New project); left out: just open it. */
   openHelper: (text?: string) => call<HelperInfo>('POST', '/api/helper-open', text ? { text } : {}),
+  helperCardAnswered: (session: string, message: number) => call('POST', '/api/helper-card-answered', { session, message }),
   setHelperModel: (model: string) => call<HelperInfo>('POST', '/api/helper-model', { model }),
   startChat: (opts: { folder?: string; model?: string; effort?: EffortLevel; profile?: string; permissionMode?: PermissionMode; account?: string }) => call<SessionInfo>('POST', '/api/chats-new', opts),
   updateChats: (sensitive: ChatsInfo['sensitive']) => call<ChatsInfo>('POST', '/api/chats', { sensitive }),

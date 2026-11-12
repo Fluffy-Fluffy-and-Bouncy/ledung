@@ -126,6 +126,8 @@ export const HELP_PLUGIN = () => path.join(appDir(), 'plugins', 'ledung-help');
 const SETUP_KEY = 'setup';
 const USER_NAME_KEY = 'user-name';
 const HELPER_MODEL_KEY = 'helper-model';
+/** The Ledung Helper's reply cards answered on the card (round 4, 21). */
+const ANSWERED_CARDS_KEY = 'helper-answered-cards';
 /** The config's userName when it sets none (config.ts): then the name given in setup stands. */
 const DEFAULT_USER_NAME = 'the user';
 /** A name given in Ledung: letters (any script), with spaces, ".", "'" or "-" between them. */
@@ -2475,7 +2477,8 @@ export class SessionManager {
   /** At each of the helper's prompts: the line it gets, and the step it now speaks for. */
   private helperPrompted(): string {
     this.saidFor(this.stepKey());
-    return setupPromptLine(this.setupView());
+    const info = this.helperSession();
+    return [setupPromptLine(this.setupView()), info ? this.cardState(info.id) : ''].filter(Boolean).join('\n');
   }
 
   private onHelperStatus(s: SessionInfo): void {
@@ -2531,8 +2534,8 @@ export class SessionManager {
     this.saidFor(key);
     const v = this.setupView();
     const text = v.current
-      ? `The setup moved on in the page${what ? ` (${what})` : ''}: now ${stepLine(v)}. Write the one short message for this step, saying first, plainly, what they chose.`
-      : `The setup's steps are all through. Say so in one or two sentences; Ledung shows the hand-over.`;
+      ? `The setup moved on in the page${what ? ` (${what})` : ''}: now ${stepLine(v)}. Reply with the one short message for this step, saying first, plainly, what they chose.`
+      : `The setup's steps are all through. Reply in one or two sentences; Ledung shows the hand-over.`;
     this.store.addInbox(info.id, 'ledung', text);
     void this.resumeIfEnded(info.id).then(() => this.live.get(info.id)?.deliver(), (e: Error) => console.error(`Ledung Helper: ${e.message}`));
   }
@@ -2674,6 +2677,71 @@ export class SessionManager {
     return out;
   }
 
+  /**
+   * The helper's one message of a turn (acceptance round 4: one message, structurally): refused with the reason when
+   * it can't be shown, so the model knows what to change; a second in the same turn is refused and ends it.
+   */
+  private helperReply(helperId: string, text: string, card: HelperCard | undefined): string {
+    if (this.repliedThisTurn(helperId)) {
+      throw new Error('Not shown: you already replied in this turn, and Ledung showed that reply. Your turn is over: end it now, calling nothing more.');
+    }
+    if (card) {
+      const parsed = CardSchema.safeParse(card);
+      if (!parsed.success) throw new Error(`Not shown: the card is not valid (${parsed.error.issues.map((i) => `${i.path.join('.') || 'card'}: ${i.message}`).join('; ')}). Fix that, or reply without a card.`);
+      const fake = cardLooksLikeApproval(parsed.data);
+      if (fake) throw new Error(`Not shown: the card's "${fake}" reads as an approval, and approvals are Ledung's own cards. Reply without those words, or call the tool that needs the approval; Ledung asks.`);
+      const sv = this.setupView();
+      if (sv.phase === 'helper' && sv.current) throw new Error(`Not shown: a setup step is open ("${sv.current}"), and Ledung shows that step's own card under your reply. Reply again with the text only.`);
+      card = parsed.data;
+    }
+    this.publish({ type: 'message', message: this.store.addMessage(helperId, 'reply', { text, ...(card ? { card } : {}) }) });
+    return 'Shown to them, once. Your turn is over: end it now; anything more you write is not shown.';
+  }
+
+  /** Whether the helper replied since the last message given to it (the person's or Ledung's). */
+  private repliedThisTurn(helperId: string): boolean {
+    for (const m of [...this.store.listMessages(helperId, { limit: 200 })].reverse()) {
+      if (m.kind === 'user') return false;
+      if (m.kind === 'reply') return true;
+    }
+    return false;
+  }
+
+  /** Cards of the helper's replies the person answered on the card, by message id (kept in meta, the last 200). */
+  private answeredCards(): number[] {
+    try {
+      const v = JSON.parse(this.store.getMeta(ANSWERED_CARDS_KEY) ?? '[]');
+      return Array.isArray(v) ? v.filter((x) => typeof x === 'number') : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** The page: the person answered this reply's card on the card itself (round 4, 21). */
+  noteCardAnswered(sessionId: string, messageId: unknown): void {
+    if (typeof messageId !== 'number' || this.store.getSession(sessionId)?.project !== HELPER) throw new UserError('Not a card of the Ledung Helper.');
+    this.store.setMeta(ANSWERED_CARDS_KEY, JSON.stringify([...this.answeredCards(), messageId].slice(-200)));
+  }
+
+  /**
+   * What became of the card of the helper's last reply, for its next prompt (round 4, 21): answered on the card, or
+   * closed unanswered because the person wrote instead. Empty: no card, or nothing from the person since.
+   */
+  private cardState(helperId: string): string {
+    const list = this.store.listMessages(helperId, { limit: 200 });
+    let person = false;
+    for (const m of [...list].reverse()) {
+      if (m.kind === 'user' && !m.data?.from && !m.data?.answerTo) person = true;
+      if (m.kind !== 'reply') continue;
+      const card = m.data?.card as HelperCard | undefined;
+      if (!card || !person) return '';
+      return this.answeredCards().includes(m.id)
+        ? `Their message answers your card "${card.title}" (it is closed now).`
+        : `Your card "${card.title}" is closed, unanswered: they wrote this message instead. No card is open; offer it again in your reply if it is still needed.`;
+    }
+    return '';
+  }
+
   /** Whether a card of the same key is in the helper's chat since the person's last message (web/src/helper/cardOrder.ts). */
   private cardShownThisTurn(helperId: string, card: HelperCard): boolean {
     const key = (c: HelperCard) => ('id' in c && c.id ? `id:${c.id}` : `${c.kind}:${c.title}`);
@@ -2752,21 +2820,7 @@ export class SessionManager {
         return Object.keys(files).length ? JSON.stringify(files, null, 2) : `"${name}" has no workflow yet; it would go in ${view.expected}.`;
       },
       proposeWorkflow: (name, changes, why) => this.proposeFlow(id, changes, why, name),
-      showCard: (card) => {
-        const parsed = CardSchema.safeParse(card);
-        if (!parsed.success) throw new Error(`This card can't be shown: ${parsed.error.issues[0]?.message ?? 'not valid'}.`);
-        const fake = cardLooksLikeApproval(parsed.data);
-        if (fake) throw new Error(`This card can't be shown: "${fake}" reads as an approval, and approvals are Ledung's own cards. Call the tool that needs it; Ledung asks.`);
-        // During the setup Ledung shows the step's own card itself, once (Simon's try-out, 2026-11-12: cards twice).
-        // Only while a step is open: once all are through, the helper's own cards are back (round 2 try-out).
-        const sv = this.setupView();
-        if (sv.phase === 'helper' && sv.current) throw new Error("No card during the setup: Ledung shows the step's own card under your message. Write your short message and end your turn.");
-        // The same card again in a turn is not shown twice (the same id, else the same kind and title).
-        // The model sometimes shows the same card again and then writes more: refused, so the turn ends (round 3, 20).
-        if (this.cardShownThisTurn(id, parsed.data)) throw new Error('That card is shown already, under your words. Your turn is over: write nothing more and call nothing more.');
-        this.addCard(id, parsed.data);
-        return 'The card is shown under your words. End your turn now and write nothing more (no "Waiting for…"); the pick comes back as their message.';
-      },
+      reply: (text, card) => this.helperReply(id, text, card),
     };
   }
 

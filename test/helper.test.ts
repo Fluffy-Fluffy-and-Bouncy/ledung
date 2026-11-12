@@ -92,14 +92,14 @@ const helperTools = () => Object.keys((helperToolServer('Simon', anyHelper).inst
 
 test('the helper has Ledung\'s settings tools only: no session, manager, board or question tool', () => {
   assert.deepEqual(helperTools(), [
-    'add_project', 'create_project', 'list_projects', 'project_settings', 'propose_workflow', 'set_project_basics', 'set_project_settings',
-    'set_user_name', 'setup_status', 'setup_step', 'show_card', 'workflow_files',
+    'add_project', 'create_project', 'list_projects', 'project_settings', 'propose_workflow', 'reply', 'set_project_basics', 'set_project_settings',
+    'set_user_name', 'setup_status', 'setup_step', 'workflow_files',
   ]);
   // What creates a project or changes settings is never unasked by the tool list.
   for (const t of ['add_project', 'create_project', 'set_project_settings', 'set_project_basics']) {
     assert.ok(!unaskedTool(`mcp__ledung__${t}`, USER_APPROVED_TOOLS), t);
   }
-  for (const t of ['setup_status', 'setup_step', 'set_user_name', 'show_card', 'workflow_files', 'propose_workflow']) assert.ok(LEDUNG_TOOLS.includes(`mcp__ledung__${t}`), t);
+  for (const t of ['setup_status', 'setup_step', 'set_user_name', 'reply', 'workflow_files', 'propose_workflow']) assert.ok(LEDUNG_TOOLS.includes(`mcp__ledung__${t}`), t);
 });
 
 // --- In a Ledung ---------------------------------------------------------------------------------------
@@ -290,28 +290,47 @@ test('basics: a model runs, a looser mode or another account is asked, a locked 
   assert.equal((await hook(mgrId, 'set_project_basics', { project: 'shop', model: 'haiku' })).decision, 'deny');
 });
 
-test('cards are stored in the helper\'s chat; one that isn\'t valid is refused', async () => {
+test("the helper speaks once per turn through reply; a card that can't be shown is refused saying why (acceptance round 4)", async () => {
   const { store, run, helper } = ledung();
   const id = await helper();
-  const ok = await run(id, 'show_card', { card: { kind: 'choice', title: 'Model', options: [{ label: 'Sonnet', hint: 'Everyday' }, { label: 'Opus' }] } });
-  assert.equal(ok.error, false, ok.text);
-  const cards = store.listMessages(id).filter((m) => m.kind === 'card');
-  assert.equal(cards.length, 1);
-  assert.equal(cards[0]!.data.card.title, 'Model');
-  const bad = await run(id, 'show_card', { card: { kind: 'link', title: 'Out', to: 'https://example.com' } });
+  const replies = () => store.listMessages(id).filter((m) => m.kind === 'reply');
+  const bad = await run(id, 'reply', { text: 'Pick one.', card: { kind: 'link', title: 'Out', to: 'https://example.com' } });
   assert.equal(bad.error, true);
-  // The same card twice in a turn is stored once (Simon's try-out, 2026-11-12: the model called show_card twice).
-  const again = await run(id, 'show_card', { card: { kind: 'choice', title: 'Model', options: [{ label: 'Sonnet', hint: 'Everyday' }, { label: 'Opus' }] } });
-  assert.match(again.text, /shown already/);
-  assert.equal(again.error, true, 'refused, so the turn ends');
-  assert.equal(store.listMessages(id).filter((m) => m.kind === 'card').length, 1);
+  assert.match(bad.text, /Not shown: the card is not valid \(to: Invalid option/);
   // One voice: the card has no words of its own beyond its title.
-  assert.equal((await run(id, 'show_card', { card: { kind: 'text', title: 'Name', text: 'Said twice' } })).error, true);
-  // A card can't look like Ledung's approval card.
-  const fake = await run(id, 'show_card', { card: { kind: 'choice', title: 'Create the project?', options: [{ label: 'Allow' }, { label: 'Deny' }] } });
-  assert.equal(fake.error, true);
+  assert.match((await run(id, 'reply', { text: 'x', card: { kind: 'text', title: 'Name', text: 'Said twice' } })).text, /Not shown: the card is not valid/);
+  const fake = await run(id, 'reply', { text: 'Create it?', card: { kind: 'choice', title: 'Create the project?', options: [{ label: 'Allow' }, { label: 'Deny' }] } });
   assert.match(fake.text, /reads as an approval/);
-  assert.equal(store.listMessages(id).filter((m) => m.kind === 'card').length, 1);
+  assert.equal(replies().length, 0, 'nothing shown for refused replies');
+  const ok = await run(id, 'reply', { text: 'Which model?', card: { kind: 'choice', title: 'Model', options: [{ label: 'Sonnet', hint: 'Everyday' }, { label: 'Opus' }] } });
+  assert.equal(ok.error, false, ok.text);
+  assert.equal(replies().length, 1);
+  assert.equal(replies()[0]!.data.text, 'Which model?');
+  assert.equal(replies()[0]!.data.card.title, 'Model');
+  // A second reply in the same turn is refused: one message per turn, whatever the model does (round 4, 13).
+  const again = await run(id, 'reply', { text: 'Which model? (again, reworded)' });
+  assert.equal(again.error, true);
+  assert.match(again.text, /already replied in this turn/);
+  assert.equal(replies().length, 1);
+  // After the person's next message, a new turn may reply again.
+  store.addMessage(id, 'user', { text: 'Sonnet' });
+  assert.equal((await run(id, 'reply', { text: 'Sonnet it is.' })).error, false);
+  assert.equal(replies().length, 2);
+});
+
+test("the next prompt says what became of the last reply's card: answered on it, or closed because they wrote (round 4, 21)", async () => {
+  const { manager, store, run, helper } = ledung();
+  const id = await helper();
+  const state = () => (manager as unknown as { cardState(id: string): string }).cardState(id);
+  await run(id, 'reply', { text: 'Pick the folder.', card: { kind: 'folder', title: 'Project folder' } });
+  assert.equal(state(), '', 'nothing from them yet');
+  store.addMessage(id, 'user', { text: 'Actually, a new project.' });
+  assert.match(state(), /Your card "Project folder" is closed, unanswered: they wrote this message instead\. No card is open/);
+  await run(id, 'reply', { text: 'Its name?', card: { kind: 'text', title: 'Name' } });
+  const reply = store.listMessages(id).filter((m) => m.kind === 'reply').at(-1)!;
+  manager.noteCardAnswered(id, reply.id);
+  store.addMessage(id, 'user', { text: 'atlas' });
+  assert.match(state(), /Their message answers your card "Name"/);
 });
 
 test('a workflow goes through the person\'s review; accepting it finishes the setup\'s step', async () => {
@@ -350,14 +369,15 @@ test('the step bar marks the person\'s own steps and takes their name; Leave and
   await assert.rejects(manager.setupAction('mark', { step: 'phone', mark: 'skipped' }), /No setup/);
 });
 
-test("during the setup the helper shows no cards of its own: Ledung shows the step's card", async () => {
+test("during the setup the helper's reply has no card of its own: Ledung shows the step's card", async () => {
   const { manager, run, helper, store } = ledung();
   (manager as unknown as { saveSetup(s: SetupState): void }).saveSetup({ phase: 'helper', marks: {}, project: null });
   const id = await helper();
-  const out = await run(id, 'show_card', { card: { kind: 'text', title: 'Your name' } });
+  const out = await run(id, 'reply', { text: 'What should I call you?', card: { kind: 'text', title: 'Your name' } });
   assert.equal(out.error, true);
-  assert.match(out.text, /No card during the setup/);
-  assert.equal(store.listMessages(id).filter((m) => m.kind === 'card').length, 0);
+  assert.match(out.text, /Not shown: a setup step is open \("name"\)/);
+  assert.equal((await run(id, 'reply', { text: 'What should I call you?' })).error, false);
+  assert.equal(store.listMessages(id).filter((m) => m.kind === 'reply').length, 1);
 });
 
 test("a step that moves on outside the helper's turn gets one message from Ledung, never two (acceptance round 1, 6.4)", async () => {

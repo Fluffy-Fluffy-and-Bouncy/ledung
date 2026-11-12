@@ -12,7 +12,7 @@ export function helperToolWords(tool: string): string {
     add_project: 'Adding the project', create_project: 'Creating the project', list_projects: 'Looking at your projects',
     project_settings: 'Reading the settings', set_project_settings: 'Changing the settings', set_project_basics: 'Changing the settings',
     setup_step: 'Moving the setup on', setup_status: 'Looking at the setup', set_user_name: 'Saving your name',
-    workflow_files: 'Reading the workflow', propose_workflow: 'Preparing the workflow for your review', show_card: 'Preparing a card',
+    workflow_files: 'Reading the workflow', propose_workflow: 'Preparing the workflow for your review', reply: 'Writing', show_card: 'Preparing a card',
   };
   if (tool === 'Skill') return "Reading Ledung's guide";
   return words[tool.replace(/^mcp__ledung__/, '')] ?? 'Working';

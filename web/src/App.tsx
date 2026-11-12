@@ -1204,9 +1204,10 @@ export function SessionView(props: {
     ? <SetupStepCard key={ledung.helper.setup.current} helper={ledung.helper} run={run} onOpen={(id) => { markBackToSetup(); props.onOpen?.(id); }} />
     : null;
   const openView = props.onOpen;
-  const renderCard = useCallback((card: HelperCard, answered: boolean) => (
+  const renderCard = useCallback((card: HelperCard, answered: boolean, messageId?: number) => (
     <HelperCardView card={card} answered={answered} projects={ledung.projects} run={run}
-      onSend={(text) => void run(() => api.send(session.id, text))} onOpen={(id) => openView?.(id)} />
+      // Answered on the card: Ledung tells the helper so (acceptance round 4, 21); then the pick as their message.
+      onSend={(text) => void run(async () => { if (messageId !== undefined) await api.helperCardAnswered(session.id, messageId); await api.send(session.id, text); })} onOpen={(id) => openView?.(id)} />
     // eslint-disable-next-line react-hooks/exhaustive-deps
   ), [session.id, ledung.projects, openView]);
   const [showTechnical, setShowTechnical] = useState(() => readTechnical(session.id));
