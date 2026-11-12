@@ -9,6 +9,7 @@ import type { ComputerInfo } from '../../src/shared/computers.ts';
 import { api, connectionHello, openConnection, setReconnect } from './api.ts';
 import { fetchNewer, PAGE, withNewer } from './catchUp.ts';
 import { secretsChanged } from './secretLock.ts';
+import { pollWhileShown } from './pollShown.ts';
 
 export type Connection = 'connecting' | 'open' | 'closed';
 
@@ -312,15 +313,14 @@ export function useLedung(openSessionId: string | null) {
     return () => document.removeEventListener('visibilitychange', shown);
   }, [refreshWorkflows]);
 
-  // Usage per session for the session list and the Overview; refreshed every 20 s (step 5).
+  // Usage per session for the session list and the Overview; refreshed every 20 s (step 5), not while the page is
+  // hidden (issue #233).
   useEffect(() => {
     let current = true;
-    const load = () => api.overview().then((o) => current && setOverview(o), () => {});
-    void load();
-    const timer = setInterval(load, 20000);
+    const stop = pollWhileShown(() => api.overview().then((o) => current && setOverview(o), () => {}), 20000);
     return () => {
       current = false;
-      clearInterval(timer);
+      stop();
     };
   }, []);
 

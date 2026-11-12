@@ -1,11 +1,11 @@
 // Reads every process's CPU time and memory, every few seconds, with one measuring process for the
 // whole machine (step 6). Per platform, as the brief's cross-platform rules ask:
-// - Windows: one long-running PowerShell that prints the process list in a loop (starting a new
-//   PowerShell every few seconds would itself cost CPU). It ends by itself when Ledung does.
+// - Windows: one long-running PowerShell that prints the process list each time Node asks (starting a
+//   new PowerShell every few seconds would itself cost CPU). It ends by itself when Ledung does.
 // - macOS and Linux: `ps` every few seconds, which is cheap.
-import { execFile, spawn, type ChildProcess } from 'node:child_process';
-import readline from 'node:readline';
+import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { PowerShellWorker } from './powershell-worker.ts';
 
 export interface ProcInfo {
   pid: number;
@@ -65,22 +65,19 @@ export function parseWindowsLines(lines: string[]): ProcessList {
   return list;
 }
 
-const WINDOWS_LOOP = (intervalSec: number, ledungPid: number) => `
-$ErrorActionPreference = 'SilentlyContinue'
-while ($true) {
-  if (-not (Get-Process -Id ${ledungPid})) { exit }
-  $p = Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,KernelModeTime,UserModeTime,WorkingSetSize,CreationDate
-  # The time the list was read, in Unix milliseconds: Node may handle two batches back to back (#157).
+/**
+ * One list, answered by the long-lived PowerShell (powershell-worker.ts) when Node asks: Node keeps the
+ * time, so a list is never asked for while the last one is still being read, and none while nothing
+ * needs one (#230). Before, the PowerShell slept and listed in a loop of its own.
+ */
+const WINDOWS_ANSWER = `  $p = Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,KernelModeTime,UserModeTime,WorkingSetSize,CreationDate
+  # The time the list was read, in Unix milliseconds: Node may handle two lists back to back (#157).
   [Console]::Out.WriteLine("#BEGIN $([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())")
   # The start time tells a reused process id from the process that had it (#169, as #162); 0 when Windows gives none.
   foreach ($x in $p) {
     $c = 0; if ($x.CreationDate) { $c = $x.CreationDate.ToFileTimeUtc() }
     [Console]::Out.WriteLine("$($x.ProcessId),$($x.ParentProcessId),$([long]$x.KernelModeTime + [long]$x.UserModeTime),$($x.WorkingSetSize),$c")
-  }
-  [Console]::Out.WriteLine('#END')
-  [Console]::Out.Flush()
-  Start-Sleep -Seconds ${intervalSec}
-}`;
+  }`;
 
 /**
  * Turns the PowerShell loop's lines into one process list per batch, each with the time PowerShell
@@ -104,56 +101,63 @@ export function windowsBatchReader(onList: (list: ProcessList, at: number) => vo
   };
 }
 
+export interface SamplerOptions {
+  /** Whether a list is needed this round; when not, `onSkip` is called instead and nothing is read (#230). */
+  wanted?: () => boolean;
+  onSkip?: (at: number) => void;
+}
+
 export class ProcessSampler {
-  private child: ChildProcess | null = null;
+  private worker: PowerShellWorker | null = null;
   private timer: NodeJS.Timeout | null = null;
   private stopped = false;
   private readonly intervalSec: number;
   private readonly onList: (list: ProcessList, at: number) => void;
+  private readonly opts: SamplerOptions;
 
-  constructor(intervalSec: number, onList: (list: ProcessList, at: number) => void) {
+  constructor(intervalSec: number, onList: (list: ProcessList, at: number) => void, opts: SamplerOptions = {}) {
     this.intervalSec = intervalSec;
     this.onList = onList;
+    this.opts = opts;
   }
 
   start(): void {
-    if (process.platform === 'win32') this.startWindows();
-    else this.startPosix();
-  }
-
-  private startWindows(): void {
-    this.child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', WINDOWS_LOOP(this.intervalSec, process.pid)], {
-      stdio: ['ignore', 'pipe', 'ignore'],
-      windowsHide: true,
-    });
-    readline.createInterface({ input: this.child.stdout! }).on('line', windowsBatchReader(this.onList));
-    // If the measuring process dies, measuring stops; Ledung itself is unaffected (a broken helper
-    // degrades to nothing, never to a dead Ledung — brief section 6). Try again once a minute.
-    this.child.on('exit', () => {
-      this.child = null;
-      if (!this.stopped) this.timer = setTimeout(() => this.startWindows(), 60000);
-    });
-  }
-
-  private startPosix(): void {
+    // The next round is timed from the end of this one, so two reads never overlap (#230).
     const tick = async () => {
       try {
-        // Timed as ps starts, not when its output is handled: a busy event loop delays the second (#157).
-        const at = Date.now();
-        const { stdout } = await run('ps', ['-A', '-o', 'pid=,ppid=,time=,rss=,pgid='], { maxBuffer: 16 * 1024 * 1024 });
-        this.onList(parsePs(stdout), at);
+        if (this.opts.wanted && !this.opts.wanted()) this.opts.onSkip?.(Date.now());
+        else await this.read();
       } catch {
-        // Skip this round.
+        // Skip this round. A broken helper degrades to no figures, never to a dead Ledung (brief section 6).
       }
-      if (!this.stopped) this.timer = setTimeout(tick, this.intervalSec * 1000);
+      if (!this.stopped) this.timer = setTimeout(() => void tick(), this.intervalSec * 1000);
     };
     void tick();
+  }
+
+  private async read(): Promise<void> {
+    if (process.platform === 'win32') {
+      // One PowerShell that stays (starting one every few seconds would itself cost CPU); it ends with Ledung,
+      // whose end closes its input, and after a minute with nothing asked. One that died is tried again after a minute.
+      this.worker ??= new PowerShellWorker({ answer: WINDOWS_ANSWER, idleMs: 60_000, retryMs: 60_000 });
+      const { lines, begin } = await this.worker.request();
+      if (this.stopped) return;
+      const reader = windowsBatchReader(this.onList);
+      reader(`#BEGIN ${begin}`);
+      for (const l of lines) reader(l);
+      reader('#END');
+      return;
+    }
+    // Timed as ps starts, not when its output is handled: a busy event loop delays the second (#157).
+    const at = Date.now();
+    const { stdout } = await run('ps', ['-A', '-o', 'pid=,ppid=,time=,rss=,pgid='], { maxBuffer: 16 * 1024 * 1024 });
+    if (!this.stopped) this.onList(parsePs(stdout), at);
   }
 
   stop(): void {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
-    this.child?.kill();
+    this.worker?.close();
   }
 }
 
