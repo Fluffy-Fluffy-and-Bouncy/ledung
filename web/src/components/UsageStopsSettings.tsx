@@ -1,8 +1,7 @@
 // Usage stops in Settings (issue #278): per account, the percent of the 5-hour and weekly windows at which Ledung
 // holds new turns on that account; a reached stop can be lifted for the rest of its window.
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import type { AccountInfoView, UsageStopInfo } from '../../../src/shared/protocol.ts';
-import { meterStopLine } from '../../../src/shared/usage-stop-text.ts';
 import { api } from '../api.ts';
 
 const WINDOWS: [string, string][] = [['five_hour', '5-hour'], ['seven_day', 'Weekly']];
@@ -13,22 +12,6 @@ export function usageStopLine(s: UsageStopInfo): string {
   const now = s.utilization != null ? ` (now ${Math.round(s.utilization * 100)}%)` : '';
   const until = s.resetsAt != null ? ` until ${new Date(s.resetsAt).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}, when the window resets` : '';
   return `${nameOf(s.kind)} usage${s.account === 'default' ? '' : ` of account ${s.account}`} reached the stop at ${s.percent}%${now}: new turns are held${until}.`;
-}
-
-/** Under a usage meter with a stop (issue #280): "93% · 2% to stop · Weekly limit resets in 11 h 30 min", or "Held at 95% · Weekly limit resets in 9 h" with Lift. */
-export function MeterStopLine({ stop, run }: { stop: UsageStopInfo; run: (action: () => Promise<unknown>) => Promise<void> }) {
-  // The countdown moves by the minute even when nothing else on the page changes.
-  const [now, setNow] = useState(Date.now);
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 30_000);
-    return () => clearInterval(timer);
-  }, []);
-  return (
-    <div className={`limit-stop${stop.holding ? ' held' : ''}`}>
-      <span>{meterStopLine(stop, now)}</span>
-      {stop.holding && <button className="small primary" onClick={() => void run(() => api.liftUsageStop(stop.account, stop.kind))}>Lift</button>}
-    </div>
-  );
 }
 
 export function UsageStopsSettings(props: { accounts: AccountInfoView[]; usageStops: UsageStopInfo[]; run: (action: () => Promise<unknown>) => Promise<void> }) {
