@@ -1284,6 +1284,10 @@ body.sidebar-dragging, body.sidebar-dragging * { cursor: grabbing !important; }
 .chip.lock.b { border-color: var(--danger); }
 /* Settings → Devices (#160). */
 .device-row { display: flex; justify-content: space-between; align-items: center; gap: 0.6rem; margin: 0.3rem 0; }
+/* Browsers and phones (Project-Ledung#482): Rename and Remove side by side, the browser this page runs in marked. */
+.device-actions { display: flex; align-items: center; gap: 0.4rem; flex-shrink: 0; }
+.device-rename input { flex: 1; min-width: 0; max-width: 20rem; }
+.this-device { color: var(--accent); font-size: 0.9em; }
 /* Settings → Computers (#240): a tab's name, then its colours. */
 .computer-row { margin: 0.5rem 0 0.8rem; }
 .computer-name { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }

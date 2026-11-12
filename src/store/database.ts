@@ -747,6 +747,21 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (project, command)
   );
   `,
+  // Browsers become devices (Project-Ledung#482, step 1 of #477): a browser's sign-in is a devices row of kind
+  // 'browser' (kind is free text, so no column changes). Each of #476's sign-ins, the meta entry 'sign-ins' holding
+  // {cookie hash: last use in ms}, becomes such a row with the same hash, so the same cookie keeps signing in and nobody
+  // is signed out; its last use stands in for when it was made and when its cookie was set, so its first use renews it.
+  // The entry is then removed, so no sign-in hash stays outside the devices table. json_each only ever sees that entry
+  // (the CASE), and a key that is not a hash, or a use that is not a number, is dropped.
+  `
+  INSERT INTO devices (id, name, cookie_hash, created_at, last_used_at, kind, cookie_at)
+    SELECT lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(6))),
+      'Browser signed in before the update', s.key, CAST(s.value AS INTEGER), CAST(s.value AS INTEGER), 'browser', CAST(s.value AS INTEGER)
+    FROM meta, json_each(CASE WHEN meta.key = 'sign-ins' AND json_valid(meta.value) AND json_type(meta.value) = 'object' THEN meta.value ELSE '{}' END) AS s
+    WHERE meta.key = 'sign-ins' AND length(s.key) = 64 AND s.key NOT GLOB '*[^0-9a-f]*' AND s.type IN ('integer', 'real')
+      AND s.key NOT IN (SELECT cookie_hash FROM devices);
+  DELETE FROM meta WHERE key = 'sign-ins';
+  `,
 ];
 
 export function databaseFile(dir = userDataDir()): string {
