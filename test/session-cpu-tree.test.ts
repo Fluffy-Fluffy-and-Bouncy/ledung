@@ -138,15 +138,21 @@ test('a session process stays counted after its host exits, and the session ends
   assert.deepEqual(sessionTree(listOf(proc(80, 50, 1)), 50, null).tree, []);
 });
 
-/** Starts a pretend host: it starts a middle process, which starts a busy command and exits. */
-function startHost(): { host: ChildProcess; pids: Promise<{ middle: number; busy: number }> } {
+/**
+ * Starts a pretend host: it starts a middle process, which starts a busy command and exits once `goFile`
+ * exists, so the test decides when: only after the monitor has sampled it. The busy command writes the CPU seconds it has had to `cpuFile` every 50 ms: on a busy machine it gets far less
+ * than a core (0.02 to 0.3 seen, issue #255), so the session's reading is checked against that.
+ */
+function startHost(cpuFile: string, goFile: string): { host: ChildProcess; pids: Promise<{ middle: number; busy: number }> } {
   // The busy command spins for at most WAIT_MS, so a failed test leaves nothing running for long.
-  const busy = `const end = Date.now() + ${WAIT_MS}; while (Date.now() < end) {}`;
+  const busy = `const fs = require('fs'); const end = Date.now() + ${WAIT_MS}; let last = 0;
+    while (Date.now() < end) { const t = Date.now(); if (t - last >= 50) { last = t; const u = process.cpuUsage(); fs.writeFileSync(${JSON.stringify(cpuFile)}, String((u.user + u.system) / 1e6)); } }`;
   // Detached on Windows only: there Node ends a child that isn't detached when its parent exits (Windows CI,
   // PR #184), so it could never outlive the middle process. Elsewhere it stays in its parent's group, as a
   // background command does.
   const middle = `const c = require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(busy)}], { stdio: 'ignore', windowsHide: true, detached: process.platform === 'win32' });
-    console.log(JSON.stringify({ middle: process.pid, busy: c.pid })); c.unref(); setTimeout(() => process.exit(0), 2500);`;
+    console.log(JSON.stringify({ middle: process.pid, busy: c.pid })); c.unref();
+    setInterval(() => { if (require('fs').existsSync(${JSON.stringify(goFile)})) process.exit(0); }, 100); setTimeout(() => process.exit(0), ${WAIT_MS});`;
   const hostCode = `const c = require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(middle)}], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
     c.stdout.pipe(process.stdout); setInterval(() => {}, 1000);`;
   const host = spawn(process.execPath, ['-e', hostCode], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
@@ -166,12 +172,56 @@ const alive = (pid: number) => {
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-test('a session whose background command keeps running after its middle process exited reads that CPU, with no turn under way', { timeout: HANG_MS }, async () => {
+/** The CPU seconds the busy command last wrote; `fallback` while the file is missing or half written. */
+function readCpu(file: string, fallback: number): number {
+  try {
+    const v = Number(fs.readFileSync(file, 'utf8'));
+    return Number.isFinite(v) && v > 0 ? v : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+/** CPU seconds the busy command needs in the window before the comparison means something (#255). */
+const ENOUGH_CPU = 0.5;
+
+test('a session whose background command keeps running after its middle process exited reads that CPU, with no turn under way', { timeout: HANG_MS }, async (t) => {
   const id = `test-169-${process.pid}`;
-  const { host, pids } = startHost();
+  const cpuFile = path.join(process.env.LEDUNG_DATA_DIR!, `busy-cpu-${process.pid}.txt`);
+  const goFile = path.join(process.env.LEDUNG_DATA_DIR!, `middle-go-${process.pid}`);
+  const { host, pids } = startHost(cpuFile, goFile);
   const record = path.join(hostsDir(), `${id}.json`);
   let busyPid = 0;
-  const monitor = new ResourceMonitor({ intervalSec: 1, targets: () => [{ id, kind: 'local' }], withDocker: () => false, onSample: () => {} });
+  // From the window's start: the session's CPU, summed from each sample's cores over the time since the
+  // last one, and the busy command's own CPU seconds at each sample.
+  // A holder, not a plain variable: TypeScript can't see the sample callback set it.
+  const span: { now: { at: number; sessionCpu: number; busyFrom: number; busyNow: number; samples: number } | null } = { now: null };
+  let middleGone = false;
+  let seenAlive = 0;
+  let onAfterGone = 0;
+  let peak = 0;
+  const monitor: ResourceMonitor = new ResourceMonitor({
+    intervalSec: 1, targets: () => [{ id, kind: 'local' }], withDocker: () => false,
+    onSample: () => {
+      const f = monitor.figures()[id];
+      if (f && !middleGone) seenAlive++;
+      if (!middleGone || !f) return;
+      const now = Date.now();
+      // The second sample after the middle process was seen gone: from here every interval is without it.
+      const w = span.now;
+      if (!w) {
+        if (++onAfterGone < 2) return;
+        const c = readCpu(cpuFile, 0);
+        span.now = { at: now, sessionCpu: 0, busyFrom: c, busyNow: c, samples: 0 };
+        return;
+      }
+      w.sessionCpu += f.cores * ((now - w.at) / 1000);
+      w.busyNow = readCpu(cpuFile, w.busyNow);
+      w.at = now;
+      w.samples++;
+      peak = Math.max(peak, f.cores);
+    },
+  });
   try {
     fs.writeFileSync(record, JSON.stringify({ sessionId: id, hostPid: host.pid, startedAt: Date.now() }));
     const { middle, busy } = await pids;
@@ -179,16 +229,33 @@ test('a session whose background command keeps running after its middle process 
     monitor.start();
     // No beginTurn: the session is between turns, as in the issue.
     const until = Date.now() + WAIT_MS;
+    // Two samples with the middle process alive, so the session has had it. On a busy machine the first
+    // samples can come later than a fixed wait: the middle process was then gone before any sample saw it,
+    // and the session read 0.00 s (#255, a full run). A process that lives less than one sample is the
+    // known limit on Windows, which has no process groups.
+    while (seenAlive < 2 && Date.now() < until) await sleep(100);
+    assert.ok(seenAlive >= 2, 'the monitor sampled the session with the middle process alive');
+    fs.writeFileSync(goFile, '');
     while (alive(middle) && Date.now() < until) await sleep(200);
     assert.equal(alive(middle), false, 'the middle process exited');
     assert.equal(alive(busy), true, 'the busy command outlived it');
-    // Two more samples, so the reading is over an interval with the middle process gone.
-    await sleep(3500);
-    const f = monitor.figures()[id];
-    assert.ok(f, 'the session is measured');
-    // The busy command spins one core; the host and the rest are idle. Before #169 this read 0.0.
-    assert.ok(f.cores >= 0.5, `session reads ${f.cores.toFixed(2)} cores, expected about 1`);
-    assert.ok(f.cores <= monitor.machine().cpus, 'never more than the machine has');
+    middleGone = true;
+    // Until the busy command has had enough CPU over at least three samples to tell its CPU from none:
+    // a spinning process gets a whole core on a quiet machine but much less on a busy one (#255).
+    const enough = () => span.now !== null && span.now.samples >= 3 && span.now.busyNow - span.now.busyFrom >= ENOUGH_CPU;
+    while (!enough() && alive(busy) && Date.now() < until) await sleep(200);
+    assert.ok(monitor.figures()[id], 'the session is measured');
+    const w = span.now;
+    assert.ok(w && w.samples >= 3, 'the monitor sampled the session with the middle process gone');
+    const own = w.busyNow - w.busyFrom;
+    if (own < ENOUGH_CPU) {
+      t.skip(`the machine is too busy to tell: the busy command had only ${own.toFixed(2)} s of CPU in the window`);
+      return;
+    }
+    // Before #169 the session read 0.0 here. Half leaves room for the samples and the file being read at
+    // slightly different moments; the session's host and the rest of its tree are idle.
+    assert.ok(w.sessionCpu >= own * 0.5, `session counted ${w.sessionCpu.toFixed(2)} s of CPU; its busy command had ${own.toFixed(2)} s`);
+    assert.ok(peak <= monitor.machine().cpus, 'never more than the machine has');
   } finally {
     monitor.stop();
     if (busyPid && alive(busyPid)) process.kill(busyPid);
