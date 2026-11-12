@@ -3,7 +3,7 @@
 // same key in the same turn replaces the earlier one, so each shows once. Pure, so it can be tested.
 import type { HelperCard } from '../../../src/shared/helper-cards.ts';
 
-type Entry = { type: string; byLedung?: boolean; card?: HelperCard; answered?: boolean };
+type Entry = { type: string; byLedung?: boolean; card?: HelperCard; answered?: boolean; text?: string; sub?: boolean };
 
 /** A card's key: its id, else its kind and title. */
 export function cardKey(card: HelperCard): string {
@@ -12,7 +12,15 @@ export function cardKey(card: HelperCard): string {
 
 const persons = (e: Entry) => e.type === 'user' && !e.byLedung;
 
-/** The entries with each turn's cards moved after its other entries and repeats of a key dropped; answered marked. */
+/** Any message given to the helper, the person's or Ledung's, starts a new turn. */
+const given = (e: Entry) => e.type === 'user';
+const words = (t: string) => t.replace(/\s+/g, ' ').trim();
+
+/**
+ * The entries with each turn's cards moved after its other entries, repeats of a card key and of the helper's own
+ * words in a turn dropped (acceptance round 1, 6.1: a message twice), and cards answered marked. A card stays in its
+ * own turn: it never moves under a later turn's message (6.3).
+ */
 export function placeCards<T extends Entry>(raw: T[]): T[] {
   const out: T[] = [];
   let held: T[] = [];
@@ -26,10 +34,16 @@ export function placeCards<T extends Entry>(raw: T[]): T[] {
     out.push(...last.values());
     held = [];
   };
+  let said = new Set<string>();
   for (const e of raw) {
     if (e.type === 'card') held.push(e);
-    else if (persons(e)) {
+    else if (given(e)) {
       flush();
+      said = new Set();
+      out.push(e);
+    } else if (e.type === 'assistant' && !e.sub && e.text) {
+      if (said.has(words(e.text))) continue;
+      said.add(words(e.text));
       out.push(e);
     } else out.push(e);
   }

@@ -124,5 +124,5 @@ test('the status line says "may be waiting for UAC on the PC" while such a comma
   const line = read('web/src/components/WorkingIndicator.tsx');
   assert.match(line, /uacWait: uac && elevates\(b\.name, b\.input \?\? \{\}\)/);
   assert.match(line, /activity\.uacWait && <span className="uac-hint"> · \{UAC_HINT\}<\/span>/);
-  assert.match(line, /currentActivity\(messages, !!session\.uac\)/);
+  assert.match(line, /currentActivity\(messages, !!session\.uac, plain\)/);
 });

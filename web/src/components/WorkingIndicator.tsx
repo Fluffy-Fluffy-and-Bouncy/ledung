@@ -10,7 +10,7 @@ import { elevates, UAC_HINT } from '../../../src/shared/elevation.ts';
  * When the current turn started, and what the session is doing right now. uac: its elevated commands raise
  * UAC on the PC, so one that runs may be waiting there for a click (#213).
  */
-function currentActivity(messages: StoredMessage[], uac: boolean): { since: number | null; doing: string; uacWait: boolean; finishedAt: number | null } {
+function currentActivity(messages: StoredMessage[], uac: boolean, plain?: (tool: string) => string): { since: number | null; doing: string; uacWait: boolean; finishedAt: number | null } {
   let since: number | null = null;
   let finishedAt: number | null = null;
   const openTools = new Map<string, { label: string; uacWait: boolean }>();
@@ -28,7 +28,7 @@ function currentActivity(messages: StoredMessage[], uac: boolean): { since: numb
       for (const b of s.message?.content ?? []) {
         if (b.type === 'tool_use') {
           const summary = toolSummary(b.name, b.input ?? {});
-          openTools.set(b.id, { label: summary ? `${b.name}: ${summary}` : b.name, uacWait: uac && elevates(b.name, b.input ?? {}) });
+          openTools.set(b.id, { label: plain ? plain(b.name) : summary ? `${b.name}: ${summary}` : b.name, uacWait: uac && elevates(b.name, b.input ?? {}) });
           lastWasText = false;
         } else if (b.type === 'text' && b.text.trim()) {
           lastWasText = true;
@@ -42,7 +42,7 @@ function currentActivity(messages: StoredMessage[], uac: boolean): { since: numb
     }
   }
   const last = [...openTools.values()].pop();
-  const doing = last ? `Running ${last.label}` : lastWasText ? 'Writing' : 'Thinking';
+  const doing = last ? (plain ? last.label : `Running ${last.label}`) : lastWasText ? 'Writing' : 'Thinking';
   return { since, doing, uacWait: !!last?.uacWait, finishedAt };
 }
 
@@ -57,8 +57,9 @@ export function endedWithError(session: SessionInfo): boolean {
 }
 
 /** extra: drawn at the bar's right end, the session's macro chips (issue #410). */
-export function WorkingIndicator({ session, sessions, messages, extra }: { session: SessionInfo; sessions: SessionInfo[]; messages: StoredMessage[]; extra?: ReactNode }) {
-  const activity = useMemo(() => currentActivity(messages, !!session.uac), [messages, session.uac]);
+/** plain: the session's tools said in plain words (the Ledung Helper's, acceptance round 1 check 16). */
+export function WorkingIndicator({ session, sessions, messages, extra, plain }: { session: SessionInfo; sessions: SessionInfo[]; messages: StoredMessage[]; extra?: ReactNode; plain?: (tool: string) => string }) {
+  const activity = useMemo(() => currentActivity(messages, !!session.uac, plain), [messages, session.uac]);
   const [now, setNow] = useState(Date.now());
   // 'starting' waits for its first message: not working (#97).
   const active = session.status === 'running' || session.status === 'stopping';

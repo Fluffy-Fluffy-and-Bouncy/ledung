@@ -326,12 +326,14 @@ test('a workflow goes through the person\'s review; accepting it finishes the se
   assert.equal(out.error, false, out.text);
   const q = store.listQuestions().find((x) => x.details?.flowProposal !== undefined)!;
   assert.equal(q.sessionId, id);
-  const card = store.listMessages(id).find((m) => m.kind === 'card' && m.data.card.kind === 'review')!;
-  assert.equal(card.data.card.question, q.id);
+  // During the setup the workflow step's own card opens the review; no second card in the chat (acceptance round 1, 6.2).
+  assert.equal(store.listMessages(id).filter((m) => m.kind === 'card').length, 0);
+  assert.equal(manager.helperInfo().review, q.id);
   assert.equal(manager.helperInfo().setup.steps.find((s) => s.id === 'workflow')!.state, 'open');
   await manager.answerQuestion(q.id, 'Accepted.').catch(() => {});
   assert.ok(fs.existsSync(path.join(at('shop'), '.ledung', 'workflow', 'flow.json')));
   assert.equal(manager.helperInfo().setup.steps.find((s) => s.id === 'workflow')!.state, 'done');
+  assert.equal(manager.helperInfo().review, null);
 });
 
 test('the step bar marks the person\'s own steps and takes their name; Leave and Run setup again', async () => {
@@ -355,4 +357,24 @@ test("during the setup the helper shows no cards of its own: Ledung shows the st
   assert.equal(out.error, true);
   assert.match(out.text, /No card during the setup/);
   assert.equal(store.listMessages(id).filter((m) => m.kind === 'card').length, 0);
+});
+
+test("a step that moves on outside the helper's turn gets one message from Ledung, never two (acceptance round 1, 6.4)", async () => {
+  const { manager, store, helper } = ledung();
+  (manager as unknown as { saveSetup(s: SetupState): void }).saveSetup({ phase: 'helper', marks: {}, project: null });
+  const id = await helper();
+  const m = manager as unknown as { helperStepSaid: string; nudgeHelper(): void };
+  manager.setUserName('Ada');
+  m.helperStepSaid = 'name';
+  await manager.setupAction('mark', { step: 'accounts', mark: 'skipped' });
+  const before = store.undeliveredInbox(id).length;
+  m.nudgeHelper();
+  m.nudgeHelper();
+  const told = store.undeliveredInbox(id).slice(before);
+  assert.equal(told.length, 1, 'one message for the new step');
+  assert.match(told[0]!.text, /moved on in the page: now Setting up · step 3 of 10: First project/);
+  // The helper spoke for it already: nothing more.
+  m.helperStepSaid = 'project';
+  m.nudgeHelper();
+  assert.equal(store.undeliveredInbox(id).length, before + 1);
 });

@@ -30,3 +30,13 @@ test("the step's card waits for the helper's words since the last message it was
   assert.equal(helperHasSpoken([given, tool, said('Hi Ada. Next…'), { kind: 'event', data: {} }]), true);
   assert.equal(helperHasSpoken([said('Hi'), given]), false, 'the person answered: the old card goes');
 });
+
+test('the helper\'s same words twice in a turn show once; a card stays in its own turn (acceptance round 1, 6.1 and 6.3)', () => {
+  assert.deepEqual(shape(placeCards([person('Skip'), said('Now your first project?'), said('Now your first project?')])),
+    ['user:Skip', 'assistant:Now your first project?']);
+  // A message from Ledung (an answer delivered) starts a new turn: the review card stays above the next step's words.
+  assert.deepEqual(shape(placeCards([said('Proposed.'), card('Review'), ledung, said('Saved. Next: shortcuts.')])),
+    ['assistant:Proposed.', 'card:Review', 'user:delivered', 'assistant:Saved. Next: shortcuts.']);
+  // The same words in another turn do show.
+  assert.deepEqual(shape(placeCards([said('Hi'), person('x'), said('Hi')])), ['assistant:Hi', 'user:x', 'assistant:Hi']);
+});

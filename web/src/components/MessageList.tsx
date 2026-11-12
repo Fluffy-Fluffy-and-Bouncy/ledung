@@ -160,6 +160,10 @@ export const MessageList = memo(function MessageList(props: {
   /** Under the last message, kept at the end: the setup step's own card in the helper's chat; footerKey changes with it. */
   footer?: ReactNode;
   footerKey?: string;
+  /** Who the session's own messages are from: "Claude", or "Ledung Helper" in the helper's chat. */
+  assistantName?: string;
+  /** No pinned strip with the person's last message (the helper's chat on a phone, acceptance round 1 check 17). */
+  noPin?: boolean;
 }) {
   const { messages, permissions, showTechnical, sessionId, hasEarlier } = props;
   // A manager's conversation also shows the questions of its sessions it handles, by when they were asked (issue #61),
@@ -269,7 +273,7 @@ export const MessageList = memo(function MessageList(props: {
         <Fragment key={item.key}>
           {item === own && (
             <div className="pin-spot" ref={pinSpot}>
-              {pinned && <PinnedMessage text={own.text} at={own.at} userName={props.userName} onShowWhole={showWhole} />}
+              {pinned && !props.noPin && <PinnedMessage text={own.text} at={own.at} userName={props.userName} onShowWhole={showWhole} />}
             </div>
           )}
           <MessageItem
@@ -288,6 +292,7 @@ export const MessageList = memo(function MessageList(props: {
             live={item.type === 'permission' ? permissions[item.permissionId] : undefined}
             decision={item.type === 'permission' ? decisions.get(item.permissionId) : undefined}
             renderCard={item.type === 'card' || item.type === 'permission' ? props.renderCard : undefined}
+            assistantName={props.assistantName}
           />
         </Fragment>
       ))}
@@ -358,6 +363,7 @@ interface ItemProps {
   /** A permission item's decision, once made. */
   decision?: Decision;
   renderCard?: (card: HelperCard, answered: boolean) => ReactNode;
+  assistantName?: string;
 }
 
 /** Same keys with the same values; a tool's result one level down, since each history rebuild makes it anew. */
@@ -446,9 +452,9 @@ const MessageItem = memo(function MessageItem(props: ItemProps) {
           style={props.tint}
         >
           <div className="msg-meta">
-            <span className="who">{item.sub ? 'Subagent' : 'Claude'}</span>
+            <span className="who">{item.sub ? 'Subagent' : props.assistantName ?? 'Claude'}</span>
             {time}
-            {quote(item.sub ? 'Subagent' : 'Claude', item.text)}
+            {quote(item.sub ? 'Subagent' : props.assistantName ?? 'Claude', item.text)}
           </div>
           <div className="msg-body"><Markdown text={item.text} onOpenFile={props.onOpenFile} /></div>
         </div>

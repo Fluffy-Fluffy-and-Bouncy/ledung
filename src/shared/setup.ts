@@ -74,6 +74,10 @@ export interface HelperInfo {
   setup: SetupView;
   /** The name sessions use for the person (the config's, or the one given in setup). */
   userName: string;
+  /** The setup's workflow review while it is open: the workflow step's card opens it; null: none. */
+  review?: number | null;
+  /** The step the helper's latest turn was for ("through" when all are): its card waits for the helper's words on it. */
+  spokeFor?: string;
 }
 
 /** Steps whose thing Ledung can see: marking them done is refused until it is there. */

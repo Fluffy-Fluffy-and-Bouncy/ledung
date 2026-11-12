@@ -5,6 +5,7 @@ import { ChatsSettingsView, NewChatView } from './chats/ChatViews.tsx';
 import { HelperCardView, HelperStepBar, SetupScreens, SetupStepCard } from './helper/HelperViews.tsx';
 import type { HelperCard } from '../../src/shared/helper-cards.ts';
 import { helperHasSpoken } from './helper/cardOrder.ts';
+import { backToSetupMarked, clearBackToSetup, helperToolWords, markBackToSetup } from './helper/helperNav.ts';
 import { api } from './api.ts';
 import { CHAT_IMAGE_TYPES, dataUrl, imageFiles, MAX_CHAT_IMAGES, prepareImage, SECRETS_HINT } from './chatImages.ts';
 import { MessageList, formatTime } from './components/MessageList.tsx';
@@ -431,6 +432,12 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [helper?.setup.phase, helper?.sessionId]);
   const inSetup = helper?.setup.phase === 'helper';
+  // Back from "Do it myself instead" (acceptance round 1, check 18): the way back while the setup runs; gone once there.
+  const inHelper = !!helper?.sessionId && openId === helper.sessionId;
+  if (inHelper || !inSetup) clearBackToSetup();
+  const backToSetup = inSetup && !inHelper && backToSetupMarked() && helper?.sessionId
+    ? <div className="banner install back-to-setup"><button className="small primary" onClick={() => { clearBackToSetup(); open(helper.sessionId!); }}>✦ Back to the setup</button><span className="muted">{`Step ${Math.min(helper.setup.index, helper.setup.total)} of ${helper.setup.total}`}</span></div>
+    : null;
 
   // The pages inside the Settings frame (issue #365): the Ledung, Chats and project tabs, each with its side menu of
   // groups (#366), and the Add project page.
@@ -482,6 +489,7 @@ export function App() {
       )}
       {ledung.away && awayBannerShown(ledung.away, session) && <AwayBanner away={ledung.away} run={run} />}
       {installApp.notice && <InstallNotice app={installApp} run={run} />}
+      {backToSetup}
       {/* During the setup the helper shows these as steps of their own. */}
       {!inSetup && <ShortcutNotice run={run} />}
       {!inSetup && <CheckInNotice run={run} />}
@@ -1186,9 +1194,12 @@ export function SessionView(props: {
 }) {
   const { session, ledung, run } = props;
   const isHelper = session.project === HELPER;
-  const waitsForPerson = (session.status === 'idle' || session.status === 'ended') && helperHasSpoken(ledung.messages);
+  // The step's card waits for the helper's words on that step (acceptance round 1, 6.4 and check 14): a step moved on
+  // in the page shows its card once the helper has said the new step's message.
+  const waitsForPerson = (session.status === 'idle' || session.status === 'ended') && helperHasSpoken(ledung.messages)
+    && (ledung.helper?.spokeFor === undefined || ledung.helper.spokeFor === ledung.helper.setup.current);
   const stepCard = isHelper && waitsForPerson && ledung.helper?.setup.phase === 'helper' && ledung.helper.setup.current && ledung.helper.sessionId === session.id
-    ? <SetupStepCard key={ledung.helper.setup.current} helper={ledung.helper} run={run} onOpen={(id) => props.onOpen?.(id)} />
+    ? <SetupStepCard key={ledung.helper.setup.current} helper={ledung.helper} run={run} onOpen={(id) => { markBackToSetup(); props.onOpen?.(id); }} />
     : null;
   const openView = props.onOpen;
   const renderCard = useCallback((card: HelperCard, answered: boolean) => (
@@ -1408,7 +1419,7 @@ export function SessionView(props: {
       )}
       <div className="session-body">
         <div className="chat-column">
-          {isHelper && ledung.helper && <HelperStepBar helper={ledung.helper} projects={ledung.projects} run={run} onOpen={(id) => openView?.(id)} />}
+          {isHelper && ledung.helper && <HelperStepBar helper={ledung.helper} projects={ledung.projects} run={run} onOpen={(id) => { markBackToSetup(); openView?.(id); }} />}
           <MessageList
             messages={ledung.messages}
             permissions={ledung.permissions}
@@ -1417,7 +1428,7 @@ export function SessionView(props: {
             onLoadEarlier={loadEarlier}
             onOpenFile={openFile}
             questions={ledung.questions}
-            userName={ledung.userName}
+            userName={isHelper && ledung.userName === 'the user' ? 'You' : ledung.userName}
             onQuote={quote}
             titleOf={titleOf}
             sessionId={session.id}
@@ -1427,11 +1438,13 @@ export function SessionView(props: {
             onOpenBoardThread={boardRepo ? openBoardThread : undefined}
             tint={tint}
             renderCard={isHelper ? renderCard : undefined}
+            assistantName={isHelper ? 'Ledung Helper' : undefined}
+            noPin={isHelper}
             // The setup step's own card, once, under the helper's latest words while it waits for the person.
             footer={stepCard ?? undefined}
             footerKey={stepCard ? `${ledung.helper?.setup.current}` : undefined}
           />
-          <WorkingIndicator key={session.id} session={session} sessions={ledung.sessions} messages={ledung.messages}
+          <WorkingIndicator key={session.id} session={session} sessions={ledung.sessions} messages={ledung.messages} plain={isHelper ? helperToolWords : undefined}
             extra={<MacroChips key={session.id} macros={macros} onUse={fireMacro} onEdit={() => (location.hash = '#/settings/macros')}
               actions={[
                 { id: 'secret', label: '🔑 Lock a secret…', title: 'Type or paste it into a masked field; Claude gets only its name', disabled: composerClosed(session), onPick: () => composerActions.current?.secret() },
@@ -1695,6 +1708,8 @@ function Composer({ session, tint, run, quoteInto, actionsInto, bangShell }: {
   /** Set here to the 🔑 and 📎 actions, which the macros' ＋ menu offers (issue #186). */
   actionsInto: RefObject<ComposerActions | null>;
 }) {
+  // The Ledung Helper's chat is with the helper, not "Claude" (acceptance round 1, check 16).
+  const to = session.project === HELPER ? 'the Ledung Helper' : 'Claude';
   const typing = usePlainTyping();
   // The box's own text, kept per session in this browser (issues #73, #323).
   const [text, setText, saveNow] = useDraft(session.id);
@@ -1911,7 +1926,7 @@ function Composer({ session, tint, run, quoteInto, actionsInto, bangShell }: {
         style={style}
         value={text}
         disabled={ended}
-        placeholder={ended ? 'This session has ended.' : resumable ? 'This session has ended; sending a message resumes it.' : coarsePointer() ? 'Message Claude' : 'Message Claude (Enter to send, Shift+Enter for a new line)'}
+        placeholder={ended ? 'This session has ended.' : resumable ? 'This session has ended; sending a message resumes it.' : coarsePointer() ? `Message ${to}` : `Message ${to} (Enter to send, Shift+Enter for a new line)`}
         onChange={(e) => {
           setText(e.target.value);
           setAsk(null);

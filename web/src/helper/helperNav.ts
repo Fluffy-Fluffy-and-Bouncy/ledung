@@ -6,6 +6,30 @@ import type { SetupStepId } from '../../../src/shared/setup.ts';
 
 const projectGroup = (project: string, group: string) => `ps:${project}/${group}`;
 
+/** What the helper is doing, in plain words, for the line above the message box (acceptance round 1, check 16). */
+export function helperToolWords(tool: string): string {
+  const words: Record<string, string> = {
+    add_project: 'Adding the project', create_project: 'Creating the project', list_projects: 'Looking at your projects',
+    project_settings: 'Reading the settings', set_project_settings: 'Changing the settings', set_project_basics: 'Changing the settings',
+    setup_step: 'Moving the setup on', setup_status: 'Looking at the setup', set_user_name: 'Saving your name',
+    workflow_files: 'Reading the workflow', propose_workflow: 'Preparing the workflow for your review', show_card: 'Preparing a card',
+  };
+  if (tool === 'Skill') return "Reading Ledung's guide";
+  return words[tool.replace(/^mcp__ledung__/, '')] ?? 'Working';
+}
+
+/** "Do it myself instead" leaves the setup for a page; the page offers the way back (acceptance round 1, check 18). */
+export const BACK_TO_SETUP_KEY = 'ledung.backToSetup';
+export function markBackToSetup(): void {
+  try { sessionStorage.setItem(BACK_TO_SETUP_KEY, '1'); } catch { /* private mode: no way back offered */ }
+}
+export function clearBackToSetup(): void {
+  try { sessionStorage.removeItem(BACK_TO_SETUP_KEY); } catch { /* as above */ }
+}
+export function backToSetupMarked(): boolean {
+  try { return sessionStorage.getItem(BACK_TO_SETUP_KEY) === '1'; } catch { return false; }
+}
+
 /** A link card's page; null when it names a project that isn't there. */
 export function helperLinkView(to: CardLink, project: string | null, projects: Pick<ProjectInfo, 'name' | 'managerId'>[]): string | null {
   const p = project ? projects.find((x) => x.name === project) : undefined;

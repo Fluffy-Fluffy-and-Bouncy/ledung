@@ -2,7 +2,7 @@
 // there is any AI, the step bar over the helper's chat (Ledung keeps the steps), the cards the helper shows in its
 // chat, and Settings → Ledung Helper. A card never approves anything: the person's pick goes back as their message,
 // and what needs their approval stays Ledung's own approval card in the chat.
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { ProjectInfo } from '../../../src/shared/protocol.ts';
 import type { HelperCard } from '../../../src/shared/helper-cards.ts';
 import { SETUP_STEPS, stepLine, type HelperInfo, type SetupStepId } from '../../../src/shared/setup.ts';
@@ -245,35 +245,59 @@ export function SetupStepCard({ helper, run, onOpen }: { helper: HelperInfo; run
   const [mode, setMode] = useState<'none' | 'folder' | 'new' | 'own'>('none');
   const [github, setGithub] = useState(false);
   const [basics, setBasics] = useState({ model: 'sonnet', effort: '', mode: 'default' });
+  // Pressed once: the card waits for the helper (it is keyed by the step, so the next step's starts fresh); round 1, 14.
+  const [pressed, setPressed] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  // A card that opens (the folder browser, a name field) is brought into view (acceptance round 1, check 17).
+  useEffect(() => {
+    if (mode === 'none') return;
+    // Again once a folder listing has come in and grown the card.
+    const timers = [0, 400, 1000].map((ms) => setTimeout(() => box.current?.scrollIntoView({ block: 'end', behavior: 'smooth' }), ms));
+    return () => timers.forEach(clearTimeout);
+  }, [mode]);
   const v = helper.setup;
   const step = v.current;
   const sid = helper.sessionId;
   if (v.phase !== 'helper' || !step || !sid) return null;
   const project = v.project;
   const say = (words: string, mark?: 'done' | 'skipped') => run(async () => {
-    if (mark) await api.setupMark(step, mark);
-    await api.send(sid, words);
-    setText('');
-    setMode('none');
+    if (pressed) return;
+    setPressed(true);
+    try {
+      if (mark) await api.setupMark(step, mark);
+      await api.send(sid, words);
+      setText('');
+      setMode('none');
+    } catch (e) {
+      setPressed(false);
+      throw e;
+    }
   });
   const button = (label: string, words: string, mark?: 'done' | 'skipped', primary = false) => (
-    <button className={`small${primary ? ' primary' : ''}`} onClick={() => void say(words, mark)}>{label}</button>
+    <button className={`small${primary ? ' primary' : ''}`} disabled={pressed} onClick={() => void say(words, mark)}>{label}</button>
   );
   const card = (title: string, inner: ReactNode) => (
-    <div className="helper-card-row"><div className={`helper-card step-card ${step}`} data-step={step}><div className="helper-card-title">{title}</div>{inner}</div></div>
+    <div className="helper-card-row" ref={box}><div className={`helper-card step-card ${step}${pressed ? ' answered' : ''}`} data-step={step}><div className="helper-card-title">{title}</div>{inner}</div></div>
   );
   const textForm = (placeholder: string, max: number, send: (t: string) => void, label = 'Send') => (
     <form className="helper-text" onSubmit={(e) => { e.preventDefault(); if (text.trim()) send(text.trim()); }}>
       <input {...typing} value={text} onChange={(e) => setText(e.target.value)} placeholder={placeholder} aria-label={placeholder} maxLength={max} autoFocus />
-      <button className="small primary" type="submit" disabled={!text.trim()}>{label}</button>
+      <button className="small primary" type="submit" disabled={!text.trim() || pressed}>{label}</button>
     </form>
   );
   switch (step) {
     case 'name':
       return card('Your name', textForm('What should Ledung call you?', 40, (name) => void run(async () => {
-        await api.setupName(name);
-        await api.send(sid, `Call me ${name}.`);
-        setText('');
+        if (pressed) return;
+        setPressed(true);
+        try {
+          await api.setupName(name);
+          await api.send(sid, `Call me ${name}.`);
+          setText('');
+        } catch (e) {
+          setPressed(false);
+          throw e;
+        }
       }), 'Save'));
     case 'accounts':
       return card('Claude accounts', (
@@ -331,6 +355,15 @@ export function SetupStepCard({ helper, run, onOpen }: { helper: HelperInfo; run
           </div>
         ));
     case 'workflow':
+      // Once proposed, the step's card opens the review: one card, never the proposal's buttons again (round 1, 6.2).
+      if (helper.review) {
+        return card('Review the workflow', (
+          <div className="helper-step-controls">
+            <button className="small primary" onClick={() => onOpen(`q:${helper.review}`)}>Open the review</button>
+            <span className="muted">Accepted saves it into the project; Changes needed sends it back.</span>
+          </div>
+        ));
+      }
       return card('A workflow', (
         <div className="helper-step-controls">
           {button('Propose a small first workflow', 'Propose a small first workflow for me to review.', undefined, true)}

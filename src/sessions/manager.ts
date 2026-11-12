@@ -116,7 +116,7 @@ import type { FlowProposal } from '../shared/flow-proposal.ts';
 import { helperFolder, HELPER_BUILT_IN_TOOLS, HELPER_DEFAULT_MODEL, HELPER_MODELS, HELPER_PROFILE, setupKickoff, setupPromptLine } from './helper.ts';
 import type { HelperHandlers } from './helper-tools.ts';
 import { cardLooksLikeApproval, CardSchema, type HelperCard } from '../shared/helper-cards.ts';
-import { isSetupStep, markProblem, setupView, type HelperInfo, type SetupFacts, type SetupPhase, type SetupState, type SetupStepId, type SetupView } from '../shared/setup.ts';
+import { isSetupStep, markProblem, setupView, stepLine, type HelperInfo, type SetupFacts, type SetupPhase, type SetupState, type SetupStepId, type SetupView } from '../shared/setup.ts';
 import { ASKED_KEY as SHORTCUTS_ASKED_KEY } from '../platform/shortcuts.ts';
 import { NOTICE_KEY as CHECKIN_NOTICE_KEY } from '../update/checkin.ts';
 
@@ -252,6 +252,8 @@ export class SessionManager {
     this.publish = (event) => {
       publish(event);
       if (event.type === 'limits') this.refreshStops();
+      // The helper's turns, for the setup's one-turn-per-step rule (acceptance round 1, 6.4).
+      if (event.type === 'session' && event.session.project === HELPER) this.onHelperStatus(event.session);
     };
     this.projectStore = new ProjectStore(store.database);
     this.accounts = new AccountStore(store.database);
@@ -1103,7 +1105,7 @@ export class SessionManager {
       propose: info.role === 'manager' && info.project !== CHATS && project.followFlow !== false ? this.proposeHandlers(project, info.id) : null,
       ledungPlugins: helper ? [HELP_PLUGIN(), WORKFLOW_PLUGIN()]
         : info.role === 'manager' && info.project !== CHATS && project.followFlow !== false && project.runner === 'local' ? [WORKFLOW_PLUGIN()] : [],
-      helper: helper ? { handlers: this.helperHandlers(info.id), builtInTools: HELPER_BUILT_IN_TOOLS, promptLine: () => setupPromptLine(this.setupView()) } : null,
+      helper: helper ? { handlers: this.helperHandlers(info.id), builtInTools: HELPER_BUILT_IN_TOOLS, promptLine: () => this.helperPrompted() } : null,
       remoteControl: launch.remoteControl,
       sensitive: {
         commandPatterns: [...this.config.sensitive.commandPatterns, ...project.sensitive.commandPatterns],
@@ -1404,7 +1406,7 @@ export class SessionManager {
     const listed = (list: typeof faults) => list.slice(0, 12).map((p) => `- ${p.at}: ${p.message}`).join('\n');
     const tiers = tiersOf(project.questionTiers);
     const details: QuestionDetails = {
-      title: `Workflow change: ${why.trim().split('\n')[0]!.slice(0, 160)}`,
+      title: `Workflow change: ${cutAtWord(why.trim().split('\n')[0]!, 160)}`,
       tier: tiers.find((t) => /process/i.test(t)) ?? tiers[0],
       flowProposal: proposal.id,
       // The helper proposes for another project than its own (ledung-helper.md): the review loads that one's.
@@ -1421,7 +1423,10 @@ export class SessionManager {
     this.proposals.setQuestion(proposal.id, q.id);
     this.publish({ type: 'question', question: q });
     // In the helper's chat, a card opens the review (ledung-helper.md).
-    if (helper) this.addCard(managerId, { kind: 'review', title: `Review the workflow for ${project.name}`, question: q.id, project: project.name });
+    // During the setup, for its project, the workflow step's own card opens it instead: one card (acceptance round 1, 6.2).
+    const inSetup = helper && this.setupView().phase === 'helper' && this.setupState().project === project.name;
+    if (helper && !inSetup) this.addCard(managerId, { kind: 'review', title: `Review the workflow for ${project.name}`, question: q.id, project: project.name });
+    if (inSetup) this.publishHelper();
     return `Your change is put to ${this.config.userName} as review #${q.id}, with the flows before and after.${faults.length ? ` The checks find ${faults.length} problem${faults.length === 1 ? '' : 's'} (said in the review):\n${listed(faults)}\nIf they are real, propose again with them fixed and withdraw review #${q.id}.` : ''} ` +
       'Accepted saves it; Changes needed comes back with the note. End your turn now.';
   }
@@ -2434,11 +2439,90 @@ export class SessionManager {
   }
 
   helperInfo(): HelperInfo {
-    return { sessionId: this.helperSession()?.id ?? null, model: this.helperModel(), setup: this.setupView(), userName: this.config.userName };
+    // Ledung just started: the step as it is now is the one the helper last spoke for.
+    if (this.helperStepSaid === '') this.helperStepSaid = this.stepKey();
+    return {
+      sessionId: this.helperSession()?.id ?? null, model: this.helperModel(), setup: this.setupView(), userName: this.config.userName, review: this.setupReview(),
+      spokeFor: this.helperStepSaid,
+    };
+  }
+
+  /** The workflow review the helper put to the person for the setup's project, while it is open; null: none. */
+  private setupReview(): number | null {
+    const state = this.setupState();
+    if (state.phase !== 'helper' || !state.project) return null;
+    const open = this.store.listQuestions().filter((q) => q.status === 'open' && q.details?.flowProject === state.project && q.details.flowProposal !== undefined);
+    return open.length ? Math.max(...open.map((q) => q.id)) : null;
   }
 
   private publishHelper(): void {
     this.publish({ type: 'helper', helper: this.helperInfo() });
+    this.watchSetupStep();
+  }
+
+  // One helper turn per step (acceptance round 1, 6.4): a step that moves on outside the helper's own turn (a card
+  // press with no message, a notice answered, a mark in the bar) gets one message from Ledung, so the helper says the
+  // next step; never a second while one is under way or the helper already spoke for that step.
+
+  /** The step the helper was last prompted for or ended a turn on; '' before any. */
+  private helperStepSaid = '';
+  private stepTimer: NodeJS.Timeout | null = null;
+  private stepKey(): string {
+    const v = this.setupView();
+    return v.phase === 'helper' ? (v.current ?? 'through') : '';
+  }
+
+  /** At each of the helper's prompts: the line it gets, and the step it now speaks for. */
+  private helperPrompted(): string {
+    this.saidFor(this.stepKey());
+    return setupPromptLine(this.setupView());
+  }
+
+  private onHelperStatus(s: SessionInfo): void {
+    // A turn that ended spoke for the step current then (its tools may have moved it on themselves).
+    if (s.status === 'idle' && this.stepKey()) this.saidFor(this.stepKey());
+  }
+
+  /** The step the helper speaks for now; the page shows a step's card only under the helper's words for it. */
+  private saidFor(key: string): void {
+    if (key === this.helperStepSaid) return;
+    this.helperStepSaid = key;
+    this.publish({ type: 'helper', helper: this.helperInfo() });
+  }
+
+  private watchSetupStep(): void {
+    if (this.stepTimer) clearTimeout(this.stepTimer);
+    // Shortly after, so a page's mark and the person's message that follows it count as one change.
+    this.stepTimer = setTimeout(() => {
+      this.stepTimer = null;
+      try {
+        this.nudgeHelper();
+      } catch (e) {
+        console.error(`Ledung Helper: ${(e as Error).message}`);
+      }
+    }, 2000);
+    this.stepTimer.unref?.();
+  }
+
+  private nudgeHelper(): void {
+    const key = this.stepKey();
+    const info = this.helperSession();
+    if (!key || !info || key === this.helperStepSaid) return;
+    // Nothing known yet (Ledung just started): the step as it is now is the one the helper spoke for.
+    if (this.helperStepSaid === '') {
+      this.helperStepSaid = key;
+      return;
+    }
+    // Under way, or a message for it waits: that turn speaks for the step.
+    if (info.status !== 'idle' && info.status !== 'ended') return;
+    if (this.store.undeliveredInbox(info.id).length) return;
+    this.saidFor(key);
+    const v = this.setupView();
+    const text = v.current
+      ? `The setup moved on in the page: now ${stepLine(v)}. Write the one short message for this step.`
+      : `The setup's steps are all through. Say so in one or two sentences; Ledung shows the hand-over.`;
+    this.store.addInbox(info.id, 'ledung', text);
+    void this.resumeIfEnded(info.id).then(() => this.live.get(info.id)?.deliver(), (e: Error) => console.error(`Ledung Helper: ${e.message}`));
   }
 
   /** Something the setup's steps look at changed outside the manager (the shortcuts question, the check-in notice). */
@@ -2574,7 +2658,7 @@ export class SessionManager {
 
   /** A change the helper made, said in its chat as an event, and the tool's answer passed on. */
   private helperNoted(helperId: string, out: string): string {
-    if (/^(Saved|Added|Created) /.test(out)) this.publish({ type: 'message', message: this.store.addMessage(helperId, 'event', { text: `Ledung Helper: ${out.split('. ')[0]!.replace(/\.$/, '')}.` }) });
+    if (/^(Saved|Added|Created) /.test(out)) this.publish({ type: 'message', message: this.store.addMessage(helperId, 'event', { text: `Ledung Helper: ${plainFields(out.split('. ')[0]!.replace(/\.$/, ''))}.` }) });
     return out;
   }
 
@@ -3840,4 +3924,26 @@ const withWarning = (message: string, profiles: EffectiveProfiles) => (profiles.
 /** Where a project's sessions run, for its account's login folder. */
 function placeOf(project: ProjectConfig): AccountPlace {
   return project.runner === 'docker' ? 'docker' : 'local';
+}
+
+/** A line cut at a word, with "…", for a title (acceptance round 1: "after 3 round"). */
+function cutAtWord(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max - 1);
+  const space = cut.lastIndexOf(' ');
+  return `${(space > max / 2 ? cut.slice(0, space) : cut).replace(/[ ,;:]+$/, '')}…`;
+}
+
+/** The settings' own names in a helper's event line, as the page names them (acceptance round 1, check 16). */
+const FIELD_WORDS: Record<string, string> = {
+  model: 'model', managerModel: "manager's model", effort: 'effort', managerEffort: "manager's effort", permissionMode: 'permission mode',
+  account: 'Claude account', managerGrant: "manager's grant", workflow: 'workflow', questionTiers: 'question tiers', sensitive: 'sensitive list',
+  devShipCommand: 'dev ship command', tickets: 'tickets', publishUsageName: 'usage name', usageRepo: 'usage repository',
+};
+function plainFields(line: string): string {
+  const m = /^Saved (.+) for (".+")$/.exec(line);
+  if (!m) return line;
+  const words = m[1]!.split(', ').map((f) => FIELD_WORDS[f] ?? f);
+  const list = words.length > 1 ? `${words.slice(0, -1).join(', ')} and ${words.at(-1)}` : words[0];
+  return `Saved the ${list} of ${m[2]}`;
 }
