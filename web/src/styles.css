@@ -652,7 +652,27 @@ button.on { border-color: var(--accent); background: var(--user-bg); }
 .limit.with-ship { grid-column: 1 / -1; }
 .limit-forecast { color: var(--muted); font-variant-numeric: tabular-nums; }
 .limit-forecast.over { color: var(--st-warning); font-weight: 600; }
-.limit-ship-box { margin: 0.15rem 0; min-width: 0; color: var(--accent); }
+.limit-ship-box { margin: 0.15rem 0; min-width: 0; color: var(--accent); position: relative; }
+.limit-ship-fit { min-width: 0; }
+/* A job on one line (issue #284): who, what, and its most-used reservation as a small bar; a click opens the card. */
+.job-row { font-size: 0.8em; }
+.job-row-button { all: unset; box-sizing: border-box; width: 100%; cursor: pointer; display: grid; grid-template-columns: auto minmax(0, max-content) minmax(0, 1fr) 3.5em; gap: 0.35rem; align-items: center; padding: 0.1rem 0.25rem; border-radius: 4px; }
+.job-row-button:hover { background: var(--panel-2); }
+.job-row-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.job-row-button > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-row-button > .job-row-track { overflow: visible; }
+.job-row-mark { color: var(--st-good); font-size: 0.8em; }
+.job-row.paused .job-row-mark { color: var(--muted); }
+.job-fold { margin-left: auto; }
+.machine-sub-toggle { all: unset; display: block; cursor: pointer; margin: 0.45rem 0.75rem 0; font-size: 0.78em; font-weight: 600; color: var(--muted); }
+.machine-sub-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* No room on the line under the ship: the forecast sits beside it on the water line's row, in the room the strip left (issue #284). */
+.limit-ship-box > .limit-forecast { position: absolute; right: 0; bottom: 0; font-size: 0.9em; white-space: nowrap; line-height: 1.1; }
+/* The line under a meter (issue #284): one line, its words chosen to fit; it wraps only between its parts. */
+.limit-sub-line { position: relative; overflow: clip; flex: 1; min-width: 0; display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
+.limit-line-text { min-width: 0; }
+.limit-sub-line > .limit-forecast { white-space: nowrap; margin-left: auto; }
+.limit-measure { position: absolute; left: 0; top: 0; visibility: hidden; pointer-events: none; white-space: nowrap; display: flex; flex-direction: column; align-items: flex-start; }
 
 /* The Usage page's Shared tab (issue #364): a card per account, its bars split by computer. */
 .shared-usage { display: flex; flex-direction: column; gap: 0.75rem; }

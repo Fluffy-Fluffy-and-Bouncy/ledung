@@ -3,15 +3,18 @@
 // "started by" in a fixed order that doesn't change with filters; more than seven fold into "Other".
 // Every chart has a legend, a hover/tap tooltip and a table next to it, since some light-mode colours
 // are below 3:1 contrast.
-import { useState, type ReactNode } from 'react';
+import { Fragment, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useNow } from '../clock.ts';
 import type { SessionInfo, UsageStopInfo } from '../../../src/shared/protocol.ts';
-import { resetsInText } from '../../../src/shared/usage-stop-text.ts';
+import { meterStopHead, resetsInText, resetsInVariants } from '../../../src/shared/usage-stop-text.ts';
 import { LimitShip } from '../components/LimitShip.tsx';
-import { MeterStopLine } from '../components/UsageStopsSettings.tsx';
+import { api } from '../api.ts';
 import type { Hull } from '../components/shipFrames.ts';
 import { forecastAt } from './projection.ts';
 import { accountLabel } from '../limitAccount.ts';
 import { hasReset, readingAge, shownAge } from './readingAge.ts';
+import { shownLimits } from './limitsShown.ts';
+import { meterLineLayout, meterLineVariants } from './meterLine.ts';
 
 export function formatTokens(n: number): string {
   if (n >= 1e9) return `${(n / 1e9).toFixed(n >= 1e10 ? 0 : 1)}B`;
@@ -180,6 +183,7 @@ const STATUS: Record<string, { label: string; icon: string; cls: string }> = {
 };
 
 const resetIn = (at: number | null, kind: string): string => resetsInText(at, Date.now(), kind);
+const labelOf = (kind: string) => LIMIT_LABEL[kind] ?? kind;
 
 /** The plan's usage limits as small meters (status colour with an icon and a label, never colour alone) for one account, named; "no data yet" while it has none. Other accounts' numbers are never shown in its place. */
 export function LimitMeters({ account, limits, stops = [], run }: { account: string; limits: (MeterLimit & { account?: string })[]; stops?: UsageStopInfo[]; run?: (action: () => Promise<unknown>) => Promise<void> }) {
@@ -199,57 +203,125 @@ type MeterLimit = { kind: string; status: string; utilization: number | null; re
 
 function LimitList({ limits, stops, run }: { limits: MeterLimit[]; stops: UsageStopInfo[]; run?: (action: () => Promise<unknown>) => Promise<void> }) {
   const now = Date.now();
+  const { shown, folded } = shownLimits(limits, now, new Set(stops.filter((s) => s.holding).map((s) => s.kind)));
   return (
     <div className="limits">
-      {limits.map((l) => {
+      {shown.map((l) => {
         // A window that reset since the reading: its figure is the earlier window's, so none is shown (issue #360).
         if (hasReset(l, now)) {
           return (
-            <div key={l.kind} className={`limit limit-reset${SHIP_LIMITS[l.kind] ? ' with-ship' : ''}`} title={`${LIMIT_LABEL[l.kind] ?? l.kind}: the window has reset since the last reading (${readingAge(l, now)}). A new one comes with the next turn on this account.`}>
+            <div key={l.kind} className={`limit limit-reset${SHIP_LIMITS[l.kind] ? ' with-ship' : ''}`} title={`${labelOf(l.kind)}: the window has reset since the last reading (${readingAge(l, now)}). A new one comes with the next turn on this account.${foldedText(folded.get(l.kind), now)}`}>
               <div className="limit-head">
-                <span>{LIMIT_LABEL[l.kind] ?? l.kind}</span>
+                <span>{labelOf(l.kind)}</span>
                 <span className="limit-status">reset</span>
               </div>
               <div className="limit-sub muted"><span>no reading since the reset</span></div>
             </div>
           );
         }
-        const age = shownAge(l, now);
-        const st = STATUS[l.status] ?? { label: l.status, icon: '●', cls: 'good' };
-        const ship = l.utilization != null ? SHIP_LIMITS[l.kind] : undefined;
-        const forecast = ship && l.utilization != null ? forecastAt(l.kind, l.utilization, l.resetsAt) : null;
-        const stop = stops.find((s) => s.kind === l.kind);
-        return (
-          <div key={l.kind} className={`limit${ship ? ' with-ship' : ''}`} title={`${LIMIT_LABEL[l.kind] ?? l.kind}: ${st.label}${l.utilization != null ? `, ${pct(l.utilization)} used` : ''}${forecast?.share != null ? `, about ${pct(forecast.share)} by the reset at this pace` : ''}. ${resetIn(l.resetsAt, l.kind)}. Reading ${readingAge(l, now)}: Ledung hears the limits during a session's turn.`}>
-            {/* A ship meter has no heading: the hover names the window (Martin, issue #70). */}
-            {!ship && (
-              <div className="limit-head">
-                <span>{LIMIT_LABEL[l.kind] ?? l.kind}</span>
-                <span className={`limit-status ${st.cls}`}>{st.icon} {l.utilization != null ? pct(l.utilization) : st.label}</span>
-              </div>
-            )}
-            {ship && l.utilization != null ? (
-              <div className="limit-ship-box"><LimitShip utilization={l.utilization} label={LIMIT_LABEL[l.kind]!} hull={ship} /></div>
-            ) : l.utilization != null && (
-              <div className="limit-track">
-                <div className={`limit-fill ${st.cls}`} style={{ width: `${Math.min(100, l.utilization * 100)}%` }} />
-              </div>
-            )}
-            <div className="limit-sub muted">
-              {/* A stop's line below counts down to the reset already. */}
-              <span>{stop && run ? '' : resetIn(l.resetsAt, l.kind)}</span>
-              {forecast && (
-                // The ship already shows the figure; say where it is heading instead, or why it can't yet.
-                forecast.share != null
-                  ? <span className={`limit-forecast${forecast.share >= 1 ? ' over' : ''}`}>≈ {pct(forecast.share)} by reset</span>
-                  : <span className="limit-forecast" title={forecast.why}>≈ — by reset</span>
-              )}
-            </div>
-            {age && <div className="limit-sub limit-age">{age}</div>}
-            {stop && run && <MeterStopLine stop={stop} run={run} />}
-          </div>
-        );
+        return <LimitRow key={l.kind} l={l} stop={run ? stops.find((s) => s.kind === l.kind) : undefined} run={run} folded={folded.get(l.kind)} />;
       })}
     </div>
   );
+}
+
+/** A window folded into this meter, as a sentence for its hover: " 7-day (incl. extra): 40% used. Weekly (incl. extra) limit resets in 3 d." */
+function foldedText(f: MeterLimit | undefined, now: number): string {
+  if (!f) return '';
+  if (hasReset(f, now)) return ` ${labelOf(f.kind)}: reset since the last reading (${readingAge(f, now)}).`;
+  const reset = resetsInText(f.resetsAt, now, f.kind);
+  return ` ${labelOf(f.kind)}${f.utilization != null ? `: ${pct(f.utilization)} used` : ''}${reset ? `. ${reset}` : ''}.`;
+}
+
+function LimitRow({ l, stop, run, folded }: { l: MeterLimit; stop?: UsageStopInfo; run?: (action: () => Promise<unknown>) => Promise<void>; folded?: MeterLimit }) {
+  // The countdown moves by the minute even when nothing else on the page changes; on the page's shared clock (#233).
+  const now = useNow(30_000);
+  const age = shownAge(l, now);
+  const st = STATUS[l.status] ?? { label: l.status, icon: '●', cls: 'good' };
+  const ship = l.utilization != null ? SHIP_LIMITS[l.kind] : undefined;
+  const forecast = ship && l.utilization != null ? forecastAt(l.kind, l.utilization, l.resetsAt) : null;
+  // A stop's line counts down to the reset itself, so the meter has one line under it, not two (issues #280, #284).
+  const variants = meterLineVariants(
+    stop ? meterStopHead(stop) : null,
+    stop ? resetsInVariants(stop.resetsAt, now, stop.kind) : resetsInVariants(l.resetsAt, now, l.kind),
+  );
+  // The ship already shows the figure; say where it is heading instead, or why it can't yet.
+  const forecastEl = (measuring = false) => forecast && (
+    forecast.share != null
+      ? <span className={`limit-forecast${forecast.share >= 1 ? ' over' : ''}`} aria-hidden={measuring || undefined}>≈ {pct(forecast.share)} by reset</span>
+      : <span className="limit-forecast" title={forecast.why} aria-hidden={measuring || undefined}>≈ — by reset</span>
+  );
+  const forecastKey = forecast ? (forecast.share != null ? `${pct(forecast.share)}${forecast.share >= 1 ? '!' : ''}` : '—') : null;
+  // Whether the ship's strip can leave room for the forecast beside it and keep its figure; the ship says.
+  const [besideShip, setBesideShip] = useState(true);
+  const { line, measure, layout } = useMeterLine(variants, forecastKey, besideShip);
+  const parts = layout.variant >= 0 && variants[layout.variant] ? variants[layout.variant]!.split(' · ') : [];
+  return (
+    <div className={`limit${ship ? ' with-ship' : ''}`} title={`${labelOf(l.kind)}: ${st.label}${l.utilization != null ? `, ${pct(l.utilization)} used` : ''}${forecast?.share != null ? `, about ${pct(forecast.share)} by the reset at this pace` : ''}. ${resetIn(l.resetsAt, l.kind)}. Reading ${readingAge(l, now)}: Ledung hears the limits during a session's turn.${foldedText(folded, now)}`}>
+      {/* A ship meter has no heading: the hover names the window (Martin, issue #70). */}
+      {!ship && (
+        <div className="limit-head">
+          <span>{labelOf(l.kind)}</span>
+          <span className={`limit-status ${st.cls}`}>{st.icon} {l.utilization != null ? pct(l.utilization) : st.label}</span>
+        </div>
+      )}
+      {ship && l.utilization != null ? (
+        <div className="limit-ship-box">
+          <div className="limit-ship-fit">
+            <LimitShip utilization={l.utilization} label={LIMIT_LABEL[l.kind]!} hull={ship}
+              side={forecast ? layout.forecastPx + 6 : 0} useSide={!layout.forecastInline} onSide={setBesideShip} />
+          </div>
+          {/* No room on the line below: the forecast rides beside the ship, level with its water line (issue #284). */}
+          {!layout.forecastInline && forecastEl()}
+        </div>
+      ) : l.utilization != null && (
+        <div className="limit-track">
+          <div className={`limit-fill ${st.cls}`} style={{ width: `${Math.min(100, l.utilization * 100)}%` }} />
+        </div>
+      )}
+      <div className={stop ? `limit-stop${stop.holding ? ' held' : ''}` : 'limit-sub muted'}>
+        <div className="limit-sub-line" ref={line}>
+          {/* Wraps only between its parts, never inside one; the hover keeps the whole line. */}
+          <span className="limit-line-text" title={variants[0]}>
+            {parts.map((p, i) => <Fragment key={i}>{i > 0 && ' '}<span className="nowrap">{i < parts.length - 1 ? `${p} ·` : p}</span></Fragment>)}
+          </span>
+          {layout.forecastInline && forecastEl()}
+          <span className="limit-measure" ref={measure} aria-hidden="true">
+            {variants.map((v) => <span key={v}>{v}</span>)}
+            {forecastEl(true)}
+          </span>
+        </div>
+        {stop?.holding && run && <button className="small primary" onClick={() => void run(() => api.liftUsageStop(stop.account, stop.kind))}>Lift</button>}
+      </div>
+      {age && <div className="limit-sub limit-age">{age}</div>}
+    </div>
+  );
+}
+
+/** Measures the line's variants and the forecast in the line's own font, and picks the layout that fits its width. */
+function useMeterLine(variants: string[], forecastKey: string | null, besideShip: boolean) {
+  const line = useRef<HTMLDivElement>(null);
+  const measure = useRef<HTMLSpanElement>(null);
+  const [room, setRoom] = useState(0);
+  const [layout, setLayout] = useState<{ variant: number; forecastInline: boolean; forecastPx: number }>({ variant: 0, forecastInline: true, forecastPx: 0 });
+  useLayoutEffect(() => {
+    const el = line.current;
+    if (!el) return;
+    const fit = () => setRoom(el.clientWidth);
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const key = variants.join('\n');
+  useLayoutEffect(() => {
+    const kids = Array.from(measure.current?.children ?? []);
+    if (!room || !kids.length) return;
+    const width = (i: number) => kids[i]?.getBoundingClientRect().width ?? 0;
+    // A pixel of slack: a width that rounds the other way must not wrap the line.
+    const forecastPx = forecastKey ? Math.ceil(width(variants.length)) : 0;
+    const next = { ...meterLineLayout({ widths: variants.map((_, i) => width(i) + 1), forecast: forecastPx, room, gap: 6, besideShip }), forecastPx };
+    setLayout((was) => (was.variant === next.variant && was.forecastInline === next.forecastInline && was.forecastPx === next.forecastPx ? was : next));
+  }, [room, key, forecastKey, besideShip]);
+  return { line, measure, layout };
 }
