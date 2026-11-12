@@ -1,6 +1,6 @@
 # Resource limits: CPU, memory and GPU
 
-Nov 12, 2026 · **Proposal, agreed in chat with Simon 2026-11-12; not approved for building yet.** Builds on step 6 ([step-6.md](step-6.md)): the Machine panel's bars, per-session CPU and memory over each session's whole process tree (#169), the "N of 10 working" limit and its line, priorities, Pause/Resume, and the per-turn record with typical costs.
+Nov 12, 2026 · **Approved (Simon, 2026-11-12, #1894)**: "b — Approve, and build it as a normal PR", with all ten recommendations under Open choices. Agreed in chat with Simon 2026-11-12 before that. Builds on step 6 ([step-6.md](step-6.md)): the Machine panel's bars, per-session CPU and memory over each session's whole process tree (#169), the "N of 10 working" limit and its line, priorities, Pause/Resume, and the per-turn record with typical costs.
 
 ## In short
 
