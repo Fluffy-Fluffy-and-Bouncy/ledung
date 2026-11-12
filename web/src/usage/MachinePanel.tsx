@@ -1,5 +1,6 @@
-// Machine resources (step 6): the load of this computer and Docker's VM, how many sessions work and
-// the limit (editable), the line for a free place with Start now, and what one session's turns used.
+// Machine resources (step 6): the load of this computer and Docker's VM, the line for a free place with
+// Start now, and what one session's turns used. The "N of M working" line and its limit editor were
+// removed (issue #300, Martin 2026-11-12); the limit itself still applies on the server.
 import { useEffect, useState } from 'react';
 import { projectLabel, type MachineInfo, type Priority, type ResourcesInfo, type SessionInfo, type TurnResource, type TypicalCost } from '../../../src/shared/protocol.ts';
 import { formatBytes, formatCores, meterLevel } from '../../../src/shared/machine-shown.ts';
@@ -188,9 +189,7 @@ export function MachinePanel(props: {
   run: (action: () => Promise<unknown>) => Promise<void>;
 }) {
   const m = props.machine;
-  const [limit, setLimit] = useState('');
   const [editing, setEditing] = useState<string | null>(null);
-  useEffect(() => setLimit(m ? String(m.limit) : ''), [m?.limit]);
   // The person's open or fold of "Waiting for room"; null: as waitingOpen says. Forgotten when the list empties.
   const [lineOpen, setLineOpen] = useState<boolean | null>(null);
   const waits = m?.resources?.line.length ?? 0;
@@ -216,10 +215,6 @@ export function MachinePanel(props: {
       )}
     </>
   );
-  const commit = () => {
-    const n = Number(limit);
-    if (n !== m.limit) void props.run(() => api.setLimit(n)).finally(() => setLimit(String(m.limit)));
-  };
   const title = (id: string) => props.byId.get(id)?.title ?? 'a session';
   return (
     <section className="machine" aria-label="Machine">
@@ -242,30 +237,23 @@ export function MachinePanel(props: {
         </details>
       )}
       {r?.gpuNote && <div className="machine-note muted">{r.gpuNote}</div>}
-      <div className="machine-working">
-        <span><strong>{m.working}</strong> of </span>
-        <input
-          type="number" min={1} max={100} value={limit} aria-label="How many sessions may work at once"
-          title="How many sessions may work at the same time. Managers don't count."
-          onChange={(e) => setLimit(e.target.value)}
-          onBlur={commit}
-          onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
-        />
-        <span> working{m.line.length ? ` · ${m.line.length} waiting` : ''}</span>
-      </div>
       {m.line.length > 0 && (
-        <ol className="machine-line">
-          {m.line.map((id) => {
-            const s = props.byId.get(id);
-            return (
-              <li key={id}>
-                <button className="link" onClick={() => props.onOpen(id)}>{title(id)}</button>
-                {s && s.priority !== 'normal' && <span className={`chip prio-${s.priority}`}>{PRIORITY_LABEL[s.priority]}</span>}
-                <button className="small" title="Start this turn now, above the limit" onClick={() => void props.run(() => api.startNow(id))}>Start now</button>
-              </li>
-            );
-          })}
-        </ol>
+        <>
+          {/* Its heading carries the count the removed "N of M working" line used to give (issue #300). */}
+          <div className="machine-sub">Waiting for a free place · {m.line.length}</div>
+          <ol className="machine-line">
+            {m.line.map((id) => {
+              const s = props.byId.get(id);
+              return (
+                <li key={id}>
+                  <button className="link" onClick={() => props.onOpen(id)}>{title(id)}</button>
+                  {s && s.priority !== 'normal' && <span className={`chip prio-${s.priority}`}>{PRIORITY_LABEL[s.priority]}</span>}
+                  <button className="small" title="Start this turn now, above the limit" onClick={() => void props.run(() => api.startNow(id))}>Start now</button>
+                </li>
+              );
+            })}
+          </ol>
+        </>
       )}
       {r && r.line.length > 0 && (
         <>
