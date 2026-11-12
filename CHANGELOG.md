@@ -12,6 +12,7 @@ is nothing user-facing in it).
 ## 2026-11-12
 - Ledung's own data folder is always yours to approve: a session's command or file tool call that names it asks you in every project, whatever its sensitive list says. (Fluffy-Fluffy-and-Bouncy/Project-Ledung#473)
 - Sensitive list: commands are checked as the shell reads them, quotes and all. **Pushing to main or master** now also asks for a push that names no branch (`git push`, `git push origin`, `git push -u origin HEAD`) and with git's options before `push`; **Publishing to npm** with npm's options before `publish`. A path entry (such as `.env` files) also asks when a Bash or PowerShell command names that file. Existing lists get the wider push and publish entries once, where they are unchanged. Push a named branch (`git push origin my-branch`) to go on unasked. (Fluffy-Fluffy-and-Bouncy/Project-Ledung#473)
+- Standing grants are stricter: a "starts with" grant such as `git push:*` now covers only that command and its arguments, on one line; a command that spans several lines, or a longer word that merely starts the same, is asked about as if there were no grant. (Project-Ledung#472)
 
 ## 2026-11-11
 - Your pinned latest message at the top of the chat no longer shows through a session's ⚙ menu (nor does the message box under it), and its bottom edge fades out softly instead of ending in a hard line. (#226)
