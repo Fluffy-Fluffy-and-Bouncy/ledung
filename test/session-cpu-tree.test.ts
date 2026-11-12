@@ -148,26 +148,32 @@ test('a session process stays counted after its host exits, and the session ends
 const busyCode = (file: string) => `const fs = require('fs'); const end = Date.now() + ${2 * WAIT_MS}; let next = 0;
   while (Date.now() < end) { const n = Date.now(); if (n >= next) { next = n + 100; const u = process.cpuUsage(); fs.appendFileSync(${JSON.stringify(file)}, ((u.user + u.system) / 1e6) + '\\n'); } }`;
 
-/** The CPU seconds the busy command has counted for itself; 0 before its first line. */
-function ownCpu(file: string): number {
+/**
+ * The CPU seconds the busy command has counted for itself: 0 before its first whole line, null when the
+ * file can't be read just now (on Windows a scanner or the writer can hold it for a moment), so a bad read
+ * never passes for a count (self-check of this change).
+ */
+function ownCpu(file: string): number | null {
   let text = '';
   try {
     text = fs.readFileSync(file, 'utf8');
-  } catch {
-    return 0;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'ENOENT' ? 0 : null;
   }
   // The last whole line: the command may be writing the next one.
-  const lines = text.slice(0, text.lastIndexOf('\n')).split('\n');
-  return Number(lines.at(-1)) || 0;
+  const end = text.lastIndexOf('\n');
+  if (end === -1) return 0;
+  const own = Number(text.slice(text.lastIndexOf('\n', end - 1) + 1, end));
+  return Number.isFinite(own) ? own : null;
 }
 
 /** One sample as the test saw it: when, the session's cores, and the busy command's own CPU seconds. */
 interface Reading { at: number; cores: number; own: number }
 
-/** An `onSample` that records each sample of session `id` into `readings`. */
+/** An `onSample` that records each sample of session `id` into `readings`; an unreadable count keeps the last one. */
 const recorder = (readings: Reading[], monitor: () => ResourceMonitor, id: string, file: string) => () => {
   const f = monitor().figures()[id];
-  if (f) readings.push({ at: Date.now(), cores: f.cores, own: ownCpu(file) });
+  if (f) readings.push({ at: Date.now(), cores: f.cores, own: ownCpu(file) ?? readings.at(-1)?.own ?? 0 });
 };
 
 /** CPU seconds the busy command must have by its own count before the comparison is made. */
@@ -244,9 +250,11 @@ test('a session whose background command keeps running after its middle process 
     // From the next sample on, so the reading is over intervals with the middle process gone.
     const w = await overWindow(readings);
     t.diagnostic(`session ${w.session.toFixed(2)} CPU s, busy command ${w.own.toFixed(2)} s by its own count, over ${w.seconds.toFixed(1)} s`);
-    if (w.own < TOO_LOADED_S) return t.skip(`the machine is too loaded: the busy command had ${w.own.toFixed(2)} s of CPU in ${w.seconds.toFixed(1)} s`);
+    // Skipped only when the command is alive and counting but starved; a dead one or a count gone backwards fails below.
+    if (w.own >= 0 && w.own < TOO_LOADED_S && alive(busyPid)) return t.skip(`the machine is too loaded: the busy command had ${w.own.toFixed(2)} s of CPU in ${w.seconds.toFixed(1)} s`);
     // The session's processes are the busy command and an idle host, so it reads at least what the command
     // had by its own count; half of that leaves room for sample timing. Before #169 this read 0.0.
+    assert.ok(w.own >= TOO_LOADED_S, `the busy command ran: it had ${w.own.toFixed(2)} s of CPU by its own count`);
     assert.ok(w.session >= 0.5 * w.own, `session read ${w.session.toFixed(2)} CPU s over ${w.seconds.toFixed(1)} s, while its busy command had ${w.own.toFixed(2)} s by its own count`);
     assert.ok(Math.max(...readings.map((r) => r.cores)) <= monitor.machine().cpus, 'never more than the machine has');
   } finally {
@@ -323,7 +331,9 @@ test('macOS/Linux: a background command whose shell came and went between two sa
     assert.ok(goneBy < 1000, `the shell was gone ${goneBy} ms after "go", before the next sample`);
     const w = await overWindow(readings);
     t.diagnostic(`session ${w.session.toFixed(2)} CPU s, busy command ${w.own.toFixed(2)} s by its own count, over ${w.seconds.toFixed(1)} s`);
-    if (w.own < TOO_LOADED_S) return t.skip(`the machine is too loaded: the busy command had ${w.own.toFixed(2)} s of CPU in ${w.seconds.toFixed(1)} s`);
+    // Skipped only when the command is alive and counting but starved; a dead one or a count gone backwards fails below.
+    if (w.own >= 0 && w.own < TOO_LOADED_S && alive(busyPid)) return t.skip(`the machine is too loaded: the busy command had ${w.own.toFixed(2)} s of CPU in ${w.seconds.toFixed(1)} s`);
+    assert.ok(w.own >= TOO_LOADED_S, `the busy command ran: it had ${w.own.toFixed(2)} s of CPU by its own count`);
     assert.ok(w.session >= 0.5 * w.own, `session read ${w.session.toFixed(2)} CPU s over ${w.seconds.toFixed(1)} s, while its busy command had ${w.own.toFixed(2)} s by its own count`);
   } finally {
     monitor.stop();
