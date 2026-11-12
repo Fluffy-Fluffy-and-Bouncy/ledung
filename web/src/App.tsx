@@ -60,7 +60,7 @@ import { SessionUsagePanel } from './usage/SessionUsage.tsx';
 import { UsageView } from './usage/UsageView.tsx';
 import type { Overview } from '../../src/shared/protocol.ts';
 import type { FlowRun } from '../../src/shared/flow-run.ts';
-import { workflowRow } from './flowRuns.ts';
+import { workflowButton } from './flowRuns.ts';
 import { bangAsk, bangCommand, bangHint } from '../../src/shared/bang.ts';
 import { SidebarResizer } from './components/SidebarResizer.tsx';
 import { useComposerHeight } from './components/ComposerResizer.tsx';
@@ -673,6 +673,25 @@ export function App() {
   );
 }
 
+/**
+ * The Workflow button at the right end of a project's row (issue #289, Martin 2026-11-12: "D, looking really good!"): a
+ * one-colour flow symbol, blue with its count while runs are under way, grey and dimmed at none, and a yellow bubble for
+ * runs waiting on you. It stays on the row when the project is folded.
+ */
+function WorkflowButton({ counts, open, onClick }: { counts: { running: number; forYou: number; title: string }; open: boolean; onClick: () => void }) {
+  const { running, forYou, title } = counts;
+  return (
+    <button className={`workflow-button${running || forYou ? ' busy' : ' idle'}${open ? ' open' : ''}`} title={title} aria-label={title} aria-current={open ? 'page' : undefined} onClick={onClick}>
+      <svg className="workflow-glyph" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+        <circle cx="3.5" cy="3.5" r="2" /><circle cx="3.5" cy="12.5" r="2" /><circle cx="12.5" cy="8" r="2" />
+        <path d="M3.5 5.5v5M5.3 4.4 10.7 7.1M5.3 11.6l5.4-2.7" />
+      </svg>
+      {running ? <span className="workflow-count">{running}</span> : null}
+      {forYou ? <span className="workflow-for-you">{forYou}</span> : null}
+    </button>
+  );
+}
+
 const Sidebar = memo(function Sidebar(props: {
   sessions: SessionInfo[];
   /** Archived sessions hello only counted, by project (issue #229), for the Archived (N) links. */
@@ -700,7 +719,7 @@ const Sidebar = memo(function Sidebar(props: {
   onStart: (project: string, profile?: string) => void;
   connection: Connection;
   board: BoardStatus | null;
-  /** Which projects have a workflow, their runs and the open questions, for each one's Workflow row (2026-11-04). */
+  /** Which projects have a workflow, their runs and the open questions, for each one's Workflow button (#289). */
   workflows: Record<string, boolean>;
   /** The added Claude accounts, for a project heading's Account (2026-11-08). */
   accounts: AccountInfoView[];
@@ -1045,6 +1064,13 @@ ${moreHint}`} onClick={() => props.onOpen('chat')}><Named colour={props.chats?.c
                   ) : <span className="project-name muted">{g.name}</span>}
                   {hiddenChip(g.view.project, g.view.project?.count === 1 ? 'session' : 'sessions')}
                   {g.view.project?.pending ? <span className="badge">{g.view.project.pending}</span> : null}
+                  {g.project && props.workflows[g.name] && (
+                    <WorkflowButton
+                      counts={workflowButton(props.runs[g.name] ?? [], (id) => props.questions[id]?.status === 'open')}
+                      open={props.openId === `wf:${g.name}`}
+                      onClick={() => props.onOpen(`wf:${g.name}`)}
+                    />
+                  )}
                 </div>
                 {/* Everything of the project one step in under its name, along a guide line from its ▾ (Simon, 2026-11-04:
                     the manager row sat left of the project's, so it didn't read as the project's). */}
@@ -1060,17 +1086,6 @@ ${moreHint}`} onClick={() => props.onOpen('chat')}><Named colour={props.chats?.c
                     <button className="small" onClick={() => setChoosing(null)}>Cancel</button>
                   </div>
                 )}
-                {g.project && props.workflows[g.name] && !g.isFolded && (() => {
-                  // The workflow's own row (Simon, 2026-11-04): under the project's name, above its manager, with what is going on.
-                  const row = workflowRow(props.runs[g.name] ?? [], (id) => props.questions[id]?.status === 'open');
-                  return (
-                    <div className="session-row">
-                      <button className={`session-item workflow-row${props.openId === `wf:${g.name}` ? ' open' : ''}`} title={row.title} onClick={() => props.onOpen(`wf:${g.name}`)}>
-                        <span className="session-text"><span className="session-title">{row.text}</span></span>
-                      </button>
-                    </div>
-                  );
-                })()}
                 {(() => {
                   const at = markerIn(g.view.rows);
                   return g.view.rows.map((r) => (

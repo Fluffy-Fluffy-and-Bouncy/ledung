@@ -1893,9 +1893,17 @@ button.settings-menu-item.danger { color: var(--danger); }
 .order-card .order-command { margin: 0; padding: 0.35rem 0.5rem; background: var(--bg); border-radius: 4px; white-space: pre-wrap; word-break: break-all; font-size: 0.85em; }
 .order-card > button { align-self: flex-start; }
 
-/* The Workflow row under a project's name (2026-11-04), and the Workflow pane beside a chat. */
-.session-item.workflow-row .session-title { color: var(--muted); }
-.session-item.workflow-row.open .session-title { color: inherit; }
+/* The Workflow button at the right end of a project's row (#289, mockup D), and the Workflow pane beside a chat. */
+.workflow-button { flex-shrink: 0; display: inline-flex; align-items: center; gap: 0.2rem; background: none; border: 1px solid transparent; border-radius: 999px; padding: 0 0.35rem; font-size: 0.8em; line-height: 1.5; cursor: pointer; }
+.workflow-button:hover:not(:disabled) { background: color-mix(in srgb, var(--muted) 15%, transparent); border-color: transparent; }
+.workflow-button.open, .workflow-button.open:hover:not(:disabled) { border-color: var(--accent); }
+.workflow-button.busy { color: var(--dot-running); }
+.workflow-button.idle { color: var(--muted); opacity: 0.6; }
+.workflow-button.idle:hover, .workflow-button.idle.open { opacity: 1; }
+.workflow-glyph { fill: currentColor; stroke: currentColor; stroke-width: 1.3; }
+.workflow-glyph path { fill: none; }
+.workflow-count { font-weight: 600; font-variant-numeric: tabular-nums; }
+.workflow-for-you { background: var(--dot-waiting); color: #000; border-radius: 999px; font-size: 0.85em; font-weight: 700; padding: 0 0.35rem; margin-left: 0.1rem; font-variant-numeric: tabular-nums; }
 .workflow-pane .workflow-pane-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* workflow-origin.md: "based on Team process v3 by Ana", the "has changed since" notice and the offer for an older copy. */
 .flow-origin { color: var(--muted); font-size: 0.85em; overflow-wrap: anywhere; }
