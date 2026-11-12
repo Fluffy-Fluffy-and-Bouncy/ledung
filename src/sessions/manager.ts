@@ -15,9 +15,6 @@ import { boardConfig, parseProject, workflowsOf } from '../config.ts';
 import { checkFolder, chosenWorkflow, projectWorkflow, withProfilesWarning, type WorkflowCheck } from './workflow.ts';
 import { backToShared, findFlow, flowInstructions, flowPlaces, readFlows, readFlowView, saveFlowFiles, workflowPlace, type FlowPlace } from './flow-files.ts';
 import { originInfo } from './flow-origin.ts';
-
-/** The meta key, with the project's name, that says "Record where this came from" was dismissed (workflow-origin.md, section 4). */
-const ORIGIN_DISMISSED = 'flow-origin-dismissed:';
 import type { FlowView } from '../shared/flow.ts';
 import { remoteControlName } from './remote-control.ts';
 import { loosensGate } from '../projects/gate.ts';
@@ -115,6 +112,9 @@ import type { RunBlock } from '../shared/protocol.ts';
 import type { ProposeHandlers, RunHandlers } from './tools.ts';
 import { buildProposal, ProposalStore, proposalSummary, type ProposedChange } from './flow-propose.ts';
 import type { FlowProposal } from '../shared/flow-proposal.ts';
+
+/** The meta key, with the project's name, that says "Record where this came from" was dismissed (workflow-origin.md, section 4). */
+const ORIGIN_DISMISSED = 'flow-origin-dismissed:';
 
 /** Ledung's own plugin with the "workflow building" skill (part 3e, #1577), shipped beside src/ and web/. */
 export const WORKFLOW_PLUGIN = () => path.join(appDir(), 'plugins', 'ledung-workflow');
