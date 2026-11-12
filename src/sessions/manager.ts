@@ -318,7 +318,10 @@ export class SessionManager {
       },
     });
     this.proposals = new ProposalStore(store.database);
-    this.linkedFiles = new LinkedFiles(store.database, () => this.linkedFilesDir(), () => boardConfig(this.config).evidenceDays);
+    this.linkedFiles = new LinkedFiles(store.database, () => this.linkedFilesDir(), () => boardConfig(this.config).evidenceDays, Date.now, () => ({
+      maxFileBytes: this.config.linkedFiles.maxFileMB * 1024 * 1024,
+      maxMessageBytes: this.config.linkedFiles.maxMessageMB * 1024 * 1024,
+    }));
     this.linkedOutbox = new LinkedOutbox(store.database, () => this.linkedOutboxDir(), () => boardConfig(this.config).evidenceDays);
     this.flowRuns = new FlowRuns({
       runs: new RunStore(store.database),
