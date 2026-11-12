@@ -617,11 +617,16 @@ test('browser sign-ins are random, kept as hashes, last through a restart, end w
   // Unused for over a year (the cookie's own Max-Age): it ends; used within it, it stays.
   const kept = devices.addBrowser('Safari on macOS').cookie;
   const idle = devices.addBrowser('Edge on Windows').cookie;
+  devices.addBrowser('Opera on Linux');
   now += 200 * DAY;
   assert.equal(restarted.signedIn(req(`ledung_auth=${kept}`)), true);
   now += 200 * DAY;
   assert.equal(restarted.signedIn(req(`ledung_auth=${kept}`)), true, 'used 200 days ago: still live');
   assert.equal(restarted.signedIn(req(`ledung_auth=${idle}`)), false, 'unused for 400 days: ended');
+  // One whose cookie never comes back leaves the list too; the one in use stays (self-check of #482, finding 2).
+  const names = devices.list().map((d) => d.name);
+  assert.ok(!names.includes('Opera on Linux'), names.join(', '));
+  assert.ok(names.includes('Safari on macOS'), names.join(', '));
   // At most MAX_BROWSERS are kept; the least recently used go first (here `other`, then `kept`).
   for (let i = 0; i < MAX_BROWSERS; i++) { now += 1; devices.addBrowser('Browser'); }
   assert.equal(devices.list().filter((d) => d.kind === 'browser').length, MAX_BROWSERS);

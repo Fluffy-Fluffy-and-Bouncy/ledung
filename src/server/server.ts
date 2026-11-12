@@ -1442,7 +1442,8 @@ export class LedungServer {
 
   /** A new browser row for this request's browser (Project-Ledung#482), as the Set-Cookie header that gives it its cookie. */
   private addBrowser(req: IncomingMessage): string {
-    const { device, cookie } = this.devices.addBrowser(browserName(req.headers['user-agent']));
+    const { device, cookie, removed } = this.devices.addBrowser(browserName(req.headers['user-agent']));
+    for (const id of removed) this.revokeDevice(id);
     console.log(`Browsers: "${device.name}" signed in.`);
     return browserCookieHeader(cookie);
   }

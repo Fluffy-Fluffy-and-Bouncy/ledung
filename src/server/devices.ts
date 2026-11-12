@@ -173,14 +173,25 @@ export class Devices {
   /**
    * A browser signed in on this computer or the local network (Project-Ledung#482): today through the sign-in link or
    * the swap of an old token cookie, which need no pairing code (the one-tap approval that will make one is step 2 of
-   * #477). Past MAX_BROWSERS live browsers, the one used longest ago is removed.
+   * #477). Past MAX_BROWSERS live browsers, the one used longest ago is removed: `removed` names them, so the server
+   * closes their pages as Remove does (self-check of #482, finding 3b).
    */
-  addBrowser(name: string): { device: Device; cookie: string } {
+  addBrowser(name: string): { device: Device; cookie: string; removed: string[] } {
+    this.pruneBrowsers();
     const added = this.add('browser', deviceName(name, 'Browser'), false, null);
-    const extra = (this.db.prepare("SELECT id FROM devices WHERE kind = 'browser' AND revoked_at IS NULL ORDER BY last_used_at DESC, created_at DESC LIMIT -1 OFFSET ?")
+    const removed = (this.db.prepare("SELECT id FROM devices WHERE kind = 'browser' AND revoked_at IS NULL ORDER BY last_used_at DESC, created_at DESC LIMIT -1 OFFSET ?")
       .all(MAX_BROWSERS) as Row[]).map((r) => String(r.id));
-    for (const id of extra) this.revoke(id);
-    return added;
+    for (const id of removed) this.revoke(id);
+    return { ...added, removed };
+  }
+
+  /**
+   * Removes browsers unused for BROWSER_UNUSED_MS, whose cookie has expired, so one never used again leaves the list too
+   * and not only one whose cookie comes back (as #476's sign-ins went when loaded; self-check of #482, finding 2).
+   */
+  private pruneBrowsers(): void {
+    this.db.prepare("UPDATE devices SET revoked_at = ? WHERE kind = 'browser' AND revoked_at IS NULL AND COALESCE(last_used_at, created_at) < ?")
+      .run(this.now(), this.now() - BROWSER_UNUSED_MS);
   }
 
   private add(kind: DeviceKind, name: string, partitioned: boolean, via: string | null): { device: Device; cookie: string } {
@@ -248,6 +259,7 @@ export class Devices {
   }
 
   list(): DeviceView[] {
+    this.pruneBrowsers();
     return (this.db.prepare('SELECT * FROM devices WHERE revoked_at IS NULL ORDER BY created_at').all() as Row[]).map((r) => deviceView(toDevice(r)));
   }
 
