@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { CHATS, type ProjectInfo, type SessionInfo } from '../src/shared/protocol.ts';
-import { indexSessions, REMOVED_PROJECTS, sidebarTree } from '../web/src/sessionTree.ts';
+import { indexSessions, REMOVED_PROJECTS, sidebarTree, usageRows } from '../web/src/sessionTree.ts';
 import { shipMode } from '../web/src/components/shipMode.ts';
 import { onTick, runningClocks } from '../web/src/clock.ts';
 import { pollWhileShown, type Page } from '../web/src/pollShown.ts';
@@ -206,4 +206,59 @@ test('no part of the page runs a timer of its own outside the shared clock, the 
   // The probe finds what is there: the clock's own timer.
   assert.ok(found.includes('web/src/clock.ts'), `the scan found ${found.join(', ') || 'nothing'}`);
   assert.deepEqual(found.filter((f) => !OWN_TIMERS.has(f)), []);
+});
+
+test('Usage → Sessions: top-level sessions that run or started one that runs, managers first then newest, each with its running sessions (issue #235)', () => {
+  const list = [
+    s('old', 'a', { createdAt: 1 }),
+    s('m', 'a', { role: 'manager', createdAt: 2 }),
+    s('w-done', 'a', { parentId: 'm', createdAt: 3, status: 'ended' }),
+    s('w-old', 'a', { parentId: 'm', createdAt: 4 }),
+    s('w-new', 'a', { parentId: 'm', createdAt: 5 }),
+    s('ended', 'a', { createdAt: 6, status: 'ended' }),
+    // Ended itself, but a session it started still runs: it stays, as a manager does.
+    s('ended-parent', 'a', { createdAt: 7, status: 'ended' }),
+    s('kid', 'a', { parentId: 'ended-parent', createdAt: 8 }),
+    // Its parent is not in the list: shown at the top level.
+    s('stray', 'a', { parentId: 'gone', createdAt: 9 }),
+  ];
+  const { index, rows } = usageRows(list);
+  assert.deepEqual(rows.map((r) => r.id), ['m', 'w-new', 'w-old', 'stray', 'ended-parent', 'kid', 'old']);
+  // The rows' own lookup: a child row's parent is found, a stray's is not.
+  assert.equal(index.byId.has('m'), true);
+  assert.equal(index.byId.has('gone'), false);
+  assert.deepEqual(usageRows([]).rows, []);
+});
+
+// The class (issue #235, after #233): a page part that scans the whole session list once per row it draws. Each
+// lookup by id goes through the index (sessionTree.ts); the scans left run once per view or render, listed here
+// with how many each file has and why.
+const LIST_SCANS = new Map([
+  ['web/src/App.tsx', 1], // the Archived view's list, once per view
+  ['web/src/claudeProgram.ts', 1], // the running sessions, once per call
+  ['web/src/limitAccount.ts', 1], // the open session's project, once per render
+  ['web/src/sessionTree.ts', 3], // the index and the trees themselves, one pass each
+  ['web/src/usage/SessionsTab.tsx', 1], // the count of ended sessions, once per render
+  ['web/src/components/FilesPane.tsx', 1], // the session's manager, once per pane
+  ['web/src/components/FlowBuilder.tsx', 1], // a workflow's blocks, not the session list
+  ['web/src/components/WaitingView.tsx', 1], // whether any chat exists, once per render
+]);
+
+function listScans(dir: string, found = new Map<string, number>()): Map<string, number> {
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) listScans(p, found);
+    else if (/\.tsx?$/.test(e.name)) {
+      const n = fs.readFileSync(p, 'utf8').match(/\bsessions\.(find|filter|some|findIndex|every)\(/g)?.length ?? 0;
+      if (n) found.set(p.split(path.sep).join('/'), n);
+    }
+  }
+  return found;
+}
+
+test('no page part scans the session list per row: the scans left are the listed ones, once per view or render', () => {
+  const found = listScans('web/src');
+  // The probe finds what is there: the index's own passes.
+  assert.equal(found.get('web/src/sessionTree.ts'), 3, `the scan found ${[...found.keys()].join(', ') || 'nothing'}`);
+  assert.deepEqual([...found].filter(([f, n]) => LIST_SCANS.get(f) !== n), []);
 });
