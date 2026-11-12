@@ -7,7 +7,7 @@ import { ABOUT, LABEL } from '../stepQuestions.ts';
 import { useStepQuestions } from '../useStepQuestions.ts';
 
 export function StepQuestionsSettings({ run }: { run: (action: () => Promise<unknown>) => Promise<void> }) {
-  const { view, choose, show } = useStepQuestions();
+  const { view, choose, show } = useStepQuestions(true);
   const choice: StepQuestions | null = view?.choice ?? null;
   return (
     <section>
