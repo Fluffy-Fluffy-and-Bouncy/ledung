@@ -245,13 +245,12 @@ test('Project-Ledung#478: a save into Ledung\'s own data folder is refused, and 
     fs.rmSync(path.join(wt, 'via'));
     // A worktree inside the data folder refuses every path.
     assert.throws(() => saveIntoWorktree(path.join(data, 'linked-files'), 'x.png', 'png', PNG, NO_RULES), refused);
-    // Nothing landed: the only file is the EXERCISED trace the refusal wrote into this data folder (src/platform/exercised.ts).
-    assert.deepEqual(filesIn(wt), ['LedungData/exercised.log'], 'nothing written but the trace');
-    assert.match(fs.readFileSync(path.join(data, 'exercised.log'), 'utf8'), /EXERCISED #478 /);
+    // Nothing landed.
+    assert.deepEqual(filesIn(wt), [], 'nothing written');
     assert.equal(fs.existsSync(path.join(data, 'new')), false, 'no folder made in the data folder');
     // The positive branch: the same worktree, a path beside the data folder, is saved.
     saveIntoWorktree(wt, 'evidence/shot.png', 'png', PNG, NO_RULES);
-    assert.deepEqual(filesIn(wt), ['LedungData/exercised.log', 'evidence/shot.png'], 'a path outside the data folder is saved');
+    assert.deepEqual(filesIn(wt), ['evidence/shot.png'], 'a path outside the data folder is saved');
   } finally {
     process.env.LEDUNG_DATA_DIR = before;
   }

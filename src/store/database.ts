@@ -711,6 +711,13 @@ const MIGRATIONS: string[] = [
   ALTER TABLE sessions ADD COLUMN requested_effort TEXT;
   ALTER TABLE sessions ADD COLUMN effort TEXT;
   `,
+  // Work time for work_history (issue #254, review of PR #260): the spans inside a turn a tool call waited on a pause or
+  // a usage stop, as JSON [[start, end], ...] (null: none, or a turn recorded before this); and when the turn now under
+  // way began, so a turn that runs across Restart Ledung is measured whole (null: none under way).
+  `
+  ALTER TABLE turn_resources ADD COLUMN waits TEXT;
+  ALTER TABLE sessions ADD COLUMN turn_started_at INTEGER;
+  `,
   // Resource limits' learning (docs/steps/resource-limits.md, "Learning"): one row per finished reserved job, per
   // stretch of unreserved heavy work, and per new session's first minutes (kind "session:<role>"); amounts are JSON
   // by resource ("cpu", "ram", "gpu", "vram"; the GPU's id left out, so a figure outlives a reboot). And the command

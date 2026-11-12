@@ -212,7 +212,16 @@ test('a wrong sign-in link sets no cookie; the right one does', async () => {
   assert.equal(wrong.headers['set-cookie'], undefined);
   const right = await request({ path: `/login?token=${TOKEN}` });
   assert.equal(right.status, 302);
-  assert.match(String(right.headers['set-cookie']), /ledung_auth=a{64}; HttpOnly; SameSite=Strict/);
+  // A sign-in of its own, never the install token (Project-Ledung#476).
+  const set = String(right.headers['set-cookie']);
+  assert.match(set, /^ledung_auth=[0-9a-f]{64}; HttpOnly; SameSite=Strict; Path=\/; Max-Age=31536000$/);
+  assert.ok(!set.includes(TOKEN), 'the install token never goes out in a cookie');
+  const cookie = set.split(';')[0]!;
+  assert.equal((await request({ path: '/api/state', headers: { cookie } })).status, 200, 'the sign-in cookie signs in');
+  // Each sign-in link opened gives a different sign-in.
+  const again = String((await request({ path: `/login?token=${TOKEN}` })).headers['set-cookie']).split(';')[0]!;
+  assert.notEqual(again, cookie);
+  assert.equal((await request({ path: '/api/state', headers: { cookie: again } })).status, 200);
 });
 
 test('reads work with the cookie', async () => {
@@ -568,6 +577,189 @@ test('without LAN sign-in, only the network names skip sign-in; this computer st
   assert.equal(open.mayUse(req('127.0.0.1:4317', COOKIE)), true);
   const closed = new Guard(TOKEN, 4317, ['192.168.1.20'], false);
   assert.equal(closed.mayUse(req('192.168.1.20:4317')), false);
+});
+
+// Project-Ledung#476: the sign-in cookie is a sign-in of its own, kept here only as a hash, and revocable.
+test('sign-ins are random, kept as hashes, last through a restart, end when revoked or unused for a year', async () => {
+  const { Guard, MAX_SIGN_INS } = await import('../src/server/security.ts');
+  const held = { saved: null as string | null };
+  const store = { get: () => held.saved, set: (v: string) => { held.saved = v; } };
+  let now = 1_000_000;
+  const req = (cookie?: string) => ({ headers: { host: '127.0.0.1:4317', cookie } }) as any;
+  const guard = new Guard(TOKEN, 4317, [], false, null, () => now);
+  guard.useSignInStore(store);
+  const set = guard.signInCookie();
+  const value = /^ledung_auth=([0-9a-f]{64});/.exec(set)![1]!;
+  assert.notEqual(value, TOKEN);
+  assert.equal(guard.signedIn(req(`ledung_auth=${value}`)), true);
+  assert.equal(guard.signedIn(req(`ledung_auth=${'c'.repeat(64)}`)), false, 'a made-up value is no sign-in');
+  assert.equal(guard.signedIn(req()), false);
+  // Kept as a hash: the store never holds the cookie's value.
+  assert.ok(held.saved && !held.saved.includes(value), 'only the hash is stored');
+  assert.ok(held.saved.includes(crypto.createHash('sha256').update(value).digest('hex')));
+  // A restart: a new guard on the same store still knows it.
+  const restarted = new Guard(TOKEN, 4317, [], false, null, () => now);
+  restarted.useSignInStore(store);
+  assert.equal(restarted.signedIn(req(`ledung_auth=${value}`)), true);
+  // Revoked: that one ends, another stays; then every one.
+  const other = /^ledung_auth=([0-9a-f]{64});/.exec(restarted.signInCookie())![1]!;
+  assert.equal(restarted.revokeSignIns(value), 1);
+  assert.equal(restarted.signedIn(req(`ledung_auth=${value}`)), false);
+  assert.equal(restarted.signedIn(req(`ledung_auth=${other}`)), true);
+  assert.equal(restarted.revokeSignIns(), 1);
+  assert.equal(restarted.signedIn(req(`ledung_auth=${other}`)), false);
+  // Unused for over a year (the cookie's own Max-Age): it ends; used within it, it stays.
+  const kept = /^ledung_auth=([0-9a-f]{64});/.exec(restarted.signInCookie())![1]!;
+  const idle = /^ledung_auth=([0-9a-f]{64});/.exec(restarted.signInCookie())![1]!;
+  now += 200 * 86_400_000;
+  assert.equal(restarted.signedIn(req(`ledung_auth=${kept}`)), true);
+  now += 200 * 86_400_000;
+  assert.equal(restarted.signedIn(req(`ledung_auth=${kept}`)), true, 'used 200 days ago: still live');
+  assert.equal(restarted.signedIn(req(`ledung_auth=${idle}`)), false, 'unused for 400 days: ended');
+  // At most MAX_SIGN_INS are kept; the least recently used goes first.
+  for (let i = 0; i < MAX_SIGN_INS; i++) { now += 1; restarted.signInCookie(); }
+  assert.equal(restarted.signInCount(), MAX_SIGN_INS);
+  assert.equal(restarted.signedIn(req(`ledung_auth=${kept}`)), false, 'the oldest went');
+  // The install token's cookie never counts through the public name, nor does a sign-in.
+  const pub = new Guard(TOKEN, 4317, [], false, { publicName: PUBLIC, device: () => null }, () => now);
+  const pubValue = /^ledung_auth=([0-9a-f]{64});/.exec(pub.signInCookie())![1]!;
+  const viaPublic = (cookie: string) => ({ headers: { host: PUBLIC, cookie } }) as any;
+  assert.equal(pub.signedIn(viaPublic(`ledung_auth=${pubValue}`)), false);
+  assert.equal(pub.signedIn(viaPublic(COOKIE)), false);
+  assert.equal(pub.signedIn(req(`ledung_auth=${pubValue}`)), true, 'the same sign-in counts locally');
+});
+
+// Test review of #234, finding 1: through the server's own database, not a stand-in store.
+test('a sign-in from the link lasts through a restart of the server on the same database, kept only as a hash', async (t) => {
+  const store = new Store(openDatabase(':memory:'));
+  const manager = refuseRealSignInStores(new SessionManager(parseConfig({ port: PORT, projects: [] }), store, () => {}));
+  const serve = async () => {
+    const port = await freePort();
+    const s = new LedungServer({ port, token: TOKEN, store, manager, webRoot });
+    await s.listen();
+    const get = (p: string, cookie?: string) => new Promise<{ status: number; headers: http.IncomingHttpHeaders }>((resolve, reject) => {
+      const req = http.request({ host: '127.0.0.1', port, path: p, headers: { host: `127.0.0.1:${port}`, ...(cookie ? { cookie } : {}) } }, (res) => {
+        res.resume();
+        res.on('end', () => resolve({ status: res.statusCode!, headers: res.headers }));
+      });
+      req.on('error', reject);
+      req.end();
+    });
+    return { s, get };
+  };
+  const first = await serve();
+  t.after(() => first.s.close());
+  const cookie = String((await first.get(`/login?token=${TOKEN}`)).headers['set-cookie']).split(';')[0]!;
+  const value = cookie.slice('ledung_auth='.length);
+  assert.match(value, /^[0-9a-f]{64}$/);
+  assert.equal((await first.get('/api/state', cookie)).status, 200);
+  await first.s.close();
+  // The database holds the hash, never the value.
+  const saved = store.getMeta('sign-ins') ?? '';
+  assert.ok(saved.includes(crypto.createHash('sha256').update(value).digest('hex')), 'the hash is in the database');
+  assert.ok(!saved.includes(value), 'the value is not');
+  // A new server on the same database: the cookie still signs in, a made-up one doesn't.
+  const second = await serve();
+  t.after(() => second.s.close());
+  assert.equal((await second.get('/api/state', cookie)).status, 200);
+  assert.equal((await second.get('/api/state', `ledung_auth=${'c'.repeat(64)}`)).status, 401);
+});
+
+test('a browser still holding the old token cookie stays signed in, and a page load swaps it for a sign-in', async () => {
+  // A browser too old to send Sec-Fetch-Dest: its page load asks for HTML.
+  const page = await request({ path: '/', headers: { cookie: COOKIE, accept: 'text/html,application/xhtml+xml,*/*;q=0.8' } });
+  assert.equal(page.status, 200);
+  const set = String(page.headers['set-cookie']);
+  assert.match(set, /^ledung_auth=[0-9a-f]{64}; HttpOnly; SameSite=Strict; Path=\/; Max-Age=31536000$/, 'the same name and path, so it replaces the old one');
+  assert.ok(!set.includes(TOKEN), 'the swap never sends the token back');
+  const cookie = set.split(';')[0]!;
+  assert.equal((await request({ path: '/api/state', headers: { cookie } })).status, 200);
+  // A page load with the new sign-in gets no further cookie; the swap is for the old cookie only.
+  const next = await request({ path: '/', headers: { cookie, 'sec-fetch-dest': 'document' } });
+  assert.equal(next.status, 200);
+  assert.equal(next.headers['set-cookie'], undefined);
+  // An API call with the old cookie (a script, the launcher's stop) still works and is not handed sign-ins to pile up.
+  const api = await request({ path: '/api/state', headers: { cookie: COOKIE } });
+  assert.equal(api.status, 200);
+  assert.equal(api.headers['set-cookie'], undefined);
+  // A browser's fetch of a script with the page gets none either; the document from a browser does.
+  const script = await request({ path: '/', headers: { cookie: COOKIE, 'sec-fetch-dest': 'script' } });
+  assert.equal(script.status, 200);
+  assert.equal(script.headers['set-cookie'], undefined);
+  const doc = await request({ path: '/', headers: { cookie: COOKIE, 'sec-fetch-dest': 'document' } });
+  assert.match(String(doc.headers['set-cookie']), /^ledung_auth=[0-9a-f]{64};/);
+  // A script loading the page (no Sec-Fetch-Dest, no HTML asked for) is answered and handed nothing (code review of #234).
+  const curl = await request({ path: '/', headers: { cookie: COOKIE, accept: '*/*' } });
+  assert.equal(curl.status, 200);
+  assert.equal(curl.headers['set-cookie'], undefined);
+  // Nothing swaps without a cookie that is the token.
+  const none = await request({ path: '/', headers: { cookie: `ledung_auth=${'b'.repeat(64)}`, 'sec-fetch-dest': 'document' } });
+  assert.equal(none.status, 401);
+  assert.equal(none.headers['set-cookie'], undefined);
+});
+
+test('API reads that do work need Ledung\'s own page; plain reads are unchanged (one route per kind)', async () => {
+  const { PLAIN_READS } = await import('../src/server/server.ts');
+  // One route per kind of work: GitHub, docker, claude, git or files through the session's runner, the relay.
+  const work = {
+    github: '/api/board-owners', docker: '/api/containers', claude: '/api/claude-code',
+    runner: '/api/sessions/s1/tree', relay: '/api/relay-computers',
+  };
+  const elsewhere: Record<string, string>[] = [
+    { origin: 'http://127.0.0.1:1' }, // another port of this computer
+    { origin: 'https://evil.example' },
+    { 'sec-fetch-site': 'same-site' }, // not Ledung's own origin
+    { 'sec-fetch-site': 'cross-site' },
+    { origin: ORIGIN, 'sec-fetch-site': 'same-site' }, // both are asked
+  ];
+  for (const [kind, p] of Object.entries(work)) {
+    for (const h of elsewhere) {
+      const res = await request({ path: p, headers: { cookie: COOKIE, ...h } });
+      assert.equal(res.status, 403, `${kind} ${p} with ${JSON.stringify(h)}`);
+      assert.match(res.body, /Ledung's own page/);
+    }
+  }
+  // The positive branch on the same check: Ledung's own page, the address bar, and a client that is no browser pass it.
+  for (const h of [{ 'sec-fetch-site': 'same-origin' }, { 'sec-fetch-site': 'none' }, { origin: ORIGIN, 'sec-fetch-site': 'same-origin' }, {}] as Record<string, string>[]) {
+    assert.equal((await request({ path: work.github, headers: { cookie: COOKIE, ...h } })).status, 200, `github with ${JSON.stringify(h)}`);
+    assert.equal((await request({ path: work.runner, headers: { cookie: COOKIE, ...h } })).status, 200, `runner with ${JSON.stringify(h)}`);
+  }
+  // Still the sign-in first: a request from the page without one is not signed in.
+  assert.equal((await request({ path: work.github, headers: { 'sec-fetch-site': 'same-origin' } })).status, 401);
+  // A project's workflow view (docker for a container project) is asked the browser's label only (code review of #234,
+  // finding 1): another page is refused, Ledung's page and the address bar are answered.
+  const flow = '/api/projects/p/flow';
+  for (const site of ['same-site', 'cross-site']) {
+    assert.equal((await request({ path: flow, headers: { cookie: COOKIE, 'sec-fetch-site': site } })).status, 403, `flow from ${site}`);
+    assert.equal((await request({ path: flow, headers: { cookie: COOKIE, origin: ORIGIN, 'sec-fetch-site': site } })).status, 403, `flow from ${site}, own Origin`);
+  }
+  for (const site of ['same-origin', 'none']) {
+    assert.equal((await request({ path: flow, headers: { cookie: COOKIE, 'sec-fetch-site': site } })).status, 200, `flow from ${site}`);
+  }
+  // Plain reads answer as before, whoever asks (a browser shows another site nothing: no CORS header).
+  for (const p of ['/api/state', '/api/projects', '/api/board-threads']) {
+    for (const h of elsewhere) {
+      const res = await request({ path: p, headers: { cookie: COOKIE, ...h } });
+      assert.equal(res.status, 200, `${p} with ${JSON.stringify(h)}`);
+      assert.equal(res.headers['access-control-allow-origin'], undefined);
+    }
+  }
+  // Every work route above is outside the plain reads, and the kinds named in the issue stay so.
+  for (const route of ['GET board-owners', 'GET board-projects/:id/people', 'GET board-projects/:id/repos', 'GET usage-publish-repos', 'GET usage-shared',
+    'GET containers', 'GET browse-container', 'GET skills', 'GET workflows', 'GET claude-code', 'GET sessions/:id/mcp', 'GET sessions/:id/changes',
+    'GET sessions/:id/tree', 'GET sessions/:id/file', 'GET sessions/:id/image', 'GET relay-computers', 'GET relay-owners', 'GET shortcuts', 'GET projects/:id/flow']) {
+    assert.equal(PLAIN_READS.has(route), false, `${route} does work`);
+  }
+});
+
+test('every plain read names a GET route the server has', async () => {
+  const { PLAIN_READS } = await import('../src/server/server.ts');
+  const source = fs.readFileSync(path.join(appDir(), 'src', 'server', 'server.ts'), 'utf8');
+  const cases = new Set([...source.matchAll(/case '(GET [^']+)'/g)].map((m) => m[1]!));
+  // The three image routes are answered before the switch; their keys are the ones apiRoute gives.
+  for (const route of ['GET sessions/:id/image', 'GET sessions/:id/sent-images/:id', 'GET board-attachment']) cases.add(route);
+  assert.ok(cases.size > 40, 'the GET routes were found');
+  for (const route of PLAIN_READS) assert.ok(cases.has(route), `${route} is a route`);
 });
 
 test("the board's routes need the sign-in, and changes Ledung's own origin (message board, per project)", async () => {

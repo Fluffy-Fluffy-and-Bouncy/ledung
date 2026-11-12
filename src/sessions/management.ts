@@ -32,6 +32,7 @@ import { stateFor } from './elapsed.ts';
 import { refusalAnswerText, refusalOf } from './refusals.ts';
 import { keepAnswerText, orderPreamble, orderRecorded, type Orders, type OrderSpec } from './orders.ts';
 import type { OrderInfo } from '../shared/orders.ts';
+import { formatWorkHistory, workHistory } from '../usage/work-history.ts';
 
 /** What managers need of the linked computers (#245): who they are, and one call to one of them. */
 export interface LinkedPort {
@@ -960,6 +961,12 @@ ${note}`);
       if (u) lines.push(`  heavy work without a reservation: ${amounts(Object.fromEntries(u.overDims.map((d) => [d, u.using[d] ?? 0])))}; priority lowered, session held`);
     }
     return lines.join('\n');
+  }
+
+  /** work_history (issue #254): the manager's own project only, whatever its lockdown, so nothing crosses projects. */
+  workHistory(managerId: string, days?: number, limit?: number): string {
+    const project = this.store.getSession(managerId)!.project;
+    return formatWorkHistory(workHistory(this.store.database, project, { days }), limit ?? 10);
   }
 
   /** normal or high on the manager's own judgement; critical only on the user's answer to one of its questions. */

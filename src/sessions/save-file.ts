@@ -17,7 +17,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { linkedKindLabel, type LinkedKind } from '../remote/stream-kinds.ts';
 import { within } from '../projects/lockdown.ts';
-import { exercisedLine } from '../platform/exercised.ts';
 import { userDataDir } from '../platform/paths.ts';
 import { SECRET_RUNTIME_PATTERN } from '../shared/secrets.ts';
 import { FileError } from './files.ts';
@@ -47,8 +46,6 @@ export interface Saved {
 
 // Characters no Windows file name holds (":" also opens an alternate data stream), and control characters.
 const BAD_CHARS = /[<>:"|?*\u0000-\u001f]/;
-
-let exercised478 = false;
 
 /** Why `rel` can't be a saved file's path in a worktree, before anything on disk is looked at; else its segments. */
 export function pathProblem(rel: string, kind: LinkedKind): string | string[] {
@@ -108,10 +105,6 @@ export function saveIntoWorktree(root: string, rel: string, kind: LinkedKind, by
   // in #474). Read on each call, so the folder a test or a throwaway Ledung sets is the one refused.
   const data = userDataDir();
   if (within(data, full) || nativeWithin(data, full)) {
-    if (!exercised478) {
-      exercised478 = true;
-      exercisedLine('EXERCISED #478 a save from a linked computer into Ledung\'s data folder refused');
-    }
     throw new FileError(`${inside} is in Ledung's own data folder; Ledung saves no file there.`);
   }
 

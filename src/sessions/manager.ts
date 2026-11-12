@@ -266,6 +266,7 @@ export class SessionManager {
     this.pullRequests = new PullRequestPoller({
       show: (id, pr) => this.live.get(id)?.showPullRequest(pr),
       onBudget: (github) => this.publish({ type: 'github', github }),
+      enterpriseHosts: () => this.config.githubHosts,
     });
     const imported = this.projectStore.importFromConfig(config.projects);
     if (imported.length) console.log(`Copied ${imported.length} project(s) from the config into Ledung: ${imported.join(', ')}.`);
@@ -425,12 +426,12 @@ export class SessionManager {
       usageStops: () => this.usageStopStates(),
       freed: () => this.dispatch(),
       mayStart: (id) => this.store.getSession(id)?.role === 'manager' || mayStart(id, this.working(), this.limit, this.lineEntries()),
-      started: (id, trigger) => {
-        this.turns.set(id, { at: Date.now(), trigger });
+      started: (id, trigger, at) => {
+        this.turns.set(id, { at: at ?? Date.now(), trigger });
         this.monitor.beginTurn(id);
       },
-      ended: (id, commands) => {
-        this.recordTurn(id, commands);
+      ended: (id, commands, waits) => {
+        this.recordTurn(id, commands, waits);
         this.book.turnEnded(id);
         this.dispatch();
         // A session waiting to take new lockdown settings may now be free (issue #109).
@@ -1087,7 +1088,7 @@ export class SessionManager {
     return out;
   }
 
-  private recordTurn(id: string, commands: string[]): void {
+  private recordTurn(id: string, commands: string[], waits?: [number, number][]): void {
     const turn = this.turns.get(id);
     this.turns.delete(id);
     const totals = this.monitor.endTurn(id);
@@ -1098,7 +1099,7 @@ export class SessionManager {
       this.store.addTurnResource({
         sessionId: id, project: info.project, role: info.role, model: info.model, trigger: turn.trigger,
         startedAt: turn.at, durationMs, cpuSeconds: totals.cpuSeconds, samples: totals.samples,
-        avgCores: 0, peakCores: totals.peakCores, peakMem: totals.peakMem, commands,
+        avgCores: 0, peakCores: totals.peakCores, peakMem: totals.peakMem, commands, waits,
       });
     } catch (e) {
       console.error(`Turn record for ${id}: ${(e as Error).message}`);
