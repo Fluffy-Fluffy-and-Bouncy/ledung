@@ -7,6 +7,11 @@ import path from 'node:path';
 import { hiddenProblem, readProjectBytes, readProjectFile, readProjectImage } from '../src/sessions/files.ts';
 import { readCachedImage, readEvidence } from '../src/board/attachments.ts';
 import { removeTemp } from './temp.ts';
+import { parseConfig } from '../src/config.ts';
+import { SessionManager } from '../src/sessions/manager.ts';
+import { openDatabase } from '../src/store/database.ts';
+import { Store } from '../src/store/store.ts';
+import { refuseRealSignInStores } from './signin-stores.ts';
 
 const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-files-'));
 const root = path.join(base, 'project with space');
@@ -847,4 +852,107 @@ test('ledung#158: a copy from a linked computer is served by its handle to the m
   assert.throws(() => files.receive('link-a', { ...meta('mgr-1'), sha: 'f'.repeat(64) }, PNG), /content is not what/);
   assert.throws(() => files.receive('link-a', { ...meta('mgr-1'), kind: 'jpeg' }, PNG), /not really a JPEG/);
   assert.deepEqual(fs.readdirSync(path.join(dir, 'link-a')), [], 'nothing left behind');
+});
+
+// Project-Ledung#474: a project whose folder holds Ledung's data folder (a project of the whole user folder), and links
+// inside a project that lead into the data folder, a locked project's folder or out of the project.
+test("Project-Ledung#474: a project's Files pane and viewer keep Ledung's data folder shut, and links can't lead around the folder checks", async (t) => {
+  const top = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-474-')));
+  const whole = path.join(top, 'user');
+  const data = path.join(whole, 'ledung-data');
+  // Both names longer than 8.3, so Windows can give each a short name (LOCKED~1, LEDUNG~1).
+  const locked = path.join(whole, 'locked-project');
+  const outside = path.join(top, 'outside');
+  for (const d of [data, locked, path.join(whole, 'notes'), outside]) fs.mkdirSync(d, { recursive: true });
+  fs.writeFileSync(path.join(data, 'auth-token'), 'secret');
+  fs.writeFileSync(path.join(locked, 'secret.md'), 'locked');
+  fs.writeFileSync(path.join(whole, 'notes', 'a.md'), '# a');
+  fs.writeFileSync(path.join(outside, 'x.md'), 'outside');
+  // Junctions on Windows: no admin rights needed, so no platform skips these.
+  fs.symlinkSync(data, path.join(whole, 'notes', 'data-link'), 'junction');
+  fs.symlinkSync(locked, path.join(whole, 'notes', 'locked-link'), 'junction');
+  fs.symlinkSync(outside, path.join(whole, 'notes', 'out-link'), 'junction');
+  // The same project reached through a link to its folder, as a project under macOS's /tmp or /var is, one level
+  // deeper than the folder itself: "../user" climbs out of the link's real folder, not out of the path as written.
+  const via = path.join(top, 'deep', 'via');
+  fs.mkdirSync(path.dirname(via));
+  fs.symlinkSync(whole, via, 'junction');
+  const before = process.env.LEDUNG_DATA_DIR;
+  const made: SessionManager[] = [];
+  const ledung = (lock: boolean) => {
+    const m = refuseRealSignInStores(new SessionManager(parseConfig({
+      projects: [
+        { name: 'user', runner: 'local', path: whole },
+        { name: 'via', runner: 'local', path: via },
+        { name: 'locked', runner: 'local', path: locked, ...(lock ? { lockdown: { level: 'A' } } : {}) },
+      ],
+    }), new Store(openDatabase(':memory:')), () => {}));
+    made.push(m);
+    const store = (m as unknown as { store: Store }).store;
+    store.createSession({ id: 's', project: 'user', runner: 'local', title: 't', parentId: null, permissionMode: 'default', role: 'session' });
+    store.createSession({ id: 'v', project: 'via', runner: 'local', title: 'v', parentId: null, permissionMode: 'default', role: 'session' });
+    return m;
+  };
+  t.after(() => {
+    for (const m of made) m.detachAll();
+    if (before === undefined) delete process.env.LEDUNG_DATA_DIR;
+    else process.env.LEDUNG_DATA_DIR = before;
+    removeTemp(top);
+  });
+
+  // The premise: with nothing locked and Ledung's data folder elsewhere, the same probes find the folders, the links
+  // and their files, so each refusal below is the rule and not a probe that finds nothing.
+  process.env.LEDUNG_DATA_DIR = path.join(top, 'elsewhere');
+  const open = ledung(false);
+  const openNames = async (rel: string) => (await open.listFolder('s', 'session', rel)).entries.map((e) => e.name);
+  assert.ok((await openNames('')).includes('ledung-data'), 'listed while it is not the data folder');
+  const openNotes = await openNames('notes');
+  assert.ok(openNotes.includes('data-link') && openNotes.includes('locked-link'), openNotes.join(', '));
+  assert.ok(!openNotes.includes('out-link'), 'a link out of the project is never listed');
+  assert.equal((await open.readFile('s', 'ledung-data/auth-token', 'session')).content, 'secret');
+  assert.equal((await open.readFile('s', 'notes/data-link/auth-token', 'session')).content, 'secret', 'through the link');
+  assert.equal((await open.readFile('s', 'notes/locked-link/secret.md', 'session')).content, 'locked', 'through the link, while not locked');
+  assert.equal((await open.readFile('v', '../user/ledung-data/auth-token', 'session')).content, 'secret', 'from the project reached through a link');
+
+  const manager = ledung(true);
+  const names = async (rel: string) => (await manager.listFolder('s', 'session', rel)).entries.map((e) => e.name);
+
+  // The data folder inside the project: refused to the tree and the viewer, through the pane and from a chat link.
+  process.env.LEDUNG_DATA_DIR = data;
+  const listed = await names('');
+  assert.ok(listed.includes('notes') && !listed.includes('ledung-data'), listed.join(', '));
+  await assert.rejects(manager.listFolder('s', 'session', 'ledung-data'), /settings and sign-ins/);
+  await assert.rejects(manager.readFile('s', 'ledung-data/auth-token', 'session'), /Ledung's data folder/);
+  await assert.rejects(manager.readFile('s', 'ledung-data/auth-token'), /Ledung's data folder/, 'a link in the chat');
+  await assert.rejects(manager.readFile('s', 'ledung-data%2Fauth-token#x'), /Ledung's data folder/, 'encoded, with a fragment');
+  await assert.rejects(manager.readFile('s', path.join(data, 'auth-token')), /Ledung's data folder/, 'an absolute path');
+  // A project whose folder is reached through a link, with ".." in the path: the same folder, the same answer.
+  await assert.rejects(manager.readFile('v', '../user/ledung-data/auth-token', 'session'), /Ledung's data folder/);
+  await assert.rejects(manager.readFile('v', '../user/ledung-data/auth-token'), /Ledung's data folder/);
+  await assert.rejects(manager.listFolder('v', 'session', 'ledung-data'), /settings and sign-ins/);
+
+  // Links inside the project: into the data folder, a locked project's folder, or out of the project.
+  const notes = await names('notes');
+  assert.ok(notes.includes('a.md'), notes.join(', '));
+  for (const link of ['data-link', 'locked-link', 'out-link']) assert.ok(!notes.includes(link), `${link} left out of the tree`);
+  await assert.rejects(manager.listFolder('s', 'session', 'notes/data-link'), /settings and sign-ins/);
+  await assert.rejects(manager.readFile('s', 'notes/data-link/auth-token', 'session'), /Ledung's data folder/);
+  await assert.rejects(manager.readFile('s', 'notes/data-link/auth-token'), /Ledung's data folder/);
+  await assert.rejects(manager.listFolder('s', 'session', 'notes/locked-link'), /settings and sign-ins/);
+  await assert.rejects(manager.readFile('s', 'notes/locked-link/secret.md', 'session'), /locked project's folder/);
+  await assert.rejects(manager.listFolder('s', 'session', 'notes/out-link'), /inside the session's folder/);
+  await assert.rejects(manager.readFile('s', 'notes/out-link/x.md', 'session'), /inside the project/);
+
+  // Windows: a folder's 8.3 short name is the same folder, so it can't lead around either check.
+  if (process.platform === 'win32') {
+    const shortLocked = shortName(locked);
+    const shortData = shortName(data);
+    if (shortLocked) await assert.rejects(manager.readFile('s', `${shortLocked}/secret.md`, 'session'), /locked project's folder/, `${shortLocked} is the locked folder`);
+    if (shortData) await assert.rejects(manager.readFile('s', `${shortData}/auth-token`, 'session'), /Ledung's data folder/, `${shortData} is the data folder`);
+    if (!shortLocked || !shortData) t.diagnostic('this volume makes no 8.3 short names; the short-name step did not run');
+  }
+
+  // Ordinary files still list and open.
+  assert.equal((await manager.readFile('s', 'notes/a.md', 'session')).content, '# a');
+  assert.equal((await manager.readFile('s', 'notes/a.md')).content, '# a');
 });
