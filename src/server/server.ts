@@ -122,8 +122,6 @@ export const PLAIN_READS = new Set([
  * (test/server-security.test.ts, "a project's flow needs the sign-in"; code review of PR #234, finding 1).
  */
 export const SITE_ONLY_READS = new Set(['GET projects/:id/flow']);
-/** Logged once, the first time a browser signs in through its devices row (Project-Ledung#482). */
-let exercised482 = false;
 
 /** An API request's route as the switch in api() names it: every second part after /api/ is an id. */
 export function apiRoute(method: string, pathname: string): string {
@@ -832,10 +830,6 @@ export class LedungServer {
       // used after that removes the browser (Project-Ledung#482, design #477 section 3).
       const browser = this.guard.browserOf(req);
       if (browser) {
-        if (!exercised482) {
-          exercised482 = true;
-          exercisedLine('EXERCISED #482 a browser signed in through its devices row');
-        }
         const renewed = this.devices.renewCookie(browser);
         if (renewed) {
           res.setHeader('Set-Cookie', browserCookieHeader(renewed));

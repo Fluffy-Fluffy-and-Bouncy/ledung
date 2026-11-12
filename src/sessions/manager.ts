@@ -178,6 +178,7 @@ export function resumedState(info: SessionInfo): {
 let exercised425 = false;
 let exercised96 = false;
 let exercised160 = false;
+let exercised474 = false;
 
 /** How long the sidebar's read of which projects have a flow waits for one project (a container's docker exec). */
 const WORKFLOWS_READ_MS = 5000;
@@ -3325,9 +3326,10 @@ ${firstMessage}`);
     if (project.runner === 'docker') return this.fromContainer(() => listContainerFolder(this.containerAccess(project), root, rel));
     try {
       // A chat's folder can be anywhere under the browse roots, so it gets the viewer's chat rules (#211, question
-      // #317); a project's own folder may itself sit under AppData, as the viewer allows.
+      // #317); a project's own folder may itself sit under AppData, as the viewer allows, so a project keeps only
+      // Ledung's own data folder shut, for a project folder that holds it (Project-Ledung#474).
       const chat = info.project === CHATS;
-      const refused = [...(chat ? this.settingsFolders() : []), ...this.lockedFoldersBesides(info.project)];
+      const refused = [...(chat ? this.settingsFolders() : [userDataDir()]), ...this.lockedFoldersBesides(info.project)];
       return await listTree(root, rel, { refused, hiddenFrom: chat ? this.allowedFolders() : [] });
     } catch (e) {
       throw e instanceof FileError ? new UserError(e.message) : e;
@@ -3388,8 +3390,18 @@ ${firstMessage}`);
         const hidden = hiddenProblem(root, link, this.allowedFolders(), this.settingsFolders());
         if (hidden) throw new UserError(hidden);
       }
+      // Both checks below on the file's real path, so a link inside the folder can't lead around them (Project-Ledung#474).
+      const real = realTarget(root, link);
+      // Ledung's data folder stays shut to a project's session too, as it is to a chat's, wherever the project is.
+      if (real && info.project !== CHATS && nativeWithin(userDataDir(), real)) {
+        if (!exercised474) {
+          exercised474 = true;
+          exercisedLine("EXERCISED #474 a file in Ledung's data folder refused to a project's session");
+        }
+        throw new UserError("That file is in Ledung's data folder, where its settings and sign-ins are kept; it is not shown.");
+      }
       // Through the Files pane, a locked project's folder stays shut as in its tree (issue #225).
-      if (folder && this.lockedFoldersBesides(info.project).some((f) => within(f, path.resolve(root, decodeURIComponent(link.replace(/[?#].*$/, '')))))) {
+      if (folder && real && this.lockedFoldersBesides(info.project).some((f) => nativeWithin(f, real))) {
         throw new UserError("That file is in a locked project's folder.");
       }
       // The session's own folder when it has one (decision of 2026-10-14): links in its chat are relative to it.
@@ -3754,6 +3766,38 @@ function projectInfo(p: StoredProject): ProjectInfo {
     lockdown: lockdownOf(c),
     skills: c.skills ?? {},
   };
+}
+
+/**
+ * The real path a viewer link in `root` leads to (as readProjectFile reads it: #fragment dropped, maybe URL-encoded),
+ * links resolved, or null when there is no such file; the read itself then says so. The native realpath gives the
+ * long name and the case on disk on Windows, as the tree's checks use (Project-Ledung#474).
+ */
+function realTarget(root: string, link: string): string | null {
+  let wanted = link.replace(/[?#].*$/, '');
+  try {
+    wanted = decodeURIComponent(wanted);
+  } catch {
+    // Not encoded; used as is, as readProjectFile does.
+  }
+  try {
+    // From the root's real path by the same call readProjectFile uses, so ".." in the link means the same folder to both.
+    return fs.realpathSync.native(path.resolve(fs.realpathSync(root), wanted));
+  } catch {
+    return null;
+  }
+}
+
+/** Is the real path `real` the folder `folder` or inside it? Native real paths on both sides, as the tree compares. */
+function nativeWithin(folder: string, real: string): boolean {
+  let at: string;
+  try {
+    at = fs.realpathSync.native(folder);
+  } catch {
+    at = path.resolve(folder);
+  }
+  const rel = path.relative(at, real);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
 /** The permissions.allow rules in a profile's inline settings, for Settings (question #708). */
