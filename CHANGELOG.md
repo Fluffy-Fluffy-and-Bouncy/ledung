@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-12
+- Waiting for you history keeps what was asked: a question's screenshots and evidence files are copied into Ledung when asked, for every project (container projects already were), so they still show after the worktree they came from is removed; screenshots are kept as WebP, about 40 % of the PNG. History now reaches back to the last 100 answered questions of each project, or every one of the last 30 days if that is more, instead of the last 30 of all projects. (#306)
 - Machine panel: virtual displays (Parsec's, a virtual monitor driver) no longer show up as extra copies of your graphics card under "Other GPUs"; a GPU limit you set on the card while it was listed as "#1" still applies to it. (#304)
 - Test feature, off unless the config's `"testFeatures"` lists `"step-questions-picker"`: a Ledung with no choice saved for **Questions at a workflow step** asks once, in a window showing one made-up step written both ways side by side, Ledung's card and the manager's full write-up. **Use …** saves the choice in Settings; **Skip** keeps Ledung's card. Neither is asked again. With the feature on, **Show the samples** in Settings → Sessions opens the window again. (#293)
 - Machine panel: the "N of 10 working" line and its limit box are gone; the limit on sessions working at once still applies as before. Sessions waiting for a free place now show under their own "Waiting for a free place · N" heading, with Start now as before. (#300)

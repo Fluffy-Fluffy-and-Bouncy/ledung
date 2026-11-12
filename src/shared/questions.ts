@@ -67,12 +67,24 @@ export interface ReviewDetails {
 }
 
 /**
- * A stored screenshot or evidence file as people read it: a container file's kept copy (issue #122) by its path in the
- * project; a file from a linked computer (issue #158) by its name, marked as from there.
+ * A stored screenshot or evidence file as people read it: a kept copy (a container's, issue #122, or any project's,
+ * issue #306) by its path in the project; a file from a linked computer (issue #158) by its name, marked as from there.
  */
 export function shownFile(file: string): string {
-  return file.replace(/^container:[0-9a-f]{32}\//, '').replace(/^linked:[0-9a-f]{16}\//, 'linked: ');
+  return file.replace(/^(?:container|kept):[0-9a-f]{32}\//, '').replace(/^linked:[0-9a-f]{16}\//, 'linked: ');
 }
+
+/** Every kept copy a stored question names, by its hash, in the question's stored JSON (issues #122, #306). */
+export const COPY_REFS = /(?:container|kept):([0-9a-f]{32})\//g;
+
+/**
+ * Waiting for you history (issue #306; Martin, 2026-11-12, Ledung question #2145): per project at least the last
+ * 100 answered questions, and every question of the last 30 days if that is more.
+ */
+export const HISTORY_PER_PROJECT = 100;
+export const HISTORY_DAYS = 30;
+/** Of those, the newest this many come to the page whole on load, as all 50 it had did before; the rest come light. */
+export const HISTORY_FULL = 50;
 
 /** At most this many evidence files per review. */
 export const MAX_REVIEW_EVIDENCE = 10;

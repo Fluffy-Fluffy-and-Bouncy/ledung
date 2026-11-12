@@ -112,7 +112,7 @@ export const PLAIN_READS = new Set([
   'GET sessions/:id/usage', 'GET overview', 'GET projects', 'GET accounts', 'GET browse', 'GET profiles',
   'GET workflow-check', 'GET projects-folder', 'GET projects/:id/proposals/:id', 'GET projects/:id/runs', 'GET board',
   'GET board-threads', 'GET board-thread', 'GET usage-publish', 'GET machine', 'GET sessions/:id/turns', 'GET typical-costs',
-  'GET sessions/:id/folders', 'GET questions/:id/evidence/:id', 'GET chats', 'GET sessions/:id/shell-check',
+  'GET sessions/:id/folders', 'GET questions/:id', 'GET questions/:id/evidence/:id', 'GET chats', 'GET sessions/:id/shell-check',
   'GET sessions/:id/secrets', 'GET update', 'GET checkin', 'GET remote-link', 'GET relay-admin',
   'GET sessions/:id/sent-images/:id', 'GET board-attachment',
 ]);
@@ -2070,6 +2070,9 @@ export class LedungServer {
         const body = await readJson(req);
         return manager.sendLineComments(id, body);
       }
+      // One whole question (issue #306): older Waiting for you history comes light, and the page asks when it opens one.
+      case 'GET questions/:id':
+        return manager.question(Number(id));
       // A review's text file (docs/steps/pr-review.md): only one the review names, read-only.
       case 'GET questions/:id/evidence/:id':
         return manager.readEvidenceText(Number(id), /^\d+$/.test(parts[3] ?? '') ? Number(parts[3]) : -1);

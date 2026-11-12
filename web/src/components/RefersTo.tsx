@@ -3,7 +3,8 @@
 // Ledung questions 313 and 320; mockups passed on question 332). The original question a manager's question is
 // about, the sources the asker attached (issue #369), and, when it attached none, its conversation just before it
 // asked. Each item is one entry in `items` below.
-import type { CSSProperties, ReactNode } from 'react';
+import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
+import { api } from '../api.ts';
 import type { AttachedSource, ConversationLine, FailedSource, OriginalQuestion, QuestionInfo } from '../../../src/shared/protocol.ts';
 import { deskQuestion } from '../../../src/shared/questions.ts';
 import { Markdown } from './Markdown.tsx';
@@ -22,7 +23,11 @@ export function RefersTo(props: {
   /** How to open an attached question here, or null when the page hasn't loaded it. */
   onOpenQuestion?: (id: number) => (() => void) | null;
 }) {
-  const { q, nameOf } = props;
+  const { nameOf } = props;
+  const whole = useWholeQuestion(props.q);
+  const q = whole ?? props.q;
+  // Older history comes without what it refers to (issue #306); until the whole question is here, say so.
+  if (props.q.light && !whole) return <section className="block refers"><h4>What it refers to</h4><div className="refers-note muted">Loading…</div></section>;
   const items: ReactNode[] = [];
   const nav: SourceNav = { userName: props.userName, nameOf, onOpenMessage: props.onOpenMessage, onOpenQuestion: props.onOpenQuestion };
   if (q.original) items.push(<OriginalBox key="original" o={q.original} nav={nav} tint={props.tintOf(q.original.sessionId)} />);
@@ -44,6 +49,22 @@ export function RefersTo(props: {
       {items}
     </section>
   );
+}
+
+/**
+ * A light question (older Waiting for you history, issue #306) asked for whole once it is shown; null while it comes,
+ * and for a question that came whole. A failed read leaves it light: the page shows what it has.
+ */
+function useWholeQuestion(q: QuestionInfo): QuestionInfo | null {
+  const [whole, setWhole] = useState<QuestionInfo | null>(null);
+  useEffect(() => {
+    setWhole(null);
+    if (!q.light) return;
+    let live = true;
+    api.question(q.id).then((full) => { if (live) setWhole(full); }, () => { if (live) setWhole({ ...q, light: false }); });
+    return () => { live = false; };
+  }, [q.id, q.light]);
+  return q.light && whole?.id === q.id ? whole : null;
 }
 
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
