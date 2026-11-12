@@ -211,6 +211,51 @@ test('audit L17: a list file or a printed project file whose real path leads out
   }
 });
 
+test("audit L17 through a session: its SessionStart hook refuses a list file or printed project file that leads outside, and prints one inside", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-start-reading-'));
+  try {
+    const [workflow, project, outside] = ['workflow', 'project', 'outside'].map((d) => path.join(dir, d)) as [string, string, string];
+    for (const d of [workflow, project, outside]) fs.mkdirSync(d);
+    fs.writeFileSync(path.join(outside, 'secret.md'), 'SECRET');
+    fs.writeFileSync(path.join(project, 'GOAL.md'), 'The goal.');
+    fs.symlinkSync(outside, path.join(project, 'linked'), 'junction');
+    fs.symlinkSync(outside, path.join(workflow, 'linked'), 'junction');
+    const list = (files: string[]) => JSON.stringify({ version: 1, session: { read: ['worker.md'], projectFiles: files.map((p) => ({ path: p, print: true })) } });
+    fs.writeFileSync(path.join(outside, 'list.json'), list(['GOAL.md']));
+    const store = new Store(openDatabase(':memory:'));
+    const info = store.createSession({ id: 'l17', project: 'p', runner: 'local', title: 'fix-1', parentId: null, permissionMode: 'default' });
+    // The session's own SessionStart hook, with the readers it picks itself (Session.startReadingContext).
+    const startText = async (file: string) => {
+      const sr: StartReading = { file, folder: workflow, projectFolder: project, projectConfig: path.join(project, 'CFG.md'), local: true };
+      const session = new Session({
+        info, store, publish: () => {}, userName: 'Simon',
+        management: { managerOf: () => null, questionTiers: () => [] } as never,
+        workflow: { rulesFile: () => path.join(workflow, 'worker.md'), projectConfig: sr.projectConfig, configExists: false, startReading: sr },
+        runner: { cwd: project, currentBranch: async () => null } as never,
+        gate: { mayStart: () => true, started: () => {}, ended: () => {} },
+      });
+      const options = await session.claudeOptions({ onLine: () => {}, onStderr: () => {} });
+      const out = await options.hooks!.SessionStart![0]!.hooks[0]!({ hook_event_name: 'SessionStart', source: 'clear' } as never, undefined, { signal: new AbortController().signal });
+      return (out as { hookSpecificOutput?: { additionalContext?: string } }).hookSpecificOutput?.additionalContext ?? '';
+    };
+    const listFile = path.join(workflow, 'list.json');
+    // The positive branch: a list inside the workflow's folder printing a file inside the project.
+    fs.writeFileSync(listFile, list(['GOAL.md']));
+    assert.match(await startText(listFile), /GOAL\.md, as it stands now:\nThe goal\.\n/);
+    // A printed project file through a link out of the project.
+    fs.writeFileSync(listFile, list(['GOAL.md', 'linked/secret.md']));
+    const printed = await startText(listFile);
+    assert.equal(printed, `The workflow's start-reading list ${listFile} names ${path.join(project, 'linked', 'secret.md')}, which leads outside the project folder. No start-reading list is shown until it is fixed.`);
+    assert.doesNotMatch(printed, /SECRET/);
+    // The list file itself, through a link or "..".
+    for (const file of [path.join(workflow, 'linked', 'list.json'), path.resolve(workflow, '../outside/list.json')]) {
+      assert.equal(await startText(file), `The workflow's start-reading list ${file} leads outside the workflow's folder ${workflow}, so it is not read. No start-reading list is shown until it is fixed.`, file);
+    }
+  } finally {
+    removeTemp(dir);
+  }
+});
+
 test("the config takes a workflow's startReadingFile, and the project's workflow carries it with its folders", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-start-reading-'));
   try {
