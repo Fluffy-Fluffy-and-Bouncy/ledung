@@ -1,6 +1,6 @@
 // Builds the usage file a computer publishes to the shared repo (issue #363; the format is
-// src/shared/published-usage.ts). Only totals go in, under labels made here: an account's name and a salted hash
-// of its email, a project's display name when its owner switched it on, else `other#` and 4 characters from a
+// src/shared/published-usage.ts). Only totals go in, under labels made here: an account's name and a keyed hash
+// of its email (Project-Ledung#480), a project's display name when its owner switched it on, else `other#` and 4 characters from a
 // keyed hash (#312, #316). Nothing from the records' text (prompts, paths, branches, titles) is ever read.
 import crypto from 'node:crypto';
 import { DEFAULT_ACCOUNT } from '../accounts/store.ts';
@@ -47,9 +47,14 @@ export function otherLabel(identity: { remote?: string | null; name: string }, k
   return `other#${out}`;
 }
 
-/** SHA-256 of the email salted with the repo's name, so one account is one card without the email in the file. */
-export function accountFingerprint(email: string, repo: string): string {
-  return crypto.createHash('sha256').update(`ledung-usage\n${repo.trim().toLowerCase()}\n${email.trim().toLowerCase()}`).digest('hex');
+/**
+ * An HMAC with the person's usage key of the email and the repo's name, so one account is one card without the email
+ * in the file. Keyed, not a plain hash, so only computers that hold the key get the same fingerprint for an email:
+ * those of one person that share the usage key (Martin, 2026-11-12, Ledung question #764: "a — Use the existing usage
+ * key"; Fluffy-Fluffy-and-Bouncy/Project-Ledung#480).
+ */
+export function accountFingerprint(email: string, repo: string, key: Buffer): string {
+  return crypto.createHmac('sha256', key).update(`ledung-usage\n${repo.trim().toLowerCase()}\n${email.trim().toLowerCase()}`).digest('hex');
 }
 
 /** "YYYY-MM-DD" in the computer's own time zone. */
@@ -72,7 +77,7 @@ export interface BuildInput {
   named: Set<string>;
   /** A project's git remote address, when it has one. */
   remoteOf: (project: string) => string | null;
-  /** The usage key. */
+  /** The usage key: it keys the project labels and the account fingerprints. */
   key: Buffer;
 }
 
@@ -141,7 +146,7 @@ export function buildPublishedUsage(input: BuildInput): PublishedUsage {
     const email = input.emailOf(name);
     return {
       label: name,
-      fingerprint: email ? accountFingerprint(email, input.repo) : null,
+      fingerprint: email ? accountFingerprint(email, input.repo, input.key) : null,
       daily: [...a.daily.values()].sort(byT).map(round),
       hourly: [...a.hourly.values()].sort(byT).map(round),
       limits: limitsOf(name),
