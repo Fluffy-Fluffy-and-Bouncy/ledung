@@ -41,17 +41,17 @@ export function pinCounts(flow: Flow | null, runs: readonly FlowRun[], flowName:
 }
 
 /**
- * The sidebar's Workflow row (Simon, 2026-11-04): "🔀 Workflow · 3 running · 1 for you", and its tooltip. Running counts
- * the runs under way that are not in line, a Run flow block's own runs left out (their parent counts); for you, the
- * runs at a person's step whose question is still open.
+ * The Workflow button on a project's row (issue #289, Martin 2026-11-12, mockup D; it replaced the Workflow row of
+ * 2026-11-04): the count beside its symbol, the yellow bubble, and its tooltip. Running counts the runs under way that are
+ * not in line, a Run flow block's own runs left out (their parent counts); for you, the runs at a person's step whose
+ * question is still open. Queued runs are in the tooltip only.
  */
-export function workflowRow(runs: readonly FlowRun[], openQuestion: (id: number) => boolean): { text: string; title: string } {
+export function workflowButton(runs: readonly FlowRun[], openQuestion: (id: number) => boolean): { running: number; forYou: number; title: string } {
   const running = runs.filter((r) => (r.state === 'running' || r.state === 'waiting') && !r.parent).length;
   const queued = runs.filter((r) => r.state === 'queued' && r.queue === 'flow').length;
   const forYou = runs.filter((r) => r.state === 'waiting' && r.question !== null && openQuestion(r.question)).length;
-  const text = ['🔀 Workflow', running ? `${running} running` : '', forYou ? `${forYou} for you` : ''].filter(Boolean).join(' · ');
   const said = [running ? `${running} running` : '', queued ? `${queued} queued` : '', forYou ? `${forYou} waiting for you` : ''].filter(Boolean);
-  return { text, title: `The workflow page${said.length ? `: ${said.join(', ')}` : ''}` };
+  return { running, forYou, title: `The workflow page${said.length ? `: ${said.join(', ')}` : ''}` };
 }
 
 /** A queued run's place in its line (part 3f): among those queued for the same flow start, or before the same block. */

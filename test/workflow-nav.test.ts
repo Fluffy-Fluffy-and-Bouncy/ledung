@@ -1,19 +1,21 @@
-// How the workflow is reached (Simon, 2026-11-04): the sidebar's Workflow row says what is going on.
+// How the workflow is reached: the Workflow button on a project's row (issue #289, mockup D; it replaced the Workflow row
+// of Simon, 2026-11-04) shows how many runs are under way and how many wait on you.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { FlowRun } from '../src/shared/flow-run.ts';
-import { workflowRow } from '../web/src/flowRuns.ts';
+import { workflowButton } from '../web/src/flowRuns.ts';
 
 const run = (id: number, over: Partial<FlowRun>): FlowRun => ({
   id: `run-${id}`, project: 'shop', title: `Issue ${id}`, ref: `#${id}`, flow: 'main', at: 'build', atSince: id, counts: {}, sessions: {}, parent: null,
   history: [], state: 'running', ending: null, coordinator: 'manager-1', question: null, worktree: null, queue: null, startedAt: id, updatedAt: id, ...over,
 });
 
-test('the Workflow row: running, for you, and nothing more when nothing goes on', () => {
+test('the Workflow button: running, for you, and nothing more when nothing goes on', () => {
   const open = (id: number) => id === 7;
-  assert.deepEqual(workflowRow([], open), { text: '🔀 Workflow', title: 'The workflow page' });
+  // No runs: the dimmed symbol alone (running 0, no bubble), and a tooltip that says only where it goes.
+  assert.deepEqual(workflowButton([], open), { running: 0, forYou: 0, title: 'The workflow page' });
   const ended = [run(1, { state: 'ended', ending: 'Merged', at: null }), run(2, { state: 'stopped', at: null })];
-  assert.equal(workflowRow(ended, open).text, '🔀 Workflow');
+  assert.deepEqual(workflowButton(ended, open), { running: 0, forYou: 0, title: 'The workflow page' });
   const runs = [
     ...ended,
     run(3, {}),
@@ -22,9 +24,17 @@ test('the Workflow row: running, for you, and nothing more when nothing goes on'
     run(5, { state: 'waiting', question: 8 }),
     // A wait block's run waits on no one in particular.
     run(6, { state: 'waiting' }),
+    // Queued: in the tooltip only, never in the count (issue #289, out of scope).
     run(9, { state: 'queued', queue: 'flow' }),
     // A Run flow block's own run: its parent counts already.
     run(10, { parent: { run: 'run-3', block: 'asset' } }),
   ];
-  assert.deepEqual(workflowRow(runs, open), { text: '🔀 Workflow · 4 running · 1 for you', title: 'The workflow page: 4 running, 1 queued, 1 waiting for you' });
+  // Running: 3, 4, 5, 6 (not 9 queued, not 10 a child); for you: 4 only (7 is the one open question).
+  assert.deepEqual(workflowButton(runs, open), { running: 4, forYou: 1, title: 'The workflow page: 4 running, 1 queued, 1 waiting for you' });
+  // Runs under way and none for you: no bubble.
+  assert.deepEqual(workflowButton([run(3, {}), run(5, { state: 'waiting', question: 8 })], open), { running: 2, forYou: 0, title: 'The workflow page: 2 running' });
+  // A Run flow block's own run waiting on your open question, alone: not running (its parent would count), but for you,
+  // so the button is blue with the bubble and no number (the PR's call, review of PR #290).
+  assert.deepEqual(workflowButton([run(11, { state: 'waiting', question: 7, parent: { run: 'run-3', block: 'asset' } })], open),
+    { running: 0, forYou: 1, title: 'The workflow page: 1 waiting for you' });
 });
