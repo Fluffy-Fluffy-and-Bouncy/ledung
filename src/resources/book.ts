@@ -227,7 +227,15 @@ export class ResourceBook {
       if (key === 'cpu' || key === 'ram') out[key] = v;
       const m = key.match(/^(gpu|vram)@(.+)$/);
       if (!m) continue;
-      const g = this.gpu?.adapters.find((a) => a.name === m[2]);
+      const adapters = this.gpu?.adapters ?? [];
+      let g = adapters.find((a) => a.name === m[2]);
+      // "<name> #1" from when copies of one card were listed (a virtual display's copy, hidden since #304, or a second
+      // card taken out) is the card that is left alone under that name, unless a limit was set on that name since.
+      const first = m[2]!.match(/^(.+) #1$/);
+      if (!g && first && this.limits[`${m[1]}@${first[1]}`] === undefined) {
+        const same = adapters.filter((a) => a.name === first[1]);
+        if (same.length === 1) g = same[0];
+      }
       if (g) out[`${m[1]}:${g.id}`] = v;
     }
     return out;
@@ -242,6 +250,8 @@ export class ResourceBook {
       const g = this.gpu?.adapters.find((a) => a.id === id);
       if (!g) throw new Error('No such GPU: its readings are not there.');
       key = `${kind}@${g.name}`;
+      // The "#1" limit limitsNow() carries over is replaced by this one, so clearing this doesn't bring it back.
+      delete this.limits[`${key} #1`];
     }
     if (v === null) delete this.limits[key];
     else this.limits[key] = v;
