@@ -1407,6 +1407,8 @@ export class SessionManager {
       title: `Workflow change: ${why.trim().split('\n')[0]!.slice(0, 160)}`,
       tier: tiers.find((t) => /process/i.test(t)) ?? tiers[0],
       flowProposal: proposal.id,
+      // The helper proposes for another project than its own (ledung-helper.md): the review loads that one's.
+      ...(helper ? { flowProject: project.name } : {}),
       review: {
         solving: why.trim(),
         done: `${manager.title} proposes this change to ${project.name}'s workflow:\n\n${proposalSummary(data)}\n\nThe diagrams below show each flow before and after. Accepted saves it into the project's .ledung/workflow.`,
@@ -2572,7 +2574,7 @@ export class SessionManager {
 
   /** A change the helper made, said in its chat as an event, and the tool's answer passed on. */
   private helperNoted(helperId: string, out: string): string {
-    if (/^(Saved|Added|Created) /.test(out)) this.publish({ type: 'message', message: this.store.addMessage(helperId, 'event', { text: `Ledung Helper: ${out.split('. ')[0]}.` }) });
+    if (/^(Saved|Added|Created) /.test(out)) this.publish({ type: 'message', message: this.store.addMessage(helperId, 'event', { text: `Ledung Helper: ${out.split('. ')[0]!.replace(/\.$/, '')}.` }) });
     return out;
   }
 

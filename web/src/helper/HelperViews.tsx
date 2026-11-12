@@ -109,6 +109,12 @@ export function HelperStepBar({ helper, projects, run, onOpen }: { helper: Helpe
   const myself = v.current ? myselfView(v.current, v.project) : null;
   /** Steps whose thing Ledung can't see are the person's word: Done says it. */
   const theirWord: SetupStepId[] = ['accounts', 'basics', 'sensitive', 'grant', 'phone'];
+  /** Done or Skip in the bar: Ledung marks it, and the helper hears it from the person, so it goes on. */
+  const mark = (m: 'done' | 'skipped') => run(async () => {
+    const at = step!;
+    await api.setupMark(at.id, m);
+    if (helper.sessionId) await api.send(helper.sessionId, `${at.label}: ${m === 'done' ? 'done' : 'skip it'}.`);
+  });
   if (!v.current) {
     return (
       <div className="helper-steps done">
@@ -144,9 +150,9 @@ export function HelperStepBar({ helper, projects, run, onOpen }: { helper: Helpe
           </form>
         ) : myself && <button className="small" onClick={() => onOpen(myself)}>Do it myself instead</button>}
         {theirWord.includes(v.current) && (v.current === 'accounts' || v.current === 'phone' || v.project) && (
-          <button className="small" onClick={() => void run(() => api.setupMark(v.current!, 'done'))}>Done</button>
+          <button className="small" onClick={() => void mark('done')}>Done</button>
         )}
-        {step?.skippable && <button className="small" onClick={() => void run(() => api.setupMark(v.current!, 'skipped'))}>Skip</button>}
+        {step?.skippable && <button className="small" onClick={() => void mark('skipped')}>Skip</button>}
         <button className="link-button small-link" onClick={() => void run(() => api.setup('leave'))}>Leave setup</button>
       </div>
     </div>
