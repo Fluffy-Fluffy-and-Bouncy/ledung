@@ -222,10 +222,10 @@ export const MAX_ZIP_UNPACKED_BYTES = 16 * 1024 * 1024 * 1024;
 
 /**
  * Why a zip that arrived from a linked computer can't be kept, or null (Project-Ledung#479): its central directory
- * must parse and account for every byte, as the sender's check needs; it lists at most MAX_ZIP_ENTRIES entries and
- * MAX_ZIP_UNPACKED_BYTES unpacked, as their directory records say; and no entry is absolute or climbs out with "..".
- * The sender checked it entry by entry (zipProblem); this is the receiver's own check of what it is given, and it reads
- * only the directory, never the entries' content.
+ * must parse and run right to the end of the file with nothing after it (entries() above); it lists at most
+ * MAX_ZIP_ENTRIES entries and MAX_ZIP_UNPACKED_BYTES unpacked, as their directory records say; and no entry name is
+ * empty, absolute or climbs out with "..". It reads only the directory: unlike zipProblem it does not check that the
+ * listed entries fill the file before the directory (ledung#244), nor any entry's content.
  */
 export async function zipArrivalProblem(file: string): Promise<string | null> {
   let fd: fs.promises.FileHandle | null = null;
