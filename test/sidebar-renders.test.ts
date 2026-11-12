@@ -46,6 +46,8 @@ before(async () => {
     }
     addEventListener() {}
     removeEventListener() {}
+    // The page sends on it too: the open session's watch (issue #231). Nothing answers it here.
+    send() {}
     close() {}
   };
   // Ledung's answers: the open session has no history yet; anything else is refused, as a page with no server gets.
