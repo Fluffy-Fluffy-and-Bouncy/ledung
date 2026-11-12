@@ -233,8 +233,6 @@ const COMPUTER_EDITS_KEY = 'computer-edits';
 const TUNNEL_LIMITS = { peekMs: 10_000, handshakeMs: 10_000, headersMs: 60_000, idleMs: 5_000 };
 /** The first byte of a TLS handshake record: anything else through the tunnel is plain HTTP. */
 const TLS_HANDSHAKE = 0x16;
-/** The #231 trace is logged once per run (agent-workflow, "EXERCISED line"). */
-let heldBackTraced = false;
 /** The ALPN protocol of a TLS-ALPN-01 check (RFC 8737). */
 const ACME_TLS = 'acme-tls/1';
 
@@ -661,13 +659,7 @@ export class LedungServer {
     const only = event.type === 'message' ? event.message.sessionId : null;
     for (const ws of this.clients) {
       if (ws.readyState !== ws.OPEN) continue;
-      if (only !== null && !this.watches(ws, only)) {
-        if (!heldBackTraced) {
-          heldBackTraced = true;
-          exercisedLine('EXERCISED #231 a message held back from a page showing another session');
-        }
-        continue;
-      }
+      if (only !== null && !this.watches(ws, only)) continue;
       ws.send(data);
     }
   }
