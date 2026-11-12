@@ -32,8 +32,8 @@ test('every step but the name has a plain form; the project\'s steps wait for a 
 
 test('the helper chat\'s approval card says what happens in plain words, not the tool\'s name', async () => {
   const { helperApprovalText } = await import('../web/src/helper/helperNav.ts');
-  assert.deepEqual(helperApprovalText('mcp__ledung__add_project', { name: 'my-app', folder: 'C:\home\my-app' }, "a manager's project tool, always yours to approve"),
-    { title: 'Add the project "my-app"?', lines: ['Folder: C:\home\my-app'] });
+  assert.deepEqual(helperApprovalText('mcp__ledung__add_project', { name: 'my-app', folder: '/.ome\my-app' }, "a manager's project tool, always yours to approve"),
+    { title: 'Add the project "my-app"?', lines: ['Folder: /.ome\my-app'] });
   assert.deepEqual(helperApprovalText('mcp__ledung__create_project', { name: 'Atlas', github: true, permission_mode: 'auto' }, null),
     { title: 'Create the project "Atlas"?', lines: ['A new folder with git in your projects folder, and a private GitHub repository', 'Permission mode: Auto'] });
   assert.deepEqual(helperApprovalText('mcp__ledung__set_project_basics', { project: 'shop', permissionMode: 'auto' }, 'a change to "shop" that lets more through without you: permission mode for new sessions Ask → Auto'),
@@ -46,4 +46,15 @@ test("a change Ledung couldn't word plainly gets the usual card, with its input 
   assert.equal(helperApprovalText('mcp__ledung__set_project_settings', { project: 'shop' }, 'Ledung could not check this change (x; y), so it asks'), null);
   assert.equal(helperApprovalText('mcp__ledung__set_project_basics', { project: 'shop' }, 'a sensitive MCP tool'), null);
   assert.equal(helperApprovalText('mcp__ledung__set_project_basics', { project: 'shop' }, null), null);
+});
+
+test("a change to Ledung's settings reads plainly: what it opens, the risk, the narrower choice", async () => {
+  const { helperApprovalText } = await import('../web/src/helper/helperNav.ts');
+  const rule = "a change to Ledung's settings that opens up: folders Ledung may use /home/me → /home/me, /. Risk: The folder browser may then reach everything under /. Narrower: a folder of its own instead, e.g. /dev-work.";
+  const t = helperApprovalText('mcp__ledung__change_ledung_setting', { setting: 'browseRoots' }, rule)!;
+  assert.equal(t.title, "Change Ledung's settings?");
+  assert.equal(t.lines[0], 'folders Ledung may use /home/me → /home/me, /');
+  assert.match(t.lines[1]!, /^Risk: /);
+  assert.match(t.lines[2]!, /^Narrower: a folder of its own/);
+  assert.equal(helperApprovalText('mcp__ledung__change_ledung_setting', {}, 'something else'), null);
 });

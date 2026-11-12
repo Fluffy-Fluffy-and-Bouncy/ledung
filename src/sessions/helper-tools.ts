@@ -26,6 +26,9 @@ export interface HelperHandlers {
   proposeWorkflow(project: string, changes: { file: string; text?: string; remove?: boolean }[], why: string): Promise<string>;
   /** The turn's one message to the person, with its card if any (acceptance round 4: structural, not by instruction). */
   reply(text: string, card: HelperCard | undefined): string;
+  /** Every setting, with its value and how to change it (docs/steps/ledung-helper.md, "Every setting"). */
+  ledungSettings(): string;
+  changeLedungSetting(input: { setting: string; value?: unknown; project?: string }): string;
 }
 
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] });
@@ -73,6 +76,13 @@ export function helperToolServer(who: string, h: HelperHandlers): McpSdkServerCo
       text: z.string().trim().min(1).max(2000).describe('The message, in plain Markdown: short, one question at a time.'),
       card: CardSchema.optional(),
     }, async (a) => safely(() => h.reply(a.text, a.card as HelperCard | undefined))) as never,
+    tool('ledung_settings', `Every setting of Ledung's that ${who} can change, with its value now and how to give a new one: the config file's (folders Ledung may use, where projects go, port, home network, sensitive lists, profiles, workflows, board…), the page's (usage stops, macros, update channel, usage count, relay address, helper's model…), a project's (extra folders, manager's powers, lockdown, name…), their browser's own (apply cards) and the secrets you never handle (link cards).`, {},
+      async () => safely(() => h.ledungSettings())) as never,
+    tool('change_ledung_setting', `Change one of those settings, through the same path the page uses. A change that opens anything up (a wider folder, the network, a looser list or mode) waits for ${who}'s approval card, which shows the before → after, the risk and a narrower choice; anything else runs at once; one that needs Restart Ledung gets a Restart card. A refusal says why, or what to do instead (a secret: a link card; their browser's own: an apply card).`, {
+      setting: z.string().min(1).max(60).describe('Its id, as ledung_settings lists it.'),
+      value: z.unknown().optional().describe('The new value, in the form ledung_settings gives; null clears it back to its default.'),
+      project: z.string().min(1).optional().describe('For a project.* setting: the project.'),
+    }, async (a) => safely(() => h.changeLedungSetting({ setting: a.setting, value: a.value, project: a.project }))) as never,
     tool('list_projects', "List Ledung's projects: folder, settings and whether each one's manager runs; a locked project shows its name only.", {}, async () => safely(() => h.listProjects())) as never,
     tool('add_project', `Add an existing folder on this computer as a project. ${who} approves it on a card in this chat first. Its sensitive list starts with Ledung's suggestions.`, {
       ...projectFields,

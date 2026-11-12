@@ -51,3 +51,48 @@ Kept in Ledung's data (`meta`), not the config: phase (welcome, claude, helper, 
 1. **Core**: the helper session, its tools and hooks, setup state, name, model setting, help skill, tests. Security review.
 2. **Page**: Welcome and Claude check, the helper view with step bar and cards, sidebar entry, Settings group, New project entries; 390 px. Security review.
 3. **Try-out** on a throwaway Ledung (port 4394), screenshots, a preview for Simon on port 4393 with empty data, and a report.
+
+## Every setting the helper can change (Simon's demo, 2026-11-12)
+
+Simon: "The plan is that it should be able to help me with all settings if I ask it." The helper reads them all with `ledung_settings` and changes one with `change_ledung_setting`, through the same paths the page uses. Classes: **a** applies at once and loosens nothing (runs, and shows as a line in the chat); **b** loosens or opens something (Ledung's approval card with before → after, a risk note and a narrower choice where one makes sense; only the person's Allow applies it); **c** needs Restart Ledung (after saving, a card with **Restart Ledung**); **d** holds a secret (the helper never handles it: a link card to the right Settings field); **browser**: kept in the person's browser (a card whose button applies it in that browser). Project settings keep their own tools (`set_project_settings`, `set_project_basics`) and add `project.*` here.
+
+| Setting | Where | Class |
+|---|---|---|
+| browseRoots | config (live) | b when it allows a folder not allowed before (risk: everything under it; narrower: a folder of its own); a when narrowing |
+| projectsFolder | config (live) | b when outside the folders already allowed; else a |
+| port | config | a, c |
+| userName | config | a, c (the setup's name is set_user_name) |
+| lan | config | b when it opens a network (narrower: one address, not `true`), c |
+| lanSignIn | config | b when switched off (anyone on that network uses Ledung), c |
+| sensitive (global) | config (live) | b when a pattern is removed; a when added |
+| keepToolResultsDays, idleStopMinutes, windowsShell, claudeAccounts | config (live) | a |
+| pluginsOff | config (live) | b when a plugin comes back on; a when one goes off |
+| profiles, defaultProfiles | config (live) | b (what sessions may use) |
+| workflow, workflows | config (live) | b (what managers are told to follow) |
+| remoteControl | config (live) | b when switched on |
+| claudeExecutable | config (live) | b (another program runs the sessions) |
+| chats | config (live) | b when it loosens (mode, a sensitive pattern removed); else a |
+| board | config | b (posts leave this computer), c |
+| computers | config | a, c |
+| remote, relayJoin | config | d (relay secrets; Settings → Remote & devices) |
+| projects | config | handled by the project tools |
+| Working sessions limit | Machine panel (meta) | a |
+| Usage stops | Settings → Claude & usage | a to set one; b to remove one |
+| Macros | Settings → Macros | b (text sent as the person's words) |
+| Skill defaults, account choices, chats' colour, the helper's model | Settings | a |
+| Chats' sensitive list | Settings → Chats | b on removal; a on adding |
+| Update channel | Settings → About | b to Dev; a to Public |
+| Usage count (check-in) | Settings → About | b to switch on; a to switch off |
+| Publish usage | Settings → Claude & usage | b (the managers' usage_publish rule) |
+| Relay address | Settings → Remote & devices | b |
+| Relay admin key, Cloudflare token, join code, link codes, invites, phones and passkeys, account sign-in | Settings | d |
+| Shortcuts, start at sign-in | Settings → Update & restart (this computer's page) | browser card (the person's press, on this computer) |
+| Appearance, autocorrect, status dot, Archived link, compact sidebar | Settings → Look & feel (this browser) | browser card |
+| Notifications, Install as app | Settings (this browser) | link card (the browser asks the person itself) |
+| project.extraFolders | project → General | b when a folder is added |
+| project.projectToolsUnasked, project.projectSettingsTools | project → Manager's powers | b when switched on |
+| project.lockdown | project → Manager's powers | a to tighten; loosening is refused (only the person, in the page) |
+| project.worktreeSetup | project → Workflow | b when new or changed |
+| project.followFlow, project.name (rename) | project | a |
+
+Nothing bypasses the page's own checks: the config file is written by Ledung's config writer (`src/config-write.ts`: the file's own keys, `$comment`s and unknown keys kept, validated with the same schema before an atomic write, then read back by the watcher); everything else calls the manager methods the page's routes call. The helper can't loosen lockdown, can't handle secrets, and can't change who may answer its cards (devices, passkeys, sign-in links are class d).

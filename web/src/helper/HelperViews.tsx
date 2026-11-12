@@ -15,7 +15,11 @@ import { useShortcuts } from '../useShortcuts.ts';
 import { useCheckIn } from '../useCheckIn.ts';
 import { statusLine } from '../checkIn.ts';
 import { helperLinkView, myselfView } from './helperNav.ts';
-import { usePlainTyping } from '../usePlainTyping.ts';
+import { useAutocorrect, usePlainTyping } from '../usePlainTyping.ts';
+import { useCompactSidebar } from '../useCompactSidebar.ts';
+import { useStatusDot } from '../useStatusDot.ts';
+import { useArchivedLink } from '../useArchivedLink.ts';
+import { applyTheme, saveTheme } from '../theme.ts';
 
 type Run = (action: () => Promise<unknown>) => Promise<void>;
 
@@ -210,6 +214,10 @@ export function HelperCardView({ card, answered, onSend, onOpen, projects, run }
     }
     case 'review':
       return wrap(<button className="small primary" onClick={() => onOpen(`q:${card.question}`)}>Open the review</button>);
+    case 'restart':
+      return wrap(<RestartNow run={run} />);
+    case 'apply':
+      return wrap(<ApplyInBrowser setting={card.setting} value={card.value} done={done} onApplied={(said) => send(said)} run={run} />);
   }
 }
 
@@ -406,6 +414,47 @@ export function SetupStepCard({ helper, run, onOpen }: { helper: HelperInfo; run
       ));
     }
   }
+}
+
+/** Ledung's own card after a setting that needs a restart was saved: the person's Restart Ledung. */
+function RestartNow({ run }: { run: Run }) {
+  const [asked, setAsked] = useState(false);
+  return asked
+    ? <p className="muted">Restarting… the page comes back by itself.</p>
+    : <button className="small primary" onClick={() => void run(async () => { setAsked(true); await api.restart(); })}>Restart Ledung</button>;
+}
+
+const THEME_WORDS: Record<string, string> = { dark: 'dark', light: 'light', system: "the computer's own" };
+
+/**
+ * A setting kept in this browser (docs/steps/ledung-helper.md, "Every setting"): the person's press sets it here, as
+ * Settings → Look & feel or Update & restart would, and tells the helper it is done.
+ */
+function ApplyInBrowser({ setting, value, done, onApplied, run }: { setting: string; value: string | boolean | number; done: boolean; onApplied: (said: string) => void; run: Run }) {
+  const [, setCompact] = useCompactSidebar();
+  const [, setDot] = useStatusDot();
+  const [, setArchived] = useArchivedLink();
+  const [, setAutocorrect] = useAutocorrect();
+  const shortcuts = useShortcuts();
+  const on = value === true || value === 'on' || value === 'true';
+  const label = setting === 'theme' ? `Use ${THEME_WORDS[String(value)] ?? String(value)} appearance`
+    : setting === 'compactSidebar' ? `Compact sidebar: step ${Number(value)}`
+    : setting === 'shortcuts' ? (value === 'remove' ? 'Remove the shortcuts' : 'Add the shortcuts')
+    : `${on ? 'Switch on' : 'Switch off'} ${({ autocorrect: 'autocorrect', statusDot: 'the status dot', archivedLink: '"Archived" in the sidebar', signInStart: 'start at sign-in' } as Record<string, string>)[setting] ?? setting}`;
+  const apply = () => run(async () => {
+    if (setting === 'theme' && (value === 'dark' || value === 'light' || value === 'system')) {
+      saveTheme(localStorage, value);
+      applyTheme(document.documentElement, value);
+    } else if (setting === 'compactSidebar') setCompact(Math.max(1, Math.min(4, Number(value))) as never);
+    else if (setting === 'statusDot') setDot(on);
+    else if (setting === 'archivedLink') setArchived(on);
+    else if (setting === 'autocorrect') setAutocorrect(on);
+    else if (setting === 'shortcuts') await shortcuts.act(value === 'remove' ? 'remove' : 'add');
+    else if (setting === 'signInStart') await shortcuts.act(on ? 'sign-in-on' : 'sign-in-off');
+    else throw new Error(`"${setting}" is not a setting this card can set.`);
+    onApplied(`Done: ${label.toLowerCase()}.`);
+  });
+  return <button className="small primary" disabled={done} onClick={() => void apply()}>{label}</button>;
 }
 
 /** Settings → Ledung → Ledung Helper: open it, run the setup again, and its model. */

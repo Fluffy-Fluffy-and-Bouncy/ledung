@@ -34,7 +34,7 @@ import { findTickets } from '../usage/links.ts';
 import type { PullRequestPoller } from './pr-poll.ts';
 import { helperToolServer, type HelperHandlers } from './helper-tools.ts';
 import { helperInstructions, helperSkillAllowed } from './helper.ts';
-import { CONTEXT_TOOLS, instructions, LEDUNG_SERVER, LEDUNG_TOOLS, ledungToolServer, MCP_LIMIT_ENV, mcpLimitFor, BASICS_TOOLS, SETTINGS_CHANGE_RULE, SETTINGS_CHANGE_TOOLS, SETTINGS_TOOLS, USAGE_PUBLISH_TOOLS, USER_APPROVED_TOOLS, type BoardHandlers, type ManagerHandlers, type ProposeHandlers, type RunHandlers, type ToolHandlers } from './tools.ts';
+import { CONTEXT_TOOLS, instructions, LEDUNG_SERVER, LEDUNG_TOOLS, ledungToolServer, MCP_LIMIT_ENV, mcpLimitFor, BASICS_TOOLS, LEDUNG_SETTING_TOOLS, SETTINGS_CHANGE_RULE, SETTINGS_CHANGE_TOOLS, SETTINGS_TOOLS, USAGE_PUBLISH_TOOLS, USER_APPROVED_TOOLS, type BoardHandlers, type ManagerHandlers, type ProposeHandlers, type RunHandlers, type ToolHandlers } from './tools.ts';
 import type { Boards } from '../board/boards.ts';
 import { commandKinds } from '../resources/commands.ts';
 import { FRESH_FACTS, pauseReason, type IdleState } from './idle.ts';
@@ -1061,7 +1061,7 @@ export class Session {
     const out = (permissionDecision: 'allow' | 'ask' | 'deny', permissionDecisionReason: string) => ({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision, permissionDecisionReason } });
     // The Ledung Helper changes projects' settings too, through this same hook (docs/steps/ledung-helper.md); not usage_publish.
     const helper = this.management.isHelper(this.id);
-    if (helper ? USAGE_PUBLISH_TOOLS.includes(toolName) : this.store.getSession(this.id)?.role !== 'manager' || BASICS_TOOLS.includes(toolName)) {
+    if (helper ? USAGE_PUBLISH_TOOLS.includes(toolName) : this.store.getSession(this.id)?.role !== 'manager' || BASICS_TOOLS.includes(toolName) || LEDUNG_SETTING_TOOLS.includes(toolName)) {
       return out('deny', "Only a manager changes projects' settings.");
     }
     let decision: ReturnType<Management['settingsChange']>;
@@ -1076,6 +1076,7 @@ export class Session {
     const own = sensitiveHookOutput(toolName, input, this.sensitiveRules);
     return 'hookSpecificOutput' in own ? own : out('allow', USAGE_PUBLISH_TOOLS.includes(toolName)
       ? 'Allowed by Ledung: switching publishing off, or leaving it as it is.'
+      : LEDUNG_SETTING_TOOLS.includes(toolName) ? "Allowed by Ledung: a change to Ledung's settings that opens nothing up."
       : "Allowed by Ledung: a change to a project's settings that loosens nothing.");
   }
 
@@ -1083,6 +1084,7 @@ export class Session {
   private settingsDecision(toolName: string, raw: unknown, note: boolean): ReturnType<Management['settingsChange']> {
     if (USAGE_PUBLISH_TOOLS.includes(toolName)) return this.management.usagePublishChange(this.id, raw, note);
     if (BASICS_TOOLS.includes(toolName)) return this.management.basicsChange(this.id, raw, note);
+    if (LEDUNG_SETTING_TOOLS.includes(toolName)) return this.management.ledungSettingChange(this.id, raw, note);
     return this.management.settingsChange(this.id, raw, note);
   }
 
@@ -1708,6 +1710,7 @@ export class Session {
         const shown = this.store.getPermission(permissionId)?.sensitive ?? null;
         if (USAGE_PUBLISH_TOOLS.includes(p.toolName)) this.management.noteApprovedUsagePublish(this.id, p.input, shown);
         else if (BASICS_TOOLS.includes(p.toolName)) this.management.noteApprovedBasics(this.id, p.input, shown);
+        else if (LEDUNG_SETTING_TOOLS.includes(p.toolName)) this.management.noteApprovedLedungSetting(this.id, p.input, shown);
         else this.management.noteApprovedSettings(this.id, p.input, shown);
       }
       const updatedInput = decision.answers ? { ...p.input, answers: decision.answers } : p.input;

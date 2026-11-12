@@ -44,7 +44,7 @@ const USER_APPROVED = ['add_project', 'create_project', 'start_manager', 'stop_m
  * The Ledung Helper's tools that run without a prompt (helper-tools.ts): reading, the setup's marks, the name, cards,
  * and a workflow proposal, which is itself the person's review. Its project tools keep the managers' names below.
  */
-const HELPER_TOOLS = ['setup_status', 'setup_step', 'set_user_name', 'list_projects', 'project_settings', 'workflow_files', 'propose_workflow', 'reply'];
+const HELPER_TOOLS = ['setup_status', 'setup_step', 'set_user_name', 'list_projects', 'project_settings', 'workflow_files', 'propose_workflow', 'reply', 'ledung_settings'];
 const fullNames = (tools: string[]) => tools.map((t) => `mcp__${LEDUNG_SERVER}__${t}`);
 /** Ledung's tools never need a permission prompt of their own, except the ones the user approves. */
 export const LEDUNG_TOOLS = fullNames([...SESSION_TOOLS, ...MANAGER_TOOLS, ...HELPER_TOOLS]);
@@ -58,7 +58,9 @@ export const SETTINGS_TOOLS = fullNames([...SETTINGS_ACTIONS]);
  * set_project_settings (issue #306): never unasked by the tool list; the PreToolUse hook lets a change run, asks the
  * user for one that loosens what reaches them (Martin's a on question #687), or refuses it (Management.settingsChange).
  */
-export const SETTINGS_CHANGE_TOOLS = fullNames(['set_project_settings', 'usage_publish', 'set_project_basics']);
+export const SETTINGS_CHANGE_TOOLS = fullNames(['set_project_settings', 'usage_publish', 'set_project_basics', 'change_ledung_setting']);
+/** change_ledung_setting (the Ledung Helper's, every setting): the same hook; asked when the change opens anything up. */
+export const LEDUNG_SETTING_TOOLS = fullNames(['change_ledung_setting']);
 /** set_project_basics (the Ledung Helper's): the same hook; asked when it loosens the mode or changes the account. */
 export const BASICS_TOOLS = fullNames(['set_project_basics']);
 /** usage_publish (issue #376): through the same hook, asked when it switches publishing on or moves it. */

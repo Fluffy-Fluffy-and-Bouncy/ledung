@@ -12,7 +12,7 @@ export function helperToolWords(tool: string): string {
     add_project: 'Adding the project', create_project: 'Creating the project', list_projects: 'Looking at your projects',
     project_settings: 'Reading the settings', set_project_settings: 'Changing the settings', set_project_basics: 'Changing the settings',
     setup_step: 'Moving the setup on', setup_status: 'Looking at the setup', set_user_name: 'Saving your name',
-    workflow_files: 'Reading the workflow', propose_workflow: 'Preparing the workflow for your review', reply: 'Writing', show_card: 'Preparing a card',
+    workflow_files: 'Reading the workflow', ledung_settings: 'Reading the settings', change_ledung_setting: 'Changing the settings', propose_workflow: 'Preparing the workflow for your review', reply: 'Writing', show_card: 'Preparing a card',
   };
   if (tool === 'Skill') return "Reading Ledung's guide";
   return words[tool.replace(/^mcp__ledung__/, '')] ?? 'Working';
@@ -85,6 +85,19 @@ export function helperApprovalText(toolName: string, input: Record<string, unkno
   // What a settings change loosens, as Ledung's own rule says it: the part after its colon, one line each.
   const loosened = () => (sensitive && sensitive.includes(': ') ? sensitive.slice(sensitive.indexOf(': ') + 2).split('; ') : []);
   switch (tool) {
+    case 'change_ledung_setting': {
+      // "a change to Ledung's settings that opens up: a; b. Risk: …  Narrower: …" (src/sessions/helper-settings.ts).
+      const head = "a change to Ledung's settings that opens up: ";
+      if (!sensitive?.startsWith(head)) return null;
+      const body = sensitive.slice(head.length);
+      const narrow = body.indexOf(' Narrower: ');
+      const riskAt = body.indexOf('. Risk: ');
+      const opens = body.slice(0, riskAt >= 0 ? riskAt : narrow >= 0 ? narrow : body.length).replace(/\.$/, '').split('; ').filter(Boolean);
+      const risk = riskAt >= 0 ? body.slice(riskAt + 2, narrow >= 0 ? narrow : body.length).trim() : null;
+      const narrower = narrow >= 0 ? body.slice(narrow + 1).trim() : null;
+      if (!opens.length) return null;
+      return { title: "Change Ledung's settings?", lines: [...opens, ...(risk ? [risk] : []), ...(narrower ? [`${narrower} (say so to the helper instead)`] : [])] };
+    }
     case 'add_project':
       return { title: `Add the project "${name}"?`, lines: [`Folder: ${str(input.folder) ?? '?'}`, ...settings] };
     case 'create_project':

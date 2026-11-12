@@ -11,6 +11,8 @@ export type CardLink = typeof CARD_LINKS[number];
 // One voice (Simon's try-out, 2026-11-12): a card has a short title and its inputs; what it is about is the helper's own
 // message, said once, before it.
 const title = z.string().min(1).max(80);
+/** Settings kept in the person's browser that an apply card sets (helper-settings.ts BROWSER_SETTINGS). */
+export const APPLY_SETTINGS = ['theme', 'autocorrect', 'statusDot', 'archivedLink', 'compactSidebar', 'shortcuts', 'signInStart'] as const;
 /** Showing a card with the same id (else the same kind and title) again in a turn replaces it: shown once. */
 const id = z.string().regex(/^[a-z0-9-]{1,40}$/).optional();
 
@@ -22,10 +24,14 @@ export const CardSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('folder'), id, title, start: z.string().min(1).max(400).optional() }).strict(),
   z.object({ kind: z.literal('text'), id, title, placeholder: z.string().min(1).max(80).optional() }).strict(),
   z.object({ kind: z.literal('link'), id, title, to: z.enum(CARD_LINKS), project: z.string().min(1).max(100).optional() }).strict(),
+  // A setting kept in their browser (docs/steps/ledung-helper.md, "Every setting"): its button sets it there.
+  z.object({ kind: z.literal('apply'), id, title, setting: z.enum(APPLY_SETTINGS), value: z.union([z.string().max(40), z.boolean(), z.number()]) }).strict(),
 ]);
 export type HelperCard = z.infer<typeof CardSchema>
   /** Ledung's own: the review of a proposed workflow (propose_workflow). */
-  | { kind: 'review'; title: string; question: number; project: string };
+  | { kind: 'review'; title: string; question: number; project: string }
+  /** Ledung's own: a setting that needs Restart Ledung was saved. */
+  | { kind: 'restart'; title: string };
 
 /** Words a card's title, option or hint may not use: they read as Ledung's own approval (reviews of parts 1 and 2). */
 const APPROVAL_WORDS = /\b(allow|approve|approved|deny|denied|confirm order)\b/i;

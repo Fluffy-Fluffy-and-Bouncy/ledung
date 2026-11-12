@@ -115,6 +115,7 @@ import type { FlowProposal } from '../shared/flow-proposal.ts';
 
 import { helperFolder, HELPER_BUILT_IN_TOOLS, HELPER_DEFAULT_MODEL, HELPER_MODELS, HELPER_PROFILE, setupKickoff, setupPromptLine } from './helper.ts';
 import type { HelperHandlers } from './helper-tools.ts';
+import { planSetting, settingRule, settingsList, type SettingPlan, type SettingsCtx } from './helper-settings.ts';
 import { cardLooksLikeApproval, CardSchema, type HelperCard } from '../shared/helper-cards.ts';
 import { isSetupStep, markProblem, setupView, stepLine, type HelperInfo, type SetupFacts, type SetupPhase, type SetupState, type SetupStepId, type SetupView } from '../shared/setup.ts';
 import { ASKED_KEY as SHORTCUTS_ASKED_KEY } from '../platform/shortcuts.ts';
@@ -323,6 +324,16 @@ export class SessionManager {
       },
       linked: () => this.linked,
       settings: () => this.settings,
+      // The Ledung Helper's every-setting tool (docs/steps/ledung-helper.md, "Every setting").
+      helperSettings: {
+        rule: (raw) => settingRule(this.ledungSettingPlan(raw)),
+        apply: (helperId, raw) => {
+          const plan = this.ledungSettingPlan(raw);
+          const out = plan.apply();
+          if (plan.restart) this.addCard(helperId, { kind: 'restart', title: `${plan.label} applies after Restart Ledung` });
+          return out;
+        },
+      },
       linkedFiles: () => this.linkedFiles,
       outgoingFiles: (managerId, names) => this.outgoingFiles(managerId, names),
       snapshotOutgoing: (managerId, linkId, toId, file) => this.snapshotOutgoing(managerId, linkId, toId, file),
@@ -2672,9 +2683,67 @@ export class SessionManager {
     return clean;
   }
 
+  // --- Every setting, for the Ledung Helper (helper-settings.ts) ---------------------------------------
+
+  /** The config file and how to read it again at once (main.ts); null in tests and where Ledung has none. */
+  private configWriter: { file: string; reload(): void } | null = null;
+  /** This computer's update channel and check-in, from the server's own parts (main.ts). */
+  private serverSettings: SettingsCtx['server'] = null;
+
+  setConfigWriter(w: { file: string; reload(): void } | null): void {
+    this.configWriter = w;
+  }
+
+  setServerSettings(s: SettingsCtx['server']): void {
+    this.serverSettings = s;
+  }
+
+  private ledungSettingPlan(raw: unknown): SettingPlan {
+    const r = (raw ?? {}) as { setting?: unknown; value?: unknown; project?: unknown };
+    if (typeof r.setting !== 'string') throw new UserError('Name the setting.');
+    try {
+      return planSetting(this.settingsCtx(), r.setting, r.value, typeof r.project === 'string' ? r.project : undefined);
+    } catch (e) {
+      throw new UserError((e as Error).message);
+    }
+  }
+
+  private settingsCtx(): SettingsCtx {
+    return {
+      config: () => this.config,
+      configFile: this.configWriter?.file ?? null,
+      reloadConfig: () => this.configWriter?.reload(),
+      setLimit: (n) => this.setLimit(n),
+      limit: () => this.limit,
+      usageStops: () => this.usageStopStates().map((s) => ({ account: s.account, kind: s.kind, percent: s.percent })),
+      setUsageStop: (account, kind, percent) => void this.setUsageStop(account, kind, percent),
+      macros: () => this.macros(),
+      setMacros: (body) => void this.setMacros(body),
+      skillDefaults: () => this.skillDefaults(),
+      setSkillDefaults: (body) => void this.setSkillDefaults(body),
+      accountChoices: () => this.accountChoices(),
+      setAccountChoices: (body) => void this.setAccountChoices(body as { chats?: unknown; newProjects?: unknown }),
+      chats: () => this.chats(),
+      updateChats: (body) => void this.updateChats(body),
+      chatsLoosen: (body) => this.chatsLoosen(body),
+      setChatsColour: (colour) => void this.setChatsColour(colour),
+      helperModel: () => this.helperModel(),
+      setHelperModel: (model) => void this.setHelperModel(model),
+      server: this.serverSettings,
+      relayAddress: () => this.settings?.relay().relay ?? null,
+      setRelayAddress: (relay) => {
+        if (!this.settings) throw new UserError('The relay is not available in this Ledung.');
+        this.settings.setRelay(relay);
+      },
+      project: (name) => this.projectStore.get(name)?.config ?? null,
+      updateProject: (name, config) => void this.updateProject(name, config),
+      renameProject: (name, to) => void this.renameProject(name, to),
+    };
+  }
+
   /** A change the helper made, said in its chat as an event, and the tool's answer passed on. */
   private helperNoted(helperId: string, out: string): string {
-    if (/^(Saved|Added|Created) /.test(out)) this.publish({ type: 'message', message: this.store.addMessage(helperId, 'event', { text: `Ledung Helper: ${plainFields(out.split('. ')[0]!.replace(/\.$/, ''))}.` }) });
+    if (/^(Saved|Added|Created|Renamed) /.test(out)) this.publish({ type: 'message', message: this.store.addMessage(helperId, 'event', { text: `Ledung Helper: ${plainFields(out.split('. ')[0]!.replace(/\.$/, ''))}.` }) });
     return out;
   }
 
@@ -2822,6 +2891,8 @@ export class SessionManager {
       },
       proposeWorkflow: (name, changes, why) => this.proposeFlow(id, changes, why, name),
       reply: (text, card) => this.helperReply(id, text, card),
+      ledungSettings: () => settingsList(this.settingsCtx()),
+      changeLedungSetting: (input) => this.helperNoted(id, m.changeLedungSetting(id, input)),
     };
   }
 

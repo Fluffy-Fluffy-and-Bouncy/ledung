@@ -92,11 +92,11 @@ const helperTools = () => Object.keys((helperToolServer('Simon', anyHelper).inst
 
 test('the helper has Ledung\'s settings tools only: no session, manager, board or question tool', () => {
   assert.deepEqual(helperTools(), [
-    'add_project', 'create_project', 'list_projects', 'project_settings', 'propose_workflow', 'reply', 'set_project_basics', 'set_project_settings',
+    'add_project', 'change_ledung_setting', 'create_project', 'ledung_settings', 'list_projects', 'project_settings', 'propose_workflow', 'reply', 'set_project_basics', 'set_project_settings',
     'set_user_name', 'setup_status', 'setup_step', 'workflow_files',
   ]);
   // What creates a project or changes settings is never unasked by the tool list.
-  for (const t of ['add_project', 'create_project', 'set_project_settings', 'set_project_basics']) {
+  for (const t of ['add_project', 'create_project', 'set_project_settings', 'set_project_basics', 'change_ledung_setting']) {
     assert.ok(!unaskedTool(`mcp__ledung__${t}`, USER_APPROVED_TOOLS), t);
   }
   for (const t of ['setup_status', 'setup_step', 'set_user_name', 'reply', 'workflow_files', 'propose_workflow']) assert.ok(LEDUNG_TOOLS.includes(`mcp__ledung__${t}`), t);

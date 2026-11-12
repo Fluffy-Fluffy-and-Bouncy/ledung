@@ -189,6 +189,8 @@ export interface ManagementContext {
   orders?: Orders;
   /** Away mode now, so an order records the period it was given in (issue #105). */
   away?(): AwayInfo | null;
+  /** The Ledung Helper's settings (src/sessions/helper-settings.ts): the rule a change would ask with, and applying it. */
+  helperSettings?: { rule(raw: unknown): string | null; apply(helperId: string, raw: unknown): string };
 }
 
 /** A screenshot as ask_user takes it (issue #60). */
@@ -1809,6 +1811,54 @@ ${note}`);
   // --- The Ledung Helper's set_project_basics (docs/steps/ledung-helper.md) ------------------------------
   // What a manager may not change: model, effort, permission mode, account. Through the same hook as
   // set_project_settings: a looser mode or another account is asked of the person, the rest runs; never a locked project.
+
+  // --- The Ledung Helper's change_ledung_setting (docs/steps/ledung-helper.md, "Every setting") ----------
+  // Planned by the manager (helper-settings.ts); a change that opens anything up is asked of the person with its
+  // rule, and runs only when what it opens now is what they allowed; anything else runs unasked.
+
+  private ledungSettingKey(helperId: string, raw: unknown): string {
+    return patchKey(`ledung-setting\n${helperId}`, raw as SettingsPatch);
+  }
+
+  private ledungSettingRule(helperId: string, raw: unknown): string | null {
+    if (!this.isHelper(helperId)) throw new ManagementError('Only the Ledung Helper changes these settings.');
+    const port = this.ctx.helperSettings;
+    if (!port) throw new ManagementError("Ledung's settings are not available here.");
+    return port.rule(raw);
+  }
+
+  ledungSettingChange(helperId: string, raw: unknown, note = true): { deny: string } | { ask: string } | { allow: true } {
+    let rule: string | null;
+    try {
+      rule = this.ledungSettingRule(helperId, raw);
+    } catch (e) {
+      return { deny: (e as Error).message };
+    }
+    if (rule) return { ask: rule };
+    if (note) this.noteUnasked(this.ledungSettingKey(helperId, raw));
+    return { allow: true };
+  }
+
+  noteApprovedLedungSetting(helperId: string, raw: unknown, shown: string | null): void {
+    this.noteApproval(this.ledungSettingKey(helperId, raw), shown);
+  }
+
+  changeLedungSetting(helperId: string, raw: unknown): string {
+    const now = this.ledungSettingRule(helperId, raw);
+    const key = this.ledungSettingKey(helperId, raw);
+    const approved = this.takeApproval(key);
+    if (approved !== undefined) {
+      if (now !== null && now !== approved) throw new ManagementError(`The setting changed while ${this.ctx.userName} was asked, so this is no longer what they allowed; nothing was saved. Call it again to ask.`);
+    } else {
+      const unasked = this.takeUnasked(key);
+      if (now !== null) {
+        throw new ManagementError(unasked
+          ? `The setting changed meanwhile, and this change now opens something up; nothing was saved. Call it again to ask ${this.ctx.userName}.`
+          : `This change opens something up and ${this.ctx.userName} did not allow it; nothing was saved.`);
+      }
+    }
+    return this.ctx.helperSettings!.apply(helperId, raw);
+  }
 
   /** Whether this session is the Ledung Helper. */
   isHelper(sessionId: string): boolean {
