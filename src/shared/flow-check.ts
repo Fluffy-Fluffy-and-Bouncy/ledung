@@ -8,6 +8,7 @@
 // A project may have several flows, and a Run flow block runs another (#447): checkFlowCalls checks them together.
 import { z } from 'zod';
 import { NAME_COLOURS } from './name-colours.ts';
+import { EARLIER_MAX, ORIGIN_HASH } from './flow-origin.ts';
 import { STOPPED_ENDING, BLOCK_KINDS, DEFAULT_FLOW, drawnArrows, endingKey, flowEndings, FLOW_FILE, outcomeName, RUNS, runsSession, SUBSTEP_KINDS, SUBSTEP_TO, SUBSTEP_WHEN, type DrawnArrow, type Flow, type FlowBlock, type FlowProblem } from './flow.ts';
 
 const ID = /^[a-z0-9][a-z0-9-]{0,47}$/;
@@ -153,12 +154,39 @@ const Tidy = z.union([
   z.object({ sessions: z.enum(['archive', 'stop']), on: Endings.optional() }),
 ], { message: 'is "archive", "stop" or "keep", or { "sessions": "archive", "on": ["Merged"] }' });
 
+/** The author's own release number (workflow-origin.md): a whole number they raise by hand. */
+const Release = z.number().int().min(1, 'is a whole number, 1 or more').max(1000000);
+const Day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'is a day, written YYYY-MM-DD');
+/** One copy further back in a copy's credit chain (question #1680). */
+const OriginLink = z.object({
+  $comment: Comment,
+  title: Text(120),
+  release: Release.optional(),
+  hash: z.string().regex(ORIGIN_HASH, 'is "sha256:" and 12 hex digits, as Ledung writes it').optional(),
+  author: Text(120).optional(),
+});
+/**
+ * Where a copy came from (workflow-origin.md, section 2). Checked apart from the rest of the file: an origin that is
+ * wrong is left out with its problems, and never keeps the flow from being read.
+ */
+const Origin = OriginLink.extend({
+  workflow: Text(48),
+  repo: Text(300).optional(),
+  copiedAt: Day.optional(),
+  adopted: Day.optional(),
+  earlier: z.array(OriginLink).max(EARLIER_MAX, `keeps at most ${EARLIER_MAX}: the first and the latest ones`).optional(),
+}).refine((o) => (o.copiedAt === undefined) !== (o.adopted === undefined), { message: 'says either "copiedAt" (the day it was copied) or "adopted" (the day it was recorded later), one of them' })
+  .refine((o) => o.adopted !== undefined || o.hash !== undefined, { message: 'has the "hash" of what was copied', path: ['hash'] });
+
 const FlowFile = z.object({
   $comment: Comment,
   version: z.literal(1, { message: 'must be 1, the only version this Ledung knows' }),
   title: Text(120).optional(),
   /** A line of credit, shown only (#117): no proof of authorship. */
   author: Text(120).optional(),
+  release: Release.optional(),
+  /** Checked by itself in parseFlow (Origin), so a wrong one is left out rather than refusing the flow. */
+  origin: z.unknown().optional(),
   start: Id.optional(),
   manager: MarkdownPath.optional(),
   blocks: z.array(Block).min(1, 'a flow needs at least one block').max(200),
@@ -190,6 +218,8 @@ function where(raw: unknown, at: readonly PropertyKey[]): string {
 /** The fields each part of the file has; anything else is left out with a problem rather than refusing the file. */
 const FIELDS = {
   top: Object.keys(FlowFile.shape), block: Object.keys(Block.shape), at: ['x', 'y'], timer: ['every', 'of', 'clock'], guard: ['$comment', 'minHours', 'when'], worktree: Object.keys(Worktree.shape),
+  origin: [...Object.keys(OriginLink.shape), 'workflow', 'repo', 'copiedAt', 'adopted', 'earlier'],
+  originLink: Object.keys(OriginLink.shape),
   overlay: Object.keys(Overlay.shape), frame: Object.keys(Frame.shape), size: ['width', 'height'], substep: Object.keys(Substep.shape), outcome: Object.keys(Outcome.shape), substepOutcome: Object.keys(SubstepOutcome.shape),
 };
 
@@ -242,6 +272,8 @@ function unknownFields(raw: unknown): FlowProblem[] {
   look(top.worktree, FIELDS.worktree, ['worktree']);
   look((top.worktree as Record<string, unknown> | null)?.remove, ['on'], ['worktree', 'remove']);
   look(top.tidy, ['sessions', 'on'], ['tidy']);
+  look(top.origin, FIELDS.origin, ['origin']);
+  items(top.origin, 'earlier').forEach((l, i) => look(l, FIELDS.originLink, ['origin', 'earlier', i]));
   list('blocks').forEach((b, i) => {
     look(b, FIELDS.block, ['blocks', i], DROPPED_IN_BLOCK);
     for (const part of ['at', 'timer', 'guard'] as const) look((b as Record<string, unknown> | null)?.[part], FIELDS[part], ['blocks', i, part]);
@@ -272,7 +304,23 @@ export function parseFlow(text: string, file = FLOW_FILE): { flow: Flow; problem
   const unknown = unknownFields(raw);
   if (!result.success) return { flow: null, problems: [...result.error.issues.map((i) => ({ at: where(raw, i.path), message: i.message })), ...unknown] };
   // $comment is for people reading the file; the page has no use for it.
-  const { $comment: _, ...flow } = result.data;
+  const { $comment: _, origin: rawOrigin, ...flow } = result.data;
+  const own: FlowProblem[] = [];
+  // workflow-origin.md: one origin and release per workflow folder, in its default flow.
+  if (file !== FLOW_FILE) {
+    for (const k of ['origin', 'release'] as const) {
+      if ((raw as Record<string, unknown>)[k] !== undefined) own.push({ at: k, message: `belongs in ${FLOW_FILE}, the default flow, once for the whole workflow; it is left out here.` });
+    }
+    delete flow.release;
+  }
+  let origin: Flow['origin'];
+  if (rawOrigin !== undefined && file === FLOW_FILE) {
+    const o = Origin.safeParse(rawOrigin);
+    if (o.success) {
+      const { $comment: _o, earlier, ...rest } = o.data;
+      origin = { ...rest, ...(earlier ? { earlier: earlier.map(({ $comment: _e, ...l }) => l) } : {}) };
+    } else own.push(...o.error.issues.map((i) => ({ at: where(raw, ['origin', ...i.path]), message: `${i.message}; the origin is left out (Ledung writes it when a copy is made).` })));
+  }
   const plain = <T extends { $comment?: string }>(list: T[] | undefined) => list?.map(({ $comment: _x, ...rest }) => rest);
   const blocks = flow.blocks.map(({ $comment: _c, outcomes, substeps, guard, ...b }) => ({
     ...b,
@@ -281,7 +329,7 @@ export function parseFlow(text: string, file = FLOW_FILE): { flow: Flow; problem
     ...(outcomes ? { outcomes: plain(outcomes) } : {}),
     ...(substeps ? { substeps: substeps.map(({ $comment: _s, outcomes: so, ...sub }) => ({ ...sub, ...(so ? { outcomes: plain(so) } : {}) })) } : {}),
   }));
-  return { flow: { ...flow, blocks, overlays: flow.overlays.map(({ $comment: _c, ...o }) => o), frames: flow.frames.map(({ $comment: _c, ...f }) => f) }, problems: unknown };
+  return { flow: { ...flow, ...(origin ? { origin } : {}), blocks, overlays: flow.overlays.map(({ $comment: _c, ...o }) => o), frames: flow.frames.map(({ $comment: _c, ...f }) => f) }, problems: [...unknown, ...own] };
 }
 
 /**
@@ -431,6 +479,8 @@ export function checkFlow(flow: Flow, exists: (file: string) => boolean, profile
   for (const b of flow.blocks) scan({ ...b, id: undefined }, `blocks.${b.id}`);
   if (flow.title) scan(flow.title, 'title');
   if (flow.author) scan(flow.author, 'author');
+  // workflow-origin.md, section 6: a copy names its original by name and remote, never by a folder.
+  if (flow.origin) scan(flow.origin, 'origin');
   flow.overlays.forEach((o) => scan(o.title, `overlays.${o.id}.title`));
   flow.frames.forEach((f) => scan(f.title, `frames.${f.id}.title`));
 

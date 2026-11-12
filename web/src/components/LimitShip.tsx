@@ -4,6 +4,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { BAR_WIDTHS, WRECK, barArriving, barLeaving, barScene, barValue, barX, damageStage, render, type Hull, type Mark, type Scene } from './shipFrames.ts';
 import { useShipSize } from './SailingShip.tsx';
+import { onTick } from '../clock.ts';
 import { shownPercent } from '../../../src/shared/usage-stop-text.ts';
 
 const STEP_MS = 180;
@@ -70,8 +71,8 @@ export function LimitShip({ utilization, label, hull = 'ship' }: { utilization: 
 
   useEffect(() => {
     if (still) return;
-    const timer = setInterval(() => setStep((s) => s + 1), STEP_MS);
-    return () => clearInterval(timer);
+    // The page's shared clock (issue #233), not a timer of its own.
+    return onTick(STEP_MS, () => setStep((s) => s + 1));
   }, [still]);
 
   // Move one frame: fast off to the left on a reset, then in from the edge; otherwise a column every other frame toward the value.

@@ -394,6 +394,11 @@ const Config = z.object({
   claudeExecutable: z.string().min(1).refine((v) => v === 'installed' || v === 'bundled' || path.isAbsolute(v), 'claudeExecutable is "installed", "bundled" or a full path to Claude Code.').default('installed'),
   /** The shell a "!" command from the message box runs in on Windows (issue #212): Git Bash, as Claude's Bash tool, or PowerShell. */
   windowsShell: z.enum(['bash', 'powershell']).default('bash'),
+  /**
+   * GitHub Enterprise hosts whose pull requests the page shows (audit L16), e.g. ["github.example.com"]. github.com is
+   * always one; a remote on any other host is not looked up.
+   */
+  githubHosts: z.array(z.string().trim().toLowerCase().regex(/^[a-z0-9.-]+$/, 'Give a host name, such as github.example.com.')).max(20).default([]),
   board: BoardSetting,
   remote: RemoteSetting,
   relayJoin: RelayJoinSetting,
@@ -553,6 +558,7 @@ export const SETTING_RELOAD = {
   remoteControl: 'live',
   claudeExecutable: 'live',
   windowsShell: 'live',
+  githubHosts: 'live',
   board: 'restart',
   remote: 'restart',
   relayJoin: 'restart',

@@ -2,17 +2,12 @@
 // the limit (editable), the line for a free place with Start now, and what one session's turns used.
 import { useEffect, useState } from 'react';
 import { projectLabel, type MachineInfo, type Priority, type SessionInfo, type TurnResource, type TypicalCost } from '../../../src/shared/protocol.ts';
+import { formatBytes, formatCores, meterLevel } from '../../../src/shared/machine-shown.ts';
 import { api } from '../api.ts';
+import { pollWhileShown } from '../pollShown.ts';
 
-export function formatCores(n: number): string {
-  return `${n < 10 ? n.toFixed(1) : Math.round(n)} ${n >= 0.95 && n < 1.05 ? 'core' : 'cores'}`;
-}
-
-export function formatBytes(n: number): string {
-  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(n >= 10 * 1024 ** 3 ? 0 : 1)} GB`;
-  if (n >= 1024 ** 2) return `${Math.round(n / 1024 ** 2)} MB`;
-  return `${Math.round(n / 1024)} KB`;
-}
+// Shared with the server, which sends the machine's figures only when what they show here changes (#230).
+export { formatBytes, formatCores };
 
 export function formatDuration(ms: number): string {
   const s = Math.round(ms / 1000);
@@ -26,7 +21,7 @@ export const PRIORITY_LABEL: Record<Priority, string> = { normal: 'Normal', high
 /** A load meter: status colour with an icon and words, never colour alone. */
 function Load({ label, used, total, text }: { label: string; used: number; total: number; text: string }) {
   const share = total > 0 ? used / total : 0;
-  const cls = share >= 0.95 ? 'critical' : share >= 0.8 ? 'warning' : 'good';
+  const cls = meterLevel(share);
   const icon = { good: '●', warning: '▲', critical: '■' }[cls];
   return (
     <div className="limit" title={`${label}: ${text}${cls === 'good' ? '' : cls === 'warning' ? ' (busy)' : ' (full)'}`}>
@@ -42,7 +37,8 @@ function Load({ label, used, total, text }: { label: string; used: number; total
 
 export function MachinePanel(props: {
   machine: MachineInfo | null;
-  sessions: SessionInfo[];
+  /** The sessions by id (issue #233). */
+  byId: ReadonlyMap<string, SessionInfo>;
   onOpen: (id: string) => void;
   run: (action: () => Promise<unknown>) => Promise<void>;
 }) {
@@ -54,7 +50,7 @@ export function MachinePanel(props: {
     const n = Number(limit);
     if (n !== m.limit) void props.run(() => api.setLimit(n)).finally(() => setLimit(String(m.limit)));
   };
-  const title = (id: string) => props.sessions.find((s) => s.id === id)?.title ?? 'a session';
+  const title = (id: string) => props.byId.get(id)?.title ?? 'a session';
   return (
     <section className="machine" aria-label="Machine">
       <div className="limits">
@@ -79,7 +75,7 @@ export function MachinePanel(props: {
       {m.line.length > 0 && (
         <ol className="machine-line">
           {m.line.map((id) => {
-            const s = props.sessions.find((x) => x.id === id);
+            const s = props.byId.get(id);
             return (
               <li key={id}>
                 <button className="link" onClick={() => props.onOpen(id)}>{title(id)}</button>
@@ -99,12 +95,11 @@ export function SessionTurns({ sessionId }: { sessionId: string }) {
   const [turns, setTurns] = useState<TurnResource[] | null>(null);
   useEffect(() => {
     let current = true;
-    const load = () => api.turns(sessionId).then((t) => current && setTurns(t), () => {});
-    void load();
-    const timer = setInterval(load, 15000);
+    // Not while the page is hidden (issue #233).
+    const stop = pollWhileShown(() => api.turns(sessionId).then((t) => current && setTurns(t), () => {}), 15000);
     return () => {
       current = false;
-      clearInterval(timer);
+      stop();
     };
   }, [sessionId]);
   if (!turns) return null;

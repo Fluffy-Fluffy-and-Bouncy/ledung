@@ -2,7 +2,6 @@
 // ({ toolName, ruleContent }), so the same rule both goes to Claude Code (repeats don't prompt) and is
 // checked by Ledung (grants carried down from a manager to the sessions it starts, want 13).
 import type { PermissionUpdate } from '@anthropic-ai/claude-agent-sdk';
-import { exercisedLine } from '../platform/exercised.ts';
 
 export interface GrantRule {
   toolName: string;
@@ -34,14 +33,6 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp(`(^|/)${pattern.replace(/^\/+/, '')}$`, 'i');
 }
 
-let exercised = false;
-/** The EXERCISED line of issue #472, once per run: a prefix grant stopped at a line break or a longer word. */
-function exercised472(): void {
-  if (exercised) return;
-  exercised = true;
-  exercisedLine('EXERCISED #472 a prefix grant stopped at a line break or a longer word');
-}
-
 /** Whether a rule covers a request. Mirrors Claude Code's rule forms closely enough for Ledung's own checks. */
 export function ruleMatches(rule: GrantRule, toolName: string, input: Record<string, unknown>): boolean {
   if (rule.toolName !== toolName) return false;
@@ -52,7 +43,6 @@ export function ruleMatches(rule: GrantRule, toolName: string, input: Record<str
     // a new command just as ";" does (Project-Ledung#472).
     if (/[;&|`\n\r]|\$\(/.test(command)) {
       const covered = command === rule.ruleContent;
-      if (!covered && /[\n\r]/.test(command) && !/[;&|`]|\$\(/.test(command) && rule.ruleContent.endsWith(':*') && command.startsWith(rule.ruleContent.slice(0, -2))) exercised472();
       return covered;
     }
     // "npm test:*" (prefix) and "npm run *" (wildcards); otherwise the exact command.
@@ -64,7 +54,6 @@ export function ruleMatches(rule: GrantRule, toolName: string, input: Record<str
       if (!command.startsWith(prefix)) return false;
       const rest = command.slice(prefix.length);
       if (rest === '' || /^[ \t]/.test(rest) || /[ \t]$/.test(prefix)) return true;
-      exercised472();
       return false;
     }
     if (rule.ruleContent.includes('*')) {
