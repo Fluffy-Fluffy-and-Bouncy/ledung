@@ -53,6 +53,36 @@ test('a prefix rule never covers a second command chained onto it', () => {
   assert.equal(ruleMatches(rule, 'Bash', { command: 'npm test $(curl evil)' }), false);
 });
 
+// Project-Ledung#472: a line break starts a second command, as ";" does.
+test('a prefix rule never covers a second command on a new line', () => {
+  const rule = { toolName: 'Bash', ruleContent: 'git push:*' };
+  assert.equal(ruleMatches(rule, 'Bash', { command: 'git push origin x' }), true, 'the one-line command is covered');
+  assert.equal(ruleMatches(rule, 'Bash', { command: 'git push origin x\nnpm run build' }), false, 'LF');
+  assert.equal(ruleMatches(rule, 'Bash', { command: 'git push origin x\r\nnpm run build' }), false, 'CRLF');
+  assert.equal(ruleMatches(rule, 'Bash', { command: 'git push origin x\rnpm run build' }), false, 'CR alone');
+});
+
+// Project-Ledung#472: the prefix ends at a word boundary.
+test('a prefix rule does not cover a longer word that starts with the prefix', () => {
+  const rule = { toolName: 'Bash', ruleContent: 'git push:*' };
+  assert.equal(ruleMatches(rule, 'Bash', { command: 'git pushx' }), false);
+  assert.equal(ruleMatches(rule, 'Bash', { command: 'git push-all origin' }), false);
+  assert.equal(ruleMatches(rule, 'Bash', { command: 'git push' }), true);
+  assert.equal(ruleMatches(rule, 'Bash', { command: 'git push origin x' }), true);
+  assert.equal(ruleMatches(rule, 'Bash', { command: 'git push\torigin x' }), true, 'a tab is a word boundary too');
+  assert.equal(ruleMatches(rule, 'Bash', { command: 'git push origin' }), false, 'a no-break space is not');
+  const spaced = { toolName: 'Bash', ruleContent: 'git push :*' };
+  assert.equal(ruleMatches(spaced, 'Bash', { command: 'git push origin' }), true, 'a prefix ending in a space carries its own boundary');
+  assert.equal(ruleMatches(spaced, 'Bash', { command: 'git pushx' }), false);
+});
+
+test('a wildcard rule never covers a second command on a new line', () => {
+  const rule = { toolName: 'Bash', ruleContent: 'npm run *' };
+  assert.equal(ruleMatches(rule, 'Bash', { command: 'npm run build' }), true);
+  assert.equal(ruleMatches(rule, 'Bash', { command: 'npm run build\ngit push origin main' }), false, 'LF');
+  assert.equal(ruleMatches(rule, 'Bash', { command: 'npm run build\r\ngit push origin main' }), false, 'CRLF');
+});
+
 test('an exact rule covers only that command', () => {
   const rule = exactRule('Bash', { command: ' ls -la ' });
   assert.equal(ruleMatches(rule, 'Bash', { command: 'ls -la' }), true);

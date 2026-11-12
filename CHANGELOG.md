@@ -11,6 +11,7 @@ is nothing user-facing in it).
 
 ## 2026-11-12
 - A merge you already said yes to ("merge #N") goes through without asking only in the manager's own project repository, from its git remote: one naming no repository runs pinned to that repository, and one naming another is asked as before. Words you typed count for it only when typed on this computer, as for settings actions; your answers to the manager's questions count as before. (Project-Ledung#475)
+- Standing grants are stricter: a "starts with" grant such as `git push:*` now covers only that command and its arguments, on one line; a command that spans several lines, or a longer word that merely starts the same, is asked about as if there were no grant. (Project-Ledung#472)
 
 ## 2026-11-11
 - Your pinned latest message at the top of the chat no longer shows through a session's ⚙ menu (nor does the message box under it), and its bottom edge fades out softly instead of ending in a hard line. (#226)
