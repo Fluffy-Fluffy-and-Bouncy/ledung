@@ -11,6 +11,7 @@ import { listAll, commandLines, type ProcessInfo } from '../src/platform/process
 import { SharedLister, listShared, parseListLines } from '../src/platform/process-lister.ts';
 import { PowerShellWorker } from '../src/platform/powershell-worker.ts';
 import { ProcessSampler } from '../src/platform/processes.ts';
+import { ResourceMonitor, type MonitorTarget } from '../src/resources/monitor.ts';
 import { startShell } from '../src/runners/shell-run.ts';
 import { LocalRunner } from '../src/runners/local-runner.ts';
 import { machineSender } from '../src/shared/machine-shown.ts';
@@ -171,6 +172,42 @@ test('the sampler reads no process list while none is wanted, and reads again on
     assert.ok(lists.length >= 1 && lists[0]! > 1, 'once wanted, the whole list is read');
   } finally {
     sampler.stop();
+  }
+});
+
+// The monitor's own rule (Martin, #2059 a): no list while no local session is live, none or only container
+// sessions; one again once a local session is. Test review finding 1: the test above hands the sampler its own
+// `wanted`, so it never reached the monitor's. The sampler's read is wrapped to count, and still reads.
+test('the monitor reads no process list with no session or only container sessions, and reads one once a local session is live', { timeout: WAIT_MS * 2 }, async () => {
+  const proto = ProcessSampler.prototype as unknown as { read: () => Promise<void> };
+  const read = proto.read;
+  let reads = 0;
+  proto.read = function (this: unknown) {
+    reads++;
+    return read.call(this);
+  };
+  let targets: MonitorTarget[] = [];
+  let samples = 0;
+  const monitor = new ResourceMonitor({ intervalSec: 0.2, targets: () => targets, withDocker: () => false, onSample: () => samples++ });
+  const roundsGoOn = async (what: string) => {
+    const from = samples;
+    for (const end = Date.now() + WAIT_MS; samples < from + 2 && Date.now() < end;) await sleep(50);
+    assert.ok(samples >= from + 2, `${what}: samples went on (${samples - from})`);
+  };
+  try {
+    monitor.start();
+    await roundsGoOn('no session');
+    assert.equal(reads, 0, 'no session: no list was read');
+    // A container session only: its figures come from the container, not from this computer's list.
+    targets = [{ id: 'c1', kind: 'docker', container: `ledung-test-none-${process.pid}` }];
+    await roundsGoOn('a container session only');
+    assert.equal(reads, 0, 'a container session only: no list was read');
+    targets = [...targets, { id: 'l1', kind: 'local' }];
+    for (const end = Date.now() + WAIT_MS; !reads && Date.now() < end;) await sleep(50);
+    assert.ok(reads >= 1, 'a local session live: a list is read');
+  } finally {
+    monitor.stop();
+    proto.read = read;
   }
 });
 
