@@ -33,4 +33,8 @@ test('the Workflow button: running, for you, and nothing more when nothing goes 
   assert.deepEqual(workflowButton(runs, open), { running: 4, forYou: 1, title: 'The workflow page: 4 running, 1 queued, 1 waiting for you' });
   // Runs under way and none for you: no bubble.
   assert.deepEqual(workflowButton([run(3, {}), run(5, { state: 'waiting', question: 8 })], open), { running: 2, forYou: 0, title: 'The workflow page: 2 running' });
+  // A Run flow block's own run waiting on your open question, alone: not running (its parent would count), but for you,
+  // so the button is blue with the bubble and no number (the PR's call, review of PR #290).
+  assert.deepEqual(workflowButton([run(11, { state: 'waiting', question: 7, parent: { run: 'run-3', block: 'asset' } })], open),
+    { running: 0, forYou: 1, title: 'The workflow page: 1 waiting for you' });
 });
