@@ -711,6 +711,57 @@ const MIGRATIONS: string[] = [
   ALTER TABLE sessions ADD COLUMN requested_effort TEXT;
   ALTER TABLE sessions ADD COLUMN effort TEXT;
   `,
+  // Work time for work_history (issue #254, review of PR #260): the spans inside a turn a tool call waited on a pause or
+  // a usage stop, as JSON [[start, end], ...] (null: none, or a turn recorded before this); and when the turn now under
+  // way began, so a turn that runs across Restart Ledung is measured whole (null: none under way).
+  `
+  ALTER TABLE turn_resources ADD COLUMN waits TEXT;
+  ALTER TABLE sessions ADD COLUMN turn_started_at INTEGER;
+  `,
+  // The person's typed words in one session since a time, read on every manager tool call by the hooks that look
+  // for their word (issue #232): only user messages, so the read never walks the session's replies.
+  `CREATE INDEX messages_user_by_session ON messages(session_id, at) WHERE kind = 'user';`,
+  // Resource limits' learning (docs/steps/resource-limits.md, "Learning"): one row per finished reserved job, per
+  // stretch of unreserved heavy work, and per new session's first minutes (kind "session:<role>"); amounts are JSON
+  // by resource ("cpu", "ram", "gpu", "vram"; the GPU's id left out, so a figure outlives a reboot). And the command
+  // kinds the person said never need a reservation.
+  `
+  CREATE TABLE job_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    commands TEXT NOT NULL,
+    asked TEXT NOT NULL,
+    peak TEXT NOT NULL,
+    mean TEXT NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    over INTEGER NOT NULL,
+    undeclared INTEGER NOT NULL,
+    ended_at INTEGER NOT NULL
+  );
+  CREATE INDEX job_runs_by_kind ON job_runs(project, kind, ended_at);
+  CREATE TABLE command_marks (
+    project TEXT NOT NULL,
+    command TEXT NOT NULL,
+    never INTEGER NOT NULL,
+    PRIMARY KEY (project, command)
+  );
+  `,
+  // Browsers become devices (Project-Ledung#482, step 1 of #477): a browser's sign-in is a devices row of kind
+  // 'browser' (kind is free text, so no column changes). Each of #476's sign-ins, the meta entry 'sign-ins' holding
+  // {cookie hash: last use in ms}, becomes such a row with the same hash, so the same cookie keeps signing in and nobody
+  // is signed out; its last use stands in for when it was made and when its cookie was set, so its first use renews it.
+  // The entry is then removed, so no sign-in hash stays outside the devices table. json_each only ever sees that entry
+  // (the CASE), and a key that is not a hash, or a use that is not a number, is dropped.
+  `
+  INSERT INTO devices (id, name, cookie_hash, created_at, last_used_at, kind, cookie_at)
+    SELECT lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(6))),
+      'Browser signed in before the update', s.key, CAST(s.value AS INTEGER), CAST(s.value AS INTEGER), 'browser', CAST(s.value AS INTEGER)
+    FROM meta, json_each(CASE WHEN meta.key = 'sign-ins' AND json_valid(meta.value) AND json_type(meta.value) = 'object' THEN meta.value ELSE '{}' END) AS s
+    WHERE meta.key = 'sign-ins' AND length(s.key) = 64 AND s.key NOT GLOB '*[^0-9a-f]*' AND s.type IN ('integer', 'real')
+      AND s.key NOT IN (SELECT cookie_hash FROM devices);
+  DELETE FROM meta WHERE key = 'sign-ins';
+  `,
 ];
 
 export function databaseFile(dir = userDataDir()): string {

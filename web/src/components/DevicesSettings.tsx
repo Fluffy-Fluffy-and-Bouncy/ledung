@@ -1,11 +1,13 @@
-// Settings → Phones, once Devices (issue #160, docs/steps/relay.md steps 4 and 5). On this computer: pair a phone with a
-// one-time link and QR code (10 minutes, used once) and revoke paired devices. Through the public name: this
-// device only, and setting up its passkey in the minutes after pairing; devices are managed on the computer.
+// Settings → Browsers and phones, once Phones (issue #160, docs/steps/relay.md steps 4 and 5; browsers since
+// Project-Ledung#482). On this computer: the browsers signed in here, and pairing a phone with a one-time link and QR code
+// (10 minutes, used once); each one renamed and removed here. Through the public name: this device only, and setting
+// up its passkey in the minutes after pairing; devices are managed on the computer.
 import { useEffect, useState } from 'react';
 import { api, type DeviceInfo } from '../api.ts';
 import { pairQrText, qrModules } from './qr.ts';
 import { browserPushSupport, framedPushNote, pushIsOn, pushOff, pushOn } from '../push.ts';
 import { inFrame } from '../computerFrame.ts';
+import { usePlainTyping } from '../usePlainTyping.ts';
 
 const when = (at: number | null) => (at ? new Date(at).toLocaleString() : 'never');
 
@@ -37,7 +39,7 @@ export function DevicesSettings({ run, linked = false }: { run: (action: () => P
   if (!here) return null;
   return (
     <section>
-      <h3>Phones</h3>
+      <h3>Browsers and phones</h3>
       {here.remote ? (
         <ThisDevice device={here.device} mayAddPasskey={here.mayAddPasskey} unlockedUntil={here.unlockedUntil} linked={linked} run={run} onChange={() => api.thisDevice().then(setHere)} />
       ) : <PairedDevices run={run} />}
@@ -170,14 +172,60 @@ function PushSwitch({ run, onChange }: { run: (action: () => Promise<unknown>) =
   );
 }
 
+/**
+ * One browser or phone in this computer's list: its name and facts, Rename (in place) and Remove. Removing the browser
+ * this page runs in signs it out at once, so that one asks first.
+ */
+function DeviceRow({ device, facts, here, run, onChange }: {
+  device: DeviceInfo; facts: string; here: boolean; run: (action: () => Promise<unknown>) => Promise<void>; onChange: () => Promise<void>;
+}) {
+  const [name, setName] = useState<string | null>(null);
+  const [asking, setAsking] = useState(false);
+  const typing = usePlainTyping();
+  const remove = () => void run(async () => { await api.revokeDevice(device.id); await onChange(); });
+  if (name !== null) {
+    return (
+      <form className="device-row device-rename" onSubmit={(e) => {
+        e.preventDefault();
+        void run(async () => { await api.renameListedDevice(device.id, name); setName(null); await onChange(); });
+      }}>
+        <input type="text" {...typing} aria-label={`New name for ${device.name}`} value={name} maxLength={60} autoFocus onChange={(e) => setName(e.target.value)} />
+        <span className="device-actions">
+          <button className="small" type="submit">Save</button>
+          <button className="small" type="button" onClick={() => setName(null)}>Cancel</button>
+        </span>
+      </form>
+    );
+  }
+  return (
+    <div className="device-row">
+      <span><b>{device.name}</b>{here && <> <span className="this-device">(this browser)</span></>} <span className="muted">· {facts}</span></span>
+      {asking ? (
+        <span className="device-actions">
+          <span className="muted">Sign this browser out?</span>
+          <button className="small" onClick={remove}>Remove</button>
+          <button className="small" onClick={() => setAsking(false)}>Keep</button>
+        </span>
+      ) : (
+        <span className="device-actions">
+          <button className="small" onClick={() => setName(device.name)}>Rename</button>
+          <button className="small" title={here ? 'Signs this browser out' : 'Signs it out at once and closes its open pages'} onClick={() => (here ? setAsking(true) : remove())}>Remove</button>
+        </span>
+      )}
+    </div>
+  );
+}
+
 function PairedDevices({ run }: { run: (action: () => Promise<unknown>) => Promise<void> }) {
-  const [state, setState] = useState<{ publicName: string | null; devices: DeviceInfo[] } | null>(null);
-  // The open code, and how many devices there were when it was made: one more means it was used (it works once).
+  const [state, setState] = useState<{ publicName: string | null; devices: DeviceInfo[]; here: string | null } | null>(null);
+  // The open code, and how many phones and computers there were when it was made: one more means it was used (it
+  // works once). Browsers are not counted: one signing in meanwhile is not the code being used.
   const [pairing, setPairing] = useState<{ url: string; expiresAt: number; kind: 'phone' | 'computer'; before: number } | null>(null);
   const [now, setNow] = useState(Date.now());
+  const paired = (devices: DeviceInfo[]) => devices.filter((d) => d.kind !== 'browser');
   const load = () => api.devices().then((s) => {
     setState(s);
-    setPairing((p) => (p && s.devices.length > p.before ? null : p));
+    setPairing((p) => (p && paired(s.devices).length > p.before ? null : p));
   }, () => {});
   useEffect(() => {
     void load();
@@ -192,40 +240,51 @@ function PairedDevices({ run }: { run: (action: () => Promise<unknown>) => Promi
     return () => clearInterval(t);
   }, [pairing]);
   if (!state) return null;
-  if (!state.publicName) {
-    return <p className="muted">Reaching Ledung from a phone anywhere needs a relay: set "remote" with its "publicName" in the config. Then phones are paired here.</p>;
-  }
+  const browsers = state.devices.filter((d) => d.kind === 'browser');
+  const phones = paired(state.devices);
   const open = pairing && pairing.expiresAt > now ? pairing : null;
   return (
     <>
-      <p className="muted">Phones, and other computers' Ledung pages (their tab for this computer), that reach this Ledung at https://{state.publicName}. Only a paired device gets in there; the sign-in link does not work there. A phone unlocks for 30 minutes at a time; a computer stays logged on until it logs out.</p>
-      {state.devices.length === 0 && <p className="muted">No paired devices.</p>}
-      {state.devices.map((d) => (
-        <div key={d.id} className="device-row">
-          <span><b>{d.name}</b> <span className="muted">· {d.kind === 'computer' ? 'computer' : 'phone'} · paired {d.pairedVia ? `through the link from ${d.pairedVia} ` : ''}{when(d.createdAt)} · last used {when(d.lastUsedAt)} · {d.passkey ? `passkey added ${when(d.passkeyAt)}` : 'no passkey'}</span></span>
-          <button className="small" onClick={() => void run(async () => { await api.revokeDevice(d.id); await load(); })}>Revoke</button>
-        </div>
+      <h4>Browsers</h4>
+      <p className="muted">Browsers signed in to this Ledung, on this computer or the local network. A browser's sign-in is renewed daily, so a copy of it stops working within a day, and a copy used after that removes the browser. Remove signs a browser out at once and closes its open pages.</p>
+      {browsers.length === 0 && <p className="muted">No browsers signed in.</p>}
+      {browsers.map((d) => (
+        <DeviceRow key={d.id} device={d} here={d.id === state.here} run={run} onChange={load}
+          facts={`signed in ${when(d.createdAt)} · last used ${when(d.lastUsedAt)}`} />
       ))}
-      {open ? (
-        <div className="pairing">
-          {open.kind === 'phone' && <QrCode text={pairQrText(open.url)} />}
-          {open.kind === 'computer'
-            ? <p className="muted">On the other computer, click this computer's tab and type the code, or the link, into the field there. It works once, for {Math.max(0, Math.ceil((open.expiresAt - now) / 60000))} more minute(s). Then set up the passkey there and log on: it stays logged on until you log out.</p>
-            : <p className="muted">Scan it with the phone, or open this link on it. It works once, for {Math.max(0, Math.ceil((open.expiresAt - now) / 60000))} more minute(s). Then set up the passkey on the phone, in its Settings → Remote & devices → Phones.</p>}
-          {open.kind === 'computer' && <p className="pair-code"><b>{new URL(open.url).pathname.split('/').pop()!.toUpperCase()}</b></p>}
-          <code className="pair-link">{open.url}</code>
-        </div>
+      <h4>Phones</h4>
+      {!state.publicName ? (
+        <p className="muted">Reaching Ledung from a phone anywhere needs a relay: set "remote" with its "publicName" in the config. Then phones are paired here.</p>
       ) : (
-        <p className="device-pair-buttons">
-          {(['phone', 'computer'] as const).map((kind) => (
-            <button key={kind} onClick={() => void run(async () => {
-              const made = await api.pairDevice(kind);
-              // The countdown starts from now, not from when Settings was opened.
-              setNow(Date.now());
-              setPairing({ ...made, before: state.devices.length });
-            })}>{kind === 'phone' ? 'Pair a phone' : 'Pair a computer'}</button>
+        <>
+          <p className="muted">Phones, and other computers' Ledung pages (their tab for this computer), that reach this Ledung at https://{state.publicName}. Only a paired device gets in there; the sign-in link does not work there. A phone unlocks for 30 minutes at a time; a computer stays logged on until it logs out.</p>
+          {phones.length === 0 && <p className="muted">No paired devices.</p>}
+          {phones.map((d) => (
+            <DeviceRow key={d.id} device={d} here={false} run={run} onChange={load}
+              facts={`${d.kind === 'computer' ? 'computer' : 'phone'} · paired ${d.pairedVia ? `through the link from ${d.pairedVia} ` : ''}${when(d.createdAt)} · last used ${when(d.lastUsedAt)} · ${d.passkey ? `passkey added ${when(d.passkeyAt)}` : 'no passkey'}`} />
           ))}
-        </p>
+          {open ? (
+            <div className="pairing">
+              {open.kind === 'phone' && <QrCode text={pairQrText(open.url)} />}
+              {open.kind === 'computer'
+                ? <p className="muted">On the other computer, click this computer's tab and type the code, or the link, into the field there. It works once, for {Math.max(0, Math.ceil((open.expiresAt - now) / 60000))} more minute(s). Then set up the passkey there and log on: it stays logged on until you log out.</p>
+                : <p className="muted">Scan it with the phone, or open this link on it. It works once, for {Math.max(0, Math.ceil((open.expiresAt - now) / 60000))} more minute(s). Then set up the passkey on the phone, in its Settings → Remote & devices → Browsers and phones.</p>}
+              {open.kind === 'computer' && <p className="pair-code"><b>{new URL(open.url).pathname.split('/').pop()!.toUpperCase()}</b></p>}
+              <code className="pair-link">{open.url}</code>
+            </div>
+          ) : (
+            <p className="device-pair-buttons">
+              {(['phone', 'computer'] as const).map((kind) => (
+                <button key={kind} onClick={() => void run(async () => {
+                  const made = await api.pairDevice(kind);
+                  // The countdown starts from now, not from when Settings was opened.
+                  setNow(Date.now());
+                  setPairing({ ...made, before: phones.length });
+                })}>{kind === 'phone' ? 'Pair a phone' : 'Pair a computer'}</button>
+              ))}
+            </p>
+          )}
+        </>
       )}
     </>
   );

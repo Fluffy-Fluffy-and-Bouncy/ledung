@@ -175,7 +175,7 @@ type OffLine = { id: string; name: string; state: FeatureState; why: string; for
 /**
  * Remote & devices (issue #365): Computers in full, each feature that is on in full, and those that are off as one
  * line each under Not set up, whose Set up opens today's form in its place. Phones and Linked computers need remote
- * access and stay greyed until it is on.
+ * access and stay greyed until it is on; Browsers and phones is always shown, as browsers need no remote access.
  */
 function RemoteGroup(props: GroupProps) {
   // undefined: not read yet; null: refused (through the public name), so Relay stays away.
@@ -203,7 +203,8 @@ function RemoteGroup(props: GroupProps) {
     <>
       <ComputersSettings computers={props.computers} run={props.run} />
       {f.remote === 'on' && <section><h3>Remote access</h3><RemoteBody remote={props.remote} /></section>}
-      {f.phones === 'on' && <DevicesSettings key={props.remote?.publicName ?? 'none'} run={props.run} linked={props.computers.some((c) => c.linked)} />}
+      {/* Always: the browsers signed in here are listed with or without remote access (Project-Ledung#482). */}
+      <DevicesSettings key={props.remote?.publicName ?? 'none'} run={props.run} linked={props.computers.some((c) => c.linked)} />
       {f.linked === 'on' && <LinkedSettings key={`linked-${props.remote?.publicName ?? 'none'}-${props.remote?.tls ?? ''}`} run={props.run} />}
       {f.relay === 'on' && <section><h3>Relay</h3>{relayForm}</section>}
       {f.board === 'on' && <BoardSettings board={props.board} />}

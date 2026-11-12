@@ -6,7 +6,8 @@ import { listHostRecords } from '../host/client.ts';
 import { memoryUsed } from '../platform/memory.ts';
 import { containerGroups, containerSessionGroup, dockerVm, type DockerVm } from '../platform/containers.ts';
 import { exercisedLine } from '../platform/exercised.ts';
-import { ProcessSampler, sessionTree, type ProcessList, type TreeMemory } from '../platform/processes.ts';
+import { ProcessSampler, sessionTree, type ProcInfo, type ProcessList, type TreeMemory } from '../platform/processes.ts';
+import { GpuTracker, readGpuPosix, type GpuRaw, type GpuReading } from '../platform/gpu.ts';
 import type { ResourceFigures } from '../shared/protocol.ts';
 
 export type MonitorTarget =
@@ -30,11 +31,26 @@ interface Counter {
 
 const DOCKER_EVERY_MS = 30000;
 
+/** One sample for resource limits (src/resources/book.ts): the lists, every local session's processes, the GPU. */
+export interface MonitorTick {
+  at: number;
+  list: ProcessList;
+  prev: ProcessList | null;
+  dt: number;
+  trees: Map<string, ProcInfo[]>;
+  hosts: Map<string, number>;
+  gpu: GpuReading | null;
+}
+
 export class ResourceMonitor {
   readonly intervalSec: number;
   private readonly targets: () => MonitorTarget[];
   private readonly withDocker: () => boolean;
   private readonly onSample: () => void;
+  private readonly onTick: ((t: MonitorTick) => void) | null;
+  private readonly gpuTracker = new GpuTracker();
+  private gpuReading: GpuReading | null = null;
+  private gpuBusy = false;
   private sampler: ProcessSampler | null = null;
   private prevList: ProcessList | null = null;
   private prevAt = 0;
@@ -53,20 +69,31 @@ export class ResourceMonitor {
   machineCores = 0;
   docker: DockerVm | null = null;
 
-  constructor(opts: { intervalSec?: number; targets: () => MonitorTarget[]; withDocker: () => boolean; onSample: () => void }) {
+  constructor(opts: { intervalSec?: number; targets: () => MonitorTarget[]; withDocker: () => boolean; onSample: () => void; onTick?: (t: MonitorTick) => void }) {
     this.intervalSec = opts.intervalSec ?? 5;
     this.targets = opts.targets;
     this.withDocker = opts.withDocker;
     this.onSample = opts.onSample;
+    this.onTick = opts.onTick ?? null;
+  }
+
+  /** The GPUs' latest reading (resource limits); null before the first. */
+  get gpu(): GpuReading | null {
+    return this.gpuReading;
   }
 
   start(): void {
-    this.sampler = new ProcessSampler(this.intervalSec, (list, at) => {
+    const guarded = (list: ProcessList | null, at: number, gpu?: { raw: GpuRaw; at: number }) => {
       try {
-        this.tick(list, at);
+        this.tick(list, at, gpu);
       } catch (e) {
         console.error(`Measuring: ${(e as Error).message}`);
       }
+    };
+    // The process list is only for local sessions' figures: with none live, none is read (#230).
+    this.sampler = new ProcessSampler(this.intervalSec, guarded, {
+      wanted: () => this.targets().some((t) => t.kind === 'local'),
+      onSkip: (at) => guarded(null, at),
     });
     this.sampler.start();
   }
@@ -99,7 +126,22 @@ export class ResourceMonitor {
     return { cpuSeconds: Math.max(0, (this.counters.get(id)?.cpu ?? 0) - t.startCpu), peakCores: t.peakCores, peakMem: t.peakMem, samples: t.samples };
   }
 
-  private tick(list: ProcessList, at: number): void {
+  /** One sample; `list` null when no process list was read (no local session was live). */
+  private tick(list: ProcessList | null, at: number, gpu?: { raw: GpuRaw; at: number }): void {
+    // The GPU (resource limits): on Windows in the same answer as the list; elsewhere read beside it, the latest kept.
+    // Like the list, only while a local session is live (#230); the last reading stays on show meanwhile.
+    if (gpu) this.gpuReading = this.gpuTracker.update(gpu.raw, gpu.at);
+    else if (list && process.platform !== 'win32' && !this.gpuBusy) {
+      this.gpuBusy = true;
+      const pids = [...list.keys()];
+      // A read that hangs is given up after 20 s, so the next round can try again (security review, finding 6).
+      const timeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('GPU read timed out')), 20_000).unref());
+      void Promise.race([readGpuPosix(pids), timeout])
+        .then((raw) => { this.gpuReading = this.gpuTracker.update(raw, Date.now()); }, () => {})
+        .finally(() => { this.gpuBusy = false; });
+    }
+    // An old reading is no reading for decisions: dropped once a list comes without a fresh one.
+    if (list && this.gpuReading && at - this.gpuReading.at > Math.max(30_000, this.intervalSec * 4000)) this.gpuReading = null;
     if (!this.memBusy) {
       this.memBusy = true;
       void memoryUsed()
@@ -120,15 +162,32 @@ export class ResourceMonitor {
 
     // Local sessions: the tree under the session's host process, turn or not, and what left it (#169).
     const dt = (at - this.prevAt) / 1000;
-    const hostPids = new Map(listHostRecords().map((r) => [r.sessionId, r.hostPid]));
+    // A host only while its pid is still that host: where the list has start times (Windows), the process must have
+    // started when Ledung recorded it starting, or a reused pid would make another program's tree the session's
+    // (acceptance test of resource limits, finding 7). Ledung writes the record just after the spawn.
+    const hostPids = new Map(list ? listHostRecords().filter((r) => hostStill(list, r.hostPid, r.startedAt)).map((r) => [r.sessionId, r.hostPid]) : []);
+    const trees = new Map<string, ProcInfo[]>();
     for (const t of targets) {
-      if (t.kind !== 'local') continue;
+      // A local session that went live after the sampler chose not to read is measured from the next sample.
+      if (t.kind !== 'local' || !list) continue;
       const pid = hostPids.get(t.id);
       const s = treeSample(this.prevList, list, pid, dt, os.cpus().length, this.trees.get(t.id) ?? null);
       this.trees.set(t.id, s.memory);
+      if (pid) trees.set(t.id, s.tree);
       this.count(t.id, s.cpuSeconds, s.cores, s.memBytes);
     }
-    this.prevList = list;
+    // Resource limits judge each sample with a list; with none (no local session) there is nothing of theirs to judge.
+    if (list && this.onTick) {
+      try {
+        this.onTick({ at, list, prev: this.prevList, dt, trees, hosts: hostPids, gpu: this.gpuReading });
+      } catch (e) {
+        console.error(`Resource limits: ${(e as Error).message}`);
+      }
+    }
+    // After a round with no list, an empty one: a session that went live meanwhile is counted from zero, as
+    // one that started between two lists always was (self-check of #230, finding 1). Not before the first
+    // list: a host that outlived a restart would bring its whole life's CPU.
+    this.prevList = list ?? (this.prevList && new Map());
     this.prevAt = at;
 
     void this.sampleContainers(targets.filter((t) => t.kind === 'docker') as Extract<MonitorTarget, { kind: 'docker' }>[], dt);
@@ -206,7 +265,7 @@ let exercised169 = false;
  * `memory` of the last sample, those that have left that tree since (`sessionTree`, #169); the new
  * memory is returned for the next sample. With no last list there is nothing to compare.
  */
-export function treeSample(prev: ProcessList | null, list: ProcessList, root: number | undefined, dt: number, threads: number, memory: TreeMemory | null = null): { cpuSeconds: number; cores: number; memBytes: number; memory: TreeMemory } {
+export function treeSample(prev: ProcessList | null, list: ProcessList, root: number | undefined, dt: number, threads: number, memory: TreeMemory | null = null): { cpuSeconds: number; cores: number; memBytes: number; memory: TreeMemory; tree: ProcInfo[] } {
   const { tree, memory: next } = sessionTree(list, root, memory);
   let used = 0;
   if (prev) for (const p of tree) used += Math.max(0, p.cpuSeconds - (prev.get(p.pid)?.cpuSeconds ?? 0));
@@ -215,7 +274,7 @@ export function treeSample(prev: ProcessList | null, list: ProcessList, root: nu
     exercised169 = true;
     exercisedLine('EXERCISED #169 a session counted a process that had left its host\'s tree');
   }
-  return { cpuSeconds: used, cores: prev && dt > 0 ? capCores(used / dt, threads) : 0, memBytes, memory: next };
+  return { cpuSeconds: used, cores: prev && dt > 0 ? capCores(used / dt, threads) : 0, memBytes, memory: next, tree };
 }
 
 function cpuTimes(): { busy: number; total: number } {
@@ -227,4 +286,11 @@ function cpuTimes(): { busy: number; total: number } {
     busy += t - c.times.idle;
   }
   return { busy, total };
+}
+
+/** The host's pid is still the host Ledung started: started no later than 5 s after its record, nor 30 s before. */
+export function hostStill(list: ProcessList, pid: number, recordedAt: number): boolean {
+  const started = list.get(pid)?.started;
+  if (started === undefined || !recordedAt) return true;
+  return started <= recordedAt + 5_000 && started >= recordedAt - 30_000;
 }

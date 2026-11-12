@@ -9,6 +9,7 @@ import type {
   SkillListView, SignInProblem,
   ShortcutAction, ShortcutsView,
   CheckInAction, CheckInView,
+  HeavyCommandInfo, JobKindInfo,
 } from '../../src/shared/protocol.ts';
 import type { ProjectColours } from '../../src/shared/name-colours.ts';
 import type { ComputerColour, ComputerInfo } from '../../src/shared/computers.ts';
@@ -84,7 +85,7 @@ async function signFor(method: string, path: string, text: string): Promise<stri
 /** Bytes of files sent to and received from a linked computer (issue #158): counted only, never a limit. */
 export type LinkBytes = { today: { sent: number; received: number }; month: { sent: number; received: number } };
 export type LinkedComputerInfo = { id: string; name: string; publicName: string; linkedAt: number; lastUsedAt: number | null; files?: LinkBytes };
-export type DeviceInfo ={ id: string; name: string; createdAt: number; lastUsedAt: number | null; passkey: boolean; passkeyAt: number | null; kind: 'phone' | 'computer'; pairedVia?: string | null };
+export type DeviceInfo ={ id: string; name: string; createdAt: number; lastUsedAt: number | null; passkey: boolean; passkeyAt: number | null; kind: 'phone' | 'computer' | 'browser'; pairedVia?: string | null };
 
 /** The live connection's key (#104): Ledung decides nothing sensitive without it. Null while there is no connection. */
 let pageKey: string | null = null;
@@ -192,6 +193,8 @@ export const api = {
   /** The messages after `afterId`, oldest first, at most 500: what a reconnecting page missed. */
   messagesAfter: (sessionId: string, afterId: number) =>
     call<StoredMessage[]>('GET', `/api/sessions/${sessionId}/messages?limit=500&after=${afterId}`),
+  /** Every archived session: the live connection's hello carries only the recent ones (issue #229). */
+  archivedSessions: () => call<SessionInfo[]>('GET', '/api/archived-sessions'),
   start: (project: string, profile?: string) => call<SessionInfo>('POST', '/api/sessions', { project, role: 'session', ...(profile ? { profile } : {}) }),
   /** A chat (issue #211): left out, the chats' default folder and mode, Claude Code's model and the full profile. */
   startChat: (opts: { folder?: string; model?: string; effort?: EffortLevel; profile?: string; permissionMode?: PermissionMode; account?: string }) => call<SessionInfo>('POST', '/api/chats-new', opts),
@@ -331,6 +334,15 @@ export const api = {
   saveFlow: (project: string, files: FlowFileWrite[]) => call<FlowView>('POST', `/api/projects/${encodeURIComponent(project)}/flow`, { files }),
   machine: () => call<MachineInfo>('GET', '/api/machine'),
   setLimit: (limit: number) => call('POST', '/api/limit', { limit }),
+  // Resource limits (docs/steps/resource-limits.md).
+  setResourceLimit: (dim: string, value: number | null) => call('POST', '/api/resource-limits', { dim, value }),
+  setResourceSettings: (settings: { averageSec?: number; marginPoints?: number; overSec?: number }) => call('POST', '/api/resource-settings', settings),
+  resourceStartNow: (id: string) => call('POST', `/api/resource-line/${encodeURIComponent(id)}/start-now`, {}),
+  pauseJob: (id: string, paused: boolean) => call('POST', `/api/jobs/${encodeURIComponent(id)}/pause`, { paused }),
+  stopJob: (id: string) => call('POST', `/api/jobs/${encodeURIComponent(id)}/stop`, {}),
+  jobKinds: () => call<{ kinds: JobKindInfo[]; commands: HeavyCommandInfo[] }>('GET', '/api/job-kinds'),
+  forgetJobKind: (project: string, kind: string) => call('POST', '/api/job-kinds-forget', { project, kind }),
+  markCommand: (project: string, command: string, never: boolean) => call('POST', '/api/heavy-commands-mark', { project, command, never }),
   setUsageStop: (account: string, kind: string, percent: number | null) => call('POST', '/api/usage-stops', { account, kind, percent }),
   liftUsageStop: (account: string, kind: string) => call('POST', '/api/usage-lift', { account, kind }),
   away: (until: string, allow: AwayKind[]) => call<AwayInfo>('POST', '/api/away', { until, allow }),
@@ -373,10 +385,13 @@ export const api = {
   linkDevicePair: (id: string) => call<{ url: string; expiresAt: number }>('POST', '/api/link-device-pair', { id }),
   dismissLinkPairing: (id: string) => call('POST', `/api/link-pairings/${encodeURIComponent(id)}/dismiss`, {}),
   // Paired devices (issue #160): managed on this computer; a device sees only itself.
-  devices: () => call<{ publicName: string | null; devices: DeviceInfo[] }>('GET', '/api/devices'),
+  // `here`: the browser asking (Project-Ledung#482), so Settings can mark it.
+  devices: () => call<{ publicName: string | null; devices: DeviceInfo[]; here: string | null }>('GET', '/api/devices'),
   /** A pairing code for a phone or, to show this Ledung in a frame on another computer's page, a computer (issue #241). */
   pairDevice: (kind: 'phone' | 'computer' = 'phone') => call<{ url: string; expiresAt: number; kind: 'phone' | 'computer' }>('POST', '/api/devices-pair', { kind }),
   revokeDevice: (id: string) => call('POST', `/api/devices/${encodeURIComponent(id)}/revoke`, {}),
+  // Rename a browser or phone from this computer's list (Project-Ledung#482); renameDevice is a device's own name.
+  renameListedDevice: (id: string, name: string) => call('POST', `/api/devices/${encodeURIComponent(id)}/rename`, { name }),
   thisDevice: () => call<{ remote: false } | { remote: true; device: DeviceInfo; mayAddPasskey: boolean; unlockedUntil: number | null }>('GET', '/api/device'),
   /** Unlocks this device for ordinary changes for 30 minutes, or logs a computer on until it logs out (one passkey prompt). */
   unlockDevice: () => call<{ unlockedUntil: number }>('POST', '/api/device-unlock', {}),

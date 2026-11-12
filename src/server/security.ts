@@ -4,9 +4,14 @@
 // also listens on, and answers to, this computer's network address(es). With "lanSignIn": false,
 // requests through those addresses need no sign-in: the network itself is trusted. Every request must:
 // - name Ledung itself in its Host header, which stops DNS rebinding;
-// - carry the sign-in cookie, set by opening the one-time /login link Ledung prints and opens;
-// - for anything that changes something, and for the live connection, come from Ledung's own page
-//   (Origin header), which stops other websites from sending requests in the background.
+// - carry the sign-in cookie, set by opening the one-time /login link Ledung prints and opens. The cookie is a
+//   paired browser's (Project-Ledung#482, step 1 of #477): a row of kind 'browser' in the devices table, random,
+//   kept only as a hash, renewed daily and removable in Settings, never the install token (Project-Ledung#476).
+//   A browser still holding the older cookie that was the token is let in, and its next page load swaps that
+//   cookie for a browser of its own (oldTokenCookie), so nobody is signed out by the change;
+// - for anything that changes something, for the live connection, and for API reads that do work, come from
+//   Ledung's own page (Origin header, and Sec-Fetch-Site where the browser sends it), which stops other pages
+//   from sending requests in the background.
 //
 // The public name (issue #160, docs/steps/relay.md step 3): nothing here trusts the address a request came
 // from. A request is the public name's when its Host is that name, or when it came through the relay tunnel
@@ -41,6 +46,11 @@ export interface PublicAccess<D> {
   device(cookie: string | null): D | null;
 }
 
+/** On this computer and the local network: the live browser a sign-in cookie belongs to (Project-Ledung#482). */
+export interface LocalAccess<D> {
+  browser(cookie: string): D | null;
+}
+
 export class Guard<D = unknown> {
   private readonly token: Buffer;
   private readonly port: number;
@@ -52,6 +62,7 @@ export class Guard<D = unknown> {
   private remote: PublicAccess<D> | null = null;
   /** Sockets that came through the relay tunnel; see isPublic. */
   private readonly tunnel = new WeakSet<object>();
+  private browsers: LocalAccess<D> | null = null;
 
   /**
    * `lanNames`: extra names Ledung answers to on the local network (empty when it isn't opened to it).
@@ -141,14 +152,55 @@ export class Guard<D = unknown> {
     return runningProof(this.token.toString(), nonce);
   }
 
-  /** The install's token cookie; never counts through the public name. */
+  /**
+   * A live browser's cookie, or the older cookie that was the install token (oldTokenCookie); never through the
+   * public name. A browser can send two values under the name (two paths or spellings), so each is tried.
+   */
   signedIn(req: IncomingMessage): boolean {
-    return !this.isPublic(req) && this.tokenMatches(readCookie(req, COOKIE_NAME));
+    if (this.isPublic(req)) return false;
+    return readCookies(req, COOKIE_NAME).some((value) => this.tokenMatches(value)) || this.browserOf(req) !== null;
   }
 
-  cookieHeader(): string {
-    return `${COOKIE_NAME}=${this.token.toString()}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000`;
+  /** The live browser a local request's sign-in cookie belongs to, or null (always null through the public name). */
+  browserOf(req: IncomingMessage): D | null {
+    if (!this.browsers || this.isPublic(req)) return null;
+    for (const cookie of readCookies(req, COOKIE_NAME)) {
+      const browser = this.browsers.browser(cookie);
+      if (browser) return browser;
+    }
+    return null;
   }
+
+  /**
+   * The request carries the cookie set before Project-Ledung#476, whose value was the install token. It still signs
+   * in, so the change signs nobody out; the server answers a page load that carries it with a browser's cookie, which
+   * replaces it in that browser (same name, host and path).
+   */
+  oldTokenCookie(req: IncomingMessage): boolean {
+    return !this.isPublic(req) && readCookies(req, COOKIE_NAME).some((value) => this.tokenMatches(value));
+  }
+
+  /** Where browsers are looked up (src/server/devices.ts); without it only the old token cookie signs in. */
+  useBrowsers(browsers: LocalAccess<D>): void {
+    this.browsers = browsers;
+  }
+
+  /**
+   * As far as the browser tells, the request comes from Ledung's own page or the person's own address bar: an Origin,
+   * when sent, is Ledung's (originAllowed), and Sec-Fetch-Site, when sent, is "same-origin" or "none" (a typed address
+   * or a bookmark). Asked of API reads that do work (Project-Ledung#476). A client that sends neither header is taken
+   * as no browser page; it still needs the cookie. `siteOnly`: ask only Sec-Fetch-Site (server.ts SITE_ONLY_READS).
+   */
+  fromOwnPage(req: IncomingMessage, siteOnly = false): boolean {
+    if (!siteOnly && req.headers.origin !== undefined && !this.originAllowed(req)) return false;
+    const site = req.headers['sec-fetch-site'];
+    return site === undefined || site === 'same-origin' || site === 'none';
+  }
+}
+
+/** A browser's sign-in cookie (Project-Ledung#482), as #476 set it: never sent to scripts or other sites. */
+export function browserCookieHeader(value: string): string {
+  return `${COOKIE_NAME}=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000`;
 }
 
 /**

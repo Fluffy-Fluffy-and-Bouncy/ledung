@@ -212,7 +212,16 @@ test('a wrong sign-in link sets no cookie; the right one does', async () => {
   assert.equal(wrong.headers['set-cookie'], undefined);
   const right = await request({ path: `/login?token=${TOKEN}` });
   assert.equal(right.status, 302);
-  assert.match(String(right.headers['set-cookie']), /ledung_auth=a{64}; HttpOnly; SameSite=Strict/);
+  // A sign-in of its own, never the install token (Project-Ledung#476).
+  const set = String(right.headers['set-cookie']);
+  assert.match(set, /^ledung_auth=[0-9a-f]{64}; HttpOnly; SameSite=Strict; Path=\/; Max-Age=31536000$/);
+  assert.ok(!set.includes(TOKEN), 'the install token never goes out in a cookie');
+  const cookie = set.split(';')[0]!;
+  assert.equal((await request({ path: '/api/state', headers: { cookie } })).status, 200, 'the sign-in cookie signs in');
+  // Each sign-in link opened gives a different sign-in.
+  const again = String((await request({ path: `/login?token=${TOKEN}` })).headers['set-cookie']).split(';')[0]!;
+  assert.notEqual(again, cookie);
+  assert.equal((await request({ path: '/api/state', headers: { cookie: again } })).status, 200);
 });
 
 test('reads work with the cookie', async () => {
@@ -466,6 +475,35 @@ test('the live connection needs both the cookie and Ledung\'s own origin', async
   assert.equal(await connect({ cookie: COOKIE, origin: ORIGIN }), 'open');
 });
 
+// Issue #231: the page says on the live connection which session it shows, and nothing else. Every other frame closes
+// it as before, so the connection stays no way in to anything the API guards.
+test('the live connection takes a watch of one session and nothing else: anything more closes it', async () => {
+  const frame = (send: string | Buffer): Promise<{ answer: unknown; code: number | null }> =>
+    new Promise((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`, { headers: { cookie: COOKIE, origin: ORIGIN } });
+      let answer: unknown = null;
+      ws.once('message', () => {
+        ws.send(send, { binary: Buffer.isBuffer(send) });
+        ws.on('message', (data) => {
+          answer = JSON.parse(String(data));
+          ws.close();
+        });
+      });
+      ws.on('close', (code) => resolve({ answer, code: code === 1005 ? null : code }));
+      ws.on('error', reject);
+    });
+  // The positive branch: a watch of a session, or of none, is answered and the connection stays until the page closes it.
+  assert.deepEqual(await frame('{"type":"watch","sessionId":"s1"}'), { answer: { type: 'watching', sessionId: 's1' }, code: null });
+  assert.deepEqual(await frame('{"type":"watch","sessionId":null}'), { answer: { type: 'watching', sessionId: null }, code: null });
+  for (const bad of [
+    'not json', '[]', 'null', '{"type":"watch"}', '{"type":"answer","sessionId":"s1"}', '{"type":"watch","sessionId":"s1","pageKey":"x"}',
+    '{"type":"watch","sessionId":1}', '{"type":"watch","sessionId":""}', JSON.stringify({ type: 'watch', sessionId: 'x'.repeat(201) }),
+    Buffer.from('{"type":"watch","sessionId":"s1"}'),
+  ]) {
+    assert.deepEqual(await frame(bad), { answer: null, code: 1008 }, String(bad).slice(0, 60));
+  }
+});
+
 /** Sends a request head as written, so no client tidies its path first; resolves with the reply's status line, empty
  * when no reply came within two seconds. */
 function rawRequest(head: string): Promise<string> {
@@ -568,6 +606,205 @@ test('without LAN sign-in, only the network names skip sign-in; this computer st
   assert.equal(open.mayUse(req('127.0.0.1:4317', COOKIE)), true);
   const closed = new Guard(TOKEN, 4317, ['192.168.1.20'], false);
   assert.equal(closed.mayUse(req('192.168.1.20:4317')), false);
+});
+
+// Project-Ledung#476: the sign-in cookie is a sign-in of its own, kept only as a hash, and revocable. Since
+// Project-Ledung#482 each one is a devices row of kind 'browser' (the meta store is gone): the same properties, through
+// the rows.
+test('browser sign-ins are random, kept as hashes, last through a restart, end when removed or unused for a year', async () => {
+  const { Guard } = await import('../src/server/security.ts');
+  const { Devices, MAX_BROWSERS } = await import('../src/server/devices.ts');
+  const db = openDatabase(':memory:');
+  let now = 1_000_000;
+  const DAY = 86_400_000;
+  const req = (cookie?: string) => ({ headers: { host: '127.0.0.1:4317', cookie } }) as any;
+  const guardOn = (devices: InstanceType<typeof Devices>, remote: { publicName: string; device: (c: string | null) => unknown } | null = null) => {
+    const guard = new Guard<unknown>(TOKEN, 4317, [], false, remote);
+    guard.useBrowsers({ browser: (cookie) => devices.byCookie(cookie, 'local') });
+    return guard;
+  };
+  const devices = new Devices(db, () => now);
+  const guard = guardOn(devices);
+  const { device, cookie: value } = devices.addBrowser('Firefox on macOS');
+  assert.match(value, /^[0-9a-f]{64}$/);
+  assert.notEqual(value, TOKEN);
+  assert.equal(guard.signedIn(req(`ledung_auth=${value}`)), true);
+  assert.equal(guard.signedIn(req(`ledung_auth=${'c'.repeat(64)}`)), false, 'a made-up value is no sign-in');
+  assert.equal(guard.signedIn(req()), false);
+  // Kept as a hash: the database never holds the cookie's value.
+  const rows = JSON.stringify(db.prepare('SELECT * FROM devices').all());
+  assert.ok(!rows.includes(value), 'only the hash is stored');
+  assert.ok(rows.includes(crypto.createHash('sha256').update(value).digest('hex')));
+  // A restart: new Devices and a new guard on the same database still know it.
+  const restarted = guardOn(new Devices(db, () => now));
+  assert.equal(restarted.signedIn(req(`ledung_auth=${value}`)), true);
+  // Removed: that one ends at once, another stays.
+  const other = devices.addBrowser('Chrome on Windows').cookie;
+  assert.equal(devices.revoke(device.id), true);
+  assert.equal(restarted.signedIn(req(`ledung_auth=${value}`)), false);
+  assert.equal(restarted.signedIn(req(`ledung_auth=${other}`)), true);
+  // Unused for over a year (the cookie's own Max-Age): it ends; used within it, it stays.
+  const kept = devices.addBrowser('Safari on macOS').cookie;
+  const idle = devices.addBrowser('Edge on Windows').cookie;
+  devices.addBrowser('Opera on Linux');
+  now += 200 * DAY;
+  assert.equal(restarted.signedIn(req(`ledung_auth=${kept}`)), true);
+  now += 200 * DAY;
+  assert.equal(restarted.signedIn(req(`ledung_auth=${kept}`)), true, 'used 200 days ago: still live');
+  assert.equal(restarted.signedIn(req(`ledung_auth=${idle}`)), false, 'unused for 400 days: ended');
+  // One whose cookie never comes back leaves the list too; the one in use stays (self-check of #482, finding 2).
+  const names = devices.list().map((d) => d.name);
+  assert.ok(!names.includes('Opera on Linux'), names.join(', '));
+  assert.ok(names.includes('Safari on macOS'), names.join(', '));
+  // At most MAX_BROWSERS are kept; the least recently used go first (here `other`, then `kept`).
+  for (let i = 0; i < MAX_BROWSERS; i++) { now += 1; devices.addBrowser('Browser'); }
+  assert.equal(devices.list().filter((d) => d.kind === 'browser').length, MAX_BROWSERS);
+  assert.equal(restarted.signedIn(req(`ledung_auth=${kept}`)), false, 'the oldest went');
+  // Neither the install token's cookie nor a browser's counts through the public name, and a browser's cookie is no
+  // device cookie there either; the same browser counts locally.
+  const pub = guardOn(devices, { publicName: PUBLIC, device: (c) => devices.byCookie(c) });
+  const fresh = devices.addBrowser('Firefox on Linux').cookie;
+  const viaPublic = (cookie: string) => ({ headers: { host: PUBLIC, cookie } }) as any;
+  assert.equal(pub.signedIn(viaPublic(`ledung_auth=${fresh}`)), false);
+  assert.equal(pub.signedIn(viaPublic(COOKIE)), false);
+  assert.equal(pub.deviceOf(viaPublic(`__Host-ledung_device=${fresh}`)), null, 'a browser is no phone through the public name');
+  const phone = devices.pair(devices.newPairCode('phone').code, 'Phone')!.cookie;
+  assert.notEqual(pub.deviceOf(viaPublic(`__Host-ledung_device=${phone}`)), null, 'a phone is, so the lookup itself works');
+  assert.equal(guard.signedIn(req(`ledung_auth=${phone}`)), false, 'and a phone is no browser here');
+  assert.equal(pub.signedIn(req(`ledung_auth=${fresh}`)), true, 'the same browser counts locally');
+});
+
+// Test review of #234, finding 1: through the server's own database, not a stand-in store.
+test('a sign-in from the link lasts through a restart of the server on the same database, kept only as a hash', async (t) => {
+  const store = new Store(openDatabase(':memory:'));
+  const manager = refuseRealSignInStores(new SessionManager(parseConfig({ port: PORT, projects: [] }), store, () => {}));
+  const serve = async () => {
+    const port = await freePort();
+    const s = new LedungServer({ port, token: TOKEN, store, manager, webRoot });
+    await s.listen();
+    const get = (p: string, cookie?: string) => new Promise<{ status: number; headers: http.IncomingHttpHeaders }>((resolve, reject) => {
+      const req = http.request({ host: '127.0.0.1', port, path: p, headers: { host: `127.0.0.1:${port}`, ...(cookie ? { cookie } : {}) } }, (res) => {
+        res.resume();
+        res.on('end', () => resolve({ status: res.statusCode!, headers: res.headers }));
+      });
+      req.on('error', reject);
+      req.end();
+    });
+    return { s, get };
+  };
+  const first = await serve();
+  t.after(() => first.s.close());
+  const cookie = String((await first.get(`/login?token=${TOKEN}`)).headers['set-cookie']).split(';')[0]!;
+  const value = cookie.slice('ledung_auth='.length);
+  assert.match(value, /^[0-9a-f]{64}$/);
+  assert.equal((await first.get('/api/state', cookie)).status, 200);
+  await first.s.close();
+  // The database holds the hash, never the value: a browser's row (Project-Ledung#482).
+  const saved = JSON.stringify(store.database.prepare("SELECT * FROM devices WHERE kind = 'browser'").all());
+  assert.ok(saved.includes(crypto.createHash('sha256').update(value).digest('hex')), 'the hash is in the database');
+  assert.ok(!saved.includes(value), 'the value is not');
+  // A new server on the same database: the cookie still signs in, a made-up one doesn't.
+  const second = await serve();
+  t.after(() => second.s.close());
+  assert.equal((await second.get('/api/state', cookie)).status, 200);
+  assert.equal((await second.get('/api/state', `ledung_auth=${'c'.repeat(64)}`)).status, 401);
+});
+
+test('a browser still holding the old token cookie stays signed in, and a page load swaps it for a sign-in', async () => {
+  // A browser too old to send Sec-Fetch-Dest: its page load asks for HTML.
+  const page = await request({ path: '/', headers: { cookie: COOKIE, accept: 'text/html,application/xhtml+xml,*/*;q=0.8' } });
+  assert.equal(page.status, 200);
+  const set = String(page.headers['set-cookie']);
+  assert.match(set, /^ledung_auth=[0-9a-f]{64}; HttpOnly; SameSite=Strict; Path=\/; Max-Age=31536000$/, 'the same name and path, so it replaces the old one');
+  assert.ok(!set.includes(TOKEN), 'the swap never sends the token back');
+  const cookie = set.split(';')[0]!;
+  assert.equal((await request({ path: '/api/state', headers: { cookie } })).status, 200);
+  // A page load with the new sign-in gets no further cookie; the swap is for the old cookie only.
+  const next = await request({ path: '/', headers: { cookie, 'sec-fetch-dest': 'document' } });
+  assert.equal(next.status, 200);
+  assert.equal(next.headers['set-cookie'], undefined);
+  // An API call with the old cookie (a script, the launcher's stop) still works and is not handed sign-ins to pile up.
+  const api = await request({ path: '/api/state', headers: { cookie: COOKIE } });
+  assert.equal(api.status, 200);
+  assert.equal(api.headers['set-cookie'], undefined);
+  // A browser's fetch of a script with the page gets none either; the document from a browser does.
+  const script = await request({ path: '/', headers: { cookie: COOKIE, 'sec-fetch-dest': 'script' } });
+  assert.equal(script.status, 200);
+  assert.equal(script.headers['set-cookie'], undefined);
+  const doc = await request({ path: '/', headers: { cookie: COOKIE, 'sec-fetch-dest': 'document' } });
+  assert.match(String(doc.headers['set-cookie']), /^ledung_auth=[0-9a-f]{64};/);
+  // A script loading the page (no Sec-Fetch-Dest, no HTML asked for) is answered and handed nothing (code review of #234).
+  const curl = await request({ path: '/', headers: { cookie: COOKIE, accept: '*/*' } });
+  assert.equal(curl.status, 200);
+  assert.equal(curl.headers['set-cookie'], undefined);
+  // Nothing swaps without a cookie that is the token.
+  const none = await request({ path: '/', headers: { cookie: `ledung_auth=${'b'.repeat(64)}`, 'sec-fetch-dest': 'document' } });
+  assert.equal(none.status, 401);
+  assert.equal(none.headers['set-cookie'], undefined);
+});
+
+test('API reads that do work need Ledung\'s own page; plain reads are unchanged (one route per kind)', async () => {
+  const { PLAIN_READS } = await import('../src/server/server.ts');
+  // One route per kind of work: GitHub, docker, claude, git or files through the session's runner, the relay.
+  const work = {
+    github: '/api/board-owners', docker: '/api/containers', claude: '/api/claude-code',
+    runner: '/api/sessions/s1/tree', relay: '/api/relay-computers',
+  };
+  const elsewhere: Record<string, string>[] = [
+    { origin: 'http://127.0.0.1:1' }, // another port of this computer
+    { origin: 'https://evil.example' },
+    { 'sec-fetch-site': 'same-site' }, // not Ledung's own origin
+    { 'sec-fetch-site': 'cross-site' },
+    { origin: ORIGIN, 'sec-fetch-site': 'same-site' }, // both are asked
+  ];
+  for (const [kind, p] of Object.entries(work)) {
+    for (const h of elsewhere) {
+      const res = await request({ path: p, headers: { cookie: COOKIE, ...h } });
+      assert.equal(res.status, 403, `${kind} ${p} with ${JSON.stringify(h)}`);
+      assert.match(res.body, /Ledung's own page/);
+    }
+  }
+  // The positive branch on the same check: Ledung's own page, the address bar, and a client that is no browser pass it.
+  for (const h of [{ 'sec-fetch-site': 'same-origin' }, { 'sec-fetch-site': 'none' }, { origin: ORIGIN, 'sec-fetch-site': 'same-origin' }, {}] as Record<string, string>[]) {
+    assert.equal((await request({ path: work.github, headers: { cookie: COOKIE, ...h } })).status, 200, `github with ${JSON.stringify(h)}`);
+    assert.equal((await request({ path: work.runner, headers: { cookie: COOKIE, ...h } })).status, 200, `runner with ${JSON.stringify(h)}`);
+  }
+  // Still the sign-in first: a request from the page without one is not signed in.
+  assert.equal((await request({ path: work.github, headers: { 'sec-fetch-site': 'same-origin' } })).status, 401);
+  // A project's workflow view (docker for a container project) is asked the browser's label only (code review of #234,
+  // finding 1): another page is refused, Ledung's page and the address bar are answered.
+  const flow = '/api/projects/p/flow';
+  for (const site of ['same-site', 'cross-site']) {
+    assert.equal((await request({ path: flow, headers: { cookie: COOKIE, 'sec-fetch-site': site } })).status, 403, `flow from ${site}`);
+    assert.equal((await request({ path: flow, headers: { cookie: COOKIE, origin: ORIGIN, 'sec-fetch-site': site } })).status, 403, `flow from ${site}, own Origin`);
+  }
+  for (const site of ['same-origin', 'none']) {
+    assert.equal((await request({ path: flow, headers: { cookie: COOKIE, 'sec-fetch-site': site } })).status, 200, `flow from ${site}`);
+  }
+  // Plain reads answer as before, whoever asks (a browser shows another site nothing: no CORS header).
+  for (const p of ['/api/state', '/api/projects', '/api/board-threads']) {
+    for (const h of elsewhere) {
+      const res = await request({ path: p, headers: { cookie: COOKIE, ...h } });
+      assert.equal(res.status, 200, `${p} with ${JSON.stringify(h)}`);
+      assert.equal(res.headers['access-control-allow-origin'], undefined);
+    }
+  }
+  // Every work route above is outside the plain reads, and the kinds named in the issue stay so.
+  for (const route of ['GET board-owners', 'GET board-projects/:id/people', 'GET board-projects/:id/repos', 'GET usage-publish-repos', 'GET usage-shared',
+    'GET containers', 'GET browse-container', 'GET skills', 'GET workflows', 'GET claude-code', 'GET sessions/:id/mcp', 'GET sessions/:id/changes',
+    'GET sessions/:id/tree', 'GET sessions/:id/file', 'GET sessions/:id/image', 'GET relay-computers', 'GET relay-owners', 'GET shortcuts', 'GET projects/:id/flow']) {
+    assert.equal(PLAIN_READS.has(route), false, `${route} does work`);
+  }
+});
+
+test('every plain read names a GET route the server has', async () => {
+  const { PLAIN_READS } = await import('../src/server/server.ts');
+  const source = fs.readFileSync(path.join(appDir(), 'src', 'server', 'server.ts'), 'utf8');
+  const cases = new Set([...source.matchAll(/case '(GET [^']+)'/g)].map((m) => m[1]!));
+  // The three image routes are answered before the switch; their keys are the ones apiRoute gives.
+  for (const route of ['GET sessions/:id/image', 'GET sessions/:id/sent-images/:id', 'GET board-attachment']) cases.add(route);
+  assert.ok(cases.size > 40, 'the GET routes were found');
+  for (const route of PLAIN_READS) assert.ok(cases.has(route), `${route} is a route`);
 });
 
 test("the board's routes need the sign-in, and changes Ledung's own origin (message board, per project)", async () => {
@@ -789,6 +1026,32 @@ test('setting or lifting a usage stop needs the live page, so a session cannot f
   assert.match(errorOf(set), /1 to 100/);
   assert.equal(lift.status, 400);
   assert.match(errorOf(lift), /not holding/);
+});
+
+test('resource limits, their settings, Start now and acting on a job need the live page, so a session cannot raise its own room', async () => {
+  // docs/steps/resource-limits.md, Security: limits are set only from the open page.
+  assert.equal((await change('/api/resource-limits', { dim: 'cpu', value: 500 })).status, 403);
+  assert.equal((await change('/api/resource-settings', { averageSec: 30 })).status, 403);
+  assert.equal((await change('/api/resource-line/r1/start-now', {})).status, 403);
+  assert.equal((await change('/api/jobs/r1/pause', { paused: true })).status, 403);
+  assert.equal((await change('/api/jobs/r1/stop', {})).status, 403);
+  assert.equal((await change('/api/job-kinds-forget', { project: 'p', kind: 'k' })).status, 403);
+  assert.equal((await change('/api/heavy-commands-mark', { project: 'p', command: 'c', never: true })).status, 403);
+  const noCookie = await request({ method: 'POST', path: '/api/resource-limits', headers: { origin: ORIGIN, 'content-type': 'application/json' }, body: '{"dim":"cpu","value":50}' });
+  assert.equal(noCookie.status, 401);
+  const page = await livePage();
+  const bad = await change('/api/resource-limits', { dim: 'cpu', value: 500 }, { 'x-ledung-page': page.key });
+  const unknown = await change('/api/resource-limits', { dim: 'disk', value: 50 }, { 'x-ledung-page': page.key });
+  const noJob = await change('/api/jobs/r999/stop', {}, { 'x-ledung-page': page.key });
+  const set = await change('/api/resource-limits', { dim: 'cpu', value: null }, { 'x-ledung-page': page.key });
+  page.close();
+  assert.equal(bad.status, 400);
+  assert.match(errorOf(bad), /1 to 100/);
+  assert.equal(unknown.status, 400);
+  assert.match(errorOf(unknown), /Unknown resource/);
+  assert.equal(noJob.status, 400);
+  assert.match(errorOf(noJob), /No such job/);
+  assert.ok(set.status === 200 || set.status === 204, `status ${set.status}`);
 });
 
 test('saving macros needs the live page, so a session cannot put words in the person\'s chips (#410)', async () => {
@@ -2919,5 +3182,122 @@ test("a container project's files: signed in, inside its folder, the approved ty
     for (const name of added.reverse()) await change(`/api/projects/${name}/remove`, {}, { 'x-ledung-page': page.key });
     page.close();
     removeTemp(dir);
+  }
+});
+
+/** A page file as raw bytes, for the compressed ones (issue #229). */
+function rawGet(pathname: string, headers: Record<string, string>) {
+  return new Promise<{ status: number; headers: http.IncomingHttpHeaders; bytes: Buffer }>((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port: PORT, path: pathname, headers: { host: `127.0.0.1:${PORT}`, ...headers } }, (res) => {
+      const parts: Buffer[] = [];
+      res.on('data', (c: Buffer) => parts.push(c));
+      res.on('end', () => resolve({ status: res.statusCode!, headers: res.headers, bytes: Buffer.concat(parts) }));
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+test('hashed page files are kept by the browser for good; the page itself and the API stay no-store (issue #229)', async () => {
+  const assets = path.join(webRoot, 'assets');
+  fs.mkdirSync(assets, { recursive: true });
+  fs.writeFileSync(path.join(assets, 'index-Ab12Cd34.js'), 'console.log(1);\n'.repeat(500));
+  fs.writeFileSync(path.join(assets, 'logo-Ab12Cd34.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]));
+  fs.writeFileSync(path.join(webRoot, 'sw.js'), 'self.addEventListener("fetch", () => {});\n');
+  // Every other security header is as on an API answer from the same server.
+  const api = (await rawGet('/api/state', { cookie: COOKIE })).headers;
+  const names = Object.keys(securityHeaders(PORT)).map((n) => n.toLowerCase()).filter((n) => n !== 'cache-control');
+  assert.ok(names.includes('content-security-policy') && api['content-security-policy'], 'the reference carries them');
+  for (const file of ['/assets/index-Ab12Cd34.js', '/assets/logo-Ab12Cd34.png']) {
+    const res = await rawGet(file, {});
+    assert.equal(res.status, 200, file);
+    assert.equal(res.headers['cache-control'], 'public, max-age=31536000, immutable', file);
+    for (const name of names) assert.equal(res.headers[name], api[name], `${file} ${name}`);
+  }
+  // Not hashed: a new release must be picked up, so these are fetched every time.
+  for (const [file, headers] of [['/', { cookie: COOKIE }], ['/sw.js', {}], ['/assets/no-such-file.js', { cookie: COOKIE }], ['/api/state', { cookie: COOKIE }]] as const) {
+    const res = await rawGet(file, headers);
+    assert.equal(res.status, 200, file);
+    assert.equal(res.headers['cache-control'], 'no-store', file);
+  }
+});
+
+test('page text files go compressed by Accept-Encoding, plain without it; pictures as they are (issue #229)', async () => {
+  const zlib = await import('node:zlib');
+  const assets = path.join(webRoot, 'assets');
+  fs.mkdirSync(assets, { recursive: true });
+  const js = Buffer.from('export const answer = "the same line again";\n'.repeat(400));
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 9, 9, 9]);
+  fs.writeFileSync(path.join(assets, 'main-Zz99Yy88.js'), js);
+  fs.writeFileSync(path.join(assets, 'pic-Zz99Yy88.png'), png);
+  fs.writeFileSync(path.join(webRoot, 'icon.svg'), `<svg xmlns="http://www.w3.org/2000/svg">${'<g/>'.repeat(300)}</svg>`);
+
+  const br = await rawGet('/assets/main-Zz99Yy88.js', { 'accept-encoding': 'gzip, deflate, br' });
+  assert.equal(br.headers['content-encoding'], 'br');
+  assert.equal(br.headers.vary, 'Accept-Encoding');
+  assert.equal(Number(br.headers['content-length']), br.bytes.length);
+  assert.ok(br.bytes.length < js.length / 4, `compressed: ${br.bytes.length} of ${js.length}`);
+  assert.deepEqual(zlib.brotliDecompressSync(br.bytes), js);
+
+  const gz = await rawGet('/assets/main-Zz99Yy88.js', { 'accept-encoding': 'gzip' });
+  assert.equal(gz.headers['content-encoding'], 'gzip');
+  assert.deepEqual(zlib.gunzipSync(gz.bytes), js);
+  // Brotli refused with q=0: gzip.
+  assert.equal((await rawGet('/assets/main-Zz99Yy88.js', { 'accept-encoding': 'br;q=0, gzip' })).headers['content-encoding'], 'gzip');
+
+  const plain = await rawGet('/assets/main-Zz99Yy88.js', {});
+  assert.equal(plain.headers['content-encoding'], undefined);
+  assert.equal(plain.headers['content-type'], 'text/javascript; charset=utf-8');
+  assert.deepEqual(plain.bytes, js);
+
+  const page = await rawGet('/', { cookie: COOKIE, 'accept-encoding': 'br' });
+  assert.equal(page.headers['content-encoding'], 'br', 'the page itself too');
+  assert.equal(zlib.brotliDecompressSync(page.bytes).toString(), fs.readFileSync(path.join(webRoot, 'index.html'), 'utf8'));
+  assert.equal((await rawGet('/icon.svg', { 'accept-encoding': 'gzip' })).headers['content-encoding'], 'gzip', 'SVG is text');
+
+  const pic = await rawGet('/assets/pic-Zz99Yy88.png', { 'accept-encoding': 'gzip, br' });
+  assert.equal(pic.headers['content-encoding'], undefined);
+  assert.deepEqual(pic.bytes, png);
+
+  // A file rebuilt in place is compressed again, not served from the old copy.
+  const changed = Buffer.from('export const answer = "changed";\n'.repeat(400));
+  fs.writeFileSync(path.join(assets, 'main-Zz99Yy88.js'), changed);
+  assert.deepEqual(zlib.brotliDecompressSync((await rawGet('/assets/main-Zz99Yy88.js', { 'accept-encoding': 'br' })).bytes), changed);
+});
+
+test('hello carries recent and named archived sessions, counts the older ones, and the full list needs the sign-in (issue #229)', async () => {
+  const day = 24 * 60 * 60 * 1000;
+  const mk = (id: string, archivedAt: number) => {
+    paneStore.createSession({ id, project: 'gone-229', runner: 'local', title: id, parentId: null, permissionMode: 'default', role: 'session' });
+    paneStore.updateSession(id, { status: 'ended', archivedAt });
+  };
+  mk('arch229-recent', Date.now() - 60_000);
+  mk('arch229-old1', Date.now() - 3 * day);
+  mk('arch229-old2', Date.now() - 4 * day);
+  mk('arch229-asked', Date.now() - 5 * day);
+  mk('arch229-ordered', Date.now() - 6 * day);
+  const q = paneStore.createQuestion({ sessionId: 'arch229-asked', question: 'still open?', options: null, addressedTo: 'user' });
+  // An open order has no time limit on the page, and its card names the session it went to.
+  const order = paneStore.addOrder({ managerId: 'm1', sessionId: 'arch229-ordered', command: 'npm test', match: 'exact', until: 'done',
+    source: { kind: 'typed', messageId: 1 }, words: 'run the tests', wordsAt: Date.now(), createdAt: Date.now(), awaySince: null }, 'open');
+  try {
+    for (const hello of [JSON.parse((await request({ path: '/api/state', headers: { cookie: COOKIE } })).body), await helloOf({ cookie: COOKIE, origin: ORIGIN })]) {
+      const ids = (hello.sessions as { id: string }[]).map((s) => s.id);
+      assert.ok(ids.includes('s1'), 'a session not archived');
+      assert.ok(ids.includes('arch229-recent'), 'archived a minute ago');
+      assert.ok(ids.includes('arch229-asked'), 'named by an open question');
+      assert.ok(ids.includes('arch229-ordered'), 'named by an open order');
+      assert.ok(!ids.includes('arch229-old1') && !ids.includes('arch229-old2'), 'archived days ago');
+      assert.equal((hello.olderArchived as Record<string, number>)['gone-229'], 2);
+    }
+    assert.equal((await request({ path: '/api/archived-sessions' })).status, 401);
+    const all = await request({ path: '/api/archived-sessions', headers: { cookie: COOKIE } });
+    assert.equal(all.status, 200);
+    const listed = JSON.parse(all.body) as { id: string; archivedAt: number | null }[];
+    assert.deepEqual(listed.filter((s) => s.id.startsWith('arch229-')).map((s) => s.id).sort(), ['arch229-asked', 'arch229-old1', 'arch229-old2', 'arch229-ordered', 'arch229-recent']);
+    assert.ok(listed.every((s) => s.archivedAt), 'archived ones only');
+  } finally {
+    paneStore.withdrawQuestion(q.id, 'test');
+    paneStore.setOrderStatus(order.id, 'dropped', 'test', Date.now(), ['open']);
   }
 });

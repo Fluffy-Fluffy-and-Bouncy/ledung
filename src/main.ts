@@ -88,6 +88,8 @@ async function main(): Promise<void> {
   // Reconnect to sessions whose hosts survived the restart, then mark the rest as ended.
   const attached = await manager.attachRunningHosts();
   const leftover = store.markUnfinishedSessionsEnded('Ledung stopped before this session ended. Resume to continue.', attached);
+  // Those that were waiting for memory to start never ran: they say so, and their managers get the task back.
+  manager.settleWaitersAfterRestart();
   // In the background: a container that doesn't answer never holds up the start.
   void manager.cleanSecretsAtStart(attached).catch((e) => console.log(`Secrets: the clean-up at start failed: ${(e as Error).message}`));
   // Only now: an away period that ran out while Ledung was off tells the managers that are live (issue #328).

@@ -6,9 +6,11 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { projectLabel, type MachineInfo, type Overview, type SessionInfo, type UsageFilter, type UsagePeriod, type UsageReport } from '../../../src/shared/protocol.ts';
 import { api } from '../api.ts';
+import { pollWhileShown } from '../pollShown.ts';
 import { formatTime } from '../components/MessageList.tsx';
 import { colorMap, formatCost, formatTokens, Legend, pct, StackedBars, Tile, TRIGGER_LABEL, TRIGGERS } from './charts.tsx';
 import { TypicalCosts } from './MachinePanel.tsx';
+import { ReservedJobs } from './ReservedJobs.tsx';
 import { SessionsTab } from './SessionsTab.tsx';
 import { SharedUsage } from './SharedUsage.tsx';
 
@@ -29,6 +31,8 @@ export function UsageView(props: {
   /** Opens Usage on Sessions (true) or on one of the other tabs (false). */
   onSessions: (open: boolean) => void;
   sessions: SessionInfo[];
+  /** Archived sessions hello only counted (issue #229): ended, so counted among those not shown. */
+  olderArchived?: Record<string, number>;
   overview: Overview | null;
   machine: MachineInfo | null;
   waitingBySession: Record<string, number>;
@@ -56,7 +60,7 @@ export function UsageView(props: {
       </div>
       {tab === 'computer' ? <ComputerUsage onOpenSession={props.onOpenSession} />
         : tab === 'shared' ? <SharedUsage />
-          : <SessionsTab sessions={props.sessions} overview={props.overview} machine={props.machine} waitingBySession={props.waitingBySession} onOpenSession={props.onOpenSession} />}
+          : <SessionsTab sessions={props.sessions} olderArchived={props.olderArchived} overview={props.overview} machine={props.machine} waitingBySession={props.waitingBySession} onOpenSession={props.onOpenSession} />}
     </div>
   );
 }
@@ -71,11 +75,16 @@ function ComputerUsage({ onOpenSession }: { onOpenSession: (id: string) => void 
 
   useEffect(() => {
     let current = true;
-    api.usage(filter).then((r) => current && setReport(r), (e: Error) => current && setError(e.message));
-    const timer = setInterval(() => api.usage(filter).then((r) => current && setReport(r), () => {}), 30000);
+    // The first read says when it fails; a refresh that fails keeps what is shown. None while the page is hidden (#233).
+    let first = true;
+    const stop = pollWhileShown(() => {
+      const shownError = first;
+      first = false;
+      return api.usage(filter).then((r) => current && setReport(r), (e: Error) => current && shownError && setError(e.message));
+    }, 30000);
     return () => {
       current = false;
-      clearInterval(timer);
+      stop();
     };
   }, [filter]);
 
@@ -220,6 +229,7 @@ function ComputerUsage({ onOpenSession }: { onOpenSession: (id: string) => void 
         </div>
       </section>
       <TypicalCosts />
+      <ReservedJobs />
     </div>
   );
 }
