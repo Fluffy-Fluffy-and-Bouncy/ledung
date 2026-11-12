@@ -138,10 +138,67 @@ test('a session process stays counted after its host exits, and the session ends
   assert.deepEqual(sessionTree(listOf(proc(80, 50, 1)), 50, null).tree, []);
 });
 
-/** Starts a pretend host: it starts a middle process, which starts a busy command and exits. */
-function startHost(): { host: ChildProcess; pids: Promise<{ middle: number; busy: number }> } {
-  // The busy command spins for at most WAIT_MS, so a failed test leaves nothing running for long.
-  const busy = `const end = Date.now() + ${WAIT_MS}; while (Date.now() < end) {}`;
+/**
+ * A busy command: it spins one core and appends the CPU time it has had so far to `file`, every 100 ms.
+ * The tests compare the session's reading with that count rather than with one core of wall clock: on
+ * a loaded machine the command gets far less than a core (0.08 cores at load average 77, #195), and the
+ * session can only read what its processes got. It spins for at most twice WAIT_MS (the start, then one
+ * wait for its CPU), so a failed test leaves nothing running for long.
+ */
+const busyCode = (file: string) => `const fs = require('fs'); const end = Date.now() + ${2 * WAIT_MS}; let next = 0;
+  while (Date.now() < end) { const n = Date.now(); if (n >= next) { next = n + 100; const u = process.cpuUsage(); fs.appendFileSync(${JSON.stringify(file)}, ((u.user + u.system) / 1e6) + '\\n'); } }`;
+
+/** The CPU seconds the busy command has counted for itself; 0 before its first line. */
+function ownCpu(file: string): number {
+  let text = '';
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch {
+    return 0;
+  }
+  // The last whole line: the command may be writing the next one.
+  const lines = text.slice(0, text.lastIndexOf('\n')).split('\n');
+  return Number(lines.at(-1)) || 0;
+}
+
+/** One sample as the test saw it: when, the session's cores, and the busy command's own CPU seconds. */
+interface Reading { at: number; cores: number; own: number }
+
+/** An `onSample` that records each sample of session `id` into `readings`. */
+const recorder = (readings: Reading[], monitor: () => ResourceMonitor, id: string, file: string) => () => {
+  const f = monitor().figures()[id];
+  if (f) readings.push({ at: Date.now(), cores: f.cores, own: ownCpu(file) });
+};
+
+/** CPU seconds the busy command must have by its own count before the comparison is made. */
+const OWN_CPU_S = 3;
+
+/** Below this much CPU by its own count in WAIT_MS, the busy command hardly ran and there is nothing to compare. */
+const TOO_LOADED_S = 0.2;
+
+/**
+ * From the next sample on, waits until the busy command has had OWN_CPU_S of CPU by its own count (at
+ * least two intervals, at most WAIT_MS), and returns what the session read over those intervals and
+ * what the command counted. Three seconds, not one: ps on Linux gives whole seconds, so a reading can be
+ * a second short at each end.
+ */
+async function overWindow(readings: Reading[]): Promise<{ session: number; own: number; seconds: number }> {
+  const until = Date.now() + WAIT_MS;
+  const start = readings.length;
+  const enough = () => readings.length >= start + 3 && readings.at(-1)!.own - readings[start]!.own >= OWN_CPU_S;
+  while (!enough() && Date.now() < until) await sleep(100);
+  const window = readings.slice(start);
+  assert.ok(window.length >= 2, `the session was measured ${window.length} times in ${WAIT_MS} ms`);
+  let session = 0;
+  for (let i = 1; i < window.length; i++) session += window[i]!.cores * ((window[i]!.at - window[i - 1]!.at) / 1000);
+  const first = window[0]!;
+  const last = window.at(-1)!;
+  return { session, own: last.own - first.own, seconds: (last.at - first.at) / 1000 };
+}
+
+/** Starts a pretend host: it starts a middle process, which starts a busy command (writing to `file`) and exits. */
+function startHost(file: string): { host: ChildProcess; pids: Promise<{ middle: number; busy: number }> } {
+  const busy = busyCode(file);
   // Detached on Windows only: there Node ends a child that isn't detached when its parent exits (Windows CI,
   // PR #184), so it could never outlive the middle process. Elsewhere it stays in its parent's group, as a
   // background command does.
@@ -166,12 +223,14 @@ const alive = (pid: number) => {
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-test('a session whose background command keeps running after its middle process exited reads that CPU, with no turn under way', { timeout: HANG_MS }, async () => {
+test('a session whose background command keeps running after its middle process exited reads that CPU, with no turn under way', { timeout: HANG_MS }, async (t) => {
   const id = `test-169-${process.pid}`;
-  const { host, pids } = startHost();
+  const cpuFile = path.join(process.env.LEDUNG_DATA_DIR!, `${id}.cpu`);
+  const { host, pids } = startHost(cpuFile);
   const record = path.join(hostsDir(), `${id}.json`);
   let busyPid = 0;
-  const monitor = new ResourceMonitor({ intervalSec: 1, targets: () => [{ id, kind: 'local' }], withDocker: () => false, onSample: () => {} });
+  const readings: Reading[] = [];
+  const monitor: ResourceMonitor = new ResourceMonitor({ intervalSec: 1, targets: () => [{ id, kind: 'local' }], withDocker: () => false, onSample: recorder(readings, () => monitor, id, cpuFile) });
   try {
     fs.writeFileSync(record, JSON.stringify({ sessionId: id, hostPid: host.pid, startedAt: Date.now() }));
     const { middle, busy } = await pids;
@@ -182,13 +241,14 @@ test('a session whose background command keeps running after its middle process 
     while (alive(middle) && Date.now() < until) await sleep(200);
     assert.equal(alive(middle), false, 'the middle process exited');
     assert.equal(alive(busy), true, 'the busy command outlived it');
-    // Two more samples, so the reading is over an interval with the middle process gone.
-    await sleep(3500);
-    const f = monitor.figures()[id];
-    assert.ok(f, 'the session is measured');
-    // The busy command spins one core; the host and the rest are idle. Before #169 this read 0.0.
-    assert.ok(f.cores >= 0.5, `session reads ${f.cores.toFixed(2)} cores, expected about 1`);
-    assert.ok(f.cores <= monitor.machine().cpus, 'never more than the machine has');
+    // From the next sample on, so the reading is over intervals with the middle process gone.
+    const w = await overWindow(readings);
+    t.diagnostic(`session ${w.session.toFixed(2)} CPU s, busy command ${w.own.toFixed(2)} s by its own count, over ${w.seconds.toFixed(1)} s`);
+    if (w.own < TOO_LOADED_S) return t.skip(`the machine is too loaded: the busy command had ${w.own.toFixed(2)} s of CPU in ${w.seconds.toFixed(1)} s`);
+    // The session's processes are the busy command and an idle host, so it reads at least what the command
+    // had by its own count; half of that leaves room for sample timing. Before #169 this read 0.0.
+    assert.ok(w.session >= 0.5 * w.own, `session read ${w.session.toFixed(2)} CPU s over ${w.seconds.toFixed(1)} s, while its busy command had ${w.own.toFixed(2)} s by its own count`);
+    assert.ok(Math.max(...readings.map((r) => r.cores)) <= monitor.machine().cpus, 'never more than the machine has');
   } finally {
     monitor.stop();
     if (busyPid && alive(busyPid)) process.kill(busyPid);
@@ -212,11 +272,13 @@ test("macOS/Linux: the sampler's own list carries each process's group, as ps gi
   assert.equal(list.get(process.pid)?.pgid, expected);
 });
 
-test('macOS/Linux: a background command whose shell came and went between two samples counts, through its group', { ...posixOnly, timeout: HANG_MS }, async () => {
+test('macOS/Linux: a background command whose shell came and went between two samples counts, through its group', { ...posixOnly, timeout: HANG_MS }, async (t) => {
   // Like a real host, the pretend host is detached: it leads its own group. On "go" it starts a short
   // shell that starts the busy command and exits after 100 ms, well within the 1 s between samples, so
   // no sample sees the busy command under the host: only the host's group keeps it.
-  const busy = `const end = Date.now() + ${WAIT_MS}; while (Date.now() < end) {}`;
+  const id = `test-169-group-${process.pid}`;
+  const cpuFile = path.join(process.env.LEDUNG_DATA_DIR!, `${id}.cpu`);
+  const busy = busyCode(cpuFile);
   const shell = `const c = require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(busy)}], { stdio: 'ignore' });
     console.log(JSON.stringify({ shell: process.pid, busy: c.pid })); c.unref(); setTimeout(() => process.exit(0), 100);`;
   const hostCode = `require('readline').createInterface({ input: process.stdin }).once('line', () => {
@@ -227,15 +289,17 @@ test('macOS/Linux: a background command whose shell came and went between two sa
   const started = new Promise<{ shell: number; busy: number }>((resolve) => {
     readline.createInterface({ input: host.stdout! }).once('line', (l) => resolve(JSON.parse(l)));
   });
-  const id = `test-169-group-${process.pid}`;
   const record = path.join(hostsDir(), `${id}.json`);
   let busyPid = 0;
   let sent = false;
   let goAt = 0;
+  const readings: Reading[] = [];
+  const recordSample = recorder(readings, () => monitor, id, cpuFile);
   const monitor: ResourceMonitor = new ResourceMonitor({
     intervalSec: 1, targets: () => [{ id, kind: 'local' }], withDocker: () => false,
     // Right after a sample, so the shell lives and exits before the next one.
     onSample: () => {
+      recordSample();
       if (!sent && monitor.figures()[id]) {
         sent = true;
         goAt = Date.now();
@@ -257,10 +321,10 @@ test('macOS/Linux: a background command whose shell came and went between two sa
     // startPosix). Seen gone within that, the shell was in no sample, so only the group rule can keep the
     // busy command (test review of PR #184, round 2).
     assert.ok(goneBy < 1000, `the shell was gone ${goneBy} ms after "go", before the next sample`);
-    await sleep(3500);
-    const f = monitor.figures()[id];
-    assert.ok(f, 'the session is measured');
-    assert.ok(f.cores >= 0.5, `session reads ${f.cores.toFixed(2)} cores, expected about 1`);
+    const w = await overWindow(readings);
+    t.diagnostic(`session ${w.session.toFixed(2)} CPU s, busy command ${w.own.toFixed(2)} s by its own count, over ${w.seconds.toFixed(1)} s`);
+    if (w.own < TOO_LOADED_S) return t.skip(`the machine is too loaded: the busy command had ${w.own.toFixed(2)} s of CPU in ${w.seconds.toFixed(1)} s`);
+    assert.ok(w.session >= 0.5 * w.own, `session read ${w.session.toFixed(2)} CPU s over ${w.seconds.toFixed(1)} s, while its busy command had ${w.own.toFixed(2)} s by its own count`);
   } finally {
     monitor.stop();
     if (busyPid && alive(busyPid)) process.kill(busyPid);
