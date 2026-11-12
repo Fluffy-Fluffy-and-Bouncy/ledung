@@ -1,5 +1,6 @@
 // The line above the message box that says whether the session is working, waiting for Simon, or done.
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useMemo, type ReactNode } from 'react';
+import { useNow } from '../clock.ts';
 import type { SessionInfo, StoredMessage } from '../../../src/shared/protocol.ts';
 import { toolSummary } from './ToolPreview.tsx';
 import { formatTime } from './MessageList.tsx';
@@ -56,24 +57,20 @@ export function endedWithError(session: SessionInfo): boolean {
   return session.status === 'ended' && /exited with code [1-9]|stopped unexpectedly/.test(session.endReason ?? '');
 }
 
-/** extra: drawn at the bar's right end, the session's macro chips (issue #410). */
-export function WorkingIndicator({ session, sessions, messages, extra, waitingToStart }: {
-  session: SessionInfo; sessions: SessionInfo[]; messages: StoredMessage[]; extra?: ReactNode;
-  /** A new session waiting for memory to start (resource limits): the reason, shown in place of "Ready". */
-  waitingToStart?: string | null;
+/**
+ * children: the sessions it started. extra: drawn at the bar's right end, the session's macro chips (issue #410).
+ * waitingToStart: a new session waiting for memory to start (resource limits), the reason, shown in place of "Ready".
+ */
+export function WorkingIndicator({ session, children, messages, extra, waitingToStart }: {
+  session: SessionInfo; children: readonly SessionInfo[]; messages: StoredMessage[]; extra?: ReactNode; waitingToStart?: string | null;
 }) {
   const activity = useMemo(() => currentActivity(messages, !!session.uac), [messages, session.uac]);
-  const [now, setNow] = useState(Date.now());
   // 'starting' waits for its first message: not working (#97).
   const active = session.status === 'running' || session.status === 'stopping';
-  const childrenWorking = sessions.filter((s) => s.parentId === session.id && s.status === 'running').length;
-  const mode = shipMode(session, sessions);
-
-  useEffect(() => {
-    if (!active) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [active]);
+  // The seconds of the turn, from the page's shared clock (issue #233).
+  const now = useNow(1000, active);
+  const childrenWorking = children.filter((s) => s.status === 'running').length;
+  const mode = shipMode(session, children);
 
   // One element for every state, so the ship keeps its place and can animate from one state to the next.
   let kind: string;

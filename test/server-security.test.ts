@@ -2841,9 +2841,10 @@ test("a project whose flow files a shared flow's named briefs lead to, or a flow
 });
 
 // Part 3f and ledung#110: starting a queued run past its limit and taking a project back to its shared flow are the
-// person's, from the open page: the sign-in cookie and Origin alone are refused, before anything happens.
-test('start anyway, stop and back to shared need the open page', async () => {
-  for (const p of ['/api/projects/p/runs/run-1/start', '/api/projects/p/runs/run-1/stop', '/api/projects/p/flow/back-to-shared']) {
+// person's, from the open page: the sign-in cookie and Origin alone are refused, before anything happens. So is "Not
+// now" on "Record where this came from" (workflow-origin.md, section 4).
+test('start anyway, stop, back to shared and dismissing the origin offer need the open page', async () => {
+  for (const p of ['/api/projects/p/runs/run-1/start', '/api/projects/p/runs/run-1/stop', '/api/projects/p/flow/back-to-shared', '/api/projects/p/flow/dismiss-origin']) {
     assert.equal((await request({ method: 'POST', path: p, headers: { origin: ORIGIN } })).status, 401, p);
     const refused = await change(p, {});
     assert.equal(refused.status, 403, p);

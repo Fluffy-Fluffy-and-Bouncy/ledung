@@ -1,4 +1,4 @@
-import { Component, Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from 'react';
+import { Component, Fragment, lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from 'react';
 import { CHATS, PERMISSION_MODES, PRIORITIES, projectLabel, type ModelChoice, type AccountInfoView, type AwayInfo, type BoardStatus, type ChatsInfo, type GitHubBudget, type CompactingInfo, type MachineInfo, type McpServerInfo, type PermissionMode, type Priority, type ProjectInfo, type QuestionInfo, type RemoteControlInfo, type SessionInfo } from '../../src/shared/protocol.ts';
 import { AddProjectView, ProjectSettingsView, ProjectStartView } from './projects/ProjectViews.tsx';
 import { ChatsSettingsView, NewChatView } from './chats/ChatViews.tsx';
@@ -7,6 +7,8 @@ import { CHAT_IMAGE_TYPES, dataUrl, imageFiles, MAX_CHAT_IMAGES, prepareImage, S
 import { MessageList, formatTime } from './components/MessageList.tsx';
 import { WorkingIndicator } from './components/WorkingIndicator.tsx';
 import { SailingShip, shipMode } from './components/SailingShip.tsx';
+import { indexSessions, REMOVED_PROJECTS, sidebarTree, type Row, type SessionIndex } from './sessionTree.ts';
+import { useNow } from './clock.ts';
 import { FileViewer } from './components/FileViewer.tsx';
 import { FilesPane } from './components/FilesPane.tsx';
 import type { PaneFolderKey } from '../../src/shared/files-pane.ts';
@@ -37,16 +39,12 @@ import { settingsOf, toApi } from './projects/projectSettings.ts';
 import { foldRows, readFolded, readFoldedSessions, toggleFolded, writeFolded, writeFoldedSessions, type FoldedRow, type Hidden } from './sidebarFold.ts';
 import { conversationFromHash, conversationHash, conversationOf, messageFromHash, messageHash, type CameFrom } from './conversation.ts';
 
-/** The sidebar group for sessions of projects that were removed. */
-const REMOVED_PROJECTS = 'Removed projects';
 
 /** Whether a session belongs to a sidebar group: its project, Chats (issue #211), or "Removed projects". */
 function inGroup(s: SessionInfo, group: string, known: Set<string>): boolean {
   return group === REMOVED_PROJECTS ? !known.has(s.project) && s.project !== CHATS : s.project === group;
 }
 
-/** A session's row in the sidebar; drag: the siblings it can be dragged among, null when it stays put (issue #88). */
-type Row = { s: SessionInfo; depth: number; drag: string | null };
 import { projectAccountShown, stripAccount } from './limitAccount.ts';
 import { githubBudgetClass, githubBudgetLine, githubBudgetsShown } from './githubBudget.ts';
 import { escapeLeaves, isSettingsView, leaveSettings, stepsInto, type SettingsSteps } from './settingsNav.ts';
@@ -407,7 +405,9 @@ export function App() {
     return counts;
   }, [permissions, questions]);
 
-  const session = ledung.sessions.find((s) => s.id === openId) ?? null;
+  // The list indexed once per change (issue #233): rows, headers and lookups by id read it instead of scanning the list.
+  const index = useMemo(() => indexSessions(ledung.sessions), [ledung.sessions]);
+  const session = (openId && index.byId.get(openId)) || null;
 
   // The pages inside the Settings frame (issue #365): the Ledung, Chats and project tabs, each with its side menu of
   // groups (#366), and the Add project page.
@@ -445,6 +445,13 @@ export function App() {
       setError((e as Error).message);
     }
   };
+
+  // The sidebar is memoized (issue #233): a message or other live event that changes nothing it shows doesn't redraw
+  // it. Its handlers keep their identity for that; they are only called on a click.
+  const sidebarRun = useStableCallback(run);
+  const sidebarOpen = useStableCallback(open);
+  const sidebarCloseSettings = useStableCallback(closeSettings);
+  const sidebarStart = useStableCallback((project: string, profile?: string) => run(async () => open((await api.start(project, profile)).id)));
 
   const banners = (
     <>
@@ -518,6 +525,7 @@ export function App() {
         {openId === null && <div className="phone-banners">{banners}</div>}
         <Sidebar
           sessions={ledung.sessions}
+          index={index}
           projects={ledung.projects}
           chats={ledung.chats}
           pending={pendingBySession}
@@ -528,12 +536,12 @@ export function App() {
           stripAccount={stripAcc}
           overview={ledung.overview}
           machine={ledung.machine}
-          run={run}
+          run={sidebarRun}
           openId={openId}
-          onOpen={open}
-          onCloseSettings={closeSettings}
+          onOpen={sidebarOpen}
+          onCloseSettings={sidebarCloseSettings}
           profiles={ledung.profiles}
-          onStart={(project, profile) => run(async () => open((await api.start(project, profile)).id))}
+          onStart={sidebarStart}
           connection={ledung.connection}
           board={ledung.board}
           workflows={ledung.workflows}
@@ -654,8 +662,10 @@ export function App() {
   );
 }
 
-function Sidebar(props: {
+const Sidebar = memo(function Sidebar(props: {
   sessions: SessionInfo[];
+  /** The same list indexed (issue #233). */
+  index: SessionIndex;
   projects: ProjectInfo[];
   /** For the chats' name colour (issue #222). */
   chats: ChatsInfo | null;
@@ -688,26 +698,11 @@ function Sidebar(props: {
   // outside the manager (and earlier managers). Sessions of removed projects come last. Projects and
   // siblings keep the order they were dragged into (issue #88), else as before.
   // Archived sessions leave the tree; each project links to its own (idle stop and archive).
-  const shown = props.sessions.filter((s) => !s.archivedAt);
-  const childrenOf = (id: string) => shown.filter((s) => s.parentId === id).sort(siblingOrder);
-  const known = new Set(props.projects.map((p) => p.name));
-  // drag: the siblings a row can be dragged among (sidebarDrag.ts); null for the manager, which stays first,
-  // and in "Removed projects", whose rows belong to no one project.
-  const withChildren = (s: SessionInfo, drag: string | null, movable: boolean): Row[] =>
-    [{ s, depth: 0, drag }, ...childrenOf(s.id).map((c) => ({ s: c, depth: 1, drag: movable ? `c:${s.id}` : null }))];
-  const rowsFor = (inProject: (s: SessionInfo) => boolean, managerId: string | null, project: string | null) => {
-    const ids = new Set(shown.filter(inProject).map((s) => s.id));
-    const manager = managerId ? shown.find((s) => s.id === managerId) : undefined;
-    const top = shown.filter((s) => inProject(s) && s.id !== managerId && (!s.parentId || !ids.has(s.parentId))).sort(siblingOrder);
-    return [...(manager ? withChildren(manager, null, !!project) : []), ...top.flatMap((s) => withChildren(s, project ? `t:${project}` : null, !!project))];
-  };
-  // Chats first (issue #211), a group of their own apart from every project, always shown for its New chat.
-  const groups = [
-    { name: CHATS, project: null as ProjectInfo | null, rows: rowsFor((s) => s.project === CHATS, null, CHATS) },
-    ...props.projects.map((p) => ({ name: p.name, project: p as ProjectInfo | null, rows: rowsFor((s) => s.project === p.name, p.managerId, p.name) })),
-    { name: REMOVED_PROJECTS, project: null, rows: rowsFor((s) => !known.has(s.project) && s.project !== CHATS, null, null) },
-  ].map((g) => ({ ...g, archived: props.sessions.filter((s) => s.archivedAt && inGroup(s, g.name, known)).length }))
-    .filter((g) => g.project || g.name === CHATS || g.rows.length || g.archived);
+  // The rows of every group and their archived counts from one pass over the list, not a scan per project or row
+  // (issue #233); memoized, so a redraw for something else (a menu, a drag) doesn't rebuild them.
+  const known = useMemo(() => new Set(props.projects.map((p) => p.name)), [props.projects]);
+  const tree = useMemo(() => sidebarTree(props.sessions, props.projects, known), [props.sessions, props.projects, known]);
+  const groups = tree.groups;
 
   // Folded projects and sessions, kept in this browser (issue #149); gone projects and sessions drop out on the next fold.
   const [folded, setFolded] = useState(() => readFolded(localStorage));
@@ -718,7 +713,7 @@ function Sidebar(props: {
     return next;
   });
   const foldSession = (id: string) => setFoldedSessions((f) => {
-    const next = toggleFolded(f, id, (n) => shown.some((s) => s.id === n));
+    const next = toggleFolded(f, id, (n) => tree.shown.byId.has(n));
     writeFoldedSessions(localStorage, next);
     return next;
   });
@@ -884,7 +879,7 @@ function Sidebar(props: {
   const menuFor = (() => {
     if (!rowMenu) return null;
     if (rowMenu.target.startsWith('s:')) {
-      const s = shown.find((x) => x.id === rowMenu.target.slice(2));
+      const s = tree.shown.byId.get(rowMenu.target.slice(2));
       return s ? { label: `Menu of ${s.title}`, entries: sessionEntries(s) } : null;
     }
     const entries = groupEntries(rowMenu.target.slice(2));
@@ -911,6 +906,9 @@ function Sidebar(props: {
 
   // The status dot, or with it switched off the status as the row's tooltip (#151).
   const [dotShown] = useStatusDot();
+  // The memoized sidebar no longer redraws on every message; a budget past its reset still drops out within a minute
+  // (self-check 4 of #233).
+  const minute = useNow(60_000);
   // The Compact sidebar step (#153): which rows a card keeps; what it hides goes in its tooltip.
   const [compact] = useCompactSidebar();
   const shows = compactRows(compact);
@@ -923,7 +921,7 @@ function Sidebar(props: {
       // Tokens today (a manager's includes its team) · context · branch.
       const own = props.overview?.sessions[s.id]?.today ?? 0;
       const team = s.role === 'manager'
-        ? props.sessions.filter((c) => c.parentId === s.id).reduce((n, c) => n + (props.overview?.sessions[c.id]?.today ?? 0), own)
+        ? props.index.childrenOf(s.id).reduce((n, c) => n + (props.overview?.sessions[c.id]?.today ?? 0), own)
         : own;
       const ctx = contextShare(s);
       const res = s.status !== 'ended' ? props.machine?.sessions[s.id] : undefined;
@@ -969,7 +967,7 @@ function Sidebar(props: {
             {shows.usage && usage && <span className="session-sub usage-line">{usage}</span>}
           </span>
           {(() => {
-            const mode = shipMode(s, props.sessions);
+            const mode = shipMode(s, props.index.childrenOf(s.id));
             return mode && <span className={`session-ship ${statusLook(s)}`}><SailingShip mode={mode} width={10} sizeButton={false} hideWhenSunk maxSize={shows.shipMax} /></span>;
           })()}
           {hiddenChip(hidden, hidden?.count === 1 ? 'sub-session' : 'sub-sessions')}
@@ -986,12 +984,12 @@ function Sidebar(props: {
   return (
     <aside className="sidebar">
       <LimitMeters account={props.stripAccount} limits={props.limits} stops={props.usageStops} run={props.run} />
-      {githubBudgetsShown(props.github, Date.now()).map((b) => (
+      {githubBudgetsShown(props.github, minute).map((b) => (
         <div key={`${b.container ?? ''} ${b.host}`} className={`github-budget muted ${githubBudgetClass(b)}`} title="What is left of the GitHub budget Ledung's pull request checks use (the worst of GitHub's readings). Under 20 % left they run every 10 minutes, under 5 % not until the reset.">
           {githubBudgetLine(b, (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}
         </div>
       ))}
-      <MachinePanel machine={props.machine} sessions={props.sessions} onOpen={props.onOpen} run={props.run} />
+      <MachinePanel machine={props.machine} byId={props.index.byId} onOpen={props.onOpen} run={props.run} />
       <button className={`waiting-entry${isDeskView(props.openId) ? ' open' : ''}${props.waiting ? ' has-items' : ''}`} onClick={() => props.onOpen('waiting')}>
         <span>Waiting for you</span>
         {props.waiting ? <span className="badge">{props.waiting}</span> : <span className="muted">nothing</span>}
@@ -1105,7 +1103,7 @@ ${moreHint}`} onClick={() => props.onOpen('chat')}><Named colour={props.chats?.c
       </div>
     </aside>
   );
-}
+});
 
 export function SessionView(props: {
   session: SessionInfo;
@@ -1127,6 +1125,8 @@ export function SessionView(props: {
   onBack: () => void;
 }) {
   const { session, ledung, run } = props;
+  // Lookups by id and its own sessions from an index built once per list change (issue #233).
+  const index = useMemo(() => indexSessions(ledung.sessions), [ledung.sessions]);
   const [showTechnical, setShowTechnical] = useState(() => readTechnical(session.id));
   /** Files opened from links, newest last; empty when the file panel is closed. */
   const [files, setFiles] = useState<string[]>([]);
@@ -1186,7 +1186,7 @@ export function SessionView(props: {
   // Not a stable callback: MessageList calls it from its own layout effect, before this view's effects would have
   // updated one, and ledung.loadEarlier works from the messages it was made with (review of #323).
   const loadEarlier = useCallback(() => run(ledung.loadEarlier), [ledung.loadEarlier]);
-  const titleOf = useCallback((id: string) => ledung.sessions.find((s) => s.id === id)?.title ?? 'unknown', [ledung.sessions]);
+  const titleOf = useCallback((id: string) => index.byId.get(id)?.title ?? 'unknown', [index]);
   const openQuestion = useStableCallback(props.onOpenQuestion);
   const boardRepo = ledung.board?.projects[session.project]?.repo;
   const openBoardThread = useStableCallback((id: string) => props.onOpenBoardThread(boardRepo!, id));
@@ -1263,7 +1263,7 @@ export function SessionView(props: {
             <div className="muted started-by">
               Started by{' '}
               <button className="link" onClick={() => (location.hash = `#/s/${session.parentId}`)}>
-                {ledung.sessions.find((s) => s.id === session.parentId)?.title ?? 'a manager'}
+                {index.byId.get(session.parentId)?.title ?? 'a manager'}
               </button>
             </div>
           )}
@@ -1329,7 +1329,7 @@ export function SessionView(props: {
           <div className="session-notice">
             <Compacting
               compacting={session.compacting!}
-              by={session.compacting!.requester === session.id ? 'the session itself' : `manager "${ledung.sessions.find((s) => s.id === session.compacting!.requester)?.title ?? 'a manager'}"`}
+              by={session.compacting!.requester === session.id ? 'the session itself' : `manager "${index.byId.get(session.compacting!.requester)?.title ?? 'a manager'}"`}
             />
           </div>
         )}
@@ -1360,7 +1360,7 @@ export function SessionView(props: {
             onOpenBoardThread={boardRepo ? openBoardThread : undefined}
             tint={tint}
           />
-          <WorkingIndicator key={session.id} session={session} sessions={ledung.sessions} messages={ledung.messages} waitingToStart={waitingToStart(ledung.machine, session)}
+          <WorkingIndicator key={session.id} session={session} children={index.childrenOf(session.id)} messages={ledung.messages} waitingToStart={waitingToStart(ledung.machine, session)}
             extra={<MacroChips key={session.id} macros={macros} onUse={fireMacro} onEdit={() => (location.hash = '#/settings/macros')}
               actions={[
                 { id: 'secret', label: '🔑 Lock a secret…', title: 'Type or paste it into a masked field; Claude gets only its name', disabled: composerClosed(session), onPick: () => composerActions.current?.secret() },
@@ -1895,11 +1895,8 @@ function Composer({ session, tint, run, quoteInto, actionsInto, bangShell }: {
 
 /** A clear (clear_session) counting down: the seconds left and Cancel, which keeps the conversation. */
 function ClearCountdown({ due, onCancel }: { due: number; onCancel: () => void }) {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 500);
-    return () => clearInterval(timer);
-  }, []);
+  // The page's shared clock (issue #233).
+  const now = useNow(500);
   const left = Math.max(0, Math.ceil((due - now) / 1000));
   return (
     <span className="clear-countdown" role="status">
@@ -1914,11 +1911,7 @@ function ClearCountdown({ due, onCancel }: { due: number; onCancel: () => void }
  * (decided 2026-10-13); Interrupt ends it. The note is shown as the requester's, never as the user's words.
  */
 function Compacting({ compacting, by }: { compacting: CompactingInfo; by: string }) {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
+  const now = useNow(1000);
   const secs = Math.max(0, Math.floor((now - compacting.startedAt) / 1000));
   const time = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
   const title = `Compact requested by ${by}${compacting.note ? `. Note for the summary: ${compacting.note}` : ''}`;

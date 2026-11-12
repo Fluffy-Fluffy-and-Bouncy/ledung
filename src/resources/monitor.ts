@@ -83,12 +83,17 @@ export class ResourceMonitor {
   }
 
   start(): void {
-    this.sampler = new ProcessSampler(this.intervalSec, (list, at, gpu) => {
+    const guarded = (list: ProcessList | null, at: number, gpu?: { raw: GpuRaw; at: number }) => {
       try {
         this.tick(list, at, gpu);
       } catch (e) {
         console.error(`Measuring: ${(e as Error).message}`);
       }
+    };
+    // The process list is only for local sessions' figures: with none live, none is read (#230).
+    this.sampler = new ProcessSampler(this.intervalSec, guarded, {
+      wanted: () => this.targets().some((t) => t.kind === 'local'),
+      onSkip: (at) => guarded(null, at),
     });
     this.sampler.start();
   }
@@ -121,10 +126,12 @@ export class ResourceMonitor {
     return { cpuSeconds: Math.max(0, (this.counters.get(id)?.cpu ?? 0) - t.startCpu), peakCores: t.peakCores, peakMem: t.peakMem, samples: t.samples };
   }
 
-  private tick(list: ProcessList, at: number, gpu?: { raw: GpuRaw; at: number }): void {
-    // The GPU (resource limits): on Windows in the same batch; elsewhere read beside it, the latest reading kept.
+  /** One sample; `list` null when no process list was read (no local session was live). */
+  private tick(list: ProcessList | null, at: number, gpu?: { raw: GpuRaw; at: number }): void {
+    // The GPU (resource limits): on Windows in the same answer as the list; elsewhere read beside it, the latest kept.
+    // Like the list, only while a local session is live (#230); the last reading stays on show meanwhile.
     if (gpu) this.gpuReading = this.gpuTracker.update(gpu.raw, gpu.at);
-    else if (process.platform !== 'win32' && !this.gpuBusy) {
+    else if (list && process.platform !== 'win32' && !this.gpuBusy) {
       this.gpuBusy = true;
       const pids = [...list.keys()];
       // A read that hangs is given up after 20 s, so the next round can try again (security review, finding 6).
@@ -133,8 +140,8 @@ export class ResourceMonitor {
         .then((raw) => { this.gpuReading = this.gpuTracker.update(raw, Date.now()); }, () => {})
         .finally(() => { this.gpuBusy = false; });
     }
-    // An old reading is no reading: decisions are never taken on a frozen GPU figure.
-    if (this.gpuReading && at - this.gpuReading.at > Math.max(30_000, this.intervalSec * 4000)) this.gpuReading = null;
+    // An old reading is no reading for decisions: dropped once a list comes without a fresh one.
+    if (list && this.gpuReading && at - this.gpuReading.at > Math.max(30_000, this.intervalSec * 4000)) this.gpuReading = null;
     if (!this.memBusy) {
       this.memBusy = true;
       void memoryUsed()
@@ -157,27 +164,31 @@ export class ResourceMonitor {
     const dt = (at - this.prevAt) / 1000;
     // A host only while its pid is still that host: where the list has start times (Windows), the process must have
     // started when Ledung recorded it starting, or a reused pid would make another program's tree the session's
-    // (acceptance test, finding 7). Ledung writes the record just after the spawn.
-    const hostPids = new Map(listHostRecords().filter((r) => hostStill(list, r.hostPid, r.startedAt)).map((r) => [r.sessionId, r.hostPid]));
+    // (acceptance test of resource limits, finding 7). Ledung writes the record just after the spawn.
+    const hostPids = new Map(list ? listHostRecords().filter((r) => hostStill(list, r.hostPid, r.startedAt)).map((r) => [r.sessionId, r.hostPid]) : []);
     const trees = new Map<string, ProcInfo[]>();
     for (const t of targets) {
-      if (t.kind !== 'local') continue;
+      // A local session that went live after the sampler chose not to read is measured from the next sample.
+      if (t.kind !== 'local' || !list) continue;
       const pid = hostPids.get(t.id);
       const s = treeSample(this.prevList, list, pid, dt, os.cpus().length, this.trees.get(t.id) ?? null);
       this.trees.set(t.id, s.memory);
       if (pid) trees.set(t.id, s.tree);
       this.count(t.id, s.cpuSeconds, s.cores, s.memBytes);
     }
-    const prev = this.prevList;
-    this.prevList = list;
-    this.prevAt = at;
-    if (this.onTick) {
+    // Resource limits judge each sample with a list; with none (no local session) there is nothing of theirs to judge.
+    if (list && this.onTick) {
       try {
-        this.onTick({ at, list, prev, dt, trees, hosts: hostPids, gpu: this.gpuReading });
+        this.onTick({ at, list, prev: this.prevList, dt, trees, hosts: hostPids, gpu: this.gpuReading });
       } catch (e) {
         console.error(`Resource limits: ${(e as Error).message}`);
       }
     }
+    // After a round with no list, an empty one: a session that went live meanwhile is counted from zero, as
+    // one that started between two lists always was (self-check of #230, finding 1). Not before the first
+    // list: a host that outlived a restart would bring its whole life's CPU.
+    this.prevList = list ?? (this.prevList && new Map());
+    this.prevAt = at;
 
     void this.sampleContainers(targets.filter((t) => t.kind === 'docker') as Extract<MonitorTarget, { kind: 'docker' }>[], dt);
     if (this.withDocker() && !this.dockerBusy && at - this.dockerAt >= DOCKER_EVERY_MS) {

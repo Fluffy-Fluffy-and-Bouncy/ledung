@@ -320,6 +320,8 @@ export const api = {
   runs: (project: string) => call<FlowRun[]>('GET', `/api/projects/${encodeURIComponent(project)}/runs`),
   /** ledung#110: takes away the project's own flow, so the shared workflow's counts again; the workflow as it then reads. */
   backToShared: (project: string, versions: Record<string, string>) => call<FlowView>('POST', `/api/projects/${encodeURIComponent(project)}/flow/back-to-shared`, { versions }),
+  /** "Not now" on "Record where this came from" (workflow-origin.md, section 4): not offered again for the project. */
+  dismissOrigin: (project: string) => call<FlowView>('POST', `/api/projects/${encodeURIComponent(project)}/flow/dismiss-origin`),
   /** The person stops a run from the Runs list. */
   stopRun: (project: string, run: string) => call<void>('POST', `/api/projects/${encodeURIComponent(project)}/runs/${encodeURIComponent(run)}/stop`),
   /** Starts a queued run past its limit (part 3f). */
