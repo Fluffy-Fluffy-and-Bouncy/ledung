@@ -5,7 +5,7 @@ import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import {
   EFFORT_LEVELS, PERMISSION_MODES, type AccountInfoView, type BoardStatus, type ContainerInfoView, type FolderListingView, type PermissionMode, type ProfilesView, type ProjectInfo, type WorkflowCheckView,
 } from '../../../src/shared/protocol.ts';
-import { SUGGESTIONS, missingSuggestions, suggestionName, withSuggestions } from '../../../src/shared/sensitive-suggestions.ts';
+import { FILE_PATH_RULE, SUGGESTIONS, missingSuggestions, suggestionName, withSuggestions } from '../../../src/shared/sensitive-suggestions.ts';
 import { DEFAULT_TIERS } from '../../../src/shared/questions.ts';
 import { api } from '../api.ts';
 import { ProjectBoard, boardBlocked, boardChanges, boardFormOf, saveBoard } from '../components/BoardViews.tsx';
@@ -399,6 +399,7 @@ export function SensitiveList<T extends { commandPatterns: string[]; pathPattern
         <button type="button" className="small" onClick={add} disabled={!pattern.trim()}>Add</button>
       </div>
       {error && <p className="error">{error}</p>}
+      <p className="muted">{FILE_PATH_RULE}</p>
     </div>
   );
 }

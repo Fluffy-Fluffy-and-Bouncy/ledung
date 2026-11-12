@@ -59,7 +59,7 @@
     "burstSeconds": 5
   },
   "sensitive": {
-    "$comment": "Requests matching these always go to Simon. A manager can never approve them. Used from step 4.",
+    "$comment": "Requests matching these always go to Simon. A manager can never approve them. Used from step 4. A pathPatterns entry is also matched against each word of a shell command, except a word that reads as code: it starts with a letter, has no slash or colon, and has a dot inside it (process.env, import.meta.env): so a bare file name such as config.prod.env or server.key in a command is not matched, while .env, ./server.key and config/.env are.",
     "commandPatterns": [],
     "pathPatterns": [],
     "mcpTools": []

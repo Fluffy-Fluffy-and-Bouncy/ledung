@@ -4,6 +4,9 @@
 // exactly what it enforces. Used by the core and by the page ("Add suggested").
 import { RUNAS_PATTERN, SUDO_PATTERN } from './elevation.ts';
 
+/** How a file path entry meets shell commands, shown with the list (#278; Martin, 2026-11-12, Ledung question #838). */
+export const FILE_PATH_RULE = 'A file path is also matched against each word of a shell command, except a word that reads as code: it starts with a letter, has no slash or colon, and has a dot inside it (process.env, import.meta.env): so a bare file name such as config.prod.env or server.key in a command is not matched, while .env, ./server.key and config/.env are.';
+
 export interface Suggestion {
   /** Plain words, shown in permission prompts and in the project's settings. */
   name: string;
