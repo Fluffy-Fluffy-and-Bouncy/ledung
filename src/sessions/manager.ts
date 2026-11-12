@@ -1406,7 +1406,7 @@ export class SessionManager {
     const listed = (list: typeof faults) => list.slice(0, 12).map((p) => `- ${p.at}: ${p.message}`).join('\n');
     const tiers = tiersOf(project.questionTiers);
     const details: QuestionDetails = {
-      title: `Workflow change: ${cutAtWord(why.trim().split('\n')[0]!, 160)}`,
+      title: `Workflow change: ${cutAtWord(why.trim().split('\n')[0]!, 90)}`,
       tier: tiers.find((t) => /process/i.test(t)) ?? tiers[0],
       flowProposal: proposal.id,
       // The helper proposes for another project than its own (ledung-helper.md): the review loads that one's.
@@ -2504,6 +2504,16 @@ export class SessionManager {
     this.stepTimer.unref?.();
   }
 
+  /** What the person answered on a notice the setup looks at, in plain words, for the helper (acceptance round 2, 21). */
+  private setupHappened(): string {
+    const parts: string[] = [];
+    const shortcuts = this.store.getMeta(SHORTCUTS_ASKED_KEY);
+    if (this.helperStepSaid === 'shortcuts' && shortcuts) parts.push(shortcuts === 'added' ? 'they added the shortcuts; begin with "The shortcuts are added."' : 'they said No to shortcuts, none were made; begin with "No shortcuts."');
+    const checkin = this.store.getMeta(CHECKIN_NOTICE_KEY);
+    if (this.helperStepSaid === 'checkin' && checkin) parts.push(this.store.getMeta('checkin') === 'off' ? 'they turned the check-in off; begin with "The check-in is off."' : 'they answered the check-in notice with OK; begin with "The check-in stays on."');
+    return parts.join('; ');
+  }
+
   private nudgeHelper(): void {
     const key = this.stepKey();
     const info = this.helperSession();
@@ -2516,10 +2526,12 @@ export class SessionManager {
     // Under way, or a message for it waits: that turn speaks for the step.
     if (info.status !== 'idle' && info.status !== 'ended') return;
     if (this.store.undeliveredInbox(info.id).length) return;
+    // What they answered, from the step the helper last spoke for, before that moves on.
+    const what = this.setupHappened();
     this.saidFor(key);
     const v = this.setupView();
     const text = v.current
-      ? `The setup moved on in the page: now ${stepLine(v)}. Write the one short message for this step.`
+      ? `The setup moved on in the page${what ? ` (${what})` : ''}: now ${stepLine(v)}. Write the one short message for this step, saying first, plainly, what they chose.`
       : `The setup's steps are all through. Say so in one or two sentences; Ledung shows the hand-over.`;
     this.store.addInbox(info.id, 'ledung', text);
     void this.resumeIfEnded(info.id).then(() => this.live.get(info.id)?.deliver(), (e: Error) => console.error(`Ledung Helper: ${e.message}`));
@@ -2746,7 +2758,9 @@ export class SessionManager {
         const fake = cardLooksLikeApproval(parsed.data);
         if (fake) throw new Error(`This card can't be shown: "${fake}" reads as an approval, and approvals are Ledung's own cards. Call the tool that needs it; Ledung asks.`);
         // During the setup Ledung shows the step's own card itself, once (Simon's try-out, 2026-11-12: cards twice).
-        if (this.setupView().phase === 'helper') throw new Error("No card during the setup: Ledung shows the step's own card under your message. Write your short message and end your turn.");
+        // Only while a step is open: once all are through, the helper's own cards are back (round 2 try-out).
+        const sv = this.setupView();
+        if (sv.phase === 'helper' && sv.current) throw new Error("No card during the setup: Ledung shows the step's own card under your message. Write your short message and end your turn.");
         // The same card again in a turn is not shown twice (the same id, else the same kind and title).
         if (this.cardShownThisTurn(id, parsed.data)) return 'That card is shown already. End your turn now, writing nothing more.';
         this.addCard(id, parsed.data);
@@ -3580,6 +3594,11 @@ ${firstMessage}`);
     if (!text.trim() && !names.length) throw new UserError('The message is empty.');
     // A command (/clear, /compact…) is run from text alone; with images it would be neither (security review of #128).
     if (names.length && text.trimStart().startsWith('/')) throw new UserError('A command starting with "/" can\'t carry images; send them in a message of their own.');
+    // The Ledung Helper: the same words twice within a few seconds are one message, a double tap (round 2, 19).
+    if (!names.length && this.store.getSession(id)?.project === HELPER) {
+      const last = this.store.listMessages(id, { limit: 50 }).filter((m) => m.kind === 'user' && !m.data?.from && !m.data?.answerTo).at(-1);
+      if (last && last.data?.text === text && Date.now() - last.at < 5000) return;
+    }
     await this.resumeIfEnded(id);
     this.liveSession(id).send(text, here, names);
   }

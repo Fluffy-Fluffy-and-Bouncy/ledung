@@ -160,8 +160,23 @@ export function HelperCardView({ card, answered, onSend, onOpen, projects, run }
   const typing = usePlainTyping();
   const [text, setText] = useState('');
   const [browsing, setBrowsing] = useState(false);
+  // Answered on the first press: a double click or tap sends once (acceptance round 2, 19).
+  const [sent, setSent] = useState(false);
+  const done = answered || sent;
+  const send = (t: string) => {
+    if (done) return;
+    setSent(true);
+    onSend(t);
+  };
+  const box = useRef<HTMLDivElement>(null);
+  // An opened folder browser is brought into view, again once its listing has come in (round 2, 17).
+  useEffect(() => {
+    if (!browsing) return;
+    const timers = [0, 400, 1000].map((ms) => setTimeout(() => box.current?.scrollIntoView({ block: 'end', behavior: 'smooth' }), ms));
+    return () => timers.forEach(clearTimeout);
+  }, [browsing]);
   const wrap = (inner: ReactNode, extra = '') => (
-    <div className={`helper-card ${card.kind}${answered ? ' answered' : ''}${extra}`}>
+    <div ref={box} className={`helper-card ${card.kind}${done ? ' answered' : ''}${extra}`}>
       <div className="helper-card-title">{card.title}</div>
       {inner}
     </div>
@@ -171,7 +186,7 @@ export function HelperCardView({ card, answered, onSend, onOpen, projects, run }
       return wrap(
         <div className="helper-choices">
           {card.options.map((o) => (
-            <button key={o.label} className="helper-choice" disabled={answered} onClick={() => onSend(o.label)}>
+            <button key={o.label} className="helper-choice" disabled={done} onClick={() => send(o.label)}>
               <span className="helper-choice-label">{o.label}</span>
               {o.hint && <span className="helper-choice-hint">{o.hint}</span>}
             </button>
@@ -179,15 +194,15 @@ export function HelperCardView({ card, answered, onSend, onOpen, projects, run }
         </div>,
       );
     case 'text':
-      return wrap(answered ? null : (
-        <form className="helper-text" onSubmit={(e) => { e.preventDefault(); if (text.trim()) onSend(text.trim()); }}>
+      return wrap(done ? null : (
+        <form className="helper-text" onSubmit={(e) => { e.preventDefault(); if (text.trim()) send(text.trim()); }}>
           <input {...typing} value={text} onChange={(e) => setText(e.target.value)} placeholder={card.placeholder ?? ''} aria-label={card.title} maxLength={200} autoFocus />
-          <button className="small primary" type="submit" disabled={!text.trim()}>Send</button>
+          <button className="small primary" type="submit" disabled={!text.trim() || done}>Send</button>
         </form>
       ));
     case 'folder':
-      return wrap(answered ? null : browsing
-        ? <FolderBrowser load={api.browse} reloadKey="helper" start={card.start} onPick={(p) => { setBrowsing(false); onSend(`Folder: ${p}`); }} pickLabel="Use this folder" />
+      return wrap(done ? null : browsing
+        ? <FolderBrowser load={api.browse} reloadKey="helper" start={card.start} onPick={(p) => { setBrowsing(false); send(`Folder: ${p}`); }} pickLabel="Use this folder" />
         : <button className="small primary" onClick={() => setBrowsing(true)}>Choose a folder</button>);
     case 'link': {
       const view = helperLinkView(card.to, card.project ?? null, projects);

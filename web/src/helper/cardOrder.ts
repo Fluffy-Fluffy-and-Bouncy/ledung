@@ -24,7 +24,12 @@ const words = (t: string) => t.replace(/\s+/g, ' ').trim();
 export function placeCards<T extends Entry>(raw: T[]): T[] {
   const out: T[] = [];
   let held: T[] = [];
-  const flush = () => {
+  // The last turn's cards wait until the helper has written in it: a card never shows before its words (round 2, 20).
+  const flush = (spoke: boolean) => {
+    if (!spoke) {
+      held = [];
+      return;
+    }
     // The last card of each key in this turn, in the order those last ones came.
     const last = new Map<string, T>();
     for (const c of held) {
@@ -38,7 +43,7 @@ export function placeCards<T extends Entry>(raw: T[]): T[] {
   for (const e of raw) {
     if (e.type === 'card') held.push(e);
     else if (given(e)) {
-      flush();
+      flush(true);
       said = new Set();
       out.push(e);
     } else if (e.type === 'assistant' && !e.sub && e.text) {
@@ -47,7 +52,7 @@ export function placeCards<T extends Entry>(raw: T[]): T[] {
       out.push(e);
     } else out.push(e);
   }
-  flush();
+  flush(said.size > 0);
   // Answered once the person wrote anything after it (their pick is their message).
   let later = false;
   for (let i = out.length - 1; i >= 0; i--) {

@@ -378,3 +378,17 @@ test("a step that moves on outside the helper's turn gets one message from Ledun
   m.nudgeHelper();
   assert.equal(store.undeliveredInbox(id).length, before + 1);
 });
+
+test("a double tap sends the same words to the helper once (acceptance round 2, 19)", async () => {
+  const { manager, store, helper } = ledung();
+  const id = await helper();
+  store.updateSession(id, { status: 'idle' });
+  const sent = (manager as unknown as { live: Map<string, { send(t: string): void }> }).live.get(id)!;
+  const calls: string[] = [];
+  sent.send = (t: string) => { calls.push(t); store.addMessage(id, 'user', { text: t }); };
+  await manager.send(id, 'second-app');
+  await manager.send(id, 'second-app');
+  assert.deepEqual(calls, ['second-app']);
+  await manager.send(id, 'third-app');
+  assert.deepEqual(calls, ['second-app', 'third-app']);
+});

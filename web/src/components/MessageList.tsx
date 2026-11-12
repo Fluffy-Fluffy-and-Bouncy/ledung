@@ -164,6 +164,8 @@ export const MessageList = memo(function MessageList(props: {
   assistantName?: string;
   /** No pinned strip with the person's last message (the helper's chat on a phone, acceptance round 1 check 17). */
   noPin?: boolean;
+  /** Every new message, card or approval brought into view (the helper's chat, acceptance round 2 check 17). */
+  follow?: boolean;
 }) {
   const { messages, permissions, showTechnical, sessionId, hasEarlier } = props;
   // A manager's conversation also shows the questions of its sessions it handles, by when they were asked (issue #61),
@@ -204,6 +206,15 @@ export const MessageList = memo(function MessageList(props: {
   const target = focus !== null ? `#qc-${focus}` : focusMessage !== null ? `#mc-${focusMessage}` : null;
   /** The first message "Load earlier" was asked from while looking for the question, so it is asked once per batch. */
   const loadingFrom = useRef<number | null>(null);
+
+  // The helper's chat keeps its newest thing in view, also as a card grows (a listing coming in) after it showed.
+  const lastKey = items.at(-1)?.key;
+  useEffect(() => {
+    if (!props.follow) return;
+    stick.current = true;
+    const timers = [0, 300, 900].map((ms) => setTimeout(() => { const el = scroller.current; if (el) el.scrollTop = el.scrollHeight; }, ms));
+    return () => timers.forEach(clearTimeout);
+  }, [props.follow, lastKey, props.footerKey, items.length]);
 
   useLayoutEffect(() => {
     const el = scroller.current;

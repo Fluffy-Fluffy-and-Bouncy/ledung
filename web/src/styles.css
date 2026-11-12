@@ -1943,6 +1943,10 @@ button.link-button:hover:not(:disabled) { border: none; }
 .helper-text { display: flex; gap: 0.4rem; }
 .helper-text input { flex: 1; min-width: 0; }
 .helper-card .banner { margin: 0; border-radius: 8px; }
+/* The folder browser inside a card stays inside it at 390 px (acceptance round 2, 17). */
+.helper-card { min-width: 0; overflow-wrap: anywhere; }
+.helper-card .browser, .helper-card .browser-head, .helper-card .browser-roots { min-width: 0; max-width: 100%; flex-wrap: wrap; }
+.helper-card .browser-path { min-width: 0; overflow-wrap: anywhere; white-space: normal; }
 .helper-step-controls { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
 .helper-step-controls p { flex-basis: 100%; margin: 0; }
 .helper-entry .session-title { font-weight: 600; }

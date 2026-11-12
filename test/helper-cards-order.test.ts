@@ -17,7 +17,9 @@ test('a card shows under the words of its turn, once, and is answered by the per
   assert.deepEqual(shape(placeCards([card('A'), said('x'), person('Ada'), card('B', 'b'), card('B2', 'b'), said('y')])),
     ['assistant:x', 'card:A✓', 'user:Ada', 'assistant:y', 'card:B2']);
   // The same title in another turn is another card.
-  assert.deepEqual(shape(placeCards([card('A'), person('1'), card('A')])), ['card:A✓', 'user:1', 'card:A']);
+  assert.deepEqual(shape(placeCards([card('A'), person('1'), card('A'), said('Next?')])), ['card:A✓', 'user:1', 'assistant:Next?', 'card:A']);
+  // A card never shows before the helper's words of its turn, even for a moment (acceptance round 2, 20).
+  assert.deepEqual(shape(placeCards([person('New project'), card('Name')])), ['user:New project']);
 });
 
 test("the step's card waits for the helper's words since the last message it was given", async () => {

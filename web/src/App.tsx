@@ -488,7 +488,8 @@ export function App() {
         </div>
       )}
       {ledung.away && awayBannerShown(ledung.away, session) && <AwayBanner away={ledung.away} run={run} />}
-      {installApp.notice && <InstallNotice app={installApp} run={run} />}
+      {/* Not during the setup: on a phone it took the top of the screen (acceptance round 2, 22); it comes after. */}
+      {installApp.notice && !inSetup && <InstallNotice app={installApp} run={run} />}
       {backToSetup}
       {/* During the setup the helper shows these as steps of their own. */}
       {!inSetup && <ShortcutNotice run={run} />}
@@ -1440,6 +1441,7 @@ export function SessionView(props: {
             renderCard={isHelper ? renderCard : undefined}
             assistantName={isHelper ? 'Ledung Helper' : undefined}
             noPin={isHelper}
+            follow={isHelper}
             // The setup step's own card, once, under the helper's latest words while it waits for the person.
             footer={stepCard ?? undefined}
             footerKey={stepCard ? `${ledung.helper?.setup.current}` : undefined}
