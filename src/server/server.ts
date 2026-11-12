@@ -1981,6 +1981,12 @@ export class LedungServer {
         manager.setResourceLimit(String(body.dim ?? ''), body.value);
         return;
       }
+      // Settings → Questions at a workflow step (#291).
+      case 'GET step-questions':
+        return { choice: manager.stepQuestions() };
+      case 'POST step-questions':
+        await this.requirePage(req, url);
+        return { choice: manager.setStepQuestions((await readJson(req)).choice) };
       case 'POST resource-settings': {
         await this.requirePage(req, url);
         manager.setResourceSettings(await readJson(req));

@@ -28,6 +28,13 @@ export interface RunStep {
   note?: string;
 }
 
+/**
+ * How this Ledung asks a run's person steps (#291, Settings → Questions at a workflow step): Ledung's card at once
+ * (the default, as before), or the coordinator's own full write-up.
+ */
+export type StepQuestions = 'card' | 'write-up';
+export const STEP_QUESTIONS: readonly StepQuestions[] = ['card', 'write-up'];
+
 export interface FlowRun {
   /** Ledung's own, e.g. "run-12". */
   id: string;

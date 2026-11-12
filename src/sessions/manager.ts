@@ -115,7 +115,7 @@ import type { SecretInfo, SecretLifetime } from '../shared/secrets.ts';
 import { FlowRunError, FlowRuns, lastReplyOf } from './flow-runs.ts';
 import { dockerWorktreeHost, localWorktreeHost } from './run-worktrees.ts';
 import { RunStore } from './run-store.ts';
-import type { FlowRun } from '../shared/flow-run.ts';
+import { STEP_QUESTIONS, type FlowRun, type StepQuestions } from '../shared/flow-run.ts';
 import type { RunBlock } from '../shared/protocol.ts';
 import type { ProposeHandlers, RunHandlers } from './tools.ts';
 import { buildProposal, ProposalStore, proposalSummary, type ProposedChange } from './flow-propose.ts';
@@ -123,6 +123,8 @@ import type { FlowProposal } from '../shared/flow-proposal.ts';
 
 /** The meta key, with the project's name, that says "Record where this came from" was dismissed (workflow-origin.md, section 4). */
 const ORIGIN_DISMISSED = 'flow-origin-dismissed:';
+/** Where Settings → Questions at a workflow step is kept (#291): this Ledung's own data, not the config file. */
+const STEP_QUESTIONS_KEY = 'step-questions';
 
 /** Ledung's own plugin with the "workflow building" skill (part 3e, #1577), shipped beside src/ and web/. */
 export const WORKFLOW_PLUGIN = () => path.join(appDir(), 'plugins', 'ledung-workflow');
@@ -423,6 +425,7 @@ export class SessionManager {
         if (this.store.withdrawQuestion(id, reason)) this.publish({ type: 'question', question: this.store.getQuestion(id)! });
       },
       tiers: (project) => tiersOf(this.projectStore.get(project)?.config.questionTiers),
+      stepQuestions: () => this.stepQuestions(),
       userName: config.userName,
     });
     this.gate = {
@@ -751,6 +754,8 @@ export class SessionManager {
       this.linkedFiles.prune();
       this.linkedOutbox.prune();
       void this.relaunchWaiting();
+      // A person step its coordinator gave no write-up for gets Ledung's own card (#291).
+      void this.flowRuns.overdue().catch((e: Error) => console.error(`Workflow: ${e.message}`));
     }, 60000);
     // Always on, as idleStopMinutes can change while Ledung runs (issue #353); checkIdle reads it each time.
     this.idleTimer = setInterval(() => void this.checkIdle(), 60000);
@@ -988,6 +993,21 @@ export class SessionManager {
     } catch (e) {
       throw new UserError((e as Error).message);
     }
+  }
+
+  /**
+   * Settings → Questions at a workflow step (#291, Martin 2026-11-12, Ledung questions #873 and #875): Ledung's card
+   * (the default, as before) or the manager's full write-up, kept in this Ledung's own data for all its projects.
+   */
+  stepQuestions(): StepQuestions {
+    const v = this.store.getMeta(STEP_QUESTIONS_KEY);
+    return v === 'write-up' ? 'write-up' : 'card';
+  }
+
+  setStepQuestions(value: unknown): StepQuestions {
+    if (!STEP_QUESTIONS.includes(value as StepQuestions)) throw new UserError(`Questions at a workflow step are ${STEP_QUESTIONS.map((s) => `"${s}"`).join(' or ')}.`);
+    this.store.setMeta(STEP_QUESTIONS_KEY, value as StepQuestions);
+    return this.stepQuestions();
   }
 
   setResourceSettings(body: Record<string, unknown>): void {
@@ -1518,6 +1538,21 @@ export class SessionManager {
       ...(this.store.getSession(sessionId)?.runBlock ? {} : { start: (a: Parameters<NonNullable<RunHandlers['start']>>[0]) => plain(() => this.flowRuns.start(sessionId, a)) }),
       step: (a) => plain(() => this.flowRuns.step(sessionId, a)),
       status: (run) => plain(() => this.flowRuns.status(sessionId, run)),
+      // ask_user at a run's person step (#291).
+      writeUp: async (a) => {
+        try {
+          return await this.flowRuns.writeUp(sessionId, a);
+        } catch (e) {
+          throw e instanceof FlowRunError ? new Error(e.message) : e;
+        }
+      },
+      writeUpAsked: (q) => {
+        try {
+          this.flowRuns.writeUpAsked(q);
+        } catch (e) {
+          throw e instanceof FlowRunError ? new Error(e.message) : e;
+        }
+      },
     };
   }
 

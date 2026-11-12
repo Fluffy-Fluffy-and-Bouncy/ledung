@@ -1880,7 +1880,8 @@ export class Session {
     const attached = !!sources?.some((s) => !('error' in s));
     const earlier = attached ? null : conversationBefore(this.store.listMessages(this.id, { limit: 300 }));
     const q = this.store.createQuestion({
-      sessionId: this.id, question, options, addressedTo: this.management.addresseeFor(this.id), aboutQuestion, aboutRequest, details, shots, earlier, sources,
+      // A run's person step is the person's to answer, whoever coordinates the run, as Ledung's own card was (#291).
+      sessionId: this.id, question, options, addressedTo: details.run ? 'user' : this.management.addresseeFor(this.id), aboutQuestion, aboutRequest, details, shots, earlier, sources,
     });
     if (attached && !sourcesExercised) {
       sourcesExercised = true;
@@ -1914,7 +1915,7 @@ export class Session {
     if (!q || q.sessionId !== this.id) return `There is no question #${id} from this session.`;
     if (q.status !== 'open') return `Question #${id} is already ${q.status}.`;
     // A person block's question moves its run when answered (workflow part 3b): the coordinator reports or stops instead.
-    if (q.details?.run) return `Question #${id} is "${q.details.run.blockTitle}" of ${q.details.run.run}, put to ${this.userName} by Ledung's workflow: it stays. Report the block's outcome with flow_step, or stop the run, and it is withdrawn.`;
+    if (q.details?.run) return `Question #${id} is "${q.details.run.blockTitle}" of ${q.details.run.run}, and its answer moves the run: it stays. Report the block's outcome with flow_step, or stop the run, and it is withdrawn.`;
     this.store.withdrawQuestion(id, reason);
     this.publish({ type: 'question', question: this.store.getQuestion(id)! });
     return `Question #${id} is withdrawn.`;

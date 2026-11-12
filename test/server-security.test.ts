@@ -1074,6 +1074,27 @@ test('setting or lifting a usage stop needs the live page, so a session cannot f
   assert.match(errorOf(lift), /not holding/);
 });
 
+test('Questions at a workflow step (#291): Ledung\'s card by default, changed only from the live page, to one of its two values', async () => {
+  const read = async () => JSON.parse((await request({ path: '/api/step-questions', headers: { cookie: COOKIE } })).body).choice;
+  assert.equal(await read(), 'card');
+  // A session holding the cookie can't pick the write-up for itself.
+  assert.equal((await change('/api/step-questions', { choice: 'write-up' })).status, 403);
+  assert.equal(await read(), 'card');
+  const page = await livePage();
+  try {
+    const bad = await change('/api/step-questions', { choice: 'mine' }, { 'x-ledung-page': page.key });
+    assert.equal(bad.status, 400);
+    assert.match(errorOf(bad), /"card" or "write-up"/);
+    const set = await change('/api/step-questions', { choice: 'write-up' }, { 'x-ledung-page': page.key });
+    assert.equal(set.status, 200, set.body);
+    assert.equal(await read(), 'write-up');
+    assert.equal((await change('/api/step-questions', { choice: 'card' }, { 'x-ledung-page': page.key })).status, 200);
+    assert.equal(await read(), 'card');
+  } finally {
+    page.close();
+  }
+});
+
 test('resource limits, their settings, Start now and acting on a job need the live page, so a session cannot raise its own room', async () => {
   // docs/steps/resource-limits.md, Security: limits are set only from the open page.
   assert.equal((await change('/api/resource-limits', { dim: 'cpu', value: 500 })).status, 403);
