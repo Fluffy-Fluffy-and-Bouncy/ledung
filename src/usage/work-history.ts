@@ -3,8 +3,9 @@
 // guessing things will take days, weeks, etc."). A tool rather than a line in the start text: it costs no context
 // until asked, and is never stale.
 //
-// Work is the time in turns (turn_resources) less the time a turn stood still on a permission prompt; the time
-// between turns, waiting for a person's answer or the next message, is not work. Plan use is the session's API-priced
+// Work is the time in turns (turn_resources) less the time a turn stood still on a permission prompt, a pause or a usage
+// stop; the time between turns, waiting for a person's answer or the next message, is not work. A wait inside a command
+// (watching CI) is, since Ledung can't tell it from the command working. Plan use is the session's API-priced
 // cost turned into a share of the account's 5-hour and weekly windows, at the rate the account's own recorded window
 // figures rose against its recorded cost.
 import type { DatabaseSync } from 'node:sqlite';
@@ -118,6 +119,17 @@ function rates(db: DatabaseSync, accounts: string[], since: number): Map<string,
   return out;
 }
 
+/** A turn's recorded pause and usage-stop spans; anything unreadable counts as none. */
+function parseWaits(json: string | null): [number, number][] {
+  if (!json) return [];
+  try {
+    const v = JSON.parse(json) as unknown;
+    return Array.isArray(v) ? v.filter((x): x is [number, number] => Array.isArray(x) && x.length === 2 && x.every(Number.isFinite) && x[1] > x[0]) : [];
+  } catch {
+    return [];
+  }
+}
+
 /** Statuses a session is mid-turn or about to start one in: its last turn is not recorded yet. */
 const UNDER_WAY = new Set(['starting', 'queued', 'running', 'waiting']);
 
@@ -169,13 +181,16 @@ export function workHistory(db: DatabaseSync, project: string, opts: { days?: nu
   if (!ids.length) return { project, days, sessions: [], kinds: [], rates: {} };
   const marks = ids.map(() => '?').join(',');
   const turns = new Map<string, [number, number][]>();
-  for (const t of db.prepare(`SELECT session_id, started_at, duration_ms FROM turn_resources WHERE session_id IN (${marks}) ORDER BY started_at`).all(...ids) as
-    { session_id: string; started_at: number; duration_ms: number }[]) {
+  // Waits inside a turn that are no work: permission prompts (below), and a pause or a usage stop holding a tool call
+  // (review of PR #260, finding 1), recorded with the turn.
+  const waits = new Map<string, [number, number][]>();
+  for (const t of db.prepare(`SELECT session_id, started_at, duration_ms, waits FROM turn_resources WHERE session_id IN (${marks}) ORDER BY started_at`).all(...ids) as
+    { session_id: string; started_at: number; duration_ms: number; waits: string | null }[]) {
     add(turns, t.session_id, [Number(t.started_at), Number(t.started_at) + Number(t.duration_ms)] as [number, number]);
+    for (const w of parseWaits(t.waits)) add(waits, t.session_id, w);
   }
   const info = new Map((db.prepare(`SELECT id, title, status, run_block FROM sessions WHERE id IN (${marks})`).all(...ids) as
     { id: string; title: string; status: string; run_block: string | null }[]).map((r) => [r.id, r]));
-  const waits = new Map<string, [number, number][]>();
   for (const w of db.prepare(`SELECT session_id, at, decided_at FROM permissions WHERE session_id IN (${marks}) AND decided_at IS NOT NULL`).all(...ids) as
     { session_id: string; at: number; decided_at: number }[]) {
     add(waits, w.session_id, [Number(w.at), Number(w.decided_at)] as [number, number]);
@@ -254,8 +269,8 @@ export function formatWorkHistory(h: WorkHistory, limit = 10): string {
     return `No sessions of "${h.project}" worked in the last ${h.days} days, so there is nothing measured yet. Estimate with the defaults in your instructions.`;
   }
   const lines = [
-    `"${h.project}", sessions with work in the last ${h.days} days (managers left out). Work: time in turns, less waits for permission answers; ` +
-      'time waiting for a person between turns is not work. Wall: first turn to last, waits included.',
+    `"${h.project}", sessions with work in the last ${h.days} days (managers left out). Work: time in turns, less waits for permission answers, pauses and usage stops; ` +
+      'time waiting for a person between turns is not work, but waits inside a command (such as watching CI) are. Wall: first turn to last, waits included.',
     '',
     'By kind (from workflow block, else the title; "all" is every session not under way): median work (range), median wall, median tokens, median plan use.',
   ];

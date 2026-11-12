@@ -244,12 +244,23 @@ export class Store {
     this.db.prepare(sql).run(...values, id);
   }
 
-  /** What one turn used (step 6c). */
-  addTurnResource(t: TurnResource & { project: string; role: string; cpuSeconds: number; samples: number }): void {
+  /** What one turn used (step 6c), and the spans it waited on a pause or a usage stop (issue #254). */
+  addTurnResource(t: TurnResource & { project: string; role: string; cpuSeconds: number; samples: number; waits?: [number, number][] }): void {
     this.db
-      .prepare(`INSERT INTO turn_resources (session_id, project, role, model, trigger, started_at, duration_ms, cpu_seconds, peak_cores, peak_mem, samples, commands)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(t.sessionId, t.project, t.role, t.model, t.trigger, t.startedAt, Math.round(t.durationMs), t.cpuSeconds, t.peakCores, Math.round(t.peakMem), t.samples, JSON.stringify(t.commands));
+      .prepare(`INSERT INTO turn_resources (session_id, project, role, model, trigger, started_at, duration_ms, cpu_seconds, peak_cores, peak_mem, samples, commands, waits)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(t.sessionId, t.project, t.role, t.model, t.trigger, t.startedAt, Math.round(t.durationMs), t.cpuSeconds, t.peakCores, Math.round(t.peakMem), t.samples,
+        JSON.stringify(t.commands), t.waits?.length ? JSON.stringify(t.waits) : null);
+  }
+
+  /** When the session's turn under way began (issue #254), kept so a turn that runs across a restart is measured whole; null: none. */
+  setTurnStart(sessionId: string, at: number | null): void {
+    this.db.prepare('UPDATE sessions SET turn_started_at = ? WHERE id = ?').run(at, sessionId);
+  }
+
+  turnStart(sessionId: string): number | null {
+    const r = this.db.prepare('SELECT turn_started_at FROM sessions WHERE id = ?').get(sessionId) as { turn_started_at: number | null } | undefined;
+    return r?.turn_started_at == null ? null : Number(r.turn_started_at);
   }
 
   /** Turn records, newest last: one session's, or every session's since a time. */

@@ -733,7 +733,7 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
       tool('list_permissions', 'List permission prompts from your sessions that wait for you.', {}, async () => safely(() => m.listPermissions())) as never,
       tool('machine_status', 'The machine\'s load, how many sessions work and the limit, the line for a free place, and CPU and memory per session of yours.', {},
         async () => safely(() => m.machineStatus())) as never,
-      tool('work_history', "How long your own project's sessions really took, for estimates: recent sessions with work time (time in turns, without waits for a person or a permission), wall time, tokens and plan use as a share of the account's 5-hour and weekly windows, plus medians and ranges by kind. Only your project.", {
+      tool('work_history', "How long your own project's sessions really took, for estimates: recent sessions with work time (time in turns, without waits for a person, a permission, a pause or a usage stop; waits inside a command, such as watching CI, count as work), wall time, tokens and plan use as a share of the account's 5-hour and weekly windows, plus medians and ranges by kind. Only your project.", {
         days: z.number().int().min(1).max(90).optional().describe('How far back; default 30.'),
         limit: z.number().int().min(0).max(50).optional().describe('How many recent sessions to list; default 10.'),
       }, async (a) => safely(() => m.workHistory(a.days, a.limit))) as never,

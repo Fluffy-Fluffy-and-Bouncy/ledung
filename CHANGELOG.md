@@ -10,7 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-12
-- Time estimates: managers and sessions are told to estimate in session time (minutes and hours of their own work), never human days or weeks, and to name waits for review, CI or merges apart. Managers get `work_history`: how long their own project's recent sessions really worked (without waits for you or a permission), their wall time and tokens, medians by kind, and what a session typically costs as a share of the account's 5-hour and weekly windows. (#254)
+- Time estimates: managers and sessions are told to estimate in session time (minutes and hours of their own work), never human days or weeks, and to name waits for review, CI or merges apart. Managers get `work_history`: how long their own project's recent sessions really worked (without waits for you, a permission, a pause or a usage stop; a turn that runs across Restart Ledung is now measured whole), their wall time and tokens, medians by kind, and what a session typically costs as a share of the account's 5-hour and weekly windows. (#254)
 - Standing grants are stricter: a "starts with" grant such as `git push:*` now covers only that command and its arguments, on one line; a command that spans several lines, or a longer word that merely starts the same, is asked about as if there were no grant. (Project-Ledung#472)
 
 ## 2026-11-11

@@ -4,6 +4,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { openDatabase } from '../src/store/database.ts';
 import { Store } from '../src/store/store.ts';
+import { Management } from '../src/sessions/management.ts';
+import { ledungToolServer, type ManagerHandlers } from '../src/sessions/tools.ts';
 import { duration, formatWorkHistory, kindOf, median, workHistory } from '../src/usage/work-history.ts';
 
 const MIN = 60_000;
@@ -178,4 +180,50 @@ test('durations under a minute show seconds', () => {
   assert.equal(duration(42_400), '42 s');
   assert.equal(duration(0), '0 s');
   assert.equal(duration(23 * MIN), '23 min');
+});
+
+// Review of PR #260.
+test('a 10-minute pause inside a turn reports 10 minutes less work (finding 1)', () => {
+  const { db, store } = setup();
+  const before = workHistory(db, 'p', { now: NOW }).sessions.find((s) => s.id === 'r1')!.workMs;
+  store.addTurnResource({
+    sessionId: 'r1', project: 'p', role: 'session', model: null, trigger: 'user', startedAt: T0 + 100 * MIN, durationMs: 30 * MIN,
+    cpuSeconds: 1, samples: 1, avgCores: 0, peakCores: 1, peakMem: 1, commands: [], waits: [[T0 + 105 * MIN, T0 + 115 * MIN]],
+  });
+  assert.equal(workHistory(db, 'p', { now: NOW }).sessions.find((s) => s.id === 'r1')!.workMs, before + 20 * MIN);
+});
+
+test('a pause and a permission prompt open at once count once', () => {
+  const { db } = setup();
+  // b1's second turn already has a permission wait from +85 to +95 min; a pause from +90 to +100 overlaps it.
+  db.prepare('UPDATE turn_resources SET waits = ? WHERE session_id = ? AND started_at = ?').run(JSON.stringify([[T0 + 90 * MIN, T0 + 100 * MIN]]), 'b1', T0 + 80 * MIN);
+  assert.equal(workHistory(db, 'p', { now: NOW }).sessions.find((s) => s.id === 'b1')!.workMs, 35 * MIN);
+});
+
+test("through Management: a manager sees only its own project, never a lockdown project's titles or times (finding 4)", () => {
+  const { store } = setup();
+  const management = new Management({
+    store, userName: 'Simon', publish: () => {}, wake: () => {}, resume: async () => {},
+    startSession: async () => { throw new Error('not used'); },
+    stopSession: async () => {}, archiveSession: () => {}, projectNames: () => ['p', 'secret'], decidePermission: () => true,
+    machine: () => ({ at: 0, cpus: 8, cores: 1, memTotal: 16e9, memUsed: 8e9, docker: null, sessions: {}, working: 1, limit: 10, line: [] }),
+    setPriority: () => {}, setPaused: () => {}, handoffProblem: () => null, shotPath: (_id, file) => file,
+    projects: () => [], addProject: () => { throw new Error('not used'); }, createProject: async () => { throw new Error('not used'); },
+    ensureManager: async () => { throw new Error('not used'); },
+  });
+  const text = management.workHistory('mgr', 90, 50);
+  assert.match(text, /^"p"/);
+  assert.match(text, /Build the export page/);
+  // x1, "Other project work" in the lockdown project "secret", worked 99 min with 9M tokens.
+  assert.doesNotMatch(text, /secret|Other project work|1 h 39 min|9\.0M/);
+});
+
+test('work_history is a manager tool, never a session\'s', () => {
+  const served = (role: 'manager' | 'session') => (ledungToolServer({
+    userName: 'Simon', role, asksWhom: role === 'manager' ? 'Simon' : 'your manager "M"',
+    ask: () => { throw new Error('not called'); }, withdraw: () => '',
+    manager: role === 'manager' ? (new Proxy({}, { get: () => () => '' }) as ManagerHandlers) : undefined,
+  }).instance as unknown as { _registeredTools: Record<string, unknown> })._registeredTools;
+  assert.ok(served('manager').work_history);
+  assert.equal(served('session').work_history, undefined);
 });
