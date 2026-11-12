@@ -122,8 +122,6 @@ export const PLAIN_READS = new Set([
 export const SITE_ONLY_READS = new Set(['GET projects/:id/flow']);
 /** Where sign-ins are kept between restarts (Guard.useSignInStore), as hashes. */
 const SIGN_INS_KEY = 'sign-ins';
-/** Logged once, the first time a browser's old token cookie is swapped for a sign-in (Project-Ledung#476). */
-let exercised476 = false;
 
 /** An API request's route as the switch in api() names it: every second part after /api/ is an id. */
 export function apiRoute(method: string, pathname: string): string {
@@ -884,10 +882,6 @@ export class LedungServer {
     const page = dest === undefined ? (req.headers.accept ?? '').includes('text/html') : dest === 'document';
     if (this.guard.oldTokenCookie(req) && page) {
       res.setHeader('Set-Cookie', this.guard.signInCookie());
-      if (!exercised476) {
-        exercised476 = true;
-        exercisedLine('EXERCISED #476 an old token cookie was swapped for a sign-in on a page load');
-      }
     }
     this.serveStatic(url.pathname, res, this.guard.mayUse(req), remote);
   }
