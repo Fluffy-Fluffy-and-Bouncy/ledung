@@ -57,6 +57,15 @@ export const LEDUNG_GROUPS: SettingsGroup[] = [
     ],
   },
   {
+    // The Ledung Helper (docs/steps/ledung-helper.md): open it, run the setup again, its model.
+    id: 'helper', label: 'Ledung Helper', part: 'ledung',
+    settings: [
+      { label: 'Ledung Helper', about: "Ledung's own assistant: questions about Ledung, new projects, settings", keywords: ['helper', 'assistant', 'setup', 'wizard', 'help', 'new project', 'ai'] },
+      { label: 'Run setup again', about: 'The first start\'s steps, with the helper', keywords: ['setup', 'first start', 'onboarding', 'welcome'] },
+      { label: 'Its model', about: "The model the helper runs on", keywords: ['sonnet', 'haiku', 'opus', 'model'] },
+    ],
+  },
+  {
     // Issue #410: chips in a session's info bar and keybinds, global or one project's.
     id: 'macros', label: 'Macros', part: 'ledung',
     settings: [{ label: 'Macros', about: 'Text you send often, as a chip in the info bar, a keybind, or both', keywords: ['macro', 'shortcut', 'keybind', 'key', 'hotkey', 'chip', 'snippet', 'quick', 'text'] }],

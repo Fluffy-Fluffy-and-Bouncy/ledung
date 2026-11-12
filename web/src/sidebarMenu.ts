@@ -6,7 +6,8 @@ import { EFFORT_LEVELS, MODEL_CHOICES, type EffortLevel, type ModelChoice, type 
 /** In the order the menu shows them. */
 export type SessionAction =
   | 'rename' | 'workflow' | 'model' | 'priority' | 'pause' | 'unpause' | 'stop' | 'resume' | 'compact' | 'clear' | 'copyId' | 'archive' | 'stopArchive';
-export type GroupAction = 'newSession' | 'newChat' | 'account' | 'settings' | 'workflow' | 'collapseAll' | 'expandAll';
+/** newProject: with the Ledung Helper (docs/steps/ledung-helper.md), on every project's heading. */
+export type GroupAction = 'newSession' | 'newChat' | 'newProject' | 'account' | 'settings' | 'workflow' | 'collapseAll' | 'expandAll';
 
 type Shown = Pick<SessionInfo, 'role' | 'status' | 'paused' | 'claudeSessionId' | 'archivedAt' | 'compacting' | 'clearDue'>;
 
@@ -45,7 +46,7 @@ export function sessionActions(s: Shown, hasWorkflow: boolean): SessionAction[] 
 export function groupActions(kind: 'project' | 'chats' | 'removed', hasWorkflow: boolean, allFolded: boolean, accountChoices = 0): GroupAction[] {
   return [
     ...(kind === 'project'
-      ? ['newSession' as const, ...(accountChoices > 1 ? ['account' as const] : []), 'settings' as const, ...(hasWorkflow ? ['workflow' as const] : [])]
+      ? ['newSession' as const, ...(accountChoices > 1 ? ['account' as const] : []), 'settings' as const, ...(hasWorkflow ? ['workflow' as const] : []), 'newProject' as const]
       : []),
     ...(kind === 'chats' ? ['newChat' as const, 'settings' as const] : []),
     allFolded ? 'expandAll' : 'collapseAll',

@@ -1,7 +1,9 @@
 import { Component, Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from 'react';
-import { CHATS, PERMISSION_MODES, PRIORITIES, projectLabel, type ModelChoice, type AccountInfoView, type AwayInfo, type BoardStatus, type ChatsInfo, type GitHubBudget, type CompactingInfo, type MachineInfo, type McpServerInfo, type PermissionMode, type Priority, type ProjectInfo, type QuestionInfo, type RemoteControlInfo, type SessionInfo } from '../../src/shared/protocol.ts';
+import { CHATS, HELPER, PERMISSION_MODES, PRIORITIES, projectLabel, type ModelChoice, type AccountInfoView, type AwayInfo, type BoardStatus, type ChatsInfo, type GitHubBudget, type CompactingInfo, type MachineInfo, type McpServerInfo, type PermissionMode, type Priority, type ProjectInfo, type QuestionInfo, type RemoteControlInfo, type SessionInfo } from '../../src/shared/protocol.ts';
 import { AddProjectView, ProjectSettingsView, ProjectStartView } from './projects/ProjectViews.tsx';
 import { ChatsSettingsView, NewChatView } from './chats/ChatViews.tsx';
+import { HelperCardView, HelperStepBar, SetupScreens } from './helper/HelperViews.tsx';
+import type { HelperCard } from '../../src/shared/helper-cards.ts';
 import { api } from './api.ts';
 import { CHAT_IMAGE_TYPES, dataUrl, imageFiles, MAX_CHAT_IMAGES, prepareImage, SECRETS_HINT } from './chatImages.ts';
 import { MessageList, formatTime } from './components/MessageList.tsx';
@@ -42,7 +44,7 @@ const REMOVED_PROJECTS = 'Removed projects';
 
 /** Whether a session belongs to a sidebar group: its project, Chats (issue #211), or "Removed projects". */
 function inGroup(s: SessionInfo, group: string, known: Set<string>): boolean {
-  return group === REMOVED_PROJECTS ? !known.has(s.project) && s.project !== CHATS : s.project === group;
+  return group === REMOVED_PROJECTS ? !known.has(s.project) && s.project !== CHATS && s.project !== HELPER : s.project === group;
 }
 
 /** A session's row in the sidebar; drag: the siblings it can be dragged among, null when it stays put (issue #88). */
@@ -61,6 +63,7 @@ import { contextShare } from './usage/SessionsTab.tsx';
 import { SessionUsagePanel } from './usage/SessionUsage.tsx';
 import { UsageView } from './usage/UsageView.tsx';
 import type { Overview } from '../../src/shared/protocol.ts';
+import type { HelperInfo } from '../../src/shared/setup.ts';
 import type { FlowRun } from '../../src/shared/flow-run.ts';
 import { workflowRow } from './flowRuns.ts';
 import { bangAsk, bangCommand, bangHint } from '../../src/shared/bang.ts';
@@ -409,6 +412,25 @@ export function App() {
 
   const session = ledung.sessions.find((s) => s.id === openId) ?? null;
 
+  // The Ledung Helper (docs/steps/ledung-helper.md): opened from the sidebar, Settings and New project; `text` is the
+  // person's own words to it, such as "I want to create a new project".
+  const helper = ledung.helper;
+  const openHelper = (text?: string) => run(async () => {
+    const info = text || !helper?.sessionId ? await api.openHelper(text) : helper;
+    if (info.sessionId) open(info.sessionId);
+  });
+  const newProject = () => openHelper('I want to create a new project');
+  // While the helper sets up, the page opens on its chat when nothing else is asked for, so leaving and coming back
+  // continues there; once per page load.
+  const openedSetup = useRef(false);
+  useEffect(() => {
+    if (openedSetup.current || helper?.setup.phase !== 'helper' || !helper.sessionId) return;
+    openedSetup.current = true;
+    if (openId === null && !window.matchMedia(NARROW_QUERY).matches) open(helper.sessionId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [helper?.setup.phase, helper?.sessionId]);
+  const inSetup = helper?.setup.phase === 'helper';
+
   // The pages inside the Settings frame (issue #365): the Ledung, Chats and project tabs, each with its side menu of
   // groups (#366), and the Add project page.
   const settingsTab = tabOf(openId);
@@ -416,9 +438,12 @@ export function App() {
   const settingsBody: ((update: UpdateState) => ReactNode) | null =
     settingsTab === 'ledung' ? (update) => (
       <SettingsView view={openId!} update={update} run={run} board={ledung.board} remote={ledung.remote} throughPublicName={ledung.throughPublicName} newComputers={ledung.newComputers} projects={ledung.projects} computers={ledung.computers} sessions={ledung.sessions}
-        accounts={ledung.accounts} accountChoices={ledung.accountChoices} defaultIdentity={ledung.defaultIdentity} accountProblems={ledung.accountProblems} usageStops={ledung.usageStops} macros={ledung.macros} canRestart={ledung.canRestart} source={ledung.source} config={ledung.configStatus} hellos={ledung.hellos} notify={notify} onOpen={open} />
+        accounts={ledung.accounts} accountChoices={ledung.accountChoices} defaultIdentity={ledung.defaultIdentity} accountProblems={ledung.accountProblems} usageStops={ledung.usageStops} macros={ledung.macros} canRestart={ledung.canRestart} source={ledung.source} config={ledung.configStatus} hellos={ledung.hellos} notify={notify} onOpen={open} helper={ledung.helper} />
     ) : settingsTab === 'add' ? () => (
-      <AddProjectView run={run} accounts={ledung.accounts} defaultAccount={ledung.accountChoices.newProjects} profiles={ledung.profiles} lockdownB={ledung.lockdownB} onAdded={(p) => open(p.managerId ?? `p:${p.name}`)} />
+      <>
+        <p className="helper-offer">✦ <button className="link-button" onClick={() => void newProject()}>Let the Ledung Helper set it up with you</button> <span className="muted">, or fill in the form below.</span></p>
+        <AddProjectView run={run} accounts={ledung.accounts} defaultAccount={ledung.accountChoices.newProjects} profiles={ledung.profiles} lockdownB={ledung.lockdownB} onAdded={(p) => open(p.managerId ?? `p:${p.name}`)} />
+      </>
     ) : settingsTab === 'chats' ? () => (
       <ChatsSettingsView view={openId!} chats={ledung.chats} run={run} onOpen={open} />
     ) : settingsProject ? () => (
@@ -456,8 +481,9 @@ export function App() {
       )}
       {ledung.away && awayBannerShown(ledung.away, session) && <AwayBanner away={ledung.away} run={run} />}
       {installApp.notice && <InstallNotice app={installApp} run={run} />}
-      <ShortcutNotice run={run} />
-      <CheckInNotice run={run} />
+      {/* During the setup the helper shows these as steps of their own. */}
+      {!inSetup && <ShortcutNotice run={run} />}
+      {!inSetup && <CheckInNotice run={run} />}
       {ledung.usageStops.filter((s) => s.holding).map((s) => (
         <div key={`${s.account}:${s.kind}`} className="banner updated">
           <span>{usageStopLine(s)}</span>
@@ -509,6 +535,16 @@ export function App() {
     if (id && !openedComputers.includes(id)) setOpenedComputers((list) => [...list, id]);
   };
 
+  // A brand-new Ledung's Welcome and Claude check, before there is any AI (docs/steps/ledung-helper.md).
+  if (!IN_FRAME && (helper?.setup.phase === 'welcome' || helper?.setup.phase === 'claude')) {
+    return (
+      <div className="page setup-page">
+        {error && <div className="banner error" onClick={() => setError(null)}>{error} <span className="muted">(click to dismiss)</span></div>}
+        <SetupScreens helper={helper} run={run} />
+      </div>
+    );
+  }
+
   return (
     <div className={`page${frame.remote ? ' remote' : ''}`} style={computerStyle(frame.here)}>
       <ComputerTabs frame={frame} shown={shown} onShow={showComputer} waiting={waiting} />
@@ -540,6 +576,9 @@ export function App() {
           accounts={ledung.accounts}
           runs={ledung.runs}
           questions={ledung.questions}
+          helper={ledung.helper}
+          onOpenHelper={() => void openHelper()}
+          onNewProject={() => void newProject()}
         />
         {!noSidebar && <SidebarResizer />}
         <main className="main">
@@ -636,13 +675,15 @@ export function App() {
               onOpenBoardThread={(repo, id) => open(threadOpenId(repo, id))}
               onOpenWorkflow={(project) => open(`wf:${project}`)}
               onBack={toList}
+              onOpen={open}
             />
           ) : (
             <div className="empty">
               <h1>Project Ledung</h1>
               <p>{ledung.projects.length ? 'Open a project on the left to talk to its manager.' : 'No projects yet. Add one to start talking to its manager.'}</p>
               <div className="empty-actions">
-                {!ledung.projects.length && <button className="primary" onClick={() => open('add')}>Add a project</button>}
+                {!ledung.projects.length && <button className="primary" onClick={() => void newProject()}>✦ New project with the helper</button>}
+                {!ledung.projects.length && <button onClick={() => open('add')}>Add a project</button>}
                 <button onClick={() => open('chat')}>New chat</button>
                 <button onClick={() => open('settings')}>Settings</button>
               </div>
@@ -683,6 +724,10 @@ function Sidebar(props: {
   accounts: AccountInfoView[];
   runs: Record<string, FlowRun[]>;
   questions: Record<number, QuestionInfo>;
+  /** The Ledung Helper (docs/steps/ledung-helper.md): its entry under Chats, and New project in a heading's menu. */
+  helper: HelperInfo | null;
+  onOpenHelper: () => void;
+  onNewProject: () => void;
 }) {
   // A tree per project: the project, its manager with the sessions it runs, then sessions started
   // outside the manager (and earlier managers). Sessions of removed projects come last. Projects and
@@ -705,7 +750,7 @@ function Sidebar(props: {
   const groups = [
     { name: CHATS, project: null as ProjectInfo | null, rows: rowsFor((s) => s.project === CHATS, null, CHATS) },
     ...props.projects.map((p) => ({ name: p.name, project: p as ProjectInfo | null, rows: rowsFor((s) => s.project === p.name, p.managerId, p.name) })),
-    { name: REMOVED_PROJECTS, project: null, rows: rowsFor((s) => !known.has(s.project) && s.project !== CHATS, null, null) },
+    { name: REMOVED_PROJECTS, project: null, rows: rowsFor((s) => !known.has(s.project) && s.project !== CHATS && s.project !== HELPER, null, null) },
   ].map((g) => ({ ...g, archived: props.sessions.filter((s) => s.archivedAt && inGroup(s, g.name, known)).length }))
     .filter((g) => g.project || g.name === CHATS || g.rows.length || g.archived);
 
@@ -875,6 +920,7 @@ function Sidebar(props: {
         };
       }
       if (a === 'newChat') return { kind: 'item', label: 'New chat', onPick: () => props.onOpen('chat') };
+      if (a === 'newProject') return { kind: 'item', label: 'New project…', hint: 'With the Ledung Helper; Settings → Add project has the plain form', onPick: props.onNewProject };
       if (a === 'settings') return { kind: 'item', label: 'Settings', onPick: () => props.onOpen(kind === 'chats' ? 'chats' : `ps:${name}`) };
       if (a === 'workflow') return { kind: 'item', label: 'Workflow', onPick: () => props.onOpen(`wf:${name}`) };
       const fold = a === 'collapseAll';
@@ -1038,6 +1084,15 @@ ${moreHint}`} onClick={() => props.onOpen('chat')}><Named colour={props.chats?.c
                 {/* Everything of the project one step in under its name, along a guide line from its ▾ (Simon, 2026-11-04:
                     the manager row sat left of the project's, so it didn't read as the project's). */}
                 <div className="project-rows">
+                {g.name === CHATS && !g.isFolded && (
+                  <div className="session-row">
+                    <button className={`session-item helper-entry${props.helper?.sessionId && props.openId === props.helper.sessionId ? ' open' : ''}`}
+                      title="Ledung's own assistant: questions about Ledung, new projects, settings" onClick={props.onOpenHelper}>
+                      <span className="session-text"><span className="session-title"><span className="helper-mark" aria-hidden="true">✦</span> Ledung Helper</span>
+                        {props.helper?.setup.phase === 'helper' && <span className="helper-sub">Setting up · step {Math.min(props.helper.setup.index, props.helper.setup.total)} of {props.helper.setup.total}</span>}</span>
+                    </button>
+                  </div>
+                )}
                 {g.project && choosing === g.name && (
                   <div className="start-row">
                     <select aria-label={`Profile for a new session in ${g.name}`} value={chosen} onChange={(e) => setChosen(e.target.value)}
@@ -1125,8 +1180,17 @@ export function SessionView(props: {
   onOpenWorkflow: (project: string) => void;
   /** The ← to the list, shown only on a phone (issue #171). */
   onBack: () => void;
+  /** Opens a view of the page: the Ledung Helper's cards and step bar lead to forms and settings. */
+  onOpen?: (id: string) => void;
 }) {
   const { session, ledung, run } = props;
+  const isHelper = session.project === HELPER;
+  const openView = props.onOpen;
+  const renderCard = useCallback((card: HelperCard, answered: boolean) => (
+    <HelperCardView card={card} answered={answered} projects={ledung.projects} run={run}
+      onSend={(text) => void run(() => api.send(session.id, text))} onOpen={(id) => openView?.(id)} />
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  ), [session.id, ledung.projects, openView]);
   const [showTechnical, setShowTechnical] = useState(() => readTechnical(session.id));
   /** Files opened from links, newest last; empty when the file panel is closed. */
   const [files, setFiles] = useState<string[]>([]);
@@ -1339,6 +1403,7 @@ export function SessionView(props: {
       )}
       <div className="session-body">
         <div className="chat-column">
+          {isHelper && ledung.helper && <HelperStepBar helper={ledung.helper} projects={ledung.projects} run={run} onOpen={(id) => openView?.(id)} />}
           <MessageList
             messages={ledung.messages}
             permissions={ledung.permissions}
@@ -1356,6 +1421,7 @@ export function SessionView(props: {
             onOpenQuestion={openQuestion}
             onOpenBoardThread={boardRepo ? openBoardThread : undefined}
             tint={tint}
+            renderCard={isHelper ? renderCard : undefined}
           />
           <WorkingIndicator key={session.id} session={session} sessions={ledung.sessions} messages={ledung.messages}
             extra={<MacroChips key={session.id} macros={macros} onUse={fireMacro} onEdit={() => (location.hash = '#/settings/macros')}

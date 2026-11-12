@@ -2,6 +2,7 @@
 // kept up to date over the live connection.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AccountChoices, AccountInfoView, ChatsInfo, AwayInfo, ConfigStatus, BoardStatus, GitHubBudget, LimitInfo, UsageStopInfo, SignInKind, SignInProblem, MachineInfo, Overview, PermissionInfo, ProjectInfo, QuestionInfo, NewComputerInfo, LinkPairingInfo, RemoteStatus, ServerEvent, SessionInfo, SourceOffer, StoredMessage } from '../../src/shared/protocol.ts';
+import type { HelperInfo } from '../../src/shared/setup.ts';
 import type { OrderInfo } from '../../src/shared/orders.ts';
 import type { Macro } from '../../src/shared/macros.ts';
 import type { FlowRun } from '../../src/shared/flow-run.ts';
@@ -51,6 +52,8 @@ export function useLedung(openSessionId: string | null) {
   const [github, setGithub] = useState<GitHubBudget[]>([]);
   const [remote, setRemote] = useState<RemoteStatus | null>(null);
   const [chats, setChats] = useState<ChatsInfo | null>(null);
+  /** The Ledung Helper and the first start's setup (docs/steps/ledung-helper.md); null before the first hello. */
+  const [helper, setHelper] = useState<HelperInfo | null>(null);
   /** Runs through a project's flows as the live connection last sent them (workflow part 3c), by project. */
   const [runs, setRuns] = useState<Record<string, FlowRun[]>>({});
   /** Which projects have a workflow (a flow found, own or shared), for the sidebar's Workflow row (2026-11-04). */
@@ -157,6 +160,7 @@ export function useLedung(openSessionId: string | null) {
             setBangShell(event.bangShell ?? 'Git Bash');
             setRemote(event.remote ?? null);
             setChats(event.chats ?? null);
+            setHelper(event.helper ?? null);
             setComputers(event.computers ?? []);
             setNewComputers(event.newComputers ?? []);
             setLinkPairings(event.linkPairings ?? []);
@@ -231,6 +235,11 @@ export function useLedung(openSessionId: string | null) {
             break;
           case 'chats':
             setChats(event.chats);
+            break;
+          case 'helper':
+            setHelper(event.helper);
+            // The name given in the setup is the page's name for the person at once.
+            setUserName(event.helper.userName);
             break;
           case 'computers':
             setComputers(event.computers);
@@ -324,5 +333,5 @@ export function useLedung(openSessionId: string | null) {
     };
   }, []);
 
-  return { runs, workflows, connection, loaded, canRestart, hellos, updated, userName, source, questions, limits, usageStops, macros, signedOut, claudeProblem, claudeLooked, accountProblems, overview, machine, away, orders, accounts, accountChoices, defaultIdentity, board, github, remote, computers, newComputers, linkPairings, throughPublicName, configStatus, chats, profiles, lockdownB, bangShell, sessions, projects, permissions, messages, hasEarlier, loadEarlier };
+  return { runs, workflows, connection, loaded, canRestart, hellos, updated, userName, source, questions, limits, usageStops, macros, signedOut, claudeProblem, claudeLooked, accountProblems, overview, machine, away, orders, accounts, accountChoices, defaultIdentity, board, github, remote, computers, newComputers, linkPairings, throughPublicName, configStatus, chats, helper, profiles, lockdownB, bangShell, sessions, projects, permissions, messages, hasEarlier, loadEarlier };
 }
