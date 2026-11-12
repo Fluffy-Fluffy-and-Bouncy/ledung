@@ -6,7 +6,8 @@
 // - the path is relative, with no empty, "." or ".." segment, and no segment starting with a dot (.git, .env, .claude:
 //   the chat viewer's rule, hiddenProblem in files.ts), nor a character a Windows file name can't hold;
 // - its extension is the file's kind, so a received text never becomes a script or a config file;
-// - not one of the sensitive path patterns, not Ledung's file of locked secrets, not inside another locked project;
+// - not one of the sensitive path patterns, not Ledung's file of locked secrets, not inside another locked project, not
+//   inside Ledung's own data folder (a project whose folder holds it, as the Files pane refuses it: Project-Ledung#478);
 // - no folder on the way and not the file itself is a link or junction, walked again after the bytes are written, as
 //   the flow builder's writer does it (localWriter in flow-files.ts; security review of PR #89, finding 4);
 // - never over anything already there, a dangling link included: the file is hard-linked into place, which fails if
@@ -16,6 +17,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { linkedKindLabel, type LinkedKind } from '../remote/stream-kinds.ts';
 import { within } from '../projects/lockdown.ts';
+import { exercisedLine } from '../platform/exercised.ts';
+import { userDataDir } from '../platform/paths.ts';
 import { SECRET_RUNTIME_PATTERN } from '../shared/secrets.ts';
 import { FileError } from './files.ts';
 
@@ -44,6 +47,8 @@ export interface Saved {
 
 // Characters no Windows file name holds (":" also opens an alternate data stream), and control characters.
 const BAD_CHARS = /[<>:"|?*\u0000-\u001f]/;
+
+let exercised478 = false;
 
 /** Why `rel` can't be a saved file's path in a worktree, before anything on disk is looked at; else its segments. */
 export function pathProblem(rel: string, kind: LinkedKind): string | string[] {
@@ -99,6 +104,16 @@ export function saveIntoWorktree(root: string, rel: string, kind: LinkedKind, by
   const locked = (at: string) => rules.refused.some((f) => within(f, at) || nativeWithin(f, at));
   // The full path only: it is inside the worktree, so a worktree inside a locked folder is refused by it too.
   if (locked(full)) throw new FileError(`${inside} is in a locked project's folder; Ledung saves no file there.`);
+  // Ledung's own data folder is never a target, whoever calls, as the Files pane refuses it (Project-Ledung#478, found
+  // in #474). Read on each call, so the folder a test or a throwaway Ledung sets is the one refused.
+  const data = userDataDir();
+  if (within(data, full) || nativeWithin(data, full)) {
+    if (!exercised478) {
+      exercised478 = true;
+      exercisedLine('EXERCISED #478 a save from a linked computer into Ledung\'s data folder refused');
+    }
+    throw new FileError(`${inside} is in Ledung's own data folder; Ledung saves no file there.`);
+  }
 
   // Every folder on the way and the name itself: no link or junction (Node reports a junction as one), each folder a
   // folder; with `create`, a missing folder is made, on its own, so nothing is made through a link either.

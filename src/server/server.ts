@@ -1713,6 +1713,11 @@ export class LedungServer {
       // follows, so from the open page only, as the builder's save.
       case 'POST projects/:id/flow/:id':
       {
+        // workflow-origin.md, section 4: "Not now" on "Record where this came from", from the open page.
+        if (parts[3] === 'dismiss-origin') {
+          this.requireOpenPage(req);
+          return manager.dismissAdoptOrigin(decodeURIComponent(id));
+        }
         if (parts[3] !== 'back-to-shared') throw new HttpError(404, 'Not found.');
         this.requireOpenPage(req);
         // The versions the page read, as a save gives them: a file changed since is never removed unseen (final review, 6).
