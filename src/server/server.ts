@@ -1986,10 +1986,15 @@ export class LedungServer {
       }
       // Settings → Questions at a workflow step (#291).
       case 'GET step-questions':
-        return { choice: manager.stepQuestions() };
+        return manager.stepQuestionsView();
       case 'POST step-questions':
         await this.requirePage(req, url);
-        return { choice: manager.setStepQuestions((await readJson(req)).choice) };
+        manager.setStepQuestions((await readJson(req)).choice);
+        return manager.stepQuestionsView();
+      // Skip in the first-run picker (#293): only from the open page, like the choice itself.
+      case 'POST step-questions-skip':
+        await this.requirePage(req, url);
+        return manager.skipStepQuestions();
       case 'POST resource-settings': {
         await this.requirePage(req, url);
         manager.setResourceSettings(await readJson(req));

@@ -383,6 +383,12 @@ const Config = z.object({
   defaultProfiles: RoleProfilesSetting.default({}),
   /** Plugin ids (as in Claude Code's enabledPlugins) turned off in every session where installed, whatever its profile (issue #265); added to a workflow's (#298). */
   pluginsOff: z.array(z.string().min(1)).default([]),
+  /**
+   * Features being tried out before they are on for everyone, by name (#293, Martin 2026-11-12, Ledung question #881:
+   * "feature-flag it"): "step-questions-picker", the first-run picker for how workflow-step questions are written.
+   * A name Ledung doesn't know is ignored, so the same list works across versions.
+   */
+  testFeatures: z.array(z.string().min(1)).default([]),
   /** Managers turn on Remote Control, as "<project> lead" in the Claude app (#19); false: none do. */
   remoteControl: z.boolean().default(true),
   /**
@@ -555,6 +561,7 @@ export const SETTING_RELOAD = {
   profiles: 'live',
   defaultProfiles: 'live',
   pluginsOff: 'live',
+  testFeatures: 'live',
   remoteControl: 'live',
   claudeExecutable: 'live',
   windowsShell: 'live',
