@@ -178,7 +178,6 @@ export function resumedState(info: SessionInfo): {
 let exercised425 = false;
 let exercised96 = false;
 let exercised160 = false;
-let exercised474 = false;
 
 /** How long the sidebar's read of which projects have a flow waits for one project (a container's docker exec). */
 const WORKFLOWS_READ_MS = 5000;
@@ -3394,10 +3393,6 @@ ${firstMessage}`);
       const real = realTarget(root, link);
       // Ledung's data folder stays shut to a project's session too, as it is to a chat's, wherever the project is.
       if (real && info.project !== CHATS && nativeWithin(userDataDir(), real)) {
-        if (!exercised474) {
-          exercised474 = true;
-          exercisedLine("EXERCISED #474 a file in Ledung's data folder refused to a project's session");
-        }
         throw new UserError("That file is in Ledung's data folder, where its settings and sign-ins are kept; it is not shown.");
       }
       // Through the Files pane, a locked project's folder stays shut as in its tree (issue #225).
