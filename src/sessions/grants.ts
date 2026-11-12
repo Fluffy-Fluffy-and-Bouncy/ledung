@@ -39,10 +39,23 @@ export function ruleMatches(rule: GrantRule, toolName: string, input: Record<str
   if (rule.ruleContent === undefined || rule.ruleContent === '') return true;
   if (toolName === 'Bash') {
     const command = typeof input.command === 'string' ? input.command.trim() : '';
-    // A prefix rule must not cover a second command chained onto the allowed one.
-    if (/[;&|`]|\$\(/.test(command)) return command === rule.ruleContent;
+    // A prefix rule must not cover a second command chained onto the allowed one; a line break starts
+    // a new command just as ";" does (Project-Ledung#472).
+    if (/[;&|`\n\r]|\$\(/.test(command)) {
+      const covered = command === rule.ruleContent;
+      return covered;
+    }
     // "npm test:*" (prefix) and "npm run *" (wildcards); otherwise the exact command.
-    if (rule.ruleContent.endsWith(':*')) return command.startsWith(rule.ruleContent.slice(0, -2));
+    if (rule.ruleContent.endsWith(':*')) {
+      // The prefix ends at a word boundary: "git push:*" covers "git push" and "git push origin x",
+      // not a longer word that starts the same (Project-Ledung#472). Only a space or a tab ends a word, as
+      // in the shell; other whitespace (a no-break space) is part of the word.
+      const prefix = rule.ruleContent.slice(0, -2);
+      if (!command.startsWith(prefix)) return false;
+      const rest = command.slice(prefix.length);
+      if (rest === '' || /^[ \t]/.test(rest) || /[ \t]$/.test(prefix)) return true;
+      return false;
+    }
     if (rule.ruleContent.includes('*')) {
       const pattern = rule.ruleContent.split('*').map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*');
       return new RegExp(`^${pattern}$`).test(command);
