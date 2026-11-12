@@ -571,8 +571,13 @@ export type SettingName = keyof LedungConfig;
 
 /** The top-level settings whose values differ between two configs, in SETTING_RELOAD's order. */
 export function changedSettings(a: LedungConfig, b: LedungConfig): SettingName[] {
-  return (Object.keys(SETTING_RELOAD) as SettingName[]).filter((k) => JSON.stringify(a[k]) !== JSON.stringify(b[k]));
+  return (Object.keys(SETTING_RELOAD) as SettingName[]).filter((k) => JSON.stringify(a[k]) !== JSON.stringify(b[k])
+    // A file that names no one keeps the name given in Ledung's setup: nothing to restart for (code review, finding 3).
+    && !(k === 'userName' && b.userName === DEFAULT_USER_NAME));
 }
+
+/** The userName a config has when the file names no one. */
+export const DEFAULT_USER_NAME = 'the user';
 
 /**
  * The config to run on after a reload: the new file's live settings over the running ones, with every restart-only

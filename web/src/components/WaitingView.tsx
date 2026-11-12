@@ -436,7 +436,7 @@ function ReviewPage({ ctx, item, list, onAnswered }: { ctx: DeskContext; item: I
           <ReviewSections review={review} sessionId={q.sessionId} />
           {q.details?.flowProposal !== undefined && (
             // A proposed workflow change (part 3e): its flows before and after, loaded only for such a review.
-            <Suspense fallback={<p className="muted">Loading the diagrams…</p>}><FlowProposalView project={project} id={q.details.flowProposal} /></Suspense>
+            <Suspense fallback={<p className="muted">Loading the diagrams…</p>}><FlowProposalView project={q.details.flowProject ?? project} id={q.details.flowProposal} /></Suspense>
           )}
           {evidence.length > 0 && <ReviewEvidenceList q={q} evidence={evidence} shown={shown} onShow={show} />}
           <ReviewAnswer q={q} answeredBy={answeredBy} noteFocus={noteFocus} onAnswered={() => onAnswered(q.id)} />

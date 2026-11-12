@@ -11,6 +11,8 @@ const STATUSES: SessionInfo['status'][] = ['starting', 'idle', 'queued', 'runnin
 test('the menu holds away (managers), permissions, priority (sessions), tool calls, usage, pause and stop (Done 2)', () => {
   assert.deepEqual(sessionControls(s({ role: 'manager' })).menu, ['away', 'permissions', 'toolCalls', 'usage', 'pause', 'stop']);
   assert.deepEqual(sessionControls(s({ role: 'session' })).menu, ['permissions', 'priority', 'toolCalls', 'usage', 'pause', 'stop']);
+  // The Ledung Helper always runs in Ask: no mode to pick (docs/steps/ledung-helper.md).
+  assert.deepEqual(sessionControls({ ...s({ role: 'session' }), project: '~helper' }).menu, ['toolCalls', 'usage', 'pause', 'stop']);
 });
 
 test('the Claude Code version is read-only info at the end of the menu, once known (Martin 15:24, on #81)', () => {

@@ -40,14 +40,14 @@ test('a stopping session offers neither model nor stop; compact and clear wait f
 });
 
 test("a project's heading: new session, settings, workflow if any, collapse all; no model (it stays in Settings)", () => {
-  assert.deepEqual(groupActions('project', true, false), ['newSession', 'settings', 'workflow', 'collapseAll']);
-  assert.deepEqual(groupActions('project', false, false), ['newSession', 'settings', 'collapseAll']);
+  assert.deepEqual(groupActions('project', true, false), ['newSession', 'settings', 'workflow', 'newProject', 'collapseAll']);
+  assert.deepEqual(groupActions('project', false, false), ['newSession', 'settings', 'newProject', 'collapseAll']);
   assert.deepEqual(groupActions('chats', false, false), ['newChat', 'settings', 'collapseAll']);
   assert.deepEqual(groupActions('removed', false, true), ['expandAll'], 'everything folded: Expand all');
 });
 
 test('a project heading offers Account only with more than one account to pick (Simon, 2026-11-08)', () => {
-  assert.deepEqual(groupActions('project', false, false, 3), ['newSession', 'account', 'settings', 'collapseAll']);
+  assert.deepEqual(groupActions('project', false, false, 3), ['newSession', 'account', 'settings', 'newProject', 'collapseAll']);
   assert.ok(!groupActions('project', false, false, 1).includes('account'), "only this computer's own login: nothing to pick");
   assert.ok(!groupActions('chats', false, false, 3).includes('account'));
 });

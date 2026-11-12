@@ -2,22 +2,24 @@
 // where a manager's Away control was. What is urgent or tied to a state stays in the header (lead's
 // call on the issue, 2026-10-14): Start now, the clear and compact notices, Resume and
 // Archive/Unarchive. Interrupt left the header for the stop sign above Send (issue #89).
-import type { SessionInfo } from '../../src/shared/protocol.ts';
+import { HELPER, type SessionInfo } from '../../src/shared/protocol.ts';
 
 /** In the order the menu shows them; a new setting is one more entry here and one block in the menu. */
 export type MenuControl = 'away' | 'permissions' | 'priority' | 'toolCalls' | 'usage' | 'pause' | 'stop' | 'version';
 export type HeaderControl = 'startNow' | 'clear' | 'compacting' | 'resume' | 'archive';
 
-type Shown = Pick<SessionInfo, 'role' | 'status' | 'clearDue' | 'compacting' | 'claudeSessionId' | 'claudeVersion'>;
+type Shown = Pick<SessionInfo, 'role' | 'status' | 'clearDue' | 'compacting' | 'claudeSessionId' | 'claudeVersion'> & { project?: string };
 
 /** Which controls a session's ⚙ menu holds and which stay in its header, in the order they are shown. */
 export function sessionControls(s: Shown): { menu: MenuControl[]; header: HeaderControl[] } {
   const ended = s.status === 'ended';
   const live = !ended && s.status !== 'stopping';
+  // The Ledung Helper always runs in Ask, and is never in the line for a free place (docs/steps/ledung-helper.md).
+  const helper = s.project === HELPER;
   const menu: MenuControl[] = [
     ...(s.role === 'manager' ? ['away' as const] : []),
-    'permissions',
-    ...(s.role === 'session' ? ['priority' as const] : []),
+    ...(helper ? [] : ['permissions' as const]),
+    ...(s.role === 'session' && !helper ? ['priority' as const] : []),
     'toolCalls',
     'usage',
     ...(live ? ['pause' as const, 'stop' as const] : []),

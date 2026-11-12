@@ -11,7 +11,7 @@ import { elevates, UAC_HINT } from '../../../src/shared/elevation.ts';
  * When the current turn started, and what the session is doing right now. uac: its elevated commands raise
  * UAC on the PC, so one that runs may be waiting there for a click (#213).
  */
-function currentActivity(messages: StoredMessage[], uac: boolean): { since: number | null; doing: string; uacWait: boolean; finishedAt: number | null } {
+function currentActivity(messages: StoredMessage[], uac: boolean, plain?: (tool: string) => string): { since: number | null; doing: string; uacWait: boolean; finishedAt: number | null } {
   let since: number | null = null;
   let finishedAt: number | null = null;
   const openTools = new Map<string, { label: string; uacWait: boolean }>();
@@ -29,7 +29,7 @@ function currentActivity(messages: StoredMessage[], uac: boolean): { since: numb
       for (const b of s.message?.content ?? []) {
         if (b.type === 'tool_use') {
           const summary = toolSummary(b.name, b.input ?? {});
-          openTools.set(b.id, { label: summary ? `${b.name}: ${summary}` : b.name, uacWait: uac && elevates(b.name, b.input ?? {}) });
+          openTools.set(b.id, { label: plain ? plain(b.name) : summary ? `${b.name}: ${summary}` : b.name, uacWait: uac && elevates(b.name, b.input ?? {}) });
           lastWasText = false;
         } else if (b.type === 'text' && b.text.trim()) {
           lastWasText = true;
@@ -43,7 +43,7 @@ function currentActivity(messages: StoredMessage[], uac: boolean): { since: numb
     }
   }
   const last = [...openTools.values()].pop();
-  const doing = last ? `Running ${last.label}` : lastWasText ? 'Writing' : 'Thinking';
+  const doing = last ? (plain ? last.label : `Running ${last.label}`) : lastWasText ? 'Writing' : 'Thinking';
   return { since, doing, uacWait: !!last?.uacWait, finishedAt };
 }
 
@@ -60,11 +60,12 @@ export function endedWithError(session: SessionInfo): boolean {
 /**
  * children: the sessions it started. extra: drawn at the bar's right end, the session's macro chips (issue #410).
  * waitingToStart: a new session waiting for memory to start (resource limits), the reason, shown in place of "Ready".
+ * plain: the session's tools said in plain words (the Ledung Helper's, acceptance round 1 check 16).
  */
-export function WorkingIndicator({ session, children, messages, extra, waitingToStart }: {
-  session: SessionInfo; children: readonly SessionInfo[]; messages: StoredMessage[]; extra?: ReactNode; waitingToStart?: string | null;
+export function WorkingIndicator({ session, children, messages, extra, waitingToStart, plain }: {
+  session: SessionInfo; children: readonly SessionInfo[]; messages: StoredMessage[]; extra?: ReactNode; waitingToStart?: string | null; plain?: (tool: string) => string;
 }) {
-  const activity = useMemo(() => currentActivity(messages, !!session.uac), [messages, session.uac]);
+  const activity = useMemo(() => currentActivity(messages, !!session.uac, plain), [messages, session.uac]);
   // 'starting' waits for its first message: not working (#97).
   const active = session.status === 'running' || session.status === 'stopping';
   // The seconds of the turn, from the page's shared clock (issue #233).

@@ -14,7 +14,7 @@ import { readRepository, sourceOffer } from './source.ts';
 import type { SessionManager } from '../sessions/manager.ts';
 import { UserError } from '../sessions/manager.ts';
 import type { Store } from '../store/store.ts';
-import { AWAY_DEFAULT, AWAY_KINDS, EFFORT_LEVELS, type AwayKind, type PermissionDecision, type PermissionMode, type RemoteStatus, type ServerEvent, parseWatch } from '../shared/protocol.ts';
+import { AWAY_DEFAULT, AWAY_KINDS, EFFORT_LEVELS, HELPER, type AwayKind, type PermissionDecision, type PermissionMode, type RemoteStatus, type ServerEvent, parseWatch } from '../shared/protocol.ts';
 import { browserCookieHeader, deviceCookieHeader, Guard, readCookies, securityHeaders } from './security.ts';
 import { browserName, DEVICE_COOKIE, type Device, type DeviceKind, deviceName, Devices, deviceView, LEGACY_BROWSER_NAME } from './devices.ts';
 import { actionOf, DEVICE_LOCKED, PASSKEY_HEADER, PasskeyError, Passkeys } from './passkeys.ts';
@@ -767,6 +767,7 @@ export class LedungServer {
       bangShell: manager.bangShellName(),
       remote: this.remote,
       chats: manager.chats(),
+      helper: manager.helperInfo(),
       computers: this.computers(),
       throughPublicName: viaPublic,
       // The Approve cards are this computer's to act on: not sent through the public name (issue #237).
@@ -1432,7 +1433,9 @@ export class LedungServer {
    * per message (Martin, 2026-10-18 10:41, issue #192).
    */
   private requirePageForManager(req: IncomingMessage, sessionId: string | undefined): void {
-    if (sessionId && this.opts.store.getSession(sessionId)?.role === 'manager') this.requireOpenPage(req);
+    // The Ledung Helper changes Ledung's settings for the person, so what reaches it is guarded as a manager's (ledung-helper.md).
+    const s = sessionId ? this.opts.store.getSession(sessionId) : undefined;
+    if (s && (s.role === 'manager' || s.project === HELPER)) this.requireOpenPage(req);
   }
 
   /** Says why, with the folder so it can be opened by hand; the page shows it (issue #83). */
@@ -2094,6 +2097,33 @@ export class LedungServer {
       // A computer tab's name and colour (issue #240): cookie and origin like every change; only computer colours.
       case 'POST computers':
         return this.editComputer(await readJson(req));
+      // The first start and the Ledung Helper (docs/steps/ledung-helper.md): cookie and origin like every change; what
+      // reaches the helper is guarded as what reaches a manager (the open page's key).
+      case 'GET helper':
+        return manager.helperInfo();
+      case 'POST setup-claude':
+        return manager.claudeCheck();
+      case 'POST setup': {
+        const body = await readJson(req);
+        // Starting the helper sends it Ledung's first message: from the open page, as a message to it would be.
+        // The name and the marks too: the name goes into every session's instructions (review of part 2, finding 1).
+        if (body.action === 'claude' || body.action === 'again' || body.action === 'name' || body.action === 'mark') this.requireOpenPage(req);
+        return manager.setupAction(body.action, { step: body.step, mark: body.mark, name: body.name });
+      }
+      case 'POST helper-open': {
+        this.requireOpenPage(req);
+        const text = (await readJson(req)).text;
+        if (text !== undefined && (typeof text !== 'string' || text.length > 2000)) throw new HttpError(400, 'The text is a message of at most 2000 characters.');
+        return manager.openHelper(text);
+      }
+      case 'POST helper-card-answered': {
+        const body = await readJson(req);
+        this.requirePageForManager(req, String(body.session ?? ''));
+        manager.noteCardAnswered(String(body.session ?? ''), body.message);
+        return { ok: true };
+      }
+      case 'POST helper-model':
+        return manager.setHelperModel((await readJson(req)).model);
       case 'POST chats-new': {
         const body = await readJson(req);
         const text = (v: unknown) => (typeof v === 'string' && v.trim() ? v : undefined);
@@ -2250,7 +2280,10 @@ export class LedungServer {
           throw new HttpError(400, 'The action is add, remove or decline, or sign-in-on or sign-in-off for the start at sign-in.');
         }
         try {
-          return await this.shortcuts().act(action);
+          const view = await this.shortcuts().act(action);
+          // Answering the shortcuts question finishes the setup's step (ledung-helper.md).
+          manager.noteSetupFacts();
+          return view;
         } catch (e) {
           throw new HttpError(400, (e as Error).message);
         }
@@ -2278,7 +2311,10 @@ export class LedungServer {
         await this.requirePage(req, url);
         const action = (await readJson(req)).action;
         if (action !== 'on' && action !== 'off' && action !== 'seen') throw new HttpError(400, 'The action is on, off or seen.');
-        return this.checkIn().act(action);
+        const view = this.checkIn().act(action);
+        // Answering the notice finishes the setup's step (ledung-helper.md).
+        manager.noteSetupFacts();
+        return view;
       }
       case 'POST certificate-check':
         if (this.opts.onCertificateCheck) this.opts.onCertificateCheck();

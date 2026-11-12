@@ -2,10 +2,11 @@
 // every tab, and the tabs along the top: Ledung, Chats, one per project, Add project. Each tab but Add project is a side
 // menu of groups and one group on screen (SettingsSplit; the Chats and project tabs since #366). Above every side menu,
 // a search box that finds a setting on any tab (#367).
+import { takeSettingFocus } from '../helper/helperNav.ts';
 import { Fragment, createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import type { ProjectInfo, SourceOffer, UpdateView } from '../../../src/shared/protocol.ts';
 import { api } from '../api.ts';
-import { settingsTabs, tabOf, updateWord, type SettingsGroup } from '../settingsGroups.ts';
+import { groupOf, settingsTabs, tabOf, updateWord, type SettingsGroup } from '../settingsGroups.ts';
 import { normalize, searchSettings, type SettingHit } from '../settingsSearch.ts';
 import { usePlainTyping } from '../usePlainTyping.ts';
 
@@ -68,6 +69,12 @@ export function SettingsFrame(props: {
   const current = tabOf(props.view);
   const behind = !!update.view?.check && !update.view.check.upToDate;
   const search = useSearch(current, props.projects, (view) => { if (view !== props.view) props.onOpen(view); });
+  // A section the Ledung Helper's link card opened at (acceptance round 6, 26): highlighted as a search hit is.
+  useEffect(() => {
+    const label = takeSettingFocus(props.view);
+    const group = groupOf(props.view, false);
+    if (label && group) search.focus(group, label);
+  }, [props.view]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <SearchContext.Provider value={search}>
     <div className="page-view settings-frame">
@@ -110,6 +117,8 @@ type Search = {
   target: Target | null;
   /** The target was highlighted, or could not be found. */
   reached: (n: number) => void;
+  /** Highlight a setting of a group of this tab (the helper's link cards). */
+  focus: (group: string, label: string) => void;
 };
 
 const SearchContext = createContext<Search | null>(null);
@@ -150,6 +159,7 @@ function useSearch(tab: string | null, projects: ProjectInfo[], open: (view: str
       open(hit.view);
     },
     reached: (n) => setTarget((t) => (t?.n === n ? null : t)),
+    focus: (group, label) => setTarget({ tab: tab ?? 'ledung', group, label, n: Date.now() }),
   };
 }
 
