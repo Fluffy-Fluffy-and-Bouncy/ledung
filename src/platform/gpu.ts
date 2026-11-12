@@ -12,6 +12,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { exercisedLine } from './exercised.ts';
 
 const run = promisify(execFile);
 
@@ -61,9 +62,17 @@ const WIN_ADAPTER = /^luid_(0x[0-9a-f]+)_(0x[0-9a-f]+)_phys_(\d+)$/i;
 
 const luidKey = (high: string, low: string) => `${high.toLowerCase()}_${low.toLowerCase()}`;
 
+/** DXGI's DXGI_ADAPTER_FLAG_REMOTE and _SOFTWARE, and Ledung's own bit: the kernel says the adapter can't render. */
+const FLAG_REMOTE = 1;
+const FLAG_SOFTWARE = 2;
+const FLAG_NO_RENDER = 256;
+/** The EXERCISED line of issue #304, once per run. */
+let exercised304 = false;
+
 /**
  * The GPU lines of one batch from the PowerShell loop (processes.ts):
- * - `G A,<luid>,<vram bytes>,<flags>,<name>` per adapter from DXGI (flags 2: software, skipped);
+ * - `G A,<luid>,<vram bytes>,<flags>,<name>` per adapter from DXGI; flags 1 remote, 2 software, 256 can't render
+ *   (an indirect or display-only adapter, from D3DKMT): all three skipped;
  * - `G E,<counter instance>,<running time in 100 ns>` per engine row with time;
  * - `G M,<instance>,<local bytes>` per process with memory;
  * - `G D,<instance>,<dedicated bytes>` per adapter;
@@ -82,7 +91,16 @@ export function parseWindowsGpu(lines: string[]): GpuRaw {
     if (kind === 'A') {
       const [luid, vram, flags, ...name] = rest.split(',');
       const m = luid?.match(/^(0x[0-9a-f]+)_(0x[0-9a-f]+)$/i);
-      if (!m || (Number(flags) & 2) !== 0) continue;
+      if (!m || (Number(flags) & (FLAG_REMOTE | FLAG_SOFTWARE)) !== 0) continue;
+      // A virtual display (Parsec's, a virtual monitor driver) shows in DXGI's list as a copy of the card that renders
+      // for it, same name and memory, under its own id: only the kernel's "can't render" tells it apart (#304).
+      if ((Number(flags) & FLAG_NO_RENDER) !== 0) {
+        if (!exercised304) {
+          exercised304 = true;
+          exercisedLine('EXERCISED #304 a GPU that cannot render left out of the GPU list');
+        }
+        continue;
+      }
       const bytes = Number(vram);
       raw.adapters.push({ id: luidKey(m[1]!, m[2]!), name: name.join(',').trim() || 'GPU', vramTotal: bytes > 0 ? bytes : null });
       continue;
@@ -128,11 +146,31 @@ public static class LedungDxgi {
   [ComImport, Guid("770aae78-f26f-4dba-a829-253c83d1b387"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
   interface IDXGIFactory1 { void SetPrivateData(); void SetPrivateDataInterface(); void GetPrivateData(); void GetParent(); void EnumAdapters(); void MakeWindowAssociation(); void GetWindowAssociation(); void CreateSwapChain(); void CreateSoftwareAdapter(); [PreserveSig] int EnumAdapters1(uint i, out IDXGIAdapter1 a); }
   [DllImport("dxgi.dll")] static extern int CreateDXGIFactory1(ref Guid riid, out IDXGIFactory1 f);
+  [StructLayout(LayoutKind.Sequential)] struct KOPEN { public uint LuidLow; public int LuidHigh; public uint hAdapter; }
+  [StructLayout(LayoutKind.Sequential)] struct KQUERY { public uint hAdapter; public int Type; public IntPtr pData; public uint Size; }
+  [StructLayout(LayoutKind.Sequential)] struct KCLOSE { public uint hAdapter; }
+  [DllImport("gdi32.dll")] static extern int D3DKMTOpenAdapterFromLuid(ref KOPEN o);
+  [DllImport("gdi32.dll")] static extern int D3DKMTQueryAdapterInfo(ref KQUERY q);
+  [DllImport("gdi32.dll")] static extern int D3DKMTCloseAdapter(ref KCLOSE c);
+  // 256 when the kernel says the adapter can't render (D3DKMT_ADAPTERTYPE.RenderSupported, KMTQAITYPE_ADAPTERTYPE 15).
+  static uint NoRender(uint low, int high) {
+    try {
+      var o = new KOPEN { LuidLow = low, LuidHigh = high };
+      if (D3DKMTOpenAdapterFromLuid(ref o) != 0) return 0;
+      IntPtr p = Marshal.AllocHGlobal(4);
+      try {
+        Marshal.WriteInt32(p, 0);
+        var q = new KQUERY { hAdapter = o.hAdapter, Type = 15, pData = p, Size = 4 };
+        if (D3DKMTQueryAdapterInfo(ref q) != 0) return 0;
+        return (Marshal.ReadInt32(p) & 1) == 0 ? 256u : 0u;
+      } finally { Marshal.FreeHGlobal(p); var c = new KCLOSE { hAdapter = o.hAdapter }; D3DKMTCloseAdapter(ref c); }
+    } catch { return 0; }
+  }
   public static string[] List() {
     var g = new Guid("770aae78-f26f-4dba-a829-253c83d1b387"); IDXGIFactory1 f;
     if (CreateDXGIFactory1(ref g, out f) != 0) return new string[0];
     var list = new System.Collections.Generic.List<string>(); IDXGIAdapter1 a;
-    for (uint i = 0; i < 16 && f.EnumAdapters1(i, out a) == 0; i++) { DESC d; if (a.GetDesc1(out d) != 0) continue; list.Add(String.Format("0x{0:X8}_0x{1:X8},{2},{3},{4}", d.LuidHigh, d.LuidLow, d.DedicatedVideoMemory, d.Flags, d.Description.Replace(",", " "))); }
+    for (uint i = 0; i < 16 && f.EnumAdapters1(i, out a) == 0; i++) { DESC d; if (a.GetDesc1(out d) != 0) continue; list.Add(String.Format("0x{0:X8}_0x{1:X8},{2},{3},{4}", d.LuidHigh, d.LuidLow, d.DedicatedVideoMemory, (d.Flags & 3) | NoRender(d.LuidLow, d.LuidHigh), d.Description.Replace(",", " "))); }
     return list.ToArray();
   }
 }

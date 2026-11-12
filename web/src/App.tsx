@@ -1,7 +1,11 @@
 import { Component, Fragment, lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from 'react';
-import { CHATS, PERMISSION_MODES, PRIORITIES, projectLabel, type ModelChoice, type AccountInfoView, type AwayInfo, type BoardStatus, type ChatsInfo, type GitHubBudget, type CompactingInfo, type MachineInfo, type McpServerInfo, type PermissionMode, type Priority, type ProjectInfo, type QuestionInfo, type RemoteControlInfo, type SessionInfo } from '../../src/shared/protocol.ts';
+import { CHATS, HELPER, PERMISSION_MODES, PRIORITIES, projectLabel, type ModelChoice, type AccountInfoView, type AwayInfo, type BoardStatus, type ChatsInfo, type GitHubBudget, type CompactingInfo, type MachineInfo, type McpServerInfo, type PermissionMode, type Priority, type ProjectInfo, type QuestionInfo, type RemoteControlInfo, type SessionInfo } from '../../src/shared/protocol.ts';
 import { AddProjectView, ProjectSettingsView, ProjectStartView } from './projects/ProjectViews.tsx';
 import { ChatsSettingsView, NewChatView } from './chats/ChatViews.tsx';
+import { HelperCardView, HelperStepBar, SetupScreens, SetupStepCard } from './helper/HelperViews.tsx';
+import type { HelperCard } from '../../src/shared/helper-cards.ts';
+import { helperHasSpoken } from './helper/cardOrder.ts';
+import { backToSetupMarked, clearBackToSetup, helperToolWords, markBackToSetup } from './helper/helperNav.ts';
 import { api } from './api.ts';
 import { CHAT_IMAGE_TYPES, dataUrl, imageFiles, MAX_CHAT_IMAGES, prepareImage, SECRETS_HINT } from './chatImages.ts';
 import { MessageList, formatTime } from './components/MessageList.tsx';
@@ -42,7 +46,7 @@ import { conversationFromHash, conversationHash, conversationOf, messageFromHash
 
 /** Whether a session belongs to a sidebar group: its project, Chats (issue #211), or "Removed projects". */
 function inGroup(s: SessionInfo, group: string, known: Set<string>): boolean {
-  return group === REMOVED_PROJECTS ? !known.has(s.project) && s.project !== CHATS : s.project === group;
+  return group === REMOVED_PROJECTS ? !known.has(s.project) && s.project !== CHATS && s.project !== HELPER : s.project === group;
 }
 
 import { projectAccountShown, stripAccount } from './limitAccount.ts';
@@ -59,6 +63,7 @@ import { contextShare } from './usage/SessionsTab.tsx';
 import { SessionUsagePanel } from './usage/SessionUsage.tsx';
 import { UsageView } from './usage/UsageView.tsx';
 import type { Overview } from '../../src/shared/protocol.ts';
+import type { HelperInfo } from '../../src/shared/setup.ts';
 import type { FlowRun } from '../../src/shared/flow-run.ts';
 import { workflowButton } from './flowRuns.ts';
 import { bangAsk, bangCommand, bangHint } from '../../src/shared/bang.ts';
@@ -87,6 +92,7 @@ import { useComputerLink } from './useComputerLink.ts';
 import { useInstallApp } from './useInstallApp.ts';
 import { InstallNotice } from './components/InstallApp.tsx';
 import { ShortcutNotice } from './components/Shortcuts.tsx';
+import { StepQuestionsPicker } from './components/StepQuestionsPicker.tsx';
 import { CheckInNotice } from './components/CheckIn.tsx';
 import { caretPoint, MaskedSecret, SecretChips, SecretEditor, SelectionKey, SessionSecretsMenu } from './components/SecretLock.tsx';
 import { chipsFor, insertToken, lockInDraft, lockRange, renameToken } from './secretLock.ts';
@@ -418,6 +424,31 @@ export function App() {
     if (fetchArchived) loadArchived().catch(() => {});
   }, [fetchArchived, hellos, loadArchived]);
 
+  // The Ledung Helper (docs/steps/ledung-helper.md): opened from the sidebar, Settings and New project; `text` is the
+  // person's own words to it, such as "I want to create a new project".
+  const helper = ledung.helper;
+  const openHelper = (text?: string) => run(async () => {
+    const info = text || !helper?.sessionId ? await api.openHelper(text) : helper;
+    if (info.sessionId) open(info.sessionId);
+  });
+  const newProject = () => openHelper('I want to create a new project');
+  // While the helper sets up, the page opens on its chat when nothing else is asked for, so leaving and coming back
+  // continues there; once per page load.
+  const openedSetup = useRef(false);
+  useEffect(() => {
+    if (openedSetup.current || helper?.setup.phase !== 'helper' || !helper.sessionId) return;
+    openedSetup.current = true;
+    if (openId === null) open(helper.sessionId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [helper?.setup.phase, helper?.sessionId]);
+  const inSetup = helper?.setup.phase === 'helper';
+  // Back from "Do it myself instead" (acceptance round 1, check 18): the way back while the setup runs; gone once there.
+  const inHelper = !!helper?.sessionId && openId === helper.sessionId;
+  if (inHelper || !inSetup) clearBackToSetup();
+  const backToSetup = inSetup && !inHelper && backToSetupMarked() && helper?.sessionId
+    ? <div className="banner install back-to-setup"><button className="small primary" onClick={() => { clearBackToSetup(); open(helper.sessionId!); }}>✦ Back to the setup</button><span className="muted">{`Step ${Math.min(helper.setup.index, helper.setup.total)} of ${helper.setup.total}`}</span></div>
+    : null;
+
   // The pages inside the Settings frame (issue #365): the Ledung, Chats and project tabs, each with its side menu of
   // groups (#366), and the Add project page.
   const settingsTab = tabOf(openId);
@@ -425,9 +456,12 @@ export function App() {
   const settingsBody: ((update: UpdateState) => ReactNode) | null =
     settingsTab === 'ledung' ? (update) => (
       <SettingsView view={openId!} update={update} run={run} board={ledung.board} remote={ledung.remote} throughPublicName={ledung.throughPublicName} newComputers={ledung.newComputers} projects={ledung.projects} computers={ledung.computers} sessions={ledung.sessions}
-        accounts={ledung.accounts} accountChoices={ledung.accountChoices} defaultIdentity={ledung.defaultIdentity} accountProblems={ledung.accountProblems} usageStops={ledung.usageStops} macros={ledung.macros} canRestart={ledung.canRestart} source={ledung.source} config={ledung.configStatus} hellos={ledung.hellos} notify={notify} onOpen={open} />
+        accounts={ledung.accounts} accountChoices={ledung.accountChoices} defaultIdentity={ledung.defaultIdentity} accountProblems={ledung.accountProblems} usageStops={ledung.usageStops} macros={ledung.macros} canRestart={ledung.canRestart} source={ledung.source} config={ledung.configStatus} hellos={ledung.hellos} notify={notify} onOpen={open} helper={ledung.helper} />
     ) : settingsTab === 'add' ? () => (
-      <AddProjectView run={run} accounts={ledung.accounts} defaultAccount={ledung.accountChoices.newProjects} profiles={ledung.profiles} lockdownB={ledung.lockdownB} onAdded={(p) => open(p.managerId ?? `p:${p.name}`)} />
+      <>
+        <p className="helper-offer">✦ <button className="link-button" onClick={() => void newProject()}>Let the Ledung Helper set it up with you</button> <span className="muted">, or fill in the form below.</span></p>
+        <AddProjectView run={run} accounts={ledung.accounts} defaultAccount={ledung.accountChoices.newProjects} profiles={ledung.profiles} lockdownB={ledung.lockdownB} onAdded={(p) => open(p.managerId ?? `p:${p.name}`)} />
+      </>
     ) : settingsTab === 'chats' ? () => (
       <ChatsSettingsView view={openId!} chats={ledung.chats} run={run} onOpen={open} />
     ) : settingsProject ? () => (
@@ -460,6 +494,9 @@ export function App() {
   const sidebarRun = useStableCallback(run);
   const sidebarOpen = useStableCallback(open);
   const sidebarCloseSettings = useStableCallback(closeSettings);
+  // The helper's entry and New project, stable so the memoized sidebar isn't drawn again for them (issue #233).
+  const sidebarOpenHelper = useStableCallback(() => void openHelper());
+  const sidebarNewProject = useStableCallback(() => void newProject());
   const sidebarStart = useStableCallback((project: string, profile?: string) => run(async () => open((await api.start(project, profile)).id)));
 
   const banners = (
@@ -471,9 +508,14 @@ export function App() {
         </div>
       )}
       {ledung.away && awayBannerShown(ledung.away, session) && <AwayBanner away={ledung.away} run={run} />}
-      {installApp.notice && <InstallNotice app={installApp} run={run} />}
-      <ShortcutNotice run={run} />
-      <CheckInNotice run={run} />
+      {/* Not during the setup: on a phone it took the top of the screen (acceptance round 2, 22); it comes after. */}
+      {installApp.notice && !inSetup && <InstallNotice app={installApp} run={run} />}
+      {backToSetup}
+      {/* During the setup the helper shows these as steps of their own. */}
+      {!inSetup && <ShortcutNotice run={run} />}
+      {/* The first-run picker for workflow-step questions (#293) comes after the setup too. */}
+      {!inSetup && <StepQuestionsPicker run={run} />}
+      {!inSetup && <CheckInNotice run={run} />}
       {ledung.usageStops.filter((s) => s.holding).map((s) => (
         <div key={`${s.account}:${s.kind}`} className="banner updated">
           <span>{usageStopLine(s)}</span>
@@ -525,6 +567,16 @@ export function App() {
     if (id && !openedComputers.includes(id)) setOpenedComputers((list) => [...list, id]);
   };
 
+  // A brand-new Ledung's Welcome and Claude check, before there is any AI (docs/steps/ledung-helper.md).
+  if (!IN_FRAME && (helper?.setup.phase === 'welcome' || helper?.setup.phase === 'claude')) {
+    return (
+      <div className="page setup-page">
+        {error && <div className="banner error" onClick={() => setError(null)}>{error} <span className="muted">(click to dismiss)</span></div>}
+        <SetupScreens helper={helper} run={run} />
+      </div>
+    );
+  }
+
   return (
     <div className={`page${frame.remote ? ' remote' : ''}`} style={computerStyle(frame.here)}>
       <ComputerTabs frame={frame} shown={shown} onShow={showComputer} waiting={waiting} />
@@ -558,6 +610,9 @@ export function App() {
           accounts={ledung.accounts}
           runs={ledung.runs}
           questions={ledung.questions}
+          helper={ledung.helper}
+          onOpenHelper={sidebarOpenHelper}
+          onNewProject={sidebarNewProject}
         />
         {!noSidebar && <SidebarResizer />}
         <main className="main">
@@ -655,13 +710,15 @@ export function App() {
               onOpenBoardThread={(repo, id) => open(threadOpenId(repo, id))}
               onOpenWorkflow={(project) => open(`wf:${project}`)}
               onBack={toList}
+              onOpen={open}
             />
           ) : (
             <div className="empty">
               <h1>Project Ledung</h1>
               <p>{ledung.projects.length ? 'Open a project on the left to talk to its manager.' : 'No projects yet. Add one to start talking to its manager.'}</p>
               <div className="empty-actions">
-                {!ledung.projects.length && <button className="primary" onClick={() => open('add')}>Add a project</button>}
+                {!ledung.projects.length && <button className="primary" onClick={() => void newProject()}>✦ New project with the helper</button>}
+                {!ledung.projects.length && <button onClick={() => open('add')}>Add a project</button>}
                 <button onClick={() => open('chat')}>New chat</button>
                 <button onClick={() => open('settings')}>Settings</button>
               </div>
@@ -725,6 +782,10 @@ const Sidebar = memo(function Sidebar(props: {
   accounts: AccountInfoView[];
   runs: Record<string, FlowRun[]>;
   questions: Record<number, QuestionInfo>;
+  /** The Ledung Helper (docs/steps/ledung-helper.md): its entry under Chats, and New project in a heading's menu. */
+  helper: HelperInfo | null;
+  onOpenHelper: () => void;
+  onNewProject: () => void;
 }) {
   // A tree per project: the project, its manager with the sessions it runs, then sessions started
   // outside the manager (and earlier managers). Sessions of removed projects come last. Projects and
@@ -902,6 +963,7 @@ const Sidebar = memo(function Sidebar(props: {
         };
       }
       if (a === 'newChat') return { kind: 'item', label: 'New chat', onPick: () => props.onOpen('chat') };
+      if (a === 'newProject') return { kind: 'item', label: 'New project…', hint: 'With the Ledung Helper; Settings → Add project has the plain form', onPick: props.onNewProject };
       if (a === 'settings') return { kind: 'item', label: 'Settings', onPick: () => props.onOpen(kind === 'chats' ? 'chats' : `ps:${name}`) };
       if (a === 'workflow') return { kind: 'item', label: 'Workflow', onPick: () => props.onOpen(`wf:${name}`) };
       const fold = a === 'collapseAll';
@@ -1075,6 +1137,15 @@ ${moreHint}`} onClick={() => props.onOpen('chat')}><Named colour={props.chats?.c
                 {/* Everything of the project one step in under its name, along a guide line from its ▾ (Simon, 2026-11-04:
                     the manager row sat left of the project's, so it didn't read as the project's). */}
                 <div className="project-rows">
+                {g.name === CHATS && !g.isFolded && (
+                  <div className="session-row">
+                    <button className={`session-item helper-entry${props.helper?.sessionId && props.openId === props.helper.sessionId ? ' open' : ''}`}
+                      title="Ledung's own assistant: questions about Ledung, new projects, settings" onClick={props.onOpenHelper}>
+                      <span className="session-text"><span className="session-title"><span className="helper-mark" aria-hidden="true">✦</span> Ledung Helper</span>
+                        {props.helper?.setup.phase === 'helper' && <span className="helper-sub">Setting up · step {Math.min(props.helper.setup.index, props.helper.setup.total)} of {props.helper.setup.total}</span>}</span>
+                    </button>
+                  </div>
+                )}
                 {g.project && choosing === g.name && (
                   <div className="start-row">
                     <select aria-label={`Profile for a new session in ${g.name}`} value={chosen} onChange={(e) => setChosen(e.target.value)}
@@ -1151,8 +1222,26 @@ export function SessionView(props: {
   onOpenWorkflow: (project: string) => void;
   /** The ← to the list, shown only on a phone (issue #171). */
   onBack: () => void;
+  /** Opens a view of the page: the Ledung Helper's cards and step bar lead to forms and settings. */
+  onOpen?: (id: string) => void;
 }) {
   const { session, ledung, run } = props;
+  const isHelper = session.project === HELPER;
+  // The step's card waits for the helper's words on that step (acceptance round 1, 6.4 and check 14): a step moved on
+  // in the page shows its card once the helper has said the new step's message.
+  const waitsForPersonNow = session.status === 'idle' || session.status === 'ended';
+  const waitsForPerson = (session.status === 'idle' || session.status === 'ended') && helperHasSpoken(ledung.messages)
+    && (ledung.helper?.spokeFor === undefined || ledung.helper.spokeFor === ledung.helper.setup.current);
+  const stepCard = isHelper && waitsForPerson && ledung.helper?.setup.phase === 'helper' && ledung.helper.setup.current && ledung.helper.sessionId === session.id
+    ? <SetupStepCard key={ledung.helper.setup.current} helper={ledung.helper} run={run} onOpen={(id) => { markBackToSetup(); props.onOpen?.(id); }} />
+    : null;
+  const openView = props.onOpen;
+  const renderCard = useCallback((card: HelperCard, answered: boolean, messageId?: number) => (
+    <HelperCardView card={card} answered={answered} projects={ledung.projects} run={run}
+      // Answered on the card: Ledung tells the helper so (acceptance round 4, 21); then the pick as their message.
+      onSend={(text) => void run(async () => { if (messageId !== undefined) await api.helperCardAnswered(session.id, messageId); await api.send(session.id, text); })} onOpen={(id) => openView?.(id)} />
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  ), [session.id, ledung.projects, openView]);
   // Lookups by id and its own sessions from an index built once per list change (issue #233).
   const index = useMemo(() => indexSessions(ledung.sessions), [ledung.sessions]);
   const [showTechnical, setShowTechnical] = useState(() => readTechnical(session.id));
@@ -1370,6 +1459,7 @@ export function SessionView(props: {
       )}
       <div className="session-body">
         <div className="chat-column">
+          {isHelper && ledung.helper && <HelperStepBar helper={ledung.helper} projects={ledung.projects} run={run} onOpen={(id) => { markBackToSetup(); openView?.(id); }} />}
           <MessageList
             messages={ledung.messages}
             permissions={ledung.permissions}
@@ -1378,7 +1468,7 @@ export function SessionView(props: {
             onLoadEarlier={loadEarlier}
             onOpenFile={openFile}
             questions={ledung.questions}
-            userName={ledung.userName}
+            userName={isHelper && ledung.userName === 'the user' ? 'You' : ledung.userName}
             onQuote={quote}
             titleOf={titleOf}
             sessionId={session.id}
@@ -1387,8 +1477,16 @@ export function SessionView(props: {
             onOpenQuestion={openQuestion}
             onOpenBoardThread={boardRepo ? openBoardThread : undefined}
             tint={tint}
+            renderCard={isHelper ? renderCard : undefined}
+            assistantName={isHelper ? 'Ledung Helper' : undefined}
+            noPin={isHelper}
+            follow={isHelper}
+            turnOpen={isHelper && !waitsForPersonNow}
+            // The setup step's own card, once, under the helper's latest words while it waits for the person.
+            footer={stepCard ?? undefined}
+            footerKey={stepCard ? `${ledung.helper?.setup.current}` : undefined}
           />
-          <WorkingIndicator key={session.id} session={session} children={index.childrenOf(session.id)} messages={ledung.messages} waitingToStart={waitingToStart(ledung.machine, session)}
+          <WorkingIndicator key={session.id} session={session} children={index.childrenOf(session.id)} messages={ledung.messages} waitingToStart={waitingToStart(ledung.machine, session)} plain={isHelper ? helperToolWords : undefined}
             extra={<MacroChips key={session.id} macros={macros} onUse={fireMacro} onEdit={() => (location.hash = '#/settings/macros')}
               actions={[
                 { id: 'secret', label: '🔑 Lock a secret…', title: 'Type or paste it into a masked field; Claude gets only its name', disabled: composerClosed(session), onPick: () => composerActions.current?.secret() },
@@ -1652,6 +1750,8 @@ function Composer({ session, tint, run, quoteInto, actionsInto, bangShell }: {
   /** Set here to the 🔑 and 📎 actions, which the macros' ＋ menu offers (issue #186). */
   actionsInto: RefObject<ComposerActions | null>;
 }) {
+  // The Ledung Helper's chat is with the helper, not "Claude" (acceptance round 1, check 16).
+  const to = session.project === HELPER ? 'the Ledung Helper' : 'Claude';
   const typing = usePlainTyping();
   // The box's own text, kept per session in this browser (issues #73, #323).
   const [text, setText, saveNow] = useDraft(session.id);
@@ -1868,7 +1968,7 @@ function Composer({ session, tint, run, quoteInto, actionsInto, bangShell }: {
         style={style}
         value={text}
         disabled={ended}
-        placeholder={ended ? 'This session has ended.' : resumable ? 'This session has ended; sending a message resumes it.' : coarsePointer() ? 'Message Claude' : 'Message Claude (Enter to send, Shift+Enter for a new line)'}
+        placeholder={ended ? 'This session has ended.' : resumable ? 'This session has ended; sending a message resumes it.' : coarsePointer() ? `Message ${to}` : `Message ${to} (Enter to send, Shift+Enter for a new line)`}
         onChange={(e) => {
           setText(e.target.value);
           setAsk(null);

@@ -16,11 +16,14 @@ import type { ComputerColour, ComputerInfo } from '../../src/shared/computers.ts
 import type { PaneFolderKey, PaneFolders, SessionChanges, TreeListing } from '../../src/shared/files-pane.ts';
 import type { LineComment } from '../../src/shared/line-comments.ts';
 import type { FlowFileWrite, FlowView } from '../../src/shared/flow.ts';
-import type { FlowRun, StepQuestions } from '../../src/shared/flow-run.ts';
+import type { FlowRun, StepQuestions, StepQuestionsView } from '../../src/shared/flow-run.ts';
 import type { FlowProposal } from '../../src/shared/flow-proposal.ts';
 import type { SkillChoices } from '../../src/shared/skills.ts';
 import type { SecretInfo, SecretLifetime } from '../../src/shared/secrets.ts';
 import type { SharedUsageView, UsagePublishView } from '../../src/shared/published-usage.ts';
+import type { HelperInfo, SetupStepId } from '../../src/shared/setup.ts';
+/** The first start's Claude check (src/sessions/manager.ts, claudeCheck). */
+export type ClaudeCheck = { problem: string | null; looked: string[]; signIn: 'in' | 'out' | 'unknown'; help: string | null };
 /** The words Ledung refuses a request with when it needs the passkey (src/server/passkeys.ts). */
 export const PASSKEY_NEEDED = 'This needs your passkey.';
 /** The words for a device that has to unlock first (src/server/passkeys.ts). */
@@ -197,6 +200,17 @@ export const api = {
   archivedSessions: () => call<SessionInfo[]>('GET', '/api/archived-sessions'),
   start: (project: string, profile?: string) => call<SessionInfo>('POST', '/api/sessions', { project, role: 'session', ...(profile ? { profile } : {}) }),
   /** A chat (issue #211): left out, the chats' default folder and mode, Claude Code's model and the full profile. */
+  // The first start and the Ledung Helper (docs/steps/ledung-helper.md).
+  helper: () => call<HelperInfo>('GET', '/api/helper'),
+  setup: (action: 'welcome' | 'claude' | 'again' | 'finish' | 'leave') => call<HelperInfo>('POST', '/api/setup', { action }),
+  /** The step bar's own: a step marked done or skipped, or the person's name typed in it. */
+  setupMark: (step: SetupStepId, mark: 'done' | 'skipped') => call<HelperInfo>('POST', '/api/setup', { action: 'mark', step, mark }),
+  setupName: (name: string) => call<HelperInfo>('POST', '/api/setup', { action: 'name', name }),
+  setupClaude: () => call<ClaudeCheck>('POST', '/api/setup-claude'),
+  /** text: the person's own words to the helper (New project); left out: just open it. */
+  openHelper: (text?: string) => call<HelperInfo>('POST', '/api/helper-open', text ? { text } : {}),
+  helperCardAnswered: (session: string, message: number) => call('POST', '/api/helper-card-answered', { session, message }),
+  setHelperModel: (model: string) => call<HelperInfo>('POST', '/api/helper-model', { model }),
   startChat: (opts: { folder?: string; model?: string; effort?: EffortLevel; profile?: string; permissionMode?: PermissionMode; account?: string }) => call<SessionInfo>('POST', '/api/chats-new', opts),
   updateChats: (sensitive: ChatsInfo['sensitive']) => call<ChatsInfo>('POST', '/api/chats', { sensitive }),
   setChatsColour: (colour: ChatsInfo['colour']) => call<ChatsInfo>('POST', '/api/chats-colour', { colour }),
@@ -340,8 +354,10 @@ export const api = {
   // Resource limits (docs/steps/resource-limits.md).
   setResourceLimit: (dim: string, value: number | null) => call('POST', '/api/resource-limits', { dim, value }),
   // Settings → Questions at a workflow step (#291).
-  stepQuestions: () => call<{ choice: StepQuestions }>('GET', '/api/step-questions'),
-  setStepQuestions: (choice: StepQuestions) => call<{ choice: StepQuestions }>('POST', '/api/step-questions', { choice }),
+  stepQuestions: () => call<StepQuestionsView>('GET', '/api/step-questions'),
+  setStepQuestions: (choice: StepQuestions) => call<StepQuestionsView>('POST', '/api/step-questions', { choice }),
+  /** Skip in the first-run picker (#293): the default stays and it is not asked again. */
+  skipStepQuestions: () => call<StepQuestionsView>('POST', '/api/step-questions-skip', {}),
   setResourceSettings: (settings: { averageSec?: number; marginPoints?: number; overSec?: number }) => call('POST', '/api/resource-settings', settings),
   resourceStartNow: (id: string) => call('POST', `/api/resource-line/${encodeURIComponent(id)}/start-now`, {}),
   pauseJob: (id: string, paused: boolean) => call('POST', `/api/jobs/${encodeURIComponent(id)}/pause`, { paused }),

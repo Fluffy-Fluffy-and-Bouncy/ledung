@@ -6,7 +6,8 @@
 // copies the user's stored answer, never text the manager supplies (decision of 2026-10-10).
 import { dimLabel, formatDim } from '../resources/limits.ts';
 import type { Store } from '../store/store.ts';
-import { effortLevel, unknownEffort } from '../shared/protocol.ts';
+import { effortLevel, HELPER, unknownEffort } from '../shared/protocol.ts';
+import { applyBasics, basicsKey, basicsLoosening, basicsRule, parseBasics, type BasicsPatch } from './helper.ts';
 import type { AttachedSource, AwayInfo, CompactingInfo, MachineInfo, McpServerInfo,PermissionDecision, PermissionInfo, PermissionMode, Priority, ProjectInfo, QuestionInfo, QuestionShot, ServerEvent, ShotVerdict, SessionInfo } from '../shared/protocol.ts';
 import { parseProject, type ProjectConfig, type WorkflowConfig } from '../config.ts';
 import type { NewProjectArgs, ProjectArgs } from './tools.ts';
@@ -190,6 +191,12 @@ export interface ManagementContext {
   orders?: Orders;
   /** Away mode now, so an order records the period it was given in (issue #105). */
   away?(): AwayInfo | null;
+  /** The Ledung Helper's settings (src/sessions/helper-settings.ts): the rule a change would ask with, and applying it. */
+  helperSettings?: { rule(raw: unknown): string | null; apply(helperId: string, raw: unknown): string };
+  /** Whether Ledung may use this folder (its browse roots and projects folder), for the helper's early check. */
+  folderAllowed?(folder: string): boolean;
+  /** The projects folder, where create_project goes when it names no parent. */
+  projectsFolder?(): string;
 }
 
 /** A screenshot as ask_user takes it (issue #60). */
@@ -1685,6 +1692,8 @@ ${note}`);
     const port = this.ctx.projectSettings;
     if (!port) throw new ManagementError("Projects' settings are not available in this Ledung.");
     const own = this.store.getSession(managerId)?.project;
+    // The Ledung Helper is the person's own, for Ledung's settings: no project's toggle stands for it (ledung-helper.md).
+    if (own === HELPER) return port;
     if (!this.ctx.projects().find((p) => p.name === own)?.projectSettingsTools) {
       throw new ManagementError(`Reading and changing projects' workflow settings is off for your project. ${this.ctx.userName} can switch it on in your project's settings ("Its manager reads and changes workflow settings of your projects").`);
     }
@@ -1818,6 +1827,138 @@ ${note}`);
       }
     }
     const changed = changedFields(before, after);
+    if (!changed.length) return `Nothing to change: "${patch.project}" has these settings already.`;
+    try {
+      port.update(patch.project, after);
+    } catch (e) {
+      throw new ManagementError(`These settings can't be saved: ${(e as Error).message}`);
+    }
+    return `Saved ${changed.join(', ')} for "${patch.project}". Its manager and sessions get them when they next start or resume; running ones keep theirs.`;
+  }
+
+  // --- The Ledung Helper's set_project_basics (docs/steps/ledung-helper.md) ------------------------------
+  // What a manager may not change: model, effort, permission mode, account. Through the same hook as
+  // set_project_settings: a looser mode or another account is asked of the person, the rest runs; never a locked project.
+
+  // --- The Ledung Helper's change_ledung_setting (docs/steps/ledung-helper.md, "Every setting") ----------
+  // Planned by the manager (helper-settings.ts); a change that opens anything up is asked of the person with its
+  // rule, and runs only when what it opens now is what they allowed; anything else runs unasked.
+
+  private ledungSettingKey(helperId: string, raw: unknown): string {
+    return patchKey(`ledung-setting\n${helperId}`, raw as SettingsPatch);
+  }
+
+  private ledungSettingRule(helperId: string, raw: unknown): string | null {
+    if (!this.isHelper(helperId)) throw new ManagementError('Only the Ledung Helper changes these settings.');
+    const port = this.ctx.helperSettings;
+    if (!port) throw new ManagementError("Ledung's settings are not available here.");
+    return port.rule(raw);
+  }
+
+  ledungSettingChange(helperId: string, raw: unknown, note = true): { deny: string } | { ask: string } | { allow: true } {
+    let rule: string | null;
+    try {
+      rule = this.ledungSettingRule(helperId, raw);
+    } catch (e) {
+      return { deny: (e as Error).message };
+    }
+    if (rule) return { ask: rule };
+    if (note) this.noteUnasked(this.ledungSettingKey(helperId, raw));
+    return { allow: true };
+  }
+
+  noteApprovedLedungSetting(helperId: string, raw: unknown, shown: string | null): void {
+    this.noteApproval(this.ledungSettingKey(helperId, raw), shown);
+  }
+
+  changeLedungSetting(helperId: string, raw: unknown): string {
+    const now = this.ledungSettingRule(helperId, raw);
+    const key = this.ledungSettingKey(helperId, raw);
+    const approved = this.takeApproval(key);
+    if (approved !== undefined) {
+      if (now !== null && now !== approved) throw new ManagementError(`The setting changed while ${this.ctx.userName} was asked, so this is no longer what they allowed; nothing was saved. Call it again to ask.`);
+    } else {
+      const unasked = this.takeUnasked(key);
+      if (now !== null) {
+        throw new ManagementError(unasked
+          ? `The setting changed meanwhile, and this change now opens something up; nothing was saved. Call it again to ask ${this.ctx.userName}.`
+          : `This change opens something up and ${this.ctx.userName} did not allow it; nothing was saved.`);
+      }
+    }
+    return this.ctx.helperSettings!.apply(helperId, raw);
+  }
+
+  /**
+   * Why the helper's add_project or create_project can't work as given, before anything is asked of the person: a
+   * folder outside the folders Ledung may use would be refused after their approval (Simon's demo, 2026-11-12).
+   */
+  helperProjectProblem(helperId: string, toolName: string, raw: unknown): string | null {
+    if (!this.isHelper(helperId) || !this.ctx.folderAllowed) return null;
+    const input = (raw ?? {}) as { folder?: unknown; parent?: unknown };
+    const tool = toolName.replace(/^mcp__ledung__/, '');
+    const folder = tool === 'add_project' ? input.folder : tool === 'create_project' ? input.parent ?? this.ctx.projectsFolder?.() : undefined;
+    if (typeof folder !== 'string' || this.ctx.folderAllowed(folder)) return null;
+    return `${folder} is outside the folders Ledung may use, so this would be refused even after their approval; nothing was asked. Offer to allow it (or a narrower folder) with change_ledung_setting browseRoots, then call this again.`;
+  }
+
+  /** Whether this session is the Ledung Helper. */
+  isHelper(sessionId: string): boolean {
+    return this.store.getSession(sessionId)?.project === HELPER;
+  }
+
+  private basicsPatched(helperId: string, patch: BasicsPatch): { port: NonNullable<ManagementContext['projectSettings']>; before: ProjectConfig; after: ProjectConfig } {
+    if (!this.isHelper(helperId)) throw new ManagementError('Only the Ledung Helper changes these settings.');
+    const port = this.settingsTools(helperId);
+    const before = this.settingsTarget(port, patch.project);
+    let after: ProjectConfig;
+    try {
+      after = parseProject(applyBasics(before, patch));
+      port.check(patch.project, after);
+    } catch (e) {
+      throw new ManagementError(`These settings can't be saved: ${(e as Error).message}`);
+    }
+    return { port, before, after };
+  }
+
+  /** The hook's answer for set_project_basics, as settingsChange is set_project_settings'. */
+  basicsChange(helperId: string, raw: unknown, note = true): { deny: string } | { ask: string } | { allow: true } {
+    const parsed = parseBasics(raw);
+    if ('problem' in parsed) return { deny: `set_project_basics: ${parsed.problem}` };
+    let rule: string | null;
+    try {
+      const { before, after } = this.basicsPatched(helperId, parsed.patch);
+      rule = basicsRule(parsed.patch.project, basicsLoosening(before, after));
+    } catch (e) {
+      return { deny: (e as Error).message };
+    }
+    if (rule) return { ask: rule };
+    if (note) this.noteUnasked(basicsKey(helperId, parsed.patch));
+    return { allow: true };
+  }
+
+  noteApprovedBasics(helperId: string, raw: unknown, shown: string | null): void {
+    const parsed = parseBasics(raw);
+    if ('patch' in parsed) this.noteApproval(basicsKey(helperId, parsed.patch), shown);
+  }
+
+  /** set_project_basics: saved once what it loosens now is what the person allowed (or nothing, run unasked). */
+  setProjectBasics(helperId: string, patch: BasicsPatch): string {
+    const { port, before, after } = this.basicsPatched(helperId, patch);
+    const key = basicsKey(helperId, patch);
+    const now = basicsRule(patch.project, basicsLoosening(before, after));
+    const approved = this.takeApproval(key);
+    if (approved !== undefined) {
+      if (now !== null && now !== approved) throw new ManagementError(`The settings of "${patch.project}" changed while ${this.ctx.userName} was asked, so this is no longer what they allowed; nothing was saved. Call it again to ask.`);
+    } else {
+      const unasked = this.takeUnasked(key);
+      if (now !== null) {
+        throw new ManagementError(unasked
+          ? `The settings of "${patch.project}" changed meanwhile, and this change now lets more through; nothing was saved. Call it again to ask ${this.ctx.userName}.`
+          : `This change lets more through without ${this.ctx.userName} and they did not allow it; nothing was saved.`);
+      }
+    }
+    const keys = ['model', 'managerModel', 'effort', 'permissionMode', 'account'] as const;
+    const changed = keys.filter((k) => JSON.stringify(before[k] ?? null) !== JSON.stringify(after[k] ?? null));
     if (!changed.length) return `Nothing to change: "${patch.project}" has these settings already.`;
     try {
       port.update(patch.project, after);

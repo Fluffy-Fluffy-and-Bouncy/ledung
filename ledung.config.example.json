@@ -49,6 +49,8 @@
   },
   "defaultProfiles": {},
   "pluginsOff": [],
+  "testFeatures": [],
+  "$testFeatures": "Features being tried out before they are on for everyone, by name: \"step-questions-picker\" asks once, on a Ledung with no choice saved, how questions at a workflow step should be written, with a sample of each. A name this Ledung doesn't know is ignored.",
   "$pluginsOff": "Plugin ids (as in Claude Code's enabledPlugins, e.g. \"name@marketplace\") turned off in every Ledung session, whatever its profile, on top of a workflow's; an id this computer doesn't have is skipped. Your own Claude Code outside Ledung keeps them. For a plugin that repeats what Ledung already gives sessions.",
   "$defaultProfiles": "The profile for \"manager\" and for \"session\" where the project names none (its settings in the page), over a workflow's own; left out: the workflow's, else full. A manager's start_session can name another.",
   "board": {

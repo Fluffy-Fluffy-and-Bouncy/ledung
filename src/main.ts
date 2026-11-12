@@ -213,6 +213,15 @@ async function main(): Promise<void> {
   });
   manager.setConfigStatus(watcher.status());
   watcher.start();
+  // The Ledung Helper changes the config file through Ledung's own writer, read again at once (docs/steps/ledung-helper.md).
+  const w = watcher;
+  manager.setConfigWriter({ file: configPath(), reload: () => void w.check() });
+  manager.setServerSettings({
+    channel: () => updater.channel(),
+    setChannel: (c) => { updater.setChannel(c); },
+    checkIn: () => checkIn.view().on,
+    setCheckIn: (on) => { checkIn.act(on ? 'on' : 'off'); },
+  });
   manager.boards?.start();
   usagePublisher.start();
 

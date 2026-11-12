@@ -7,12 +7,13 @@ import { ToolPreview } from './ToolPreview.tsx';
 import { usePlainTyping } from '../usePlainTyping.ts';
 import { NOT_AT_PC, STOP_NOTE, UAC_NOTE } from '../../../src/shared/elevation.ts';
 
-export function PermissionCard({ permission, managerTitle }: { permission: PermissionInfo; managerTitle?: string }) {
+/** plain: the request in plain words, for the Ledung Helper's chat (docs/steps/ledung-helper.md); left out: as always. */
+export function PermissionCard({ permission, managerTitle, plain }: { permission: PermissionInfo; managerTitle?: string; plain?: { title: string; lines: string[] } | null }) {
   if (permission.toolName === 'AskUserQuestion') return <QuestionCard permission={permission} />;
-  return <ApprovalCard permission={permission} managerTitle={managerTitle} />;
+  return <ApprovalCard permission={permission} managerTitle={managerTitle} plain={plain ?? null} />;
 }
 
-function ApprovalCard({ permission, managerTitle }: { permission: PermissionInfo; managerTitle?: string }) {
+function ApprovalCard({ permission, managerTitle, plain }: { permission: PermissionInfo; managerTitle?: string; plain: { title: string; lines: string[] } | null }) {
   const typing = usePlainTyping();
   const [denying, setDenying] = useState(false);
   const [message, setMessage] = useState('');
@@ -29,6 +30,26 @@ function ApprovalCard({ permission, managerTitle }: { permission: PermissionInfo
       setBusy(false);
     }
   };
+
+  if (plain) {
+    return (
+      <div className="card permission helper-approval">
+        <div className="card-head"><strong>{plain.title}</strong></div>
+        <ul className="helper-approval-lines">{plain.lines.map((l) => <li key={l}>{l}</li>)}</ul>
+        {permission.sensitive && <p className="muted">Only you can allow this.</p>}
+        {denying && (
+          <textarea {...typing} className="deny-message" placeholder="Optional: tell the helper why, or what to do instead" value={message} onChange={(e) => setMessage(e.target.value)} rows={2} autoFocus />
+        )}
+        <div className="actions">
+          <button className="allow" disabled={busy} onClick={() => decide('allow')}>Allow</button>
+          {denying
+            ? <button className="deny" disabled={busy} onClick={() => decide('deny')}>Deny</button>
+            : <button className="deny" disabled={busy} onClick={() => setDenying(true)}>Deny…</button>}
+        </div>
+        {error && <p className="error">{error}</p>}
+      </div>
+    );
+  }
 
   return (
     <div className="card permission">

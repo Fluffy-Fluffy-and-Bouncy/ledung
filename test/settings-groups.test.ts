@@ -11,7 +11,8 @@ import type { RemoteStatus, UpdateView } from '../src/shared/protocol.ts';
 test('the Ledung tab has the side menu of f-mix.png, in its order', () => {
   assert.deepEqual(LEDUNG_GROUPS.map((g) => g.label), [
     // Macros after Sessions: issue #410, as mocked and passed by Martin in Ledung question #425.
-    'Update & restart', 'Claude & usage', 'Sessions', 'Macros', 'Remote & devices', 'Look & feel', 'Notifications', 'Config file', 'About',
+    // The Ledung Helper after Sessions (docs/steps/ledung-helper.md).
+    'Update & restart', 'Claude & usage', 'Sessions', 'Ledung Helper', 'Macros', 'Remote & devices', 'Look & feel', 'Notifications', 'Config file', 'About',
   ]);
   assert.deepEqual(LEDUNG_GROUPS.filter((g) => g.part === 'browser').map((g) => g.id), ['look', 'notifications']);
 });

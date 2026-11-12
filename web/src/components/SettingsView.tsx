@@ -9,6 +9,8 @@
 // The config file: when it was last read, a refused change and what waits for a restart (#353).
 // Since #365 (mockup F, Martin 2026-10-28 in Ledung question #325) this is the Ledung tab inside the Settings frame:
 // a side menu of groups, one group on screen at a time, each at its own address; features that are off are one line.
+import { HelperSettings } from '../helper/HelperViews.tsx';
+import type { HelperInfo } from '../../../src/shared/setup.ts';
 import { Fragment, useEffect, useState, type ReactNode } from 'react';
 import { BoatSlider } from './BoatSlider.tsx';
 import type { AccountChoices, AccountInfoView, BoardStatus, CertificateStatus, ConfigStatus, NewComputerInfo, ProjectInfo, RelayAdminView, RemoteStatus, SessionInfo, SourceOffer, UpdateStepView, UpdateView, UsageStopInfo } from '../../../src/shared/protocol.ts';
@@ -73,6 +75,8 @@ export function SettingsView(props: {
   hellos: number;
   notify: ReturnType<typeof useNotifications>;
   onOpen: (id: string) => void;
+  /** The Ledung Helper (docs/steps/ledung-helper.md). */
+  helper: HelperInfo | null;
 }) {
   const narrow = useNarrow(NARROW_QUERY);
   const group = groupOf(props.view, narrow);
@@ -133,6 +137,8 @@ function GroupContent(props: GroupProps) {
           <StepQuestionsSettings run={props.run} />
         </>
       );
+    case 'helper':
+      return <HelperSettings helper={props.helper} run={props.run} onOpen={props.onOpen} />;
     case 'macros':
       return <MacrosSettings macros={props.macros} projects={props.projects} run={props.run} />;
     case 'remote':

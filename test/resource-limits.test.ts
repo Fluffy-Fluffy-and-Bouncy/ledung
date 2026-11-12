@@ -730,6 +730,61 @@ test('identical GPUs get their own names, so each has its own limit (finding 10)
   assert.deepEqual(b.book.info().limits, { 'gpu:0x0_0x2': 40 });
 });
 
+// #304: on a PC with one RTX 3080 Ti, Parsec's virtual display adapter and a virtual monitor driver, DXGI listed the
+// card three times, same name and 12 GB each, under three ids; D3DKMT said the two extra ids can't render (indirect
+// display adapters). The reader marks those with flag 256. Lines as read on that PC, 2026-11-12.
+const CARD = 'NVIDIA GeForce RTX 3080 Ti';
+const pcAdapters = (noRender: number) => [
+  `G A,0x00000000_0x00011183,12673089536,0,${CARD}`,
+  `G A,0x00000000_0x0001FECE,12673089536,${noRender},${CARD}`,
+  `G A,0x00000000_0x0001D451,12673089536,${noRender},${CARD}`,
+  'G A,0x00000000_0x000122F7,0,2,Microsoft Basic Render Driver',
+];
+
+test('virtual display adapters are left out of the GPUs; a real one with only shared memory stays (#304)', () => {
+  // Premise: without the kernel's "can't render" the copies are listed, as the Machine panel showed them.
+  const before = new GpuTracker().update(parseWindowsGpu(pcAdapters(0)), 0);
+  assert.deepEqual(before.adapters.map((a) => a.name), [`${CARD} #1`, `${CARD} #2`, `${CARD} #3`]);
+  const r = new GpuTracker().update(parseWindowsGpu([
+    ...pcAdapters(256),
+    // An integrated GPU with no memory of its own renders: it stays. A remote adapter is left out like the software one.
+    'G A,0x00000000_0x00000A01,0,0,Intel(R) UHD Graphics 770',
+    'G A,0x00000000_0x00000A02,0,1,Remote Display Adapter',
+  ]), 0);
+  assert.deepEqual(r.adapters.map((a) => [a.id, a.name, a.vramTotal]), [
+    ['0x00000000_0x00011183', CARD, 12673089536],
+    ['0x00000000_0x00000a01', 'Intel(R) UHD Graphics 770', null],
+  ]);
+  assert.equal(mainGpu(r), '0x00000000_0x00011183', 'the card stays the main GPU');
+  // Alone, the shared-memory GPU is the main one.
+  assert.equal(mainGpu(new GpuTracker().update(parseWindowsGpu(['G A,0x0_0x1,0,0,Intel(R) UHD Graphics 770', 'G A,0x0_0x2,0,256,Virtual Display Driver']), 0)), '0x0_0x1');
+});
+
+test("limits and reservations on a GPU that is hidden now don't break the page or the line; the card's limit carries over (#304)", () => {
+  const b = rig();
+  const real = '0x00000000_0x00011183';
+  const copy = '0x00000000_0x0001fece';
+  b.tick({ s1: tree() }, { gpu: new GpuTracker().update(parseWindowsGpu(pcAdapters(0)), 0) });
+  b.book.setLimit(`gpu:${real}`, 60);
+  b.book.setLimit(`gpu:${copy}`, 10);
+  assert.match(b.book.reserve('s1', { what: 'Render', gpu: 50, gpu_device: `${CARD} #2` }), /wait/i);
+  assert.deepEqual(b.book.info().line.map((l) => Object.keys(l.need)), [[`gpu:${copy}`]]);
+  // The copies are hidden from here on.
+  b.tick({ s1: tree() }, { gpu: new GpuTracker().update(parseWindowsGpu(pcAdapters(256)), 0) });
+  const info = b.book.info();
+  assert.deepEqual(info.gpus.map((g) => [g.id, g.name, g.main]), [[real, CARD, true]]);
+  // The card's limit, kept as "#1", is the card's still; the hidden copy's limit stops counting.
+  assert.deepEqual(info.limits, { [`gpu:${real}`]: 60 });
+  // Nothing limits the hidden id any more, so the job waiting on it goes, and the line is empty.
+  assert.deepEqual(info.line, []);
+  assert.equal(info.jobs.length, 1);
+  // Set again on the card, then cleared: the old "#1" limit doesn't come back.
+  b.book.setLimit(`gpu:${real}`, 70);
+  assert.deepEqual(b.book.info().limits, { [`gpu:${real}`]: 70 });
+  b.book.setLimit(`gpu:${real}`, null);
+  assert.deepEqual(b.book.info().limits, {});
+});
+
 test('the card says seconds under a minute (finding 14)', () => {
   assert.equal(overFor(20_000), '20 s');
   assert.equal(overFor(90_000), '2 min');
