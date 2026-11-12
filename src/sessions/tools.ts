@@ -25,6 +25,8 @@ const MANAGER_TOOLS = [
   'save_linked_file',
   'decide_permission', 'list_permissions',
   'machine_status', 'set_priority', 'pause_session', 'resume_session', 'list_projects', 'away_log', 'order_done',
+  // Reads the manager's own project's records only, as lockdown keeps them (issue #254).
+  'work_history',
   'mcp_status', 'reconnect_mcp_server',
   // Reads what Settings shows, nothing secret (issue #263); the Settings actions themselves are SETTINGS_TOOLS.
   'settings_status',
@@ -135,6 +137,8 @@ export interface ManagerHandlers {
   decidePermission(request: string, behavior: 'allow' | 'deny', scope: 'once' | 'session', message?: string): string;
   listPermissions(): string;
   machineStatus(): string;
+  /** The manager's own project's measured session durations and plan use (issue #254). */
+  workHistory(days?: number, limit?: number): string;
   setPriority(id: string, priority: 'normal' | 'high' | 'critical', userQuestion?: number): string;
   setPaused(id: string, paused: boolean): string;
   listProjects(computer?: string): Promise<string>;
@@ -361,6 +365,8 @@ export function instructions(h: ToolHandlers): string {
     `You run inside Ledung, which manages several Claude Code sessions for ${who}.`,
     // Sessions held work back on a high figure although the usage stop exists for that (issue #284).
     `Plan usage figures are information only: don't delay or ration work for them; Ledung's usage stop holds work if needed.`,
+    // Sessions guessed days and weeks for work that takes them minutes (Simon, 2026-11-12, issue #254).
+    'Estimate in session time, never human days or weeks: small fix ≈ 10–20 min, feature with tests and review ≈ 30–90 min, large build ≈ 2–4 h; name the waits (review, CI, merge) apart from the work.',
     `Every question goes through ask_user, however small; never end a reply with a question in the chat: it notifies no one. Whenever you need a decision, approval or information to go on, ask ${h.asksWhom} with it, then end your turn: don't wait, poll, ask anything else or repeat it in the chat.`,
     // Sessions otherwise learn of the fields (#59) and screenshots (#60) only from the schema (issue #67).
     // The tier list itself is in ask_user's description: here it would take a session past Claude Code's limit (#32).
@@ -392,6 +398,7 @@ export function instructions(h: ToolHandlers): string {
         ? `Your project is in lockdown level B, nearly air-gapped: you have no tools for other managers, other projects or the board, and your sessions have no network unless ${who} let a host in.`
         : `Other managers: list_managers and message_manager, here and on ${who}'s linked computers, whose managers count as this computer's (give message_manager the computer); work on another computer goes through its manager. Other projects: list_projects; add_project, create_project, start_manager and stop_manager always wait for ${who}'s approval in Ledung, whatever your mode or grant, so call them only when your task needs it.`,
       `Away mode: while ${who} is away, a line in your prompt says until when and what is allowed. Then Ledung lets your own sensitive \`gh pr merge <number> -R <owner/name>\` or \`gh pr merge <PR link>\` (one plain command that names its repository; the PR open, mergeable, no check failing or still running) or your project's dev ship command (also from a session you started, and with \`cd <path> &&\` before it or an output redirect after it) through, if that kind is allowed, and holds everything else for ${who} as always. away_log explains "computer control" and lists each decision, for your morning report.`,
+      `Estimates: work_history gives your project's measured work time and plan use per kind of session; prefer it to the defaults above, and add the plan use when cost matters, e.g. "a typical build: about 35 min, about 2% of the weekly window".`,
       `Machine resources: only a limited number of sessions may work at once; above that, sessions wait in line for a free place. machine_status shows the load, the line and what your sessions use. set_priority puts one of your sessions ahead in the line: normal or high on your own judgement; critical only when ${who} said so in an answer to one of your questions, which you give as user_question. pause_session and resume_session pause one of your sessions by hand.`,
     );
   }
@@ -468,7 +475,7 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
           z.array(z.object({
             key: z.string().regex(/^[a-z0-9]{1,3}$/, 'a short key such as "a"').describe('A short key, e.g. "a".'),
             text: z.string().min(1).describe('The option in Markdown; a **bold** start is its label, the rest explains it.'),
-            cost: z.string().min(1).optional().describe('What choosing it costs: time, risk, what waits.'),
+            cost: z.string().min(1).optional().describe('What choosing it costs: session time (never human days), plan use, risk, what waits.'),
           })).min(2).max(8),
         ]).optional().describe(
           'Optional suggested answers, shown as buttons in this order. Either labels (same order and names as any choices listed in the question; the recommended one first, ending in " (recommended)"), ' +
@@ -726,6 +733,10 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
       tool('list_permissions', 'List permission prompts from your sessions that wait for you.', {}, async () => safely(() => m.listPermissions())) as never,
       tool('machine_status', 'The machine\'s load, how many sessions work and the limit, the line for a free place, and CPU and memory per session of yours.', {},
         async () => safely(() => m.machineStatus())) as never,
+      tool('work_history', "How long your own project's sessions really took, for estimates: recent sessions with work time (time in turns, without waits for a person or a permission), wall time, tokens and plan use as a share of the account's 5-hour and weekly windows, plus medians and ranges by kind. Only your project.", {
+        days: z.number().int().min(1).max(90).optional().describe('How far back; default 30.'),
+        limit: z.number().int().min(0).max(50).optional().describe('How many recent sessions to list; default 10.'),
+      }, async (a) => safely(() => m.workHistory(a.days, a.limit))) as never,
       tool('set_priority', `Set the priority of one of your sessions in the line for a free place: normal or high. critical only on ${who}'s directive: give user_question, your question that ${who} answered asking for it.`, {
         id,
         priority: z.enum(['normal', 'high', 'critical']),

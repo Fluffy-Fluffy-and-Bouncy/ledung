@@ -525,6 +525,7 @@ export class Session {
       decidePermission: (request, behavior, scope, message) => m.decidePermission(id, request, behavior, scope, message),
       listPermissions: () => m.listPermissions(id),
       machineStatus: () => m.machineStatus(id),
+      workHistory: (days, limit) => m.workHistory(id, days, limit),
       setPriority: (sid, priority, q) => m.setPriority(id, sid, priority, q),
       setPaused: (sid, paused) => m.setPaused(id, sid, paused),
       mcpStatus: (sid) => m.mcpStatus(id, sid),
