@@ -10,6 +10,7 @@ import { api, connectionHello, openConnection, setReconnect } from './api.ts';
 import { OpenSession, type OpenSessionView } from './openSession.ts';
 import { secretsChanged } from './secretLock.ts';
 import { pollWhileShown } from './pollShown.ts';
+import { withArchived, withSession, type KnownSessions } from '../../src/shared/hello-sessions.ts';
 
 export type Connection = 'connecting' | 'open' | 'closed';
 
@@ -17,7 +18,10 @@ export function useLedung(openSessionId: string | null) {
   const [connection, setConnection] = useState<Connection>('connecting');
   /** True once the first full list (hello) has arrived; before that, questions and permissions are just empty. */
   const [loaded, setLoaded] = useState(false);
-  const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  /** The sessions, and the archived ones hello only counted, by project (issue #229); none once loadArchived ran. */
+  const [{ sessions, olderArchived }, setKnown] = useState<KnownSessions>({ sessions: [], olderArchived: {} });
+  /** When the last hello came, on this computer's clock: a session made before it that the page lacks was counted. */
+  const helloAtRef = useRef(0);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [permissions, setPermissions] = useState<Record<string, PermissionInfo>>({});
   const [{ messages, hasEarlier }, setView] = useState<OpenSessionView>({ messages: [], hasEarlier: false });
@@ -78,6 +82,12 @@ export function useLedung(openSessionId: string | null) {
   });
   const open = openRef.current;
 
+  // Every archived session, for an Archived list or an archived session opened by its link (issue #229).
+  const loadArchived = useCallback(async () => {
+    const archived = await api.archivedSessions();
+    setKnown((known) => withArchived(known, archived));
+  }, []);
+
   const loadEarlier = useCallback(() => open.loadEarlier().catch(() => {}), [open]);
 
   useEffect(() => {
@@ -134,7 +144,8 @@ export function useLedung(openSessionId: string | null) {
             setMacros(event.macros ?? []);
             setAway(event.away ?? null);
             setOrders(event.orders ?? []);
-            setSessions(event.sessions);
+            helloAtRef.current = Date.now();
+            setKnown({ sessions: event.sessions, olderArchived: event.olderArchived ?? {} });
             setProjects(event.projects);
             setBoard(event.board ?? null);
             setGithub(event.github ?? []);
@@ -164,10 +175,7 @@ export function useLedung(openSessionId: string | null) {
             }, () => {});
             break;
           case 'session':
-            setSessions((list) => {
-              const i = list.findIndex((s) => s.id === event.session.id);
-              return i === -1 ? [event.session, ...list] : list.map((s) => (s.id === event.session.id ? event.session : s));
-            });
+            setKnown((known) => withSession(known, event.session, helloAtRef.current));
             break;
           case 'limits':
             setLimits(event.limits);
@@ -311,5 +319,5 @@ export function useLedung(openSessionId: string | null) {
     };
   }, []);
 
-  return { runs, workflows, connection, loaded, canRestart, hellos, updated, userName, source, questions, limits, usageStops, macros, signedOut, claudeProblem, claudeLooked, accountProblems, overview, machine, away, orders, accounts, accountChoices, defaultIdentity, board, github, remote, computers, newComputers, linkPairings, throughPublicName, configStatus, chats, profiles, lockdownB, bangShell, sessions, projects, permissions, messages, hasEarlier, loadEarlier };
+  return { runs, workflows, connection, loaded, canRestart, hellos, updated, userName, source, questions, limits, usageStops, macros, signedOut, claudeProblem, claudeLooked, accountProblems, overview, machine, away, orders, accounts, accountChoices, defaultIdentity, board, github, remote, computers, newComputers, linkPairings, throughPublicName, configStatus, chats, profiles, lockdownB, bangShell, sessions, olderArchived, loadArchived, projects, permissions, messages, hasEarlier, loadEarlier };
 }

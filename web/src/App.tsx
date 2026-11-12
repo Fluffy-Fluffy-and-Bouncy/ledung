@@ -80,6 +80,7 @@ import { useCompactSidebar } from './useCompactSidebar.ts';
 import { compactRows, rowTooltip } from './compactSidebar.ts';
 import { useArchivedLink } from './useArchivedLink.ts';
 import { showsArchivedLink } from './archivedLink.ts';
+import { fetchesArchived } from '../../src/shared/hello-sessions.ts';
 import { computerFrame, computerStyle, frameAnswer, inFrame, shownComputerOf } from './computerFrame.ts';
 import { ComputerFrames, ComputerTabs } from './components/ComputerTabs.tsx';
 import { useComputerLink } from './useComputerLink.ts';
@@ -409,6 +410,14 @@ export function App() {
   const index = useMemo(() => indexSessions(ledung.sessions), [ledung.sessions]);
   const session = (openId && index.byId.get(openId)) || null;
 
+  // Hello carries only recent archived sessions (issue #229): an Archived list, or an archived session opened by its
+  // link, fetches the rest, again after each hello, which brings the short list back.
+  const { loadArchived, loaded, hellos } = ledung;
+  const fetchArchived = fetchesArchived({ openId, loaded, unknownSession: isSessionId(openId) && !session, olderArchived: ledung.olderArchived });
+  useEffect(() => {
+    if (fetchArchived) loadArchived().catch(() => {});
+  }, [fetchArchived, hellos, loadArchived]);
+
   // The pages inside the Settings frame (issue #365): the Ledung, Chats and project tabs, each with its side menu of
   // groups (#366), and the Add project page.
   const settingsTab = tabOf(openId);
@@ -525,6 +534,7 @@ export function App() {
         {openId === null && <div className="phone-banners">{banners}</div>}
         <Sidebar
           sessions={ledung.sessions}
+          olderArchived={ledung.olderArchived}
           index={index}
           projects={ledung.projects}
           chats={ledung.chats}
@@ -559,6 +569,7 @@ export function App() {
               sessionsOpen={openId === 'overview'}
               onSessions={(on) => open(on ? 'overview' : 'usage')}
               sessions={ledung.sessions}
+              olderArchived={ledung.olderArchived}
               overview={ledung.overview}
               machine={ledung.machine}
               waitingBySession={pendingBySession}
@@ -664,6 +675,8 @@ export function App() {
 
 const Sidebar = memo(function Sidebar(props: {
   sessions: SessionInfo[];
+  /** Archived sessions hello only counted, by project (issue #229), for the Archived (N) links. */
+  olderArchived: Record<string, number>;
   /** The same list indexed (issue #233). */
   index: SessionIndex;
   projects: ProjectInfo[];
@@ -701,7 +714,7 @@ const Sidebar = memo(function Sidebar(props: {
   // The rows of every group and their archived counts from one pass over the list, not a scan per project or row
   // (issue #233); memoized, so a redraw for something else (a menu, a drag) doesn't rebuild them.
   const known = useMemo(() => new Set(props.projects.map((p) => p.name)), [props.projects]);
-  const tree = useMemo(() => sidebarTree(props.sessions, props.projects, known), [props.sessions, props.projects, known]);
+  const tree = useMemo(() => sidebarTree(props.sessions, props.projects, known, props.olderArchived), [props.sessions, props.projects, known, props.olderArchived]);
   const groups = tree.groups;
 
   // Folded projects and sessions, kept in this browser (issue #149); gone projects and sessions drop out on the next fold.

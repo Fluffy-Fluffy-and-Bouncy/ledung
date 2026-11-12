@@ -1405,7 +1405,10 @@ export type ServerEvent =
       source?: SourceOffer;
       /** The name shown for the person using Ledung ("Simon"), from the config. */
       userName: string;
+      /** Sessions not archived, archived lately, or named by the questions and prompts here (issue #229). */
       sessions: SessionInfo[];
+      /** The archived sessions left out of `sessions`, counted by project; GET archived-sessions lists them all. */
+      olderArchived?: Record<string, number>;
       permissions: PermissionInfo[];
       /** Open questions, and the most recent answered or withdrawn ones. */
       questions: QuestionInfo[];
