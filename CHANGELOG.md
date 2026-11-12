@@ -11,6 +11,7 @@ is nothing user-facing in it).
 
 ## 2026-11-12
 - The page opens faster, most of all on a phone through the public name: its script and style files come compressed (about a quarter of the size) and the browser keeps them, so opening the page again loads none of them until Ledung is updated. Ledung also no longer sends every archived session when the page opens, only those archived in the last day; a project's Archived list loads the rest when you open it, and its count stays right. (#229)
+- Standing grants are stricter: a "starts with" grant such as `git push:*` now covers only that command and its arguments, on one line; a command that spans several lines, or a longer word that merely starts the same, is asked about as if there were no grant. (Project-Ledung#472)
 
 ## 2026-11-11
 - Your pinned latest message at the top of the chat no longer shows through a session's ⚙ menu (nor does the message box under it), and its bottom edge fades out softly instead of ending in a hard line. (#226)
