@@ -3,7 +3,7 @@
 // config file are copied in once each, by name, so a project removed in the page doesn't come back.
 import type { DatabaseSync } from 'node:sqlite';
 import { parseProject, type ProjectConfig } from '../config.ts';
-import { LATER_SUGGESTIONS, withSuggestions } from '../shared/sensitive-suggestions.ts';
+import { LATER_SUGGESTIONS, withLaterBatch, withSuggestions } from '../shared/sensitive-suggestions.ts';
 import { NO_COLOURS, parseColours, type ProjectColours } from '../shared/name-colours.ts';
 
 export interface StoredProject {
@@ -144,8 +144,9 @@ export class ProjectStore {
       if (this.db.prepare('SELECT 1 FROM meta WHERE key = ?').get(key)) return;
       for (const p of this.list()) {
         const sensitive = add(p.config.sensitive);
-        if (sensitive.commandPatterns.length === p.config.sensitive.commandPatterns.length
-          && sensitive.pathPatterns.length === p.config.sensitive.pathPatterns.length) continue;
+        // Compared whole: a batch may replace a pattern in place (Project-Ledung#473), leaving the count as it was.
+        if (sensitive.commandPatterns.join('\n') === p.config.sensitive.commandPatterns.join('\n')
+          && sensitive.pathPatterns.join('\n') === p.config.sensitive.pathPatterns.join('\n')) continue;
         this.db.prepare('UPDATE projects SET data = ? WHERE name = ?').run(JSON.stringify({ ...p.config, sensitive }), p.config.name);
         changed.add(p.config.name);
       }
@@ -153,7 +154,7 @@ export class ProjectStore {
     };
     once(SUGGESTIONS_KEY, withSuggestions);
     for (const batch of LATER_SUGGESTIONS) {
-      once(batch.key, (s) => ({ ...s, commandPatterns: [...s.commandPatterns, ...batch.commandPatterns.filter((p) => !s.commandPatterns.includes(p))] }));
+      once(batch.key, (s) => ({ ...s, commandPatterns: withLaterBatch(s.commandPatterns, batch) }));
     }
     return changed.size;
   }

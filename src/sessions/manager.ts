@@ -21,7 +21,7 @@ import { loosensGate } from '../projects/gate.ts';
 import { bangRefusal } from './bang.ts';
 import { matchSensitive } from './sensitive.ts';
 import { AIRGAP_PROFILE, isLocked, levelProblem, lockdownOf, opensUp, othersSettings, overlapProblem, projectFolders, within } from '../projects/lockdown.ts';
-import { LATER_SUGGESTIONS, withSuggestions } from '../shared/sensitive-suggestions.ts';
+import { LATER_SUGGESTIONS, withLaterBatch, withSuggestions } from '../shared/sensitive-suggestions.ts';
 import { isNameColour, parseNameColour } from '../shared/name-colours.ts';
 import { ACCEPTED, ledungTier, questionText, reviewAnswerProblem, tiersOf, type QuestionDetails } from '../shared/questions.ts';
 import {
@@ -2532,7 +2532,7 @@ export class SessionManager {
       const raw = this.store.getMeta(CHATS_SENSITIVE_KEY);
       if (raw) {
         const s = JSON.parse(raw) as ChatsInfo['sensitive'];
-        this.store.setMeta(CHATS_SENSITIVE_KEY, JSON.stringify({ ...s, commandPatterns: [...s.commandPatterns, ...batch.commandPatterns.filter((p) => !s.commandPatterns.includes(p))] }));
+        this.store.setMeta(CHATS_SENSITIVE_KEY, JSON.stringify({ ...s, commandPatterns: withLaterBatch(s.commandPatterns, batch) }));
       }
       this.store.setMeta(key, new Date().toISOString());
     }
