@@ -216,9 +216,9 @@ async function main(): Promise<void> {
   manager.setConfigWriter({ file: configPath(), reload: () => void w.check() });
   manager.setServerSettings({
     channel: () => updater.channel(),
-    setChannel: (c) => void updater.setChannel(c),
+    setChannel: (c) => { updater.setChannel(c); },
     checkIn: () => checkIn.view().on,
-    setCheckIn: (on) => void checkIn.act(on ? 'on' : 'off'),
+    setCheckIn: (on) => { checkIn.act(on ? 'on' : 'off'); },
   });
   manager.boards?.start();
   usagePublisher.start();

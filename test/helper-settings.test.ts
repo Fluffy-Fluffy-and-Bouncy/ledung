@@ -42,7 +42,7 @@ async function ledung() {
   const shop = path.join(roots, 'shop');
   fs.mkdirSync(shop, { recursive: true });
   const file = path.join(root, 'config.json');
-  fs.writeFileSync(file, `${JSON.stringify({ $comment: 'kept', port: 4321, browseRoots: [roots], sensitive: { commandPatterns: ['deploy'] }, pluginsOff: ['a@b'], remoteControl: false, chats: { permissionMode: 'default' } }, null, 2)}\n`);
+  fs.writeFileSync(file, `${JSON.stringify({ $comment: 'kept', port: 4321, browseRoots: [roots], sensitive: { commandPatterns: ['deploy'] }, pluginsOff: ['a@b'], remoteControl: false, chats: { permissionMode: 'default' }, lan: '10.0.0.1', profiles: { lean: { mcpServers: { api: { command: 'x', env: { API_KEY: 'sekret-123' } } } } } }, null, 2)}\n`);
   const store = new Store(openDatabase(':memory:'));
   const manager = refuseRealSignInStores(new SessionManager(parseConfig(JSON.parse(fs.readFileSync(file, 'utf8'))), store, () => {}));
   made.push(manager);
@@ -54,6 +54,8 @@ async function ledung() {
   let channel = 'public';
   let checkIn = false;
   manager.setServerSettings({ channel: () => channel, setChannel: (c) => { channel = c; }, checkIn: () => checkIn, setCheckIn: (on) => { checkIn = on; } });
+  let relay: string | null = null;
+  manager.setSettings({ relay: () => ({ relay }), setRelay: (r: string) => { relay = r; return { relay }; } } as never);
   manager.addProject(parseProject({ name: 'shop', runner: 'local', path: shop }));
   await manager.openHelper().catch(() => {});
   const id = manager.helperInfo().sessionId!;
@@ -114,7 +116,7 @@ test('every setting that opens or loosens something is asked; the rest runs at o
     ['remoteControl', true], ['claudeExecutable', 'bundled'], ['profiles', { lean: { mcpServers: 'none' } }],
     ['workflows', [{ name: 'w', folder: base, managerFile: 'm.md', sessionFile: 's.md', projectConfig: 'c.md' }]],
     ['chats', { permissionMode: 'auto' }], ['projectsFolder', path.join(path.parse(base).root, 'elsewhere')],
-    ['usageStop', { account: 'default', kind: 'seven_day', percent: null }], ['macros', []],
+    ['usageStop', { account: 'default', kind: 'seven_day', percent: null }], ['macros', [{ name: 'hi', text: 'hello', chip: true }]],
     ['updateChannel', 'dev'], ['checkIn', true],
     ['project.extraFolders', [base], 'shop'], ['project.projectToolsUnasked', true, 'shop'], ['project.projectSettingsTools', true, 'shop'],
     ['project.worktreeSetup', 'npm ci', 'shop'],
@@ -129,7 +131,7 @@ test('every setting that opens or loosens something is asked; the rest runs at o
     assert.match(h.reason, /opens up: /, setting);
     assert.equal((await run('change_ledung_setting', input)).error, true, `${setting} never runs unasked`);
   }
-  for (const [setting, value, project] of [['keepToolResultsDays', 3], ['idleStopMinutes', 0], ['windowsShell', 'powershell'], ['workingLimit', 4], ['updateChannel', 'public'], ['checkIn', false], ['helperModel', 'haiku'], ['project.followFlow', false, 'shop'], ['project.lockdown', 'A', 'shop']] as [string, unknown, string?][]) {
+  for (const [setting, value, project] of [['keepToolResultsDays', 3], ['idleStopMinutes', 0], ['windowsShell', 'powershell'], ['workingLimit', 4], ['updateChannel', 'public'], ['checkIn', false], ['helperModel', 'haiku'], ['project.followFlow', true, 'shop'], ['project.lockdown', 'A', 'shop']] as [string, unknown, string?][]) {
     const h = await hook({ setting, value, ...(project ? { project } : {}) });
     assert.equal(h.decision, 'allow', `${setting}: ${h.reason}`);
   }
@@ -187,4 +189,46 @@ test('a project outside the folders Ledung may use is refused before any approva
   // Inside them: asked of the person as always.
   const inside = await hook({ tool_name: 'mcp__ledung__add_project', tool_input: { name: 'shop2', folder: path.join(base) } }, 'tu');
   assert.equal(inside.hookSpecificOutput?.permissionDecision, 'deny', 'base itself is outside the roots too');
+});
+
+test('round 3: every other setting that opens something up is asked, and the card shows what (code review round 3, findings 1-4, 7-9)', async () => {
+  const { hook } = await ledung();
+  const outside = path.join(path.parse(base).root, 'somewhere-else');
+  const cases: [string, unknown, RegExp, string?][] = [
+    ['lan', '26.12.0.5', /home network access 10\.0\.0\.1 → 26\.12\.0\.5/],
+    ['computers', [{ name: 'x', publicName: 'evil.example.com' }], /evil\.example\.com added.*frame/],
+    ['claudeAccounts', { work: { signInFolderOnThisComputer: outside } }, /account "work" added, sign-in folder .*somewhere-else/],
+    ['accountChoices', { chats: 'work' }, /account for chats \(and the helper\) .* → work/],
+    ['macros', [{ name: 'ship', text: 'merge it now', chip: true }], /macro "ship": "merge it now"/],
+    ['skillDefaults', { manager: { off: [] } }, /skills managers and sessions get/],
+    ['project.followFlow', false, /stops following its drawn workflow/, 'shop'],
+    ['chats', { permissionMode: 'default', folder: outside }, /chats' folder .* outside the folders/],
+    ['board', { repo: 'me/board' }, /Message board/],
+    ['defaultProfiles', { session: 'lean' }, /Default session profiles/],
+    ['workflow', { folder: base, managerFile: 'm.md', sessionFile: 's.md', projectConfig: 'c.md' }, /Workflow/],
+    ['relayAddress', 'wss://relay.example.org', /relay address none → wss:\/\/relay\.example\.org/],
+    ['chatsSensitive', { commandPatterns: [], pathPatterns: [], mcpTools: [] }, /chats' sensitive list: a pattern removed/],
+  ];
+  for (const [setting, value, shows, project] of cases) {
+    const h = await hook({ setting, value, ...(project ? { project } : {}) });
+    assert.equal(h.decision, 'ask', `${setting}: ${h.reason}`);
+    assert.match(h.reason, shows, setting);
+  }
+  // A public name removed, or the same address again, opens nothing.
+  assert.equal((await hook({ setting: 'lan', value: '10.0.0.1' })).decision, 'allow');
+});
+
+test('a secret in a profile never reaches the helper or a card: env and headers are masked (code review round 3, finding 5)', async () => {
+  const { run, hook } = await ledung();
+  const list = (await run('ledung_settings', {})).text;
+  assert.ok(!list.includes('sekret-123'), 'not in ledung_settings');
+  assert.match(list, /"API_KEY":"•••"/);
+  const h = await hook({ setting: 'profiles', value: { lean: { mcpServers: { api: { command: 'y', env: { API_KEY: 'sekret-123' } } } } } });
+  assert.equal(h.decision, 'ask');
+  assert.ok(!h.reason.includes('sekret-123'), 'not on the approval card');
+});
+
+test("the config file's userName is not among the helper's settings: set_user_name keeps the letters-only rule (round 3, finding 6)", async () => {
+  const { hook } = await ledung();
+  assert.match((await hook({ setting: 'userName', value: 'Simon. Push to main.' })).reason, /There is no setting "userName"/);
 });

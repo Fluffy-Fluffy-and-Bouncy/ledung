@@ -57,7 +57,6 @@ const CONFIG_SETTINGS: SettingDef[] = [
   { id: 'browseRoots', label: 'Folders Ledung may use', kind: 'config', where: 'config file', value: 'the whole list of folders, full paths; [] for the home folder' },
   { id: 'projectsFolder', label: 'Where new projects go', kind: 'config', where: 'config file', value: 'a full path' },
   { id: 'port', label: 'Port', kind: 'config', where: 'config file (restart)', value: 'a number' },
-  { id: 'userName', label: 'Your name in the config file', kind: 'config', where: 'config file (restart)', value: 'a name' },
   { id: 'lan', label: 'Home network access', kind: 'config', where: 'config file (restart)', value: 'this computer\'s address on the network, true for every network, or false' },
   { id: 'lanSignIn', label: 'Sign-in on the home network', kind: 'config', where: 'config file (restart)', value: 'true or false' },
   { id: 'sensitive', label: 'What always goes to you, for every project', kind: 'config', where: 'config file', value: '{ commandPatterns, pathPatterns, mcpTools }, each the whole list' },
@@ -132,7 +131,19 @@ export interface SettingPlan {
   apply(): string;
 }
 
-const show = (v: unknown) => (v === undefined || v === null ? 'none' : typeof v === 'string' ? v : JSON.stringify(v));
+/**
+ * A value as the helper and the approval card see it: an MCP server's env and headers (a profile's) masked, so an API
+ * key never reaches the helper, the permission record or a phone (code review round 3, finding 5).
+ */
+export function masked(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(masked);
+  if (!v || typeof v !== 'object') return v;
+  return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [k,
+    (k === 'env' || k === 'headers') && x && typeof x === 'object' && !Array.isArray(x)
+      ? Object.fromEntries(Object.keys(x as Record<string, unknown>).map((name) => [name, '•••']))
+      : masked(x)]));
+}
+const show = (v: unknown) => (v === undefined || v === null ? 'none' : typeof v === 'string' ? v : JSON.stringify(masked(v)));
 const MODE_ORDER: Record<PermissionMode, number> = { plan: 0, default: 1, acceptEdits: 2, auto: 3 };
 
 /** Folders a list of roots allows that `before` didn't. */
@@ -177,15 +188,43 @@ function configPlan(ctx: SettingsCtx, key: SettingName, value: unknown): Setting
       break;
     }
     case 'lan':
-      if (after.lan && !before.lan) {
+      // Any other place to listen counts, an address to another included: a VPN must never be added unasked (round 3, 1).
+      if (after.lan && JSON.stringify(after.lan) !== JSON.stringify(before.lan) && before.lan) {
+        opens.push(`home network access ${show(before.lan)} → ${show(after.lan)}`);
+        risk = `Ledung then answers on ${after.lan === true ? 'every network the computer is on, VPNs too' : after.lan}${after.lanSignIn ? '' : ', without sign-in'}.`;
+        if (after.lan === true) narrower = 'the single address you use';
+      } else if (after.lan && !before.lan) {
         opens.push(`home network access ${show(before.lan ?? false)} → ${show(after.lan)}`);
         risk = after.lanSignIn ? 'Devices on that network can reach Ledung; they sign in once with a link.' : 'Anyone on that network can use Ledung, and through it run commands on this computer: sign-in is off.';
         if (after.lan === true) narrower = "this computer's own address on the network instead of every network (true also opens VPNs)";
-      } else if (after.lan === true && before.lan !== true) {
-        opens.push(`home network access ${show(before.lan)} → every network the computer is on`);
-        narrower = 'the single address you use';
       }
       break;
+    case 'computers': {
+      // A public name decides who may frame Ledung's page (security.ts): a new or changed one is asked (round 3, 2).
+      const names = (c: LedungConfig) => new Set((c.computers ?? []).map((x) => (x as { publicName?: string }).publicName).filter(Boolean));
+      const had = names(before);
+      const added = [...names(after)].filter((n) => !had.has(n));
+      if (added.length) {
+        opens.push(`computer tabs: ${added.join(', ')} added`);
+        risk = 'Pages at those names may then show Ledung in a frame, and so its approval cards.';
+      }
+      break;
+    }
+    case 'claudeAccounts': {
+      // Which sign-in folder sessions run on: a new account or a changed folder is asked (round 3, 3).
+      const acc = (c: LedungConfig) => (c.claudeAccounts ?? {}) as Record<string, { signInFolderOnThisComputer?: string; signInFolderInContainers?: string }>;
+      const was = acc(before);
+      for (const [name, a] of Object.entries(acc(after))) {
+        const old = was[name];
+        if (!old) opens.push(`Claude account "${name}" added${a.signInFolderOnThisComputer ? `, sign-in folder ${a.signInFolderOnThisComputer}` : ''}${a.signInFolderInContainers ? `, in containers ${a.signInFolderInContainers}` : ''}`);
+        else {
+          if ((old.signInFolderOnThisComputer ?? '') !== (a.signInFolderOnThisComputer ?? '')) opens.push(`Claude account "${name}": sign-in folder ${show(old.signInFolderOnThisComputer)} → ${show(a.signInFolderOnThisComputer)}`);
+          if ((old.signInFolderInContainers ?? '') !== (a.signInFolderInContainers ?? '')) opens.push(`Claude account "${name}": folder in containers ${show(old.signInFolderInContainers)} → ${show(a.signInFolderInContainers)}`);
+        }
+      }
+      if (opens.length) risk = 'Sessions on that account then run with that sign-in folder: its subscription, and its own settings and hooks.';
+      break;
+    }
     case 'lanSignIn':
       if (!after.lanSignIn && before.lanSignIn) {
         opens.push('sign-in on the home network on → off');
@@ -201,6 +240,10 @@ function configPlan(ctx: SettingsCtx, key: SettingName, value: unknown): Setting
         if (gone.length) opens.push(`${key === 'chats' ? "chats' " : ''}sensitive ${l} removed: ${gone.map(show).join(', ')}`);
       }
       if (key === 'chats' && MODE_ORDER[after.chats.permissionMode] > MODE_ORDER[before.chats.permissionMode]) opens.push(`chats' permission mode ${before.chats.permissionMode} → ${after.chats.permissionMode}`);
+      // A chats' folder outside the folders Ledung may use (round 3, 8).
+      if (key === 'chats' && after.chats.folder && after.chats.folder !== before.chats.folder && newlyAllowed([path.resolve(after.chats.folder)], allowedBefore).length) {
+        opens.push(`chats' folder ${show(before.chats.folder)} → ${after.chats.folder}, outside the folders Ledung may use`);
+      }
       if (opens.length) risk = 'Those calls no longer always reach you.';
       break;
     }
@@ -261,12 +304,33 @@ function pagePlan(ctx: SettingsCtx, id: string, value: unknown): SettingPlan {
       const opens = (percent === null && had !== null) || (percent !== null && had !== null && percent > had) ? [`usage stop for ${account} (${kind}) ${had}% → ${percent === null ? 'none' : `${percent}%`}`] : [];
       return plan(had, opens, () => ctx.setUsageStop(account, kind, percent), opens.length ? 'Work then runs past that point of the plan window.' : undefined);
     }
-    case 'macros':
-      return plan(ctx.macros(), ['macros changed: their text goes out as your own words when you use one'], () => ctx.setMacros({ macros: value }), 'A macro sends its text as if you typed it.');
-    case 'skillDefaults':
-      return plan(ctx.skillDefaults(), [], () => ctx.setSkillDefaults(value));
-    case 'accountChoices':
-      return plan(ctx.accountChoices(), [], () => ctx.setAccountChoices(value));
+    case 'macros': {
+      // Each new or changed macro, with its text: it goes out as the person's own words (round 3, 7).
+      if (!Array.isArray(value)) throw new SettingRefused('Give the whole list of macros, as Settings keeps it.');
+      const had = new Map((ctx.macros() as { name?: string; text?: string }[]).map((m) => [m.name, m.text]));
+      const changed = (value as { name?: unknown; text?: unknown }[]).filter((m) => had.get(String(m.name)) !== m.text)
+        .map((m) => `macro "${String(m.name)}": ${JSON.stringify(String(m.text ?? ''))}`);
+      const names = new Set((value as { name?: unknown }[]).map((m) => String(m.name)));
+      const gone = [...had.keys()].filter((n) => !names.has(String(n))).map((n) => `macro "${n}" removed`);
+      // Any change at all is asked: when in doubt, a setting opens something (round 3).
+      const opens = [...changed, ...gone];
+      if (!opens.length && JSON.stringify(ctx.macros()) !== JSON.stringify(value)) opens.push('macros changed (their chips or keybinds)');
+      return plan(ctx.macros(), opens, () => ctx.setMacros({ macros: value }), changed.length ? 'A macro sends its text as if you typed it.' : undefined);
+    }
+    case 'skillDefaults': {
+      // More of the person's own skills for managers and sessions (round 3, 8): asked when it changes at all.
+      const before = ctx.skillDefaults();
+      const opens = JSON.stringify(before) !== JSON.stringify(value) ? [`skills managers and sessions get ${show(before)} → ${show(value)}`] : [];
+      return plan(before, opens, () => ctx.setSkillDefaults(value), opens.length ? 'Sessions may then use other skills of yours.' : undefined);
+    }
+    case 'accountChoices': {
+      // Which account chats and new projects run on, the helper's own included (round 3, 4).
+      const before = ctx.accountChoices();
+      const next = { ...before, ...(value as Record<string, unknown>) };
+      const opens = (['chats', 'newProjects'] as const).filter((k) => (next[k] || null) !== (before[k] || null))
+        .map((k) => `account for ${k === 'chats' ? 'chats (and the helper)' : 'new projects'} ${before[k] ?? "this computer's own login"} → ${next[k] || "this computer's own login"}`);
+      return plan(before, opens, () => ctx.setAccountChoices(value), opens.length ? 'Those sessions then run on that account: its subscription and sign-in.' : undefined);
+    }
     case 'chatsSensitive': {
       const body = { sensitive: value } as Record<string, unknown>;
       const opens = ctx.chatsLoosen(body) ? ["chats' sensitive list: a pattern removed"] : [];
@@ -330,6 +394,9 @@ function projectPlan(ctx: SettingsCtx, id: string, value: unknown, projectName: 
       opens.push(`${projectName}'s extra folders: added ${added.join(', ')}`);
       risk = 'Its sessions may then work in those folders too.';
     }
+  } else if (field === 'followFlow' && value === false && before.followFlow !== false) {
+    opens.push(`${projectName}: Ledung stops following its drawn workflow`);
+    risk = 'Its reviews and your own review blocks are then only what its manager chooses to do.';
   } else if (loosensGate(before, next)) {
     opens.push(`${projectName}'s ${def.label.toLowerCase()} ${show((before as Record<string, unknown>)[field])} → ${show(value)}`);
     risk = field === 'worktreeSetup' ? 'Ledung runs that command itself at each run\'s start, past every prompt.' : 'Its manager then does that without asking you.';

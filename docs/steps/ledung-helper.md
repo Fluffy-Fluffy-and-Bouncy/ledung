@@ -61,25 +61,28 @@ Simon: "The plan is that it should be able to help me with all settings if I ask
 | browseRoots | config (live) | b when it allows a folder not allowed before (risk: everything under it; narrower: a folder of its own); a when narrowing |
 | projectsFolder | config (live) | b when outside the folders already allowed; else a |
 | port | config | a, c |
-| userName | config | a, c (the setup's name is set_user_name) |
-| lan | config | b when it opens a network (narrower: one address, not `true`), c |
+| userName | config | not through the config tools: set_user_name keeps the letters-only rule |
+| lan | config | b for any new place to listen, an address to another too (narrower: one address, not `true`), c |
 | lanSignIn | config | b when switched off (anyone on that network uses Ledung), c |
 | sensitive (global) | config (live) | b when a pattern is removed; a when added |
-| keepToolResultsDays, idleStopMinutes, windowsShell, claudeAccounts | config (live) | a |
+| keepToolResultsDays, idleStopMinutes, windowsShell | config (live) | a |
+| claudeAccounts | config (live) | b for an added account or a changed sign-in folder, with the folder shown |
 | pluginsOff | config (live) | b when a plugin comes back on; a when one goes off |
 | profiles, defaultProfiles | config (live) | b (what sessions may use) |
 | workflow, workflows | config (live) | b (what managers are told to follow) |
 | remoteControl | config (live) | b when switched on |
 | claudeExecutable | config (live) | b (another program runs the sessions) |
-| chats | config (live) | b when it loosens (mode, a sensitive pattern removed); else a |
+| chats | config (live) | b when it loosens (mode, a sensitive pattern removed, a folder outside the folders Ledung may use); else a |
 | board | config | b (posts leave this computer), c |
-| computers | config | a, c |
+| computers | config | b when a public name is added (it may frame the page), c |
 | remote, relayJoin | config | d (relay secrets; Settings → Remote & devices) |
 | projects | config | handled by the project tools |
 | Working sessions limit | Machine panel (meta) | a |
 | Usage stops | Settings → Claude & usage | a to set one; b to remove one |
-| Macros | Settings → Macros | b (text sent as the person's words) |
-| Skill defaults, account choices, chats' colour, the helper's model | Settings | a |
+| Macros | Settings → Macros | b on any change, each new or changed macro's name and text on the card |
+| Skill defaults | Settings → Sessions | b on any change |
+| Account choices (chats, the helper, new projects) | Settings → Accounts | b when an account changes |
+| Chats' colour, the helper's model | Settings | a |
 | Chats' sensitive list | Settings → Chats | b on removal; a on adding |
 | Update channel | Settings → About | b to Dev; a to Public |
 | Usage count (check-in) | Settings → About | b to switch on; a to switch off |
@@ -93,6 +96,7 @@ Simon: "The plan is that it should be able to help me with all settings if I ask
 | project.projectToolsUnasked, project.projectSettingsTools | project → Manager's powers | b when switched on |
 | project.lockdown | project → Manager's powers | a to tighten; loosening is refused (only the person, in the page) |
 | project.worktreeSetup | project → Workflow | b when new or changed |
-| project.followFlow, project.name (rename) | project | a |
+| project.followFlow | project → Workflow | b when switched off; a when on |
+| project.name (rename) | project | a |
 
-Nothing bypasses the page's own checks: the config file is written by Ledung's config writer (`src/config-write.ts`: the file's own keys, `$comment`s and unknown keys kept, validated with the same schema before an atomic write, then read back by the watcher); everything else calls the manager methods the page's routes call. The helper can't loosen lockdown, can't handle secrets, and can't change who may answer its cards (devices, passkeys, sign-in links are class d).
+Nothing bypasses the page's own checks: the config file is written by Ledung's config writer (`src/config-write.ts`: the file's own keys, `$comment`s and unknown keys kept, validated with the same schema before an atomic write, then read back by the watcher); everything else calls the manager methods the page's routes call. When in doubt, a setting is class b (code review round 3). Values shown to the helper or on a card have an MCP server's `env` and `headers` masked. The helper can't loosen lockdown, can't handle secrets, and can't change who may answer its cards (devices, passkeys, sign-in links are class d).
