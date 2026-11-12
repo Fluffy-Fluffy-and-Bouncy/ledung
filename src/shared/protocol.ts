@@ -812,6 +812,89 @@ export interface MachineInfo {
   limit: number;
   /** Session ids waiting for a free place, in the order they will start. */
   line: string[];
+  /** Resource limits, reservations and their line (docs/steps/resource-limits.md); left out by an older Ledung. */
+  resources?: ResourcesInfo;
+}
+
+/**
+ * Amounts by resource: "cpu" (% of the whole PC), "ram" (bytes), "gpu:<id>" (% load of that GPU), "vram:<id>"
+ * (bytes of that GPU's memory).
+ */
+export type ResourceAmounts = Record<string, number>;
+
+export interface ResourcesInfo {
+  /** The limits set, by resource; a resource left out has none. */
+  limits: ResourceAmounts;
+  settings: { averageSec: number; marginPoints: number; overSec: number };
+  threads: number;
+  memTotal: number;
+  /** The PC's moving averages, by resource. */
+  average: ResourceAmounts;
+  /** What going jobs have reserved and don't use yet. */
+  reserved: ResourceAmounts;
+  gpus: { id: string; name: string; vramTotal: number | null; load: number; vramUsed: number | null; main: boolean }[];
+  /** Why there are no GPU limits, when there are none ("GPU limits off: …"). */
+  gpuNote: string | null;
+  line: ResourceLineInfo[];
+  jobs: ResourceJobInfo[];
+  /** Sessions over the allowance with no reservation. */
+  unreserved: { sessionId: string; using: ResourceAmounts; overSince: number | null; overDims: string[]; lowered: boolean }[];
+}
+
+export interface ResourceLineInfo {
+  /** A reservation's id ("r12"), or a new session's id. */
+  id: string;
+  sessionId: string;
+  what: string;
+  kind: 'job' | 'session';
+  need: ResourceAmounts;
+  /** "Waiting for GPU room: needs ~100%, limit 50%: only a higher limit lets it start". */
+  reason: string;
+  /** The same without other sessions' job names or titles, for sessions and managers. */
+  reasonForSessions: string;
+  place: number;
+  since: number;
+}
+
+export interface ResourceJobInfo {
+  id: string;
+  sessionId: string;
+  /** The session's own words for it: shown as plain text. */
+  what: string;
+  granted: ResourceAmounts;
+  /** Its moving averages. */
+  using: ResourceAmounts;
+  learnedRuns: number;
+  state: 'going' | 'over' | 'paused';
+  overSince: number | null;
+  overDims: string[];
+  lowered: boolean;
+  /** Lowered and this OS doesn't let Ledung raise it again (macOS, Linux). */
+  loweredStays: boolean;
+  processes: number;
+  goAt: number;
+  minutes: number | null;
+  /** An addition to it waiting in line. */
+  waitingExtra: ResourceAmounts | null;
+}
+
+/** A kind of reserved job and what it used (the usage page). */
+export interface JobKindInfo {
+  project: string;
+  kind: string;
+  runs: number;
+  asked: ResourceAmounts;
+  learned: ResourceAmounts;
+  underDeclared: number;
+  lastAt: number;
+}
+
+export interface HeavyCommandInfo {
+  project: string;
+  command: string;
+  runs: number;
+  peak: ResourceAmounts;
+  never: boolean;
 }
 
 /** What one turn used (step 6c). */
