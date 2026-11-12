@@ -7,6 +7,7 @@ import { dimLabel, formatDim } from '../../../src/resources/limits.ts';
 import { api } from '../api.ts';
 import { pollWhileShown } from '../pollShown.ts';
 import { limitShare, limitText, overFor, parseLimitInput } from './resourceLimits.ts';
+import { jobOpen, jobUse, waitingOpen } from './machineFold.ts';
 
 // Shared with the server, which sends the machine's figures only when what they show here changes (#230).
 export { formatBytes, formatCores };
@@ -118,11 +119,32 @@ function JobCard({ job, r, title, onOpen, run }: { job: ResourcesInfo['jobs'][nu
   const state = job.state === 'over'
     ? `Over its share${job.overSince ? ` for ${overFor(Date.now() - job.overSince)}` : ''}: priority ${job.lowered ? 'lowered' : 'unchanged'}, session held, told`
     : job.state === 'paused' ? 'Paused by you: its processes are suspended; their memory stays taken' : 'Going';
+  // One line a job, the full card a click away; over its share it stays open, since that needs the person (issue #284).
+  const [expanded, setExpanded] = useState(false);
+  if (!jobOpen(job) && !expanded) {
+    const use = jobUse(job);
+    const usage = dims.map((d) => `${label(d)} ${formatDim(d, job.using[d] ?? 0)} of ${formatDim(d, job.granted[d] ?? 0)}`).join(', ');
+    return (
+      <li className={`job-row ${job.state}`}>
+        <button type="button" className="job-row-button" aria-expanded={false} onClick={() => setExpanded(true)}
+          title={`${title}: ${job.what}. ${state}. Using ${usage || 'nothing reserved'}. Click for Pause, Resume and Stop.`}>
+          <span className="job-row-mark" aria-hidden="true">{job.state === 'paused' ? '❚❚' : '●'}</span>
+          <span className="job-row-who">{title}</span>
+          <span className="job-what">{job.what}</span>
+          <span className="job-track job-row-track" aria-label={`${Math.round(use.share * 100)}% of its reservation used`}>
+            <span className={`job-fill${use.over ? ' over' : ''}`} style={{ width: `${(Math.min(1.5, use.share) / 1.5) * 100}%` }} />
+            <span className="job-mark" style={{ left: `${100 / 1.5}%` }} />
+          </span>
+        </button>
+      </li>
+    );
+  }
   return (
     <li className={`job-card ${job.state}`}>
       <div className="job-card-head">
         <button className="link" onClick={onOpen}>{title}</button>
         <span className="job-what">{job.what}</span>
+        {expanded && !jobOpen(job) && <button type="button" className="small link job-fold" aria-expanded={true} title="Back to one line" onClick={() => setExpanded(false)}>▴</button>}
       </div>
       {dims.map((d) => {
         const g = job.granted[d] ?? 0;
@@ -169,8 +191,15 @@ export function MachinePanel(props: {
   const [limit, setLimit] = useState('');
   const [editing, setEditing] = useState<string | null>(null);
   useEffect(() => setLimit(m ? String(m.limit) : ''), [m?.limit]);
+  // The person's open or fold of "Waiting for room"; null: as waitingOpen says. Forgotten when the list empties.
+  const [lineOpen, setLineOpen] = useState<boolean | null>(null);
+  const waits = m?.resources?.line.length ?? 0;
+  useEffect(() => {
+    if (!waits) setLineOpen(null);
+  }, [waits]);
   if (!m) return null;
   const r = m.resources;
+  const lineShown = lineOpen ?? (r ? waitingOpen(r.line, Date.now()) : false);
   const main = r?.gpus.find((g) => g.main) ?? null;
   const others = r?.gpus.filter((g) => !g.main) ?? [];
   const toggle = (dim: string) => setEditing((d) => (d === dim ? null : dim));
@@ -240,8 +269,12 @@ export function MachinePanel(props: {
       )}
       {r && r.line.length > 0 && (
         <>
-          <div className="machine-sub">Waiting for room · {r.line.length}</div>
-          <ol className="machine-line resource-line">
+          {/* Folded to its count, unless something has waited over a minute (issue #284); a click opens or folds it. */}
+          <button type="button" className="machine-sub machine-sub-toggle" aria-expanded={lineShown}
+            title={lineShown ? 'Fold the list' : 'Show what is waiting'} onClick={() => setLineOpen(!lineShown)}>
+            {lineShown ? '▾' : '▸'} Waiting for room · {r.line.length}
+          </button>
+          {lineShown && <ol className="machine-line resource-line">
             {r.line.map((w) => (
               <li key={w.id}>
                 <button className="link" onClick={() => props.onOpen(w.sessionId)}>{title(w.sessionId)}</button>
@@ -250,7 +283,7 @@ export function MachinePanel(props: {
                 <button className="small" title="Let it go now, above the limits" onClick={() => void props.run(() => api.resourceStartNow(w.id))}>Start now</button>
               </li>
             ))}
-          </ol>
+          </ol>}
         </>
       )}
       {r && (r.jobs.length > 0 || r.unreserved.length > 0) && (
