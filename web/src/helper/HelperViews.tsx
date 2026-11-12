@@ -201,44 +201,169 @@ export function HelperCardView({ card, answered, onSend, onOpen, projects, run }
     }
     case 'review':
       return wrap(<button className="small primary" onClick={() => onOpen(`q:${card.question}`)}>Open the review</button>);
-    case 'step':
-      return wrap(<StepCard step={card.step} answered={answered} onSend={onSend} onOpen={onOpen} run={run} />, ' step');
   }
 }
 
-/** The person's own controls for a step: they press them; Ledung sees the shortcuts and the notice answered. */
-function StepCard({ step, answered, onSend, onOpen, run }: { step: 'shortcuts' | 'checkin' | 'phone' | 'accounts'; answered: boolean; onSend: (t: string) => void; onOpen: (id: string) => void; run: Run }) {
-  const shortcuts = useShortcuts();
-  const checkIn = useCheckIn();
-  const done = (said: string) => !answered && <button className="small" onClick={() => onSend(said)}>{said}</button>;
-  if (step === 'shortcuts') {
-    const v = shortcuts.view;
-    if (!v) return <p className="muted">Shortcuts are made from the page on the computer Ledung runs on. Open Ledung there, or skip this step.</p>;
-    if (!v.asked) return <ShortcutNotice run={run} />;
-    return <p className="muted">{v.available ? `Answered: ${v.places.some((p) => p.present) ? 'the shortcuts are there' : 'no shortcuts'}${v.signIn.on ? ', and Ledung starts when you sign in' : ''}. Settings → Update & restart changes it.` : v.reason}{' '}{done('Done with shortcuts')}</p>;
-  }
-  if (step === 'checkin') {
-    const v = checkIn.view;
-    if (v?.notice) return <CheckInNotice run={run} />;
-    return <p className="muted">{v ? statusLine(v) : 'Answered.'} Settings → About → Usage count changes it. {done('Done with the check-in')}</p>;
-  }
-  if (step === 'phone') {
-    return (
-      <div className="helper-step-controls">
-        <p className="muted">On your home network: set <code>"lan"</code> in the config file to this computer's address. From anywhere: join a relay, then pair your phone. Opening Ledung to a network is your own setting.</p>
-        <button className="small" onClick={() => onOpen('settings:remote')}>Remote & devices</button>
-        {done('Done with the phone')}
-        {done('Skip the phone for now')}
-      </div>
-    );
-  }
+const MODELS = [
+  { v: 'sonnet', label: 'Sonnet', hint: 'Strong for everyday work' },
+  { v: 'opus', label: 'Opus', hint: 'Deepest; uses more of your plan' },
+  { v: 'haiku', label: 'Haiku', hint: 'Quick and light' },
+];
+const EFFORTS = [
+  { v: '', label: 'Default', hint: "Claude Code's own" },
+  { v: 'medium', label: 'Medium', hint: 'Balanced' },
+  { v: 'high', label: 'High', hint: 'Careful, for real work' },
+  { v: 'max', label: 'Max', hint: 'Slowest, deepest' },
+];
+const MODES = [
+  { v: 'default', label: 'Ask', hint: 'Every action that needs permission asks you' },
+  { v: 'acceptEdits', label: 'Accept edits', hint: 'File edits go through; commands ask' },
+  { v: 'auto', label: 'Auto', hint: 'Routine actions go through; the rest asks' },
+  { v: 'plan', label: 'Plan', hint: 'Read-only: plans, changes nothing' },
+];
+
+/** One row of choices, one of them picked. */
+function Pick({ label, options, value, onPick }: { label: string; options: { v: string; label: string; hint: string }[]; value: string; onPick: (v: string) => void }) {
   return (
-    <div className="helper-step-controls">
-      <button className="small" onClick={() => onOpen('settings:claude')}>Accounts</button>
-      {done("This computer's own login is fine")}
-      {done('I added an account')}
+    <div className="helper-pick" role="radiogroup" aria-label={label}>
+      <div className="helper-pick-label">{label}</div>
+      <div className="helper-choices">
+        {options.map((o) => (
+          <button key={o.v} role="radio" aria-checked={value === o.v} className={`helper-choice${value === o.v ? ' on' : ''}`} onClick={() => onPick(o.v)}>
+            <span className="helper-choice-label">{o.label}</span><span className="helper-choice-hint">{o.hint}</span>
+          </button>
+        ))}
+      </div>
     </div>
   );
+}
+
+/**
+ * The setup step's own card (Simon's try-out, 2026-11-12): Ledung draws it, once, keyed by the step, under the helper's
+ * latest message while the helper waits; the helper only says what the step is about. Every press is the person's own:
+ * it marks what is their word and tells the helper in their message, so it goes on.
+ */
+export function SetupStepCard({ helper, run, onOpen }: { helper: HelperInfo; run: Run; onOpen: (id: string) => void }) {
+  const typing = usePlainTyping();
+  const shortcuts = useShortcuts();
+  const checkIn = useCheckIn();
+  const [text, setText] = useState('');
+  const [mode, setMode] = useState<'none' | 'folder' | 'new' | 'own'>('none');
+  const [github, setGithub] = useState(false);
+  const [basics, setBasics] = useState({ model: 'sonnet', effort: '', mode: 'default' });
+  const v = helper.setup;
+  const step = v.current;
+  const sid = helper.sessionId;
+  if (v.phase !== 'helper' || !step || !sid) return null;
+  const project = v.project;
+  const say = (words: string, mark?: 'done' | 'skipped') => run(async () => {
+    if (mark) await api.setupMark(step, mark);
+    await api.send(sid, words);
+    setText('');
+    setMode('none');
+  });
+  const button = (label: string, words: string, mark?: 'done' | 'skipped', primary = false) => (
+    <button className={`small${primary ? ' primary' : ''}`} onClick={() => void say(words, mark)}>{label}</button>
+  );
+  const card = (title: string, inner: ReactNode) => (
+    <div className="helper-card-row"><div className={`helper-card step-card ${step}`} data-step={step}><div className="helper-card-title">{title}</div>{inner}</div></div>
+  );
+  const textForm = (placeholder: string, max: number, send: (t: string) => void, label = 'Send') => (
+    <form className="helper-text" onSubmit={(e) => { e.preventDefault(); if (text.trim()) send(text.trim()); }}>
+      <input {...typing} value={text} onChange={(e) => setText(e.target.value)} placeholder={placeholder} aria-label={placeholder} maxLength={max} autoFocus />
+      <button className="small primary" type="submit" disabled={!text.trim()}>{label}</button>
+    </form>
+  );
+  switch (step) {
+    case 'name':
+      return card('Your name', textForm('What should Ledung call you?', 40, (name) => void run(async () => {
+        await api.setupName(name);
+        await api.send(sid, `Call me ${name}.`);
+        setText('');
+      }), 'Save'));
+    case 'accounts':
+      return card('Claude accounts', (
+        <div className="helper-step-controls">
+          {button("This computer's own login is fine", "This computer's own Claude login is fine.", 'done', true)}
+          <button className="small" onClick={() => onOpen('settings:claude')}>Open Accounts</button>
+          {button('I added an account', 'I added an account.', 'done')}
+        </div>
+      ));
+    case 'project':
+      return card('Your first project', mode === 'folder'
+        ? <FolderBrowser load={api.browse} reloadKey="helper-setup" onPick={(p) => void say(`Use the folder ${p} as my first project.`)} pickLabel="Use this folder" />
+        : mode === 'new'
+          ? (
+            <>
+              {textForm('Its name', 48, (name) => void say(`Create a new project called "${name}"${github ? ', with a private GitHub repository' : ', without a GitHub repository'}.`), 'Create')}
+              <label className="toggle"><input type="checkbox" checked={github} onChange={(e) => setGithub(e.target.checked)} /> Also a private GitHub repository (needs the GitHub CLI signed in)</label>
+            </>
+          )
+          : (
+            <div className="helper-choices">
+              <button className="helper-choice" onClick={() => setMode('folder')}><span className="helper-choice-label">An existing folder</span><span className="helper-choice-hint">A folder on this computer you already work in</span></button>
+              <button className="helper-choice" onClick={() => { setText(''); setMode('new'); }}><span className="helper-choice-label">A new project</span><span className="helper-choice-hint">A new folder with git, optionally on GitHub</span></button>
+            </div>
+          ));
+    case 'basics': {
+      const picked = MODES.find((m) => m.v === basics.mode)!;
+      return card(`Model, effort and mode for ${project ?? 'the project'}`, (
+        <>
+          <Pick label="Model" options={MODELS} value={basics.model} onPick={(m) => setBasics({ ...basics, model: m })} />
+          <Pick label="Effort" options={EFFORTS} value={basics.effort} onPick={(e) => setBasics({ ...basics, effort: e })} />
+          <Pick label="Permissions for new sessions" options={MODES} value={basics.mode} onPick={(m) => setBasics({ ...basics, mode: m })} />
+          <div className="helper-step-controls">
+            {button('Use these', `Set ${project} to ${MODELS.find((m) => m.v === basics.model)!.label}, ${basics.effort ? `${basics.effort} effort` : "Claude Code's default effort"}, and the ${picked.label} mode.`, undefined, true)}
+          </div>
+        </>
+      ));
+    }
+    case 'sensitive':
+      return card('What always goes to you', (
+        <div className="helper-step-controls">
+          {button("Keep Ledung's suggestions", 'Keep the suggested sensitive list.', 'done', true)}
+          {project && <button className="small" onClick={() => onOpen(`ps:${project}/safety`)}>Show me the list</button>}
+          {button('I want changes', 'I want to change the sensitive list.')}
+        </div>
+      ));
+    case 'grant':
+      return card(`What ${project ?? 'the project'}'s manager may decide alone`, mode === 'own'
+        ? textForm('In your words, e.g. "merge PRs that passed review"', 300, (g) => void say(`Let the manager decide this on its own: ${g}`))
+        : (
+          <div className="helper-step-controls">
+            {button('Nothing: ask me', 'The manager should ask me about everything.', 'done', true)}
+            {button('Routine things', 'Let the manager decide routine things on its own: naming, formatting, and choosing between equal options.')}
+            <button className="small" onClick={() => { setText(''); setMode('own'); }}>In my own words…</button>
+          </div>
+        ));
+    case 'workflow':
+      return card('A workflow', (
+        <div className="helper-step-controls">
+          {button('Propose a small first workflow', 'Propose a small first workflow for me to review.', undefined, true)}
+          {button('Not now', 'Skip the workflow for now.', 'skipped')}
+        </div>
+      ));
+    case 'shortcuts': {
+      const sv = shortcuts.view;
+      return card('Shortcuts and start at sign-in', !sv
+        ? <div className="helper-step-controls"><p className="muted">Shortcuts are made from the page on the computer Ledung runs on.</p>{button('Skip', 'Skip the shortcuts.', 'skipped')}</div>
+        : !sv.asked ? <ShortcutNotice run={run} /> : <div className="helper-step-controls"><p className="muted">{sv.places.some((p) => p.present) ? 'The shortcuts are there.' : 'No shortcuts.'}</p>{button('Continue', 'Done with the shortcuts.', undefined, true)}</div>);
+    }
+    case 'phone':
+      return card('Your phone', (
+        <div className="helper-step-controls">
+          <button className="small" onClick={() => onOpen('settings:remote')}>Open Remote & devices</button>
+          {button('Done', 'Done with the phone.', 'done')}
+          {button('Not now', 'Skip the phone for now.', 'skipped', true)}
+        </div>
+      ));
+    case 'checkin': {
+      const cv = checkIn.view;
+      return card('Anonymous usage count', cv?.notice ? <CheckInNotice run={run} /> : (
+        <div className="helper-step-controls"><p className="muted">{cv ? statusLine(cv) : 'Answered.'}</p>{button('Continue', 'Done with the check-in.', undefined, true)}</div>
+      ));
+    }
+  }
 }
 
 /** Settings → Ledung → Ledung Helper: open it, run the setup again, and its model. */

@@ -2,7 +2,7 @@ import { Component, Fragment, lazy, Suspense, useCallback, useEffect, useMemo, u
 import { CHATS, HELPER, PERMISSION_MODES, PRIORITIES, projectLabel, type ModelChoice, type AccountInfoView, type AwayInfo, type BoardStatus, type ChatsInfo, type GitHubBudget, type CompactingInfo, type MachineInfo, type McpServerInfo, type PermissionMode, type Priority, type ProjectInfo, type QuestionInfo, type RemoteControlInfo, type SessionInfo } from '../../src/shared/protocol.ts';
 import { AddProjectView, ProjectSettingsView, ProjectStartView } from './projects/ProjectViews.tsx';
 import { ChatsSettingsView, NewChatView } from './chats/ChatViews.tsx';
-import { HelperCardView, HelperStepBar, SetupScreens } from './helper/HelperViews.tsx';
+import { HelperCardView, HelperStepBar, SetupScreens, SetupStepCard } from './helper/HelperViews.tsx';
 import type { HelperCard } from '../../src/shared/helper-cards.ts';
 import { api } from './api.ts';
 import { CHAT_IMAGE_TYPES, dataUrl, imageFiles, MAX_CHAT_IMAGES, prepareImage, SECRETS_HINT } from './chatImages.ts';
@@ -1185,6 +1185,10 @@ export function SessionView(props: {
 }) {
   const { session, ledung, run } = props;
   const isHelper = session.project === HELPER;
+  const waitsForPerson = session.status === 'idle' || session.status === 'ended';
+  const stepCard = isHelper && waitsForPerson && ledung.helper?.setup.phase === 'helper' && ledung.helper.setup.current && ledung.helper.sessionId === session.id
+    ? <SetupStepCard key={ledung.helper.setup.current} helper={ledung.helper} run={run} onOpen={(id) => props.onOpen?.(id)} />
+    : null;
   const openView = props.onOpen;
   const renderCard = useCallback((card: HelperCard, answered: boolean) => (
     <HelperCardView card={card} answered={answered} projects={ledung.projects} run={run}
@@ -1422,6 +1426,9 @@ export function SessionView(props: {
             onOpenBoardThread={boardRepo ? openBoardThread : undefined}
             tint={tint}
             renderCard={isHelper ? renderCard : undefined}
+            // The setup step's own card, once, under the helper's latest words while it waits for the person.
+            footer={stepCard ?? undefined}
+            footerKey={stepCard ? `${ledung.helper?.setup.current}` : undefined}
           />
           <WorkingIndicator key={session.id} session={session} sessions={ledung.sessions} messages={ledung.messages}
             extra={<MacroChips key={session.id} macros={macros} onUse={fireMacro} onEdit={() => (location.hash = '#/settings/macros')}

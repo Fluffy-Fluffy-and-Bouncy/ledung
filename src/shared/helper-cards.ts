@@ -7,23 +7,21 @@ import { z } from 'zod';
 export const CARD_LINKS = ['add-project', 'project-settings', 'workflow', 'manager', 'accounts', 'settings', 'devices', 'helper-settings', 'shortcuts', 'checkin'] as const;
 export type CardLink = typeof CARD_LINKS[number];
 
-/** The page controls a step card shows: the person presses them. */
-export const CARD_STEPS = ['shortcuts', 'checkin', 'phone', 'accounts'] as const;
-export type CardStep = typeof CARD_STEPS[number];
 
 // One voice (Simon's try-out, 2026-11-12): a card has a short title and its inputs; what it is about is the helper's own
 // message, said once, before it.
 const title = z.string().min(1).max(80);
+/** Showing a card with the same id (else the same kind and title) again in a turn replaces it: shown once. */
+const id = z.string().regex(/^[a-z0-9-]{1,40}$/).optional();
 
 export const CardSchema = z.discriminatedUnion('kind', [
   z.object({
-    kind: z.literal('choice'), title,
+    kind: z.literal('choice'), id, title,
     options: z.array(z.object({ label: z.string().min(1).max(80), hint: z.string().min(1).max(240).optional() }).strict()).min(2).max(8),
   }).strict(),
-  z.object({ kind: z.literal('folder'), title, start: z.string().min(1).max(400).optional() }).strict(),
-  z.object({ kind: z.literal('text'), title, placeholder: z.string().min(1).max(80).optional() }).strict(),
-  z.object({ kind: z.literal('step'), title, step: z.enum(CARD_STEPS) }).strict(),
-  z.object({ kind: z.literal('link'), title, to: z.enum(CARD_LINKS), project: z.string().min(1).max(100).optional() }).strict(),
+  z.object({ kind: z.literal('folder'), id, title, start: z.string().min(1).max(400).optional() }).strict(),
+  z.object({ kind: z.literal('text'), id, title, placeholder: z.string().min(1).max(80).optional() }).strict(),
+  z.object({ kind: z.literal('link'), id, title, to: z.enum(CARD_LINKS), project: z.string().min(1).max(100).optional() }).strict(),
 ]);
 export type HelperCard = z.infer<typeof CardSchema>
   /** Ledung's own: the review of a proposed workflow (propose_workflow). */

@@ -4,6 +4,7 @@ import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, 
 import type { PermissionInfo, QuestionInfo, ShellBlock, StoredMessage } from '../../../src/shared/protocol.ts';
 import type { HelperCard } from '../../../src/shared/helper-cards.ts';
 import { helperApprovalText } from '../helper/helperNav.ts';
+import { placeCards } from '../helper/cardOrder.ts';
 import { shellFooter } from '../../../src/shared/bang.ts';
 import { quietTexts, type TurnEntry } from '../../../src/shared/quiet-reply.ts';
 import { compactedLabel } from '../../../src/shared/compact-label.ts';
@@ -49,27 +50,6 @@ function resultText(content: unknown): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) return content.map((b) => (b?.type === 'text' ? b.text : b?.type === 'image' ? '[image]' : '')).join('\n');
   return '';
-}
-
-/** A helper card is answered once the person wrote anything after it (their pick is their message). */
-function withAnswers(raw: Item[]): Item[] {
-  // A card shows after the helper's words of its turn (Simon's try-out, 2026-11-12): moved past every item up to the
-  // person's next message, keeping the cards' own order.
-  const items: Item[] = [];
-  let held: Item[] = [];
-  for (const it of raw) {
-    if (it.type === 'card') held.push(it);
-    else if (it.type === 'user' && !it.byLedung) { items.push(...held, it); held = []; }
-    else items.push(it);
-  }
-  items.push(...held);
-  let later = false;
-  for (let i = items.length - 1; i >= 0; i--) {
-    const it = items[i]!;
-    if (it.type === 'user' && !it.byLedung) later = true;
-    else if (it.type === 'card' && later) items[i] = { ...it, answered: true };
-  }
-  return items;
 }
 
 function toItems(messages: StoredMessage[]): Item[] {
@@ -177,12 +157,15 @@ export const MessageList = memo(function MessageList(props: {
   tint?: CSSProperties;
   /** Draws a Ledung Helper card (docs/steps/ledung-helper.md); none: cards are not shown. */
   renderCard?: (card: HelperCard, answered: boolean) => ReactNode;
+  /** Under the last message, kept at the end: the setup step's own card in the helper's chat; footerKey changes with it. */
+  footer?: ReactNode;
+  footerKey?: string;
 }) {
   const { messages, permissions, showTechnical, sessionId, hasEarlier } = props;
   // A manager's conversation also shows the questions of its sessions it handles, by when they were asked (issue #61),
   // with technical messages or when opened at one (issue #112).
   const earliest = hasEarlier ? messages[0]?.at ?? null : null;
-  const base = useMemo(() => withAnswers(toItems(messages)), [messages]);
+  const base = useMemo(() => placeCards(toItems(messages)), [messages]);
   const focus = props.focusQuestion ?? null;
   const woven = useMemo(
     () => (sessionId ? shownWoven(wovenQuestions(Object.values(props.questions), sessionId, earliest), showTechnical, focus) : []),
@@ -239,7 +222,7 @@ export const MessageList = memo(function MessageList(props: {
     }
     if (stick.current) el.scrollTop = el.scrollHeight;
     updatePinned();
-  }, [items, showTechnical, target, hasEarlier]);
+  }, [items, showTechnical, target, hasEarlier, props.footerKey]);
 
   useEffect(() => {
     // A conversation opened at a question stays there; any other opens at its end.
@@ -308,6 +291,7 @@ export const MessageList = memo(function MessageList(props: {
           />
         </Fragment>
       ))}
+      {props.footer}
     </div>
   );
 });

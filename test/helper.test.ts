@@ -300,7 +300,11 @@ test('cards are stored in the helper\'s chat; one that isn\'t valid is refused',
   assert.equal(cards[0]!.data.card.title, 'Model');
   const bad = await run(id, 'show_card', { card: { kind: 'link', title: 'Out', to: 'https://example.com' } });
   assert.equal(bad.error, true);
-  // One voice: the card has no words of its own beyond its title (Simon's try-out, 2026-11-12).
+  // The same card twice in a turn is stored once (Simon's try-out, 2026-11-12: the model called show_card twice).
+  const again = await run(id, 'show_card', { card: { kind: 'choice', title: 'Model', options: [{ label: 'Sonnet', hint: 'Everyday' }, { label: 'Opus' }] } });
+  assert.match(again.text, /shown already/);
+  assert.equal(store.listMessages(id).filter((m) => m.kind === 'card').length, 1);
+  // One voice: the card has no words of its own beyond its title.
   assert.equal((await run(id, 'show_card', { card: { kind: 'text', title: 'Name', text: 'Said twice' } })).error, true);
   // A card can't look like Ledung's approval card.
   const fake = await run(id, 'show_card', { card: { kind: 'choice', title: 'Create the project?', options: [{ label: 'Allow' }, { label: 'Deny' }] } });
@@ -341,4 +345,14 @@ test('the step bar marks the person\'s own steps and takes their name; Leave and
   assert.equal(v.current, 'project');
   assert.equal((await manager.setupAction('leave')).setup.phase, 'done');
   await assert.rejects(manager.setupAction('mark', { step: 'phone', mark: 'skipped' }), /No setup/);
+});
+
+test("during the setup the helper shows no cards of its own: Ledung shows the step's card", async () => {
+  const { manager, run, helper, store } = ledung();
+  (manager as unknown as { saveSetup(s: SetupState): void }).saveSetup({ phase: 'helper', marks: {}, project: null });
+  const id = await helper();
+  const out = await run(id, 'show_card', { card: { kind: 'text', title: 'Your name' } });
+  assert.equal(out.error, true);
+  assert.match(out.text, /No card during the setup/);
+  assert.equal(store.listMessages(id).filter((m) => m.kind === 'card').length, 0);
 });

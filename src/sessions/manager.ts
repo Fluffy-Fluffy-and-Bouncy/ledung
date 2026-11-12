@@ -2578,6 +2578,16 @@ export class SessionManager {
     return out;
   }
 
+  /** Whether a card of the same key is in the helper's chat since the person's last message (web/src/helper/cardOrder.ts). */
+  private cardShownThisTurn(helperId: string, card: HelperCard): boolean {
+    const key = (c: HelperCard) => ('id' in c && c.id ? `id:${c.id}` : `${c.kind}:${c.title}`);
+    for (const m of [...this.store.listMessages(helperId, { limit: 200 })].reverse()) {
+      if (m.kind === 'user' && !m.data?.from && !m.data?.answerTo) return false;
+      if (m.kind === 'card' && key(m.data.card) === key(card)) return true;
+    }
+    return false;
+  }
+
   /** A card in the helper's chat (ledung-helper.md). */
   private addCard(helperId: string, card: HelperCard): void {
     this.publish({ type: 'message', message: this.store.addMessage(helperId, 'card', { card }) });
@@ -2651,6 +2661,10 @@ export class SessionManager {
         if (!parsed.success) throw new Error(`This card can't be shown: ${parsed.error.issues[0]?.message ?? 'not valid'}.`);
         const fake = cardLooksLikeApproval(parsed.data);
         if (fake) throw new Error(`This card can't be shown: "${fake}" reads as an approval, and approvals are Ledung's own cards. Call the tool that needs it; Ledung asks.`);
+        // During the setup Ledung shows the step's own card itself, once (Simon's try-out, 2026-11-12: cards twice).
+        if (this.setupView().phase === 'helper') throw new Error("No card during the setup: Ledung shows the step's own card under your message. Write your short message and end your turn.");
+        // The same card again in a turn is not shown twice (the same id, else the same kind and title).
+        if (this.cardShownThisTurn(id, parsed.data)) return 'That card is shown already. End your turn now, writing nothing more.';
         this.addCard(id, parsed.data);
         return 'The card is shown under your words. End your turn now, writing nothing more; the pick comes back as their message.';
       },
