@@ -33,7 +33,7 @@ before(async () => {
   fs.mkdirSync(webRoot);
   fs.writeFileSync(path.join(webRoot, 'index.html'), '<!doctype html><title>Ledung</title>');
   store = new Store(openDatabase(':memory:'));
-  for (const id of ['A', 'B', 'C', 'D']) store.createSession({ id, project: 'p', runner: 'local', title: id, parentId: null, permissionMode: 'default', role: 'session' });
+  for (const id of ['A', 'B', 'C', 'D', 'E']) store.createSession({ id, project: 'p', runner: 'local', title: id, parentId: null, permissionMode: 'default', role: 'session' });
   const manager = refuseRealSignInStores(new SessionManager(parseConfig({ port }), store, () => {}));
   server = new LedungServer({ port, token: TOKEN, store, manager, webRoot });
   await server.listen();
@@ -207,6 +207,49 @@ test("opened while the connection is down, the page reads at once, and the conne
     say('D', 'd3');
     await until(() => views.at(-1)?.messages.length === 3, 'the next message on the connection');
     assert.deepEqual(views.at(-1)!.messages.map((m) => m.data.text), ['d1', 'd2', 'd3']);
+  } finally {
+    live.ws.close();
+  }
+});
+
+test('switching A, B and back to A before any answer: a message of A stored between the second and third watch is shown once', async () => {
+  say('E', 'e0');
+  const live = await page();
+  watch(live.ws, null);
+  await live.next('watching');
+  const views: OpenSessionView[] = [];
+  const get = async (id: string, q: string) => (await fetch(`${origin}/api/sessions/${id}/messages?limit=500${q}`, { headers: { cookie: COOKIE } })).json() as Promise<StoredMessage[]>;
+  // The watches are held, so the test decides when Ledung takes each one.
+  const held: string[] = [];
+  const open = new OpenSession({
+    send: (text) => held.push(text),
+    messages: (id) => get(id, ''),
+    messagesBefore: async () => [],
+    messagesAfter: (id, afterId) => get(id, `&after=${afterId}`),
+    changed: (v) => views.push(v),
+  });
+  live.ws.on('message', (data) => {
+    const e = JSON.parse(String(data)) as ServerEvent;
+    if (e.type === 'message') open.message(e.message);
+    if (e.type === 'watching') void open.watching(e.sessionId);
+  });
+  try {
+    open.connected();
+    open.open('E');
+    open.open('B');
+    open.open('E');
+    assert.deepEqual(held.map((t) => JSON.parse(t).sessionId), [null, 'E', 'B', 'E'], 'the premise: four watches, none answered yet');
+    // Ledung takes the watches up to B, so the page gets no message of E for a while...
+    held.splice(0, 3).forEach((t) => live.ws.send(t));
+    for (let i = 0; i < 3; i++) await live.next('watching');
+    // ...and this one is stored then: not sent live, and only a read after it can bring it.
+    say('E', 'between B and E');
+    held.splice(0).forEach((t) => live.ws.send(t));
+    await live.next('watching');
+    say('E', 'after');
+    const want = ['e0', 'between B and E', 'after'];
+    await until(() => views.at(-1)?.messages.length === want.length, 'every message of E shown');
+    assert.deepEqual(views.at(-1)!.messages.map((m) => m.data.text), want, 'each once, in order, none missed');
   } finally {
     live.ws.close();
   }
