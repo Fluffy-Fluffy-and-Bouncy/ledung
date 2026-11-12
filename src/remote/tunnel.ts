@@ -188,7 +188,8 @@ export class Tunnel {
         }
         if (helloVersion(text) !== PROTOCOL_VERSION) return;
         this.attempt = 0;
-        this.streams = new Streams(ws);
+        // A stream the relay kept sending after we asked it to hold is dropped here (Project-Ledung#479), and said so.
+        this.streams = new Streams(ws, { onReset: (id, reason) => console.log(`Relay: stream reset, stream ${id}, reason ${reason}.`) });
         // A new connection starts uncapped until the relay's status says otherwise.
         this.set('connected', null, null, null);
         return;

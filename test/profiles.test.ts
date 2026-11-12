@@ -308,7 +308,7 @@ test("a session on full, or with no profile, gets none of a profile's options an
   }
 });
 
-test("a manager's options, profile and all, raise Claude Code's tool server limit for its instructions; a session's stay at the default (#32)", async () => {
+test("a manager's options, profile and all, raise Claude Code's tool server limit for its instructions; a session's stay near the default (#32)", async () => {
   const own = process.env[MCP_LIMIT_ENV];
   delete process.env[MCP_LIMIT_ENV];
   try {
@@ -318,7 +318,9 @@ test("a manager's options, profile and all, raise Claude Code's tool server limi
         const env = (await s.options()).env ?? {};
         const limit = Number(env[MCP_LIMIT_ENV]);
         if (role === 'manager') assert.ok(limit > MCP_INSTRUCTIONS_LIMIT, `a manager's limit is ${limit}`);
-        else assert.equal(limit, MCP_INSTRUCTIONS_LIMIT);
+        // A session the person talks to directly has the file-link line too; with the estimates rule (#254) that takes
+        // it a little past the default, raised only as far as its text needs.
+        else assert.ok(limit >= MCP_INSTRUCTIONS_LIMIT && limit <= MCP_INSTRUCTIONS_LIMIT + 256, `a session's limit is ${limit}`);
         // The account's login is still the one the session gets.
         assert.equal(env.CLAUDE_CONFIG_DIR, path.dirname(s.project) + path.sep + 'config');
       } finally {

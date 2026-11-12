@@ -11,7 +11,7 @@ import { duplexPair, type Duplex } from 'node:stream';
 import tls from 'node:tls';
 import WebSocket, { WebSocketServer } from 'ws';
 import { AGENT_NAME_HEADER, DEFAULT_PASSTHROUGH_FROM, forwardHead, hashSecret, parseRelayConfig, readProxyHeader, Relay, senderCheck, type RelayLimits } from '../relay/relay.ts';
-import { decodeFrame, encodeFrame, FRAME, helloMessage, helloVersion, PROTOCOL_VERSION } from '../src/remote/mux.ts';
+import { decodeFrame, encodeFrame, FRAME, helloMessage, helloVersion, MAX_CHUNK, PROTOCOL_VERSION } from '../src/remote/mux.ts';
 import { Tunnel } from '../src/remote/tunnel.ts';
 import { selfSigned } from './self-signed.ts';
 import { freePort, listenOk } from './free-port.ts';
@@ -199,6 +199,22 @@ function rawAgent(port: number, name: string, secret: string, hello: string | nu
   });
 }
 
+/**
+ * The kind of the next frame the relay sends an agent. Text messages are skipped: right after its
+ * hello the relay sends its cap status as text (`{...`), and it can arrive after the caller starts
+ * waiting, which read its `{` (123) as the frame kind (issue #228).
+ */
+function nextFrameKind(ws: WebSocket): Promise<number> {
+  return new Promise((resolve) => {
+    const onMessage = (data: Buffer, isBinary: boolean) => {
+      if (!isBinary) return;
+      ws.off('message', onMessage);
+      resolve(decodeFrame(data)!.kind);
+    };
+    ws.on('message', onMessage);
+  });
+}
+
 test('the link starts with a versioned hello each way; phones reach the Ledung only after it (review 165, plan step 1)', T, async () => {
   const { port, relay, lines } = await startRelay();
   // Signed in, no hello yet: not reachable.
@@ -219,7 +235,7 @@ test('the link starts with a versioned hello each way; phones reach the Ledung o
   // The right hello: answered with the relay's, and phones reach it.
   const good = await rawAgent(port, 'pc', SECRET);
   assert.deepEqual(relay.connected(), ['pc']);
-  const opened = new Promise<number>((resolve) => good.ws!.once('message', (data: Buffer) => resolve(decodeFrame(data)!.kind)));
+  const opened = nextFrameKind(good.ws!);
   const socket = net.connect(port, '127.0.0.1', () => socket.write(`GET / HTTP/1.1\r\nHost: ${HOST}\r\n\r\n`));
   socket.on('error', () => {});
   assert.equal(await opened, FRAME.open);
@@ -265,10 +281,56 @@ test('with two Ledungs connected, each public host reaches its own and only its 
   assert.deepEqual(pcTarget.received.map((r) => r.toString('latin1').split('\r\n')[0]), ['GET /p HTTP/1.1']);
 });
 
-test('too many failed sign-ins from one address are turned away for the window, even with the right secret', T, async () => {
-  const { port } = await startRelay({ failedAttemptsPerAddress: 3 });
+test('too many failed sign-ins from one address turn wrong secrets away for the window; the right secret still connects (Project-Ledung#479)', T, async () => {
+  const { relay, port, lines } = await startRelay({ failedAttemptsPerAddress: 3 });
   for (let i = 0; i < 3; i++) assert.equal((await rawAgent(port, 'pc', `wrong ${i}`)).status, 401);
-  assert.equal((await rawAgent(port, 'pc', SECRET)).status, 429);
+  const refused = () => lines.filter((l) => l.includes('agent refused') && l.includes('too many failed attempts')).length;
+  // Blocked: a wrong secret is refused with 429, and counted.
+  assert.equal((await rawAgent(port, 'pc', 'wrong 3')).status, 429);
+  assert.equal(refused(), 1, 'the blocked refusal is logged');
+  // Others' failures from the same address don't keep out the agent with its right secret.
+  const agent = await rawAgent(port, 'pc', SECRET);
+  assert.equal(agent.status, 101);
+  assert.deepEqual(relay.connected(), ['pc']);
+  agent.ws!.close();
+  // Still blocked for the wrong ones after it: the right secret cleared nothing.
+  assert.equal((await rawAgent(port, 'pc', 'wrong 4')).status, 429);
+  assert.equal(refused(), 2);
+});
+
+test('an agent that keeps sending after the relay asked it to pause has its stream reset, and the relay logs it (Project-Ledung#479)', T, async () => {
+  const { port, lines } = await startRelay();
+  const agent = await rawAgent(port, 'pc', SECRET);
+  const ws = agent.ws!;
+  const got: { kind: number; id: number }[] = [];
+  ws.on('message', (data: Buffer, isBinary: boolean) => {
+    if (isBinary) got.push(decodeFrame(data)!);
+  });
+  // A phone that asks and then never reads its answer.
+  const socket = net.connect(port, '127.0.0.1', () => socket.write(`GET / HTTP/1.1\r\nHost: ${HOST}\r\n\r\n`));
+  socket.on('error', () => {});
+  socket.pause();
+  await new Promise<void>((done) => {
+    const check = () => (got.some((f) => f.kind === FRAME.open) ? done() : setTimeout(check, 10));
+    check();
+  });
+  const id = got.find((f) => f.kind === FRAME.open)!.id;
+  // The agent ignores the pause: it sends until the relay resets the stream, waiting only for its own socket to empty.
+  const chunk = Buffer.alloc(MAX_CHUNK);
+  let sent = 0;
+  while (!got.some((f) => f.id === id && f.kind === FRAME.reset)) {
+    if (sent > 1024 * 1024 * 1024) assert.fail('never reset');
+    for (let i = 0; i < 16; i++) ws.send(encodeFrame(FRAME.data, id, chunk));
+    sent += 16 * MAX_CHUNK;
+    while (ws.bufferedAmount > 0) await new Promise((r) => setTimeout(r, 1));
+    await new Promise((r) => setImmediate(r));
+  }
+  assert.ok(got.some((f) => f.id === id && f.kind === FRAME.pause), 'it was asked to pause first');
+  const reset = lines.filter((l) => l.includes('stream reset'));
+  assert.equal(reset.length, 1, lines.join('\n'));
+  assert.match(reset[0]!, /agent="pc" owner="someone" stream="\d+" reason="ignored pause"/);
+  socket.destroy();
+  ws.close();
 });
 
 test('a second connection with the same name replaces the first', T, async () => {
@@ -279,7 +341,7 @@ test('a second connection with the same name replaces the first', T, async () =>
   assert.equal(await closed, 4000);
   assert.deepEqual(relay.connected(), ['pc']);
   // Phones now reach the second: it gets the stream.
-  const opened = new Promise<number>((resolve) => second.ws!.once('message', (data: Buffer) => resolve(decodeFrame(data)!.kind)));
+  const opened = nextFrameKind(second.ws!);
   const socket = net.connect(port, '127.0.0.1', () => socket.write(`GET / HTTP/1.1\r\nHost: ${HOST}\r\n\r\n`));
   socket.on('error', () => {});
   assert.equal(await opened, FRAME.open);
@@ -290,10 +352,10 @@ test('a second connection with the same name replaces the first', T, async () =>
 test('phone connections beyond the per-agent limit are refused', T, async () => {
   const { port, lines } = await startRelay({ maxStreamsPerAgent: 1 });
   const agent = await rawAgent(port, 'pc', SECRET);
-  const opened = new Promise<void>((resolve) => agent.ws!.once('message', () => resolve()));
+  const opened = nextFrameKind(agent.ws!);
   const held = net.connect(port, '127.0.0.1', () => held.write(`GET / HTTP/1.1\r\nHost: ${HOST}\r\n\r\n`));
   held.on('error', () => {});
-  await opened;
+  assert.equal(await opened, FRAME.open);
   const second = (await phone(port, Buffer.from(`GET / HTTP/1.1\r\nHost: ${HOST}\r\n\r\n`))).toString();
   assert.match(second, /^HTTP\/1\.1 503/);
   assert.match(second, /Too many connections/);
@@ -635,10 +697,10 @@ test('the default senders are loopback and the private ranges, IPv4-mapped forms
 test('passed-through connections beyond the per-agent limit are closed', T, async () => {
   const { port, passPort, lines } = await startPassRelay({ maxStreamsPerAgent: 1 });
   const agent = await rawAgent(port, 'e2e', SECRET);
-  const opened = new Promise<void>((resolve) => agent.ws!.once('message', () => resolve()));
+  const opened = nextFrameKind(agent.ws!);
   const held = net.connect(passPort, '127.0.0.1', () => held.write(Buffer.concat([proxyV4('198.51.100.9'), browserHello(PASS_HOST)])));
   held.on('error', () => {});
-  await opened;
+  assert.equal(await opened, FRAME.open);
   assert.equal((await passPhone(passPort, Buffer.concat([proxyV4('198.51.100.10'), browserHello(PASS_HOST)]))).length, 0);
   assert.ok(lines.some((l) => l.includes('stream refused') && l.includes('"198.51.100.10"')));
   held.destroy();

@@ -178,7 +178,7 @@ test('a database from before the daily totals has them filled from its calls at 
   assert.ok(kept.length > 50);
   // Back to how migration 37 left it: no daily totals, the session index as it was.
   db.exec(`DROP TRIGGER usage_daily_insert; DROP TRIGGER usage_daily_update; DROP TRIGGER usage_daily_delete; DROP TABLE usage_daily;
-    DROP INDEX usage_by_branch; DROP INDEX usage_by_session; CREATE INDEX usage_by_session ON usage(session_id, at); ALTER TABLE questions DROP COLUMN earlier; ALTER TABLE questions DROP COLUMN sources; DROP TABLE flow_runs; ALTER TABLE sessions DROP COLUMN run_block; DROP TABLE flow_proposals; DROP TABLE linked_files; DROP TABLE link_bytes; DROP TABLE linked_outbox; ALTER TABLE sessions DROP COLUMN tools_schema; ALTER TABLE sessions DROP COLUMN requested_effort; ALTER TABLE sessions DROP COLUMN effort; PRAGMA user_version = 37;`);
+    DROP INDEX usage_by_branch; DROP INDEX usage_by_session; CREATE INDEX usage_by_session ON usage(session_id, at); ALTER TABLE questions DROP COLUMN earlier; ALTER TABLE questions DROP COLUMN sources; DROP TABLE flow_runs; ALTER TABLE sessions DROP COLUMN run_block; DROP TABLE flow_proposals; DROP TABLE linked_files; DROP TABLE link_bytes; DROP TABLE linked_outbox; ALTER TABLE sessions DROP COLUMN tools_schema; ALTER TABLE sessions DROP COLUMN requested_effort; ALTER TABLE sessions DROP COLUMN effort; ALTER TABLE turn_resources DROP COLUMN waits; ALTER TABLE sessions DROP COLUMN turn_started_at; DROP INDEX messages_user_by_session; DROP TABLE job_runs; DROP TABLE command_marks; PRAGMA user_version = 37;`);
   db.close();
   db = openDatabase(file);
   assert.deepEqual(dailyRows(db), kept);

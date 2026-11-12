@@ -134,7 +134,6 @@ export class UsagePublisher {
   private readTimer: NodeJS.Timeout | null = null;
   private running: Promise<void> | null = null;
   private exercisedSplit = false;
-  private exercisedFingerprint = false;
   // The reader's state, for the default repo.
   private readRepo: string | null = null;
   private files = new Map<string, { sha: string; entry: SharedUsageEntry }>();
@@ -493,10 +492,6 @@ export class UsagePublisher {
           await this.repo(repoName).publish(usageBranch(login, file.computerId), Buffer.from(JSON.stringify(file)), `Usage of ${file.computer}`);
           this.lastKey.set(repoName, changed);
           this.lastPublishedAt = now;
-          if (!this.exercisedFingerprint && file.accounts.some((a) => a.fingerprint)) {
-            this.exercisedFingerprint = true;
-            this.exercisedLine('EXERCISED #480 usage published with keyed account fingerprints');
-          }
           if (targets.size > 1 && !this.exercisedSplit) {
             this.exercisedSplit = true;
             this.exercisedLine('EXERCISED #380 usage published to a repository per project');

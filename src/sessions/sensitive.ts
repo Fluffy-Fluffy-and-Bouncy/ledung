@@ -410,8 +410,7 @@ export function mergeAnswered(
   rules: Partial<SensitiveRules>,
   questions: { id: number; question: string; answer: string | null; answeredBy: string | null; typed?: boolean }[],
 ): { pr: number; questionId: number } | null {
-  const segments = runnableLines(command).flatMap((l) => l.split(/&&|\|\||;|\|/)).map((s) => s.trim()).filter(Boolean);
-  const merges = segments.map((s) => /^gh\s+pr\s+merge\s+(\d+)(?:\s+(?:-R|--repo)\s+\S+|\s+--(?:merge|squash|rebase|delete-branch)|\s+-[msrd])*$/i.exec(s));
+  const { segments, merges } = mergeSegments(command);
   const hits = merges.filter((m): m is RegExpExecArray => !!m);
   if (hits.length !== 1) return null;
   // Everything else in the command must be harmless on its own (a second merge, a push, a ship: asked).
@@ -427,6 +426,46 @@ export function mergeAnswered(
     && (x.typed ? x.answer.split('\n').some((line) => together.test(line) && !HOLDS_BACK.test(line))
       : names.test(x.question) && SAYS_MERGE.test(x.answer) && !HOLDS_BACK.test(x.answer.replace(/\(recommended\)/i, ''))));
   return q ? { pr, questionId: q.id } : null;
+}
+
+/** A command's simple commands as they run, and for each the plain `gh pr merge N` it is, if any. */
+function mergeSegments(command: string): { segments: string[]; merges: (RegExpExecArray | null)[] } {
+  const segments = runnableLines(command).flatMap((l) => l.split(/&&|\|\||;|\|/)).map((s) => s.trim()).filter(Boolean);
+  const merges = segments.map((s) => /^gh\s+pr\s+merge\s+(\d+)(?:\s+(?:-R|--repo)\s+\S+|\s+--(?:merge|squash|rebase|delete-branch)|\s+-[msrd])*$/i.exec(s));
+  return { segments, merges };
+}
+
+/** A GitHub repository: its host and owner/name, as the project's git remote gives them. */
+export interface OwnRepo { host: string; owner: string; name: string }
+
+/**
+ * Where a merge the person said yes to may run (Project-Ledung#475): their "merge #N" names a PR of the manager's own
+ * project, so the merge must be one in that project's repository. A merge that names it with -R (owner/name, or
+ * host/owner/name) runs as sent; one that names another repository, or names one twice, is asked as before. One that
+ * names none runs only when it is the whole command and the shell stands in the project folder, and then pinned to
+ * the project's repository with -R, so neither the shell's folder nor the environment decides which PR it is.
+ * `own`: the project's repository from its git remote; null when unknown, and then nothing is let through.
+ * Returns the command to run, or null: asked as before.
+ */
+export function pinMergeRepo(command: string, own: OwnRepo | null, shellInProject: boolean): string | null {
+  if (!own) return null;
+  const { segments, merges } = mergeSegments(command);
+  const at = merges.findIndex((m) => !!m);
+  if (at < 0) return null;
+  const words = segments[at]!.split(/\s+/);
+  // Case matters to gh: -r is --rebase, not the repository (self-check of Project-Ledung#475).
+  const named = words.flatMap((w, k) => (/^(?:-R|--repo)$/.test(w) ? [words[k + 1] ?? ''] : []));
+  if (named.length > 1) return null;
+  if (named.length === 1) {
+    const parts = named[0]!.toLowerCase().split('/');
+    // Without a host, -R means github.com (gh's default); a project elsewhere must name its host.
+    const [host, owner, name] = parts.length === 2 ? ['github.com', ...parts] : parts;
+    const same = parts.length >= 2 && parts.length <= 3
+      && host === own.host.toLowerCase() && owner === own.owner.toLowerCase() && name === own.name.toLowerCase();
+    return same ? command : null;
+  }
+  if (segments.length !== 1 || !shellInProject) return null;
+  return `${segments[0]} -R ${own.host}/${own.owner}/${own.name}`;
 }
 
 /** Checks that the project's patterns are valid regular expressions; throws a readable error if not. */

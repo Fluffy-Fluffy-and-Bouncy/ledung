@@ -111,6 +111,9 @@ export class ProjectStore {
       // Runs through its flows (workflow part 3).
       'UPDATE flow_runs SET project = ? WHERE project = ?',
       'UPDATE flow_proposals SET project = ? WHERE project = ?',
+      // What its reserved jobs used and its commands' marks (resource limits): the learning follows the project.
+      'UPDATE job_runs SET project = ? WHERE project = ?',
+      'UPDATE command_marks SET project = ? WHERE project = ?',
     ];
     this.db.exec('BEGIN');
     try {

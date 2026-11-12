@@ -83,7 +83,12 @@ test('the admin API answers only to the admin key, is off without one, and turns
   assert.equal((await call('GET', '/admin/invites', undefined, null)).status, 401, 'no key');
   assert.equal((await call('GET', '/admin/invites', undefined, 'wrong')).status, 401, 'a wrong key');
   assert.equal((await call('POST', '/admin/invites', { owner: 'x' }, 'wrong')).status, 401);
-  assert.equal((await call('GET', '/admin/invites')).status, 429, 'after three failures even the right key waits out the window');
+  // The key before the lockout (Project-Ledung#479): blocked, a wrong key is a 429 and counts; the right key still works.
+  const refusedLines = () => lines.filter((l) => l.includes('admin refused')).length;
+  assert.equal((await call('GET', '/admin/invites', undefined, 'wrong again')).status, 429, 'after three failures a wrong key waits out the window');
+  assert.equal(refusedLines(), 4, 'and is still counted and logged');
+  assert.equal((await call('GET', '/admin/invites')).status, 200, 'the right key is not kept out by the failures');
+  assert.equal((await call('GET', '/admin/invites', undefined, null)).status, 429, 'the right key cleared nothing for the wrong ones');
   assert.ok(lines.some((l) => l.includes('admin refused') && l.includes('wrong key')));
   assert.equal(lines.some((l) => l.includes(ADMIN_KEY)), false, 'the key is never logged');
 
@@ -100,7 +105,7 @@ test('a bad escape in the address is a counted wrong key without the key, and a 
   assert.equal((await call('POST', '/admin/computers/%E0/approved')).status, 400);
   assert.equal((await call('DELETE', '/admin/invites/%E0', undefined, null)).status, 401, 'without the key: refused before decoding');
   assert.equal((await call('DELETE', '/admin/invites/%E0', undefined, null)).status, 401);
-  assert.equal((await call('GET', '/admin/invites')).status, 429, 'both counted as failed attempts');
+  assert.equal((await call('GET', '/admin/invites', undefined, null)).status, 429, 'both counted as failed attempts');
   assert.equal(lines.some((l) => l.includes('api error')), false, 'nothing reaches the log as an api error');
 });
 
@@ -186,9 +191,13 @@ test('a join code adds the computer to the running relay end to end, once; the c
 test('guessing join codes is turned away for the window, like guessing agent secrets', T, async () => {
   const { call, lines } = await startRelay({ failed: 3 });
   for (let i = 0; i < 3; i++) assert.equal((await call('POST', '/enrol', enrolBody(`AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAA${i}`), null)).status, 401);
-  const invite = (await call('POST', '/admin/invites', { owner: 'F' }, ADMIN_KEY)).status;
-  assert.equal(invite, 429, 'the address is turned away, admin key or not');
-  assert.equal(lines.filter((l) => l.includes('enrol refused')).length, 3);
+  // Blocked: one more wrong code is a 429, and still counted (Project-Ledung#479).
+  assert.equal((await call('POST', '/enrol', enrolBody('AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAA9'), null)).status, 429, 'the address is turned away for wrong codes');
+  assert.equal(lines.filter((l) => l.includes('enrol refused')).length, 4);
+  // The right admin key and a valid code still get through: others' guesses don't keep them out.
+  const invite = await call('POST', '/admin/invites', { owner: 'F' }, ADMIN_KEY);
+  assert.equal(invite.status, 200, 'the admin key is checked before the lockout');
+  assert.equal((await call('POST', '/enrol', enrolBody(invite.body.token), null)).status, 200, 'and so is a valid code');
 });
 
 test('invites and joined computers survive a restart of the relay', T, async () => {

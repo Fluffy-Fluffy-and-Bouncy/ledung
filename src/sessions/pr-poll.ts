@@ -45,20 +45,39 @@ const QUERY_TIMEOUT_MS = 20_000;
 /** PRs asked for per branch: an open one is preferred over the newest closed one, as `gh pr view` does. */
 const PRS_PER_BRANCH = 3;
 
-/** owner/name and host of a GitHub remote URL (https, ssh or scp-like); null for anything else. */
-export function parseRemoteUrl(url: string): { host: string; owner: string; name: string } | null {
+/**
+ * owner/name and host of a GitHub remote URL (https, ssh or scp-like); null for anything else. The host must be
+ * github.com or one of `enterpriseHosts` exactly (audit L16): the poll calls `gh api --hostname <host>`, which sends
+ * gh's stored token for that host, so a host is never taken on a guess from its name.
+ */
+export function parseRemoteUrl(url: string, enterpriseHosts: readonly string[] = []): { host: string; owner: string; name: string } | null {
   const u = url.trim();
   const m = /^(?:https?|ssh|git):\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(u)
     ?? /^(?:[^@/]+@)?([^:/]+):([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(u);
   if (!m) return null;
-  // ssh over port 443 is still github.com; an Enterprise host carries "github" in its name as a rule.
+  // ssh over port 443 is still github.com.
   const host = m[1]!.toLowerCase() === 'ssh.github.com' ? 'github.com' : m[1]!.toLowerCase();
-  if (!host.includes('github')) return null;
+  if (host !== 'github.com' && !enterpriseHosts.some((h) => h.toLowerCase() === host)) return null;
   return { host, owner: m[2]!, name: m[3]! };
 }
 
+/**
+ * The project's own GitHub repository, from its git remote: `origin`, or the only remote when there is no origin.
+ * Null when that is not a GitHub remote, or when several remotes and none is origin leave it unclear
+ * (Project-Ledung#475: a merge the person said yes to runs only there).
+ */
+export function projectRepo(state: GitState): { host: string; owner: string; name: string } | null {
+  const urls = new Map<string, string>();
+  for (const line of state.config.split(/\r?\n/)) {
+    const m = /^remote\.(.+)\.url (.+)$/.exec(line.trim());
+    if (m) urls.set(m[1]!, m[2]!);
+  }
+  const url = urls.get('origin') ?? (urls.size === 1 ? [...urls.values()][0]! : '');
+  return parseRemoteUrl(url);
+}
+
 /** Where to look for the branch's pull request, or why not to: decided from git alone, at no cost (issue #252). */
-export function prTarget(state: GitState): PrTarget | PrSkip {
+export function prTarget(state: GitState, enterpriseHosts: readonly string[] = []): PrTarget | PrSkip {
   const branch = state.head.trim();
   if (!branch || branch === 'HEAD') return { skip: 'detached', branch: null };
   const config = new Map<string, string>();
@@ -85,7 +104,7 @@ export function prTarget(state: GitState): PrTarget | PrSkip {
   if (remoteBranch === defaultBranch) return { skip: 'default', branch };
   const sha = refs.get(base + remoteBranch)?.sha ?? '';
   if (!sha && !hasUpstream) return { skip: 'unpushed', branch };
-  const repo = parseRemoteUrl(config.get(`remote.${remote}.url`) ?? '');
+  const repo = parseRemoteUrl(config.get(`remote.${remote}.url`) ?? '', enterpriseHosts);
   if (!repo) return { skip: 'remote', branch };
   return { ...repo, branch, remoteBranch, sha };
 }
@@ -196,6 +215,8 @@ export interface PullRequestPollerOptions {
   show: (id: string, pr: PullRequestInfo | null) => void;
   /** The budgets changed. */
   onBudget: (budgets: GitHubBudget[]) => void;
+  /** The GitHub Enterprise hosts the config names (githubHosts), read each round; github.com is always polled. */
+  enterpriseHosts?: () => readonly string[];
   now?: () => number;
   /** Timers; tests pass their own. Returns a cancel. */
   schedule?: (fn: () => void, ms: number) => () => void;
@@ -302,7 +323,7 @@ export class PullRequestPoller {
       if (!w) return;
       const state = await w.source.gitState();
       if (this.watched.get(id) !== w) return;
-      const t = state ? prTarget(state) : { skip: 'detached' as const, branch: null };
+      const t = state ? prTarget(state, this.opts.enterpriseHosts?.() ?? []) : { skip: 'detached' as const, branch: null };
       if ('skip' in t) {
         // A remote branch deleted after the merge (and pruned) leaves the same local branch: keep what is shown.
         const pruned = t.branch !== null && t.branch === w.branch && w.done;
