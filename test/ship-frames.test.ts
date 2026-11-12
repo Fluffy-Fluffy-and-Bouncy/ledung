@@ -189,14 +189,18 @@ test('the scene with work behind a stopped ship puts the small boat and the wate
 });
 
 test('every other scene is drawn in one layer, as before (#270)', () => {
-  const others: Timeline[] = [
-    sailing(-6, 2), turnAndStop(3, 'none'), turnAndStop(3, 'fleet'), standing('none'), standing('fleet'), gather(), fleetLeaves(), depart(2), startAgain(2),
-    sinking(3), calmSea(), watchArrives(), watchChanges(), watchStandsDown(),
-    { scenes: [barScene(20, 3, 8, '40%').scene, barLeaving(20, 3, 8), barArriving(20, 0)], loopFrom: 0 },
-  ];
-  // The turn into a busy stop keeps the session's own colour until the ship has stopped.
-  const turn = turnAndStop(3, 'busy');
-  others.push({ scenes: turn.scenes.slice(0, turn.loopFrom), loopFrom: 0 });
+  // On the status line's strip and the session list's narrow one.
+  const others: Timeline[] = [20, 10].flatMap((w) => {
+    // The turn into a busy stop keeps the session's own colour until the ship has stopped.
+    const turn = turnAndStop(3, 'busy', w);
+    return [
+      sailing(-6, 2, w), turnAndStop(3, 'none', w), turnAndStop(3, 'fleet', w), standing('none', w), standing('fleet', w), gather(w), fleetLeaves(w),
+      depart(2, w), startAgain(2, w), sinking(3, w), calmSea(w), watchArrives(w), watchChanges(w), watchStandsDown(w),
+      radiating(w), burstAndReplace(w), rocking(w), founderAndReplace(w), fogRollsIn(w), fogLifts(w),
+      { scenes: [barScene(w, 3, 2, '40%').scene, barLeaving(w, 3, 2), barArriving(w, 0)], loopFrom: 0 },
+      { scenes: turn.scenes.slice(0, turn.loopFrom), loopFrom: 0 },
+    ];
+  });
   for (const t of others) t.scenes.forEach((s, i) => assert.deepEqual(renderRuns(s, i), [{ text: render(s, i), back: false }]));
   // The same probe finds the background where there is one.
   assert.ok(renderRuns(standing('busy').scenes[0]!, 0).some((r) => r.back));
