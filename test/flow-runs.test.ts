@@ -843,6 +843,35 @@ test('part 3d: followed: a wait waits, sub-steps at once, the caller\'s session 
   assert.equal(ports.runs.get('run-1')!.ending, 'Ship it');
 });
 
+test('#291: a run waiting at a wait or a Run flow block gets no late card, whichever way person steps are asked; one at a person step does with the write-up', async () => {
+  // Test review of PR #294, finding 1: those runs wait with no question too, and the minute check runs in both modes.
+  for (const questions of ['card', 'write-up'] as const) {
+    const { runs, ports, store, late } = await engine({ flows: await phases(), questions });
+    await runs.start('manager-1', { title: 'Speed up the cart' });
+    // At the CI wait, more than 10 minutes.
+    await runs.step('manager-1', { run: 'run-1', outcome: 'Pushed' });
+    assert.deepEqual([ports.runs.get('run-1')!.at, ports.runs.get('run-1')!.state], ['ci', 'waiting'], questions);
+    await late();
+    assert.equal(store.listQuestions().length, 0, `${questions}: a wait`);
+    assert.equal(ports.runs.get('run-1')!.question, null);
+    // At Polish, a Run flow block, waiting for its child run, more than 10 minutes.
+    for (const w of ['Green', 'Approved']) await runs.step('manager-1', { run: 'run-1', outcome: w });
+    assert.deepEqual([ports.runs.get('run-1')!.at, ports.runs.get('run-1')!.state], ['polish', 'waiting'], questions);
+    await late();
+    assert.equal(store.listQuestions().length, 0, `${questions}: a Run flow block`);
+    assert.equal(ports.runs.get('run-1')!.question, null);
+    // The person step after it: with the write-up the same check does ask its card; with the card it was asked at once.
+    await runs.step('manager-1', { run: 'run-2', outcome: 'Polished' });
+    assert.equal(ports.runs.get('run-1')!.at, 'owner');
+    if (questions === 'write-up') {
+      assert.equal(store.listQuestions().length, 0);
+      await late();
+    }
+    assert.equal(store.listQuestions().length, 1, questions);
+    assert.equal(ports.runs.get('run-1')!.question, store.listQuestions()[0]!.id);
+  }
+});
+
 test('part 3c review: the page gets every open run and only the latest others', () => {
   const store = new Store(openDatabase(':memory:'));
   const runs = new RunStore(store.database);
