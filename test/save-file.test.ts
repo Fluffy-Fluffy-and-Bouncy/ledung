@@ -222,6 +222,41 @@ test('ledung#160: a locked folder spelled another way than on disk (another case
   assert.deepEqual(filesIn(wt), [], 'nothing written');
 });
 
+// Project-Ledung#478 (found in #474): a project whose folder holds Ledung's data folder (one of the whole user folder,
+// say) must not get a save into it, as the Files pane refuses it. The data folder is set to one inside the worktree for
+// this test only; the writer reads it on each call.
+test('Project-Ledung#478: a save into Ledung\'s own data folder is refused, and nothing is written there; a path beside it is saved', () => {
+  const wt = fresh('wt');
+  const data = path.join(wt, 'LedungData');
+  const before = process.env.LEDUNG_DATA_DIR;
+  process.env.LEDUNG_DATA_DIR = data;
+  try {
+    fs.mkdirSync(path.join(data, 'linked-files'), { recursive: true });
+    const refused = /^Error: .+ is in Ledung's own data folder; Ledung saves no file there\.$/;
+    assert.throws(() => saveIntoWorktree(wt, 'LedungData/shot.png', 'png', PNG, NO_RULES), refused);
+    assert.throws(() => saveIntoWorktree(wt, 'LedungData/linked-files/notes.txt', 'text', Buffer.from('x'), NO_RULES), refused);
+    // A folder in it that isn't there yet, and the data folder spelled in another case where the disk ignores case.
+    assert.throws(() => saveIntoWorktree(wt, 'LedungData/new/shot.png', 'png', PNG, NO_RULES), refused);
+    if (process.platform === 'darwin' || process.platform === 'win32') assert.throws(() => saveIntoWorktree(wt, 'ledungdata/shot.png', 'png', PNG, NO_RULES), refused);
+    // A folder in the worktree that is a link (a junction on Windows) to the data folder: refused for the data folder,
+    // before the walk would refuse it as a link (self-check of this PR).
+    fs.symlinkSync(data, path.join(wt, 'via'), 'junction');
+    assert.throws(() => saveIntoWorktree(wt, 'via/shot.png', 'png', PNG, NO_RULES), refused);
+    fs.rmSync(path.join(wt, 'via'));
+    // A worktree inside the data folder refuses every path.
+    assert.throws(() => saveIntoWorktree(path.join(data, 'linked-files'), 'x.png', 'png', PNG, NO_RULES), refused);
+    // Nothing landed: the only file is the EXERCISED trace the refusal wrote into this data folder (src/platform/exercised.ts).
+    assert.deepEqual(filesIn(wt), ['LedungData/exercised.log'], 'nothing written but the trace');
+    assert.match(fs.readFileSync(path.join(data, 'exercised.log'), 'utf8'), /EXERCISED #478 /);
+    assert.equal(fs.existsSync(path.join(data, 'new')), false, 'no folder made in the data folder');
+    // The positive branch: the same worktree, a path beside the data folder, is saved.
+    saveIntoWorktree(wt, 'evidence/shot.png', 'png', PNG, NO_RULES);
+    assert.deepEqual(filesIn(wt), ['LedungData/exercised.log', 'evidence/shot.png'], 'a path outside the data folder is saved');
+  } finally {
+    process.env.LEDUNG_DATA_DIR = before;
+  }
+});
+
 // --- The tool, between two linked Ledungs ------------------------------------------------------------------------
 
 const management = (node: Node) => (node.manager as unknown as { management: Management }).management;
