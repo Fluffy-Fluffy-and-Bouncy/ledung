@@ -1927,10 +1927,10 @@ export class LedungServer {
       case 'POST setup-claude':
         return manager.claudeCheck();
       case 'POST setup': {
-        const action = (await readJson(req)).action;
+        const body = await readJson(req);
         // Starting the helper sends it Ledung's first message: from the open page, as a message to it would be.
-        if (action === 'claude' || action === 'again') this.requireOpenPage(req);
-        return manager.setupAction(action);
+        if (body.action === 'claude' || body.action === 'again') this.requireOpenPage(req);
+        return manager.setupAction(body.action, { step: body.step, mark: body.mark, name: body.name });
       }
       case 'POST helper-open': {
         this.requireOpenPage(req);

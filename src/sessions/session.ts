@@ -33,7 +33,7 @@ import { compactionUsage, contextAfterCompact, UsageRecorder, type SessionFacts 
 import { findTickets } from '../usage/links.ts';
 import type { PullRequestPoller } from './pr-poll.ts';
 import { helperToolServer, type HelperHandlers } from './helper-tools.ts';
-import { helperInstructions } from './helper.ts';
+import { helperInstructions, helperSkillAllowed } from './helper.ts';
 import { CONTEXT_TOOLS, instructions, LEDUNG_SERVER, LEDUNG_TOOLS, ledungToolServer, MCP_LIMIT_ENV, mcpLimitFor, BASICS_TOOLS, SETTINGS_CHANGE_RULE, SETTINGS_CHANGE_TOOLS, SETTINGS_TOOLS, USAGE_PUBLISH_TOOLS, USER_APPROVED_TOOLS, type BoardHandlers, type ManagerHandlers, type ProposeHandlers, type RunHandlers, type ToolHandlers } from './tools.ts';
 import type { Boards } from '../board/boards.ts';
 import { commandKinds } from '../resources/commands.ts';
@@ -1175,8 +1175,9 @@ export class Session {
       // Always explicit: without it a session may pick a mode from its settings (spike finding 1).
       permissionMode: this.store.getSession(this.id)!.permissionMode,
       systemPrompt: { type: 'preset', preset: 'claude_code' },
-      // The Ledung Helper keeps only the built-in tools it needs (Skill): no file, shell, web or agent tools.
-      ...(this.helper ? { tools: this.helper.builtInTools } : {}),
+      // The Ledung Helper keeps only the built-in tools it needs (Skill): no file, shell, web or agent tools; and no
+      // settings, skills, commands or CLAUDE.md from its folder or above it (review of part 1, finding 3).
+      ...(this.helper ? { tools: this.helper.builtInTools, settingSources: [] } : {}),
       // Ledung's own plugins (part 3e, #1577): passed for this session alone, whatever the profile turns off of the user's.
       ...(this.ledungPlugins.length ? { plugins: [...(profile.plugins ?? []), ...this.ledungPlugins.map((p) => ({ type: 'local' as const, path: p }))] } : {}),
       mcpServers: {
@@ -1186,8 +1187,8 @@ export class Session {
       },
       canUseTool: (toolName, input, opts) =>
         // Ledung's own tools never need a prompt; the project tools only when the project opted in (2026-10-14).
-        // The Ledung Helper's Skill loads only Ledung's own two skills: it has no other plugins or user settings.
-        unaskedTool(toolName, this.alwaysAsked) || (this.helper && toolName === 'Skill') ? Promise.resolve({ behavior: 'allow' as const, updatedInput: input }) : this.onPermission(toolName, input, opts),
+        // The Ledung Helper's Skill loads only Ledung's own two skills (review of part 1, finding 3); any other is asked.
+        unaskedTool(toolName, this.alwaysAsked) || (this.helper && toolName === 'Skill' && helperSkillAllowed(input)) ? Promise.resolve({ behavior: 'allow' as const, updatedInput: input }) : this.onPermission(toolName, input, opts),
       // The user's own Claude Code, or the SDK's copy when the config says "bundled" (issue #341).
       pathToClaudeCodeExecutable: this.programPath(),
       spawnClaudeCodeProcess: (o) => {
@@ -1212,6 +1213,10 @@ export class Session {
           }
           if (unaskedTool(toolName, this.alwaysAsked)) return {};
           if (SETTINGS_CHANGE_TOOLS.includes(toolName)) return this.settingsChangeHook(toolName, i.tool_input);
+          // The Ledung Helper loads Ledung's own two skills and no other (review of part 1, finding 3).
+          if (this.helper && toolName === 'Skill' && !helperSkillAllowed(i.tool_input)) {
+            return { hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'deny' as const, permissionDecisionReason: 'The Ledung Helper loads only the ledung-help and workflow-building skills.' } };
+          }
           // Level B: no subagent in the cloud, which would take the project's files off this computer (issue #109).
           if (this.airgap && toolName === 'Agent' && (i.tool_input as { isolation?: unknown } | undefined)?.isolation === 'remote') {
             return { hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'deny' as const, permissionDecisionReason: 'This project is nearly air-gapped (lockdown level B): no remote agents.' } };

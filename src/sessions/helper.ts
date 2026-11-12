@@ -18,6 +18,16 @@ export const HELPER_MODELS = ['sonnet', 'haiku', 'opus'] as const;
 /** Claude Code's built-in tools the helper keeps: only Skill, for its two skills (no file, shell, web or agent tools). */
 export const HELPER_BUILT_IN_TOOLS = ['Skill'];
 
+/** The skills it may load: Ledung's own two, by name or with their plugin's prefix (review of part 1, finding 3). */
+const HELPER_SKILLS = new Set(['ledung-help', 'ledung-help:ledung-help', 'workflow-building', 'ledung-workflow:workflow-building']);
+export function helperSkillAllowed(input: unknown): boolean {
+  const skill = input && typeof input === 'object' ? (input as { skill?: unknown }).skill : undefined;
+  return typeof skill === 'string' && HELPER_SKILLS.has(skill.trim().replace(/^\//, ''));
+}
+
+/** A model as Claude Code takes it: an alias, or a full Claude model name (review of part 1, finding 4). */
+export const MODEL_NAME = /^(opus|sonnet|haiku|fable|default|opusplan)(\[1m\])?$|^claude-[a-z0-9.-]{3,60}(\[1m\])?$/;
+
 /**
  * Nothing of the person's own setup: no MCP servers, plugins or user settings, so no hook, server or allow rule of
  * theirs reaches it. Ledung's own plugins (help and workflow building) are added beside this.
@@ -31,8 +41,8 @@ export const MODE_WORDS: Record<PermissionMode, string> = { plan: 'Plan', defaul
 /** set_project_basics' input: what a manager may not change, which the person's own helper may (with the person's OK where it loosens). */
 export const BASICS_PATCH = {
   project: z.string().min(1).describe('The project name, as list_projects shows it.'),
-  model: z.string().min(1).nullable().optional().describe("Default model for its sessions: opus, sonnet, haiku or a full name; null: Claude Code's own default."),
-  managerModel: z.string().min(1).nullable().optional().describe("Its manager's model; null: the same as its sessions'."),
+  model: z.string().regex(MODEL_NAME, 'opus, sonnet, haiku or a full Claude model name').nullable().optional().describe("Default model for its sessions: opus, sonnet, haiku or a full name; null: Claude Code's own default."),
+  managerModel: z.string().regex(MODEL_NAME, 'opus, sonnet, haiku or a full Claude model name').nullable().optional().describe("Its manager's model; null: the same as its sessions'."),
   effort: z.enum(EFFORT_LEVELS as [EffortLevel, ...EffortLevel[]]).nullable().optional().describe(`Default effort of its sessions (${EFFORT_LEVELS.join(', ')}); null: Claude Code's own default.`),
   permissionMode: z.enum(PERMISSION_MODES as [PermissionMode, ...PermissionMode[]]).optional().describe('Permission mode for its new sessions: plan, default (Ask), acceptEdits or auto.'),
   account: z.string().min(1).nullable().optional().describe('The Claude account its manager and sessions run on, by name as added in Ledung; null: the computer\'s own login.'),

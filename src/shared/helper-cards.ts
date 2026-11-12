@@ -28,5 +28,14 @@ export type HelperCard = z.infer<typeof CardSchema>
   /** Ledung's own: the review of a proposed workflow (propose_workflow). */
   | { kind: 'review'; title: string; text?: string; question: number; project: string };
 
+/** Words a card may not start a title or option with: they read as Ledung's own approval (review of part 1). */
+const APPROVAL_WORDS = /^\s*\**\s*(allow|approve|approved|deny|denied|confirm order)\b/i;
+
+/** The words of a card that read as an approval, or null. */
+export function cardLooksLikeApproval(card: z.infer<typeof CardSchema>): string | null {
+  const words = [card.title, ...(card.kind === 'choice' ? card.options.map((o) => o.label) : [])];
+  return words.find((w) => APPROVAL_WORDS.test(w)) ?? null;
+}
+
 /** A card as stored in the conversation (message kind "card"). */
 export interface CardMessageData { card: HelperCard }

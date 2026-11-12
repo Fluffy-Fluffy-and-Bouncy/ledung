@@ -115,7 +115,7 @@ import type { FlowProposal } from '../shared/flow-proposal.ts';
 
 import { helperFolder, HELPER_BUILT_IN_TOOLS, HELPER_DEFAULT_MODEL, HELPER_MODELS, HELPER_PROFILE, setupKickoff, setupPromptLine } from './helper.ts';
 import type { HelperHandlers } from './helper-tools.ts';
-import { CardSchema, type HelperCard } from '../shared/helper-cards.ts';
+import { cardLooksLikeApproval, CardSchema, type HelperCard } from '../shared/helper-cards.ts';
 import { isSetupStep, markProblem, setupView, type HelperInfo, type SetupFacts, type SetupPhase, type SetupState, type SetupStepId, type SetupView } from '../shared/setup.ts';
 import { ASKED_KEY as SHORTCUTS_ASKED_KEY } from '../platform/shortcuts.ts';
 import { NOTICE_KEY as CHECKIN_NOTICE_KEY } from '../update/checkin.ts';
@@ -128,6 +128,8 @@ const USER_NAME_KEY = 'user-name';
 const HELPER_MODEL_KEY = 'helper-model';
 /** The config's userName when it sets none (config.ts): then the name given in setup stands. */
 const DEFAULT_USER_NAME = 'the user';
+/** A name given in Ledung: letters (any script), with spaces, ".", "'" or "-" between them. */
+const USER_NAME = /^[\p{L}\p{M}][\p{L}\p{M} .'’-]{0,39}$/u;
 
 /** Ledung's own plugin with the "workflow building" skill (part 3e, #1577), shipped beside src/ and web/. */
 export const WORKFLOW_PLUGIN = () => path.join(appDir(), 'plugins', 'ledung-workflow');
@@ -240,7 +242,9 @@ export class SessionManager {
 
   constructor(config: LedungConfig, store: Store, publish: (event: ServerEvent) => void) {
     // The name given in the setup, when the config sets none: before anything takes the name (ledung-helper.md).
-    const given = config.userName === DEFAULT_USER_NAME ? store.getMeta(USER_NAME_KEY) : null;
+    // A name in the config always wins, also over one given later (review of part 1, finding 2).
+    this.configNamed = config.userName !== DEFAULT_USER_NAME;
+    const given = this.configNamed ? null : store.getMeta(USER_NAME_KEY);
     if (given) config.userName = given;
     this.config = config;
     this.store = store;
@@ -2501,11 +2505,24 @@ export class SessionManager {
 
   /**
    * The setup's page actions: welcome (on to the Claude check), claude (the check passed: the helper starts), again
-   * (Settings' Run setup again), finish (the hand-over card), leave (out of the setup, from any step).
+   * (Settings' Run setup again), finish (the hand-over card), leave (out of the setup, from any step); and the step
+   * bar's own: mark (a step done or skipped, as the helper's setup_step), name (the person's name, typed in the bar).
    */
-  async setupAction(action: unknown): Promise<HelperInfo> {
+  async setupAction(action: unknown, body: { step?: unknown; mark?: unknown; name?: unknown } = {}): Promise<HelperInfo> {
     const state = this.setupState();
     switch (action) {
+      case 'mark': {
+        if (state.phase !== 'helper') throw new UserError('No setup is under way.');
+        if (!isSetupStep(body.step) || (body.mark !== 'done' && body.mark !== 'skipped')) throw new UserError('Name a step, and done or skipped.');
+        const problem = markProblem(body.step, body.mark, this.setupFacts(state));
+        if (problem) throw new UserError(problem);
+        this.saveSetup({ ...state, marks: { ...state.marks, [body.step]: body.mark } });
+        return this.helperInfo();
+      }
+      case 'name':
+        if (typeof body.name !== 'string') throw new UserError('Give a name.');
+        this.setUserName(body.name);
+        return this.helperInfo();
       case 'welcome':
         if (state.phase !== 'welcome') throw new UserError('The welcome is over.');
         this.saveSetup({ ...state, phase: 'claude' });
@@ -2526,21 +2543,33 @@ export class SessionManager {
         this.saveSetup({ ...state, phase: 'done' });
         return this.helperInfo();
       default:
-        throw new UserError('The action is welcome, claude, again, finish or leave.');
+        throw new UserError('The action is welcome, claude, again, finish, leave, mark or name.');
     }
   }
 
-  /** The name the person gave: kept in Ledung's data, used where the config names none (no API writes the config). */
+  /** The config named the person: then no name given in Ledung stands. */
+  private readonly configNamed: boolean;
+
+  /**
+   * The name the person gave: kept in Ledung's data, used where the config names none (no API writes the config). It
+   * goes into every session's instructions, so only letters, spaces and . ' - (review of part 1, finding 1).
+   */
   setUserName(name: string): string {
     const clean = name.replace(/\s+/g, ' ').trim();
-    if (!clean || clean.length > 60) throw new UserError('Give a name of 1 to 60 characters.');
-    if (this.config.userName !== DEFAULT_USER_NAME && this.store.getMeta(USER_NAME_KEY) === null) {
+    if (!USER_NAME.test(clean)) throw new UserError('Give a name of 1 to 40 letters, with spaces, ".", "\'" or "-" between them.');
+    if (this.configNamed) {
       throw new UserError(`The config file names you "${this.config.userName}"; change it there (Settings → Config file).`);
     }
     this.store.setMeta(USER_NAME_KEY, clean);
     this.config.userName = clean;
     this.publishHelper();
     return clean;
+  }
+
+  /** A change the helper made, said in its chat as an event, and the tool's answer passed on. */
+  private helperNoted(helperId: string, out: string): string {
+    if (out.startsWith('Saved ')) this.publish({ type: 'message', message: this.store.addMessage(helperId, 'event', { text: `Ledung Helper: ${out.split('. ')[0]}.` }) });
+    return out;
   }
 
   /** A card in the helper's chat (ledung-helper.md). */
@@ -2576,7 +2605,12 @@ export class SessionManager {
           ? `Marked. Now step ${v.index} of ${v.total}: ${v.steps.find((s) => s.id === v.current)!.label} ("${v.current}").`
           : `Marked. All steps are through: tell ${this.config.userName} in one sentence; Ledung shows the hand-over card.`;
       },
-      setUserName: (name) => `Ledung calls them "${this.setUserName(name)}" now.`,
+      // Only the setup's name step, unasked; afterwards the person types it in the step bar or the config (review of part 1, finding 1).
+      setUserName: (name) => {
+        const v = this.setupView();
+        if (v.phase !== 'helper' || v.current !== 'name') throw new Error(`Only during the setup's name step. ${this.config.userName} can set "userName" in the config file (Settings → Config file).`);
+        return `Ledung calls them "${this.setUserName(name)}" now.`;
+      },
       listProjects: () => m.listProjects(id),
       addProject: async (args) => {
         const out = await m.addProject(id, args);
@@ -2589,8 +2623,9 @@ export class SessionManager {
         return out;
       },
       projectSettings: (project) => m.projectSettings(id, project),
-      setProjectSettings: (patch) => m.setProjectSettings(id, patch),
-      setProjectBasics: (patch) => m.setProjectBasics(id, patch),
+      // Each change shows in the helper's chat, asked or not, so nothing changes unseen (review of part 1, finding 4).
+      setProjectSettings: (patch) => this.helperNoted(id, m.setProjectSettings(id, patch)),
+      setProjectBasics: (patch) => this.helperNoted(id, m.setProjectBasics(id, patch)),
       workflowFiles: async (name) => {
         const project = this.projectStore.get(name)?.config;
         if (!project) throw new Error(`There is no project named "${name}". Use list_projects.`);
@@ -2606,6 +2641,8 @@ export class SessionManager {
       showCard: (card) => {
         const parsed = CardSchema.safeParse(card);
         if (!parsed.success) throw new Error(`This card can't be shown: ${parsed.error.issues[0]?.message ?? 'not valid'}.`);
+        const fake = cardLooksLikeApproval(parsed.data);
+        if (fake) throw new Error(`This card can't be shown: "${fake}" reads as an approval, and approvals are Ledung's own cards. Call the tool that needs it; Ledung asks.`);
         this.addCard(id, parsed.data);
         return 'The card is shown. End your turn now; the pick comes back as their message.';
       },
@@ -3508,6 +3545,8 @@ ${firstMessage}`);
 
   async setPermissionMode(id: string, mode: string): Promise<void> {
     if (!PERMISSION_MODES.includes(mode as PermissionMode)) throw new UserError(`Unknown permission mode "${mode}".`);
+    // The Ledung Helper stays on Ask (review of part 1): what it does is always the person's to see.
+    if (this.store.getSession(id)?.project === HELPER) throw new UserError('The Ledung Helper always runs in Ask.');
     try {
       await this.liveSession(id).setPermissionMode(mode as PermissionMode, 'user');
     } catch (e) {
