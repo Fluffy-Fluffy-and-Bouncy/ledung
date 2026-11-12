@@ -139,7 +139,8 @@ How the relay does it:
   the same refusal.
 - **Abuse limits:** a wrong admin key or a bad code counts as a failed attempt from that address,
   like a wrong agent secret, and `limits.failedAttemptsPerAddress` of them turn the address away
-  for `limits.attemptWindowSeconds`. Bodies are at most 4 KB, and at most 100 invites are open at
+  for `limits.attemptWindowSeconds`: while it is turned away, a wrong key or code is answered 429
+  and still counts, and the right admin key or a valid code still gets through. Bodies are at most 4 KB, and at most 100 invites are open at
   once. Neither the key, a token nor a secret is logged.
 - **What is kept:** `relay.invites.json` beside the store (`RELAY_INVITES` moves it), written the
   same way: open invites with only their token's SHA-256, and the computers that joined, with their
@@ -188,11 +189,15 @@ on to Caddy as before (`docs/steps/relay-e2e.md`, piece 1, and the spike's Caddy
 
 `limits` in the config: the largest message an agent may send (`maxFrameBytes`), phone connections
 open at once through one Ledung (`maxStreamsPerAgent`), failed agent sign-ins from one address
-before it is turned away (`failedAttemptsPerAddress` within `attemptWindowSeconds`), and what an
+before it is turned away (`failedAttemptsPerAddress` within `attemptWindowSeconds`; the secret is
+checked first, so an agent with the right one still connects from a turned-away address, and only
+wrong ones are refused), and what an
 owner past their monthly cap is slowed to (`capThrottleBytesPerSecond`, below). A request head
 over 16 KiB, or one that takes longer than `headTimeoutMs` (10 seconds) to arrive, is dropped. On the passthrough
 listener the same goes for the PROXY header and ClientHello, and a ClientHello split over several
-TLS records is refused (legal, but rare).
+TLS records is refused (legal, but rare). A stream whose far side keeps sending after it was asked
+to pause is reset once 32 MiB of it wait to be written, and logged as `stream reset` with
+`reason="ignored pause"`.
 
 ## Bytes per owner and caps
 

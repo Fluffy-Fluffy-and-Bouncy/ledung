@@ -812,6 +812,89 @@ export interface MachineInfo {
   limit: number;
   /** Session ids waiting for a free place, in the order they will start. */
   line: string[];
+  /** Resource limits, reservations and their line (docs/steps/resource-limits.md); left out by an older Ledung. */
+  resources?: ResourcesInfo;
+}
+
+/**
+ * Amounts by resource: "cpu" (% of the whole PC), "ram" (bytes), "gpu:<id>" (% load of that GPU), "vram:<id>"
+ * (bytes of that GPU's memory).
+ */
+export type ResourceAmounts = Record<string, number>;
+
+export interface ResourcesInfo {
+  /** The limits set, by resource; a resource left out has none. */
+  limits: ResourceAmounts;
+  settings: { averageSec: number; marginPoints: number; overSec: number };
+  threads: number;
+  memTotal: number;
+  /** The PC's moving averages, by resource. */
+  average: ResourceAmounts;
+  /** What going jobs have reserved and don't use yet. */
+  reserved: ResourceAmounts;
+  gpus: { id: string; name: string; vramTotal: number | null; load: number; vramUsed: number | null; main: boolean }[];
+  /** Why there are no GPU limits, when there are none ("GPU limits off: …"). */
+  gpuNote: string | null;
+  line: ResourceLineInfo[];
+  jobs: ResourceJobInfo[];
+  /** Sessions over the allowance with no reservation. */
+  unreserved: { sessionId: string; using: ResourceAmounts; overSince: number | null; overDims: string[]; lowered: boolean }[];
+}
+
+export interface ResourceLineInfo {
+  /** A reservation's id ("r12"), or a new session's id. */
+  id: string;
+  sessionId: string;
+  what: string;
+  kind: 'job' | 'session';
+  need: ResourceAmounts;
+  /** "Waiting for GPU room: needs ~100%, limit 50%: only a higher limit lets it start". */
+  reason: string;
+  /** The same without other sessions' job names or titles, for sessions and managers. */
+  reasonForSessions: string;
+  place: number;
+  since: number;
+}
+
+export interface ResourceJobInfo {
+  id: string;
+  sessionId: string;
+  /** The session's own words for it: shown as plain text. */
+  what: string;
+  granted: ResourceAmounts;
+  /** Its moving averages. */
+  using: ResourceAmounts;
+  learnedRuns: number;
+  state: 'going' | 'over' | 'paused';
+  overSince: number | null;
+  overDims: string[];
+  lowered: boolean;
+  /** Lowered and this OS doesn't let Ledung raise it again (macOS, Linux). */
+  loweredStays: boolean;
+  processes: number;
+  goAt: number;
+  minutes: number | null;
+  /** An addition to it waiting in line. */
+  waitingExtra: ResourceAmounts | null;
+}
+
+/** A kind of reserved job and what it used (the usage page). */
+export interface JobKindInfo {
+  project: string;
+  kind: string;
+  runs: number;
+  asked: ResourceAmounts;
+  learned: ResourceAmounts;
+  underDeclared: number;
+  lastAt: number;
+}
+
+export interface HeavyCommandInfo {
+  project: string;
+  command: string;
+  runs: number;
+  peak: ResourceAmounts;
+  never: boolean;
 }
 
 /** What one turn used (step 6c). */
@@ -1280,6 +1363,31 @@ export interface ConfigStatus {
   restartFor: string[];
 }
 
+/**
+ * The one thing a page sends on the live connection (issue #231): which session it shows, so Ledung sends it that
+ * session's messages and no other's. Null: none. Everything else the page does goes through the API.
+ */
+export type PageEvent = { type: 'watch'; sessionId: string | null };
+
+/** The longest session id a watch may name; Ledung's own ids are far shorter. */
+export const WATCH_ID_MAX = 200;
+
+/** A watch read from the live connection, or null for anything else (which closes the connection). */
+export function parseWatch(text: string): PageEvent | null {
+  let v: unknown;
+  try {
+    v = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return null;
+  const { type, sessionId, ...rest } = v as Record<string, unknown>;
+  if (type !== 'watch' || Object.keys(rest).length) return null;
+  if (sessionId === null) return { type, sessionId };
+  if (typeof sessionId !== 'string' || !sessionId || sessionId.length > WATCH_ID_MAX) return null;
+  return { type, sessionId };
+}
+
 export type ServerEvent =
   /** A session's locked secrets changed (issue #468): names and lifetimes, never a value. */
   | { type: 'secrets'; sessionId: string; secrets: SecretInfo[] }
@@ -1347,7 +1455,13 @@ export type ServerEvent =
   | { type: 'chats'; chats: ChatsInfo }
   | { type: 'computers'; computers: ComputerInfo[] }
   | { type: 'session'; session: SessionInfo }
+  /** A new message of a session: only to the pages that show that session, see PageEvent (issue #231). */
   | { type: 'message'; message: StoredMessage }
+  /**
+   * Ledung now sends this connection the messages of `sessionId` only (none for null): the answer to a watch, sent in
+   * order on the same connection, so a page that reads the session's messages after it misses none (issue #231).
+   */
+  | { type: 'watching'; sessionId: string | null }
   | { type: 'permission'; permission: PermissionInfo }
   | { type: 'question'; question: QuestionInfo }
   | { type: 'limits'; limits: LimitInfo[] }

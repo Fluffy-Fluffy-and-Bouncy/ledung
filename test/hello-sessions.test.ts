@@ -1,8 +1,9 @@
 // What hello carries of the sessions, and how the page keeps its Archived (N) counts right (issue #229, audit O8).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { archivedCount, fetchesArchived, helloSessions, RECENT_ARCHIVED_MS, withArchived, withSession } from '../src/shared/hello-sessions.ts';
-import type { SessionInfo } from '../src/shared/protocol.ts';
+import { fetchesArchived, helloSessions, RECENT_ARCHIVED_MS, withArchived, withSession, type KnownSessions } from '../src/shared/hello-sessions.ts';
+import type { ProjectInfo, SessionInfo } from '../src/shared/protocol.ts';
+import { REMOVED_PROJECTS, sidebarTree } from '../web/src/sessionTree.ts';
 
 const NOW = 1_800_000_000_000;
 const DAY = 24 * 60 * 60 * 1000;
@@ -13,6 +14,13 @@ function s(id: string, opts: { project?: string; archivedAt?: number | null; par
 }
 
 const ids = (list: SessionInfo[]) => list.map((x) => x.id);
+
+/** A sidebar group's Archived (N), as the sidebar builds it from what the page knows; projects p and q exist. */
+function archivedIn(known: KnownSessions, group = 'p'): number {
+  const projects = ['p', 'q'].map((name) => ({ name, managerId: null }) as unknown as ProjectInfo);
+  const tree = sidebarTree(known.sessions, projects, new Set(['p', 'q']), known.olderArchived);
+  return tree.groups.find((g) => g.name === group)?.archived ?? 0;
+}
 
 test('hello keeps sessions not archived and those archived within the window; older archived ones are counted by project', () => {
   const all = [
@@ -55,22 +63,21 @@ test('a parent loop in the data does not hang the selection', () => {
 test("a group's Archived count adds what the page has and what hello only counted", () => {
   const list = [s('x'), s('a1', { archivedAt: NOW - 1000 }), s('a2', { project: 'q', archivedAt: NOW - 1000 })];
   const older = { p: 4, q: 2, gone: 3 };
-  assert.equal(archivedCount(list, older, (project) => project === 'p'), 5);
-  assert.equal(archivedCount(list, older, (project) => project === 'q'), 3);
-  // A group of several projects, as "Removed projects" is: every project not known.
-  assert.equal(archivedCount(list, older, (project) => project !== 'p' && project !== 'q'), 3);
-  assert.equal(archivedCount(list, {}, (project) => project === 'p'), 1);
+  assert.equal(archivedIn({ sessions: list, olderArchived: older }, 'p'), 5);
+  assert.equal(archivedIn({ sessions: list, olderArchived: older }, 'q'), 3);
+  // A group of several projects, as "Removed projects" is: every project not known, shown for its count alone.
+  assert.equal(archivedIn({ sessions: list, olderArchived: older }, REMOVED_PROJECTS), 3);
+  assert.equal(archivedIn({ sessions: list, olderArchived: {} }, 'p'), 1);
 });
 
 test('the counts before and after fetching the archived list are the same, and the old total is what hello left out', () => {
   const all = [s('live'), s('recent', { archivedAt: NOW - 1000 }), ...Array.from({ length: 5 }, (_, i) => s(`old${i}`, { archivedAt: NOW - (2 + i) * DAY }))];
   const hello = helloSessions(all, [], NOW);
-  const inP = (project: string) => project === 'p';
-  assert.equal(archivedCount(hello.sessions, hello.olderArchived, inP), 6);
+  assert.equal(archivedIn(hello), 6);
   const fetched = withArchived(hello, all.filter((x) => x.archivedAt));
   assert.equal(fetched.sessions.length, all.length, 'every session, none twice');
   assert.deepEqual(fetched.olderArchived, {});
-  assert.equal(archivedCount(fetched.sessions, fetched.olderArchived, inP), 6);
+  assert.equal(archivedIn(fetched), 6);
 });
 
 test('fetching the archived list keeps the newer copy the page already has', () => {
@@ -99,10 +106,10 @@ test('a session hello only counted, resumed or unarchived, moves from the count 
   const back = withSession(hello, s('old', { archivedAt: null, createdAt: NOW - 4 * DAY }), NOW);
   assert.deepEqual(ids(back.sessions), ['old', 'a']);
   assert.deepEqual(back.olderArchived, { p: 0 });
-  assert.equal(archivedCount(back.sessions, back.olderArchived, () => true), 0, 'counted once, not twice');
+  assert.equal(archivedIn(back), 0, 'counted once, not twice');
   // Still archived but changed (its pull request, say): in the list now, so out of the count too.
   const changed = withSession(hello, s('old', { archivedAt: NOW - 3 * DAY, createdAt: NOW - 4 * DAY }), NOW);
-  assert.equal(archivedCount(changed.sessions, changed.olderArchived, () => true), 1);
+  assert.equal(archivedIn(changed), 1);
 });
 
 test("a session made just before hello, on a clock up to half the window off, is new, not a counted one", () => {

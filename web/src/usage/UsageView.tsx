@@ -6,9 +6,11 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { projectLabel, type MachineInfo, type Overview, type SessionInfo, type UsageFilter, type UsagePeriod, type UsageReport } from '../../../src/shared/protocol.ts';
 import { api } from '../api.ts';
+import { pollWhileShown } from '../pollShown.ts';
 import { formatTime } from '../components/MessageList.tsx';
 import { colorMap, formatCost, formatTokens, Legend, pct, StackedBars, Tile, TRIGGER_LABEL, TRIGGERS } from './charts.tsx';
 import { TypicalCosts } from './MachinePanel.tsx';
+import { ReservedJobs } from './ReservedJobs.tsx';
 import { SessionsTab } from './SessionsTab.tsx';
 import { SharedUsage } from './SharedUsage.tsx';
 
@@ -73,11 +75,16 @@ function ComputerUsage({ onOpenSession }: { onOpenSession: (id: string) => void 
 
   useEffect(() => {
     let current = true;
-    api.usage(filter).then((r) => current && setReport(r), (e: Error) => current && setError(e.message));
-    const timer = setInterval(() => api.usage(filter).then((r) => current && setReport(r), () => {}), 30000);
+    // The first read says when it fails; a refresh that fails keeps what is shown. None while the page is hidden (#233).
+    let first = true;
+    const stop = pollWhileShown(() => {
+      const shownError = first;
+      first = false;
+      return api.usage(filter).then((r) => current && setReport(r), (e: Error) => current && shownError && setError(e.message));
+    }, 30000);
     return () => {
       current = false;
-      clearInterval(timer);
+      stop();
     };
   }, [filter]);
 
@@ -222,6 +229,7 @@ function ComputerUsage({ onOpenSession }: { onOpenSession: (id: string) => void 
         </div>
       </section>
       <TypicalCosts />
+      <ReservedJobs />
     </div>
   );
 }

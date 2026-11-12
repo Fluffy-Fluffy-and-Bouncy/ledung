@@ -8,6 +8,7 @@ import {
 } from '../src/sessions/pr-poll.ts';
 import type { GitHubBudget, PullRequestInfo } from '../src/shared/protocol.ts';
 import { githubBudgetLine, githubBudgetsShown } from '../web/src/githubBudget.ts';
+import { parseConfig, SETTING_RELOAD } from '../src/config.ts';
 
 const URL_LINE = 'remote.origin.url https://github.com/acme/app.git';
 const SHA = 'a'.repeat(40);
@@ -56,7 +57,9 @@ test('GitHub remote URLs in their usual forms', () => {
   assert.deepEqual(parseRemoteUrl('https://user@github.com/acme/app.git/'), app);
   assert.deepEqual(parseRemoteUrl('git@github.com:acme/app.git'), app);
   assert.deepEqual(parseRemoteUrl('ssh://git@ssh.github.com:443/acme/app.git'), app);
-  assert.deepEqual(parseRemoteUrl('https://github.example.com/team/tool.git'), { host: 'github.example.com', owner: 'team', name: 'tool' });
+  // An Enterprise host only when the config names it, exactly (audit L16).
+  assert.deepEqual(parseRemoteUrl('https://github.example.com/team/tool.git', ['GitHub.Example.com']), { host: 'github.example.com', owner: 'team', name: 'tool' });
+  assert.equal(parseRemoteUrl('https://github.example.com/team/tool.git'), null);
   assert.equal(parseRemoteUrl('C:/repos/app'), null);
   assert.equal(parseRemoteUrl('https://gitlab.com/acme/app.git'), null);
 });
@@ -142,8 +145,10 @@ const REST_RESET = Math.floor(Date.parse(RESET) / 1000);
 interface Fake extends PrSource { state: GitState | null }
 
 /** A world of fake sessions sharing one gh: every gh call is recorded; `graphql` answers queries. */
-function world(opts: { rest?: number; graphql?: (query: string) => string } = {}) {
+function world(opts: { rest?: number; graphql?: (query: string) => string; enterpriseHosts?: string[] } = {}) {
   const calls: string[] = [];
+  /** Every gh call's --hostname, or "-" for none (github.com). */
+  const hostnames: string[] = [];
   const shown: [string, PullRequestInfo | null][] = [];
   const budgets: GitHubBudget[][] = [];
   const timers: { fn: () => void; ms: number; cancelled: boolean }[] = [];
@@ -156,6 +161,8 @@ function world(opts: { rest?: number; graphql?: (query: string) => string } = {}
       return this.state;
     },
     async ghApi(args: string[], input: string | null): Promise<GhAnswer> {
+      const at = args.indexOf('--hostname');
+      hostnames.push(at < 0 ? '-' : args[at + 1]!);
       if (args[0] === 'rate_limit') {
         calls.push(`${scope} rate_limit`);
         return { ok: true, stdout: JSON.stringify({ resources: { graphql: { remaining: rest, limit: 5000, reset: REST_RESET } } }) };
@@ -168,6 +175,7 @@ function world(opts: { rest?: number; graphql?: (query: string) => string } = {}
   const poller = new PullRequestPoller({
     show: (id, pr) => shown.push([id, pr]),
     onBudget: (b) => budgets.push(b),
+    ...(opts.enterpriseHosts ? { enterpriseHosts: () => opts.enterpriseHosts! } : {}),
     now: () => NOW,
     schedule: (fn, ms) => {
       const t = { fn, ms, cancelled: false };
@@ -176,7 +184,7 @@ function world(opts: { rest?: number; graphql?: (query: string) => string } = {}
     },
   });
   return {
-    poller, calls, shown, budgets, timers, source,
+    poller, calls, hostnames, shown, budgets, timers, source,
     setRest: (n: number) => (rest = n),
     setGraphql: (f: (query: string) => string) => (graphql = f),
     graphqlCalls: () => calls.filter((c) => c.includes(' graphql ')),
@@ -219,6 +227,32 @@ test('a round per repo, and per gh login: a container\'s sessions use its own', 
   await w.poller.run('soon');
   assert.deepEqual(w.calls.sort(), ['docker:box graphql acme/app', 'docker:box rate_limit', 'local graphql acme/app', 'local graphql acme/other', 'local rate_limit']);
   assert.deepEqual(w.poller.budgets().map((b) => b.container).sort(), ['box', null]);
+});
+
+test('audit L16: a remote whose host only looks like GitHub is never asked about; github.com and a configured Enterprise host are', async () => {
+  const on = (url: string) => ({ ...git('am/x', ['am/x']), config: `remote.origin.url ${url}\n` });
+  const lookalikes = ['git@evilgithub.example:o/r', 'https://github.com.example.net/o/r', 'https://notgithub.com/o/r.git', 'https://github.example.com/o/r'];
+  const w = world({ graphql: allAre(null) });
+  for (const [i, url] of lookalikes.entries()) w.poller.watch(`x${i}`, w.source(on(url)));
+  await w.poller.run('soon');
+  assert.deepEqual(w.calls, [], 'no gh call at all, so no token sent anywhere');
+  assert.deepEqual(w.hostnames, []);
+  for (const [i] of lookalikes.entries()) assert.deepEqual(prTarget(on(lookalikes[i]!)), { skip: 'remote', branch: 'am/x' });
+  // The positive branch: github.com, and the Enterprise host once the config names it, are asked about.
+  const ok = world({ graphql: allAre(null), enterpriseHosts: ['github.example.com'] });
+  ok.poller.watch('gh', ok.source(on('git@github.com:acme/app.git')));
+  ok.poller.watch('ghe', ok.source(on('https://github.example.com/team/tool.git')));
+  ok.poller.watch('evil', ok.source(on('git@evilgithub.example:o/r')));
+  await ok.poller.run('soon');
+  assert.deepEqual(ok.calls.sort(), ['local graphql acme/app', 'local graphql team/tool', 'local rate_limit', 'local rate_limit']);
+  assert.deepEqual([...new Set(ok.hostnames)].sort(), ['-', 'github.example.com']);
+});
+
+test('audit L16: the config lists Enterprise hosts by name, read live; none by default', () => {
+  assert.deepEqual(parseConfig({}).githubHosts, []);
+  assert.deepEqual(parseConfig({ githubHosts: [' GitHub.Example.com '] }).githubHosts, ['github.example.com']);
+  assert.throws(() => parseConfig({ githubHosts: ['https://github.example.com/'] }), /host name/);
+  assert.equal(SETTING_RELOAD.githubHosts, 'live');
 });
 
 test('a merged or closed pull request is not asked about again until the branch moves', async () => {

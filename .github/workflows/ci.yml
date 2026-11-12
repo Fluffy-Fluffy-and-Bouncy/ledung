@@ -5,6 +5,7 @@ name: CI
 # The triggers keep the earlier limits: Windows per PR update and push to main, macOS weekly and by
 # hand, nothing for docs-only or site-only changes.
 # Sessions run `npm run check` locally before every push, so CI is the last net, not the first.
+# Actions are pinned to a full commit SHA, the tag in a comment (audit L19): a tag can be moved, a SHA can't.
 on:
   pull_request:
     paths-ignore: ['**.md', 'docs/**', 'site/**']
@@ -20,6 +21,10 @@ on:
         type: boolean
         default: false
 
+# Read-only: CI only checks out and tests, so its token may change nothing (audit L19).
+permissions:
+  contents: read
+
 # A newer push to the same PR or branch cancels the run it supersedes.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -31,8 +36,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: npm
@@ -53,8 +58,8 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: npm

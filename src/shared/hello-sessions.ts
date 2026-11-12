@@ -31,13 +31,6 @@ export function helloSessions(all: SessionInfo[], named: Iterable<string>, now: 
   return { sessions: all.filter((s) => keep.has(s.id)), olderArchived };
 }
 
-/** The archived sessions in a group: those the page has, and those hello only counted. inGroup: is a project in it. */
-export function archivedCount(sessions: SessionInfo[], olderArchived: Record<string, number>, inGroup: (project: string) => boolean): number {
-  let n = sessions.filter((s) => s.archivedAt && inGroup(s.project)).length;
-  for (const [project, count] of Object.entries(olderArchived)) if (inGroup(project)) n += count;
-  return n;
-}
-
 /**
  * Whether the page fetches every archived session: while hello has left some out, when a project's Archived list is
  * open ("a:<name>"), or when a session's link names one the page lacks once hello has come (an old archived one).

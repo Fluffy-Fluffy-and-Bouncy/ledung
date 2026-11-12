@@ -244,12 +244,23 @@ export class Store {
     this.db.prepare(sql).run(...values, id);
   }
 
-  /** What one turn used (step 6c). */
-  addTurnResource(t: TurnResource & { project: string; role: string; cpuSeconds: number; samples: number }): void {
+  /** What one turn used (step 6c), and the spans it waited on a pause or a usage stop (issue #254). */
+  addTurnResource(t: TurnResource & { project: string; role: string; cpuSeconds: number; samples: number; waits?: [number, number][] }): void {
     this.db
-      .prepare(`INSERT INTO turn_resources (session_id, project, role, model, trigger, started_at, duration_ms, cpu_seconds, peak_cores, peak_mem, samples, commands)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(t.sessionId, t.project, t.role, t.model, t.trigger, t.startedAt, Math.round(t.durationMs), t.cpuSeconds, t.peakCores, Math.round(t.peakMem), t.samples, JSON.stringify(t.commands));
+      .prepare(`INSERT INTO turn_resources (session_id, project, role, model, trigger, started_at, duration_ms, cpu_seconds, peak_cores, peak_mem, samples, commands, waits)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(t.sessionId, t.project, t.role, t.model, t.trigger, t.startedAt, Math.round(t.durationMs), t.cpuSeconds, t.peakCores, Math.round(t.peakMem), t.samples,
+        JSON.stringify(t.commands), t.waits?.length ? JSON.stringify(t.waits) : null);
+  }
+
+  /** When the session's turn under way began (issue #254), kept so a turn that runs across a restart is measured whole; null: none. */
+  setTurnStart(sessionId: string, at: number | null): void {
+    this.db.prepare('UPDATE sessions SET turn_started_at = ? WHERE id = ?').run(at, sessionId);
+  }
+
+  turnStart(sessionId: string): number | null {
+    const r = this.db.prepare('SELECT turn_started_at FROM sessions WHERE id = ?').get(sessionId) as { turn_started_at: number | null } | undefined;
+    return r?.turn_started_at == null ? null : Number(r.turn_started_at);
   }
 
   /** Turn records, newest last: one session's, or every session's since a time. */
@@ -370,6 +381,16 @@ export class Store {
       ? this.db.prepare('SELECT * FROM messages WHERE session_id = ? AND id < ? ORDER BY id DESC LIMIT ?').all(sessionId, opts.beforeId, limit)
       : this.db.prepare('SELECT * FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT ?').all(sessionId, limit);
     return rows.map(toMessage).reverse();
+  }
+
+  /**
+   * The user messages stored in a session after `since`, oldest first: the words the hooks that look for the
+   * person's word read on every manager tool call (issue #232), by the index on them instead of the newest 400
+   * messages of every kind filtered afterwards.
+   */
+  userMessagesSince(sessionId: string, since: number): StoredMessage[] {
+    return this.db.prepare(`SELECT * FROM messages WHERE session_id = ? AND kind = 'user' AND at > ? ORDER BY id ASC`)
+      .all(sessionId, since).map(toMessage);
   }
 
   /** The session's replies stored from `from` until before `to`, oldest first: a source named by its time (issue #369). */
@@ -546,6 +567,10 @@ export class Store {
     return r?.value ?? null;
   }
 
+  deleteMeta(key: string): void {
+    this.db.prepare('DELETE FROM meta WHERE key = ?').run(key);
+  }
+
   setMeta(key: string, value: string): void {
     this.db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value').run(key, value);
   }
@@ -646,6 +671,17 @@ export class Store {
   answeredSince(sessionId: string, since: number): QuestionInfo[] {
     return this.db.prepare(`SELECT * FROM questions WHERE session_id = ? AND status = 'answered' AND answered_at > ? ORDER BY answered_at DESC`)
       .all(sessionId, since).map((r) => toQuestion({ ...(r as Row), earlier: null, sources: null }));
+  }
+
+  /**
+   * A session's questions about an auto mode classifier refusal (issue #104), open ones first (oldest first), then
+   * the rest newest first, without their stored context: read when a refusal comes in (issue #232). The match on
+   * the stored details only narrows the read; the caller still checks each one is a refusal.
+   */
+  refusalQuestions(sessionId: string): QuestionInfo[] {
+    return this.db.prepare(`SELECT * FROM questions WHERE session_id = ? AND details LIKE '%"refusal"%'
+      ORDER BY status = 'open' DESC, CASE WHEN status = 'open' THEN asked_at END ASC, COALESCE(answered_at, asked_at) DESC`)
+      .all(sessionId).map((r) => toQuestion({ ...(r as Row), earlier: null, sources: null }));
   }
 
   /** The hashes of the container file copies any question names (issue #122): its screenshots or review evidence. */

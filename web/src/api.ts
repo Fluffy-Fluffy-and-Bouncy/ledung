@@ -9,6 +9,7 @@ import type {
   SkillListView, SignInProblem,
   ShortcutAction, ShortcutsView,
   CheckInAction, CheckInView,
+  HeavyCommandInfo, JobKindInfo,
 } from '../../src/shared/protocol.ts';
 import type { ProjectColours } from '../../src/shared/name-colours.ts';
 import type { ComputerColour, ComputerInfo } from '../../src/shared/computers.ts';
@@ -321,6 +322,8 @@ export const api = {
   runs: (project: string) => call<FlowRun[]>('GET', `/api/projects/${encodeURIComponent(project)}/runs`),
   /** ledung#110: takes away the project's own flow, so the shared workflow's counts again; the workflow as it then reads. */
   backToShared: (project: string, versions: Record<string, string>) => call<FlowView>('POST', `/api/projects/${encodeURIComponent(project)}/flow/back-to-shared`, { versions }),
+  /** "Not now" on "Record where this came from" (workflow-origin.md, section 4): not offered again for the project. */
+  dismissOrigin: (project: string) => call<FlowView>('POST', `/api/projects/${encodeURIComponent(project)}/flow/dismiss-origin`),
   /** The person stops a run from the Runs list. */
   stopRun: (project: string, run: string) => call<void>('POST', `/api/projects/${encodeURIComponent(project)}/runs/${encodeURIComponent(run)}/stop`),
   /** Starts a queued run past its limit (part 3f). */
@@ -331,6 +334,15 @@ export const api = {
   saveFlow: (project: string, files: FlowFileWrite[]) => call<FlowView>('POST', `/api/projects/${encodeURIComponent(project)}/flow`, { files }),
   machine: () => call<MachineInfo>('GET', '/api/machine'),
   setLimit: (limit: number) => call('POST', '/api/limit', { limit }),
+  // Resource limits (docs/steps/resource-limits.md).
+  setResourceLimit: (dim: string, value: number | null) => call('POST', '/api/resource-limits', { dim, value }),
+  setResourceSettings: (settings: { averageSec?: number; marginPoints?: number; overSec?: number }) => call('POST', '/api/resource-settings', settings),
+  resourceStartNow: (id: string) => call('POST', `/api/resource-line/${encodeURIComponent(id)}/start-now`, {}),
+  pauseJob: (id: string, paused: boolean) => call('POST', `/api/jobs/${encodeURIComponent(id)}/pause`, { paused }),
+  stopJob: (id: string) => call('POST', `/api/jobs/${encodeURIComponent(id)}/stop`, {}),
+  jobKinds: () => call<{ kinds: JobKindInfo[]; commands: HeavyCommandInfo[] }>('GET', '/api/job-kinds'),
+  forgetJobKind: (project: string, kind: string) => call('POST', '/api/job-kinds-forget', { project, kind }),
+  markCommand: (project: string, command: string, never: boolean) => call('POST', '/api/heavy-commands-mark', { project, command, never }),
   setUsageStop: (account: string, kind: string, percent: number | null) => call('POST', '/api/usage-stops', { account, kind, percent }),
   liftUsageStop: (account: string, kind: string) => call('POST', '/api/usage-lift', { account, kind }),
   away: (until: string, allow: AwayKind[]) => call<AwayInfo>('POST', '/api/away', { until, allow }),

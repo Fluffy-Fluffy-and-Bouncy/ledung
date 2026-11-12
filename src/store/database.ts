@@ -711,6 +711,42 @@ const MIGRATIONS: string[] = [
   ALTER TABLE sessions ADD COLUMN requested_effort TEXT;
   ALTER TABLE sessions ADD COLUMN effort TEXT;
   `,
+  // Work time for work_history (issue #254, review of PR #260): the spans inside a turn a tool call waited on a pause or
+  // a usage stop, as JSON [[start, end], ...] (null: none, or a turn recorded before this); and when the turn now under
+  // way began, so a turn that runs across Restart Ledung is measured whole (null: none under way).
+  `
+  ALTER TABLE turn_resources ADD COLUMN waits TEXT;
+  ALTER TABLE sessions ADD COLUMN turn_started_at INTEGER;
+  `,
+  // The person's typed words in one session since a time, read on every manager tool call by the hooks that look
+  // for their word (issue #232): only user messages, so the read never walks the session's replies.
+  `CREATE INDEX messages_user_by_session ON messages(session_id, at) WHERE kind = 'user';`,
+  // Resource limits' learning (docs/steps/resource-limits.md, "Learning"): one row per finished reserved job, per
+  // stretch of unreserved heavy work, and per new session's first minutes (kind "session:<role>"); amounts are JSON
+  // by resource ("cpu", "ram", "gpu", "vram"; the GPU's id left out, so a figure outlives a reboot). And the command
+  // kinds the person said never need a reservation.
+  `
+  CREATE TABLE job_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    commands TEXT NOT NULL,
+    asked TEXT NOT NULL,
+    peak TEXT NOT NULL,
+    mean TEXT NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    over INTEGER NOT NULL,
+    undeclared INTEGER NOT NULL,
+    ended_at INTEGER NOT NULL
+  );
+  CREATE INDEX job_runs_by_kind ON job_runs(project, kind, ended_at);
+  CREATE TABLE command_marks (
+    project TEXT NOT NULL,
+    command TEXT NOT NULL,
+    never INTEGER NOT NULL,
+    PRIMARY KEY (project, command)
+  );
+  `,
 ];
 
 export function databaseFile(dir = userDataDir()): string {
