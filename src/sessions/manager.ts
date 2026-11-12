@@ -23,7 +23,7 @@ import { matchSensitive } from './sensitive.ts';
 import { AIRGAP_PROFILE, isLocked, levelProblem, lockdownOf, opensUp, othersSettings, overlapProblem, projectFolders, within } from '../projects/lockdown.ts';
 import { LATER_SUGGESTIONS, withLaterBatch, withSuggestions } from '../shared/sensitive-suggestions.ts';
 import { isNameColour, parseNameColour } from '../shared/name-colours.ts';
-import { ACCEPTED, HISTORY_DAYS, HISTORY_FULL, HISTORY_PER_PROJECT, ledungTier, questionText, reviewAnswerProblem, tiersOf, type QuestionDetails } from '../shared/questions.ts';
+import { ACCEPTED, HISTORY_DAYS, HISTORY_PER_PROJECT, ledungTier, questionText, reviewAnswerProblem, tiersOf, type QuestionDetails } from '../shared/questions.ts';
 import {
   BrowseError, createProjectFolder, defaultProjectsFolder, defaultRoots, isInside, listContainer, listContainers, listLocal,
   type ContainerInfo, type FolderListing,
@@ -1506,12 +1506,20 @@ export class SessionManager {
     return this.config.userName;
   }
 
+  /** What the page gets with every load: the open questions and the 50 most recently closed, whole. */
+  questions(): QuestionInfo[] {
+    return this.store.listQuestions();
+  }
+
   /**
-   * What the page gets: every open question, then Waiting for you history (issue #306): per project the last 100
-   * answered, or every one of the last 30 days if that is more; the newest whole, the rest light (questionHistory).
+   * Waiting for you history (issue #306), read when it opens (GET /api/question-history): per project the last 100
+   * answered, or every one of the last 30 days if that is more, light; and the sessions they name, for their names and
+   * projects, which a page load carries only for recent ones (issue #229).
    */
-  questions(now = Date.now()): QuestionInfo[] {
-    return [...this.store.listQuestions(0), ...this.store.questionHistory(HISTORY_PER_PROJECT, now - HISTORY_DAYS * 24 * 60 * 60 * 1000, HISTORY_FULL)];
+  questionHistory(now = Date.now()): { questions: QuestionInfo[]; sessions: SessionInfo[] } {
+    const questions = this.store.questionHistory(HISTORY_PER_PROJECT, now - HISTORY_DAYS * 24 * 60 * 60 * 1000);
+    const named = new Set(questions.flatMap((q) => [q.sessionId, q.addressedTo, q.answeredBy ?? '']));
+    return { questions, sessions: this.sessions().filter((s) => named.has(s.id)) };
   }
 
   /** One whole question for the page (GET /api/questions/:id): a light one from history, opened (issue #306). */

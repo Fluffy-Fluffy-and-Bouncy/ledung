@@ -50,6 +50,22 @@ function history(closed: Item[], now: number): Item[] {
   });
 }
 
+/**
+ * History read when Waiting for you opens (issue #306), added to the questions the page has: a question it has already
+ * (whole from the page load, or newer from the live connection) is never replaced by its light history entry.
+ */
+export function withHistory(have: Record<number, QuestionInfo>, history: QuestionInfo[]): Record<number, QuestionInfo> {
+  const out = { ...have };
+  for (const q of history) if (!out[q.id]) out[q.id] = q;
+  return out;
+}
+
+/** The question an opened page shows: the whole one once read, for a light history entry; else as it is. */
+export function opened(item: Item, whole: QuestionInfo | null): Item {
+  if (!item.q.light || !whole || whole.id !== item.q.id) return item;
+  return { ...item, q: whole, v: deskQuestion(whole) };
+}
+
 export function waitingLists(
   questions: QuestionInfo[],
   projectOf: (sessionId: string) => string,

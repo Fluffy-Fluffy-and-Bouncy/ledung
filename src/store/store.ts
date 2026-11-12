@@ -21,7 +21,7 @@ import type { IdleFacts } from '../sessions/idle.ts';
 import type { AwayRecord } from '../sessions/away.ts';
 import { isAskUser, quietTexts, type TurnEntry } from '../shared/quiet-reply.ts';
 import { elevates, raisesUac } from '../shared/elevation.ts';
-import { COPY_REFS, type QuestionDetails } from '../shared/questions.ts';
+import { COPY_REFS, lightQuestion, type QuestionDetails } from '../shared/questions.ts';
 import type { OrderInfo, OrderStatus } from '../shared/orders.ts';
 import { trimForStorage } from './trim.ts';
 import { exercisedLine } from '../platform/exercised.ts';
@@ -707,16 +707,16 @@ export class Store {
   /**
    * Waiting for you history (issue #306): per project, the `perProject` most recently answered questions and as many
    * withdrawn ones, and every closed question since `since` besides, newest first. A question's project is its asking
-   * session's, as the page groups them. `full` of them, the newest, keep the original, the kept conversation and the
-   * attached sources; the rest come without them, marked `light`, and the page asks for one when it is opened, so a
-   * long history doesn't make every page load heavy.
+   * session's, as the page groups them. Light (lightQuestion): the page reads them when Waiting for you opens, not with
+   * every page load, and asks for one whole when it is opened (code review of PR #307: a busy Ledung closes about 95
+   * questions a day, so 30 days is some 2,800 questions).
    */
-  questionHistory(perProject: number, since: number, full: number): QuestionInfo[] {
+  questionHistory(perProject: number, since: number): QuestionInfo[] {
     const rows = this.db.prepare(`SELECT * FROM (
         SELECT q.*, ROW_NUMBER() OVER (PARTITION BY s.project, q.status = 'answered' ORDER BY COALESCE(q.answered_at, q.asked_at) DESC, q.id DESC) AS place
         FROM questions q LEFT JOIN sessions s ON s.id = q.session_id WHERE q.status != 'open')
       WHERE place <= ? OR COALESCE(answered_at, asked_at) >= ? ORDER BY COALESCE(answered_at, asked_at) DESC, id DESC`).all(perProject, since) as Row[];
-    return rows.map((r, i) => (i < full ? this.withOriginal(toQuestion(r)) : { ...toQuestion({ ...r, earlier: null, sources: null }), light: true }));
+    return rows.map((r) => lightQuestion(toQuestion({ ...r, earlier: null, sources: null })));
   }
 
   /**

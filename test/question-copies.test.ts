@@ -4,6 +4,7 @@
 // or 30 days back if that is more.
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -18,8 +19,10 @@ import { Session } from '../src/sessions/session.ts';
 import { LEDUNG_SERVER } from '../src/sessions/tools.ts';
 import { isWebp, pixelCount, toWebp, WEBP_MAX_PIXELS } from '../src/sessions/webp.ts';
 import { keepCopy, moveCopies, pruneCopies, readCopy } from '../src/sessions/container-files.ts';
-import { HISTORY_DAYS, HISTORY_PER_PROJECT, shownFile } from '../src/shared/questions.ts';
-import { waitingLists } from '../web/src/waitingLists.ts';
+import { deskQuestion, HISTORY_DAYS, HISTORY_PER_PROJECT, LIGHT_TEXT_CHARS, lightQuestion, shownFile } from '../src/shared/questions.ts';
+import type { QuestionInfo } from '../src/shared/protocol.ts';
+import { opened, waitingLists, withHistory } from '../web/src/waitingLists.ts';
+import { runCappedBytes } from '../src/sessions/git-read.ts';
 import { removeTemp } from './temp.ts';
 import { refuseRealSignInStores } from './signin-stores.ts';
 
@@ -79,7 +82,7 @@ test('a JPEG becomes a WebP of its size; an image too large or not an image is r
   huge.writeUInt32BE(10_000, 16);
   huge.writeUInt32BE(10_000, 20);
   assert.ok(10_000 * 10_000 > WEBP_MAX_PIXELS);
-  await assert.rejects(toWebp(huge, 'png'), /at most 50000000 are converted/);
+  await assert.rejects(toWebp(huge, 'png'), new RegExp(`at most ${WEBP_MAX_PIXELS} are converted`));
   await assert.rejects(toWebp(Buffer.concat([SHOT.subarray(0, 8), Buffer.alloc(16)]), 'png'));
 });
 
@@ -136,6 +139,49 @@ test("a local project's screenshot and evidence are kept when asked, and still s
   assert.deepEqual(manager.readEvidenceText(second!.id, 0), { file: logRef, content: 'tests 12 passed\n' });
   // Positive branch of the old path: the same file by its path in the folder is gone with the worktree.
   await assert.rejects(manager.readImage('s', '.claude/worktrees/fix-1/shots/menu.png'), /There is no file/);
+});
+
+// A container project (issue #122): its files read through a fake runner that runs the container's scripts in a local
+// sh, as reviews.test.ts does; here with a real screenshot, so the conversion runs (test review of PR #307, finding 1).
+const hasSh = spawnSync('sh', ['-c', 'readlink -f . && head -c 1 /dev/null'], { windowsHide: true }).status === 0;
+test("a container project's screenshot and image evidence are kept as WebP and shown with the container stopped", { skip: !hasSh && 'no sh with readlink here' }, async () => {
+  const root = path.join(base, 'box');
+  fs.mkdirSync(path.join(root, 'shots'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'shots', 'menu.png'), SHOT);
+  const long = fs.realpathSync.native(root);
+  const posix = (process.platform === 'win32' ? long.replace(/^([A-Za-z]):/, (_, d: string) => `/${d.toLowerCase()}`) : long).replaceAll('\\', '/');
+  const store = new Store(openDatabase(':memory:'));
+  const manager = refuseRealSignInStores(new SessionManager(parseConfig({ userName: 'Simon', projects: [{ name: 'ct', runner: 'docker', container: 'test-ct', pathInContainer: posix }] }), store, () => {}));
+  let up = true;
+  manager.containerExecFor = () => (script, args, opts) => (up ? runCappedBytes('sh', ['-c', script, 'sh', ...args], opts) : Promise.resolve({ failed: 'The container "test-ct" is not running.' }));
+  const copies = path.join(base, 'box-copies');
+  manager.containerCopiesDir = () => copies;
+  const info = store.createSession({ id: 'c', project: 'ct', runner: 'docker', title: 'Worker', parentId: null, permissionMode: 'default' });
+  const session = new Session({
+    info, store, publish: () => {}, userName: 'Simon', management: (manager as unknown as { management: Management }).management,
+    runner: { cwd: posix, currentBranch: async () => null } as never,
+    gate: { mayStart: () => true, started: () => {}, ended: () => {} },
+  });
+  const ask = await askTool(session);
+  const asked = await ask.handler({ question: 'Judge', tier: 'Process', screenshots: [{ file: 'shots/menu.png', look_for: 'the menu' }] }, {});
+  assert.equal(asked.isError, undefined, asked.content[0]!.text);
+  const review = await ask.handler({ title: 'T', tier: 'Process', review: { solving: 's', done: 'd', evidence: [{ file: 'shots/menu.png', caption: 'the menu' }] } }, {});
+  assert.equal(review.isError, undefined, review.content[0]!.text);
+  const [first, second] = store.listQuestions();
+  const shotRef = first!.shots![0]!.path;
+  const evidenceRef = second!.details!.review!.evidence![0]!.file;
+  assert.match(shotRef, /^container:[0-9a-f]{32}\/shots\/menu\.png$/);
+  const kept = fs.readFileSync(path.join(copies, folderOf('ct'), hashOf(shotRef)));
+  assert.equal(isWebp(kept), true, 'stored as WebP');
+  assert.equal(isWebp(fs.readFileSync(path.join(copies, folderOf('ct'), hashOf(evidenceRef)))), true, 'the evidence image too');
+  assert.equal(evidenceRef, shotRef, 'the same image, kept once');
+
+  up = false;
+  const image = await manager.readImage('c', shotRef);
+  assert.equal(image.type, 'image/webp');
+  assert.ok(image.bytes.equals(kept));
+  const [a, b] = await Promise.all([pixels(SHOT, 'png'), pixels(image.bytes, 'webp')]);
+  assert.ok(Buffer.from(a.data.buffer, a.data.byteOffset, a.data.byteLength).equals(Buffer.from(b.data.buffer, b.data.byteOffset, b.data.byteLength)), 'the pixels as the PNG in the container had them');
 });
 
 test('a question stored before copies were kept still shows its file from the project folder, while it is there', async () => {
@@ -231,7 +277,7 @@ function answered(store: Store, session: string, ages: number[], now: number, st
   });
 }
 
-test('history: per project the last 100 answered, or every one of the last 30 days if more; the newest whole, the rest light', () => {
+test('history: per project the last 100 answered, or every one of the last 30 days if more, light', () => {
   const now = Date.UTC(2026, 10, 12, 12);
   const store = new Store(openDatabase(':memory:'));
   for (const [id, project] of [['a', 'A'], ['b', 'B'], ['c', 'C']] as const) store.createSession({ id, project, runner: 'local', title: id, parentId: null, permissionMode: 'default' });
@@ -245,7 +291,7 @@ test('history: per project the last 100 answered, or every one of the last 30 da
   const cw = answered(store, 'c', Array.from({ length: 3 }, (_, i) => 70 + i), now, 'withdrawn');
   store.createQuestion({ sessionId: 'a', question: 'still open', options: null, addressedTo: 'user' });
 
-  const history = store.questionHistory(HISTORY_PER_PROJECT, now - HISTORY_DAYS * DAY, 50);
+  const history = store.questionHistory(HISTORY_PER_PROJECT, now - HISTORY_DAYS * DAY);
   const ids = new Set(history.map((q) => q.id));
   assert.deepEqual(a.filter((id) => ids.has(id)), a.slice(0, 100), 'A: its 100 newest');
   assert.deepEqual(b.filter((id) => ids.has(id)), b.slice(0, 100), 'B: its 100 newest, the month among them');
@@ -253,35 +299,80 @@ test('history: per project the last 100 answered, or every one of the last 30 da
   assert.deepEqual(cw.filter((id) => ids.has(id)), cw, "C's withdrawn: counted apart");
   assert.equal(history.length, 100 + 100 + 120 + 3);
   assert.ok(history.every((q) => q.status !== 'open'));
-  // Newest first; the newest 50 whole, the rest light (no kept conversation, marked so).
+  // Newest first, every one light: no kept conversation, marked so.
   const at = history.map((q) => q.answeredAt!);
   assert.deepEqual(at, [...at].sort((x, y) => y - x));
-  assert.ok(history.slice(0, 50).every((q) => !q.light && q.earlier?.length === 1));
-  assert.ok(history.slice(50).every((q) => q.light === true && q.earlier === null));
+  assert.ok(history.every((q) => q.light === true && q.earlier === null));
   // The page asks for a light one whole.
   const light = history.at(-1)!;
   assert.deepEqual(store.getQuestion(light.id)!.earlier, [{ at: 1, kind: 'reply', text: 'before' }]);
 
-  // The page's list keeps the same ones from what it has.
+  // The page's list keeps the same ones from what it has: the page load's whole ones and the history read.
   const projectOf = (s: string) => ({ a: 'A', b: 'B', c: 'C' })[s] ?? '?';
-  const { done } = waitingLists(store.listQuestions(1000), projectOf, () => [], () => true, [], now);
+  const have = Object.values(withHistory(Object.fromEntries(store.listQuestions().map((q) => [q.id, q])), history));
+  const { done } = waitingLists(have, projectOf, () => [], () => true, [], now);
   assert.deepEqual(done.map((i) => i.q.id).sort((x, y) => x - y), [...ids].sort((x, y) => x - y));
   // One project shown alone keeps its own 100, not 30 of all.
-  const { done: onlyA } = waitingLists(store.listQuestions(1000), projectOf, () => [], (p) => p === 'A', [], now);
+  const { done: onlyA } = waitingLists(have, projectOf, () => [], (p) => p === 'A', [], now);
   assert.equal(onlyA.length, 100);
 });
 
-test('the session manager sends the page every open question and the history', () => {
+test('a page load carries what it did before; history is its own read, with the sessions it names', () => {
   const store = new Store(openDatabase(':memory:'));
   const manager = refuseRealSignInStores(new SessionManager(parseConfig({ userName: 'Simon', projects: [{ name: 'A', runner: 'local', path: base }] }), store, () => {}));
   store.createSession({ id: 'a', project: 'A', runner: 'local', title: 'a', parentId: null, permissionMode: 'default' });
+  store.createSession({ id: 'other', project: 'A', runner: 'local', title: 'not named', parentId: null, permissionMode: 'default' });
   const now = Date.now();
   const old = answered(store, 'a', Array.from({ length: 70 }, (_, i) => 40 + i), now);
   const open = store.createQuestion({ sessionId: 'a', question: 'open', options: null, addressedTo: 'user' });
-  const sent = manager.questions(now);
-  assert.equal(sent[0]!.id, open.id);
-  assert.deepEqual(sent.slice(1).map((q) => q.id), old, 'all 70: more than the 50 it sent before');
-  assert.equal(sent.filter((q) => q.light).length, 20);
+  // The page load: the open ones and the 50 most recently closed, whole, as before #306.
+  const sent = manager.questions();
+  assert.deepEqual(sent.map((q) => q.id), [open.id, ...old.slice(0, 50)]);
+  assert.ok(sent.every((q) => !q.light));
+  // The history read: all 70, light, and only the sessions they name.
+  const history = manager.questionHistory(now);
+  assert.deepEqual(history.questions.map((q) => q.id), old, 'all 70: more than the 50 a page load has');
+  assert.ok(history.questions.every((q) => q.light));
+  assert.deepEqual(history.sessions.map((s) => s.id), ['a']);
   assert.deepEqual(manager.question(old.at(-1)!).earlier, [{ at: 1, kind: 'reply', text: 'before' }]);
   assert.throws(() => manager.question(9999), /No such question/);
+});
+
+test("a light question's texts are cut, its files' names never; the page keeps what it has and opens one whole", () => {
+  const long = 'x'.repeat(5000);
+  const name = `kept:${'a'.repeat(32)}/${'deep/'.repeat(80)}shot.png`;
+  const q = {
+    id: 7, sessionId: 's', askedAt: 1, question: long, options: null, addressedTo: 'user', status: 'answered', answer: long, answeredAt: 2,
+    answeredBy: 'user', aboutQuestion: null, forwardedFrom: null, aboutRequest: null, deliveredAt: 2, withdrawnReason: null,
+    shots: [{ path: name, group: 'g', lookFor: long, doneWhen: null, facts: [long], opinions: [] }],
+    details: { title: 'T', tier: 'Process', issue: long, review: { solving: long, done: 'd', evidence: [{ file: name, caption: long, kind: 'image' }] } },
+    earlier: [{ at: 1, kind: 'reply', text: long }], sources: null, original: null,
+  } as QuestionInfo;
+  const light = lightQuestion(q);
+  assert.equal(light.light, true);
+  assert.equal(light.earlier, null);
+  assert.equal(light.question.length, LIGHT_TEXT_CHARS + 1);
+  assert.equal(light.answer!.length, LIGHT_TEXT_CHARS + 1);
+  assert.equal(light.details!.issue!.length, LIGHT_TEXT_CHARS + 1);
+  assert.equal(light.details!.review!.solving.length, LIGHT_TEXT_CHARS + 1);
+  assert.equal(light.shots![0]!.lookFor.length, LIGHT_TEXT_CHARS + 1);
+  assert.equal(light.shots![0]!.path, name, "a screenshot's name is whole");
+  assert.equal(light.details!.review!.evidence![0]!.file, name, "an evidence file's name is whole");
+  assert.equal(light.details!.title, 'T', 'a short text as it was');
+  assert.ok(JSON.stringify(light).length < JSON.stringify(q).length / 5);
+
+  // The page: a question it has whole is never replaced by its light entry; one it lacks is added.
+  const whole = { ...q, id: 8 };
+  const merged = withHistory({ 8: whole }, [lightQuestion(whole), light]);
+  assert.equal(merged[8], whole);
+  assert.equal(merged[7], light);
+  // Opened, a light entry shows the whole question once read; a whole one is shown as it is.
+  const item = { q: light, v: deskQuestion(light), project: 'p', tier: null };
+  assert.equal(opened(item, null).q, light, 'still light while it is read');
+  assert.equal(opened(item, { ...q, id: 9 }).q, light, "another question's answer is not taken");
+  const shown = opened(item, q);
+  assert.equal(shown.q, q);
+  assert.equal(shown.v.review!.solving, long, "the desk reads the whole question");
+  const wholeItem = { q: whole, v: deskQuestion(whole), project: 'p', tier: null };
+  assert.equal(opened(wholeItem, q), wholeItem);
 });

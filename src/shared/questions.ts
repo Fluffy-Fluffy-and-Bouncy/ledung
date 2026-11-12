@@ -2,6 +2,7 @@
 // the page's question desk shows any question, structured or plain. Modelled on the Master Question Desk.
 // Every question has a tier from its project's list, which starts as the five below (issue #96).
 import type { OrderQuestionDetails } from './orders.ts';
+import type { QuestionInfo } from './protocol.ts';
 
 /** An option of a structured question: its key ("a"), its text in Markdown (a **bold** start is its label), its cost. */
 export interface QuestionOption {
@@ -83,8 +84,27 @@ export const COPY_REFS = /(?:container|kept):([0-9a-f]{32})\//g;
  */
 export const HISTORY_PER_PROJECT = 100;
 export const HISTORY_DAYS = 30;
-/** Of those, the newest this many come to the page whole on load, as all 50 it had did before; the rest come light. */
-export const HISTORY_FULL = 50;
+/** In a light question, each text cut to this many characters: what the history list shows, an excerpt of 180. */
+export const LIGHT_TEXT_CHARS = 300;
+
+/**
+ * A question as Waiting for you history lists it (issue #306): without what it refers to, and every text of it, the
+ * question's, the answer's and each of its fields', cut to LIGHT_TEXT_CHARS. Marked `light`: the page asks for it
+ * whole when it is opened.
+ */
+export function lightQuestion(q: QuestionInfo): QuestionInfo {
+  // A file's name (a screenshot's path, an evidence file) is never cut: the page shows the image by it.
+  const cut = (v: unknown): unknown => {
+    if (typeof v === 'string') return v.length > LIGHT_TEXT_CHARS ? `${v.slice(0, LIGHT_TEXT_CHARS)}…` : v;
+    if (Array.isArray(v)) return v.map(cut);
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, k === 'path' || k === 'file' ? x : cut(x)]));
+    return v;
+  };
+  return {
+    ...q, question: cut(q.question) as string, answer: cut(q.answer) as string | null, withdrawnReason: cut(q.withdrawnReason) as string | null,
+    details: cut(q.details) as QuestionDetails | null, shots: cut(q.shots) as QuestionInfo['shots'], original: null, earlier: null, sources: null, light: true,
+  };
+}
 
 /** At most this many evidence files per review. */
 export const MAX_REVIEW_EVIDENCE = 10;

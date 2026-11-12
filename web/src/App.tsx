@@ -633,6 +633,7 @@ export function App() {
           ) :  isDeskView(openId) ? (
             <WaitingView
               questions={questions}
+              onLoadHistory={ledung.loadHistory}
               permissions={permissions}
               sessions={ledung.sessions}
               projects={ledung.projects}

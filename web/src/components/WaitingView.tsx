@@ -9,7 +9,7 @@ import { disagree, MAX_BORDER_PARTS, mergeTiers, type DeskOpinion } from '../../
 import { findTickets } from '../../../src/shared/tickets.ts';
 import { api } from '../api.ts';
 import { conversationOf } from '../conversation.ts';
-import { readFilter, waitingLists, writeFilter, type Filter, type Item } from '../waitingLists.ts';
+import { opened, readFilter, waitingLists, writeFilter, type Filter, type Item } from '../waitingLists.ts';
 import { nameTint, questionLabel, withChatsColour } from '../nameTint.ts';
 import { Markdown } from './Markdown.tsx';
 import { formatTime } from './MessageList.tsx';
@@ -60,6 +60,8 @@ export function WaitingView(props: {
   linkPairings: LinkPairingInfo[];
   /** Orders on record (issue #105): shown first, each with Cancel. */
   orders: OrderInfo[];
+  /** Reads Waiting for you history (issue #306), when the view opens. */
+  onLoadHistory?: () => Promise<void>;
   run: (action: () => Promise<unknown>) => Promise<void>;
 }) {
   const [filter, setFilterState] = useState(() => readFilter(localStorage));
@@ -92,7 +94,11 @@ export function WaitingView(props: {
     items.filter((i) => i.q.status === 'open' && i.q.addressedTo === 'user' && i.project === name).length +
     props.permissions.filter((p) => p.status === 'pending' && p.addressedTo === 'user' && projectOf(p.sessionId) === name).length;
 
-  const current = props.questionId === null ? null : items.find((i) => i.q.id === props.questionId) ?? null;
+  // History is read when the view opens (issue #306); a light entry opened is read whole before it is shown.
+  useEffect(() => { props.onLoadHistory?.().catch(() => {}); }, []);
+  const found = props.questionId === null ? null : items.find((i) => i.q.id === props.questionId) ?? null;
+  const whole = useWholeQuestion(found?.q ?? null);
+  const current = found && opened(found, whole);
 
   const header = (sub: ReactNode, controls: ReactNode, conv?: QuestionInfo) => (
     <header className="desk-head">
@@ -117,11 +123,14 @@ export function WaitingView(props: {
   const ctx: DeskContext = { props, nameOf, titleOf, projectOf, tierColor, tintOf, settingsOf, header };
 
   if (props.questionId !== null) {
-    if (!current) {
+    // Not here, or a history entry still being read whole (issue #306).
+    if (!current || current.q.light) {
       return (
         <div className="waiting-view desk-view">
           {header('', <button onClick={() => props.onOpenQuestion(null)}>← Queue</button>)}
-          <div className="desk"><div className="desk-body"><div className="empty-box">Question #{props.questionId} is not here: it may be older than the recent ones Ledung keeps in view.</div></div></div>
+          <div className="desk"><div className="desk-body"><div className="empty-box">{current
+            ? `Loading question #${current.q.id}…`
+            : `Question #${props.questionId} is not here: it may be older than the recent ones Ledung keeps in view.`}</div></div></div>
         </div>
       );
     }
@@ -152,6 +161,22 @@ export function WaitingView(props: {
       tiers={visibleTiers}
     />
   );
+}
+
+/**
+ * A light history entry (issue #306) read whole once it is opened; null while it comes and for a whole question. A
+ * failed read gives the light one back marked whole, so the page shows what it has rather than waiting.
+ */
+function useWholeQuestion(q: QuestionInfo | null): QuestionInfo | null {
+  const [whole, setWhole] = useState<QuestionInfo | null>(null);
+  const id = q?.light ? q.id : null;
+  useEffect(() => {
+    if (id === null) return;
+    let live = true;
+    api.question(id).then((full) => { if (live) setWhole(full); }, () => { if (live && q) setWhole({ ...q, light: false }); });
+    return () => { live = false; };
+  }, [id]);
+  return whole;
 }
 
 interface DeskContext {

@@ -112,7 +112,7 @@ export const PLAIN_READS = new Set([
   'GET sessions/:id/usage', 'GET overview', 'GET projects', 'GET accounts', 'GET browse', 'GET profiles',
   'GET workflow-check', 'GET projects-folder', 'GET projects/:id/proposals/:id', 'GET projects/:id/runs', 'GET board',
   'GET board-threads', 'GET board-thread', 'GET usage-publish', 'GET machine', 'GET sessions/:id/turns', 'GET typical-costs',
-  'GET sessions/:id/folders', 'GET questions/:id', 'GET questions/:id/evidence/:id', 'GET chats', 'GET sessions/:id/shell-check',
+  'GET sessions/:id/folders', 'GET questions/:id', 'GET question-history', 'GET questions/:id/evidence/:id', 'GET chats', 'GET sessions/:id/shell-check',
   'GET sessions/:id/secrets', 'GET update', 'GET checkin', 'GET remote-link', 'GET relay-admin',
   'GET sessions/:id/sent-images/:id', 'GET board-attachment',
 ]);
@@ -1246,7 +1246,8 @@ export class LedungServer {
 
   /** What waits for the user here, as this computer's page counts it (App: questions, prompts, cards). */
   private waitingNow(): number {
-    return waitingCount(this.opts.manager.questions(), this.opts.store.pendingPermissions())
+    // Only the open questions count; the closed ones are not read for it (code review of PR #307).
+    return waitingCount(this.opts.store.listQuestions(0, false), this.opts.store.pendingPermissions())
       + (this.opts.relayAdmin?.newComputers().length ?? 0) + this.linkPairings().length;
   }
 
@@ -1495,6 +1496,9 @@ export class LedungServer {
     switch (route) {
       case 'GET state':
         return this.hello(this.guard.isPublic(req));
+      // Waiting for you history (issue #306): read when it opens, not with every page load.
+      case 'GET question-history':
+        return manager.questionHistory();
       // Every archived session, for an Archived list: hello carries only the recent ones (issue #229).
       case 'GET archived-sessions':
         return manager.sessions().filter((s) => s.archivedAt);

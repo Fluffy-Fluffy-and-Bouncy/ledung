@@ -4,45 +4,51 @@
 // node_modules and handed in, as Node has no fetch for file URLs. A PNG becomes lossless WebP: the pixels stay exact for
 // judging how something looks, and on Ledung's own dark screenshots it was 33-46 % of the PNG (lossy q80 was larger
 // than the PNG on most of them). A JPEG, lossy already, becomes lossy WebP at quality 90.
-import fs from 'node:fs';
-import { fileURLToPath } from 'node:url';
+//
+// Each conversion runs in a worker thread of its own, which ends with it (code review of PR #307): a lossless encode
+// took 0.5 s for a 4K screenshot and 2 s for an 8K one, which on Ledung's own thread would hold every page and session
+// that long, and WebAssembly memory never shrinks (+480 MB for the 8K one). The worker's code goes in as a data: module,
+// since the package bundles Ledung into a few fixed files and a worker file of its own would not be among them.
+import { Worker } from 'node:worker_threads';
 
-/** Past this many pixels an image is kept as it came: decoding it would take over 200 MB (4 bytes a pixel). */
-export const WEBP_MAX_PIXELS = 50_000_000;
+/** Past this many pixels an image is kept as it came (5K is 14.7 million, a 1280 × 16,000 full page 20.5 million). */
+export const WEBP_MAX_PIXELS = 25_000_000;
+/** A conversion that takes longer is stopped, and the image kept as it came. */
+const WEBP_TIMEOUT_MS = 60_000;
 const JPEG_QUALITY = 90;
 
-type Pixels = { data: Uint8ClampedArray; width: number; height: number };
-interface Codecs {
-  png(bytes: ArrayBuffer): Promise<Pixels>;
-  jpeg(bytes: ArrayBuffer): Promise<Pixels>;
-  webp(pixels: Pixels, options: { lossless?: number; quality?: number }): Promise<ArrayBuffer>;
+/** The worker: decodes the PNG or JPEG and encodes it as WebP, with the codecs at the file URLs it is given. */
+const WORKER = `
+import { parentPort, workerData } from 'node:worker_threads';
+import fs from 'node:fs';
+const { bytes, kind, at, quality } = workerData;
+const wasm = (url) => WebAssembly.compile(fs.readFileSync(new URL(url)));
+const own = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+let pixels;
+if (kind === 'png') {
+  const png = await import(at.png);
+  await png.init(await wasm(at.pngWasm));
+  pixels = await png.decode(own);
+} else {
+  const jpeg = await import(at.jpeg);
+  await jpeg.init(await wasm(at.jpegWasm));
+  pixels = await jpeg.default(own);
 }
+// Node 24 has WebAssembly SIMD, which webp's init picks; its module must be the SIMD build.
+const webp = await import(at.webp);
+await webp.init(await wasm(at.webpWasm));
+const out = await webp.default(pixels, kind === 'png' ? { lossless: 1 } : { quality });
+parentPort.postMessage(out, [out]);
+`;
 
-let loading: Promise<Codecs> | null = null;
-
-const wasm = (spec: string) => WebAssembly.compile(fs.readFileSync(fileURLToPath(import.meta.resolve(spec))));
-
-/** The codecs, loaded once, on the first copy; a failed load is tried again next time. */
-function codecs(): Promise<Codecs> {
-  loading ??= (async () => {
-    const [png, jpeg, webp] = await Promise.all([
-      import('@jsquash/png/decode.js'), import('@jsquash/jpeg/decode.js'), import('@jsquash/webp/encode.js'),
-    ]);
-    // Node 24 has WebAssembly SIMD, which webp's init picks; its module must be the SIMD build. jpeg's init takes a
-    // module too, though its typings name only the options.
-    await Promise.all([
-      png.init(await wasm('@jsquash/png/codec/pkg/squoosh_png_bg.wasm')),
-      webp.init(await wasm('@jsquash/webp/codec/enc/webp_enc_simd.wasm')),
-      (jpeg.init as unknown as (m: WebAssembly.Module) => Promise<void>)(await wasm('@jsquash/jpeg/codec/dec/mozjpeg_dec.wasm')),
-    ]);
-    return {
-      png: (b) => png.decode(b) as Promise<Pixels>,
-      jpeg: (b) => jpeg.default(b) as Promise<Pixels>,
-      webp: (p, o) => webp.default(p as never, o),
-    };
-  })();
-  loading.catch(() => { loading = null; });
-  return loading;
+/** Where the codecs are: resolved here, so the package's own node_modules are used wherever Ledung runs from. */
+function codecs(): Record<string, string> {
+  const at = (spec: string) => import.meta.resolve(spec);
+  return {
+    png: at('@jsquash/png/decode.js'), pngWasm: at('@jsquash/png/codec/pkg/squoosh_png_bg.wasm'),
+    jpeg: at('@jsquash/jpeg/decode.js'), jpegWasm: at('@jsquash/jpeg/codec/dec/mozjpeg_dec.wasm'),
+    webp: at('@jsquash/webp/encode.js'), webpWasm: at('@jsquash/webp/codec/enc/webp_enc_simd.wasm'),
+  };
 }
 
 /** RIFF....WEBP: a WebP file by its first bytes. */
@@ -65,16 +71,25 @@ export function pixelCount(bytes: Buffer, kind: 'png' | 'jpeg'): number | null {
 }
 
 /**
- * A PNG or JPEG as WebP. Throws when it can't be converted (an image too large to decode, or one the codec refuses);
- * the caller keeps the image as it came then, so a question is never refused for the conversion.
+ * A PNG or JPEG as WebP. Throws when it can't be converted (an image too large, one the codec refuses, or one that took
+ * too long); the caller keeps the image as it came then, so a question is never refused for the conversion.
  */
 export async function toWebp(bytes: Buffer, kind: 'png' | 'jpeg'): Promise<Buffer> {
   const pixels = pixelCount(bytes, kind);
   if (pixels === null || pixels > WEBP_MAX_PIXELS) throw new Error(`the image is ${pixels === null ? 'of unknown size' : `${pixels} pixels`}; at most ${WEBP_MAX_PIXELS} are converted`);
-  const c = await codecs();
-  const own = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length) as ArrayBuffer;
-  const decoded = kind === 'png' ? await c.png(own) : await c.jpeg(own);
-  const out = Buffer.from(await c.webp(decoded, kind === 'png' ? { lossless: 1 } : { quality: JPEG_QUALITY }));
+  const out = await new Promise<Buffer>((resolve, reject) => {
+    const worker = new Worker(new URL(`data:text/javascript,${encodeURIComponent(WORKER)}`), {
+      workerData: { bytes: new Uint8Array(bytes), kind, at: codecs(), quality: JPEG_QUALITY },
+      // A worker's own LEDUNG_* or anything else is not needed; it reads only the codec files it is given.
+      env: {},
+      stdout: true,
+      stderr: true,
+    });
+    const timer = setTimeout(() => { void worker.terminate(); reject(new Error(`the conversion took over ${WEBP_TIMEOUT_MS / 1000} s`)); }, WEBP_TIMEOUT_MS);
+    worker.once('message', (m: ArrayBuffer) => { clearTimeout(timer); resolve(Buffer.from(m)); void worker.terminate(); });
+    worker.once('error', (e) => { clearTimeout(timer); reject(e); });
+    worker.once('exit', (code) => { clearTimeout(timer); reject(new Error(`the converter stopped (${code})`)); });
+  });
   if (!isWebp(out)) throw new Error('the encoder gave no WebP');
   return out;
 }

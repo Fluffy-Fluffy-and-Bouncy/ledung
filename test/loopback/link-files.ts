@@ -10,6 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import { fileURLToPath } from 'node:url';
 import { check, failed, link, type Page, repo, startPair, until } from './linked-pair.ts';
 
 const work = path.join(repo, '.test', 'link-files');
@@ -66,6 +67,22 @@ async function shotQuestion(page: Page, id: string, handle: string, title: strin
   return until(find, `${title}: a question with the screenshot`, TURN_MS);
 }
 
+/**
+ * Whether a WebP shows exactly the pixels of a PNG (issue #306: a question keeps its screenshot as a lossless WebP), by
+ * the codecs' own decoders.
+ */
+async function samePixels(png: Buffer, webp: Buffer): Promise<boolean> {
+  const wasm = (spec: string) => WebAssembly.compile(fs.readFileSync(fileURLToPath(import.meta.resolve(spec))));
+  const own = (b: Buffer) => b.buffer.slice(b.byteOffset, b.byteOffset + b.length) as ArrayBuffer;
+  const p = await import('@jsquash/png/decode.js');
+  await p.init(await wasm('@jsquash/png/codec/pkg/squoosh_png_bg.wasm'));
+  const w = await import('@jsquash/webp/decode.js');
+  await (w.init as unknown as (m: WebAssembly.Module) => Promise<void>)(await wasm('@jsquash/webp/codec/dec/webp_dec.wasm'));
+  const a = await p.decode(own(png)) as unknown as { data: Uint8ClampedArray; width: number; height: number };
+  const b = await w.default(own(webp)) as unknown as { data: Uint8ClampedArray; width: number; height: number };
+  return a.width === b.width && a.height === b.height && Buffer.from(a.data.buffer, a.data.byteOffset, a.data.byteLength).equals(Buffer.from(b.data.buffer, b.data.byteOffset, b.data.byteLength));
+}
+
 const filesOf = async (page: Page) => (await page.api('GET', 'links')).json.links[0].files as { today: { sent: number; received: number }; month: { sent: number; received: number } };
 
 /** A page in a browser, dark, if one was given: the question view, or Settings → Linked computers. */
@@ -84,11 +101,11 @@ async function shot(page: Page, hash: string, file: string, section?: string): P
       await s.waitFor();
       await s.screenshot({ path: path.join(work, 'shots', file) });
     } else {
-      const found = await tab.locator('img[src*="linked%3A"]').first().waitFor({ timeout: 15_000 }).then(() => true, () => false);
+      const found = await tab.locator('img[src*="kept%3A"]').first().waitFor({ timeout: 15_000 }).then(() => true, () => false);
       await tab.waitForTimeout(500);
       await tab.screenshot({ path: path.join(work, 'shots', file) });
       if (!found) {
-        console.log(`(no linked image on ${hash}; at ${tab.url()}, images: ${JSON.stringify(await tab.locator('img').evaluateAll((els: { src: string }[]) => els.map((e) => e.src)))})`);
+        console.log(`(no kept image on ${hash}; at ${tab.url()}, images: ${JSON.stringify(await tab.locator('img').evaluateAll((els: { src: string }[]) => els.map((e) => e.src)))})`);
         return false;
       }
     }
@@ -157,9 +174,11 @@ async function main(): Promise<void> {
     console.log('== 3. Beta asks with the PNG as a screenshot and the log as a review\'s evidence ==');
     const reviewQ = await until(async () => (await state(pc)).questions.find((q) => q.sessionId === beta.id && q.details?.review) ?? null, 'Beta\'s review', TURN_MS);
     const shotQ = await shotQuestion(pc, beta.id, pngHandle!, 'Screenshot from the Mac');
-    check(shotQ.shots![0]!.path === pngHandle, 'the question on the PC carries the PNG by its handle', shotQ.shots![0]!.path);
-    const image = await raw(pc, `sessions/${beta.id}/image?path=${encodeURIComponent(pngHandle!)}`);
-    check(image.status === 200 && image.type === 'image/png' && image.bytes.equals(shotPng), 'the PC\'s page gets the PNG through Beta, byte for byte', `${image.status} ${image.bytes.length} bytes`);
+    // Kept as the question's own copy (issue #306), so it outlives the linked copy, as a lossless WebP.
+    const shotRef = shotQ.shots![0]!.path;
+    check(/^kept:[0-9a-f]{32}\/shot\.png$/.test(shotRef), 'the question on the PC keeps the PNG as its own copy', shotRef);
+    const image = await raw(pc, `sessions/${beta.id}/image?path=${encodeURIComponent(shotRef)}`);
+    check(image.status === 200 && image.type === 'image/webp' && await samePixels(shotPng, image.bytes), 'the PC\'s page gets it through Beta as WebP, every pixel the PNG\'s', `${image.status} ${image.type} ${image.bytes.length} bytes`);
     const evidence = await pc.api('GET', `questions/${reviewQ.id}/evidence/0`);
     check(evidence.status === 200 && evidence.json.content === log, 'the whole log is the review\'s evidence', `${evidence.json?.content?.length} characters`);
     if (await shot(pc, `waiting/q/${shotQ.id}`, 'pc-question-linked-shot.png')) check(true, 'shot: the PC\'s question with the Mac\'s PNG (dark)', 'shots/pc-question-linked-shot.png');
@@ -167,10 +186,10 @@ async function main(): Promise<void> {
     console.log('== 4. The reverse: Beta sends a worktree screenshot; the Mac\'s manager asks with it ==');
     const atAlpha = await until(async () => /"(linked:[0-9a-f]{16}\/cart\.png)"/.exec(await messages(mac, alpha.id))?.[1] ?? null, 'the cart at Alpha', TURN_MS);
     const macQ = await shotQuestion(mac, alpha.id, atAlpha, 'Screenshot from the PC');
-    const cartHandle = macQ.shots![0]!.path;
-    check(/^linked:[0-9a-f]{16}\/cart\.png$/.test(cartHandle), 'the Mac\'s question carries the PC worker\'s screenshot by its handle', cartHandle);
-    const cart = await raw(mac, `sessions/${alpha.id}/image?path=${encodeURIComponent(cartHandle)}`);
-    check(cart.status === 200 && cart.bytes.equals(cartPng), 'the Mac\'s page gets it byte for byte', `${cart.bytes.length} bytes`);
+    const cartRef = macQ.shots![0]!.path;
+    check(/^kept:[0-9a-f]{32}\/cart\.png$/.test(cartRef), 'the Mac\'s question keeps the PC worker\'s screenshot as its own copy', cartRef);
+    const cart = await raw(mac, `sessions/${alpha.id}/image?path=${encodeURIComponent(cartRef)}`);
+    check(cart.status === 200 && cart.type === 'image/webp' && await samePixels(cartPng, cart.bytes), 'the Mac\'s page gets it as WebP, every pixel the PNG\'s', `${cart.type} ${cart.bytes.length} bytes`);
     if (await shot(mac, `waiting/q/${macQ.id}`, 'mac-question-linked-shot.png')) check(true, 'shot: the Mac\'s question with the PC\'s screenshot (dark)', 'shots/mac-question-linked-shot.png');
     await idle(mac, alpha.id, 'Alpha to finish');
     await idle(pc, beta.id, 'Beta to finish');
