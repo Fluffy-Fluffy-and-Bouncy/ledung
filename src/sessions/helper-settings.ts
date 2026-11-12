@@ -5,7 +5,7 @@
 // handled here, and lockdown is never loosened.
 import path from 'node:path';
 import { SETTING_RELOAD, type LedungConfig, type ProjectConfig, type SettingName } from '../config.ts';
-import { configWith, writeConfig } from '../config-write.ts';
+import { configWith, savedConfig, writeConfig } from '../config-write.ts';
 import { defaultProjectsFolder, defaultRoots, isInside } from '../projects/browse.ts';
 import { lockdownOf } from '../projects/lockdown.ts';
 import { loosensGate } from '../projects/gate.ts';
@@ -166,6 +166,78 @@ function maskedUrl(url: string): string {
   return `${url.slice(0, q)}?${url.slice(q + 1).split('&').map((p) => (p.includes('=') ? `${p.slice(0, p.indexOf('='))}=•••` : p)).join('&')}`;
 }
 const show = (v: unknown) => (v === undefined || v === null ? 'none' : typeof v === 'string' ? v : JSON.stringify(masked(v)));
+
+export const MASK = '•••';
+
+/**
+ * The helper's value with every masked place it left as it saw it put back to the saved value (acceptance round 7,
+ * 26: a profile's secrets were written over with "•••"). A place the saved value masks the same way gets the saved
+ * one; any mask left after that is refused, so the literal mask is never written.
+ */
+export function restoreMasked(value: unknown, saved: unknown): unknown {
+  const savedMasked = masked(saved);
+  const walk = (v: unknown, s: unknown, sm: unknown): unknown => {
+    if (typeof v === 'string') return v.includes(MASK) && typeof s === 'string' && sm === v ? s : v;
+    if (Array.isArray(v)) return v.map((x, i) => walk(x, Array.isArray(s) ? s[i] : undefined, Array.isArray(sm) ? sm[i] : undefined));
+    if (v && typeof v === 'object') {
+      const so = s && typeof s === 'object' && !Array.isArray(s) ? s as Record<string, unknown> : {};
+      const smo = sm && typeof sm === 'object' && !Array.isArray(sm) ? sm as Record<string, unknown> : {};
+      return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [k, walk(x, so[k], smo[k])]));
+    }
+    return v;
+  };
+  const out = walk(value, saved, savedMasked);
+  if (JSON.stringify(out ?? null).includes(MASK)) {
+    throw new SettingRefused(`Not saved: the value still holds "${MASK}" where no secret was saved. Leave a hidden value exactly as you saw it to keep it; Ledung never writes the mask.`);
+  }
+  return out;
+}
+
+/** A path's step: an array item by its name when it has one ("Laptop"), else by its place. */
+const step = (item: unknown, i: number) => (item && typeof item === 'object' && typeof (item as { name?: unknown }).name === 'string' ? `"${(item as { name: string }).name}"` : `[${i + 1}]`);
+
+/**
+ * What changes between two values, one readable line per changed place, secrets masked (round 7, 24 and 26), and
+ * whether any hidden value changed; at most `max` lines.
+ */
+export function changeLines(label: string, before: unknown, after: unknown, max = 8): { lines: string[]; secretChanged: boolean; secretsKept: boolean } {
+  const mb = masked(before), ma = masked(after);
+  const lines: string[] = [];
+  let secretChanged = false;
+  let secretsKept = false;
+  const leaf = (v: unknown) => v === undefined ? 'none' : typeof v === 'string' ? JSON.stringify(v) : JSON.stringify(v);
+  const walk = (path: string, b: unknown, a: unknown, xb: unknown, xa: unknown) => {
+    const both = (x: unknown) => x && typeof x === 'object';
+    if (Array.isArray(b) && Array.isArray(a) && b.every((x) => both(x)) && a.every((x) => both(x)) && (a.length || b.length)) {
+      // Lists of objects: by name where they have one.
+      const key = (x: unknown, i: number) => step(x, i);
+      const bm = new Map(b.map((x, i) => [key(x, i), i]));
+      a.forEach((x, i) => {
+        const j = bm.get(key(x, i));
+        if (j === undefined) lines.push(`${path} ${key(x, i)} added: ${leaf((xa as unknown[])[i])}`);
+        else walk(`${path} ${key(x, i)}`, b[j], x, (xb as unknown[])[j], (xa as unknown[])[i]);
+      });
+      b.forEach((x, j) => { if (!a.some((y, i) => key(y, i) === key(x, j))) lines.push(`${path} ${key(x, j)} removed`); });
+      return;
+    }
+    if (both(b) && both(a) && !Array.isArray(b) && !Array.isArray(a)) {
+      const keys = [...new Set([...Object.keys(b as object), ...Object.keys(a as object)])];
+      for (const k of keys) walk(path ? `${path}.${k}` : k, (b as Record<string, unknown>)[k], (a as Record<string, unknown>)[k], (xb as Record<string, unknown> | undefined)?.[k], (xa as Record<string, unknown> | undefined)?.[k]);
+      return;
+    }
+    const masks = JSON.stringify(xb ?? null).includes(MASK) || JSON.stringify(xa ?? null).includes(MASK);
+    if (JSON.stringify(b) === JSON.stringify(a)) {
+      if (masks) secretsKept = true;
+      return;
+    }
+    if (masks && JSON.stringify(xb) === JSON.stringify(xa)) secretChanged = true;
+    else lines.push(`${path || label}: ${leaf(xb)} → ${leaf(xa)}`);
+  };
+  walk('', before, after, mb, ma);
+  const shown = lines.slice(0, max).map((l) => (l.startsWith(label) ? l : `${label}: ${l.trim()}`));
+  if (lines.length > max) shown.push(`${label}: and ${lines.length - max} more`);
+  return { lines: shown, secretChanged, secretsKept };
+}
 const MODE_ORDER: Record<PermissionMode, number> = { plan: 0, default: 1, acceptEdits: 2, auto: 3 };
 
 /** Folders a list of roots allows that `before` didn't. */
@@ -183,8 +255,14 @@ function narrowerFor(folder: string): string {
 
 function configPlan(ctx: SettingsCtx, key: SettingName, value: unknown): SettingPlan {
   if (!ctx.configFile) throw new SettingRefused('This Ledung has no config file it can write.');
-  const before = ctx.config();
-  const { raw, config: after } = configWith(ctx.configFile, key, value === null ? undefined : value);
+  // "Before" is what is saved in the config (round 7, 24): a restart-only change may be saved but not running yet.
+  const saved = savedConfig(ctx.configFile);
+  const before = saved.config;
+  const running = ctx.config();
+  const pending = JSON.stringify(running[key]) !== JSON.stringify(before[key]);
+  // Hidden values the helper left as it saw them go back to the saved ones; the mask is never written (round 7, 26).
+  const restored = value === null ? undefined : restoreMasked(value, saved.raw[key]);
+  const { raw, config: after } = configWith(ctx.configFile, key, restored);
   const def = CONFIG_SETTINGS.find((d) => d.id === key)!;
   const opens: string[] = [];
   let risk: string | undefined;
@@ -227,6 +305,8 @@ function configPlan(ctx: SettingsCtx, key: SettingName, value: unknown): Setting
       const had = new Set(framingPages(before.computers ?? []));
       const added = framingPages(after.computers ?? []).filter((o) => !had.has(o));
       if (added.length) {
+        // The change itself first (Laptop's port 4317 → 4318), then what it opens (round 7, 24).
+        opens.push(...changeLines(def.label, before.computers, after.computers).lines);
         opens.push(`pages that may show Ledung in a frame: ${added.join(', ')} added`);
         risk = 'Those pages may then show Ledung in a frame, and so its approval cards.';
       }
@@ -293,15 +373,21 @@ function configPlan(ctx: SettingsCtx, key: SettingName, value: unknown): Setting
     case 'board':
       if (JSON.stringify(before[key]) !== JSON.stringify(after[key])) {
         // Only a masked value changed: the card says so rather than showing the same before and after (R4-4).
-        opens.push(show(before[key]) === show(after[key]) ? `${def.label}: a value hidden as secret changed` : `${def.label} ${show(before[key])} → ${show(after[key])}`);
+        // What changes, place by place, secrets masked; a change of hidden values alone is said as such (round 7).
+        const diff = changeLines(def.label, before[key], after[key]);
+        opens.push(...diff.lines, ...(diff.secretChanged ? [`${def.label}: a value hidden as secret changed`] : []));
+        if (diff.secretsKept && !diff.secretChanged) opens.push(`${def.label}: hidden values (secrets) unchanged`);
         risk = key === 'board' ? 'Managers then post to the board, outside this computer.' : key === 'claudeExecutable' ? 'Sessions then run another program.' : 'This changes what sessions may use or what managers follow.';
       }
       break;
   }
   const restart = SETTING_RELOAD[key] === 'restart';
   const file = ctx.configFile;
+  // A saved value that doesn't run yet is said so (round 7, 24).
+  if (pending && opens.length) opens.push(`${def.label} now saved: ${show(before[key])}, running: ${show(running[key])} until Restart Ledung`);
+  const diff = changeLines(def.label, before[key], after[key]);
   return {
-    label: def.label, changes: [`${def.label}: ${show(before[key])} → ${show(after[key])}`], opens, risk, narrower, restart,
+    label: def.label, changes: diff.lines.length ? diff.lines : [`${def.label}: ${show(before[key])} → ${show(after[key])}`], opens, risk, narrower, restart,
     apply: () => {
       writeConfig(file, raw);
       ctx.reloadConfig();
@@ -464,7 +550,7 @@ export function settingRule(plan: SettingPlan): string | null {
 export function settingsList(ctx: SettingsCtx): string {
   const c = ctx.config() as unknown as Record<string, unknown>;
   const lines = [
-    'Config file (change_ledung_setting writes it; "(restart)" ones apply after Restart Ledung):',
+    'Config file (change_ledung_setting writes it; "(restart)" ones apply after Restart Ledung). Values shown as "•••" are hidden secrets: give them back exactly as shown and Ledung keeps the saved values.',
     ...CONFIG_SETTINGS.map((d) => `- ${d.id} (${d.label}${SETTING_RELOAD[d.id as SettingName] === 'restart' ? ', restart' : ''}): ${show(d.id === 'browseRoots' ? defaultRoots(ctx.config().browseRoots) : d.id === 'projectsFolder' ? defaultProjectsFolder(ctx.config().projectsFolder) : c[d.id])} · give ${d.value}`),
     'In the page:',
     `- workingLimit: ${ctx.limit()} · usageStop: ${show(ctx.usageStops())} · accountChoices: ${show(ctx.accountChoices())} · helperModel: ${ctx.helperModel()}`,

@@ -80,6 +80,21 @@ export function helperLinkView(to: CardLink, project: string | null, projects: P
   return null;
 }
 
+/** Settings by the words the cards use, for a declined line (acceptance round 7, 16). */
+const SETTING_WORDS: Record<string, string> = {
+  browseRoots: 'the folders Ledung may use', projectsFolder: 'where new projects go', port: 'the port', lan: 'home network access',
+  lanSignIn: 'sign-in on the home network', sensitive: 'what always goes to you', keepToolResultsDays: 'how long tool output is kept whole',
+  idleStopMinutes: 'when idle sessions stop', windowsShell: 'the shell for "!" lines', claudeAccounts: 'the Claude accounts', pluginsOff: 'the plugins kept off',
+  profiles: 'the session profiles', defaultProfiles: 'the default session profiles', workflow: 'the workflow', workflows: 'the workflows',
+  remoteControl: 'Remote Control', claudeExecutable: 'the Claude Code sessions run', chats: "the chats' settings", board: 'the message board',
+  computers: 'the computer tabs', workingLimit: 'how many sessions may work at once', usageStop: 'a usage stop', macros: 'the macros',
+  skillDefaults: 'the skills sessions get', accountChoices: 'the account for chats and new projects', chatsSensitive: "the chats' sensitive list",
+  chatsColour: "the chats' colour", helperModel: "the helper's model", updateChannel: 'the update channel', checkIn: 'the usage count',
+  relayAddress: 'the relay address', 'project.extraFolders': 'its extra folders', 'project.projectToolsUnasked': "its manager's project tools",
+  'project.projectSettingsTools': "its manager's settings tools", 'project.lockdown': 'its lockdown', 'project.worktreeSetup': 'its worktree command',
+  'project.followFlow': 'whether Ledung follows its workflow', 'project.name': 'its name',
+};
+
 /** The pending setting to scroll to and highlight once its Settings group is on screen (SettingsFrame takes it). */
 let pendingFocus: { view: string; label: string } | null = null;
 export function focusSettingNext(to: CardLink): void {
@@ -107,7 +122,10 @@ export function helperDeclinedText(toolName: string, input: Record<string, unkno
       return `You declined changing${name ? ` "${name}"` : ''}${what ? `: ${what}` : ''}.`;
     }
     case 'set_project_settings': return `You declined changing${name ? ` "${name}"'s` : ' the'} settings.`;
-    case 'change_ledung_setting': return `You declined changing the setting ${str(input.setting) ?? ''}${name ? ` of "${name}"` : ''}.`.replace(' .', '.');
+    case 'change_ledung_setting': {
+      const id = str(input.setting) ?? '';
+      return `You declined changing ${SETTING_WORDS[id] ?? `the setting ${id}`}${name ? ` of "${name}"` : ''}.`;
+    }
     case 'usage_publish': return 'You declined publishing usage.';
   }
   return 'You declined that request.';

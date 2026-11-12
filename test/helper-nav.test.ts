@@ -87,6 +87,6 @@ test('a declined request in the helper chat reads plainly, with no tool name (ac
     helperDeclinedText('mcp__ledung__add_project', { name: 'shop', folder: '/x' }),
     helperDeclinedText('mcp__ledung__whatever', {}),
   ];
-  assert.deepEqual(lines.slice(1, 3), ['You declined changing "shop": permission mode Auto.', 'You declined adding the project "shop".']);
+  assert.deepEqual(lines.slice(0, 3), ['You declined changing sign-in on the home network.', 'You declined changing "shop": permission mode Auto.', 'You declined adding the project "shop".']);
   for (const l of lines) assert.ok(!/mcp__|_project|ledung__/.test(l), l);
 });

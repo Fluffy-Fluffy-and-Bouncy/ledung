@@ -26,6 +26,16 @@ function readRaw(file: string): Record<string, unknown> {
   return raw as Record<string, unknown>;
 }
 
+/** The file's own object and the config it makes, as saved now (a restart-only change may not run yet). */
+export function savedConfig(file: string): { raw: Record<string, unknown>; config: LedungConfig } {
+  const raw = readRaw(file);
+  try {
+    return { raw, config: parseConfig(raw) };
+  } catch (e) {
+    throw new ConfigWriteError(`The config file has a problem, so Ledung leaves it alone; fix it first (Settings → Config file): ${(e as Error).message.split('\n')[0]}`);
+  }
+}
+
 /** The config as it would be with this setting (undefined: left out, back to its default); throws why not. */
 export function configWith(file: string, key: SettingName, value: unknown): { raw: Record<string, unknown>; config: LedungConfig } {
   if (!(key in SETTING_RELOAD) || key === '$comment') throw new ConfigWriteError(`"${key}" is not a setting of the config file.`);

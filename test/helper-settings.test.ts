@@ -278,3 +278,52 @@ test('a change of a secret alone says so instead of the same masked before and a
   assert.match(h.reason, /Session profiles: a value hidden as secret changed/);
   assert.ok(!h.reason.includes('other-456') && !h.reason.includes('sekret-123'));
 });
+
+test("an unrelated profile edit keeps its secrets byte for byte; the mask is never written (acceptance round 7, 26)", async () => {
+  const { hook, run, allow, file } = await ledung();
+  const savedProfile = { lean: { about: 'old', mcpServers: { api: { command: 'node', args: ['server.js', '--api-key', 'key-999'], env: { API_TOKEN: 'tok-888' } } } } };
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  fs.writeFileSync(file, JSON.stringify({ ...raw, profiles: savedProfile }, null, 2));
+  // What the helper sees, and sends back with only the description changed.
+  const seen = { lean: { about: 'Lean test profile', mcpServers: { api: { command: 'node', args: ['server.js', '--api-key', '•••'], env: { API_TOKEN: '•••' } } } } };
+  const input = { setting: 'profiles', value: seen };
+  const h = await hook(input);
+  assert.equal(h.decision, 'ask');
+  // A readable diff of only what changes, and that the secrets don't.
+  assert.match(h.reason, /Session profiles: lean\.about: "old" → "Lean test profile"/);
+  assert.match(h.reason, /hidden values \(secrets\) unchanged/);
+  assert.ok(!h.reason.includes('key-999') && !h.reason.includes('tok-888'));
+  allow(input, h.reason);
+  const out = await run('change_ledung_setting', input);
+  assert.equal(out.error, false, out.text);
+  const written = JSON.parse(fs.readFileSync(file, 'utf8')).profiles.lean;
+  assert.equal(written.about, 'Lean test profile');
+  assert.deepEqual(written.mcpServers.api.args, ['server.js', '--api-key', 'key-999'], 'args secret kept');
+  assert.equal(written.mcpServers.api.env.API_TOKEN, 'tok-888', 'env secret kept');
+  assert.ok(!fs.readFileSync(file, 'utf8').includes('•••'));
+  // A mask where no secret was saved is refused, never written.
+  const bad = await hook({ setting: 'profiles', value: { lean: { ...seen.lean, mcpServers: { api: { command: 'node', env: { NEW: '•••' } } } } } });
+  assert.equal(bad.decision, 'deny');
+  assert.match(bad.reason, /never writes the mask/);
+});
+
+test("a card's before is what the config file has saved, with the running value when a restart is pending (round 7, 24)", async () => {
+  const { hook, file } = await ledung();
+  // Saved .99, still running the old 10.0.0.1 until a restart.
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  fs.writeFileSync(file, JSON.stringify({ ...raw, lan: '192.168.50.99' }, null, 2));
+  const h = await hook({ setting: 'lan', value: '192.168.50.98' });
+  assert.equal(h.decision, 'ask');
+  assert.match(h.reason, /home network access 192\.168\.50\.99 → 192\.168\.50\.98/);
+  assert.match(h.reason, /now saved: 192\.168\.50\.99, running: 10\.0\.0\.1 until Restart Ledung/);
+});
+
+test("a computer tab's card names the change itself, then what it opens (round 7, 24)", async () => {
+  const { hook, file } = await ledung();
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  fs.writeFileSync(file, JSON.stringify({ ...raw, computers: [{ name: 'Laptop', publicName: 'laptop.example.com', port: 4317 }] }, null, 2));
+  const h = await hook({ setting: 'computers', value: [{ name: 'Laptop', publicName: 'laptop.example.com', port: 4318 }] });
+  assert.equal(h.decision, 'ask');
+  assert.match(h.reason, /Computer tabs: "Laptop"\.port: 4317 → 4318/);
+  assert.match(h.reason, /http:\/\/127\.0\.0\.1:4318/);
+});
