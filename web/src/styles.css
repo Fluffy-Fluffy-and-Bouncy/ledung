@@ -1925,3 +1925,4 @@ button.settings-menu-item.danger { color: var(--danger); }
 .job-state { margin-top: 0.25rem; }
 .job-actions { display: flex; gap: 0.35rem; margin-top: 0.3rem; }
 .job-actions .danger { color: var(--danger); }
+.resource-line .link, .job-card-head .link { text-align: left; }

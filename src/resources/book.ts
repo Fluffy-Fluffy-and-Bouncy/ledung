@@ -636,10 +636,15 @@ export class ResourceBook {
       }
       return out;
     };
-    // What a session started: below Claude Code itself (not the host, nor Claude Code, its child).
+    // What a session started: below Claude Code itself (not the host, nor Claude Code, its child), and not the
+    // console host Windows gives Claude Code at its first shell call, which lives as long as it does and would keep
+    // a job "running" forever (try-out of 2026-11-12).
     const workOf = (sessionId: string): ProcInfo[] => {
       const host = x.hosts.get(sessionId);
-      return (x.trees.get(sessionId) ?? []).filter((p) => p.pid !== host && p.ppid !== host);
+      const tree = x.trees.get(sessionId) ?? [];
+      // Only Claude Code's own: one named so further down is a program the session started, and counts.
+      const claude = new Set(tree.filter((p) => p.ppid === host).map((p) => p.pid));
+      return tree.filter((p) => p.pid !== host && p.ppid !== host && !(claude.has(p.ppid) && p.name && /^conhost\.exe$/i.test(p.name)));
     };
     // What Ledung may act on: only processes reached from the host through live parents now. A process taken in by
     // #169's rule for counting (its parent gone) may be someone else's that got a reused id (finding 5).

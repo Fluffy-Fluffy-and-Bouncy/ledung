@@ -215,3 +215,38 @@ L1 can be built and released on its own (it only shows figures). L2 and L3 belon
 - **Disk.**
 - **Docker and container projects**: neither measured for GPU nor limited; `reserve` is offered to local sessions only. Docker's virtual machine still shows in the PC's totals as it does now.
 - **The quick "I'm using the PC" switch**: v2.
+
+## Progress
+
+| Part | Status (2026-11-12) |
+|---|---|
+| L1 GPU measuring | Done (`src/platform/gpu.ts`, in the measuring loop of `src/platform/processes.ts`). Windows: the raw CIM classes and DXGI, as checked above, with a 10 s timeout per read, a retry after a failed read, the adapter list read again every 60th round, and a watchdog that restarts a loop that stops sending. Linux and macOS: parsers tested on sample output only. |
+| L2 Limits on the bars | Done (`web/src/usage/MachinePanel.tsx`). A GPU's limit is kept by the GPU's name, since Windows gives a GPU a new id at each reboot. |
+| L3 Reserve, the line, cards | Done (`src/resources/book.ts`, `src/resources/limits.ts`, the `reserve` and `release` tools). |
+| L4 Running share | Done. |
+| L5 New sessions under a memory limit | Done (sessions and chats; managers and container sessions don't wait). |
+| L6 Learning and recognition | Done (`src/resources/jobs.ts`, tables `job_runs` and `command_marks`; usage page "Reserved jobs"). |
+
+**Changed while building, from the two security reviews and the try-out:**
+
+- **Unreserved work** is the session's whole tree that isn't a reserved job, Claude Code included, against its footprint (learned per project and role, ~1 GB at first) plus the allowance. Measuring only what the session started, against the allowance alone, held sessions for their own MCP servers, and let a heavy process started just before a tiny reservation go unjudged.
+- **Managers** are never asked to reserve and never held: they have no `reserve` tool.
+- **A request above the limit itself** holds back no one in the line; requests above the PC's own memory or the GPU's are refused.
+- **Sessions and managers never see another session's job name or title** in a reason ("Waiting behind another job"); the page does.
+- **A job's name can't start with `session:` or `(`**, which the learning store keeps for itself.
+- **Only shell calls that ran 10 s or more, or in the background, are learned as a job's commands**, so `git status` between two builds never becomes "heavy". The heavy-command check also looks inside `bash -c`, `nohup`, `env`, `cmd /c` and the like, and covers the Monitor tool. It stays advisory: a script file can hide a command; what really runs is judged by the check of each job's share.
+- **While held,** the person's answers to the session's questions also go in, besides the person's messages and Ledung's notices.
+- **Pause, Resume and Stop** act only on processes still under the session's host in a fresh process list, and on Windows only on a handle whose start time matches Ledung's record. A second Pause is refused (Windows counts suspends). A paused job that ends is resumed.
+- **A lowered priority is put back** only on the same process (start time), and only if it is still at Ledung's level; priorities lowered before a restart of Ledung are put back at the next start. On Linux each thread is lowered.
+- **Windows' console host** (`conhost.exe`, which Claude Code gets at its first shell call and keeps) is never part of a job: it kept a reservation "running" forever in the try-out.
+
+**Checked live** (throwaway Ledung on port 4396, Haiku sessions, `node burn.mjs` as the fake job, on this PC while other programs kept its CPU near 100%):
+
+- A reserved CPU job: it waited under a 60% CPU limit ("needs ~25%, 13% left under the 60% limit"), went when the limit was taken off, and its card showed its own share (about 10% CPU and 0.4 GB; the busy PC gave its 4 workers about 1.6 cores).
+- A job over its share: reserving 0.5 GB and holding 2 GB, it was lowered and held after the set time, the session was told, and when it let the memory go it was put back and told so; it was released when its process ended.
+- A queued job starting when a limit is raised: a job asking 80% GPU under a 50% limit waited with "only a higher limit lets it start", and was told "You may go" as soon as the limit went to 100%.
+- A new session under a memory limit: it waited ("needs ~0.3 GB", the footprint already learned from the earlier sessions), started by itself when memory freed up, and in a second run started within seconds of the limit being raised; its first message came after the start.
+- Pause, a second Pause (refused), Resume and Stop from a job's card, through the page's API. Suspend, resume, priority and end were also checked on a throwaway process directly, including that a wrong start time is refused.
+- GPU readings: both GPUs of this PC read in the loop (the 4090's load 7–20% and 5–7 GB, the integrated AMD), the software renderer left out.
+
+**Not checked:** a GPU job's own figures under real GPU load (no GPU load was started, as asked; only the PC's readings at its normal load); CPU over-share live (this PC's other load kept a CPU job to about 1.6 cores, so the over-share case was run with memory; CPU over-share is covered by the tests); Linux and macOS measuring and priorities (parsers and logic tested only); the learned figure and the heavy-command refusal live (unit tests only); the usage page's "Reserved jobs" in a browser.

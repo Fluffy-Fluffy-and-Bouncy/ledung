@@ -8,7 +8,7 @@ import {
   ALLOWANCE, Averages, DEFAULT_SETTINGS, GB, grantPass, marginOf, notFitting, NOT_OVER, overStep, roomReason, unusedOf, type LineItem,
 } from '../src/resources/limits.ts';
 import { GpuTracker, type GpuReading, groupLoad, groupMem, mainGpu, parseDrmFdinfo, parseIoreg, parseNvidiaGpus, parseNvidiaPmon, parseWindowsGpu } from '../src/platform/gpu.ts';
-import { windowsBatchReader, type ProcInfo, type ProcessList } from '../src/platform/processes.ts';
+import { parseWindowsLines, windowsBatchReader, type ProcInfo, type ProcessList } from '../src/platform/processes.ts';
 import { ResourceBook, LAPSE_MS, RESOURCE_SOURCE, type BookSample, type BookSession } from '../src/resources/book.ts';
 import { JobStore, fromGeneric, toGeneric } from '../src/resources/jobs.ts';
 import { heavyKinds } from '../src/resources/commands.ts';
@@ -558,4 +558,17 @@ test('heavy commands are found inside the usual wrappers', () => {
   assert.deepEqual(heavyKinds('env CUDA=1 python train.py'), ['python train.py']);
   assert.deepEqual(heavyKinds('cmd /c npm run build'), ['npm run build']);
   assert.deepEqual(heavyKinds('git status'), ['git status']);
+});
+
+test("Claude Code's own console host on Windows is never a job, so a reservation still ends with its job", () => {
+  const r = rig();
+  r.tick({ s1: tree() });
+  r.book.reserve('s1', { what: 'Build', cpu: 10 });
+  const conhost = { ...proc(19, 11, 5 * 1024 ** 2), name: 'conhost.exe' };
+  r.tick({ s1: tree(conhost, proc(13, 11)) }, { cpuOf: { 13: 2 } });
+  r.tick({ s1: tree(conhost, proc(13, 11)) }, { cpuOf: { 13: 2 } });
+  assert.equal(r.book.info().jobs[0]!.processes, 1);
+  r.tick({ s1: tree(conhost) });
+  assert.equal(r.book.info().jobs.length, 0, 'ended: only the console host is left');
+  assert.equal(parseWindowsLines(['100,50,0,2000,0,conhost.exe'])!.get(100)!.name, 'conhost.exe');
 });
