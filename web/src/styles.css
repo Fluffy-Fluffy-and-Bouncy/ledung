@@ -1323,6 +1323,20 @@ body.sidebar-dragging, body.sidebar-dragging * { cursor: grabbing !important; }
 .passkey-dialog h3 { margin: 0 0 0.5rem; }
 .passkey-dialog p { margin: 0 0 0.6rem; }
 .passkey-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.8rem; }
+/* The first-run picker for workflow-step questions (#293, mockup A, Ledung question #881): the passkey dialog made
+   wide, two sample question pages side by side at a smaller size, one under the other on a phone. */
+.picker-backdrop { align-items: flex-start; overflow-y: auto; padding: 2rem 1rem; }
+.passkey-dialog.picker-dialog { max-width: 1180px; }
+.picker-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; align-items: start; }
+@media (max-width: 760px) { .picker-pair { grid-template-columns: 1fr; } }
+.picker-side { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
+.picker-side > b { font-size: 1.02rem; }
+.picker-tag { font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.picker-frame { border: 1px solid var(--border); border-radius: 10px; background: var(--bg); overflow: hidden; margin: 0.2rem 0 0.4rem; }
+.picker-sample { zoom: 0.72; max-width: none; padding: 0.6rem 1rem 1.2rem; }
+.picker-sample .issue p, .picker-sample .ev p { margin: 0.3rem 0; }
+.picker-sample .ev { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem 0.8rem; }
+.picker-foot { justify-content: space-between; align-items: center; flex-wrap: wrap; }
 
 /* The Files pane (issue #225, a test feature): the file panel's frame and phone overlay, with a tree and a diff. */
 .files-toggle.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }

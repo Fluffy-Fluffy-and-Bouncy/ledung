@@ -16,7 +16,7 @@ import type { ComputerColour, ComputerInfo } from '../../src/shared/computers.ts
 import type { PaneFolderKey, PaneFolders, SessionChanges, TreeListing } from '../../src/shared/files-pane.ts';
 import type { LineComment } from '../../src/shared/line-comments.ts';
 import type { FlowFileWrite, FlowView } from '../../src/shared/flow.ts';
-import type { FlowRun, StepQuestions } from '../../src/shared/flow-run.ts';
+import type { FlowRun, StepQuestions, StepQuestionsView } from '../../src/shared/flow-run.ts';
 import type { FlowProposal } from '../../src/shared/flow-proposal.ts';
 import type { SkillChoices } from '../../src/shared/skills.ts';
 import type { SecretInfo, SecretLifetime } from '../../src/shared/secrets.ts';
@@ -340,8 +340,10 @@ export const api = {
   // Resource limits (docs/steps/resource-limits.md).
   setResourceLimit: (dim: string, value: number | null) => call('POST', '/api/resource-limits', { dim, value }),
   // Settings → Questions at a workflow step (#291).
-  stepQuestions: () => call<{ choice: StepQuestions }>('GET', '/api/step-questions'),
-  setStepQuestions: (choice: StepQuestions) => call<{ choice: StepQuestions }>('POST', '/api/step-questions', { choice }),
+  stepQuestions: () => call<StepQuestionsView>('GET', '/api/step-questions'),
+  setStepQuestions: (choice: StepQuestions) => call<StepQuestionsView>('POST', '/api/step-questions', { choice }),
+  /** Skip in the first-run picker (#293): the default stays and it is not asked again. */
+  skipStepQuestions: () => call<StepQuestionsView>('POST', '/api/step-questions-skip', {}),
   setResourceSettings: (settings: { averageSec?: number; marginPoints?: number; overSec?: number }) => call('POST', '/api/resource-settings', settings),
   resourceStartNow: (id: string) => call('POST', `/api/resource-line/${encodeURIComponent(id)}/start-now`, {}),
   pauseJob: (id: string, paused: boolean) => call('POST', `/api/jobs/${encodeURIComponent(id)}/pause`, { paused }),

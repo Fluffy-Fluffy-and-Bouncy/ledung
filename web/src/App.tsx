@@ -87,6 +87,7 @@ import { useComputerLink } from './useComputerLink.ts';
 import { useInstallApp } from './useInstallApp.ts';
 import { InstallNotice } from './components/InstallApp.tsx';
 import { ShortcutNotice } from './components/Shortcuts.tsx';
+import { StepQuestionsPicker } from './components/StepQuestionsPicker.tsx';
 import { CheckInNotice } from './components/CheckIn.tsx';
 import { caretPoint, MaskedSecret, SecretChips, SecretEditor, SelectionKey, SessionSecretsMenu } from './components/SecretLock.tsx';
 import { chipsFor, insertToken, lockInDraft, lockRange, renameToken } from './secretLock.ts';
@@ -473,6 +474,7 @@ export function App() {
       {ledung.away && awayBannerShown(ledung.away, session) && <AwayBanner away={ledung.away} run={run} />}
       {installApp.notice && <InstallNotice app={installApp} run={run} />}
       <ShortcutNotice run={run} />
+      <StepQuestionsPicker run={run} />
       <CheckInNotice run={run} />
       {ledung.usageStops.filter((s) => s.holding).map((s) => (
         <div key={`${s.account}:${s.kind}`} className="banner updated">
