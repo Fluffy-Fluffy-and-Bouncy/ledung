@@ -298,6 +298,9 @@ export const api = {
   renameProject: (name: string, to: string, settings?: Record<string, unknown>) =>
     call<ProjectInfo>('POST', `/api/projects/${encodeURIComponent(name)}/rename`, { name: to, ...(settings ? { settings } : {}) }),
   removeProject: (name: string) => call('POST', `/api/projects/${encodeURIComponent(name)}/remove`, {}),
+  /** Removes an Allow always rule (issue #225). */
+  removeAllowedCall: (project: string, id: number) =>
+    call<ProjectInfo>('POST', `/api/projects/${encodeURIComponent(project)}/allowed-remove`, { id }),
   messageManager: (name: string, text: string) => call<SessionInfo>('POST', `/api/projects/${encodeURIComponent(name)}/manager`, { text }),
   browse: (path?: string) => call<FolderListingView>('GET', `/api/browse${path ? `?path=${encodeURIComponent(path)}` : ''}`),
   containers: () => call<ContainerInfoView[]>('GET', '/api/containers'),

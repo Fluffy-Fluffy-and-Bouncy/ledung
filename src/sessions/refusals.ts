@@ -3,11 +3,15 @@
 // grant for that exact call in that session, honoured by Ledung's PreToolUse hook (an `allow` there gets past the
 // classifier, as the merge on an answer showed). Nothing here grants anything without the person's own answer.
 //
+// Allow always (issue #225) is the third answer for a shell command: a rule of the project for that exact command,
+// kept in the database (allowed_calls), listed and removable in the project's settings, and honoured by the same hook.
+//
 // The grant is kept as the answered question itself, and used up through the store's words_used (atomic), so a
 // restart neither loses nor repeats it. Kept apart from the session so the order record (#105) can grant a call the
 // same way: `sameCall` and `onceGrant` know nothing about where the grant came from but the question.
 import type { QuestionInfo } from '../shared/protocol.ts';
 import type { QuestionDetails, RefusalDetails } from '../shared/questions.ts';
+import type { Store } from '../store/store.ts';
 
 /** What Claude Code puts in the tool result when the classifier refuses a call (its own text, Claude Code 2.1.x). */
 export const CLASSIFIER_REFUSAL = 'Permission for this action was denied by the Claude Code auto mode classifier.';
@@ -15,6 +19,13 @@ export const CLASSIFIER_REFUSAL = 'Permission for this action was denied by the 
 /** The answers the person can give; the question offers them as its buttons. */
 export const ALLOW_ONCE = 'Allow once';
 export const DENY = 'Deny';
+/**
+ * Allow always (issue #225; Martin 2026-11-11 21:24: "if I approve of something then that approval has to stay"):
+ * exactly this command, in every session of the project, from now on, until removed in the project's settings.
+ */
+export const ALLOW_ALWAYS = 'Allow always';
+/** Allow always for a command on the project's sensitive list: its own button, so it is never given by mistake. */
+export const ALLOW_ALWAYS_SENSITIVE = 'Allow always, though sensitive';
 /** The answer to a refusal only the person can make (Project-Ledung#470): they made the change themself. */
 export const DONE_BY_HAND = 'Done by hand';
 
@@ -158,6 +169,45 @@ export function allowsOnce(answer: string | null): boolean {
 }
 
 /**
+ * Which Allow always a call can be offered (issue #225), or null: only a shell command, which a rule can name exactly,
+ * and never one Allow once can't lift either (Project-Ledung#470). `sensitiveRule` is the project's sensitive rule the
+ * command matches, if any: then the button says so.
+ */
+export function alwaysOffer(toolName: string, input: Record<string, unknown>, byHand: boolean, sensitiveRule: string | null): 'plain' | 'sensitive' | null {
+  if (byHand || !LABELLED_TOOLS.includes(toolName) || typeof input.command !== 'string' || !input.command.trim()) return null;
+  return sensitiveRule === null ? 'plain' : 'sensitive';
+}
+
+/**
+ * Whether an answered refusal question is the person's Allow always, and which: the button the question offered,
+ * alone or with a note under it, by the person themself (not passed on by a manager). A typed "Allow always" on a
+ * question that offered the sensitive button, or none, allows nothing.
+ */
+export function allowsAlways(q: Pick<QuestionInfo, 'details' | 'answer' | 'answeredBy' | 'forwardedFrom' | 'status'>): 'plain' | 'sensitive' | null {
+  const r = refusalOf(q);
+  if (!r?.always || r.byHand || q.status !== 'answered' || q.answeredBy !== 'user' || q.forwardedFrom !== null || q.answer === null) return null;
+  const label = r.always === 'sensitive' ? ALLOW_ALWAYS_SENSITIVE : ALLOW_ALWAYS;
+  const a = q.answer.trim();
+  return a === label || a.startsWith(`${label}\n\nNote: `) ? r.always : null;
+}
+
+/**
+ * Records the person's Allow always (issue #225), when the answered question is one: the exact command becomes a rule
+ * of the session's project, with who allowed it, when and on which question. Called when the person answers, before
+ * the answer reaches the session, so the session's retry is let through by the rule. True when a rule was recorded.
+ */
+export function recordAllowAlways(
+  store: Pick<Store, 'getSession' | 'addAllowedCall'>, q: QuestionInfo, userName: string,
+): boolean {
+  const always = allowsAlways(q);
+  const r = refusalOf(q);
+  const project = store.getSession(q.sessionId)?.project;
+  if (!always || !r || typeof r.input.command !== 'string' || project === undefined) return false;
+  store.addAllowedCall({ project, toolName: r.toolName, command: r.input.command, sensitive: always === 'sensitive', allowedBy: userName, questionId: q.id });
+  return true;
+}
+
+/**
  * The person's Allow once that covers this call, if any: a refusal question of this session, answered Allow once by
  * the person themself (not passed on by a manager, which forward_answer does), within the last day, for exactly this
  * call from the same caller (the session itself, or a subagent of it). Whether it is still unused is the store's to say (words_used), so the caller uses it up atomically.
@@ -219,15 +269,24 @@ export function refusalQuestion(
     return { question: `**${title}**\n\n${issue}`, options: [DONE_BY_HAND, DENY], details };
   }
   const title = `Auto mode refused a call in "${session.title}"`;
+  const always = r.always === 'sensitive' ? ALLOW_ALWAYS_SENSITIVE : r.always === 'plain' ? ALLOW_ALWAYS : null;
   const issue = [
     `The auto mode classifier refused this ${what} in the session "${session.title}" (project ${session.project}).`,
     call,
     reason,
     `**${ALLOW_ONCE}** lets exactly this call run one time: Ledung tells the session to retry it, and lets the retry through. ` +
-      `Any other command, and a second run of this one, is refused or asked as usual. **${DENY}** tells the session you said no.`,
+      `Any other command, and a second run of this one, is refused or asked as usual.` +
+      (always
+        ? ` **${always}** lets exactly this command run from now on, in every session of project ${session.project}, without the classifier and without asking you; ` +
+          `a changed command (other arguments, a pipe, another command chained on) is asked as before. You can remove it in the project's settings, under What always goes to you.`
+        : '') +
+      ` **${DENY}** tells the session you said no.`,
+    ...(r.always === 'sensitive'
+      ? [`**This command is on the project's sensitive list** (${r.sensitiveRule ?? 'a sensitive rule'}). **${ALLOW_ALWAYS_SENSITIVE}** lets it past that list too, so it will no longer come to you.`]
+      : []),
   ].join('\n\n');
   const details: QuestionDetails = { title, issue, ...(tier ? { tier } : {}), rank: 0, refusal: r };
-  return { question: `**${title}**\n\n${issue}`, options: [ALLOW_ONCE, DENY], details };
+  return { question: `**${title}**\n\n${issue}`, options: always ? [ALLOW_ONCE, always, DENY] : [ALLOW_ONCE, DENY], details };
 }
 
 /** What the session is told when the person answered (buildDelivery): retry once, stop, or what they said instead. */
@@ -242,6 +301,14 @@ export function refusalAnswerText(q: QuestionInfo, userName: string): string {
     const note = q.answer!.trim().slice(ALLOW_ONCE.length).replace(/^\s*Note:\s*/, '').trim();
     return `${userName} allowed, once, the call the auto mode classifier refused (Ledung's question #${q.id}). Retry exactly this call now, one time, unchanged:\n\n${call}\n\n` +
       'Ledung lets that one retry through; it does not cover any other command, a changed one, or a second run.' +
+      (note ? `\n\n${userName}'s note: ${note}` : '');
+  }
+  const always = allowsAlways(q);
+  if (always) {
+    const label = always === 'sensitive' ? ALLOW_ALWAYS_SENSITIVE : ALLOW_ALWAYS;
+    const note = q.answer!.trim().slice(label.length).replace(/^\s*Note:\s*/, '').trim();
+    return `${userName} allowed always the call the auto mode classifier refused (Ledung's question #${q.id}). Retry exactly this call now, unchanged:\n\n${call}\n\n` +
+      'Ledung lets exactly this command through from now on, in every session of this project. A changed command (other arguments, a pipe, another command chained on) is not covered and is refused or asked as usual.' +
       (note ? `\n\n${userName}'s note: ${note}` : '');
   }
   if (q.answer?.trim() === DENY) {

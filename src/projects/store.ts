@@ -68,6 +68,8 @@ export class ProjectStore {
     const project = parseProject(config);
     if (this.get(project.name)) throw new Error(`There is already a project named "${project.name}".`);
     this.db.prepare('DELETE FROM projects WHERE name = ?').run(project.name);
+    // A removed project's Allow always rules don't come back with a new one of its name (issue #225).
+    this.db.prepare('DELETE FROM allowed_calls WHERE project = ?').run(project.name);
     this.db.prepare('INSERT INTO projects (name, data, manager_id, created_at) VALUES (?, ?, ?, ?)')
       .run(project.name, JSON.stringify(project), managerId, Date.now());
     return this.get(project.name)!;
@@ -114,11 +116,14 @@ export class ProjectStore {
       // What its reserved jobs used and its commands' marks (resource limits): the learning follows the project.
       'UPDATE job_runs SET project = ? WHERE project = ?',
       'UPDATE command_marks SET project = ? WHERE project = ?',
+      // Its Allow always rules (issue #225).
+      'UPDATE allowed_calls SET project = ? WHERE project = ?',
     ];
     this.db.exec('BEGIN');
     try {
       this.db.prepare('DELETE FROM projects WHERE name = ? AND removed_at IS NOT NULL').run(project.name);
       this.db.prepare('DELETE FROM board_projects WHERE name = ?').run(project.name);
+      this.db.prepare('DELETE FROM allowed_calls WHERE project = ?').run(project.name);
       this.db.prepare('UPDATE projects SET name = ?, data = ? WHERE name = ? AND removed_at IS NULL').run(project.name, JSON.stringify(project), from);
       // Its manager's title, while it is still the one Ledung gave it ("Manager: <project>", start).
       this.db.prepare(`UPDATE sessions SET title = ? WHERE project = ? AND role = 'manager' AND title = ?`).run(`Manager: ${project.name}`, from, `Manager: ${from}`);

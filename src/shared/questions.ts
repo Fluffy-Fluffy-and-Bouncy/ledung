@@ -161,6 +161,13 @@ export interface RefusalDetails {
   byHand?: 'protected' | 'retried';
   /** With `retried`: the question whose Allow once the retry used. */
   retryOf?: number;
+  /**
+   * Allow always was offered (issue #225): `plain`, or `sensitive` with its own button when the command is on the
+   * project's sensitive list. Absent: not offered (not a shell command, by hand, or asked before #225).
+   */
+  always?: 'plain' | 'sensitive';
+  /** With `sensitive`: the sensitive rule the command matched, as the question named it. */
+  sensitiveRule?: string;
 }
 
 /** The run and block a person block's question belongs to (workflow part 3b), with their titles as asked. */

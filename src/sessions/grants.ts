@@ -114,6 +114,11 @@ export class AllowedNotes {
     }
   }
 
+  /** A command the user allowed always after a refusal (issue #225): `why` says who, when and on which question. */
+  alwaysAllowed(toolUseID: string | undefined, why: string): void {
+    if (toolUseID) this.notes.set(toolUseID, `Ledung allowed this call without asking: ${why}, after the auto mode classifier refused it.`);
+  }
+
   /** A command the person ordered (issue #105): `note` quotes their words and where they said them. */
   ordered(toolUseID: string | undefined, note: string): void {
     if (toolUseID) this.notes.set(toolUseID, note);
