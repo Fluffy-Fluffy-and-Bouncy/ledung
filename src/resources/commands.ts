@@ -30,3 +30,27 @@ export function commandKinds(command: string): string[] {
   }
   return out;
 }
+
+/**
+ * The kinds of command a shell call really runs, for resource limits' heavy-command check: as commandKinds, also
+ * looking inside the usual wrappers (`bash -c "…"`, `sh -c`, `powershell -Command`, `cmd /c`, `nohup`, `time`, `env`,
+ * `nice`, `exec`, PowerShell's `&`, a subshell's parentheses), so `nohup python train.py &` is `python train.py`.
+ * Still advisory (security review of the resource limits, finding 13): a script file can hide anything, and what really
+ * runs is judged by the check of each job's measured share.
+ */
+export function heavyKinds(command: string): string[] {
+  let c = command;
+  for (let round = 0; round < 3; round++) {
+    const before = c;
+    c = c
+      .replace(/\b(?:ba|z)?sh(?:\.exe)?\s+(?:-\w+\s+)*-c\s+(["'])([\s\S]*?)\1/g, ' ; $2 ; ')
+      .replace(/\b(?:powershell|pwsh)(?:\.exe)?\s+(?:-\w+\s+)*-(?:Command|c)\s+(["'])([\s\S]*?)\1/gi, ' ; $2 ; ')
+      .replace(/\bcmd(?:\.exe)?\s+\/[cCkK]\s+/g, ' ; ');
+    if (c === before) break;
+  }
+  c = c.replace(/[()]/g, ' ; ');
+  // A wrapper word at the start of a part: dropped, with what belongs to it.
+  const wrapper = /(^|[;&|\n]\s*)(?:&\s+|nohup\s+|time\s+|exec\s+|nice(?:\s+-n)?\s+-?\d+\s+|nice\s+|env(?:\s+-\w+)*(?:\s+[A-Za-z_][A-Za-z0-9_]*=\S*)*\s+)/g;
+  for (let round = 0; round < 3; round++) c = c.replace(wrapper, '$1');
+  return [...new Set([...commandKinds(c), ...commandKinds(command)].filter((k) => /^[\w.]/.test(k) && !/^(bash|sh|zsh|cmd|powershell|pwsh|nohup|time|env|nice|exec)$/.test(k)))];
+}

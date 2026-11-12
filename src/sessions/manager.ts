@@ -4,7 +4,7 @@ import type { DockerProjectConfig, LedungConfig, LocalProjectConfig, ProjectConf
 import { ProjectStore, type StoredProject } from '../projects/store.ts';
 import { AccountError, AccountStore, DEFAULT_ACCOUNT, SIGN_IN_ENV, type AccountPlace } from '../accounts/store.ts';
 import { removeSignIn } from '../accounts/signin-store.ts';
-import type { AccountChoices, AccountInfoView, AwayInfo, AwayKind, SignInProblem } from '../shared/protocol.ts';
+import type { AccountChoices, AccountInfoView, AwayInfo, AwayKind, HeavyCommandInfo, JobKindInfo, SignInProblem } from '../shared/protocol.ts';
 import { Away } from './away.ts';
 import { Orders } from './orders.ts';
 import { ChatImageError, type ChatImages } from './chat-images.ts';
@@ -36,6 +36,11 @@ import { sessionEnv, type Runner } from '../runners/runner.ts';
 import type { Store } from '../store/store.ts';
 import { lineOrder, mayStart, type LineEntry } from '../resources/line.ts';
 import { ResourceMonitor, type MonitorTarget } from '../resources/monitor.ts';
+import { ResourceBook, RESOURCE_SOURCE } from '../resources/book.ts';
+import { JobStore } from '../resources/jobs.ts';
+import { mainGpu } from '../platform/gpu.ts';
+import { actOn, type Target } from '../platform/process-control.ts';
+import { snapshotTree } from '../platform/process-tree.ts';
 import {
   CHATS,
   PERMISSION_MODES,
@@ -195,6 +200,9 @@ export class SessionManager {
   readonly projectStore: ProjectStore;
   readonly accounts: AccountStore;
   private readonly monitor: ResourceMonitor;
+  /** Resource limits and reservations (docs/steps/resource-limits.md). */
+  private readonly book: ResourceBook;
+  readonly jobs: JobStore;
   private readonly gate: TurnGate;
   /** Turns under way: when they started and what started them (step 6c). */
   private readonly turns = new Map<string, { at: number; trigger: string }>();
@@ -413,15 +421,56 @@ export class SessionManager {
       },
       ended: (id, commands) => {
         this.recordTurn(id, commands);
+        this.book.turnEnded(id);
         this.dispatch();
         // A session waiting to take new lockdown settings may now be free (issue #109).
         if (this.relaunching.has(id)) setImmediate(() => void this.relaunchWaiting());
       },
     };
+    Object.assign(this.gate, {
+      reserve: (id: string, args: Parameters<ResourceBook['reserve']>[1]) => this.book.reserve(id, args),
+      release: (id: string) => this.book.release(id),
+      resourceFacts: () => {
+        const gpu = this.monitor.gpu;
+        const main = mainGpu(gpu);
+        const names = [...(gpu?.adapters ?? [])].sort((a, b) => (a.id === main ? -1 : b.id === main ? 1 : 0)).map((a) => a.name);
+        return { threads: os.cpus().length, gpus: names };
+      },
+      resourceHeld: (id: string) => this.book.isHeld(id),
+      commandCheck: (id: string, kinds: string[]) => {
+        this.book.noteCommands(id, kinds);
+        return this.book.commandRefusal(id, kinds);
+      },
+    } satisfies Partial<TurnGate>);
+    this.jobs = new JobStore(store.database);
+    this.book = new ResourceBook({
+      meta: { get: (key) => this.store.getMeta(key), set: (key, value) => this.store.setMeta(key, value) },
+      jobs: this.jobs,
+      session: (id) => {
+        const info = this.store.getSession(id);
+        if (!info || info.status === 'ended') return null;
+        return {
+          id, title: info.title, project: info.project, role: info.role, priority: info.priority, local: info.runner === 'local',
+          busy: info.status === 'running' || info.status === 'waiting',
+        };
+      },
+      // A paused job that ends is resumed, never left frozen (security review of the resource limits, finding 10).
+      resume: (targets) => void actOn(targets, 'resume').catch((e: Error) => console.error(`Resuming a job: ${e.message}`)),
+      tell: (id, text) => {
+        this.store.addInbox(id, RESOURCE_SOURCE, text);
+        this.live.get(id)?.deliver();
+      },
+      wake: (id) => this.live.get(id)?.deliver(),
+      changed: () => this.publish({ type: 'machine', machine: this.machine() }),
+    });
     this.monitor = new ResourceMonitor({
       targets: () => this.targets(),
       withDocker: () => this.projectStore.list().some((p) => p.config.runner === 'docker'),
       onSample: () => this.publish({ type: 'machine', machine: this.machine() }),
+      onTick: (t) => {
+        const m = this.monitor.machine();
+        this.book.sample({ ...t, threads: m.cpus, cores: m.cores, memUsed: m.memUsed, memTotal: m.memTotal });
+      },
     });
     // A stop reached before a restart still holds, and its reset still lifts it (issue #278).
     this.refreshStops();
@@ -902,8 +951,98 @@ export class SessionManager {
   machine(): MachineInfo {
     return {
       at: Date.now(), ...this.monitor.machine(), docker: this.monitor.docker, sessions: this.monitor.figures(),
-      working: this.working(), limit: this.limit, line: lineOrder(this.lineEntries()),
+      working: this.working(), limit: this.limit, line: lineOrder(this.lineEntries()), resources: this.book.info(),
     };
+  }
+
+  // --- Resource limits (docs/steps/resource-limits.md): from the page only ---------------------------------------
+
+  setResourceLimit(dim: string, value: unknown): void {
+    try {
+      this.book.setLimit(dim, value);
+    } catch (e) {
+      throw new UserError((e as Error).message);
+    }
+  }
+
+  setResourceSettings(body: Record<string, unknown>): void {
+    try {
+      this.book.setSettings(body);
+    } catch (e) {
+      throw new UserError((e as Error).message);
+    }
+  }
+
+  resourceStartNow(id: string): void {
+    try {
+      this.book.startNow(id);
+    } catch (e) {
+      throw new UserError((e as Error).message);
+    }
+  }
+
+  /**
+   * A job's processes to act on, checked just now: still under its session's host in a fresh process list (so a pid
+   * that ended and was given to another program since the last sample is left out), with the start times the
+   * sampler recorded, which Windows checks again on the handle it acts through (security review, finding 1).
+   */
+  private async freshJobTargets(id: string): Promise<{ sessionId: string; paused: boolean; targets: Target[] }> {
+    let job: ReturnType<ResourceBook['jobTargets']>;
+    try {
+      job = this.book.jobTargets(id);
+    } catch (e) {
+      throw new UserError((e as Error).message);
+    }
+    if (!job.host) throw new UserError("This job's session is not measured right now; try again in a few seconds.");
+    const now = new Set((await snapshotTree(job.host)).map((p) => p.pid));
+    return { sessionId: job.sessionId, paused: job.paused, targets: job.targets.filter((t) => now.has(t.pid) && t.pid !== job.host) };
+  }
+
+  /** The person's Pause or Resume on a job's card: suspends or resumes its processes. Never automatic. */
+  async pauseJob(id: string, paused: boolean): Promise<void> {
+    const job = await this.freshJobTargets(id);
+    // Windows counts suspends: a second Pause would need two Resumes (finding 3).
+    if (job.paused === paused) throw new UserError(paused ? 'This job is already paused.' : 'This job is not paused.');
+    let done: number;
+    try {
+      done = (await actOn(job.targets, paused ? 'suspend' : 'resume')).done;
+    } catch (e) {
+      throw new UserError(`Could not ${paused ? 'pause' : 'resume'} the job: ${(e as Error).message}`);
+    }
+    if (!done) throw new UserError(`Could not ${paused ? 'pause' : 'resume'} the job: none of its processes could be reached.`);
+    this.book.setJobPaused(id, paused);
+    this.store.addInbox(job.sessionId, RESOURCE_SOURCE, `${this.config.userName} ${paused ? 'paused' : 'resumed'} your job (reservation ${id}) from its card${paused ? ': its processes are suspended until resumed; their memory stays taken' : ''}.`);
+    this.live.get(job.sessionId)?.deliver();
+  }
+
+  /** The person's Stop on a job's card, after a confirm in the page: ends its processes. */
+  async stopJob(id: string): Promise<void> {
+    const job = await this.freshJobTargets(id);
+    let done: number;
+    try {
+      done = (await actOn(job.targets, 'end')).done;
+    } catch (e) {
+      throw new UserError(`Could not stop the job: ${(e as Error).message}`);
+    }
+    if (!done) throw new UserError('Could not stop the job: none of its processes could be reached.');
+    this.store.addInbox(job.sessionId, RESOURCE_SOURCE, `${this.config.userName} stopped your job (reservation ${id}) from its card: ${done} of its processes were ended.`);
+    this.live.get(job.sessionId)?.deliver();
+  }
+
+  jobKinds(): JobKindInfo[] {
+    return this.jobs.kinds();
+  }
+
+  heavyCommands(): HeavyCommandInfo[] {
+    return this.jobs.heavyCommands();
+  }
+
+  forgetJobKind(project: string, kind: string): void {
+    this.jobs.forget(project, kind);
+  }
+
+  markCommand(project: string, command: string, never: boolean): void {
+    this.jobs.markNever(project, command, never);
   }
 
   private targets(): MonitorTarget[] {
@@ -2476,8 +2615,11 @@ export class SessionManager {
     const session = new Session({ info, ...this.sessionOptions(project, info) });
     this.noteLaunch(project, info);
     this.live.set(info.id, session);
-    await session.start();
-    if (opts.text?.trim() && this.store.getSession(info.id)?.status !== 'ended') session.send(opts.text);
+    await this.admitted(info.id, async () => {
+      if (this.store.getSession(info.id)?.status === 'ended') return;
+      await session.start();
+      if (opts.text?.trim() && this.store.getSession(info.id)?.status !== 'ended') session.send(opts.text);
+    });
     return session.info;
   }
 
@@ -2594,7 +2736,36 @@ export class SessionManager {
     const session = new Session({ info, ...this.sessionOptions(project, info) });
     this.noteLaunch(project, info);
     this.live.set(info.id, session);
-    await session.start();
+    const begin = async () => {
+      if (this.store.getSession(info.id)?.status === 'ended') return;
+      await session.start();
+      this.deliverFirst(session, info.id, firstMessage, opts);
+    };
+    await this.admitted(info.id, begin);
+    return session.info;
+  }
+
+  /**
+   * A new session starts at once, or under a memory limit waits in the resource line until it fits (resource limits,
+   * point 9): then the caller gets it back still "starting", and it starts when there is room. True: started.
+   */
+  private async admitted(id: string, begin: () => Promise<void>): Promise<boolean> {
+    let started: Promise<void> = Promise.resolve();
+    const now = this.book.admitSession(id, () => {
+      started = begin();
+      started.catch((e: Error) => console.error(`Starting session ${id}: ${e.message}`));
+    });
+    if (!now) {
+      this.publish({ type: 'message', message: this.store.addMessage(id, 'event', { text: 'Waiting for memory before starting: see the line under the Machine bars.' }) });
+      return false;
+    }
+    await started;
+    return true;
+  }
+
+  /** The first message of a new session (start), once it runs. */
+  private deliverFirst(session: Session, id: string, firstMessage: string | undefined, opts: { parentId?: string; title?: string; before?: string; intro?: string; here?: boolean }): void {
+    const info = { id };
     if (firstMessage?.trim() && this.store.getSession(info.id)?.status !== 'ended') {
       if (opts.parentId) {
         // From a manager: delivered as context, so it never passes for the user's words (step 4).
@@ -2612,7 +2783,6 @@ ${firstMessage}`);
         session.send(firstMessage, opts.here === true);
       }
     }
-    return session.info;
   }
 
   /**
@@ -3308,6 +3478,14 @@ ${firstMessage}`);
 
   /** From the page unless a reason says otherwise: then it is the person using Ledung, by name. */
   async stop(id: string, reason = `Stopped by ${this.config.userName}.`): Promise<void> {
+    // One still waiting for memory to start is taken out of the line and ends; it never ran (resource limits).
+    if (this.book.dropWaiter(id)) {
+      this.store.updateSession(id, { status: 'ended', endedAt: Date.now(), endReason: reason });
+      this.publish({ type: 'message', message: this.store.addMessage(id, 'event', { text: reason }) });
+      this.publish({ type: 'session', session: this.store.getSession(id)! });
+      this.live.delete(id);
+      return;
+    }
     await this.liveSession(id).stop(reason);
     this.live.delete(id);
     this.dispatch();

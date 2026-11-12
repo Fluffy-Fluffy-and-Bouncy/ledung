@@ -9,6 +9,7 @@ import { api } from '../api.ts';
 import { formatTime } from '../components/MessageList.tsx';
 import { colorMap, formatCost, formatTokens, Legend, pct, StackedBars, Tile, TRIGGER_LABEL, TRIGGERS } from './charts.tsx';
 import { TypicalCosts } from './MachinePanel.tsx';
+import { ReservedJobs } from './ReservedJobs.tsx';
 import { SessionsTab } from './SessionsTab.tsx';
 import { SharedUsage } from './SharedUsage.tsx';
 
@@ -220,6 +221,7 @@ function ComputerUsage({ onOpenSession }: { onOpenSession: (id: string) => void 
         </div>
       </section>
       <TypicalCosts />
+      <ReservedJobs />
     </div>
   );
 }

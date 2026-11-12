@@ -711,6 +711,32 @@ const MIGRATIONS: string[] = [
   ALTER TABLE sessions ADD COLUMN requested_effort TEXT;
   ALTER TABLE sessions ADD COLUMN effort TEXT;
   `,
+  // Resource limits' learning (docs/steps/resource-limits.md, "Learning"): one row per finished reserved job, per
+  // stretch of unreserved heavy work, and per new session's first minutes (kind "session:<role>"); amounts are JSON
+  // by resource ("cpu", "ram", "gpu", "vram"; the GPU's id left out, so a figure outlives a reboot). And the command
+  // kinds the person said never need a reservation.
+  `
+  CREATE TABLE job_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    commands TEXT NOT NULL,
+    asked TEXT NOT NULL,
+    peak TEXT NOT NULL,
+    mean TEXT NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    over INTEGER NOT NULL,
+    undeclared INTEGER NOT NULL,
+    ended_at INTEGER NOT NULL
+  );
+  CREATE INDEX job_runs_by_kind ON job_runs(project, kind, ended_at);
+  CREATE TABLE command_marks (
+    project TEXT NOT NULL,
+    command TEXT NOT NULL,
+    never INTEGER NOT NULL,
+    PRIMARY KEY (project, command)
+  );
+  `,
 ];
 
 export function databaseFile(dir = userDataDir()): string {

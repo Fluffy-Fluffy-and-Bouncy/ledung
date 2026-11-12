@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-12
+- Resource limits: click a Machine bar in the sidebar to set a limit for the whole PC on CPU, memory, GPU load or GPU memory (the GPU bars are new, for any GPU on Windows, and NVIDIA, AMD and Intel on Linux); the limit shows as a line on the bar. Sessions reserve heavy work first and wait in a line under the bars, with the reason ("Waiting for GPU room: needs ~100%, limit 50%"), until it fits; raising a limit lets waiting work go at once. A running job only has to keep to its own reservation: one that stays over it is lowered in priority, its session held and told to cut back, never killed; its card under the bars has Pause and Stop for you. Ledung learns what each kind of job uses, asks for a reservation for commands it knows are heavy, and under a memory limit new sessions wait for room too. What jobs used is on the usage page. (#257)
 - Standing grants are stricter: a "starts with" grant such as `git push:*` now covers only that command and its arguments, on one line; a command that spans several lines, or a longer word that merely starts the same, is asked about as if there were no grant. (Project-Ledung#472)
 
 ## 2026-11-11

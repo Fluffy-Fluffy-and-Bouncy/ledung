@@ -6,6 +6,7 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import readline from 'node:readline';
 import { promisify } from 'node:util';
+import { parseWindowsGpu, WINDOWS_GPU_READ, WINDOWS_GPU_SETUP, type GpuRaw } from './gpu.ts';
 
 export interface ProcInfo {
   pid: number;
@@ -67,6 +68,7 @@ export function parseWindowsLines(lines: string[]): ProcessList {
 
 const WINDOWS_LOOP = (intervalSec: number, ledungPid: number) => `
 $ErrorActionPreference = 'SilentlyContinue'
+${WINDOWS_GPU_SETUP}
 while ($true) {
   if (-not (Get-Process -Id ${ledungPid})) { exit }
   $p = Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,KernelModeTime,UserModeTime,WorkingSetSize,CreationDate
@@ -77,6 +79,9 @@ while ($true) {
     $c = 0; if ($x.CreationDate) { $c = $x.CreationDate.ToFileTimeUtc() }
     [Console]::Out.WriteLine("$($x.ProcessId),$($x.ParentProcessId),$([long]$x.KernelModeTime + [long]$x.UserModeTime),$($x.WorkingSetSize),$c")
   }
+  # The GPU's counters in the same batch (resource limits): "G ..." lines, read by gpu.ts.
+  [Console]::Out.WriteLine("G T,$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())")
+${WINDOWS_GPU_READ}
   [Console]::Out.WriteLine('#END')
   [Console]::Out.Flush()
   Start-Sleep -Seconds ${intervalSec}
@@ -89,18 +94,25 @@ while ($true) {
  * few milliseconds read as 26 cores on a 12-thread machine (#157). A `#BEGIN` without a time (an
  * older loop) falls back to the time of handling.
  */
-export function windowsBatchReader(onList: (list: ProcessList, at: number) => void, now: () => number = Date.now): (line: string) => void {
+export function windowsBatchReader(onList: (list: ProcessList, at: number, gpu?: { raw: GpuRaw; at: number }) => void, now: () => number = Date.now): (line: string) => void {
   let lines: string[] | null = null;
+  let gpuLines: string[] = [];
+  let gpuAt = 0;
   let at = 0;
   return (line) => {
     if (line.startsWith('#BEGIN')) {
       lines = [];
+      gpuLines = [];
+      gpuAt = 0;
       const read = Number(line.slice('#BEGIN'.length).trim());
       at = read > 0 ? read : now();
     } else if (line === '#END' && lines) {
-      onList(parseWindowsLines(lines), at);
+      // The GPU's lines (resource limits), timed by their own "G T" line: they are read after the process list.
+      onList(parseWindowsLines(lines), at, gpuAt > 0 ? { raw: parseWindowsGpu(gpuLines), at: gpuAt } : undefined);
       lines = null;
-    } else lines?.push(line);
+    } else if (lines && line.startsWith('G T,')) gpuAt = Number(line.slice(4)) || at;
+    else if (lines && line.startsWith('G ')) gpuLines.push(line);
+    else lines?.push(line);
   };
 }
 
@@ -109,9 +121,9 @@ export class ProcessSampler {
   private timer: NodeJS.Timeout | null = null;
   private stopped = false;
   private readonly intervalSec: number;
-  private readonly onList: (list: ProcessList, at: number) => void;
+  private readonly onList: (list: ProcessList, at: number, gpu?: { raw: GpuRaw; at: number }) => void;
 
-  constructor(intervalSec: number, onList: (list: ProcessList, at: number) => void) {
+  constructor(intervalSec: number, onList: (list: ProcessList, at: number, gpu?: { raw: GpuRaw; at: number }) => void) {
     this.intervalSec = intervalSec;
     this.onList = onList;
   }
@@ -126,7 +138,19 @@ export class ProcessSampler {
       stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
     });
-    readline.createInterface({ input: this.child.stdout! }).on('line', windowsBatchReader(this.onList));
+    // A watchdog: a loop that stops sending batches (a stuck counter read) is ended, and so started again below
+    // (security review of the resource limits, finding 6).
+    let lastBatch = Date.now();
+    const child = this.child;
+    const watchdog = setInterval(() => {
+      if (Date.now() - lastBatch > Math.max(60_000, this.intervalSec * 6000)) child.kill();
+    }, 15_000);
+    watchdog.unref();
+    child.on('exit', () => clearInterval(watchdog));
+    readline.createInterface({ input: this.child.stdout! }).on('line', windowsBatchReader((list, at, gpu) => {
+      lastBatch = Date.now();
+      this.onList(list, at, gpu);
+    }));
     // If the measuring process dies, measuring stops; Ledung itself is unaffected (a broken helper
     // degrades to nothing, never to a dead Ledung — brief section 6). Try again once a minute.
     this.child.on('exit', () => {
