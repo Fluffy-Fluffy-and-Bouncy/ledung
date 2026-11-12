@@ -78,8 +78,6 @@ const WAITING_POLL_MS = 30_000;
 const WAITING_PUSH_MS = 1000;
 /** Logged once, the first time a late answer after close is let go (#463). */
 let exercised463 = false;
-/** Logged once, the first time hello leaves archived sessions out (#229). */
-let exercised229 = false;
 
 /** Why linking refuses through the public name (#245 step 1: on the computer itself only). */
 const LINKED_HERE = 'Computers are linked and unlinked';
@@ -233,8 +231,6 @@ const COMPUTER_EDITS_KEY = 'computer-edits';
 const TUNNEL_LIMITS = { peekMs: 10_000, handshakeMs: 10_000, headersMs: 60_000, idleMs: 5_000 };
 /** The first byte of a TLS handshake record: anything else through the tunnel is plain HTTP. */
 const TLS_HANDSHAKE = 0x16;
-/** The #231 trace is logged once per run (agent-workflow, "EXERCISED line"). */
-let heldBackTraced = false;
 /** The ALPN protocol of a TLS-ALPN-01 check (RFC 8737). */
 const ACME_TLS = 'acme-tls/1';
 
@@ -664,13 +660,7 @@ export class LedungServer {
     const only = event.type === 'message' ? event.message.sessionId : null;
     for (const ws of this.clients) {
       if (ws.readyState !== ws.OPEN) continue;
-      if (only !== null && !this.watches(ws, only)) {
-        if (!heldBackTraced) {
-          heldBackTraced = true;
-          exercisedLine('EXERCISED #231 a message held back from a page showing another session');
-        }
-        continue;
-      }
+      if (only !== null && !this.watches(ws, only)) continue;
       ws.send(data);
     }
   }
@@ -754,10 +744,6 @@ export class LedungServer {
       ...orders.flatMap((o) => [o.sessionId, o.managerId]),
     ];
     const { sessions, olderArchived } = helloSessions(manager.sessions(), named, Date.now());
-    if (!exercised229 && Object.keys(olderArchived).length) {
-      exercised229 = true;
-      exercisedLine(`EXERCISED #229 hello left out ${Object.values(olderArchived).reduce((a, b) => a + b, 0)} older archived sessions`);
-    }
     return {
       type: 'hello',
       // A release is named by its folder; the npm package's folder never changes, so by its version (#105).
