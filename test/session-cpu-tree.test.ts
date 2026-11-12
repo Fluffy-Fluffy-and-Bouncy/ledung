@@ -204,15 +204,15 @@ class Window {
   }
   /**
    * The session's processes include the busy command, so the session's CPU is at least the busy command's
-   * own: the same lists, the same counts. 5 % for the figure being divided and multiplied back. Before #169
-   * the session read 0.0 here; its host and the rest of its tree are idle.
+   * own, exactly: the same lists, the same counts, so no margin is needed; 1e-6 s only for the figure being
+   * divided and multiplied back in floating point. Before #169 the session read 0.0 here.
    */
   check(t: { skip: (m: string) => void }): boolean {
     if (this.busyCpu < ENOUGH_CPU) {
       t.skip(`the machine is too busy to tell: the busy command had only ${this.busyCpu.toFixed(2)} s of CPU in ${this.samples} samples`);
       return false;
     }
-    assert.ok(this.sessionCpu >= this.busyCpu * 0.95, `session counted ${this.sessionCpu.toFixed(2)} s of CPU; its busy command had ${this.busyCpu.toFixed(2)} s in the same ${this.samples} samples`);
+    assert.ok(this.sessionCpu >= this.busyCpu - 1e-6, `session counted ${this.sessionCpu.toFixed(2)} s of CPU; its busy command had ${this.busyCpu.toFixed(2)} s in the same ${this.samples} samples`);
     return true;
   }
 }
