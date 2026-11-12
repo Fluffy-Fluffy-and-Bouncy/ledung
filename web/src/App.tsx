@@ -82,7 +82,7 @@ import { useCompactSidebar } from './useCompactSidebar.ts';
 import { compactRows, rowTooltip } from './compactSidebar.ts';
 import { useArchivedLink } from './useArchivedLink.ts';
 import { showsArchivedLink } from './archivedLink.ts';
-import { archivedCount } from '../../src/shared/hello-sessions.ts';
+import { archivedCount, fetchesArchived } from '../../src/shared/hello-sessions.ts';
 import { computerFrame, computerStyle, frameAnswer, inFrame, shownComputerOf } from './computerFrame.ts';
 import { ComputerFrames, ComputerTabs } from './components/ComputerTabs.tsx';
 import { useComputerLink } from './useComputerLink.ts';
@@ -413,11 +413,10 @@ export function App() {
   // Hello carries only recent archived sessions (issue #229): an Archived list, or an archived session opened by its
   // link, fetches the rest, again after each hello, which brings the short list back.
   const { loadArchived, loaded, hellos } = ledung;
-  const olderLeft = Object.keys(ledung.olderArchived).length > 0;
-  const needsArchived = !!openId?.startsWith('a:') || (loaded && isSessionId(openId) && !session);
+  const fetchArchived = fetchesArchived({ openId, loaded, unknownSession: isSessionId(openId) && !session, olderArchived: ledung.olderArchived });
   useEffect(() => {
-    if (needsArchived && olderLeft) loadArchived().catch(() => {});
-  }, [needsArchived, olderLeft, hellos, loadArchived]);
+    if (fetchArchived) loadArchived().catch(() => {});
+  }, [fetchArchived, hellos, loadArchived]);
 
   // The pages inside the Settings frame (issue #365): the Ledung, Chats and project tabs, each with its side menu of
   // groups (#366), and the Add project page.

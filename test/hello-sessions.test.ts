@@ -1,7 +1,7 @@
 // What hello carries of the sessions, and how the page keeps its Archived (N) counts right (issue #229, audit O8).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { archivedCount, helloSessions, RECENT_ARCHIVED_MS, withArchived, withSession } from '../src/shared/hello-sessions.ts';
+import { archivedCount, fetchesArchived, helloSessions, RECENT_ARCHIVED_MS, withArchived, withSession } from '../src/shared/hello-sessions.ts';
 import type { SessionInfo } from '../src/shared/protocol.ts';
 
 const NOW = 1_800_000_000_000;
@@ -111,4 +111,22 @@ test("a session made just before hello, on a clock up to half the window off, is
   assert.deepEqual(withSession(known, s('n', { createdAt: NOW - RECENT_ARCHIVED_MS }), NOW).olderArchived, { p: 0 });
   // Its project has none counted: nothing to move, whatever its age.
   assert.deepEqual(withSession(known, s('n', { project: 'q', createdAt: NOW - 9 * DAY }), NOW).olderArchived, { p: 1 });
+});
+
+test('the page fetches every archived session when an Archived list opens, while hello has left some out', () => {
+  const older = { p: 3 };
+  const at = (openId: string | null, more: { loaded?: boolean; unknownSession?: boolean; olderArchived?: Record<string, number> } = {}) =>
+    fetchesArchived({ openId, loaded: more.loaded ?? true, unknownSession: more.unknownSession ?? false, olderArchived: more.olderArchived ?? older });
+  assert.equal(at('a:p'), true, "a project's Archived list");
+  assert.equal(at('a:Removed projects'), true, 'the removed projects\' list');
+  assert.equal(at('a:p', { loaded: false }), true, 'opened by its link before hello');
+  // Nothing left out: the page has them all already.
+  assert.equal(at('a:p', { olderArchived: {} }), false);
+  // Other views never fetch.
+  for (const view of [null, 'waiting', 'usage', 'p:demo', 'ps:demo', 'q:12']) assert.equal(at(view), false, String(view));
+  // A session's link: only one the page lacks, and only once hello has come.
+  assert.equal(at('arch-400', { unknownSession: true }), true);
+  assert.equal(at('arch-400', { unknownSession: true, loaded: false }), false);
+  assert.equal(at('live-1', { unknownSession: false }), false);
+  assert.equal(at('arch-400', { unknownSession: true, olderArchived: {} }), false);
 });

@@ -38,6 +38,15 @@ export function archivedCount(sessions: SessionInfo[], olderArchived: Record<str
   return n;
 }
 
+/**
+ * Whether the page fetches every archived session: while hello has left some out, when a project's Archived list is
+ * open ("a:<name>"), or when a session's link names one the page lacks once hello has come (an old archived one).
+ */
+export function fetchesArchived(at: { openId: string | null; loaded: boolean; unknownSession: boolean; olderArchived: Record<string, number> }): boolean {
+  if (!Object.keys(at.olderArchived).length) return false;
+  return !!at.openId?.startsWith('a:') || (at.loaded && at.unknownSession);
+}
+
 /** The page's sessions and the archived ones it only has counts of. */
 export interface KnownSessions {
   sessions: SessionInfo[];
