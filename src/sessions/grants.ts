@@ -2,6 +2,7 @@
 // ({ toolName, ruleContent }), so the same rule both goes to Claude Code (repeats don't prompt) and is
 // checked by Ledung (grants carried down from a manager to the sessions it starts, want 13).
 import type { PermissionUpdate } from '@anthropic-ai/claude-agent-sdk';
+import { exercisedLine } from '../platform/exercised.ts';
 
 export interface GrantRule {
   toolName: string;
@@ -33,16 +34,39 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp(`(^|/)${pattern.replace(/^\/+/, '')}$`, 'i');
 }
 
+let exercised = false;
+/** The EXERCISED line of issue #472, once per run: a prefix grant stopped at a line break or a longer word. */
+function exercised472(): void {
+  if (exercised) return;
+  exercised = true;
+  exercisedLine('EXERCISED #472 a prefix grant stopped at a line break or a longer word');
+}
+
 /** Whether a rule covers a request. Mirrors Claude Code's rule forms closely enough for Ledung's own checks. */
 export function ruleMatches(rule: GrantRule, toolName: string, input: Record<string, unknown>): boolean {
   if (rule.toolName !== toolName) return false;
   if (rule.ruleContent === undefined || rule.ruleContent === '') return true;
   if (toolName === 'Bash') {
     const command = typeof input.command === 'string' ? input.command.trim() : '';
-    // A prefix rule must not cover a second command chained onto the allowed one.
-    if (/[;&|`]|\$\(/.test(command)) return command === rule.ruleContent;
+    // A prefix rule must not cover a second command chained onto the allowed one; a line break starts
+    // a new command just as ";" does (Project-Ledung#472).
+    if (/[;&|`\n\r]|\$\(/.test(command)) {
+      const covered = command === rule.ruleContent;
+      if (!covered && /[\n\r]/.test(command) && !/[;&|`]|\$\(/.test(command) && rule.ruleContent.endsWith(':*') && command.startsWith(rule.ruleContent.slice(0, -2))) exercised472();
+      return covered;
+    }
     // "npm test:*" (prefix) and "npm run *" (wildcards); otherwise the exact command.
-    if (rule.ruleContent.endsWith(':*')) return command.startsWith(rule.ruleContent.slice(0, -2));
+    if (rule.ruleContent.endsWith(':*')) {
+      // The prefix ends at a word boundary: "git push:*" covers "git push" and "git push origin x",
+      // not a longer word that starts the same (Project-Ledung#472). Only a space or a tab ends a word, as
+      // in the shell; other whitespace (a no-break space) is part of the word.
+      const prefix = rule.ruleContent.slice(0, -2);
+      if (!command.startsWith(prefix)) return false;
+      const rest = command.slice(prefix.length);
+      if (rest === '' || /^[ \t]/.test(rest) || /[ \t]$/.test(prefix)) return true;
+      exercised472();
+      return false;
+    }
     if (rule.ruleContent.includes('*')) {
       const pattern = rule.ruleContent.split('*').map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*');
       return new RegExp(`^${pattern}$`).test(command);

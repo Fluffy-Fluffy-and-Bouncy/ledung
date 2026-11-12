@@ -11,6 +11,7 @@ is nothing user-facing in it).
 
 ## 2026-11-12
 - `save_linked_file` refuses to save a file from a linked computer into Ledung's own data folder, as the Files pane does, also in a project whose folder holds that folder. (Fluffy-Fluffy-and-Bouncy/Project-Ledung#478)
+- Standing grants are stricter: a "starts with" grant such as `git push:*` now covers only that command and its arguments, on one line; a command that spans several lines, or a longer word that merely starts the same, is asked about as if there were no grant. (Project-Ledung#472)
 
 ## 2026-11-11
 - Your pinned latest message at the top of the chat no longer shows through a session's ⚙ menu (nor does the message box under it), and its bottom edge fades out softly instead of ending in a hard line. (#226)
