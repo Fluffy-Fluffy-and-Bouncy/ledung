@@ -9,6 +9,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build, stop } from 'esbuild';
 import { Window } from 'happy-dom';
+import { STEP, TAIL } from '../web/src/messageWindow.ts';
 
 const root = path.join(import.meta.dirname, '..');
 const MESSAGES = Number(process.env.TYPING_MESSAGES ?? 500);
@@ -150,7 +151,8 @@ test('typing in a conversation of 500 long messages draws no message again', asy
   localStorage.clear();
   const messages = Array.from({ length: MESSAGES }, (_, i) => assistant(i + 1, long(i + 1)));
   const view = await mount(ledung(messages));
-  assert.equal(drawn.length, MESSAGES, 'each message drawn once on opening');
+  // Only the latest TAIL are drawn on opening (issue #233), each once.
+  assert.equal(drawn.length, Math.min(MESSAGES, TAIL), 'each of the latest messages drawn once on opening');
   drawn.length = 0;
   const typed = 'Hello there, how is it going?';
   const start = performance.now();
@@ -224,4 +226,61 @@ test('opened at a question not loaded yet, it loads earlier messages from the me
   await view.rerender(at([assistant(50, 'Later'), assistant(51, 'Latest')], true));
   assert.deepEqual(seen, [50]);
   await view.unmount();
+});
+
+// The drawn part of a long conversation (issue #233): what a click reaches, without a browser's layout (test review of
+// PR #237, finding 1). Scrolling near the top and back to the end need a layout and are manual steps.
+const textOf = (id: number) => `Text ${id}`;
+const button = (host: HTMLElement, label: string) => [...host.querySelectorAll('button')].find((b) => b.textContent === label) as HTMLButtonElement | undefined;
+
+test('"Show earlier messages" draws the next batch at once; at the first item it gives way to "Load earlier messages", whose messages are drawn without a second click', async (t) => {
+  localStorage.clear();
+  drawn.length = 0;
+  // 700 loaded, ids 101–800; Ledung has more before them.
+  const loaded = Array.from({ length: 700 }, (_, i) => assistant(101 + i, textOf(101 + i)));
+  const view = await mount({ ...ledung(loaded), hasEarlier: true });
+  t.after(() => view.unmount());
+  // The latest TAIL: ids 501–800.
+  assert.equal(drawn.length, TAIL);
+  assert.equal(drawn[0], textOf(800 - TAIL + 1));
+  assert.equal(button(view.host, 'Load earlier messages'), undefined, 'not while loaded ones are left to show');
+
+  drawn.length = 0;
+  await page.act(async () => button(view.host, 'Show earlier messages')!.click());
+  // Exactly the STEP above them, and nothing drawn again.
+  assert.deepEqual(drawn, Array.from({ length: STEP }, (_, i) => textOf(800 - TAIL - STEP + 1 + i)));
+
+  drawn.length = 0;
+  await page.act(async () => button(view.host, 'Show earlier messages')!.click());
+  // The rest, down to the first loaded one; now the button asks Ledung for more.
+  assert.equal(drawn.length, 700 - TAIL - STEP);
+  assert.equal(drawn[0], textOf(101));
+  assert.equal(button(view.host, 'Show earlier messages'), undefined);
+  assert.ok(button(view.host, 'Load earlier messages'), 'the button now loads from Ledung');
+
+  // Ledung's earlier messages arrive: drawn at once, with no second click.
+  drawn.length = 0;
+  const earlier = Array.from({ length: 50 }, (_, i) => assistant(51 + i, textOf(51 + i)));
+  await view.rerender({ ...ledung([...earlier, ...loaded]), hasEarlier: true });
+  assert.deepEqual(drawn, earlier.map((_, i) => textOf(51 + i)));
+});
+
+test('your latest message above the drawn part sticks to the top, and a click on it draws down to it', async (t) => {
+  localStorage.clear();
+  drawn.length = 0;
+  const own = { id: 1, at: 1_700_000_000_000, kind: 'user', data: { text: 'My question about the plan' } };
+  const replies = Array.from({ length: 400 }, (_, i) => assistant(2 + i, textOf(2 + i)));
+  const view = await mount(ledung([own, ...replies]));
+  t.after(() => view.unmount());
+  const inList = () => [...view.host.querySelectorAll('.msg.user:not(.pinned)')].filter((m) => m.textContent!.includes('My question'));
+  // Above the latest TAIL: not drawn in the list, but pinned at the top.
+  assert.equal(inList().length, 0);
+  const pinned = view.host.querySelector('.pin-spot .msg.user.pinned') as HTMLElement | null;
+  assert.ok(pinned?.textContent!.includes('My question about the plan'), 'pinned at the top');
+  assert.ok(!drawn.includes(textOf(2)), 'the first replies are not drawn yet');
+
+  await page.act(async () => pinned!.click());
+  // Drawn down from it: the message itself in the list, and the replies after it.
+  assert.equal(inList().length, 1);
+  assert.ok(drawn.includes(textOf(2)), 'the replies above the old drawn part are drawn');
 });

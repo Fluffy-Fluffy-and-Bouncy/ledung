@@ -156,7 +156,7 @@ test('the file never holds prompts, replies, tool output, paths, folder or branc
   assert.equal(file.asOf, now);
   // The account is its name and the fingerprint of its email for this repo (test review, finding 2).
   assert.equal(file.accounts[0]!.label, 'default');
-  assert.equal(file.accounts[0]!.fingerprint, accountFingerprint('Person.Secret@Example.com', REPO));
+  assert.equal(file.accounts[0]!.fingerprint, accountFingerprint('Person.Secret@Example.com', REPO, Buffer.from(publisher.key()!, 'base64url')));
   const projects = new Set(file.accounts[0]!.daily.map((d) => d.project));
   assert.ok(projects.has('Open Project'), 'a switched-on project is published by name');
   assert.equal([...projects].filter((p) => /^other#[0-9a-z]{4}$/.test(p)).length, 1, 'the other project is other# and 4 characters');
@@ -206,12 +206,54 @@ test('a project label is stable, the same for one remote written differently, an
 });
 
 test('the account fingerprint is one per account and repo, without the email', () => {
-  const a = accountFingerprint('Person@Example.com', 'Acme/Usage');
-  assert.equal(a, accountFingerprint(' person@example.com ', 'acme/usage'));
-  assert.notEqual(a, accountFingerprint('person@example.com', 'acme/other'), 'salted with the repo');
-  assert.notEqual(a, accountFingerprint('other@example.com', 'acme/usage'));
+  const key = crypto.randomBytes(32);
+  const a = accountFingerprint('Person@Example.com', 'Acme/Usage', key);
+  assert.equal(a, accountFingerprint(' person@example.com ', 'acme/usage', key));
+  assert.notEqual(a, accountFingerprint('person@example.com', 'acme/other', key), 'salted with the repo');
+  assert.notEqual(a, accountFingerprint('other@example.com', 'acme/usage', key));
   assert.match(a, /^[0-9a-f]{64}$/);
   assert.notEqual(a, crypto.createHash('sha256').update('person@example.com').digest('hex'), 'not a bare hash of the email');
+});
+
+// Fluffy-Fluffy-and-Bouncy/Project-Ledung#480: the published fingerprint is an HMAC with the usage key, so it is no
+// longer the plain SHA-256 of the same text (the form before #480); the same key gives the same fingerprint after a
+// restart and on a computer that shares it, another key another one.
+test('the account fingerprint is keyed with the usage key: stable across a restart, unmatched by a plain hash', async () => {
+  const email = 'Person.Secret@Example.com';
+  const plain = crypto.createHash('sha256').update(`ledung-usage\n${REPO.toLowerCase()}\n${email.toLowerCase()}`).digest('hex');
+  const a = setup();
+  a.store.addUsage(record(1, a.clock.now - 60_000, {}));
+  await a.publisher.configure({ enabled: true, repo: REPO });
+  const fingerprintOf = (g: ReturnType<typeof fakeGitHub>) => g.fileOn([...g.refs.keys()][0]!).accounts[0]!.fingerprint;
+  const first = fingerprintOf(a.github);
+  assert.match(first ?? '', /^[0-9a-f]{64}$/);
+  assert.notEqual(first, plain, 'not the unkeyed hash of the email form');
+  // The key is the one file in the key folder, private to this user where the platform has modes.
+  const keyFile = path.join(a.keyDir, USAGE_KEY_FILE);
+  assert.equal(first, crypto.createHmac('sha256', Buffer.from(fs.readFileSync(keyFile, 'utf8'), 'base64url')).update(`ledung-usage\n${REPO.toLowerCase()}\n${email.toLowerCase()}`).digest('hex'));
+  if (process.platform !== 'win32') assert.equal(fs.statSync(keyFile).mode & 0o777, 0o600);
+  // A restart: a new publisher on the same data folder (a fresh repo, so the file is published again).
+  const github = fakeGitHub();
+  const b = setup({ keyDir: a.keyDir, github });
+  b.store.addUsage(record(1, b.clock.now - 60_000, {}));
+  await b.publisher.configure({ enabled: true, repo: REPO });
+  assert.match(fingerprintOf(github) ?? '', /^[0-9a-f]{64}$/);
+  assert.equal(fingerprintOf(github), first, 'the same after a restart');
+  // Another computer with the person's key (linked) agrees; one with a key of its own does not.
+  const linked = setup({ linkedKey: a.publisher.key(), github: fakeGitHub({ login: 'alice' }) });
+  linked.store.addUsage(record(1, linked.clock.now - 60_000, {}));
+  await linked.publisher.configure({ enabled: true, repo: REPO });
+  assert.match(fingerprintOf(linked.github) ?? '', /^[0-9a-f]{64}$/);
+  assert.equal(fingerprintOf(linked.github), first, 'a computer sharing the key shows the account as the same card');
+  const own = setup();
+  own.store.addUsage(record(1, own.clock.now - 60_000, {}));
+  await own.publisher.configure({ enabled: true, repo: REPO });
+  assert.match(fingerprintOf(own.github) ?? '', /^[0-9a-f]{64}$/, 'the other computer publishes a fingerprint too');
+  assert.notEqual(fingerprintOf(own.github), first, 'a computer with another key does not');
+  // The key itself never goes into the published file: it is in the key file, and nowhere in the file's text.
+  const key = a.publisher.key()!;
+  assert.equal(fs.readFileSync(keyFile, 'utf8'), key);
+  assert.ok(!JSON.stringify(a.github.fileOn([...a.github.refs.keys()][0]!)).includes(key), 'the usage key is not in the file');
 });
 
 test('the branch is ledung-usage/<login>/<computer id>, kept across a rename, and replaced on every publish', async () => {

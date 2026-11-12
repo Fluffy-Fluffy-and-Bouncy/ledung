@@ -4,6 +4,7 @@
 // questions, and can only forward an answer the user actually gave to one of the manager's own
 // questions. Nothing a session writes can reach another session as the user's words: forwardAnswer
 // copies the user's stored answer, never text the manager supplies (decision of 2026-10-10).
+import { dimLabel, formatDim } from '../resources/limits.ts';
 import type { Store } from '../store/store.ts';
 import { effortLevel, unknownEffort } from '../shared/protocol.ts';
 import type { AttachedSource, AwayInfo, CompactingInfo, MachineInfo, McpServerInfo,PermissionDecision, PermissionInfo, PermissionMode, Priority, ProjectInfo, QuestionInfo, QuestionShot, ServerEvent, ShotVerdict, SessionInfo } from '../shared/protocol.ts';
@@ -31,6 +32,7 @@ import { stateFor } from './elapsed.ts';
 import { refusalAnswerText, refusalOf } from './refusals.ts';
 import { keepAnswerText, orderPreamble, orderRecorded, type Orders, type OrderSpec } from './orders.ts';
 import type { OrderInfo } from '../shared/orders.ts';
+import { formatWorkHistory, workHistory } from '../usage/work-history.ts';
 
 /** What managers need of the linked computers (#245): who they are, and one call to one of them. */
 export interface LinkedPort {
@@ -935,14 +937,36 @@ ${note}`);
       m.docker ? `Docker: CPU ${m.docker.cores.toFixed(1)} of ${m.docker.cpus} cores; memory ${gb(m.docker.memUsed)} of ${gb(m.docker.memTotal)}.` : 'Docker: not measured.',
       `Sessions working: ${m.working} of a limit of ${m.limit}. Waiting for a place: ${m.line.length}.`,
     ];
+    const r = m.resources;
+    // Resource limits (docs/steps/resource-limits.md): the limits, and the reservations of this manager's own sessions only.
+    const label = (dim: string) => dimLabel(dim, (id) => r?.gpus.find((g) => g.id === id && !g.main)?.name ?? null);
+    const amounts = (a: Record<string, number>) => Object.entries(a).map(([d, v]) => `${formatDim(d, v)} ${label(d)}`).join(', ');
+    if (r) {
+      const set = Object.entries(r.limits).map(([d, v]) => `${label(d)} ${formatDim(d, v)}`);
+      const avg = Object.entries(r.average).filter(([d]) => d in r.limits || d === 'cpu' || d === 'ram');
+      lines.push(`Resource limits for the whole PC: ${set.length ? set.join(', ') : 'none set'}. Averages now: ${avg.length ? amounts(Object.fromEntries(avg)) : 'not measured yet'}.${r.gpuNote ? ` ${r.gpuNote}` : ''}`);
+    }
     const own = this.store.childSessions(managerId).filter((s) => s.status !== 'ended');
     for (const s of own) {
       const f = m.sessions[s.id];
       const place = m.line.indexOf(s.id);
       lines.push(`- "${s.title}" (${s.id}): ${s.status}${place >= 0 ? `, number ${place + 1} in line` : ''}, priority ${s.priority}${s.paused ? ', paused' : ''}` +
         `${f ? `; ${f.cores.toFixed(1)} cores, ${gb(f.memBytes)}` : ''}`);
+      if (!r) continue;
+      for (const j of r.jobs.filter((x) => x.sessionId === s.id)) {
+        lines.push(`  job ${j.id} "${j.what}": reserved ${amounts(j.granted)}; using ${amounts(j.using) || 'nothing yet'}; ${j.state === 'over' ? 'over its share (priority lowered, session held)' : j.state}`);
+      }
+      for (const w of r.line.filter((x) => x.sessionId === s.id)) lines.push(`  ${w.kind === 'job' ? `reservation ${w.id} "${w.what}"` : 'waiting to start'}: ${w.reasonForSessions}; number ${w.place} in the resource line`);
+      const u = r.unreserved.find((x) => x.sessionId === s.id);
+      if (u) lines.push(`  heavy work without a reservation: ${amounts(Object.fromEntries(u.overDims.map((d) => [d, u.using[d] ?? 0])))}; priority lowered, session held`);
     }
     return lines.join('\n');
+  }
+
+  /** work_history (issue #254): the manager's own project only, whatever its lockdown, so nothing crosses projects. */
+  workHistory(managerId: string, days?: number, limit?: number): string {
+    const project = this.store.getSession(managerId)!.project;
+    return formatWorkHistory(workHistory(this.store.database, project, { days }), limit ?? 10);
   }
 
   /** normal or high on the manager's own judgement; critical only on the user's answer to one of its questions. */

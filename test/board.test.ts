@@ -13,6 +13,7 @@ import { parseAddress, readHeader, sensitiveInText, tokenLike, withHeader } from
 import { outgoingFinding } from '../src/board/outgoing.ts';
 import { BoardError } from '../src/board/types.ts';
 import type { RepoDirectory } from '../src/board/repos.ts';
+import type { BoardStatus } from '../src/shared/protocol.ts';
 import { buildDelivery } from '../src/sessions/management.ts';
 import type { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
@@ -33,6 +34,8 @@ interface Rig {
   started: string[];
   asked: { managerId: string; question: string; options: string[] | null }[];
   timers: { fn: () => void; ms: number; done: boolean }[];
+  /** Every status sent to the page, in order (issue #232). */
+  published: BoardStatus[];
   fire(): void;
   clock: { now: number };
   /** org/board's threads and posts. */
@@ -64,7 +67,7 @@ function rig(opts: {
   const projects = opts.projects ?? ['Desk', 'Other', 'Quiet'];
   const managers: Record<string, string> = { ...(opts.managers ?? { Desk: 'm-desk', Other: 'm-other' }) };
   const r: Rig = {
-    fake: fakes[REPO]!, backends, settings, store: settings.repo(REPO), inbox: [], wakes: [], started: [], asked: [], timers: [],
+    fake: fakes[REPO]!, backends, settings, store: settings.repo(REPO), inbox: [], wakes: [], started: [], asked: [], timers: [], published: [],
     clock: { now: Date.parse('2026-10-14T12:00:00Z') },
     fire() {
       for (const t of r.timers.filter((x) => !x.done)) {
@@ -101,7 +104,7 @@ function rig(opts: {
       r.asked.push({ managerId, question, options });
       return 100 + r.asked.length;
     },
-    publish: () => {},
+    publish: (status) => void r.published.push(status),
     now: () => r.clock.now,
     setTimer: (fn, ms) => {
       const t = { fn, ms, done: false };
@@ -121,6 +124,70 @@ const fromLedung = (fake: FakeBoard, author: string, to: string[], text: string,
   fake.add(author, thread, withHeader(to, from, text), thread ? undefined : 'A question');
 
 const flush = () => new Promise((r) => setImmediate(r));
+
+test('a poll that changes nothing the page shows sends no board event; one that brings a post does (issue #232)', async () => {
+  const r = rig();
+  r.published.length = 0;
+  // Two identical polls, five seconds apart: the first turns the board from starting to ok, the second changes only
+  // the poll times. One event.
+  await r.board.pollOnce();
+  r.clock.now += 5_000;
+  await r.board.pollOnce();
+  assert.equal(r.published.length, 1);
+  assert.equal(r.published[0]!.boards[0]!.state, 'ok');
+  // Nothing new again: still one.
+  r.clock.now += 5_000;
+  await r.board.pollOnce();
+  assert.equal(r.published.length, 1);
+  // The positive branch: a poll that brings a post sends an event (the Board view reloads its threads on one),
+  // though the status itself reads the same: the post woke Desk's manager, so nothing is unread.
+  fromLedung(r.fake, 'alice', ['@me'], 'news');
+  r.clock.now += 5_000;
+  await r.board.pollOnce();
+  assert.equal(r.inbox.length, 1);
+  // Two: the post at once (with the last poll's time), then this poll's time at its end, so the page never keeps
+  // an older check time than the newest it was sent.
+  assert.equal(r.published.length, 3);
+  assert.equal(r.published[1]!.boards[0]!.lastPollAt, r.clock.now - 5_000);
+  assert.equal(r.published[2]!.boards[0]!.lastPollAt, r.clock.now);
+  // A status change with no post (the board's service fails) is sent too.
+  r.backend.poll = async () => { throw new BoardError('unreachable', 'down'); };
+  r.clock.now += 5_000;
+  await r.board.pollOnce();
+  assert.equal(r.published.length, 4);
+  assert.equal(r.published[3]!.boards[0]!.state, 'error');
+});
+
+test('a board polled with nothing new is still sent once a minute, so the page can tell it is being checked (issue #232)', async () => {
+  const r = rig();
+  // Polling, as in Ledung: the next check's time is part of what is sent (the page judges an overdue check by it).
+  r.boards.start();
+  await r.board.pollOnce();
+  const first = r.clock.now;
+  assert.equal(r.published.at(-1)!.boards[0]!.nextPollAt, first + r.backend.pollMs, 'the next check, set before sending');
+  r.published.length = 0;
+  // Polls every 5 s with nothing new: none sent until a minute has passed since the last one sent.
+  while (r.clock.now + 5_000 < first + 60_000) {
+    r.clock.now += 5_000;
+    await r.board.pollOnce();
+  }
+  assert.equal(r.published.length, 0, 'under a minute: nothing');
+  r.clock.now = first + 60_000;
+  await r.board.pollOnce();
+  assert.equal(r.published.length, 1, 'a minute on: one, with the time of that check');
+  assert.equal(r.published[0]!.boards[0]!.lastPollAt, first + 60_000);
+  // The minute counts from the last one sent: a change sent in between moves it on.
+  fromLedung(r.fake, 'alice', ['@me'], 'news');
+  r.clock.now += 30_000;
+  await r.board.pollOnce();
+  assert.equal(r.published.length, 3, 'the post, then that poll');
+  r.clock.now += 55_000;
+  await r.board.pollOnce();
+  assert.equal(r.published.length, 3, '55 s after the post: nothing');
+  r.clock.now += 5_000;
+  await r.board.pollOnce();
+  assert.equal(r.published.length, 4, 'a minute after the post: the heartbeat');
+});
 
 test('addresses: @login, @login/Project and #channel; anything else is refused with the reason', () => {
   assert.deepEqual(parseAddress('@alice'), { kind: 'person', login: 'alice' });
@@ -437,7 +504,7 @@ test('migration 26 keeps the board rows of a database from before, without a rep
     // A database as migration 25 left it: the board tables in 23's shape, with a thread, a post, a delivery and a held post.
     const before = openDatabase(file);
     before.exec(`ALTER TABLE questions DROP COLUMN answered_here; DROP TABLE words_used; ALTER TABLE board_outbox DROP COLUMN attachments; DROP TABLE board_attachments; DROP TABLE board_threads; DROP TABLE board_posts; DROP TABLE board_deliveries; DROP TABLE board_boards;
-      ALTER TABLE board_projects DROP COLUMN repo; ALTER TABLE board_projects DROP COLUMN allow; ALTER TABLE board_outbox DROP COLUMN board; ALTER TABLE sessions DROP COLUMN status_since; ALTER TABLE devices DROP COLUMN kind; ALTER TABLE devices DROP COLUMN partitioned; ALTER TABLE devices DROP COLUMN logged_on_at; ALTER TABLE devices DROP COLUMN cookie_at; ALTER TABLE devices DROP COLUMN old_cookie_hash; ALTER TABLE devices DROP COLUMN old_cookie_until; ALTER TABLE devices DROP COLUMN paired_via; ALTER TABLE sessions DROP COLUMN claude_program; ALTER TABLE accounts DROP COLUMN container_dir; ALTER TABLE accounts DROP COLUMN containers; ALTER TABLE sessions DROP COLUMN trimmed_at; ALTER TABLE limits DROP COLUMN seen_at; ALTER TABLE questions DROP COLUMN earlier; ALTER TABLE questions DROP COLUMN sources; DROP TABLE flow_runs; ALTER TABLE sessions DROP COLUMN run_block; DROP TABLE flow_proposals; DROP TABLE linked_files; DROP TABLE link_bytes; DROP TABLE linked_outbox; ALTER TABLE sessions DROP COLUMN tools_schema; ALTER TABLE sessions DROP COLUMN requested_effort; ALTER TABLE sessions DROP COLUMN effort;
+      ALTER TABLE board_projects DROP COLUMN repo; ALTER TABLE board_projects DROP COLUMN allow; ALTER TABLE board_outbox DROP COLUMN board; ALTER TABLE sessions DROP COLUMN status_since; ALTER TABLE devices DROP COLUMN kind; ALTER TABLE devices DROP COLUMN partitioned; ALTER TABLE devices DROP COLUMN logged_on_at; ALTER TABLE devices DROP COLUMN cookie_at; ALTER TABLE devices DROP COLUMN old_cookie_hash; ALTER TABLE devices DROP COLUMN old_cookie_until; ALTER TABLE devices DROP COLUMN paired_via; ALTER TABLE sessions DROP COLUMN claude_program; ALTER TABLE accounts DROP COLUMN container_dir; ALTER TABLE accounts DROP COLUMN containers; ALTER TABLE sessions DROP COLUMN trimmed_at; ALTER TABLE limits DROP COLUMN seen_at; ALTER TABLE questions DROP COLUMN earlier; ALTER TABLE questions DROP COLUMN sources; DROP TABLE flow_runs; ALTER TABLE sessions DROP COLUMN run_block; DROP TABLE flow_proposals; DROP TABLE linked_files; DROP TABLE link_bytes; DROP TABLE linked_outbox; ALTER TABLE sessions DROP COLUMN tools_schema; ALTER TABLE sessions DROP COLUMN requested_effort; ALTER TABLE sessions DROP COLUMN effort; ALTER TABLE turn_resources DROP COLUMN waits; ALTER TABLE sessions DROP COLUMN turn_started_at; DROP INDEX messages_user_by_session; DROP TABLE job_runs; DROP TABLE command_marks;
       DROP TRIGGER usage_daily_insert; DROP TRIGGER usage_daily_update; DROP TRIGGER usage_daily_delete; DROP TABLE usage_daily; DROP INDEX usage_by_branch; DROP INDEX usage_by_session; CREATE INDEX usage_by_session ON usage(session_id, at);
       CREATE TABLE board_threads (id TEXT PRIMARY KEY, title TEXT NOT NULL, participants TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
       CREATE TABLE board_posts (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, author TEXT NOT NULL, via_ledung INTEGER NOT NULL, from_project TEXT,
@@ -451,7 +518,7 @@ test('migration 26 keeps the board rows of a database from before, without a rep
       PRAGMA user_version = 25;`);
     before.close();
     const db = openDatabase(file);
-    assert.equal((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 48);
+    assert.equal((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 51);
     const r = rig({ db, setup: {} });
     assert.deepEqual(r.boards.adoptLegacy(parseConfig({ board: { repo: 'org/legacy', allow: ['alice'], frontDesk: 'Desk' } }).board), ['Desk']);
     const legacy = r.settings.repo('org/legacy');

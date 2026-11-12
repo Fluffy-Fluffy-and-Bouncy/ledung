@@ -4,61 +4,16 @@
 // gathers its fleet beside it while it waits, and they depart together. While a clear counts down, the next watch
 // waits beside it; the clear changes the watch, a cancel sends the boat on. Drawings and timelines are in shipFrames.ts.
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import type { SessionInfo } from '../../../src/shared/protocol.ts';
+import { onTick } from '../clock.ts';
 import {
-  WIDTH, calmSea, depart, fleetLeaves, gather, leadX, render, sailing, sinking, standing, startAgain, turnAndStop,
-  watchArrives, watchChanges, watchStandsDown, type Behind, type Timeline,
+  WIDTH, calmSea, depart, fleetLeaves, gather, leadX, renderRuns, sailing, sinking, standing, startAgain, turnAndStop,
+  watchArrives, watchChanges, watchStandsDown, type Timeline,
 } from './shipFrames.ts';
+import { shipMode, type ShipMode } from './shipMode.ts';
 
-/** clearedAt: when the session was last cleared, so leaving 'clearing' tells a clear from a cancel. */
-export type ShipMode = { clearedAt?: number | null } & (
-  | { kind: 'working'; followers: number }
-  | { kind: 'stopped'; behind: Behind }
-  | { kind: 'clearing' }
-  | { kind: 'sunk' }
-);
+export { shipMode, type ShipMode };
 
 const STEP_MS = 180;
-
-/**
- * What a session's ship does: sail while it works (a manager's with one small boat per working session,
- * two at most), stop facing you while it waits or is idle, sink once it has ended. A stopped manager has its
- * fleet gathered beside it while any session it started is still open (working, waiting or idle); when the
- * last one ends the fleet sails off, and resuming one brings it back. Null: no ship (queued).
- */
-export function shipMode(session: SessionInfo, sessions: SessionInfo[]): ShipMode | null {
-  const children = sessions.filter((s) => s.parentId === session.id);
-  // 'starting' is a session waiting for its first message (a resumed one waits there until spoken to), so not working.
-  const childrenWorking = children.filter((s) => s.status === 'running').length;
-  // Its fleet: the sessions it started that have not ended. When the last one ends, the fleet sails off.
-  const childrenActive = children.filter((s) => s.status !== 'ended').length;
-  const clearedAt = session.clearedAt;
-  if (session.clearDue != null && session.status !== 'ended') return { kind: 'clearing', clearedAt };
-  const mode = baseMode();
-  return mode && { ...mode, clearedAt };
-  function baseMode(): ShipMode | null {
-  switch (session.status) {
-    case 'running':
-      // A paused session keeps its status but does no work: its ship stands like an idle one's.
-      if (!session.paused) return { kind: 'working', followers: session.role === 'manager' ? childrenWorking : 0 };
-      return { kind: 'stopped', behind: stoppedBehind() };
-    case 'stopping':
-      return { kind: 'working', followers: session.role === 'manager' ? childrenWorking : 0 };
-    case 'starting':
-    case 'waiting':
-    case 'idle':
-      return { kind: 'stopped', behind: stoppedBehind() };
-    case 'ended':
-      return { kind: 'sunk' };
-    default:
-      return null;
-  }
-  }
-  // Work still going on behind it, or a manager's fleet gathered beside it once its sessions have finished.
-  function stoppedBehind(): Behind {
-    return childrenWorking > 0 || session.backgroundTasks > 0 ? 'busy' : session.role === 'manager' && childrenActive > 0 ? 'fleet' : 'none';
-  }
-}
 
 /** Text sizes a ship steps through when clicked; each choice is kept per browser, under its own key. */
 const SIZES = [7, 6, 5, 4];
@@ -177,18 +132,20 @@ export function SailingShip({ mode, width = WIDTH, sizeButton = true, hideWhenSu
 
   useEffect(() => {
     if (still) return;
-    const timer = setInterval(() => {
+    // The clock every ship shares (issue #233): one timer for the whole page, all ships redrawn in one pass.
+    return onTick(STEP_MS, () => {
       const t = timeline.current;
       if (t) index.current = index.current + 1 < t.scenes.length ? index.current + 1 : t.loopFrom;
       setStep((s) => s + 1);
-    }, STEP_MS);
-    return () => clearInterval(timer);
+    });
   }, [still]);
 
   const t = timeline.current!;
   if (hideWhenSunk && mode.kind === 'sunk' && index.current >= t.loopFrom) return null;
   const scene = t.scenes[index.current]!;
-  const drawing = <pre className="sailing-ship" style={{ fontSize: `${maxSize ? Math.min(size, maxSize) : size}px` }} aria-hidden="true">{render(scene, still ? 0 : step)}</pre>;
+  // Work going on behind a stopped ship is drawn in the working colour, the ship itself in the session's (#270).
+  const runs = renderRuns(scene, still ? 0 : step).map((r, i) => (r.back ? <span key={i} className="ship-behind">{r.text}</span> : r.text));
+  const drawing = <pre className="sailing-ship" style={{ fontSize: `${maxSize ? Math.min(size, maxSize) : size}px` }} aria-hidden="true">{runs}</pre>;
   if (!sizeButton) return drawing;
   return (
     <button type="button" className="ship-button" title={`Ship size ${size}px: click for ${nextSize}px`} onClick={stepSize}>
