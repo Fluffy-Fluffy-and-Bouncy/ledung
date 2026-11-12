@@ -15,8 +15,8 @@ import type { SessionManager } from '../sessions/manager.ts';
 import { UserError } from '../sessions/manager.ts';
 import type { Store } from '../store/store.ts';
 import { AWAY_DEFAULT, AWAY_KINDS, EFFORT_LEVELS, type AwayKind, type PermissionDecision, type PermissionMode, type RemoteStatus, type ServerEvent } from '../shared/protocol.ts';
-import { deviceCookieHeader, Guard, readCookies, securityHeaders } from './security.ts';
-import { DEVICE_COOKIE, type Device, type DeviceKind, deviceName, Devices, deviceView } from './devices.ts';
+import { browserCookieHeader, deviceCookieHeader, Guard, readCookies, securityHeaders } from './security.ts';
+import { browserName, DEVICE_COOKIE, type Device, type DeviceKind, deviceName, Devices, deviceView, LEGACY_BROWSER_NAME } from './devices.ts';
 import { actionOf, DEVICE_LOCKED, PASSKEY_HEADER, PasskeyError, Passkeys } from './passkeys.ts';
 import { linkedPushItem, Push, PushError, type LinkedPushItem } from './push.ts';
 import type { UsageQueries } from '../usage/queries.ts';
@@ -120,10 +120,10 @@ export const PLAIN_READS = new Set([
  * (test/server-security.test.ts, "a project's flow needs the sign-in"; code review of PR #234, finding 1).
  */
 export const SITE_ONLY_READS = new Set(['GET projects/:id/flow']);
-/** Where sign-ins are kept between restarts (Guard.useSignInStore), as hashes. */
-const SIGN_INS_KEY = 'sign-ins';
 /** Logged once, the first time a browser's old token cookie is swapped for a sign-in (Project-Ledung#476). */
 let exercised476 = false;
+/** Logged once, the first time a browser signs in through its devices row (Project-Ledung#482). */
+let exercised482 = false;
 
 /** An API request's route as the switch in api() names it: every second part after /api/ is an id. */
 export function apiRoute(method: string, pathname: string): string {
@@ -240,9 +240,10 @@ export class LedungServer {
   private readonly clients = new Set<WebSocket>();
   /**
    * Each live connection's page key (#104): only Ledung's open page has one; see requirePage. With the
-   * device it was opened by through the public name (null: locally), so a key only works where it was given.
+   * device it was opened by through the public name (null: locally), so a key only works where it was given, and
+   * locally the browser it was opened by (null: the old token cookie or the open local network), so Remove closes it.
    */
-  private readonly pageKeys = new Map<WebSocket, { key: string; device: string | null }>();
+  private readonly pageKeys = new Map<WebSocket, { key: string; device: string | null; browser: string | null }>();
   private readonly guard: Guard<Device>;
   /** Paired devices and their passkeys (docs/steps/relay.md steps 4 and 5); passkeys only with a public name. */
   readonly devices: Devices;
@@ -309,8 +310,9 @@ export class LedungServer {
       forward: (item) => this.forwardPush(item),
     }) : null;
     this.push?.seed(opts.manager.questions(), opts.store.pendingPermissions());
-    this.guard = new Guard<Device>(opts.token, opts.port, opts.lanNames ?? [], opts.lanOpen ?? false, null, opts.now ?? Date.now);
-    this.guard.useSignInStore({ get: () => opts.store.getMeta(SIGN_INS_KEY), set: (v) => opts.store.setMeta(SIGN_INS_KEY, v) });
+    this.guard = new Guard<Device>(opts.token, opts.port, opts.lanNames ?? [], opts.lanOpen ?? false, null);
+    // A browser's sign-in is a devices row of kind 'browser' (Project-Ledung#482); #476's hashes were moved there.
+    this.guard.useBrowsers({ browser: (cookie) => this.devices.byCookie(cookie, 'local') });
     this.headers = {};
     this.webRoot = opts.webRoot ?? path.join(appDir(), 'web', 'dist');
     this.setPublicName(opts.publicName ?? null, opts.tunnelTls ?? null);
@@ -451,8 +453,9 @@ export class LedungServer {
       if (!url) return refuse('400 Bad Request');
       if (url.pathname !== '/ws' || !this.guard.hostAllowed(req) || !this.guard.originAllowed(req) || !this.guard.mayUse(req)) return refuse('403 Forbidden');
       const device = this.guard.deviceOf(req)?.id ?? null;
+      const browser = this.guard.browserOf(req)?.id ?? null;
       const viaPublic = this.guard.isPublic(req);
-      this.wss.handleUpgrade(req, socket, head, (ws) => this.onClient(ws, device, viaPublic));
+      this.wss.handleUpgrade(req, socket, head, (ws) => this.onClient(ws, device, browser, viaPublic));
     });
     return server;
   }
@@ -670,10 +673,10 @@ export class LedungServer {
     this.broadcast({ type: 'remote', remote: this.remote });
   }
 
-  private onClient(ws: WebSocket, device: string | null, viaPublic: boolean): void {
+  private onClient(ws: WebSocket, device: string | null, browser: string | null, viaPublic: boolean): void {
     this.clients.add(ws);
     const key = crypto.randomBytes(32).toString('hex');
-    this.pageKeys.set(ws, { key, device });
+    this.pageKeys.set(ws, { key, device, browser });
     const gone = () => {
       this.clients.delete(ws);
       this.pageKeys.delete(ws);
@@ -785,6 +788,23 @@ export class LedungServer {
         res.setHeader('Set-Cookie', deviceCookieHeader(renewed, device.partitioned));
         console.log(`Devices: renewed the cookie of "${device.name}"${device.partitioned ? ' (paired in a frame)' : ''}.`);
       } else if (!device && req.method === 'GET' && req.headers['sec-fetch-dest'] === 'iframe') this.noteFrameUnpaired(req);
+    } else {
+      // A browser's cookie is renewed daily like a computer's, so a copy of it stops working within a day, and a copy
+      // used after that removes the browser (Project-Ledung#482, design #477 section 3).
+      const browser = this.guard.browserOf(req);
+      if (browser) {
+        if (!exercised482) {
+          exercised482 = true;
+          exercisedLine('EXERCISED #482 a browser signed in through its devices row');
+        }
+        const renewed = this.devices.renewCookie(browser);
+        if (renewed) {
+          res.setHeader('Set-Cookie', browserCookieHeader(renewed));
+          console.log(`Browsers: renewed the cookie of "${browser.name}".`);
+        }
+        // Moved from #476's sign-ins with no name: named from what it is the first time it is used.
+        if (browser.name === LEGACY_BROWSER_NAME && req.headers['user-agent']) this.devices.rename(browser.id, browserName(req.headers['user-agent']));
+      }
     }
 
     // Pairing a device is the one way in through the public name (docs/steps/relay.md step 4).
@@ -825,7 +845,9 @@ export class LedungServer {
       // The install token never signs in through the public name: a leaked link stays useless from outside.
       if (remote) throw new HttpError(403, 'Sign-in links work only on the computer Ledung runs on. Pair this device from Settings there.');
       if (!this.guard.tokenMatches(url.searchParams.get('token'))) throw new HttpError(403, 'This sign-in link is not valid.');
-      res.writeHead(302, { ...this.headersFor(res), 'Set-Cookie': this.guard.signInCookie(), Location: '/' });
+      // The launcher opens this link at every start: a browser already signed in keeps its row instead of adding one.
+      const cookie = this.guard.browserOf(req) ? null : this.addBrowser(req);
+      res.writeHead(302, { ...this.headersFor(res), ...(cookie ? { 'Set-Cookie': cookie } : {}), Location: '/' });
       res.end();
       return;
     }
@@ -883,7 +905,7 @@ export class LedungServer {
     const dest = req.headers['sec-fetch-dest'];
     const page = dest === undefined ? (req.headers.accept ?? '').includes('text/html') : dest === 'document';
     if (this.guard.oldTokenCookie(req) && page) {
-      res.setHeader('Set-Cookie', this.guard.signInCookie());
+      res.setHeader('Set-Cookie', this.addBrowser(req));
       if (!exercised476) {
         exercised476 = true;
         exercisedLine('EXERCISED #476 an old token cookie was swapped for a sign-in on a page load');
@@ -1415,13 +1437,20 @@ export class LedungServer {
       .some(({ key, device }) => device === where && key.length === given.length && crypto.timingSafeEqual(Buffer.from(key), Buffer.from(given)));
   }
 
-  /** Locks a device out: its cookie stops working at once and its open pages are closed. */
+  /** Locks a device or browser out: its cookie stops working at once and its open pages are closed. */
   revokeDevice(id: string): boolean {
     const revoked = this.devices.revoke(id);
     this.passkeys?.lock(id);
     this.push?.unsubscribe(id);
-    for (const [ws, { device }] of this.pageKeys) if (device === id) ws.close(1008, 'This device was removed from Ledung.');
+    for (const [ws, { device, browser }] of this.pageKeys) if (device === id || browser === id) ws.close(1008, 'This device was removed from Ledung.');
     return revoked;
+  }
+
+  /** A new browser row for this request's browser (Project-Ledung#482), as the Set-Cookie header that gives it its cookie. */
+  private addBrowser(req: IncomingMessage): string {
+    const { device, cookie } = this.devices.addBrowser(browserName(req.headers['user-agent']));
+    console.log(`Browsers: "${device.name}" signed in.`);
+    return browserCookieHeader(cookie);
   }
 
   private async api(method: string, url: URL, req: IncomingMessage): Promise<unknown> {
@@ -1436,7 +1465,8 @@ export class LedungServer {
       // Paired devices (docs/steps/relay.md step 4): listed, paired and revoked on this computer only.
       case 'GET devices':
         this.requireLocal(req);
-        return { publicName: this.publicName, devices: this.devices.list() };
+        // `here`: the browser asking, so Settings can mark it (Project-Ledung#482).
+        return { publicName: this.publicName, devices: this.devices.list(), here: this.guard.browserOf(req)?.id ?? null };
       case 'POST devices-pair': {
         this.requireLocal(req);
         // A paired device with its passkey can allow sensitive calls, so making one needs the open page (#104):
@@ -1502,6 +1532,13 @@ export class LedungServer {
         this.requireLocal(req);
         if (!this.revokeDevice(decodeURIComponent(id))) throw new HttpError(400, 'No such device.');
         return;
+      // Renaming a browser or phone from this computer's list (Project-Ledung#482), like Remove above.
+      case 'POST devices/:id/rename': {
+        this.requireLocal(req);
+        const body = await readJson(req);
+        if (!this.devices.rename(decodeURIComponent(id), String(body.name ?? ''))) throw new HttpError(400, 'No such device.');
+        return;
+      }
       // This device and its passkey (step 5); locally there is no device and nothing changes.
       case 'GET device': {
         const device = this.guard.deviceOf(req);

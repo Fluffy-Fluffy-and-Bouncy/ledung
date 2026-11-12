@@ -84,7 +84,7 @@ async function signFor(method: string, path: string, text: string): Promise<stri
 /** Bytes of files sent to and received from a linked computer (issue #158): counted only, never a limit. */
 export type LinkBytes = { today: { sent: number; received: number }; month: { sent: number; received: number } };
 export type LinkedComputerInfo = { id: string; name: string; publicName: string; linkedAt: number; lastUsedAt: number | null; files?: LinkBytes };
-export type DeviceInfo ={ id: string; name: string; createdAt: number; lastUsedAt: number | null; passkey: boolean; passkeyAt: number | null; kind: 'phone' | 'computer'; pairedVia?: string | null };
+export type DeviceInfo ={ id: string; name: string; createdAt: number; lastUsedAt: number | null; passkey: boolean; passkeyAt: number | null; kind: 'phone' | 'computer' | 'browser'; pairedVia?: string | null };
 
 /** The live connection's key (#104): Ledung decides nothing sensitive without it. Null while there is no connection. */
 let pageKey: string | null = null;
@@ -373,10 +373,13 @@ export const api = {
   linkDevicePair: (id: string) => call<{ url: string; expiresAt: number }>('POST', '/api/link-device-pair', { id }),
   dismissLinkPairing: (id: string) => call('POST', `/api/link-pairings/${encodeURIComponent(id)}/dismiss`, {}),
   // Paired devices (issue #160): managed on this computer; a device sees only itself.
-  devices: () => call<{ publicName: string | null; devices: DeviceInfo[] }>('GET', '/api/devices'),
+  // `here`: the browser asking (Project-Ledung#482), so Settings can mark it.
+  devices: () => call<{ publicName: string | null; devices: DeviceInfo[]; here: string | null }>('GET', '/api/devices'),
   /** A pairing code for a phone or, to show this Ledung in a frame on another computer's page, a computer (issue #241). */
   pairDevice: (kind: 'phone' | 'computer' = 'phone') => call<{ url: string; expiresAt: number; kind: 'phone' | 'computer' }>('POST', '/api/devices-pair', { kind }),
   revokeDevice: (id: string) => call('POST', `/api/devices/${encodeURIComponent(id)}/revoke`, {}),
+  // Rename a browser or phone from this computer's list (Project-Ledung#482); renameDevice is a device's own name.
+  renameListedDevice: (id: string, name: string) => call('POST', `/api/devices/${encodeURIComponent(id)}/rename`, { name }),
   thisDevice: () => call<{ remote: false } | { remote: true; device: DeviceInfo; mayAddPasskey: boolean; unlockedUntil: number | null }>('GET', '/api/device'),
   /** Unlocks this device for ordinary changes for 30 minutes, or logs a computer on until it logs out (one passkey prompt). */
   unlockDevice: () => call<{ unlockedUntil: number }>('POST', '/api/device-unlock', {}),
