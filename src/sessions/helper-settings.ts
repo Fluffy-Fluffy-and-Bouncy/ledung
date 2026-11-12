@@ -10,6 +10,7 @@ import { defaultProjectsFolder, defaultRoots, isInside } from '../projects/brows
 import { lockdownOf } from '../projects/lockdown.ts';
 import { loosensGate } from '../projects/gate.ts';
 import { PERMISSION_MODES, type PermissionMode } from '../shared/protocol.ts';
+import { framingPages } from '../shared/computers.ts';
 
 /** What the settings need from Ledung: the running config and its file, and the page's own setters. */
 export interface SettingsCtx {
@@ -141,7 +142,27 @@ export function masked(v: unknown): unknown {
   return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [k,
     (k === 'env' || k === 'headers') && x && typeof x === 'object' && !Array.isArray(x)
       ? Object.fromEntries(Object.keys(x as Record<string, unknown>).map((name) => [name, '•••']))
+      : k === 'args' && Array.isArray(x) ? maskedArgs(x)
+      : k === 'url' && typeof x === 'string' ? maskedUrl(x)
       : masked(x)]));
+}
+
+/** A flag that names a secret: the value after it (or after its "=") is masked (code review round 4, R4-4). */
+const SECRET_FLAG = /^-{1,2}[\w-]*(key|token|secret|password|passwd|auth)[\w-]*$/i;
+function maskedArgs(args: unknown[]): unknown[] {
+  return args.map((a, i) => {
+    if (typeof a !== 'string') return a;
+    const eq = a.indexOf('=');
+    if (eq > 0 && SECRET_FLAG.test(a.slice(0, eq))) return `${a.slice(0, eq)}=•••`;
+    const prev = args[i - 1];
+    return typeof prev === 'string' && SECRET_FLAG.test(prev) ? '•••' : a;
+  });
+}
+/** A URL's query values masked: a token in it never shows. */
+function maskedUrl(url: string): string {
+  const q = url.indexOf('?');
+  if (q < 0) return url;
+  return `${url.slice(0, q)}?${url.slice(q + 1).split('&').map((p) => (p.includes('=') ? `${p.slice(0, p.indexOf('='))}=•••` : p)).join('&')}`;
 }
 const show = (v: unknown) => (v === undefined || v === null ? 'none' : typeof v === 'string' ? v : JSON.stringify(masked(v)));
 const MODE_ORDER: Record<PermissionMode, number> = { plan: 0, default: 1, acceptEdits: 2, auto: 3 };
@@ -200,16 +221,23 @@ function configPlan(ctx: SettingsCtx, key: SettingName, value: unknown): Setting
       }
       break;
     case 'computers': {
-      // A public name decides who may frame Ledung's page (security.ts): a new or changed one is asked (round 3, 2).
-      const names = (c: LedungConfig) => new Set((c.computers ?? []).map((x) => (x as { publicName?: string }).publicName).filter(Boolean));
-      const had = names(before);
-      const added = [...names(after)].filter((n) => !had.has(n));
+      // The pages that may frame Ledung's page (security.ts): a computer's public name and its local port each add
+      // some; any new one is asked, named on the card (round 3, 2; round 4, R4-1).
+      const had = new Set(framingPages(before.computers ?? []));
+      const added = framingPages(after.computers ?? []).filter((o) => !had.has(o));
       if (added.length) {
-        opens.push(`computer tabs: ${added.join(', ')} added`);
-        risk = 'Pages at those names may then show Ledung in a frame, and so its approval cards.';
+        opens.push(`pages that may show Ledung in a frame: ${added.join(', ')} added`);
+        risk = 'Those pages may then show Ledung in a frame, and so its approval cards.';
       }
       break;
     }
+    case 'keepToolResultsDays':
+      // Lower: older tool output is shrunk at once, and that can't be undone in Ledung (R4-2).
+      if (after.keepToolResultsDays < before.keepToolResultsDays) {
+        opens.push(`days old tool output is kept whole ${before.keepToolResultsDays} → ${after.keepToolResultsDays}`);
+        risk = 'Older tool output is shrunk at once; it does not come back in Ledung.';
+      }
+      break;
     case 'claudeAccounts': {
       // Which sign-in folder sessions run on: a new account or a changed folder is asked (round 3, 3).
       const acc = (c: LedungConfig) => (c.claudeAccounts ?? {}) as Record<string, { signInFolderOnThisComputer?: string; signInFolderInContainers?: string }>;
@@ -263,7 +291,8 @@ function configPlan(ctx: SettingsCtx, key: SettingName, value: unknown): Setting
     case 'claudeExecutable':
     case 'board':
       if (JSON.stringify(before[key]) !== JSON.stringify(after[key])) {
-        opens.push(`${def.label} ${show(before[key])} → ${show(after[key])}`);
+        // Only a masked value changed: the card says so rather than showing the same before and after (R4-4).
+        opens.push(show(before[key]) === show(after[key]) ? `${def.label}: a value hidden as secret changed` : `${def.label} ${show(before[key])} → ${show(after[key])}`);
         risk = key === 'board' ? 'Managers then post to the board, outside this computer.' : key === 'claudeExecutable' ? 'Sessions then run another program.' : 'This changes what sessions may use or what managers follow.';
       }
       break;

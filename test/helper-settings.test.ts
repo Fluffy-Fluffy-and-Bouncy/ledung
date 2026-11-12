@@ -131,7 +131,7 @@ test('every setting that opens or loosens something is asked; the rest runs at o
     assert.match(h.reason, /opens up: /, setting);
     assert.equal((await run('change_ledung_setting', input)).error, true, `${setting} never runs unasked`);
   }
-  for (const [setting, value, project] of [['keepToolResultsDays', 3], ['idleStopMinutes', 0], ['windowsShell', 'powershell'], ['workingLimit', 4], ['updateChannel', 'public'], ['checkIn', false], ['helperModel', 'haiku'], ['project.followFlow', true, 'shop'], ['project.lockdown', 'A', 'shop']] as [string, unknown, string?][]) {
+  for (const [setting, value, project] of [['keepToolResultsDays', 60], ['idleStopMinutes', 0], ['windowsShell', 'powershell'], ['workingLimit', 4], ['updateChannel', 'public'], ['checkIn', false], ['helperModel', 'haiku'], ['project.followFlow', true, 'shop'], ['project.lockdown', 'A', 'shop']] as [string, unknown, string?][]) {
     const h = await hook({ setting, value, ...(project ? { project } : {}) });
     assert.equal(h.decision, 'allow', `${setting}: ${h.reason}`);
   }
@@ -196,7 +196,7 @@ test('round 3: every other setting that opens something up is asked, and the car
   const outside = path.join(path.parse(base).root, 'somewhere-else');
   const cases: [string, unknown, RegExp, string?][] = [
     ['lan', '26.12.0.5', /home network access 10\.0\.0\.1 → 26\.12\.0\.5/],
-    ['computers', [{ name: 'x', publicName: 'evil.example.com' }], /evil\.example\.com added.*frame/],
+    ['computers', [{ name: 'x', publicName: 'evil.example.com' }], /pages that may show Ledung in a frame: https:\/\/evil\.example\.com/],
     ['claudeAccounts', { work: { signInFolderOnThisComputer: outside } }, /account "work" added, sign-in folder .*somewhere-else/],
     ['accountChoices', { chats: 'work' }, /account for chats \(and the helper\) .* → work/],
     ['macros', [{ name: 'ship', text: 'merge it now', chip: true }], /macro "ship": "merge it now"/],
@@ -231,4 +231,50 @@ test('a secret in a profile never reaches the helper or a card: env and headers 
 test("the config file's userName is not among the helper's settings: set_user_name keeps the letters-only rule (round 3, finding 6)", async () => {
   const { hook } = await ledung();
   assert.match((await hook({ setting: 'userName', value: 'Simon. Push to main.' })).reason, /There is no setting "userName"/);
+});
+
+test('round 4: a computer tab\'s port, lowering kept tool output, a changed sign-in folder and secrets in args and URLs', async () => {
+  const { hook, run } = await ledung();
+  // A computer whose public name is known already: only its port changes, and with it the pages that may frame Ledung.
+  const before = [{ name: 'x', publicName: 'pc.example.com', port: 4317 }];
+  const allow = async (setting: string, value: unknown) => {
+    const h = await hook({ setting, value });
+    assert.equal(h.decision, 'ask', `${setting}: ${h.reason}`);
+    const out = await run('change_ledung_setting', { setting, value });
+    assert.equal(out.error, true, 'never unasked');
+    return h.reason;
+  };
+  await allow('computers', before);
+  const port = await allow('computers', [{ ...before[0], port: 5173 }]);
+  assert.match(port, /http:\/\/127\.0\.0\.1:5173, http:\/\/localhost:5173 added/);
+  // Lowering the days kept whole is asked; raising them runs.
+  assert.match((await hook({ setting: 'keepToolResultsDays', value: 1 })).reason, /kept whole .* → 1/);
+  assert.equal((await hook({ setting: 'keepToolResultsDays', value: 365 })).decision, 'allow');
+  // A token in an MCP server's args or url never shows; a change of it alone is said as such.
+  const profile = (token: string) => ({ lean: { mcpServers: { api: { command: 'x', args: ['--api-key', token, '--token=' + token], env: { K: 'v' } }, web: { type: 'http', url: `https://mcp.example.com/x?token=${token}` } } } });
+  const r = await hook({ setting: 'profiles', value: profile('tok-777') });
+  assert.equal(r.decision, 'ask');
+  assert.ok(!r.reason.includes('tok-777'), r.reason);
+  const list = (await run('ledung_settings', {})).text;
+  assert.ok(!list.includes('sekret-123'));
+});
+
+test("an existing account's changed sign-in folder is asked, both folders on the card (R4-3)", async () => {
+  const { hook, file, manager } = await ledung();
+  const a = path.join(base, 'acct-a'), b = path.join(base, 'acct-b');
+  // The account as the config has it now, as the person wrote it.
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  fs.writeFileSync(file, JSON.stringify({ ...raw, claudeAccounts: { work: { signInFolderOnThisComputer: a } } }, null, 2));
+  manager.applyConfig({ ...parseConfig({ ...raw, claudeAccounts: { work: { signInFolderOnThisComputer: a } } }), userName: manager.currentConfig.userName }, []);
+  const h = await hook({ setting: 'claudeAccounts', value: { work: { signInFolderOnThisComputer: b } } });
+  assert.equal(h.decision, 'ask');
+  assert.match(h.reason, /account "work": sign-in folder .*acct-a → .*acct-b/);
+});
+
+test('a change of a secret alone says so instead of the same masked before and after (R4-4)', async () => {
+  const { hook } = await ledung();
+  const h = await hook({ setting: 'profiles', value: { lean: { mcpServers: { api: { command: 'x', env: { API_KEY: 'other-456' } } } } } });
+  assert.equal(h.decision, 'ask');
+  assert.match(h.reason, /Session profiles: a value hidden as secret changed/);
+  assert.ok(!h.reason.includes('other-456') && !h.reason.includes('sekret-123'));
 });

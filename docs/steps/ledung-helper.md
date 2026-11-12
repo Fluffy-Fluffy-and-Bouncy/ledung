@@ -65,7 +65,8 @@ Simon: "The plan is that it should be able to help me with all settings if I ask
 | lan | config | b for any new place to listen, an address to another too (narrower: one address, not `true`), c |
 | lanSignIn | config | b when switched off (anyone on that network uses Ledung), c |
 | sensitive (global) | config (live) | b when a pattern is removed; a when added |
-| keepToolResultsDays, idleStopMinutes, windowsShell | config (live) | a |
+| keepToolResultsDays | config (live) | b when lowered (older output is shrunk at once); a when raised |
+| idleStopMinutes, windowsShell | config (live) | a |
 | claudeAccounts | config (live) | b for an added account or a changed sign-in folder, with the folder shown |
 | pluginsOff | config (live) | b when a plugin comes back on; a when one goes off |
 | profiles, defaultProfiles | config (live) | b (what sessions may use) |
@@ -74,7 +75,7 @@ Simon: "The plan is that it should be able to help me with all settings if I ask
 | claudeExecutable | config (live) | b (another program runs the sessions) |
 | chats | config (live) | b when it loosens (mode, a sensitive pattern removed, a folder outside the folders Ledung may use); else a |
 | board | config | b (posts leave this computer), c |
-| computers | config | b when a public name is added (it may frame the page), c |
+| computers | config | b when any page that may frame Ledung is added (a public name, or a computer's local port), c |
 | remote, relayJoin | config | d (relay secrets; Settings → Remote & devices) |
 | projects | config | handled by the project tools |
 | Working sessions limit | Machine panel (meta) | a |
@@ -99,4 +100,4 @@ Simon: "The plan is that it should be able to help me with all settings if I ask
 | project.followFlow | project → Workflow | b when switched off; a when on |
 | project.name (rename) | project | a |
 
-Nothing bypasses the page's own checks: the config file is written by Ledung's config writer (`src/config-write.ts`: the file's own keys, `$comment`s and unknown keys kept, validated with the same schema before an atomic write, then read back by the watcher); everything else calls the manager methods the page's routes call. When in doubt, a setting is class b (code review round 3). Values shown to the helper or on a card have an MCP server's `env` and `headers` masked. The helper can't loosen lockdown, can't handle secrets, and can't change who may answer its cards (devices, passkeys, sign-in links are class d).
+Nothing bypasses the page's own checks: the config file is written by Ledung's config writer (`src/config-write.ts`: the file's own keys, `$comment`s and unknown keys kept, validated with the same schema before an atomic write, then read back by the watcher); everything else calls the manager methods the page's routes call. When in doubt, a setting is class b (code review round 3). Values shown to the helper or on a card have an MCP server's `env` and `headers`, the values after key, token or secret flags in its `args`, and its `url`'s query masked; a change of a masked value alone is said as such. The helper can't loosen lockdown, can't handle secrets, and can't change who may answer its cards (devices, passkeys, sign-in links are class d).
