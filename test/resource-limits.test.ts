@@ -13,7 +13,7 @@ import { ResourceBook, LAPSE_MS, RESOURCE_SOURCE, type BookSample, type BookSess
 import { JobStore, fromGeneric, toGeneric } from '../src/resources/jobs.ts';
 import { heavyKinds } from '../src/resources/commands.ts';
 import { LOWERED, type PriorityControl } from '../src/platform/process-control.ts';
-import { limitShare, limitText, overFor, parseLimitInput } from '../web/src/usage/resourceLimits.ts';
+import { dragMax, dragStep, dragText, dragValue, limitShare, limitText, limitUnits, overFor, parseLimitInput, stepDrag, valueShare } from '../web/src/usage/resourceLimits.ts';
 import { fileTimeMs, JOB_BUSY, JobActions, jobTargetsNow, type FreshProcess } from '../src/resources/job-actions.ts';
 import { hostStill } from '../src/resources/monitor.ts';
 
@@ -472,6 +472,43 @@ test('the page puts the limit line where it belongs and reads what is typed', ()
   assert.equal(parseLimitInput('cpu', '101'), undefined);
   assert.equal(parseLimitInput('ram', '12.5'), 12.5);
   assert.equal(parseLimitInput('ram', ''), undefined);
+});
+
+test('dragging a limit line snaps to 5 % or 1 GB, and the far end is no limit (issue #295)', () => {
+  assert.equal(dragStep('cpu'), 5);
+  assert.equal(dragStep('vram:a'), 1);
+  assert.equal(dragValue('gpu:a', 0.52, 100), 50);
+  assert.equal(dragValue('cpu', 0.533, 100), 55);
+  assert.equal(dragValue('ram', 48.4 / 64, 64 * GB), 48);
+  // Never below one step, and dragged off the right end the limit goes.
+  assert.equal(dragValue('cpu', 0, 100), 5);
+  assert.equal(dragValue('ram', -0.2, 64 * GB), 1);
+  assert.equal(dragValue('cpu', 0.99, 100), null);
+  assert.equal(dragValue('cpu', 1.3, 100), null);
+  assert.equal(dragValue('ram', 63.6 / 64, 64 * GB), null);
+  // A total that isn't whole GB: the far end is its whole GB.
+  assert.equal(dragMax('ram', 63.9 * GB), 63);
+  assert.equal(dragValue('ram', 1, 63.9 * GB), null);
+  assert.equal(limitUnits('ram', 12 * GB), 12);
+  assert.equal(limitUnits('cpu', undefined), null);
+  assert.equal(valueShare('ram', 16, 64 * GB), 0.25);
+  assert.equal(valueShare('cpu', null, 100), 1);
+  assert.equal(dragText('gpu:a', 50), '50%');
+  assert.equal(dragText('ram', 48), '48 GB');
+  assert.equal(dragText('ram', null), 'No limit');
+});
+
+test('arrow keys move a limit one step onto the grid, and off the end to no limit (issue #295)', () => {
+  assert.equal(stepDrag('cpu', 50, 1, 100), 55);
+  assert.equal(stepDrag('cpu', 52, -1, 100), 50);
+  assert.equal(stepDrag('cpu', 52, 1, 100), 55);
+  assert.equal(stepDrag('cpu', 5, -1, 100), 5);
+  assert.equal(stepDrag('cpu', 95, 1, 100), null);
+  assert.equal(stepDrag('cpu', null, -1, 100), 95);
+  assert.equal(stepDrag('cpu', null, 1, 100), null);
+  assert.equal(stepDrag('ram', 12.5, 1, 64 * GB), 13);
+  assert.equal(stepDrag('ram', 12.5, -1, 64 * GB), 12);
+  assert.equal(stepDrag('ram', null, -1, 64 * GB), 63);
 });
 
 // --- Findings of the security reviews -----------------------------------------------------------------------------
