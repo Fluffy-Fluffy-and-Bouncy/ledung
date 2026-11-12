@@ -324,6 +324,6 @@ test("a computer tab's card names the change itself, then what it opens (round 7
   fs.writeFileSync(file, JSON.stringify({ ...raw, computers: [{ name: 'Laptop', publicName: 'laptop.example.com', port: 4317 }] }, null, 2));
   const h = await hook({ setting: 'computers', value: [{ name: 'Laptop', publicName: 'laptop.example.com', port: 4318 }] });
   assert.equal(h.decision, 'ask');
-  assert.match(h.reason, /Computer tabs: "Laptop"\.port: 4317 → 4318/);
+  assert.match(h.reason, /Computer tabs: Laptop's port: 4317 → 4318/);
   assert.match(h.reason, /http:\/\/127\.0\.0\.1:4318/);
 });

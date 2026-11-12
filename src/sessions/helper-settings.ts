@@ -234,7 +234,8 @@ export function changeLines(label: string, before: unknown, after: unknown, max 
     else lines.push(`${path || label}: ${leaf(xb)} → ${leaf(xa)}`);
   };
   walk('', before, after, mb, ma);
-  const shown = lines.slice(0, max).map((l) => (l.startsWith(label) ? l : `${label}: ${l.trim()}`));
+  // "Laptop".port reads as Laptop's port (round 10).
+  const shown = lines.slice(0, max).map((l) => l.trim().replace(/"([^"]+)"\.(\w+)/g, "$1's $2")).map((l) => (l.startsWith(label) ? l : `${label}: ${l}`));
   if (lines.length > max) shown.push(`${label}: and ${lines.length - max} more`);
   return { lines: shown, secretChanged, secretsKept };
 }
