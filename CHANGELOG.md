@@ -11,6 +11,7 @@ is nothing user-facing in it).
 
 ## 2026-11-12
 - Less busy work while the board and managers are idle: the page is sent the message board's state when something on it changed and once a minute, not after every check of the board. The board's "last checked" now reads "under a minute ago" or whole minutes, and a board not checked for over three minutes shows as a problem even without an error. The checks that look for your yes before a merge or a settings action read just that manager's recent words instead of the newest 500 questions and 400 messages. A yes buried under many newer messages or other sessions' questions now still counts. (#232)
+- Standing grants are stricter: a "starts with" grant such as `git push:*` now covers only that command and its arguments, on one line; a command that spans several lines, or a longer word that merely starts the same, is asked about as if there were no grant. (Project-Ledung#472)
 
 ## 2026-11-11
 - Your pinned latest message at the top of the chat no longer shows through a session's ⚙ menu (nor does the message box under it), and its bottom edge fades out softly instead of ending in a hard line. (#226)
