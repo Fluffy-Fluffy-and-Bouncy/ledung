@@ -3,7 +3,7 @@
 // keyboard, and a One project / All filter. Permission prompts head the queue and the recently answered
 // questions follow. What a manager is handling is not listed: the manager handles it (issue #96). Answers
 // take the same path as the chat's question card.
-import { Fragment, lazy, Suspense, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { CHATS, projectLabel, type ChatsInfo, type LinkPairingInfo, type NewComputerInfo, type PermissionInfo, type ProjectInfo, type QuestionInfo, type SessionInfo } from '../../../src/shared/protocol.ts';
 import { disagree, MAX_BORDER_PARTS, mergeTiers, type DeskOpinion } from '../../../src/shared/questions.ts';
 import { findTickets } from '../../../src/shared/tickets.ts';
@@ -20,6 +20,7 @@ import { ScreenshotView, shotCount } from './ScreenshotView.tsx';
 import { usePlainTyping } from '../usePlainTyping.ts';
 import { Withdraw } from './Withdraw.tsx';
 import { RunLine } from './FlowRuns.tsx';
+import { indexSessions } from '../sessionTree.ts';
 
 const FlowProposalView = lazy(() => import('./FlowProposal.tsx'));
 import { NewComputerCard } from './RelaySettings.tsx';
@@ -67,7 +68,9 @@ export function WaitingView(props: {
     writeFilter(localStorage, f);
   };
 
-  const sessionOf = (id: string) => props.sessions.find((s) => s.id === id);
+  // Each card looks its session up in one index of the list, not by scanning it (issue #235).
+  const byId = useMemo(() => indexSessions(props.sessions).byId, [props.sessions]);
+  const sessionOf = (id: string) => byId.get(id);
   const titleOf = (id: string) => sessionOf(id)?.title ?? 'unknown';
   const nameOf = (id: string) => { const s = sessionOf(id); return s?.role === 'manager' ? `Manager "${s.title}"` : s?.title ?? 'Unknown session'; };
   const projectOf = (sessionId: string) => sessionOf(sessionId)?.project ?? '';
@@ -111,7 +114,7 @@ export function WaitingView(props: {
     </header>
   );
 
-  const ctx: DeskContext = { props, nameOf, titleOf, tierColor, tintOf, settingsOf, header };
+  const ctx: DeskContext = { props, nameOf, titleOf, projectOf, tierColor, tintOf, settingsOf, header };
 
   if (props.questionId !== null) {
     if (!current) {
@@ -155,6 +158,7 @@ interface DeskContext {
   props: Parameters<typeof WaitingView>[0];
   nameOf: (sessionId: string) => string;
   titleOf: (sessionId: string) => string;
+  projectOf: (sessionId: string) => string;
   tierColor: (t: string | null) => string;
   tintOf: (sessionId: string) => CSSProperties | undefined;
   settingsOf: (project: string) => ProjectInfo | undefined;
@@ -194,7 +198,7 @@ function Queue(p: {
   permsForYou: PermissionInfo[];
   tiers: string[];
 }) {
-  const { props, nameOf, titleOf, tierColor, tintOf, header } = p.ctx;
+  const { props, nameOf, titleOf, projectOf, tierColor, tintOf, header } = p.ctx;
   const { filter, setFilter } = p;
   const setMode = (mode: Filter['mode']) => setFilter({ ...filter, mode, one: p.projectNames.includes(filter.one) ? filter.one : p.projectNames[0] ?? '' });
   const nextProject = () => {
@@ -256,7 +260,7 @@ function Queue(p: {
     <div key={perm.id} className="waiting-permission">
       <div className="waiting-from">
         <button className="link" onClick={() => props.onOpenSession(perm.sessionId)}>{titleOf(perm.sessionId)}</button>
-        <span className="muted"> ({projectLabel(props.sessions.find((s) => s.id === perm.sessionId)?.project ?? '')}) · {formatTime(perm.at)}</span>
+        <span className="muted"> ({projectLabel(projectOf(perm.sessionId))}) · {formatTime(perm.at)}</span>
       </div>
       <PermissionCard permission={perm} />
     </div>
