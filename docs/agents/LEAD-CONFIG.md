@@ -145,7 +145,7 @@ steward, miner and metrics runs are off, and that is not a stop.
 | `METRICS_MODEL` | Sonnet |
 | `LOG_TRIAGE_MODEL` | Sonnet |
 | `ESCALATION_MODEL` | Opus |
-| `TEST_PORTS` | per machine: ports for throwaway Ledungs, one per session, handed out by the lead; never the real Ledung's port (`4317` unless that machine's config says otherwise) — Martin's Windows PC `4396`–`4399` · Martin's Mac `4396`–`4399` |
+| `TEST_PORTS` | per machine: ports for throwaway Ledungs, one per session, handed out by the lead; never the real Ledung's port (`4317` unless that machine's config says otherwise) — Martin's Windows PC `4396`–`4399` · Martin's Mac `4396`–`4399` · magto-mini `4396`–`4399` (the lead's own choice, 2026-11-13: the mini's real Ledung is on `4317` and nothing else there uses these) |
 
 ## Modules
 
