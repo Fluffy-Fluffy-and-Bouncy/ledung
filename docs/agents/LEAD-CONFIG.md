@@ -38,7 +38,7 @@ local file with the per-machine values is.
 | `REPO` | `Fluffy-Fluffy-and-Bouncy/ledung` (public): code and PRs, there since 2026-10-29 (question #487). Open and merge PRs with `gh pr … -R Fluffy-Fluffy-and-Bouncy/ledung`. Where the issues are is `ISSUES_REPO` |
 | `ISSUES_REPO` | `Fluffy-Fluffy-and-Bouncy/ledung`, `Fluffy-Fluffy-and-Bouncy/Project-Ledung` — new issues are filed in the first, the public repo, since 2026-11-02 (Ledung questions #491–#493 and #508: "new issues go on the public repo"). **The open issues were moved to `ledung` on 2026-11-02**, 61 in two batches, each with a "Moved from Project-Ledung#N" line; the old issue is closed with a "Moved to" link, so anyone citing an old number follows that link. The private second repo keeps history, its Testing cards and #464, #465, #451, #455, #456, #459, #461, #463, which finish there; a PR names those as `Fluffy-Fluffy-and-Bouncy/Project-Ledung#N` (Martin, 2026-11-12 08:57, Ledung question #791: "b — Merge, and add the second issues repo to the process config") |
 | `DEFAULT_BRANCH` | `main` |
-| `WIN_CLONE` | per machine: the project's clone, the folder Ledung starts the project's sessions in; sessions work in worktrees only — Martin's Windows PC `%USERPROFILE%\claude-project\ledung` · Martin's Mac `~/claude-project/project-ledung` |
+| `WIN_CLONE` | per machine: the project's clone, the folder Ledung starts the project's sessions in; sessions work in worktrees only — Martin's Windows PC `%USERPROFILE%\claude-project\ledung` · Martin's Mac `~/claude-project/project-ledung` · magto-mini `/Volumes/dev/projects/ledung` |
 
 ## Board
 
@@ -145,7 +145,7 @@ steward, miner and metrics runs are off, and that is not a stop.
 | `METRICS_MODEL` | Sonnet |
 | `LOG_TRIAGE_MODEL` | Sonnet |
 | `ESCALATION_MODEL` | Opus |
-| `TEST_PORTS` | per machine: ports for throwaway Ledungs, one per session, handed out by the lead; never the real Ledung's port (`4317` unless that machine's config says otherwise) — Martin's Windows PC `4396`–`4399` · Martin's Mac `4396`–`4399` |
+| `TEST_PORTS` | per machine: ports for throwaway Ledungs, one per session, handed out by the lead; never the real Ledung's port (`4317` unless that machine's config says otherwise) — Martin's Windows PC `4396`–`4399` · Martin's Mac `4396`–`4399` · magto-mini `4396`–`4399` (Martin, 2026-11-13, Ledung question #2 on magto-mini: "a — 4396–4399", recorded on PR #321) |
 
 ## Modules
 
@@ -156,6 +156,9 @@ steward, miner and metrics runs are off, and that is not a stop.
 | `MODULE_SYMBOL_INDEX` | off |
 | `MODULE_FEATURE_MAP` | off |
 | `MODULE_SHOT_JUDGE` | off |
+| `MODULE_WORK_HOST` | on — one computer does the work, the managers on the others keep the talk with Martin and the jobs tied to their own computer (agent-workflow v155, `modules/work-host/`; Martin, 2026-11-13, Ledung question #2219 "a", recorded on `Magto/agent-workflow#295`) |
+| `WORK_HOST` | `magto-mini` — Project Ledung's work host (Martin, 2026-11-13, Ledung question #2219 "a") |
+| `WORK_HOST_BOUND` | `dev ship → tubal-cain · play checks (exercised.log) → tubal-cain` — the dev ship's publishing clone and npm login exist only on tubal-cain, and the play-check log is the one Martin's real Ledung writes on his PC, tubal-cain (agent-workflow v155) |
 
 ## Humans and approvals
 
