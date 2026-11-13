@@ -47,7 +47,7 @@ export function ComputerTabs({ frame, shown = null, onShow, waiting: hereWaiting
         const waiting = count ? <span className="badge" title={`${count} waiting for you on ${c.name}`} aria-label={`${count} waiting for you`}>{count}</span> : null;
         // That computer trusts this one's own screen (issue #313; Martin, 2026-11-13, question #890: "with a key on the tab").
         const trusted = !c.here && c.trustsUs
-          ? <span className="ctab-key" title={`${c.name} trusts this computer's screen: changes from here need no passkey there`} aria-label="trusts this screen">🔑</span>
+          ? <span className="ctab-key" title={`Trusted — ${c.name} trusts this computer's screen: changes from here need no passkey there`} aria-label="trusts this screen">🔑</span>
           : null;
         const body = <><span className="sw" aria-hidden="true" /><span className="nm">{c.name}</span>{trusted}{waiting}</>;
         const on = c.here ? shown === null : shown === c.id;

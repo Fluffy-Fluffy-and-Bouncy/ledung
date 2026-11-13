@@ -5,9 +5,13 @@
 // from the Mac's public name, a phone, a script with the token alone or anyone without the link key.
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { COOKIE, keyFor, LinkedNodes, until, type Node } from './linked-nodes.ts';
 import { FakePasskey } from './fake-passkey.ts';
 import { HANG_MS } from './limits.ts';
+import { removeTemp } from './temp.ts';
 
 const nodes = new LinkedNodes();
 after(() => nodes.close());
@@ -18,10 +22,10 @@ const PASSKEY_ONLY = /This needs a passkey, or this computer's own screen/;
 
 let n = 0;
 /** A linked Mac and PC, and the Mac's frame of the PC paired through the link: a computer device on the PC. */
-async function frameOfPc() {
+async function frameOfPc(pcConfig: Record<string, unknown> = {}) {
   n++;
   const mac = await nodes.ledung(`mac${n}.trust.test`);
-  const pc = await nodes.ledung(`pc${n}.trust.test`);
+  const pc = await nodes.ledung(`pc${n}.trust.test`, undefined, undefined, undefined, pcConfig);
   await nodes.link(mac, pc, 'Mac');
   const macPage = await nodes.page(mac);
   const pcPage = await nodes.page(pc);
@@ -226,7 +230,7 @@ test('another trusted computer can\'t vouch for the Mac\'s frame: each vouch cou
   assert.equal((await frame('device-unlock', {}, await vouched(frame, macPage, pc, 'device-unlock'))).status, 200);
 });
 
-test('opening lockdown and loosening the gate still take a passkey: a vouch is refused for them', { timeout: HANG_MS }, async () => {
+test('loosening the gate still takes a passkey: a vouch is refused for a new project\'s grant and a rename carrying one', { timeout: HANG_MS }, async () => {
   const { pc, macPage, pcPage, frame, macLink } = await frameOfPc();
   assert.equal((await pcPage('POST', `links/${macLink.id}/trust`, { on: true })).status, 200);
   assert.equal((await frame('device-unlock', {}, await vouched(frame, macPage, pc, 'device-unlock'))).status, 200);
@@ -243,14 +247,65 @@ test('opening lockdown and loosening the gate still take a passkey: a vouch is r
   const viaRename = await frame('projects/loose/rename', renamed, await vouched(frame, macPage, pc, 'projects/loose/rename', renamed));
   assert.equal(viaRename.status, 403, JSON.stringify(viaRename.json));
   assert.match(viaRename.json.error, PASSKEY_ONLY);
-  // Premise: a rename whose settings loosen nothing passes the check on a vouch (and then finds no such project).
+  // Premise: a rename whose settings loosen nothing passes the check on a vouch, and the manager then refuses it for
+  // having no such project (a UserError: 400).
   const plainRename = { name: 'renamed', settings: {} };
   const passed = await frame('projects/loose/rename', plainRename, await vouched(frame, macPage, pc, 'projects/loose/rename', plainRename));
-  assert.notEqual(passed.status, 403, JSON.stringify(passed.json));
+  assert.equal(passed.status, 400, JSON.stringify(passed.json));
+  assert.doesNotMatch(passed.json.error, PASSKEY_ONLY);
   // Asked for the passkey itself, the frame gets a passkey's challenge, which it can't answer without one.
   const forced = await frame('passkey-challenge', { method: 'POST', path: '/api/projects', body: JSON.stringify(loosening), passkey: true });
   assert.equal(forced.json.vouch, undefined);
   assert.match(forced.json.error, /no passkey/);
+});
+
+test('opening a locked project, removing it, a new project\'s grant and taking a chats pattern out each refuse a vouch', { timeout: HANG_MS }, async () => {
+  // The PC's projects live in a folder of its own that it may use.
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-trust-projects-')));
+  after(() => removeTemp(root));
+  const { pc, macPage, pcPage, frame, macLink } = await frameOfPc({ browseRoots: [root] });
+  assert.equal((await pcPage('POST', `links/${macLink.id}/trust`, { on: true })).status, 200);
+  assert.equal((await frame('device-unlock', {}, await vouched(frame, macPage, pc, 'device-unlock'))).status, 200);
+  const onVouch = async (route: string, body: unknown) => frame(route, body, await vouched(frame, macPage, pc, route, body));
+  const folder = (name: string) => fs.mkdtempSync(path.join(root, `${name}-`));
+  // A locked project and an unlocked one on the PC.
+  const island = { name: `island${n}`, runner: 'local', path: folder('island'), lockdown: { level: 'A' } };
+  const plain = { name: `plain${n}`, runner: 'local', path: folder('plain') };
+  pc.manager.addProject(island as never);
+  pc.manager.addProject(plain as never);
+
+  // Its settings as stored, sent back as Settings does, so only the change named counts (its sensitive lists too).
+  const stored = { ...island, sensitive: pc.manager.projects().find((p) => p.name === island.name)!.sensitive };
+  // Lockdown switched off: refused. Premise: another setting of the same locked project goes through.
+  const off = await onVouch(`projects/${island.name}`, { ...stored, lockdown: { level: 'off' } });
+  assert.equal(off.status, 403, JSON.stringify(off.json));
+  assert.match(off.json.error, PASSKEY_ONLY);
+  const model = await onVouch(`projects/${island.name}`, { ...stored, model: 'haiku' });
+  assert.equal(model.status, 200, JSON.stringify(model.json));
+  assert.equal(pc.manager.projects().find((p) => p.name === island.name)!.lockdown.level, 'A', 'still locked');
+
+  // Removing the locked project: refused. Premise: removing an unlocked one goes through.
+  const removeLocked = await onVouch(`projects/${island.name}/remove`, {});
+  assert.equal(removeLocked.status, 403, JSON.stringify(removeLocked.json));
+  assert.match(removeLocked.json.error, PASSKEY_ONLY);
+  assert.ok(pc.manager.projects().some((p) => p.name === island.name), 'still there');
+  const removePlain = await onVouch(`projects/${plain.name}/remove`, {});
+  assert.equal(removePlain.status, 200, JSON.stringify(removePlain.json));
+  assert.ok(!pc.manager.projects().some((p) => p.name === plain.name), 'removed');
+
+  // A new project (New project's form) with a manager grant: refused before anything is made.
+  const grant = await onVouch('projects-new', { settings: { managerGrant: 'anything' } });
+  assert.equal(grant.status, 403, JSON.stringify(grant.json));
+  assert.match(grant.json.error, PASSKEY_ONLY);
+
+  // The chats' sensitive list with a pattern taken out: refused. Premise: the same list sent back goes through.
+  const had = (await pcPage('POST', 'chats', { sensitive: { commandPatterns: ['deploy-313'] } })).json.sensitive as { commandPatterns: string[]; pathPatterns: string[]; mcpTools: string[] };
+  assert.ok(had.commandPatterns.includes('deploy-313'), JSON.stringify(had));
+  const taken = await onVouch('chats', { sensitive: { ...had, commandPatterns: had.commandPatterns.filter((c) => c !== 'deploy-313') } });
+  assert.equal(taken.status, 403, JSON.stringify(taken.json));
+  assert.match(taken.json.error, PASSKEY_ONLY);
+  const same = await onVouch('chats', { sensitive: had });
+  assert.equal(same.status, 200, JSON.stringify(same.json));
 });
 
 test('a sensitive prompt is decided on a vouch, and not without one', { timeout: HANG_MS }, async () => {
@@ -264,7 +319,53 @@ test('a sensitive prompt is decided on a vouch, and not without one', { timeout:
   const unsigned = await frame('permissions/perm313', allow);
   assert.equal(unsigned.status, 403, 'logged on is not enough for a sensitive prompt');
   const signed = await frame('permissions/perm313', allow, await vouched(frame, macPage, pc, 'permissions/perm313', allow));
-  assert.notEqual(signed.status, 403, JSON.stringify(signed.json));
+  // Past the check it reaches the manager, which has no live session to tell (as server-security.test.ts's own case).
+  assert.equal(signed.status, 400, JSON.stringify(signed.json));
+  assert.match(signed.json.error, /no longer waiting/);
+});
+
+test('a tab paired before the link id was kept counts by the link\'s name, only while one link has it; a phone never', { timeout: HANG_MS }, async () => {
+  const { pc, macPage, pcPage, frame, cookie, macLink } = await frameOfPc();
+  // As a row from before the migration: the link's name only.
+  const device = pc.server.devices.byCookie(cookie.split('=')[1]!)!;
+  pc.db.prepare('UPDATE devices SET paired_via_link = NULL WHERE id = ?').run(device.id);
+  assert.equal(pc.server.devices.get(device.id)!.pairedVia, 'Mac');
+  assert.equal(pc.server.devices.get(device.id)!.pairedViaLink, null);
+  assert.equal((await pcPage('POST', `links/${macLink.id}/trust`, { on: true })).status, 200);
+  // One link named Mac: the vouch is offered and counts, and removing trust logs it off.
+  assert.equal((await frame('device-unlock', {}, await vouched(frame, macPage, pc, 'device-unlock'))).status, 200);
+  assert.equal((await frame('computers', rename(pc, 'By name'))).status, 200);
+  assert.equal((await pcPage('POST', `links/${macLink.id}/trust`, { on: false })).status, 200);
+  const off = await frame('computers', rename(pc, 'Off'));
+  assert.equal(off.status, 403);
+  assert.match(off.json.error, NO_PASSKEY);
+
+  // A phone whose row names the Mac (it never could by pairing), while one link has that name: a passkey's challenge,
+  // never a vouch's.
+  assert.equal((await pcPage('POST', `links/${macLink.id}/trust`, { on: true })).status, 200);
+  const code = new URL((await pcPage('POST', 'devices-pair', { kind: 'phone' })).json.url).pathname.slice('/p/'.length);
+  const paired = await nodes.viaTunnel(pc.name, '/pair', { body: new URLSearchParams({ code, name: 'Phone' }).toString(), headers: { origin: `https://${pc.name}`, 'content-type': 'application/x-www-form-urlencoded' } });
+  const phoneCookie = /^(__Host-ledung_device=[0-9a-f]{64})/.exec(String(paired.headers['set-cookie']))![1]!;
+  const phoneRow = pc.server.devices.byCookie(phoneCookie.split('=')[1]!)!;
+  pc.db.prepare('UPDATE devices SET paired_via = ? WHERE id = ?').run('Mac', phoneRow.id);
+  const phone = await asDevice(pc, phoneCookie);
+  const key = new FakePasskey(pc.name);
+  assert.equal((await phone('passkey', { response: key.register((await phone('passkey-options')).json) })).status, 200);
+  const phoneOffer = await offer(phone, 'device-unlock');
+  assert.equal(phoneOffer.json.vouch, undefined);
+  assert.equal(typeof phoneOffer.json.challenge, 'string');
+  // A second link with the same name here: the name no longer says which, so nothing counts.
+  assert.equal((await pcPage('POST', `links/${macLink.id}/trust`, { on: true })).status, 200);
+  const twin = await nodes.ledung(`twin${n}.trust.test`);
+  await nodes.link(twin, pc, 'Mac');
+  assert.equal(((await pcPage('GET', 'links')).json.links as { name: string }[]).filter((l) => l.name === 'Mac').length, 2);
+  const offered = await offer(frame, 'device-unlock');
+  assert.equal(offered.json.vouch, undefined, JSON.stringify(offered.json));
+  assert.match(offered.json.error, /no passkey/);
+  const header = await frame('device-unlock', {}, { 'x-ledung-vouch': 'A'.repeat(43) });
+  assert.equal(header.status, 403);
+  assert.match(header.json.error, /does not trust that computer's screen/);
+
 });
 
 test('removing trust logs the frame off at once and its next change is refused; unlinking does too', { timeout: HANG_MS }, async () => {

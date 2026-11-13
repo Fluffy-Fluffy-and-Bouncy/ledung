@@ -1506,7 +1506,7 @@ export class LedungServer {
 
   /**
    * requirePage for what a trusted computer's vouch doesn't cover (issue #313, choice 2a: Martin, 2026-11-13, question
-   * #890): opening a locked project up, loosening the sensitive gate and removing a project. Through the public name
+   * #890): opening a locked project up, loosening the sensitive gate and removing a locked project. Through the public name
    * these still take the passkey, or this computer's own screen.
    */
   private async requirePasskeyPage(req: IncomingMessage, url: URL): Promise<void> {

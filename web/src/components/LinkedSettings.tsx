@@ -111,7 +111,7 @@ function TrustRow({ link, run, onChange }: { link: LinkedComputerInfo; run: Run;
     return (
       <div className="trust-row">
         <p>🔓 <b>Its own screen acts here without a passkey</b> <span className="muted">· since {new Date(link.trustedAt).toLocaleDateString()}, set {link.trustedFrom === 'phone' ? 'from a phone' : 'on this computer'}</span></p>
-        <p className="muted">From {link.name}'s tab for this computer: log on, send, allow prompts (sensitive ones too), <code>!</code> commands and away mode, with no Touch ID or Windows Hello. Opening lockdown still needs a passkey or this screen.</p>
+        <p className="muted">From {link.name}'s tab for this computer: log on, send, allow prompts (sensitive ones too), <code>!</code> commands and away mode, with no Touch ID or Windows Hello. Opening a locked project, loosening the sensitive gate or removing a locked project still needs a passkey or this screen.</p>
         <button className="small" onClick={() => set(false)}>Remove trust</button>
       </div>
     );

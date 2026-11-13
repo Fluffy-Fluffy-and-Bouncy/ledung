@@ -72,7 +72,7 @@ test('a computer that trusts this screen shows a key on its tab; the others and 
     const html: string = page.renderToStaticMarkup(page.createElement(page.ComputerTabs, { frame: { tabs, remote: false, here: tabs[0] } }));
     const keys = html.match(/class="ctab-key"/g) ?? [];
     assert.equal(keys.length, 1, html);
-    assert.match(html, /<span class="nm">PC<\/span><span class="ctab-key" title="PC trusts this computer&#x27;s screen: changes from here need no passkey there"/);
+    assert.match(html, /<span class="nm">PC<\/span><span class="ctab-key" title="Trusted — PC trusts this computer&#x27;s screen: changes from here need no passkey there"/);
     assert.doesNotMatch(html, /<span class="nm">Mini<\/span><span class="ctab-key"/);
   } finally {
     // esbuild's service would keep the test process alive.
