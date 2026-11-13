@@ -137,7 +137,14 @@ test('another computer\'s tab shows its own page here in a frame, and stays a li
   // they may carry.
   const sources = (dir: URL): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((f) =>
     f.isDirectory() ? sources(new URL(`${f.name}/`, dir)) : /\.tsx?$/.test(f.name) ? [readFileSync(new URL(f.name, dir), 'utf8')] : []);
-  assert.equal(sources(new URL('../web/src/', import.meta.url)).join('\n').match(/postMessage/g)?.length, 5, 'the question and the answer, and the Look settings');
+  // And a trusted computer's vouch (issue #313, design 3a: Martin, 2026-11-13, Ledung question #890: "a — Design a, with
+  // a key on the tab"): the frame's ask, with only a one-time challenge, and the framing page's answer to that frame's
+  // window at its origin. trusted-computer-page.test.ts pins who may ask and whose answer counts.
+  assert.equal(sources(new URL('../web/src/', import.meta.url)).join('\n').match(/postMessage/g)?.length, 7, 'the question and the answer, the Look settings, and the vouch');
+  const vouch = readFileSync(new URL('../web/src/vouch.ts', import.meta.url), 'utf8');
+  assert.equal(vouch.match(/postMessage/g)?.length, 1, 'the frame: its ask');
+  assert.match(vouch, /window\.parent\.postMessage\(vouchAsk\(id, challenge\), '\*'\)/, 'the ask carries the challenge only');
+  assert.match(view, /source\.postMessage\(vouchAnswer\(ask\.id, error\), e\.origin\)/, 'the framing page answers only that frame, at its origin');
   const settings = readFileSync(new URL('../web/src/settingsStore.ts', import.meta.url), 'utf8');
   assert.equal(settings.match(/postMessage/g)?.length, 2, 'the frame: its ask and its saves');
   assert.match(settings, /window\.parent\.postMessage\(frameSettingsAsk\(\), '\*'\)/, 'the ask carries nothing');

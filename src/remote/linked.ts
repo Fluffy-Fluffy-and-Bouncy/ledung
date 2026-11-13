@@ -267,10 +267,11 @@ export class LinkedComputers {
    * /link/hello from a linked computer: the port it told, kept when it changed, and whether it trusts this computer's
    * screen (issue #313); this one's own port back, and whether this one trusts it.
    */
-  hello(id: string, body: Record<string, unknown>): { port?: number; trusts: boolean } {
+  hello(id: string, body: Record<string, unknown>): { port?: number; trusts?: true } {
     this.notePort(id, linkPort(body.port));
-    if (typeof body.trusts === 'boolean') this.noteTrustsUs(id, body.trusts);
-    return { ...this.ownPort(), trusts: this.trusted(id) };
+    // Said only when true, so a Ledung from before trust (which never says it) counts as not trusting.
+    this.noteTrustsUs(id, body.trusts === true);
+    return { ...this.ownPort(), ...(this.trusted(id) ? { trusts: true as const } : {}) };
   }
 
   /** Whether this computer trusts that linked computer's own screen (issue #313). */
@@ -318,10 +319,10 @@ export class LinkedComputers {
    */
   helloAll(): void {
     for (const link of this.read()) {
-      this.call(link.publicName, '/link/hello', { ...this.ownPort(), trusts: typeof link.trustedAt === 'number' }, link.sendKey)
+      this.call(link.publicName, '/link/hello', { ...this.ownPort(), ...(typeof link.trustedAt === 'number' ? { trusts: true } : {}) }, link.sendKey)
         .then((answer) => {
           this.notePort(link.id, linkPort(answer.port));
-          if (typeof answer.trusts === 'boolean') this.noteTrustsUs(link.id, answer.trusts);
+          this.noteTrustsUs(link.id, answer.trusts === true);
         })
         .catch((e: Error) => console.log(`Linked computers: no hello from ${link.publicName} (${e.message}).`));
     }
