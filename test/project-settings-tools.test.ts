@@ -205,24 +205,29 @@ test('a new grant, its own included, a new dev ship command or a removed pattern
   }
   assert.equal(project('home').managerGrant, 'ordinary code decisions', 'nothing ran');
   assert.equal(project('other').managerGrant, null);
-  // Claude Code hands an asked call to Ledung's permission flow: a sensitive prompt that only the user allows,
-  // whatever grant the manager has, with what it loosens on it.
-  void live(id).onPermission('mcp__ledung__set_project_settings', { project: 'home', managerGrant: 'may merge anything' }, { signal: new AbortController().signal, toolUseID: 'tu-x' });
-  const asked = store.pendingPermissions().find((p) => p.sessionId === id)!;
+  // Claude Code hands an asked call to Ledung's permission flow: only the user allows it, whatever grant the manager
+  // has, with what it loosens on it. Since issue #308 a manager's own is a question at once, not a prompt.
+  const out = await live(id).onPermission('mcp__ledung__set_project_settings', { project: 'home', managerGrant: 'may merge anything' }, { signal: new AbortController().signal, toolUseID: 'tu-x' }) as { behavior: string };
+  assert.equal(out.behavior, 'deny', 'returned at once');
+  assert.equal(store.pendingPermissions().length, 0, 'no prompt');
+  const asked = store.listQuestions(10).find((q) => q.sessionId === id && q.details?.refusal?.held === 'prompt')!;
   assert.equal(asked.addressedTo, 'user');
-  assert.match(asked.sensitive!, /manager grant "ordinary code decisions" → "may merge anything"/);
+  assert.match(asked.details!.refusal!.reason, /manager grant "ordinary code decisions" → "may merge anything"/);
   // Without the user's allow the tool itself refuses it too, whatever let the call through (review of #306, M3).
   const unallowed = await run(id, 'set_project_settings', { project: 'home', managerGrant: 'may merge anything' });
   assert.equal(unallowed.error, true);
   assert.match(unallowed.text, /Simon did not allow it; nothing was saved/);
-  // Once the user allows it, the tool saves it.
-  assert.ok(live(id).decide(asked.id, { behavior: 'allow', scope: 'once' }, 'user'));
-  const approved = await run(id, 'set_project_settings', { project: 'home', managerGrant: 'may merge anything' });
-  assert.equal(approved.error, false, approved.text);
+  // Once the user allows it, the manager's exact retry is let through and the tool saves it.
+  assert.ok(store.answerQuestion(asked.id, 'Allow once', 'user'));
+  const retry = await change(id, { project: 'home', managerGrant: 'may merge anything' });
+  assert.equal(retry.decision, 'allow');
+  assert.equal(retry.result!.error, false, retry.result!.text);
   assert.equal(project('home').managerGrant, 'may merge anything');
   // One allow, one save.
   const again = await run(id, 'set_project_settings', { project: 'home', managerGrant: 'may merge anything' });
   assert.match(again.text, /Nothing to change/);
+  // A second, other loosening is asked again: the Allow once is used up and covered only that exact change.
+  assert.equal((await change(id, { project: 'home', managerGrant: 'may merge everything' })).decision, 'ask');
 });
 
 test('an allowed change that would loosen more than its prompt showed, because the project changed meanwhile, is refused', async () => {
@@ -231,16 +236,28 @@ test('an allowed change that would loosen more than its prompt showed, because t
   const had = project('other').sensitive.commandPatterns;
   const input = { project: 'other', sensitive: { commandPatterns: had.filter((p) => p !== 'deploy') } };
   assert.equal((await change(id, input)).decision, 'ask');
-  void live(id).onPermission('mcp__ledung__set_project_settings', input, { signal: new AbortController().signal, toolUseID: 'tu-y' });
-  const asked = store.pendingPermissions().find((p) => p.sessionId === id)!;
-  assert.match(asked.sensitive!, /sensitive command pattern removed: "deploy"$/);
-  // While the prompt waits, the user adds a pattern in the page; the call's list would now remove it too.
+  // Since issue #308 a manager's own is a question at once, not a prompt, with what it loosens.
+  await live(id).onPermission('mcp__ledung__set_project_settings', input, { signal: new AbortController().signal, toolUseID: 'tu-y' });
+  const asked = store.listQuestions(10).find((q) => q.sessionId === id && q.details?.refusal?.held === 'prompt')!;
+  assert.match(asked.details!.refusal!.reason, /sensitive command pattern removed: "deploy"$/);
+  store.answerQuestion(asked.id, 'Allow once', 'user');
+  // The retry is let through on the answer; before the tool runs, the user adds a pattern in the page, so the call's
+  // list would now remove it too.
+  const hook = (await live(id).claudeOptions({ onLine: () => {}, onStderr: () => {} })).hooks!.PreToolUse![0]!.hooks[0]!;
+  assert.equal((await hook({ tool_name: 'mcp__ledung__set_project_settings', tool_input: input }, 'tu-z')).hookSpecificOutput?.permissionDecision, 'allow');
   manager.updateProject('other', parseProject({ name: 'other', runner: 'local', path: at('other'), sensitive: { commandPatterns: [...had, 'rm -rf'] } }));
-  assert.ok(live(id).decide(asked.id, { behavior: 'allow', scope: 'once' }, 'user'));
   const late = await run(id, 'set_project_settings', input);
   assert.equal(late.error, true);
   assert.match(late.text, /changed while Simon was asked, so this change now loosens more than they allowed; nothing was saved/);
   assert.deepEqual(project('other').sensitive.commandPatterns, [...had, 'rm -rf']);
+  // Changed while the question waited instead: the retry is not let through at all, it now loosens something else.
+  await live(id).onPermission('mcp__ledung__set_project_settings', input, { signal: new AbortController().signal, toolUseID: 'tu-w' });
+  const second = store.listQuestions(10).find((q) => q.sessionId === id && q.status === 'open' && q.details?.refusal?.held === 'prompt')!;
+  assert.match(second.details!.refusal!.reason, /removed: "deploy", "rm -rf"$/);
+  manager.updateProject('other', parseProject({ name: 'other', runner: 'local', path: at('other'), sensitive: { commandPatterns: [...had, 'rm -rf', 'drop table'] } }));
+  store.answerQuestion(second.id, 'Allow once', 'user');
+  assert.equal((await hook({ tool_name: 'mcp__ledung__set_project_settings', tool_input: input }, 'tu-v')).hookSpecificOutput?.permissionDecision, 'ask', 'not on an answer to something else');
+  assert.deepEqual(project('other').sensitive.commandPatterns, [...had, 'rm -rf', 'drop table']);
 });
 
 test("a workflow config path outside the target project's folder is refused, relative or absolute", async () => {
