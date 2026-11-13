@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-13
+- Managers no longer stop on a prompt of their own, whether you are away or here. A manager's AskUserQuestion or plan approval is declined at once, and the manager asks you with ask_user instead. A manager's settings change and its other sensitive calls that aren't shell commands come to Waiting for you as a question (Allow once, Deny). The manager goes on and gets its sessions' reports. On Allow once, it retries that exact call once if it is still needed; a settings change goes through only while it still changes exactly what the question showed. Workers' prompts are unchanged. The Waiting for you group for these questions is now called "Calls refused or held for you". (#308)
 - Away mode: a manager's own call that away mode holds no longer stops the manager until you answer. It returns at once as a question in Waiting for you (Allow once, Allow always though sensitive, Deny), the manager goes on and gets its sessions' reports; on Allow once it retries that exact call once, if it is still needed. A manager's sensitive PowerShell call while you are away is held the same way. (#262)
 
 ## 2026-11-12

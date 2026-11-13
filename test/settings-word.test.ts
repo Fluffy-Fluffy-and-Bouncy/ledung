@@ -267,13 +267,41 @@ test('a manager without the user\'s word gets a prompt to the user, even in a pr
     const id = await start('manager');
     for (const t of ACTIONS) assert.equal((await call(id, t, { relay: 'wss://r.example.org', code: CODE, owner: 'Anna' })).decision, 'ask', `${t}, unasked ${unasked}`);
     assert.deepEqual(ran, [], 'nothing ran');
-    // Claude Code then hands the call to Ledung's permission flow: a sensitive prompt for the user, not a grant's.
-    const live = (manager as unknown as { live: Map<string, { onPermission(t: string, i: object, o: object): Promise<unknown> }> }).live.get(id)!;
-    void live.onPermission('mcp__ledung__relay_admin_key', {}, { signal: new AbortController().signal, toolUseID: 'tu-x' });
-    const asked = store.pendingPermissions().find((p) => p.sessionId === id)!;
-    assert.equal(asked.sensitive, SETTINGS_RULE);
+    // Claude Code then hands the call to Ledung's permission flow: the user's, not a grant's. Since issue #308 a
+    // manager's own call is asked as a question at once, under the same rule, not a prompt that stops its turn.
+    const live = (manager as unknown as { live: Map<string, { onPermission(t: string, i: object, o: object): Promise<{ behavior: string }> }> }).live.get(id)!;
+    const out = await live.onPermission('mcp__ledung__relay_admin_key', {}, { signal: new AbortController().signal, toolUseID: 'tu-x' });
+    assert.equal(out.behavior, 'deny');
+    assert.equal(store.pendingPermissions().length, 0, 'no prompt');
+    const asked = store.listQuestions(10).find((q) => q.sessionId === id && q.details?.refusal)!;
+    assert.equal(asked.details!.refusal!.reason, SETTINGS_RULE);
+    assert.equal(asked.details!.refusal!.held, 'prompt');
     assert.equal(asked.addressedTo, 'user');
   }
+});
+
+test("#308: the user's Allow once on the question asked instead of a Settings action's prompt runs that exact call once; a refused call's question never does", async () => {
+  const { start, call, ran, store, manager } = ledung();
+  const id = await start('manager');
+  const live = (manager as unknown as { live: Map<string, { onPermission(t: string, i: object, o: object): Promise<{ behavior: string }> }> }).live.get(id)!;
+  const tool = 'mcp__ledung__relay_address';
+  const input = { relay: 'wss://r.example.org' };
+  // A question about the same call as the auto mode classifier's refusal (#104), answered Allow once: Settings actions
+  // keep their own rule, so it grants nothing.
+  const refused = store.createQuestion({ sessionId: id, question: 'x', options: ['Allow once', 'Deny'], addressedTo: 'user', details: { title: 'x', issue: 'x', refusal: { toolName: tool, input, reason: 'r', toolUseId: 'tu-r' } } });
+  store.answerQuestion(refused.id, 'Allow once', 'user', null, true);
+  assert.equal((await call(id, 'relay_address', input)).decision, 'ask', "a refused call's Allow once");
+  await live.onPermission(tool, input, { signal: new AbortController().signal, toolUseID: 'tu-p' });
+  const asked = store.listQuestions(10).find((q) => q.details?.refusal?.held === 'prompt')!;
+  // Before the answer, and after a Deny, nothing runs.
+  assert.equal((await call(id, 'relay_address', input)).decision, 'ask', 'not before the answer');
+  store.answerQuestion(asked.id, 'Allow once', 'user', null, false);
+  assert.equal((await call(id, 'relay_address', { relay: 'wss://other.example.org' })).decision, 'ask', 'another relay: not covered');
+  const retry = await call(id, 'relay_address', input);
+  assert.equal(retry.decision, 'allow', 'the exact retry');
+  assert.match(retry.note!, new RegExp(`question #${asked.id}`));
+  assert.equal((await call(id, 'relay_address', input)).decision, 'ask', 'once');
+  assert.deepEqual(ran, ['relay wss://r.example.org']);
 });
 
 test("with the user's word typed on this computer the action runs once, and the session is told who allowed it", async () => {

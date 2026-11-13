@@ -338,7 +338,7 @@ function Queue(p: {
           {orders.length > 0 && <div className="group">{groupHead('Orders', 'var(--accent)', orders.length)}{orders.map((o) => (
             <OrderCard key={o.id} order={o} userName={props.userName} sessionTitle={titleOf} onOpenSession={props.onOpenSession} run={props.run} />
           ))}</div>}
-          {refused.length > 0 && <div className="group">{groupHead('Refused by auto mode or held while away', 'var(--danger)', refused.length)}{refused.map((i) => row(i, ++place))}</div>}
+          {refused.length > 0 && <div className="group">{groupHead('Calls refused or held for you', 'var(--danger)', refused.length)}{refused.map((i) => row(i, ++place))}</div>}
           {props.newComputers.length > 0 && <>{groupHead('New computers', 'var(--warn-border)', props.newComputers.length)}{props.newComputers.map((c) => <NewComputerCard key={c.name} computer={c} run={props.run} />)}</>}
           {props.linkPairings.length > 0 && <>{groupHead('Paired through the link', 'var(--warn-border)', props.linkPairings.length)}{props.linkPairings.map((l) => <LinkPairingCard key={l.id} pairing={l} run={props.run} />)}</>}
           {p.permsForYou.length > 0 && <>{groupHead('Permission prompts', 'var(--warn-border)', p.permsForYou.length)}{p.permsForYou.map(permission)}</>}

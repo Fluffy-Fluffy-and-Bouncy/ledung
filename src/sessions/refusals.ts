@@ -268,15 +268,19 @@ export function refusalQuestion(
     const details: QuestionDetails = { title, issue, ...(tier ? { tier } : {}), rank: 0, refusal: r };
     return { question: `**${title}**\n\n${issue}`, options: [DONE_BY_HAND, DENY], details };
   }
-  const held = r.held === 'away';
-  const title = held ? `Away mode held a call in "${session.title}"` : `Auto mode refused a call in "${session.title}"`;
+  const held = r.held === 'away' || r.held === 'prompt';
+  const title = r.held === 'away' ? `Away mode held a call in "${session.title}"`
+    : r.held === 'prompt' ? `A call in "${session.title}" needs your allow`
+    : `Auto mode refused a call in "${session.title}"`;
   const always = r.always === 'sensitive' ? ALLOW_ALWAYS_SENSITIVE : r.always === 'plain' ? ALLOW_ALWAYS : null;
   const issue = [
-    held
+    r.held === 'away'
       ? `Away mode held this ${what} of the manager "${session.title}" (project ${session.project}) while you are away. It did not run: the manager was told at once and goes on with other work.`
+      : r.held === 'prompt'
+      ? `The manager "${session.title}" (project ${session.project}) made this ${what}, which only you allow. Ledung asks you here instead of a prompt that would stop the manager until you answer: the call did not run, and the manager was told at once and goes on with other work.`
       : `The auto mode classifier refused this ${what} in the session "${session.title}" (project ${session.project}).`,
     call,
-    held ? `**Away mode's reason:** ${r.reason}` : reason,
+    r.held === 'away' ? `**Away mode's reason:** ${r.reason}` : r.held === 'prompt' ? `**Why it comes to you:** ${r.reason}` : reason,
     (held
       ? `**${ALLOW_ONCE}** lets exactly this call run one time: Ledung tells the manager to retry it if it is still needed, and lets that retry through. `
       : `**${ALLOW_ONCE}** lets exactly this call run one time: Ledung tells the session to retry it, and lets the retry through. `) +
@@ -300,8 +304,9 @@ export function refusalAnswerText(q: QuestionInfo, userName: string): string {
   const call = fenced(callText(r));
   // A held call (issue #262) may be answered hours later, after the manager got it done another way, and a second dev
   // ship or merge is not harmless: so its retry is only "if it is still needed" (issue #262).
-  const held = r.held === 'away';
-  const which = held ? 'the call away mode held' : 'the call the auto mode classifier refused';
+  // A call asked instead of a prompt (issue #308) may be answered as late, so the same "if it is still needed".
+  const held = r.held === 'away' || r.held === 'prompt';
+  const which = r.held === 'away' ? 'the call away mode held' : r.held === 'prompt' ? 'the call Ledung asked them about' : 'the call the auto mode classifier refused';
   const retry = held
     ? 'If it is still needed, retry exactly this call now, one time, unchanged; if you already got it done another way, or it is no longer needed, don\'t:'
     : 'Retry exactly this call now, one time, unchanged:';
@@ -340,4 +345,30 @@ export function heldMessage(questionId: number, reason: string, userName: string
     `Away mode ${reason}. Go on with other work. Don't retry it now, and don't get the same effect another way. ` +
     `If you can send it in a form away mode lets through, do that and withdraw question #${questionId}. ` +
     `When ${userName} answers, Ledung tells you: after Allow once, retry exactly this call once, if it is still needed.`;
+}
+
+/**
+ * What a manager is told at once when its own settings change or sensitive non-shell call would have been a permission
+ * prompt (issue #308): asked as question #N instead, go on, retry only on Ledung's word. As heldMessage, never Claude
+ * Code's classifier sentence. `rule`: what the prompt would have shown.
+ */
+export function askedMessage(questionId: number, rule: string, userName: string, again = false): string {
+  return `${again ? 'Still waiting' : 'Waiting'} for ${userName}'s allow as Ledung question #${questionId}${again ? ', which is still open' : ''}; this call did not run. ` +
+    `It needs ${userName}'s allow: ${rule}. Ledung asked instead of a prompt, so your turn and your messages go on. ` +
+    `Go on with other work. Don't retry it now, and don't get the same effect another way; withdraw question #${questionId} if you no longer need it. ` +
+    `When ${userName} answers, Ledung tells you: after Allow once, retry exactly this call once, if it is still needed.`;
+}
+
+/**
+ * Claude Code's own question and plan-approval tools: a manager's call to one is a prompt that stops its turn and its
+ * inbox until answered (issue #308), so Ledung declines it at once and points at ask_user.
+ */
+export const MANAGER_DECLINED_TOOLS = ['AskUserQuestion', 'ExitPlanMode'];
+
+/** What a manager is told when Ledung declines its AskUserQuestion or ExitPlanMode (issue #308). */
+export function declinedMessage(toolName: string, userName: string): string {
+  const why = `it would stop your turn and your messages until ${userName} answers it.`;
+  return toolName === 'ExitPlanMode'
+    ? `Ledung declined ExitPlanMode: a manager's plan approval is a prompt, and ${why} Put the plan to ${userName} with ask_user (mcp__ledung__ask_user) and end your turn; the answer arrives as a message, and ${userName} switches this session out of plan mode on the page if they approve.`
+    : `Ledung declined AskUserQuestion: a manager asks ${userName} with ask_user (mcp__ledung__ask_user), not Claude Code's own question, because ${why} Ask the same with ask_user, then end your turn; the answer arrives as a message.`;
 }
