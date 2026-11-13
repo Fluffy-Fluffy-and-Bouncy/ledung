@@ -214,8 +214,11 @@ export interface RefusalDetails {
    * Not refused by the classifier but held by away mode (issue #262): a manager's own sensitive call, denied at once
    * so its turn and inbox go on, and asked here instead of as a prompt. `reason` is then away mode's. Grants, Allow
    * always and the passkey on the phone work as for a refusal. Absent: the classifier refused it.
+   * `prompt` (issue #308): a manager's own settings change or sensitive non-shell call, which would have been a
+   * permission prompt; `reason` is then the rule the prompt would have shown, and a settings change's retry is let
+   * through only while it still loosens exactly that.
    */
-  held?: 'away';
+  held?: 'away' | 'prompt';
 }
 
 /** The run and block a person block's question belongs to (workflow part 3b), with their titles as asked. */

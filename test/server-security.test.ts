@@ -59,6 +59,8 @@ const questionAbout: Record<string, number> = {};
 let refusalQuestion = 0;
 /** Ledung's question about a manager's call away mode held (issue #262). */
 let heldQuestion = 0;
+/** Ledung's question about a manager's settings change, asked instead of its prompt (issue #308). */
+let promptQuestion = 0;
 let allowedRule = 0;
 let alwaysQuestion = 0;
 let keepQuestion = 0;
@@ -120,6 +122,10 @@ before(async () => {
   const hq = store.createQuestion({ sessionId: 's1', question: 'held', options: ['Allow once', 'Allow always, though sensitive', 'Deny'], addressedTo: 'user', details: { refusal: { toolName: 'Bash', input: { command: 'gh pr merge 5 -R o/r --merge' }, reason: 'held for Simon: failing checks: ci', toolUseId: 't3', held: 'away', always: 'sensitive', sensitiveRule: 'gh pr merge' } } });
   store.withdrawQuestion(hq.id, 'test');
   heldQuestion = hq.id;
+  // A manager's settings change asked the same way instead of its prompt (issue #308), no longer open.
+  const pq = store.createQuestion({ sessionId: 's1', question: 'asked', options: ['Allow once', 'Deny'], addressedTo: 'user', details: { refusal: { toolName: 'mcp__ledung__set_project_settings', input: { project: 'p', managerGrant: 'anything' }, reason: 'a change to "p" that loosens what reaches you: manager grant none → "anything"', toolUseId: 't4', held: 'prompt' } } });
+  store.withdrawQuestion(pq.id, 'test');
+  promptQuestion = pq.id;
   // An Allow always rule of project p (issue #225), for the removal route.
   allowedRule = store.addAllowedCall({ project: 'p', toolName: 'Bash', command: 'npm run publish:dev', sensitive: false, allowedBy: 'Simon', questionId: rq.id }).id;
   // An open refused-call question that offers Allow always, for the answer route (issue #225).
@@ -1019,6 +1025,16 @@ test("answering Ledung's question about a call away mode held, whose Allow once 
   assert.equal((await change(`/api/questions/${heldQuestion}/answer`, answer)).status, 403);
   const page = await livePage();
   const passed = await change(`/api/questions/${heldQuestion}/answer`, answer, { 'x-ledung-page': page.key });
+  page.close();
+  assert.equal(passed.status, 400);
+  assert.match(errorOf(passed), /no longer open/);
+});
+
+test("answering Ledung's question about a manager's settings change asked instead of its prompt, whose Allow once lets the retry through, needs the live page too (issue #308)", async () => {
+  const answer = { answer: 'Allow once' };
+  assert.equal((await change(`/api/questions/${promptQuestion}/answer`, answer)).status, 403);
+  const page = await livePage();
+  const passed = await change(`/api/questions/${promptQuestion}/answer`, answer, { 'x-ledung-page': page.key });
   page.close();
   assert.equal(passed.status, 400);
   assert.match(errorOf(passed), /no longer open/);

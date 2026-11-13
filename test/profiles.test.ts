@@ -345,18 +345,18 @@ test("in a real session the managers' project tools are always the user's, in au
       // Control: a Ledung tool that only reads is let through.
       assert.deepEqual(await hook({ tool_name: `mcp__${LEDUNG_SERVER}__list_projects`, tool_input: {} }), {}, mode);
 
-      // A grant from the user that covers the tool doesn't allow it: the prompt goes to the user, as sensitive.
+      // A grant from the user that covers the tool doesn't allow it: it goes to the user, as sensitive. Since issue #308
+      // a manager's own such call is asked as a question at once, not a prompt that stops its turn.
       const tool = `mcp__${LEDUNG_SERVER}__start_manager`;
       s.store.addGrant('s', tool, undefined, 'user');
-      const abort = new AbortController();
-      const result = o.canUseTool!(tool, { project: 'q', message: 'hi' }, { signal: abort.signal, toolUseID: 't1' } as never);
-      const [p, ...more] = s.store.pendingPermissions();
+      const result = await o.canUseTool!(tool, { project: 'q', message: 'hi' }, { signal: new AbortController().signal, toolUseID: 't1' } as never);
+      assert.equal(result?.behavior, 'deny', 'not allowed, and returned at once');
+      assert.equal(s.store.pendingPermissions().length, 0, 'no prompt');
+      const [q, ...more] = s.store.listQuestions(10).filter((x) => x.details?.refusal);
       assert.equal(more.length, 0);
-      assert.equal(p?.toolName, tool);
-      assert.equal(p?.addressedTo, 'user');
-      assert.ok(p?.sensitive, 'the permission is sensitive');
-      abort.abort();
-      assert.notEqual((await result)?.behavior, 'allow');
+      assert.equal(q?.details?.refusal?.toolName, tool);
+      assert.equal(q?.details?.refusal?.held, 'prompt');
+      assert.equal(q?.addressedTo, 'user');
       // Control: the same kind of grant does allow an ordinary tool.
       s.store.addGrant('s', 'mcp__other__tool', undefined, 'user');
       const other = await o.canUseTool!('mcp__other__tool', {}, { signal: new AbortController().signal, toolUseID: 't2' } as never);

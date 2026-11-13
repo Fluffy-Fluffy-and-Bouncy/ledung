@@ -87,6 +87,7 @@ About 3–4 h of session time for 1a/2a/3a/4a, then review.
 ## As built
 
 - 1a, 2a, 3a and 4a as above. Not covered by a vouch (2a): opening a locked project up, loosening the sensitive gate (a new project's grant, unasked tools, a sensitive pattern taken out, also for chats, also when sent with a rename) and removing a **locked** project. "Project removal" in 2a above meant that: removing an unlocked project never needed a signature of its own, and a vouch covers it as an ordinary change.
+- "Allow always, though sensitive" on a held call is covered, like deciding any sensitive prompt (Martin, 2026-11-13 11:58, Ledung question #893: "b — Leave it covered"); the exclusion is for a project's and the chats' settings.
 - **"With a key on the tab"**, read as a key mark: a 🔑 after the computer's name on its tab, with the tooltip "<name> trusts this computer's screen: changes from here need no passkey there". The bar above the frame in mockup 2 was not built; the key says it. If "a key on the tab" meant something else, that is a change on top.
 - A phone sees each link's name and trust only (`GET /api/link-trust`), to set it with its passkey; the full list stays on the computer itself.
 - The notice in Waiting for you when trust is set from a phone (choice 5, last bullet) was not built: a follow-up if wanted.

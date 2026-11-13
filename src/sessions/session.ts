@@ -61,7 +61,7 @@ import { attachSources, type SourceContext } from './sources.ts';
 import type { SessionRole, ShellBlock } from '../shared/protocol.ts';
 import { effortLevel, type EffortLevel } from '../shared/protocol.ts';
 import { exercisedLine } from '../platform/exercised.ts';
-import { alwaysOffer, classifierReason, guardedWrite, heldMessage, ONCE_ACTION, ONCE_GRANT_MS, onceGrant, refusalOf, refusalQuestion, sameCall } from './refusals.ts';
+import { alwaysOffer, askedMessage, classifierReason, declinedMessage, guardedWrite, heldMessage, MANAGER_DECLINED_TOOLS, ONCE_ACTION, ONCE_GRANT_MS, onceGrant, refusalOf, refusalQuestion, sameCall } from './refusals.ts';
 import { orderNote, type Orders } from './orders.ts';
 import type { ChatImages, ImageBlock } from './chat-images.ts';
 import { heldImageNames, heldText } from '../store/store.ts';
@@ -85,6 +85,8 @@ let byHandExercised = false;
 let subagentGrantExercised = false;
 /** The EXERCISED line of issue #262, once per run. */
 let heldReturnsExercised = false;
+/** The EXERCISED line of issue #308, once per run. */
+let askedReturnsExercised = false;
 
 /** Notes for after a call, one per line; undefined when there are none. */
 function joinNotes(...notes: (string | undefined)[]): string | undefined {
@@ -834,10 +836,14 @@ export class Session {
    * mergeOnAnswer's does. Settings actions keep their own rule (settingsOnWord). Null: as before.
    */
   private onceOnTap(toolName: string, input: Record<string, unknown>, toolUseId: string | undefined, agentId: unknown): Record<string, unknown> | null {
-    if (settingsAction(toolName) || SETTINGS_CHANGE_TOOLS.includes(toolName)) return null;
+    if (SETTINGS_CHANGE_TOOLS.includes(toolName)) return null;
     const now = Date.now();
+    const answered = this.store.answeredSince(this.id, now - ONCE_GRANT_MS);
+    // A Settings action keeps its own rule (settingsOnWord): only the question Ledung asked instead of its prompt
+    // (issue #308) grants one, as the prompt's allow did; a refused call's question never does.
+    const pool = settingsAction(toolName) ? answered.filter((q) => refusalOf(q)?.held === 'prompt') : answered;
     // A subagent's identical call does not use up the session's own Allow once, nor the other way round (issue #146).
-    const q = onceGrant(this.store.answeredSince(this.id, now - ONCE_GRANT_MS), this.id, toolName, input, now, !!agentId);
+    const q = onceGrant(pool, this.id, toolName, input, now, !!agentId);
     // Used up atomically, so two calls racing for one grant can't both run.
     if (!q || !this.store.useWord(this.id, `q${q.id}`, ONCE_ACTION)) return null;
     const why = `${this.userName} allowed this exact call once, at ${new Date(q.answeredAt!).toLocaleTimeString()}, in their answer to question #${q.id}`;
@@ -850,6 +856,41 @@ export class Session {
       if (this.onceUsedBy.size > 300) this.onceUsedBy.delete(this.onceUsedBy.keys().next().value!);
     }
     return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: `Allowed by Ledung: ${why}.` } };
+  }
+
+  /**
+   * A manager's settings change the person allowed once on the question Ledung asked instead of its prompt (issue
+   * #308): the hook would ask; the exact call, once, within a day, by the person's own answer, and only while it still
+   * loosens exactly what that question showed. Then noted as approved with that rule, as a prompt's allow is (decide),
+   * so the tool's own check that it loosens no more than was allowed still runs (review of #306, M2). Null: as before.
+   */
+  private settingsOnceOnTap(toolName: string, raw: unknown, out: Record<string, unknown>, toolUseId: string | undefined, agentId: unknown): Record<string, unknown> | null {
+    if ((out as { hookSpecificOutput?: { permissionDecision?: string } }).hookSpecificOutput?.permissionDecision !== 'ask') return null;
+    const input = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+    let rule: string;
+    try {
+      rule = this.promptRule(toolName, input);
+    } catch {
+      return null;
+    }
+    const now = Date.now();
+    const shown = this.store.answeredSince(this.id, now - ONCE_GRANT_MS).filter((q) => refusalOf(q)?.held === 'prompt' && refusalOf(q)!.reason === rule);
+    const q = onceGrant(shown, this.id, toolName, input, now, !!agentId);
+    if (!q || !this.store.useWord(this.id, `q${q.id}`, ONCE_ACTION)) return null;
+    this.noteApproved(toolName, input, rule);
+    const why = `${this.userName} allowed this exact change once, at ${new Date(q.answeredAt!).toLocaleTimeString()}, in their answer to question #${q.id}`;
+    this.record('event', { text: `Settings change allowed once: ${why}.` });
+    this.allowedBy.onceAllowed(toolUseId, this.userName, q.answeredAt!, q.id);
+    if (toolUseId) {
+      this.onceUsedBy.set(toolUseId, q.id);
+      if (this.onceUsedBy.size > 300) this.onceUsedBy.delete(this.onceUsedBy.keys().next().value!);
+    }
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: `Allowed by Ledung: ${why}.` } };
+  }
+
+  /** The rule a settings change's prompt shows, as onPermission gives it: the project's sensitive list, else what it loosens. */
+  private promptRule(toolName: string, input: Record<string, unknown>): string {
+    return matchSensitive(toolName, input, this.sensitiveRules, this.alwaysAsked)?.rule ?? this.settingsChangeRule(toolName, input);
   }
 
   /**
@@ -1334,7 +1375,10 @@ export class Session {
             return { hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'deny' as const, permissionDecisionReason: 'Only the main session can compact or clear, not a subagent.' } };
           }
           if (unaskedTool(toolName, this.alwaysAsked)) return {};
-          if (SETTINGS_CHANGE_TOOLS.includes(toolName)) return this.settingsChangeHook(toolName, i.tool_input);
+          if (SETTINGS_CHANGE_TOOLS.includes(toolName)) {
+            const out = this.settingsChangeHook(toolName, i.tool_input);
+            return this.settingsOnceOnTap(toolName, i.tool_input, out, toolUseId, (input as { agent_id?: string }).agent_id) ?? out;
+          }
           // The helper's project tools are checked before the person is asked: an approval that can't work is never shown.
           const projectProblem = this.helper ? this.management.helperProjectProblem(this.id, toolName, i.tool_input) : null;
           if (projectProblem) return { hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'deny' as const, permissionDecisionReason: projectProblem } };
@@ -1729,6 +1773,15 @@ export class Session {
     input: Record<string, unknown>,
     opts: PermissionOpts,
   ): Promise<PermissionResult> {
+    // A manager's own call, not a request the host re-sent after a restart (that one is already a prompt on screen):
+    // since issue #308 none of the prompts below may stop its turn and its inbox. Not the Ledung Helper's, whose
+    // approvals stay the card it shows; workers' prompts stay their manager's (Martin 2026-11-13, question #2183).
+    const resent = !!(opts.requestId && this.store.pendingPermissionByRequest(this.id, opts.requestId));
+    const ownManager = !resent && !this.helper && this.store.getSession(this.id)?.role === 'manager';
+    if (ownManager && MANAGER_DECLINED_TOOLS.includes(toolName)) {
+      this.record('event', { text: `Ledung declined ${toolName} from this manager: it asks ${this.userName} with ask_user, so its turn and messages go on.` });
+      return Promise.resolve({ behavior: 'deny', message: declinedMessage(toolName, this.userName) });
+    }
     let route = routePermission(toolName, input, this.sensitiveRules, this.alwaysAsked, () => this.management.grantFor(this.id, toolName, input));
     // A projects' settings change comes here only when the hook asked: the user's alone, never a grant's (issue #306).
     if (SETTINGS_CHANGE_TOOLS.includes(toolName) && !('sensitive' in route)) route = { sensitive: { rule: this.settingsChangeRule(toolName, input) } };
@@ -1768,6 +1821,19 @@ export class Session {
       // A session its manager started: its dev ship too, recorded in the manager's record (issue #408).
       const manager = toolName === 'Bash' ? this.shipManager(info, away, input.command) : null;
       if (manager) return this.awayPermission(away, input.command, toolName, input, opts, sensitive, { managerId: manager, title: info!.title });
+    }
+    // A manager's own settings change or sensitive non-shell call (issue #308; Martin 2026-11-13, question #2183 "a — Fix
+    // both kinds"): asked as a question at once, away or present, not a prompt. Its shell calls keep the prompt while
+    // the person is here (#262 returns them only when away mode holds them).
+    if (sensitive && ownManager && toolName !== 'Bash' && toolName !== 'PowerShell') {
+      // A retry the person's Allow once already let through in the hook, which Claude Code still brings here: their
+      // allow, not asked again (as for #262).
+      const granted = opts.toolUseID === undefined ? undefined : this.onceUsedBy.get(opts.toolUseID);
+      if (granted !== undefined) {
+        this.record('event', { text: `A call ${this.userName} allowed (question #${granted}) was asked again by Claude Code; allowed on that answer, not asked again.` });
+        return Promise.resolve({ behavior: 'allow', updatedInput: input });
+      }
+      return Promise.resolve(this.holdForUser(toolName, input, opts, sensitive, sensitive.rule, 'prompt'));
     }
     return this.askPermission(toolName, input, opts, sensitive);
   }
@@ -1826,33 +1892,45 @@ export class Session {
    * phone like any refusal question (server: details.refusal). On Allow once, onceOnTap lets the manager's exact retry
    * through, once. The same call while its question is open raises no second one. (A retry onceOnTap already let
    * through never gets here: onPermission allows it before away mode judges it.)
+   * Since issue #308 also a manager's own settings change or sensitive non-shell call (`held` 'prompt'), away or
+   * present, with the rule its prompt would have shown as the reason.
    */
-  private holdForUser(toolName: string, input: Record<string, unknown>, opts: PermissionOpts, sensitive: { rule: string }, reason: string): PermissionResult {
+  private holdForUser(toolName: string, input: Record<string, unknown>, opts: PermissionOpts, sensitive: { rule: string }, reason: string, held: 'away' | 'prompt' = 'away'): PermissionResult {
     const byAgent = !!opts.agentID;
+    // The manager is told what the question is (issue #308: a call that would have been a prompt) or why it was held.
+    const told = (id: number, again = false) => (held === 'prompt' ? askedMessage(id, reason, this.userName, again) : heldMessage(id, reason, this.userName, again));
     const open = this.store.refusalQuestions(this.id).find((q) => {
       const r = refusalOf(q);
       return !!r && q.status === 'open' && !r.byHand && sameCall(r, toolName, input) && (r.byAgent ?? false) === byAgent;
     });
     if (open) {
-      this.record('event', { text: `Away mode held the same call again; it still waits for ${this.userName} as question #${open.id}.` });
-      return { behavior: 'deny', message: heldMessage(open.id, reason, this.userName, true) };
+      this.record('event', { text: held === 'prompt'
+        ? `The same call again; it still waits for ${this.userName}'s allow as question #${open.id}.`
+        : `Away mode held the same call again; it still waits for ${this.userName} as question #${open.id}.` });
+      return { behavior: 'deny', message: told(open.id, true) };
     }
     const info = this.store.getSession(this.id)!;
     const always = alwaysOffer(toolName, input, false, sensitive.rule);
     const refusal: RefusalDetails = {
-      toolName, input, reason, toolUseId: opts.toolUseID ?? '', held: 'away',
+      toolName, input, reason, toolUseId: opts.toolUseID ?? '', held,
       ...(byAgent ? { byAgent } : {}), ...(always ? { always } : {}), ...(always === 'sensitive' ? { sensitiveRule: sensitive.rule } : {}),
     };
     const asked = refusalQuestion(refusal, { title: info.title, project: info.project }, this.management.questionTiers(this.id)[0]);
     const q = this.store.createQuestion({ sessionId: this.id, question: asked.question, options: asked.options, addressedTo: 'user', details: asked.details });
-    this.record('event', { text: `Away mode held a ${toolName} call; it did not run, and Ledung asked ${this.userName} (question #${q.id}).` });
+    this.record('event', { text: held === 'prompt'
+      ? `A ${toolName} call that needs ${this.userName}'s allow did not run; Ledung asked ${this.userName} (question #${q.id}) instead of a prompt.`
+      : `Away mode held a ${toolName} call; it did not run, and Ledung asked ${this.userName} (question #${q.id}).` });
     this.record('question', { questionId: q.id });
     this.publish({ type: 'question', question: q });
-    if (!heldReturnsExercised) {
+    if (held === 'away' && !heldReturnsExercised) {
       heldReturnsExercised = true;
       exercisedLine(`EXERCISED #262 a manager's own call away mode held returned at once as question #${q.id}, not a prompt`);
     }
-    return { behavior: 'deny', message: heldMessage(q.id, reason, this.userName) };
+    if (held === 'prompt' && !askedReturnsExercised) {
+      askedReturnsExercised = true;
+      exercisedLine(`EXERCISED #308 a manager's own ${toolName} call that needs the person's allow returned at once as question #${q.id}, not a prompt`);
+    }
+    return { behavior: 'deny', message: told(q.id) };
   }
 
   /** The prompt: to the manager, or the user if it has none; a sensitive one only the user allows (issue #51). */
@@ -1897,13 +1975,7 @@ export class Session {
     if (!p) return false;
     if (decision.behavior === 'allow') {
       // What the user allowed, with what its prompt showed, so the tool saves only that (review of #306, M2).
-      if (SETTINGS_CHANGE_TOOLS.includes(p.toolName)) {
-        const shown = this.store.getPermission(permissionId)?.sensitive ?? null;
-        if (USAGE_PUBLISH_TOOLS.includes(p.toolName)) this.management.noteApprovedUsagePublish(this.id, p.input, shown);
-        else if (BASICS_TOOLS.includes(p.toolName)) this.management.noteApprovedBasics(this.id, p.input, shown);
-        else if (LEDUNG_SETTING_TOOLS.includes(p.toolName)) this.management.noteApprovedLedungSetting(this.id, p.input, shown);
-        else this.management.noteApprovedSettings(this.id, p.input, shown);
-      }
+      if (SETTINGS_CHANGE_TOOLS.includes(p.toolName)) this.noteApproved(p.toolName, p.input, this.store.getPermission(permissionId)?.sensitive ?? null);
       const updatedInput = decision.answers ? { ...p.input, answers: decision.answers } : p.input;
       const scope = decision.scope === 'session' && !p.sensitive && !decision.answers ? 'session' : 'once';
       let updatedPermissions: PermissionUpdate[] | undefined;
@@ -1918,6 +1990,14 @@ export class Session {
     }
     const message = decision.message?.trim() || (by === 'user' ? `${this.userName} denied this.` : 'Your manager denied this.');
     return this.finishPermission(permissionId, 'denied', by, message, { behavior: 'deny', message });
+  }
+
+  /** The person allowed this settings change, as `shown` named it: the tool may then loosen exactly that (#306, M2). */
+  private noteApproved(toolName: string, input: unknown, shown: string | null): void {
+    if (USAGE_PUBLISH_TOOLS.includes(toolName)) this.management.noteApprovedUsagePublish(this.id, input, shown);
+    else if (BASICS_TOOLS.includes(toolName)) this.management.noteApprovedBasics(this.id, input, shown);
+    else if (LEDUNG_SETTING_TOOLS.includes(toolName)) this.management.noteApprovedLedungSetting(this.id, input, shown);
+    else this.management.noteApprovedSettings(this.id, input, shown);
   }
 
   private finishPermission(
