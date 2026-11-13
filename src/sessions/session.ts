@@ -1747,6 +1747,14 @@ export class Session {
       && !(opts.requestId && this.store.pendingPermissionByRequest(this.id, opts.requestId))) {
       const info = this.store.getSession(this.id);
       if (info?.role === 'manager') {
+        // A retry onceOnTap already let through on the person's Allow once, which Claude Code still brings here (its own
+        // checks come first): their Allow, not judged or held again, so no GitHub read and no false "held" away record
+        // (issue #262, code review Minor 1).
+        const granted = opts.toolUseID === undefined ? undefined : this.onceUsedBy.get(opts.toolUseID);
+        if (granted !== undefined) {
+          this.record('event', { text: `A call ${this.userName} allowed (question #${granted}) was asked again by Claude Code; allowed on that answer, not held again.` });
+          return Promise.resolve({ behavior: 'allow', updatedInput: input });
+        }
         if (toolName === 'Bash') return this.awayPermission(away, input.command, toolName, input, opts, sensitive, null);
         // Away mode judges Bash only, so a manager's own PowerShell call is always held; since issue #262 it returns at
         // once too, saying so (Martin 2026-11-13, Ledung question #2179, C: "Bash + PowerShell").
@@ -1816,15 +1824,10 @@ export class Session {
    * both until the person answers (nine nights, about 37 hours, in the issue's evidence). The person is asked the
    * refusal's question (#104, #225): Allow once, Allow always though sensitive, Deny, signed with the passkey on the
    * phone like any refusal question (server: details.refusal). On Allow once, onceOnTap lets the manager's exact retry
-   * through, once. The same call while its question is open raises no second one. A retry onceOnTap already let
-   * through that Claude Code still brings here (its own checks come first) is the person's Allow, not held again.
+   * through, once. The same call while its question is open raises no second one. (A retry onceOnTap already let
+   * through never gets here: onPermission allows it before away mode judges it.)
    */
   private holdForUser(toolName: string, input: Record<string, unknown>, opts: PermissionOpts, sensitive: { rule: string }, reason: string): PermissionResult {
-    const granted = opts.toolUseID === undefined ? undefined : this.onceUsedBy.get(opts.toolUseID);
-    if (granted !== undefined) {
-      this.record('event', { text: `A call ${this.userName} allowed (question #${granted}) was asked again by Claude Code; allowed on that answer, not held again.` });
-      return { behavior: 'allow', updatedInput: input };
-    }
     const byAgent = !!opts.agentID;
     const open = this.store.refusalQuestions(this.id).find((q) => {
       const r = refusalOf(q);

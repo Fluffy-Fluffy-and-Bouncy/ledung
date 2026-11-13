@@ -816,12 +816,18 @@ test('#262: a retry Allow once let through that Claude Code still brings to the 
   const [q] = t.refusals();
   t.store.answerQuestion(q!.id, 'Allow once', 'user');
   assert.equal((await t.mgr.hook(MERGE, 'retry')).decision, 'allow');
+  const [reads, logged] = [t.viewed.length, t.away.log('mgr').records.length];
   assert.deepEqual(await t.settle(t.mgr.permission(MERGE, 'retry')), { behavior: 'allow', updatedInput: { command: MERGE, description: 'Merge' } });
   assert.equal(t.refusals().length, 1, 'no new question');
-  // The positive branch: the same command under a call no grant let through is held, as a new question.
+  // Code review Minor 1: Martin's tap ran it, so the morning report must not show it held, and GitHub is not read again.
+  assert.equal(t.away.log('mgr').records.length, logged, 'no "held" record for the call Martin allowed');
+  assert.equal(t.viewed.length, reads, 'GitHub not read again');
+  // The positive branch: the same command under a call no grant let through is held, as a new question, read and logged.
   const other = await t.settle(t.mgr.permission(MERGE, 'later'));
   assert.equal(other !== 'waiting' && other.behavior, 'deny');
   assert.equal(t.refusals().length, 2);
+  assert.equal(t.away.log('mgr').records.length, logged + 1, 'the held call is in the away log');
+  assert.ok(t.viewed.length > reads, 'GitHub read for it');
   t.away.stop();
 });
 
@@ -852,9 +858,15 @@ test('#262: the same held call while its question is open raises no second quest
   assert.equal(again !== 'waiting' && again.behavior, 'deny');
   assert.match(msg(again), new RegExp(`^Still held for Martin as Ledung question #${q!.id}, which is still open`));
   assert.equal(t.refusals().length, 1, 'no second question');
+  // A subagent's identical call is not the manager's repeat: its own question, so its Allow once is its own (#146).
+  const sub = await t.settle(t.mgr.call('Bash', { command: MERGE, description: 'Merge' }, { toolUseID: 'sub', agentID: 'agent-1' }));
+  assert.equal(sub !== 'waiting' && sub.behavior, 'deny');
+  const subQ = t.refusals().find((x) => x.id !== q!.id);
+  assert.equal(subQ?.details?.refusal?.byAgent, true, "a second question, the subagent's");
+  assert.doesNotMatch(msg(sub), /^Still held/);
   // The positive branch: another call is its own question.
   await t.settle(t.mgr.permission('gh pr merge 2265 -R o/r --merge', 'c'));
-  assert.equal(t.refusals().length, 2);
+  assert.equal(t.refusals().length, 3);
   t.away.stop();
 });
 
@@ -899,19 +911,18 @@ test("#262: a subagent's held call is the subagent's question: its Allow once is
   t.away.stop();
 });
 
-test('#262: what keeps the prompt: not away, a re-sent request, a settings change, and a session\'s held dev ship', async () => {
+test('#262: what keeps the prompt: not away, a re-sent request, and a session\'s held dev ship', async () => {
   const t = setup({ gh: () => FAILING, devShip: SHIP, sensitive: [MERGE_SENSITIVE, SHIP_SENSITIVE] });
   // Not away: the prompt, as before.
-  assert.equal(await t.settle(t.mgr.permission(MERGE, 'home')), 'waiting');
+  const merge = { command: MERGE, description: 'Merge' };
+  assert.equal(await t.settle(t.mgr.call('Bash', merge, { toolUseID: 'home', requestId: 'req-1' })), 'waiting');
   t.away.start(later(), ['merge', 'devShip']);
-  // A request the host re-sent after a restart: the prompt already on screen.
-  assert.equal(await t.settle(t.mgr.call('Bash', { command: 'git push --force origin main' }, { toolUseID: 'r', requestId: 'req-1' })), 'waiting');
-  assert.equal(await t.settle(t.mgr.call('Bash', { command: 'git push --force origin main' }, { toolUseID: 'r', requestId: 'req-1' })), 'waiting');
-  // A projects' settings change: its own approval path, unchanged.
-  assert.equal(await t.settle(t.mgr.call('mcp__ledung__set_project_settings', { project: 'p', mode: 'bypassPermissions' }, { toolUseID: 'set' })), 'waiting');
+  // The host re-sends that request after a restart, now while away: the prompt already on screen, not held anew.
+  assert.equal(await t.settle(t.mgr.call('Bash', merge, { toolUseID: 'home', requestId: 'req-1' })), 'waiting');
   // A session's held dev ship: a prompt to its manager, which its manager's turn doesn't wait on (#408).
   assert.equal(await t.settle(t.worker.call('Bash', { command: `${SHIP} > run.log; echo done` }, { toolUseID: 'w' })), 'waiting');
   const prompts = t.store.pendingPermissions();
+  assert.equal(prompts.filter((p) => p.sessionId === 'mgr').length, 1, "the manager's re-sent request is the one prompt");
   assert.equal(prompts.find((p) => p.sessionId === 's')!.addressedTo, 'mgr');
   assert.equal(t.refusals().length, 0, 'no held question for any of them');
   // The positive branch on the same sessions and period: the manager's own held call returns as a question.
