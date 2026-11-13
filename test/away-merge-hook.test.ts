@@ -15,6 +15,7 @@ import { Store } from '../src/store/store.ts';
 import { Management } from '../src/sessions/management.ts';
 import { Session, shellFolderInside } from '../src/sessions/session.ts';
 import { Away, classify, formatLog, linkRepo, pinnedMerge, words } from '../src/sessions/away.ts';
+import { refusalAnswerText } from '../src/sessions/refusals.ts';
 import { SUGGESTIONS } from '../src/shared/sensitive-suggestions.ts';
 
 const clock = (ms: number) => { const d = new Date(ms); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
@@ -37,6 +38,9 @@ const pinned = (json: string, pr: number) => JSON.stringify({ url: `https://gith
 
 /** The merge from the issue's evidence, with the repository made generic. */
 const MERGE = 'gh pr merge 2264 -R o/r --merge';
+
+/** The message a denied call gives back (issue #262), or nothing when it still waits. */
+const msg = (r: 'waiting' | { message?: string }) => (r === 'waiting' ? '' : r.message ?? '');
 
 const REFUSED = (reason: string) =>
   `Permission for this action was denied by the Claude Code auto mode classifier. Reason: ${reason}. If you have other tasks that don't depend on this action, continue working on those.`;
@@ -110,7 +114,7 @@ function setup(opts: Options = {}) {
       },
       /** The permission prompt path (canUseTool), which Claude Code reaches after the hook's "ask". */
       permission: (command: string, toolUseID: string) => (session as unknown as {
-        onPermission(t: string, i: Record<string, unknown>, o: { signal: AbortSignal; toolUseID?: string }): Promise<{ behavior: string; updatedInput?: Record<string, unknown> }>;
+        onPermission(t: string, i: Record<string, unknown>, o: { signal: AbortSignal; toolUseID?: string }): Promise<{ behavior: string; message?: string; updatedInput?: Record<string, unknown> }>;
       }).onPermission('Bash', { command, description: 'Merge' }, { signal: new AbortController().signal, toolUseID }),
       /** The two stream lines a refused call gives: the model's tool_use, then Claude Code's error result for it. */
       /** parent: the subagent's Task call, when the refused call is one of the session's subagents'. */
@@ -119,6 +123,17 @@ function setup(opts: Options = {}) {
         s.onMessage({ type: 'user', parent_tool_use_id: parent, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, is_error: true, content: REFUSED(reason) }] } });
       },
       events: () => store.listMessages(id, { limit: 100 }).filter((m) => m.kind === 'event').map((m) => String(m.data.text)),
+      /** The permission path for any tool, with the options Claude Code may pass (issue #262). */
+      call: (toolName: string, input: Record<string, unknown>, o: { toolUseID?: string; agentID?: string; requestId?: string } = {}) => (session as unknown as {
+        onPermission(t: string, i: Record<string, unknown>, o: { signal: AbortSignal; toolUseID?: string; agentID?: string; requestId?: string }): Promise<{ behavior: string; message?: string; updatedInput?: Record<string, unknown> }>;
+      }).onPermission(toolName, input, { signal: new AbortController().signal, ...o }),
+      /** The stream lines of a call that failed with this error text: the model's tool_use, then its error result. */
+      failed: (toolUseId: string, command: string, content: string) => {
+        s.onMessage({ type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'tool_use', id: toolUseId, name: 'Bash', input: { command, description: 'Merge' } }] } });
+        s.onMessage({ type: 'user', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, is_error: true, content }] } });
+      },
+      /** The end of a turn, as Claude Code's stream gives it. */
+      turnEnds: () => s.onMessage({ type: 'result', subtype: 'success', num_turns: 1, result: '', session_id: 'x', total_cost_usd: 0, usage: {} }),
     };
   };
   const mgr = make('mgr', 'p', 'manager', null);
@@ -193,16 +208,26 @@ test("a dev ship, the other command away mode can allow, is not allowed in the m
   t.away.stop();
 });
 
-test('a merge whose floors fail is held as before: asked once, with the reason, GitHub asked and the decision recorded once', async () => {
+test('a merge whose floors fail is held, and returns at once as a question to Martin, with the reason; GitHub asked and the decision recorded once', async () => {
+  // Issue #262 (Martin 2026-11-13, Ledung questions #2174 and #2179): before, the held merge was a prompt that held the
+  // manager's turn and inbox until Martin answered; the issue's evidence shows nine nights, about 37 hours.
   const t = setup({ gh: () => FAILING });
   t.away.start(later(), ['merge']);
   assert.equal((await t.mgr.hook(MERGE, 'tu-1')).decision, 'ask', 'the sensitive ask, as before');
-  // Claude Code then reaches Ledung's prompt for it (the classifier allowed it, or let it through as an ask).
-  assert.equal(await t.settle(t.mgr.permission(MERGE, 'tu-1')), 'waiting');
-  const [p] = t.store.pendingPermissions();
-  assert.equal(p!.addressedTo, 'user');
-  assert.match(p!.reason ?? '', /Away mode held for Martin: failing checks: ci/);
-  assert.equal(t.viewed.length, 1, 'GitHub asked once, not again at the prompt');
+  // Claude Code then reaches Ledung's permission path for it (the classifier allowed it, or let it through as an ask).
+  const out = await t.settle(t.mgr.permission(MERGE, 'tu-1'));
+  assert.notEqual(out, 'waiting', 'returned at once, not a prompt that waits');
+  const [q] = t.refusals();
+  assert.equal(out !== 'waiting' && out.behavior, 'deny', 'the call did not run');
+  assert.equal(t.store.pendingPermissions().length, 0, 'no prompt');
+  assert.notEqual(t.store.getSession('mgr')!.status, 'waiting', "the manager's turn is not held");
+  assert.equal(t.refusals().length, 1, 'one question');
+  assert.equal(q!.addressedTo, 'user');
+  assert.equal(q!.details!.refusal!.held, 'away');
+  assert.match(msg(out), new RegExp(`^Held for Martin as Ledung question #${q!.id}; this call did not run\\. Away mode held for Martin: failing checks: ci`));
+  assert.match(q!.question, /Away mode held a call in "Manager: p"/);
+  assert.match(q!.question, /\*\*Away mode's reason:\*\* held for Martin: failing checks: ci/);
+  assert.equal(t.viewed.length, 1, 'GitHub asked once, not again at the permission path');
   assert.deepEqual(t.away.log('mgr').records.map((r) => r.allowed), [false], 'recorded once');
   t.away.stop();
 });
@@ -544,7 +569,10 @@ test('#146: merge dropped from away mode while the floors are read: held, not al
   // At the prompt the same.
   t.away.start(later(), ['merge', 'devShip']);
   duringRead = () => t.away.start(later(), ['devShip']);
-  assert.equal(await t.settle(t.mgr.permission(MERGE, 'dropped-prompt')), 'waiting', 'asked at the prompt, not allowed');
+  // Since issue #262 a manager's own held call returns at once as a question instead of a prompt.
+  const dropped = await t.settle(t.mgr.permission(MERGE, 'dropped-prompt'));
+  assert.equal(dropped === 'waiting' ? dropped : dropped.behavior, 'deny', 'held at the prompt, not allowed');
+  assert.equal(t.store.pendingPermissions().length, 0, 'no prompt');
   // The positive branch: merge still allowed after the read.
   t.away.start(later(), ['merge', 'devShip']);
   assert.equal((await t.mgr.hook(MERGE, 'kept')).decision, 'allow');
@@ -723,4 +751,182 @@ test("#232: the merge hook reads this manager's own words since two days ago by 
   const answered = await u.mgr.hook(MERGE, 'answered');
   assert.equal(answered.decision, 'allow');
   assert.match(answered.reason, new RegExp(`Martin said yes to merging #2264 in their answer to question #${mine.id}`));
+});
+
+// ---------------------------------------------------------------- 6. a held call returns at once (issue #262)
+// Martin 2026-11-13, Ledung question #2174 ("a — Ready, the PC builds it now") and #2179 ("a — As recommended (A retry,
+// B three buttons, C Bash + PowerShell)"). The issue's evidence: nine nights, about 37 hours, in which a held manager
+// call was a prompt that held its turn, so its inbox (deliver returns while a prompt is pending) never moved.
+
+const SHIP = 'npm run publish:dev';
+const SHIP_SENSITIVE = String.raw`\bnpm\s+run\s+publish:dev\b`;
+
+test('#262: a held dev ship with a chained tail returns at once, with away mode\'s hint on the form it lets through', async () => {
+  const t = setup({ devShip: SHIP, sensitive: [MERGE_SENSITIVE, SHIP_SENSITIVE] });
+  t.away.start(later(), ['merge', 'devShip']);
+  // The form from the evidence (11-06 eve, 11-09): a cd before it and a tail chained on after.
+  const out = await t.settle(t.mgr.call('Bash', { command: `cd x && ${SHIP} > ship.log; tail ship.log` }, { toolUseID: 'ship-1' }));
+  assert.notEqual(out, 'waiting');
+  const [q] = t.refusals();
+  assert.equal(out !== 'waiting' && out.behavior, 'deny');
+  assert.match(msg(out), new RegExp(`question #${q!.id}`));
+  assert.match(msg(out), /send it as one plain command/, "away mode's form hint reaches the manager");
+  assert.equal(t.store.pendingPermissions().length, 0, 'no prompt');
+  // The positive branch: the plain dev ship goes through, so the hint leads somewhere.
+  assert.equal((await t.settle(t.mgr.call('Bash', { command: SHIP }, { toolUseID: 'ship-2' })) as { behavior: string }).behavior, 'allow');
+  t.away.stop();
+});
+
+test("#262: the manager's inbox is delivered when its turn ends after a held call; before, the prompt held it", async () => {
+  const t = setup({ gh: () => FAILING });
+  t.away.start(later(), ['merge']);
+  t.store.updateSession('mgr', { status: 'running' });
+  t.store.addInbox('mgr', 'manager:s', 'Worker finished: PR #12 is ready.');
+  const out = await t.settle(t.mgr.permission(MERGE, 'held'));
+  assert.equal(out !== 'waiting' && out.behavior, 'deny', 'returned at once');
+  assert.equal(t.mgr.pushed.length, 0, 'nothing pushed in the middle of the turn');
+  assert.equal(t.store.undeliveredInbox('mgr').length, 1, 'the report waits for the turn to end');
+  t.mgr.turnEnds();
+  assert.equal(t.mgr.pushed.length, 1, 'a delivery went into the session');
+  assert.equal(t.store.undeliveredInbox('mgr').length, 0, "the worker's report was delivered to the manager");
+  t.away.stop();
+});
+
+test("#262: Martin's Allow once lets the manager's exact retry through once; a changed command, a second retry or a subagent's call is not", async () => {
+  const t = setup({ gh: () => FAILING });
+  t.away.start(later(), ['merge']);
+  await t.settle(t.mgr.permission(MERGE, 'held'));
+  const [q] = t.refusals();
+  // Premise: before the answer, the retry is not let through.
+  assert.notEqual((await t.mgr.hook(MERGE, 'early')).decision, 'allow', 'not before Martin answers');
+  assert.ok(t.store.answerQuestion(q!.id, 'Allow once', 'user'));
+  assert.notEqual((await t.mgr.hook('gh pr merge 2265 -R o/r --merge', 'changed')).decision, 'allow', 'another PR: not covered');
+  assert.notEqual((await t.mgr.hook(MERGE, 'sub', { agent_id: 'agent-1' })).decision, 'allow', "a subagent's identical call does not use the manager's grant");
+  const retry = await t.mgr.hook(MERGE, 'retry');
+  assert.equal(retry.decision, 'allow', 'the exact retry');
+  assert.match(retry.reason, new RegExp(`question #${q!.id}`));
+  assert.notEqual((await t.mgr.hook(MERGE, 'again')).decision, 'allow', 'a second run is not covered');
+  t.away.stop();
+});
+
+test('#262: a retry Allow once let through that Claude Code still brings to the permission path is allowed, not held again', async () => {
+  const t = setup({ gh: () => FAILING });
+  t.away.start(later(), ['merge']);
+  await t.settle(t.mgr.permission(MERGE, 'held'));
+  const [q] = t.refusals();
+  t.store.answerQuestion(q!.id, 'Allow once', 'user');
+  assert.equal((await t.mgr.hook(MERGE, 'retry')).decision, 'allow');
+  const [reads, logged] = [t.viewed.length, t.away.log('mgr').records.length];
+  assert.deepEqual(await t.settle(t.mgr.permission(MERGE, 'retry')), { behavior: 'allow', updatedInput: { command: MERGE, description: 'Merge' } });
+  assert.equal(t.refusals().length, 1, 'no new question');
+  // Code review Minor 1: Martin's tap ran it, so the morning report must not show it held, and GitHub is not read again.
+  assert.equal(t.away.log('mgr').records.length, logged, 'no "held" record for the call Martin allowed');
+  assert.equal(t.viewed.length, reads, 'GitHub not read again');
+  // The positive branch: the same command under a call no grant let through is held, as a new question, read and logged.
+  const other = await t.settle(t.mgr.permission(MERGE, 'later'));
+  assert.equal(other !== 'waiting' && other.behavior, 'deny');
+  assert.equal(t.refusals().length, 2);
+  assert.equal(t.away.log('mgr').records.length, logged + 1, 'the held call is in the away log');
+  assert.ok(t.viewed.length > reads, 'GitHub read for it');
+  t.away.stop();
+});
+
+test("#262: Martin's Deny grants nothing, and the answers tell the manager what they mean, retry only if still needed", async () => {
+  const t = setup({ gh: () => FAILING });
+  t.away.start(later(), ['merge']);
+  await t.settle(t.mgr.permission(MERGE, 'a'));
+  await t.settle(t.mgr.permission('gh pr merge 2265 -R o/r --merge', 'b'));
+  const [denied, allowed] = t.refusals().sort((x, y) => x.id - y.id);
+  t.store.answerQuestion(denied!.id, 'Deny', 'user');
+  t.store.answerQuestion(allowed!.id, 'Allow once', 'user');
+  assert.notEqual((await t.mgr.hook(MERGE, 'after-deny')).decision, 'allow', 'Deny: nothing let through');
+  const no = refusalAnswerText(t.store.getQuestion(denied!.id)!, 'Martin');
+  assert.match(no, /^Martin declined the call away mode held/);
+  const yes = refusalAnswerText(t.store.getQuestion(allowed!.id)!, 'Martin');
+  assert.match(yes, /^Martin allowed, once, the call away mode held/);
+  assert.match(yes, /If it is still needed, retry exactly this call now, one time, unchanged/);
+  assert.doesNotMatch(yes, /classifier/);
+  t.away.stop();
+});
+
+test('#262: the same held call while its question is open raises no second question, and names the open one', async () => {
+  const t = setup({ gh: () => FAILING });
+  t.away.start(later(), ['merge']);
+  await t.settle(t.mgr.permission(MERGE, 'a'));
+  const [q] = t.refusals();
+  const again = await t.settle(t.mgr.permission(MERGE, 'b'));
+  assert.equal(again !== 'waiting' && again.behavior, 'deny');
+  assert.match(msg(again), new RegExp(`^Still held for Martin as Ledung question #${q!.id}, which is still open`));
+  assert.equal(t.refusals().length, 1, 'no second question');
+  // A subagent's identical call is not the manager's repeat: its own question, so its Allow once is its own (#146).
+  const sub = await t.settle(t.mgr.call('Bash', { command: MERGE, description: 'Merge' }, { toolUseID: 'sub', agentID: 'agent-1' }));
+  assert.equal(sub !== 'waiting' && sub.behavior, 'deny');
+  const subQ = t.refusals().find((x) => x.id !== q!.id);
+  assert.equal(subQ?.details?.refusal?.byAgent, true, "a second question, the subagent's");
+  assert.doesNotMatch(msg(sub), /^Still held/);
+  // The positive branch: another call is its own question.
+  await t.settle(t.mgr.permission('gh pr merge 2265 -R o/r --merge', 'c'));
+  assert.equal(t.refusals().length, 3);
+  t.away.stop();
+});
+
+test("#262: the held call's result is not read as a classifier refusal, so it raises no second question", async () => {
+  const t = setup({ gh: () => FAILING });
+  t.away.start(later(), ['merge']);
+  const out = await t.settle(t.mgr.permission(MERGE, 'held'));
+  assert.equal(t.refusals().length, 1);
+  // Claude Code gives the deny message back as the call's error result.
+  t.mgr.failed('held', MERGE, msg(out));
+  await t.flush();
+  assert.equal(t.refusals().length, 1, 'still one question');
+  // The positive branch: a real classifier refusal of another call in the same stream is asked.
+  t.mgr.refuse('real', 'git push --force origin main', 'Force push');
+  await t.flush();
+  assert.equal(t.refusals().length, 2);
+  t.away.stop();
+});
+
+test("#262: a manager's own sensitive PowerShell call while away returns at once, saying away mode judges only Bash", async () => {
+  const t = setup();
+  t.away.start(later(), ['merge']);
+  const out = await t.settle(t.mgr.call('PowerShell', { command: MERGE }, { toolUseID: 'ps' }));
+  assert.equal(out !== 'waiting' && out.behavior, 'deny');
+  assert.match(msg(out), /away mode judges only Bash commands/);
+  assert.equal(t.store.pendingPermissions().length, 0, 'no prompt');
+  assert.equal(t.refusals()[0]!.details!.refusal!.toolName, 'PowerShell');
+  assert.deepEqual(t.away.log('mgr').records.map((r) => r.allowed), [false], 'in the away log for the morning report');
+  t.away.stop();
+});
+
+test("#262: a subagent's held call is the subagent's question: its Allow once is not the manager's own", async () => {
+  const t = setup({ gh: () => FAILING });
+  t.away.start(later(), ['merge']);
+  const out = await t.settle(t.mgr.call('Bash', { command: MERGE, description: 'Merge' }, { toolUseID: 'sub', agentID: 'agent-1' }));
+  assert.equal(out !== 'waiting' && out.behavior, 'deny');
+  const [q] = t.refusals();
+  assert.equal(q!.details!.refusal!.byAgent, true);
+  t.store.answerQuestion(q!.id, 'Allow once', 'user');
+  assert.notEqual((await t.mgr.hook(MERGE, 'own')).decision, 'allow', "the manager's own call is not covered");
+  assert.equal((await t.mgr.hook(MERGE, 'sub-retry', { agent_id: 'agent-1' })).decision, 'allow', "the subagent's retry is");
+  t.away.stop();
+});
+
+test('#262: what keeps the prompt: not away, a re-sent request, and a session\'s held dev ship', async () => {
+  const t = setup({ gh: () => FAILING, devShip: SHIP, sensitive: [MERGE_SENSITIVE, SHIP_SENSITIVE] });
+  // Not away: the prompt, as before.
+  const merge = { command: MERGE, description: 'Merge' };
+  assert.equal(await t.settle(t.mgr.call('Bash', merge, { toolUseID: 'home', requestId: 'req-1' })), 'waiting');
+  t.away.start(later(), ['merge', 'devShip']);
+  // The host re-sends that request after a restart, now while away: the prompt already on screen, not held anew.
+  assert.equal(await t.settle(t.mgr.call('Bash', merge, { toolUseID: 'home', requestId: 'req-1' })), 'waiting');
+  // A session's held dev ship: a prompt to its manager, which its manager's turn doesn't wait on (#408).
+  assert.equal(await t.settle(t.worker.call('Bash', { command: `${SHIP} > run.log; echo done` }, { toolUseID: 'w' })), 'waiting');
+  const prompts = t.store.pendingPermissions();
+  assert.equal(prompts.filter((p) => p.sessionId === 'mgr').length, 1, "the manager's re-sent request is the one prompt");
+  assert.equal(prompts.find((p) => p.sessionId === 's')!.addressedTo, 'mgr');
+  assert.equal(t.refusals().length, 0, 'no held question for any of them');
+  // The positive branch on the same sessions and period: the manager's own held call returns as a question.
+  assert.equal((await t.settle(t.mgr.permission(MERGE, 'held')) as { behavior: string }).behavior, 'deny');
+  assert.equal(t.refusals().length, 1);
+  t.away.stop();
 });
