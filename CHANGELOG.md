@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-13
+- Trusted computer: in Settings → Linked computers, **Trust its own screen** lets that computer's tab act on this one with no passkey: it logs on, sends, and allows prompts (sensitive ones too), `!` commands and away mode with no Touch ID or Windows Hello. The prompts still show. Opening lockdown and loosening the sensitive gate still need a passkey or this computer's own screen. Set or removed on the computer itself, or from a phone with its passkey; removing it logs that tab off at once. A trusted computer's tab shows a 🔑. Phones keep their passkey. (#313)
 - Away mode: a manager's own call that away mode holds no longer stops the manager until you answer. It returns at once as a question in Waiting for you (Allow once, Allow always though sensitive, Deny), the manager goes on and gets its sessions' reports; on Allow once it retries that exact call once, if it is still needed. A manager's sensitive PowerShell call while you are away is held the same way. (#262)
 
 ## 2026-11-12

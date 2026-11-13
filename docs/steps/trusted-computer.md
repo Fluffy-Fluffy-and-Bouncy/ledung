@@ -1,6 +1,6 @@
 # Trusted computer: act on your other linked computers without a passkey — design
 
-Nov 13, 2026 · **Proposal for #313. Nothing built; the choices go to Martin first.** Builds on the computer tabs in a frame (#241, [computer-tabs-in-page.md](computer-tabs-in-page.md)), the hivemind link and pairing through it (#245, #273, [computer-tabs-link.md](computer-tabs-link.md)), and the passkey rules through the public name ([relay.md](relay.md) decisions 3, 8 and 9; #192).
+Nov 13, 2026 · **Decided: option a, all five choices as recommended, "with a key on the tab"** (Martin, 09:57, Ledung question #890: "a — Design a, with a key on the tab"). Built on branch `agent/fix-313-trusted-computer`; see *As built* at the end. Builds on the computer tabs in a frame (#241, [computer-tabs-in-page.md](computer-tabs-in-page.md)), the hivemind link and pairing through it (#245, #273, [computer-tabs-link.md](computer-tabs-link.md)), and the passkey rules through the public name ([relay.md](relay.md) decisions 3, 8 and 9; #192).
 
 Why: "For the computers in the hivemind - I think I want to be able to act on my stationary computers without using a passkey. I will soon have a headless mac running and I dont have windows hello on my windows PC. Could that be possible?" (Martin, 2026-11-13 09:33). Question #889: "b — File a "trusted computer" card", cost shown: "A weaker lock: an unlocked trusted computer can act on all of them."
 
@@ -83,3 +83,12 @@ With 1a, 2a, 3a and 4a: **anyone at your unlocked trusted computer, or anything 
 5. Tests, loopback, `docs/decisions.md`, `CHANGELOG.md`.
 
 About 3–4 h of session time for 1a/2a/3a/4a, then review.
+
+## As built
+
+- 1a, 2a, 3a and 4a as above. Not covered by a vouch (2a): opening a locked project up, loosening the sensitive gate (a new project's grant, unasked tools, a sensitive pattern taken out, also for chats) and removing a locked project.
+- **"With a key on the tab"**, read as a key mark: a 🔑 after the computer's name on its tab, with the tooltip "<name> trusts this computer's screen: changes from here need no passkey there". The bar above the frame in mockup 2 was not built; the key says it. If "a key on the tab" meant something else, that is a change on top.
+- A phone sees each link's name and trust only (`GET /api/link-trust`), to set it with its passkey; the full list stays on the computer itself.
+- The notice in Waiting for you when trust is set from a phone (choice 5, last bullet) was not built: a follow-up if wanted.
+- Removing trust, and unlinking, log the frame off at once.
+- A tab paired before this change has no link id on its device row; it counts by the link's name, when only one link has that name.
