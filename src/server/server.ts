@@ -78,6 +78,8 @@ const WAITING_POLL_MS = 30_000;
 const WAITING_PUSH_MS = 1000;
 /** Logged once, the first time a late answer after close is let go (#463). */
 let exercised463 = false;
+/** Once per run: a trusted computer's vouch let a request through (issue #313). */
+let exercised313 = false;
 
 /** Why linking refuses through the public name (#245 step 1: on the computer itself only). */
 const LINKED_HERE = 'Computers are linked and unlinked';
@@ -1492,6 +1494,10 @@ export class LedungServer {
       if (!this.trustedLink(device)) throw new HttpError(403, 'This computer does not trust that computer\'s screen; use the passkey.');
       await passkeyCall(async () => this.passkeys!.verifyVouch(device, action, req.headers[VOUCH_HEADER]));
       this.vouched.add(req);
+      if (!exercised313) {
+        exercised313 = true;
+        exercisedLine('EXERCISED #313 a trusted computer\'s screen vouched for its frame instead of a passkey');
+      }
     } else {
       await passkeyCall(() => this.passkeys!.verify(device, action, req.headers[PASSKEY_HEADER]));
     }
