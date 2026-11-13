@@ -8,6 +8,7 @@ import { api } from '../api.ts';
 import type { ComputerInfo } from '../../../src/shared/computers.ts';
 import { computerStyle, FRAME_ANSWER_MS, frameAsk, pairsThroughLink, showsHere, tabWaiting, type ComputerFrame, type FramePairing } from '../computerFrame.ts';
 import { frameMessage, type FrameSettingsMessage } from '../frameSettings.ts';
+import { vouchAnswer, vouchAsked } from '../vouch.ts';
 
 const globe = (
   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
@@ -44,7 +45,11 @@ export function ComputerTabs({ frame, shown = null, onShow, waiting: hereWaiting
         // computer's own tab shows what waits here while another computer's page shows (issue #291).
         const count = tabWaiting(c, shown, hereWaiting);
         const waiting = count ? <span className="badge" title={`${count} waiting for you on ${c.name}`} aria-label={`${count} waiting for you`}>{count}</span> : null;
-        const body = <><span className="sw" aria-hidden="true" /><span className="nm">{c.name}</span>{waiting}</>;
+        // That computer trusts this one's own screen (issue #313; Martin, 2026-11-13, question #890: "with a key on the tab").
+        const trusted = !c.here && c.trustsUs
+          ? <span className="ctab-key" title={`Trusted — ${c.name} trusts this computer's screen: changes from here need no passkey there`} aria-label="trusts this screen">🔑</span>
+          : null;
+        const body = <><span className="sw" aria-hidden="true" /><span className="nm">{c.name}</span>{trusted}{waiting}</>;
         const on = c.here ? shown === null : shown === c.id;
         // This computer is not a link: it is the page you are on. While another one shows, it switches back.
         if (c.here) {
@@ -89,6 +94,14 @@ export function ComputerFrames({ computers, opened, shown, throughPublicName = f
         const msg = { data: e.data, origin: e.origin, fromFrame: e.source === frames.current[c.id]?.contentWindow };
         // That computer's Settings → Look, kept here where an iPhone keeps them (#459), and its "paired" (#286).
         const reply = (answer: FrameSettingsMessage) => (e.source as Window).postMessage(answer, e.origin);
+        // Its page asks this screen to vouch instead of a passkey, where that computer trusts this one (issue #313).
+        const ask = vouchAsked(msg, { url: c.url!, trustsUs: c.trustsUs });
+        if (ask) {
+          const source = e.source as Window;
+          api.linkVouch(c.id, ask.challenge).then(() => null, (err: Error) => err.message)
+            .then((error) => source.postMessage(vouchAnswer(ask.id, error), e.origin));
+          continue;
+        }
         if (!frameMessage(msg, { id: c.id, url: c.url! }, localStorage, reply)) continue;
         clearTimeout(timers.current[c.id]);
         setPaired((p) => ({ ...p, [c.id]: 'paired' }));
@@ -113,8 +126,11 @@ export function ComputerFrames({ computers, opened, shown, throughPublicName = f
             <PairThroughLink computer={c} onCode={(url) => setPairing((p) => ({ ...p, [c.id]: url }))} />
           )}
           {pairing[c.id]
+            // The same handle as the page's frame: after pairing through the link this frame goes on as that computer's
+            // page, and its messages (a vouch, #313; its settings) are told apart by it (browser check of PR #315).
             ? <iframe key="pairing" className="cframe" style={computerStyle(c)} src={pairing[c.id]}
-              title={`${c.name}'s Ledung`} allow="publickey-credentials-get; publickey-credentials-create" />
+              title={`${c.name}'s Ledung`} allow="publickey-credentials-get; publickey-credentials-create"
+              ref={(el) => { frames.current[c.id] = el; }} />
             : <iframe key="page" className="cframe" style={computerStyle(c)} src={c.url!}
               title={`${c.name}'s Ledung`} allow="publickey-credentials-get; publickey-credentials-create"
               ref={(el) => { frames.current[c.id] = el; }} onLoad={() => loaded(c)} />}

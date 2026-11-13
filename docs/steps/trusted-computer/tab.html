@@ -1,0 +1,21 @@
+<!doctype html><html data-theme="dark"><head><meta charset="utf-8"><link rel="stylesheet" href="../../../web/src/styles.css">
+<!-- Mockup for #313 (docs/steps/trusted-computer.md, choice 5): MacBook's tab for Mac mini, which trusts it. -->
+<style>body{width:900px;height:560px;display:flex;flex-direction:column}
+.cframe-box{display:flex;flex-direction:column;flex:1;margin:0}
+.inner{flex:1;border:3px solid #9ece6a;border-top-width:1px;background:var(--bg);padding:1rem 1.2rem}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:.7rem .9rem;margin-bottom:.8rem;max-width:620px}
+.card h4{margin:0 0 .3rem} .sens{color:#e0af68;font-size:.85em;font-weight:600}
+pre{background:var(--panel-2);padding:.4rem .6rem;border-radius:4px;margin:.4rem 0}
+.done{color:#9ece6a;font-size:.9em}
+.ctab-dot{width:9px;height:9px;border-radius:50%;display:inline-block}</style></head>
+<body>
+<div class="ctabs"><a class="ctab" style="--cc-light:#3b63c4;--cc-dark:#7aa2f7"><span class="ctab-dot" style="background:#7aa2f7"></span>MacBook</a><a class="ctab on" style="--cc-light:#2e7d32;--cc-dark:#9ece6a"><span class="ctab-dot" style="background:#9ece6a"></span>Mac mini</a></div>
+<div class="cframe-box">
+<div class="cframe-bar" style="--cc-light:#2e7d32;--cc-dark:#9ece6a"><span>🔓 <b>Mac mini trusts this screen:</b> changes from here need no passkey there. Set in Mac mini's Settings → Linked computers.</span></div>
+<div class="inner">
+<div class="card"><span class="sens">⚠ Sensitive · matches “git push”</span><h4>Manager: web-shop wants to run</h4><pre>git push origin main</pre>
+<div class="restart-confirm"><button class="small allow">Allow</button><button class="small">Deny</button></div></div>
+<div class="card"><span class="sens">⚠ Sensitive · matches “gh pr merge”</span><h4>Manager: web-shop wants to run</h4><pre>gh pr merge 41 --squash</pre>
+<p class="done">✓ Allowed from MacBook's screen (trusted) · no passkey asked</p></div>
+<p class="muted" style="font-size:.85em">From a phone, or from a computer Mac mini doesn't trust, Allow opens the passkey dialog as today.</p>
+</div></div></div></body></html>

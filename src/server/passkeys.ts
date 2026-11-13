@@ -29,6 +29,13 @@ export const PASSKEY_NEEDED = 'This needs your passkey.';
 export const DEVICE_LOCKED = 'This device is locked: unlock it with its passkey to make changes from here.';
 /** The header a request through the public name carries its passkey assertion in (base64url of its JSON). */
 export const PASSKEY_HEADER = 'x-ledung-passkey';
+/**
+ * The header a trusted computer's frame carries a vouched challenge in instead (issue #313,
+ * docs/steps/trusted-computer.md choice 3a): the challenge itself, which that computer's own screen vouched for.
+ */
+export const VOUCH_HEADER = 'x-ledung-vouch';
+/** The refusal of a vouch for what still takes a passkey (choice 2a): the page then asks for the passkey itself. */
+export const PASSKEY_ONLY = 'This needs a passkey, or this computer\'s own screen: a trusted computer can\'t do it.';
 /** ES256 and RS256: what phones and computers make; nothing weaker. */
 const ALGORITHMS = [-7, -257];
 /** Open challenges per device; more is a page (or someone) asking without answering. */
@@ -43,10 +50,12 @@ export function actionOf(method: string, pathname: string, body: Buffer | string
 
 interface Open {
   deviceId: string;
-  purpose: 'register' | 'assert';
-  /** For an assertion: the request it allows. */
+  purpose: 'register' | 'assert' | 'vouch';
+  /** For an assertion or a vouch: the request it allows. */
   action: string;
   expiresAt: number;
+  /** A vouch's challenge: true once the trusted computer's own screen vouched for it over the link (issue #313). */
+  vouched?: boolean;
 }
 
 export class Passkeys {
@@ -141,6 +150,35 @@ export class Passkeys {
       rpID: this.rpID, challenge, timeout: CHALLENGE_MS, userVerification: 'required',
       allowCredentials: [{ id: device.credentialId }],
     });
+  }
+
+  /**
+   * A challenge for one request by a trusted computer's frame (issue #313): its own screen vouches for it over the link
+   * instead of a passkey signing it. Bound to the request and the device, used once, within two minutes, as a passkey's.
+   * The caller checks the device is that frame; it needs no passkey of its own.
+   */
+  vouchChallenge(device: Device, action: string): string {
+    return Buffer.from(this.issue(device.id, 'vouch', action)).toString('base64url');
+  }
+
+  /**
+   * The trusted computer's own screen vouches for an open challenge (/link/vouch): `accepts` says whether the device it
+   * was issued to is that computer's frame here. Throws when the challenge is unknown, used, expired or not a vouch's.
+   */
+  vouch(challenge: unknown, accepts: (device: Device) => boolean): void {
+    const o = typeof challenge === 'string' ? this.open.get(challenge) : undefined;
+    if (!o || o.purpose !== 'vouch' || o.vouched || o.expiresAt <= this.now()) throw new PasskeyError('That check expired or was already used; try again.');
+    const device = this.devices.get(o.deviceId);
+    if (!device || !accepts(device)) throw new PasskeyError('That check is not for a frame of this computer.');
+    o.vouched = true;
+  }
+
+  /** Throws unless `header` is a challenge issued to this device for exactly `action` and vouched for; uses it up. */
+  verifyVouch(device: Device, action: string, header: unknown): void {
+    if (typeof header !== 'string' || !header || header.length > 100) throw new PasskeyError(PASSKEY_NEEDED);
+    const vouched = this.open.get(header)?.vouched === true;
+    this.take(header, device.id, 'vouch', action);
+    if (!vouched) throw new PasskeyError('That check was not vouched for by the trusted computer.');
   }
 
   /** Throws unless `header` holds this device's passkey signing a challenge issued for exactly `action`. */

@@ -778,6 +778,11 @@ const MIGRATIONS: string[] = [
     UNIQUE (project, tool_name, command)
   );
   `,
+  // The link a device paired through the link came by (issue #313): its id in this computer's links, so a computer
+  // that trusts that link's own screen knows the device is its frame. Null: paired here, or before this column.
+  `
+  ALTER TABLE devices ADD COLUMN paired_via_link TEXT;
+  `,
 ];
 
 export function databaseFile(dir = userDataDir()): string {

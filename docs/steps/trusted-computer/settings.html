@@ -1,0 +1,23 @@
+<!doctype html><html data-theme="dark"><head><meta charset="utf-8"><link rel="stylesheet" href="../../../web/src/styles.css">
+<!-- Mockup for #313 (docs/steps/trusted-computer.md, choice 5): Settings → Linked computers on the computer being acted on. -->
+<style>body{padding:1.2rem 1.5rem;width:760px} .tag{font-size:.8em;padding:1px 6px;border-radius:4px;background:color-mix(in srgb,#9ece6a 22%,var(--panel));color:#9ece6a;margin-left:.4rem}
+.trust{margin:.15rem 0 .7rem 0;padding:.45rem .7rem;border:1px solid var(--border);border-radius:6px;background:var(--panel)} .trust p{margin:.2rem 0}
+.confirm{border:1px solid var(--warn-border, #e0af68);border-radius:6px;padding:.5rem .8rem;margin:.4rem 0 .8rem}</style></head>
+<body><div class="settings-list"><section>
+<h3>Linked computers</h3>
+<p class="muted">Your other computers' Ledungs this one is linked with. Their managers will reach this computer's managers as if they ran here; the link goes end to end through the relay, which can't read it.</p>
+
+<div class="device-row"><span><b>MacBook</b><span class="tag">Trusted</span> <span class="muted">· macbook.example.net · linked 2 Nov · last heard from just now</span></span><button class="small">Unlink</button></div>
+<div class="trust"><p>🔓 <b>Its own screen acts here without a passkey</b> <span class="muted">· since 13 Nov, set on this computer</span></p>
+<p class="muted">From MacBook's tab for this computer: log on, send, allow prompts (sensitive ones too), <code>!</code> commands and away mode, with no Touch ID. Lockdown changes still need a passkey or this screen.</p>
+<button class="small">Remove trust</button></div>
+
+<div class="device-row"><span><b>Windows PC</b> <span class="muted">· pc.example.net · linked 2 Nov · last heard from 1 min ago</span></span><button class="small">Unlink</button></div>
+<div class="trust"><p class="muted">Its tab here asks for a passkey for changes.</p>
+<label><input type="checkbox" checked> Trust Windows PC's own screen</label></div>
+<div class="confirm"><div class="new-computer-head">Trust Windows PC's own screen?</div>
+<p>Anyone at Windows PC while it is unlocked, or anything running on it, could then act on this computer without a passkey — merges and sensitive prompts included — until you remove the trust here. The prompts still show; only the passkey step goes.</p>
+<div class="restart-confirm"><button class="small primary">Trust</button><button class="small">Cancel</button></div></div>
+
+<p class="muted" style="margin-top:1rem">This computer is trusted by: <b>Windows PC</b> (its tab for Windows PC needs no passkey there).</p>
+</section></div></body></html>

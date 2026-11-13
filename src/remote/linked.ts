@@ -50,6 +50,14 @@ export interface LinkedComputer {
   lastUsedAt: number | null;
   /** The port its Ledung listens on there, as it told this one (issue #273); left out: not told, 4317. */
   port?: number;
+  /**
+   * This computer trusts that computer's own screen (issue #313, docs/steps/trusted-computer.md): its frame here acts
+   * with that computer's vouch instead of a passkey. Since when, and where it was set; left out: not trusted.
+   */
+  trustedAt?: number;
+  trustedFrom?: 'here' | 'phone';
+  /** That computer trusts this one's own screen, as it told over the link (issue #313): the key on its tab here. */
+  trustsUs?: boolean;
 }
 
 interface Saved extends LinkedComputer {
@@ -255,10 +263,54 @@ export class LinkedComputers {
     this.opts.onChange?.();
   }
 
-  /** /link/hello from a linked computer: the port it told, kept when it changed; this one's own port back. */
-  hello(id: string, body: Record<string, unknown>): { port?: number } {
+  /**
+   * /link/hello from a linked computer: the port it told, kept when it changed, and whether it trusts this computer's
+   * screen (issue #313); this one's own port back, and whether this one trusts it.
+   */
+  hello(id: string, body: Record<string, unknown>): { port?: number; trusts?: true } {
     this.notePort(id, linkPort(body.port));
-    return this.ownPort();
+    // Said only when true, so a Ledung from before trust (which never says it) counts as not trusting.
+    this.noteTrustsUs(id, body.trusts === true);
+    return { ...this.ownPort(), ...(this.trusted(id) ? { trusts: true as const } : {}) };
+  }
+
+  /** Whether this computer trusts that linked computer's own screen (issue #313). */
+  trusted(id: string): boolean {
+    return typeof this.read().find((l) => l.id === id)?.trustedAt === 'number';
+  }
+
+  /**
+   * Trusts that linked computer's own screen, or stops (issue #313), and tells it, so its tab here shows the key; a
+   * failure to tell is only logged, and the next hello carries it. Returns the link, or null when there is none.
+   */
+  setTrust(id: string, on: boolean, from: 'here' | 'phone'): LinkedComputer | null {
+    const links = this.read();
+    const link = links.find((l) => l.id === id);
+    if (!link) return null;
+    if (on) {
+      link.trustedAt = this.now();
+      link.trustedFrom = from;
+    } else {
+      delete link.trustedAt;
+      delete link.trustedFrom;
+    }
+    this.write(links);
+    this.opts.onChange?.();
+    this.call(link.publicName, '/link/trust', { trusts: on }, link.sendKey).catch((e: Error) => {
+      console.log(`Linked computers: could not tell ${link.publicName} that this computer ${on ? 'trusts' : 'no longer trusts'} its screen (${e.message}).`);
+    });
+    return this.list().find((l) => l.id === id) ?? null;
+  }
+
+  /** /link/trust, or a hello: whether that computer trusts this one's own screen, for the key on its tab (issue #313). */
+  noteTrustsUs(id: string, trusts: boolean): void {
+    const links = this.read();
+    const link = links.find((l) => l.id === id);
+    if (!link || !!link.trustsUs === trusts) return;
+    if (trusts) link.trustsUs = true;
+    else delete link.trustsUs;
+    this.write(links);
+    this.opts.onChange?.();
   }
 
   /**
@@ -267,8 +319,11 @@ export class LinkedComputers {
    */
   helloAll(): void {
     for (const link of this.read()) {
-      this.call(link.publicName, '/link/hello', this.ownPort(), link.sendKey)
-        .then((answer) => this.notePort(link.id, linkPort(answer.port)))
+      this.call(link.publicName, '/link/hello', { ...this.ownPort(), ...(typeof link.trustedAt === 'number' ? { trusts: true } : {}) }, link.sendKey)
+        .then((answer) => {
+          this.notePort(link.id, linkPort(answer.port));
+          this.noteTrustsUs(link.id, answer.trusts === true);
+        })
         .catch((e: Error) => console.log(`Linked computers: no hello from ${link.publicName} (${e.message}).`));
     }
   }
