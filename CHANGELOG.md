@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-13
+- Away mode: a manager's own call that away mode holds no longer stops the manager until you answer. It returns at once as a question in Waiting for you (Allow once, Allow always though sensitive, Deny), the manager goes on and gets its sessions' reports; on Allow once it retries that exact call once, if it is still needed. A manager's sensitive PowerShell call while you are away is held the same way. (#262)
+
 ## 2026-11-12
 - Waiting for you history keeps what was asked: a question's screenshots and evidence files are copied into Ledung when asked, for every project (container projects already were), so they still show after the worktree they came from is removed; screenshots are kept as WebP, about 40 % of the PNG. History now reaches back to the last 100 answered questions of each project, or every one of the last 30 days if that is more, instead of the last 30 of all projects. (#306)
 - Sidebar, CPU, Memory and GPU bars: drag the handle on a bar's limit line to set the limit. A label shows the value as you drag ("GPU 50%", "Memory 48 GB", in steps of 5% or 1 GB), it applies when you let go, and dragging to the right end removes the limit. With no limit the handle waits at the right end and shows when you point at the bar. The keyboard works too: arrow keys, Home and End, then Enter. The number editor now opens with a double-click (a tap on a phone) and has a slider next to the number field; on a phone it is the way to set a limit. (#295)

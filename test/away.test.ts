@@ -296,14 +296,16 @@ test("while away, a manager's merge with every floor passing runs with no prompt
   t.away.stop();
 });
 
-test('while away, a merge that fails a floor is the same prompt to Martin as always, with the reason', async () => {
+test('while away, a merge that fails a floor returns at once as a question to Martin, with the reason (issue #262)', async () => {
   const t = sessionSetup('manager', pr({ statusCheckRollup: [run('ci', 'COMPLETED', 'FAILURE')] }));
   t.away.start(later(), ['merge']);
-  assert.equal(await t.settle(t.ask('gh pr merge 31 -R o/r')), 'waiting');
-  const [p] = t.store.pendingPermissions();
-  assert.equal(p!.addressedTo, 'user');
-  assert.ok(p!.sensitive);
-  assert.match(p!.reason ?? '', /Away mode held for Martin: failing checks: ci/);
+  const out = await t.settle(t.ask('gh pr merge 31 -R o/r')) as { behavior: string; message: string };
+  assert.equal(out.behavior, 'deny');
+  assert.match(out.message, /Away mode held for Martin: failing checks: ci/);
+  assert.equal(t.store.pendingPermissions().length, 0, 'no prompt');
+  const [q] = t.store.listQuestions(10);
+  assert.equal(q!.addressedTo, 'user');
+  assert.equal(q!.details!.refusal!.held, 'away');
   assert.equal(t.away.log('mgr').records[0]!.allowed, false);
   t.away.stop();
 });
@@ -323,8 +325,10 @@ test("while away, an ordinary session's merge is held for Martin as now, and Git
 test('while away, a manager\'s force-push stays held for Martin', async () => {
   const t = sessionSetup('manager', pr());
   t.away.start(later(), ['merge', 'devShip']);
-  assert.equal(await t.settle(t.ask('git push --force origin am/x')), 'waiting');
-  assert.equal(t.store.pendingPermissions()[0]!.addressedTo, 'user');
+  // Held: since issue #262 it returns at once as a question to Martin, not a prompt.
+  assert.equal((await t.settle(t.ask('git push --force origin am/x')) as { behavior: string }).behavior, 'deny');
+  assert.equal(t.store.pendingPermissions().length, 0, 'no prompt');
+  assert.equal(t.store.listQuestions(10)[0]!.addressedTo, 'user');
   assert.match(t.away.log('mgr').records[0]!.reason, /^held for Martin/);
   t.away.stop();
 });
@@ -332,8 +336,10 @@ test('while away, a manager\'s force-push stays held for Martin', async () => {
 test("while away, a force-push that contains the dev ship command stays held for Martin (review 1, PR #42)", async () => {
   const t = sessionSetup('manager', pr(), { devShip: 'ship-dev' });
   t.away.start(later(), ['merge', 'devShip']);
-  assert.equal(await t.settle(t.ask('git push --force origin main ship-dev')), 'waiting');
-  assert.equal(t.store.pendingPermissions()[0]!.addressedTo, 'user');
+  // Held: since issue #262 it returns at once as a question to Martin, not a prompt.
+  assert.equal((await t.settle(t.ask('git push --force origin main ship-dev')) as { behavior: string }).behavior, 'deny');
+  assert.equal(t.store.pendingPermissions().length, 0, 'no prompt');
+  assert.equal(t.store.listQuestions(10)[0]!.addressedTo, 'user');
   assert.match(t.away.log('mgr').records[0]!.reason, /^held for Martin/);
   t.away.stop();
 });

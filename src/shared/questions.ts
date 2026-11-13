@@ -210,6 +210,12 @@ export interface RefusalDetails {
   always?: 'plain' | 'sensitive';
   /** With `sensitive`: the sensitive rule the command matched, as the question named it. */
   sensitiveRule?: string;
+  /**
+   * Not refused by the classifier but held by away mode (issue #262): a manager's own sensitive call, denied at once
+   * so its turn and inbox go on, and asked here instead of as a prompt. `reason` is then away mode's. Grants, Allow
+   * always and the passkey on the phone work as for a refusal. Absent: the classifier refused it.
+   */
+  held?: 'away';
 }
 
 /** The run and block a person block's question belongs to (workflow part 3b), with their titles as asked. */

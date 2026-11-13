@@ -268,13 +268,18 @@ export function refusalQuestion(
     const details: QuestionDetails = { title, issue, ...(tier ? { tier } : {}), rank: 0, refusal: r };
     return { question: `**${title}**\n\n${issue}`, options: [DONE_BY_HAND, DENY], details };
   }
-  const title = `Auto mode refused a call in "${session.title}"`;
+  const held = r.held === 'away';
+  const title = held ? `Away mode held a call in "${session.title}"` : `Auto mode refused a call in "${session.title}"`;
   const always = r.always === 'sensitive' ? ALLOW_ALWAYS_SENSITIVE : r.always === 'plain' ? ALLOW_ALWAYS : null;
   const issue = [
-    `The auto mode classifier refused this ${what} in the session "${session.title}" (project ${session.project}).`,
+    held
+      ? `Away mode held this ${what} of the manager "${session.title}" (project ${session.project}) while you are away. It did not run: the manager was told at once and goes on with other work.`
+      : `The auto mode classifier refused this ${what} in the session "${session.title}" (project ${session.project}).`,
     call,
-    reason,
-    `**${ALLOW_ONCE}** lets exactly this call run one time: Ledung tells the session to retry it, and lets the retry through. ` +
+    held ? `**Away mode's reason:** ${r.reason}` : reason,
+    (held
+      ? `**${ALLOW_ONCE}** lets exactly this call run one time: Ledung tells the manager to retry it if it is still needed, and lets that retry through. `
+      : `**${ALLOW_ONCE}** lets exactly this call run one time: Ledung tells the session to retry it, and lets the retry through. `) +
       `Any other command, and a second run of this one, is refused or asked as usual.` +
       (always
         ? ` **${always}** lets exactly this command run from now on, in every session of project ${session.project}, without the classifier and without asking you; ` +
@@ -293,13 +298,20 @@ export function refusalQuestion(
 export function refusalAnswerText(q: QuestionInfo, userName: string): string {
   const r = refusalOf(q)!;
   const call = fenced(callText(r));
+  // A held call (issue #262) may be answered hours later, after the manager got it done another way, and a second dev
+  // ship or merge is not harmless: so its retry is only "if it is still needed" (issue #262).
+  const held = r.held === 'away';
+  const which = held ? 'the call away mode held' : 'the call the auto mode classifier refused';
+  const retry = held
+    ? 'If it is still needed, retry exactly this call now, one time, unchanged; if you already got it done another way, or it is no longer needed, don\'t:'
+    : 'Retry exactly this call now, one time, unchanged:';
   if (r.byHand && q.answer?.trim() === DONE_BY_HAND) {
     return `${userName} made this change by hand (Ledung's question #${q.id}), because Allow once can't get the call past Claude Code. Don't retry it:\n\n${call}\n\nCheck the result if you need to, and go on.`;
   }
   // A question that offered no Allow once grants none, whatever its words say (Project-Ledung#470).
   if (allowsOnce(q.answer) && !r.byHand) {
     const note = q.answer!.trim().slice(ALLOW_ONCE.length).replace(/^\s*Note:\s*/, '').trim();
-    return `${userName} allowed, once, the call the auto mode classifier refused (Ledung's question #${q.id}). Retry exactly this call now, one time, unchanged:\n\n${call}\n\n` +
+    return `${userName} allowed, once, ${which} (Ledung's question #${q.id}). ${retry}\n\n${call}\n\n` +
       'Ledung lets that one retry through; it does not cover any other command, a changed one, or a second run.' +
       (note ? `\n\n${userName}'s note: ${note}` : '');
   }
@@ -307,12 +319,25 @@ export function refusalAnswerText(q: QuestionInfo, userName: string): string {
   if (always) {
     const label = always === 'sensitive' ? ALLOW_ALWAYS_SENSITIVE : ALLOW_ALWAYS;
     const note = q.answer!.trim().slice(label.length).replace(/^\s*Note:\s*/, '').trim();
-    return `${userName} allowed always the call the auto mode classifier refused (Ledung's question #${q.id}). Retry exactly this call now, unchanged:\n\n${call}\n\n` +
+    return `${userName} allowed always ${which} (Ledung's question #${q.id}). ${held ? 'If it is still needed, retry exactly this call now, unchanged:' : 'Retry exactly this call now, unchanged:'}\n\n${call}\n\n` +
       'Ledung lets exactly this command through from now on, in every session of this project. A changed command (other arguments, a pipe, another command chained on) is not covered and is refused or asked as usual.' +
       (note ? `\n\n${userName}'s note: ${note}` : '');
   }
   if (q.answer?.trim() === DENY) {
-    return `${userName} declined the call the auto mode classifier refused (Ledung's question #${q.id}):\n\n${call}\n\nDon't retry it, and don't ask again for it; go on without it, or say what you need instead.`;
+    return `${userName} declined ${which} (Ledung's question #${q.id}):\n\n${call}\n\nDon't retry it, and don't ask again for it; go on without it, or say what you need instead.`;
   }
-  return `${userName} answered Ledung's question #${q.id} about the call the auto mode classifier refused, without allowing it:\n\n${q.answer ?? ''}\n\nNothing was allowed; don't retry the call unless the answer tells you how.`;
+  return `${userName} answered Ledung's question #${q.id} about ${which}, without allowing it:\n\n${q.answer ?? ''}\n\nNothing was allowed; don't retry the call unless the answer tells you how.`;
+}
+
+/**
+ * What a manager is told at once when away mode holds its own sensitive call (issue #262), as the denied call's
+ * result: held as question #N, go on, retry only on Ledung's word. Never starts with Claude Code's classifier sentence,
+ * which would read as a refusal and raise a second question (issue #262). `again`: the same call while
+ * its question is still open, which raises none.
+ */
+export function heldMessage(questionId: number, reason: string, userName: string, again = false): string {
+  return `${again ? 'Still held' : 'Held'} for ${userName} as Ledung question #${questionId}${again ? ', which is still open' : ''}; this call did not run. ` +
+    `Away mode ${reason}. Go on with other work. Don't retry it now, and don't get the same effect another way. ` +
+    `If you can send it in a form away mode lets through, do that and withdraw question #${questionId}. ` +
+    `When ${userName} answers, Ledung tells you: after Allow once, retry exactly this call once, if it is still needed.`;
 }
