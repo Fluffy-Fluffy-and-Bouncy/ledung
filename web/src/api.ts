@@ -28,6 +28,17 @@ export type ClaudeCheck = { problem: string | null; looked: string[]; signIn: 'i
 export const PASSKEY_NEEDED = 'This needs your passkey.';
 /** The words for a device that has to unlock first (src/server/passkeys.ts). */
 export const DEVICE_LOCKED = 'This device is locked: unlock it with its passkey to make changes from here.';
+/** The refusal of a trusted computer's vouch for what still takes a passkey (src/server/passkeys.ts, issue #313). */
+export const PASSKEY_ONLY = 'This needs a passkey, or this computer\'s own screen: a trusted computer can\'t do it.';
+
+/**
+ * In a frame of a computer that trusts the screen around it (issue #313): asks that page to vouch for a challenge
+ * (web/src/vouch.ts), set by main.tsx in a frame; null on a top-level page, where no screen around it can vouch.
+ */
+let vouchCall: ((challenge: string) => Promise<void>) | null = null;
+export const setVouchCall = (call: ((challenge: string) => Promise<void>) | null) => {
+  vouchCall = call;
+};
 /** How Ledung's refusal of a change without a live page's key begins (src/server/server.ts, requireOpenPage). */
 export const OPEN_PAGE_ONLY = "Only Ledung's open page can do this";
 /** The page was opened through the public name (always HTTPS); locally it is plain http. */
@@ -63,8 +74,24 @@ export const resetPasskeyExplained = () => {
   signExplained = false;
 };
 
+/**
+ * The header that proves this request: a trusted computer's frame gets a challenge for the screen around it to vouch
+ * for, with no passkey prompt (issue #313); otherwise one passkey signature, explained first and retried while the
+ * person asks to. `passkey`: the passkey itself, after a refusal for what a vouch doesn't cover.
+ */
+async function proofFor(method: string, path: string, text: string, passkey = false): Promise<[string, string]> {
+  if (!passkey && vouchCall) {
+    const offer = await call<{ vouch?: string; challenge?: string }>('POST', '/api/passkey-challenge', { method, path, body: text });
+    if (typeof offer.vouch === 'string') {
+      await vouchCall(offer.vouch);
+      return ['X-Ledung-Vouch', offer.vouch];
+    }
+  }
+  return ['X-Ledung-Passkey', await signFor(method, path, text, passkey)];
+}
+
 /** One passkey signature for exactly this request, explained first and retried while the person asks to. */
-async function signFor(method: string, path: string, text: string): Promise<string> {
+async function signFor(method: string, path: string, text: string, passkey = false): Promise<string> {
   // The unlock's notice also says the signature that may follow, so that one goes straight on (#179).
   const kind = path === '/api/device-unlock' ? 'unlock' : 'sign';
   if (prompter && (kind === 'unlock' || !signExplained)) {
@@ -74,7 +101,7 @@ async function signFor(method: string, path: string, text: string): Promise<stri
   }
   for (;;) {
     // A fresh challenge each try: the last one may have run out while the phone's prompt was open.
-    const options = await call<{ challenge: string }>('POST', '/api/passkey-challenge', { method, path, body: text });
+    const options = await call<{ challenge: string }>('POST', '/api/passkey-challenge', { method, path, body: text, ...(passkey ? { passkey: true } : {}) });
     try {
       return await passkeyCalls().sign(options);
     } catch (e) {
@@ -87,7 +114,13 @@ async function signFor(method: string, path: string, text: string): Promise<stri
 /** A paired device as Settings lists it (issue #160). */
 /** Bytes of files sent to and received from a linked computer (issue #158): counted only, never a limit. */
 export type LinkBytes = { today: { sent: number; received: number }; month: { sent: number; received: number } };
-export type LinkedComputerInfo = { id: string; name: string; publicName: string; linkedAt: number; lastUsedAt: number | null; files?: LinkBytes };
+export type LinkedComputerInfo = {
+  id: string; name: string; publicName: string; linkedAt: number; lastUsedAt: number | null; files?: LinkBytes;
+  /** This computer trusts its own screen (issue #313): since when, and where that was set. */
+  trustedAt?: number; trustedFrom?: 'here' | 'phone';
+  /** It trusts this computer's own screen (issue #313). */
+  trustsUs?: boolean;
+};
 export type DeviceInfo ={ id: string; name: string; createdAt: number; lastUsedAt: number | null; passkey: boolean; passkeyAt: number | null; kind: 'phone' | 'computer' | 'browser'; pairedVia?: string | null };
 
 /** The live connection's key (#104): Ledung decides nothing sensitive without it. Null while there is no connection. */
@@ -149,10 +182,10 @@ const errorOf = async (res: Response): Promise<string | undefined> => ((await re
 async function call<T>(method: string, path: string, body?: unknown, raw?: Blob): Promise<T> {
   // The exact text sent, once: through the public name a passkey signs its hash (#160).
   const text = raw || body === undefined ? undefined : JSON.stringify(body);
-  const send = (key: string | null, passkey?: string) => {
+  const send = (key: string | null, proof?: [string, string]) => {
     const headers: Record<string, string> = raw ? { 'Content-Type': raw.type } : text === undefined ? {} : { 'Content-Type': 'application/json' };
     if (key) headers['X-Ledung-Page'] = key;
-    if (passkey) headers['X-Ledung-Passkey'] = passkey;
+    if (proof) headers[proof[0]] = proof[1];
     return fetch(path, { method, credentials: 'same-origin', headers, body: raw ?? text });
   };
   const change = method !== 'GET';
@@ -182,7 +215,11 @@ async function call<T>(method: string, path: string, body?: unknown, raw?: Blob)
   }
   if (change && remotePage() && res.status === 403) {
     if ((await refusal()) === PASSKEY_NEEDED) {
-      res = await send(key, await signFor(method, path, text ?? ''));
+      res = await send(key, await proofFor(method, path, text ?? ''));
+    }
+    // A trusted computer's vouch doesn't cover this one (issue #313): the passkey itself, where the device has one.
+    if ((await refusal()) === PASSKEY_ONLY) {
+      res = await send(key, await proofFor(method, path, text ?? '', true));
     }
   }
   const data = await res.json().catch(() => ({}));
@@ -404,6 +441,12 @@ export const api = {
   typicalCosts: (days = 30) => call<TypicalCost[]>('GET', `/api/typical-costs?days=${days}`),
   // Linked computers (issue #245): linked and unlinked on this computer only.
   links: () => call<{ publicName: string | null; problem: string | null; links: LinkedComputerInfo[] }>('GET', '/api/links'),
+  /** Each link's name and trust only (issue #313): what a phone sees, to trust a computer's screen from there. */
+  linkTrust: () => call<{ links: Pick<LinkedComputerInfo, 'id' | 'name' | 'trustedAt' | 'trustedFrom' | 'trustsUs'>[] }>('GET', '/api/link-trust'),
+  /** Trusts a linked computer's own screen, or stops (issue #313): here, or from a phone with its passkey. */
+  trustLink: (id: string, on: boolean) => call<LinkedComputerInfo>('POST', `/api/links/${encodeURIComponent(id)}/trust`, { on }),
+  /** This computer's own screen vouches for a challenge its frame of that linked computer was given (issue #313). */
+  linkVouch: (id: string, challenge: string) => call<{ ok: true }>('POST', '/api/link-vouch', { id, challenge }),
   linkCode: () => call<{ code: string; expiresAt: number }>('POST', '/api/links-code', {}),
   joinLink: (code: string, name: string) => call<LinkedComputerInfo>('POST', '/api/links-join', { code, name }),
   unlink: (id: string) => call('POST', `/api/links/${encodeURIComponent(id)}/remove`, {}),

@@ -1886,6 +1886,34 @@ test('computers are linked and unlinked only on this computer: a paired device, 
   }
 });
 
+test('a trusted computer\'s vouch (issue #313): link-vouch only on this computer, and a vouch header counts for no phone', async () => {
+  const d = await deviceWithPasskey('Vouching phone');
+  try {
+    assert.equal((await pubChange('/api/device-unlock', '{}', d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign('/api/device-unlock', '{}') })).status, 200);
+    // Unlocked, with the page key and this very request signed: link-vouch is still this computer's own screen's alone.
+    const body = JSON.stringify({ id: 'mac.l.example.com', challenge: 'A'.repeat(43) });
+    const vouch = await pubChange('/api/link-vouch', body, d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign('/api/link-vouch', body) });
+    assert.equal(vouch.status, 403, vouch.body);
+    assert.match(errorOf(vouch), /Only this computer's own screen vouches/);
+    // Locally without the open page's key (the token alone), refused before anything else.
+    const noPage = await change('/api/link-vouch', JSON.parse(body));
+    assert.equal(noPage.status, 403, noPage.body);
+    // A phone's vouch header, in place of its passkey, allows nothing: no phone is a trusted computer's frame.
+    const away = JSON.stringify({ until: '23:59' });
+    const viaVouch = await pubChange('/api/away', away, d.cookie, { ...d.withKey, 'x-ledung-vouch': 'A'.repeat(43) });
+    assert.equal(viaVouch.status, 403, viaVouch.body);
+    assert.match(errorOf(viaVouch), /does not trust that computer's screen/);
+    // Premise: the same request with its passkey goes through.
+    assert.equal((await pubChange('/api/away', away, d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign('/api/away', away) })).status, 200);
+    // And a phone's challenge is a passkey's, never one to vouch for.
+    const offered = JSON.parse((await pubChange('/api/passkey-challenge', { method: 'POST', path: '/api/away', body: away }, d.cookie)).body);
+    assert.equal(offered.vouch, undefined);
+    assert.equal(typeof offered.challenge, 'string');
+  } finally {
+    d.page.close();
+  }
+});
+
 test("an account's folder opens only on this computer, from its open page (issue #414)", async () => {
   // An account straight in the database: adding it through the manager would check its sign-in with Claude Code.
   const folder = path.join(projectRoot, 'account-work');

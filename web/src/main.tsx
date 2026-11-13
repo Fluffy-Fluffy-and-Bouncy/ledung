@@ -3,14 +3,17 @@ import { createRoot } from 'react-dom/client';
 import { App } from './App.tsx';
 import './styles.css';
 import { THEME_KEY, applyTheme, parseTheme, readTheme } from './theme.ts';
-import { setPasskeyCalls } from './api.ts';
+import { setPasskeyCalls, setVouchCall } from './api.ts';
 import { browserPasskeys } from './passkey.ts';
 import { followKeyboard } from './phoneKeyboard.ts';
 import { PasskeyDialog } from './components/PasskeyDialog.tsx';
 import { followFramingPage } from './settingsStore.ts';
+import { vouchByFramingPage } from './vouch.ts';
 
 // Through the public name, page-key actions ask for the phone's passkey (#160).
 setPasskeyCalls(browserPasskeys);
+// In a frame on another computer's page: when this computer trusts that screen, it vouches instead (issue #313).
+if (window.parent !== window) setVouchCall(vouchByFramingPage);
 
 // Before the first render, so a chosen scheme shows from the start (#113); another tab's choice follows.
 applyTheme(document.documentElement, readTheme(localStorage));
