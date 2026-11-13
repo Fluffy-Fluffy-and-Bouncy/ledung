@@ -238,10 +238,33 @@ test('opening lockdown and loosening the gate still take a passkey: a vouch is r
   // The same vouch path for a change that doesn't loosen it goes through the check (premise: the vouch itself is good).
   const plain = await frame('away', away(), await vouched(frame, macPage, pc, 'away', away()));
   assert.equal(plain.status, 200, JSON.stringify(plain.json));
+  // The same settings sent along with a rename (self-check finding 1): refused on a vouch too.
+  const renamed = { name: 'renamed', settings: { managerGrant: 'anything' } };
+  const viaRename = await frame('projects/loose/rename', renamed, await vouched(frame, macPage, pc, 'projects/loose/rename', renamed));
+  assert.equal(viaRename.status, 403, JSON.stringify(viaRename.json));
+  assert.match(viaRename.json.error, PASSKEY_ONLY);
+  // Premise: a rename whose settings loosen nothing passes the check on a vouch (and then finds no such project).
+  const plainRename = { name: 'renamed', settings: {} };
+  const passed = await frame('projects/loose/rename', plainRename, await vouched(frame, macPage, pc, 'projects/loose/rename', plainRename));
+  assert.notEqual(passed.status, 403, JSON.stringify(passed.json));
   // Asked for the passkey itself, the frame gets a passkey's challenge, which it can't answer without one.
   const forced = await frame('passkey-challenge', { method: 'POST', path: '/api/projects', body: JSON.stringify(loosening), passkey: true });
   assert.equal(forced.json.vouch, undefined);
   assert.match(forced.json.error, /no passkey/);
+});
+
+test('a sensitive prompt is decided on a vouch, and not without one', { timeout: HANG_MS }, async () => {
+  const { pc, macPage, pcPage, frame, macLink } = await frameOfPc();
+  assert.equal((await pcPage('POST', `links/${macLink.id}/trust`, { on: true })).status, 200);
+  assert.equal((await frame('device-unlock', {}, await vouched(frame, macPage, pc, 'device-unlock'))).status, 200);
+  // A sensitive request of a session that is no longer live: past the check, the manager finds nothing to decide.
+  pc.store.createSession({ id: 's313', project: 'p', runner: 'local', title: 't', parentId: null, permissionMode: 'default', role: 'session' });
+  pc.store.createPermission({ id: 'perm313', sessionId: 's313', toolName: 'Bash', input: { command: 'gh pr merge 1' }, title: null, reason: null, sensitive: 'command matches /gh pr merge/' });
+  const allow = { behavior: 'allow' };
+  const unsigned = await frame('permissions/perm313', allow);
+  assert.equal(unsigned.status, 403, 'logged on is not enough for a sensitive prompt');
+  const signed = await frame('permissions/perm313', allow, await vouched(frame, macPage, pc, 'permissions/perm313', allow));
+  assert.notEqual(signed.status, 403, JSON.stringify(signed.json));
 });
 
 test('removing trust logs the frame off at once and its next change is refused; unlinking does too', { timeout: HANG_MS }, async () => {

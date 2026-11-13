@@ -1636,7 +1636,9 @@ export class LedungServer {
       // 3a): local and the open page only, so neither a phone, anything on this computer's public name, nor a script
       // with the install token alone can; the link key never reaches a browser. That computer decides whether it counts.
       case 'POST link-vouch': {
-        if (this.guard.isPublic(req)) throw new HttpError(403, 'Only this computer\'s own screen vouches for its frames.');
+        // This computer itself: not its public name, and not another computer on the local network with "lan" on, which
+        // would act on every computer that trusts this screen (self-check finding 2).
+        if (this.guard.isPublic(req) || !fromThisComputer(req)) throw new HttpError(403, 'Only this computer\'s own screen vouches for its frames.');
         await this.requirePage(req, url);
         const linked = this.requireLinked();
         const body = await readJson(req);
@@ -1979,8 +1981,13 @@ export class LedungServer {
       }
       // A new name (issue #116): the user's alone, from the open page; no manager tool renames a project.
       case 'POST projects/:id/rename': {
-        await this.requirePage(req, url);
         const body = await readJson(req);
+        // Settings sent with it that open a locked project up or loosen the gate are passkey-only, as on their own
+        // route (issue #313, self-check finding 1): a trusted computer's vouch is not enough for them.
+        const sent = (body.settings ?? null) as Record<string, unknown> | null;
+        const project = decodeURIComponent(id);
+        if (sent && (manager.lockdownOpensUp(project, sent) || manager.gateLoosens(project, sent))) await this.requirePasskeyPage(req, url);
+        else await this.requirePage(req, url);
         // The other settings come along, so a refused one leaves the name as it was (review-116 m1).
         return manager.renameProject(decodeURIComponent(id), body.name, body.settings ? projectFrom(body.settings as Record<string, unknown>) : undefined);
       }
