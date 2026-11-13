@@ -17,7 +17,7 @@ import type { Store } from '../store/store.ts';
 import { AWAY_DEFAULT, AWAY_KINDS, EFFORT_LEVELS, HELPER, type AwayKind, type PermissionDecision, type PermissionMode, type RemoteStatus, type ServerEvent, parseWatch } from '../shared/protocol.ts';
 import { browserCookieHeader, deviceCookieHeader, Guard, readCookies, securityHeaders } from './security.ts';
 import { browserName, DEVICE_COOKIE, type Device, type DeviceKind, deviceName, Devices, deviceView, LEGACY_BROWSER_NAME } from './devices.ts';
-import { actionOf, DEVICE_LOCKED, PASSKEY_HEADER, PASSKEY_ONLY, PasskeyError, Passkeys, VOUCH_HEADER } from './passkeys.ts';
+import { actionOf, DEVICE_LOCKED, PASSKEY_HEADER, PASSKEY_NEEDED, PASSKEY_ONLY, PasskeyError, Passkeys, VOUCH_HEADER } from './passkeys.ts';
 import { linkedPushItem, Push, PushError, type LinkedPushItem } from './push.ts';
 import type { UsageQueries } from '../usage/queries.ts';
 import { readRunningRelease, type Updater } from '../update/updater.ts';
@@ -1499,6 +1499,10 @@ export class LedungServer {
         exercisedLine('EXERCISED #313 a trusted computer\'s screen vouched for its frame instead of a passkey');
       }
     } else {
+      // A trusted computer's frame sent no proof yet: "needs your passkey" is the refusal the page answers with a proof,
+      // here the vouch. Without this a frame with no passkey of its own was told it had none, and the page stopped
+      // there (browser check of PR #315, round 2).
+      if (req.headers[PASSKEY_HEADER] === undefined && this.trustedLink(device)) throw new HttpError(403, PASSKEY_NEEDED);
       await passkeyCall(() => this.passkeys!.verify(device, action, req.headers[PASSKEY_HEADER]));
     }
     this.signed.add(req);

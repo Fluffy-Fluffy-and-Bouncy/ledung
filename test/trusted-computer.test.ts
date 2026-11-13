@@ -324,6 +324,99 @@ test('a sensitive prompt is decided on a vouch, and not without one', { timeout:
   assert.match(signed.json.error, /no longer waiting/);
 });
 
+/**
+ * A change sent the way the page sends it (web/src/api.ts `call`): with no proof first; refused as locked, it logs on
+ * (that request too goes the same way) and sends again; refused as needing the passkey, it gets a proof for exactly the
+ * request (a vouch when the PC offers one, else the passkey, which this frame has none of) and sends again; refused as
+ * passkey-only, it asks for the passkey itself. Returns the final answer and every refusal on the way, in order.
+ */
+async function asThePage(frame: Device, macPage: Awaited<ReturnType<LinkedNodes['page']>>, pc: Node, route: string, body: unknown = {}): Promise<{ status: number; json: any; steps: string[] }> {
+  const steps: string[] = [];
+  const word = (r: { status: number; json: any }) => (r.status === 403 ? String(r.json.error) : String(r.status));
+  const proof = async (passkey: boolean): Promise<Record<string, string> | { refused: { status: number; json: any } }> => {
+    const got = await frame('passkey-challenge', { method: 'POST', path: `/api/${route}`, body: JSON.stringify(body), ...(passkey ? { passkey: true } : {}) });
+    if (got.status !== 200) return { refused: got };
+    if (typeof got.json.vouch !== 'string') throw new Error(`a passkey's challenge, which this frame can't answer: ${JSON.stringify(got.json)}`);
+    const v = await macPage('POST', 'link-vouch', { id: pc.name, challenge: got.json.vouch });
+    if (v.status !== 200) throw new Error(`the Mac's page could not vouch: ${JSON.stringify(v.json)}`);
+    steps.push('vouched');
+    return { 'x-ledung-vouch': got.json.vouch };
+  };
+  let res = await frame(route, body);
+  steps.push(word(res));
+  if (res.status === 403 && /This device is locked/.test(res.json.error)) {
+    const unlock = await asThePage(frame, macPage, pc, 'device-unlock', {});
+    steps.push(...unlock.steps.map((st) => `unlock: ${st}`));
+    if (unlock.status !== 200) return { ...unlock, steps };
+    res = await frame(route, body);
+    steps.push(word(res));
+  }
+  for (const [needed, passkey] of [[/^This needs your passkey\.$/, false], [/^This needs a passkey, or this computer's own screen/, true]] as const) {
+    if (res.status !== 403 || !needed.test(res.json.error)) continue;
+    const p = await proof(passkey);
+    if ('refused' in p) {
+      steps.push(word(p.refused as { status: number; json: any }));
+      return { ...(p.refused as { status: number; json: any }), steps };
+    }
+    res = await frame(route, body, p);
+    steps.push(word(res));
+  }
+  return { ...res, steps };
+}
+
+test('a trusted tab with no passkey, logged off, gets through as the page sends: locked, log on by vouch, then the vouch for its request', { timeout: HANG_MS }, async () => {
+  const { pc, macPage, pcPage, frame, macLink } = await frameOfPc();
+  pc.store.createSession({ id: 's313b', project: 'p', runner: 'local', title: 't', parentId: null, permissionMode: 'default', role: 'session' });
+  pc.store.createPermission({ id: 'perm313b', sessionId: 's313b', toolName: 'Bash', input: { command: 'gh pr merge 2' }, title: null, reason: null, sensitive: 'command matches /gh pr merge/' });
+  const allow = { behavior: 'allow' };
+  // Premise: untrusted, the page's own path ends where it always did, "it can only look", with no vouch on the way.
+  const before = await asThePage(frame, macPage, pc, 'permissions/perm313b', allow);
+  assert.equal(before.status, 403);
+  assert.match(before.json.error, NO_PASSKEY);
+  assert.ok(!before.steps.includes('vouched'), JSON.stringify(before.steps));
+
+  assert.equal((await pcPage('POST', `links/${macLink.id}/trust`, { on: true })).status, 200);
+  // A sensitive prompt, from logged off: refused as locked; the log-on, sent bare, is refused as needing the passkey
+  // (not "no passkey"), so the page vouches for it; then the prompt itself, the same way. It reaches the manager, which
+  // has no live session to tell (400, as server-security.test.ts's own case).
+  const prompt = await asThePage(frame, macPage, pc, 'permissions/perm313b', allow);
+  assert.deepEqual(prompt.steps, [
+    'This device is locked: unlock it with its passkey to make changes from here.',
+    'unlock: This needs your passkey.', 'unlock: vouched', 'unlock: 200',
+    'This needs your passkey.', 'vouched', '400',
+  ]);
+  assert.match(prompt.json.error, /no longer waiting/);
+  // An ordinary change after that goes through on the log-on alone, with no proof.
+  const ordinary = await asThePage(frame, macPage, pc, 'computers', rename(pc, 'Ordinary'));
+  assert.deepEqual(ordinary.steps, ['200']);
+
+  // What still takes a passkey: the page vouches, is told passkey-only, asks for the passkey and is told it has none.
+  const loosening = { name: 'loose', folder: '/nowhere', managerGrant: 'anything' };
+  const gate = await asThePage(frame, macPage, pc, 'projects', loosening);
+  assert.deepEqual(gate.steps.slice(0, 3), ['This needs your passkey.', 'vouched', "This needs a passkey, or this computer's own screen: a trusted computer can't do it."]);
+  assert.equal(gate.status, 403);
+  assert.match(gate.json.error, /no passkey/);
+
+  // Trust removed: the page's path ends at "it can only look" again, with no vouch.
+  assert.equal((await pcPage('POST', `links/${macLink.id}/trust`, { on: false })).status, 200);
+  const afterTrust = await asThePage(frame, macPage, pc, 'computers', rename(pc, 'After'));
+  assert.equal(afterTrust.status, 403);
+  assert.match(afterTrust.json.error, NO_PASSKEY);
+  assert.ok(!afterTrust.steps.includes('vouched'), JSON.stringify(afterTrust.steps));
+});
+
+test('a phone with no passkey, with a trusted computer on the PC: the page\'s path still ends at "it can only look"', { timeout: HANG_MS }, async () => {
+  const { pc, macPage, pcPage, macLink } = await frameOfPc();
+  assert.equal((await pcPage('POST', `links/${macLink.id}/trust`, { on: true })).status, 200);
+  const code = new URL((await pcPage('POST', 'devices-pair', { kind: 'phone' })).json.url).pathname.slice('/p/'.length);
+  const paired = await nodes.viaTunnel(pc.name, '/pair', { body: new URLSearchParams({ code, name: 'Phone' }).toString(), headers: { origin: `https://${pc.name}`, 'content-type': 'application/x-www-form-urlencoded' } });
+  const phone = await asDevice(pc, /^(__Host-ledung_device=[0-9a-f]{64})/.exec(String(paired.headers['set-cookie']))![1]!);
+  const res = await asThePage(phone, macPage, pc, 'computers', rename(pc, 'Phone'));
+  assert.equal(res.status, 403);
+  assert.match(res.json.error, NO_PASSKEY);
+  assert.deepEqual(res.steps, [res.json.error]);
+});
+
 test('a tab paired before the link id was kept counts by the link\'s name, only while one link has it; a phone never', { timeout: HANG_MS }, async () => {
   const { pc, macPage, pcPage, frame, cookie, macLink } = await frameOfPc();
   // As a row from before the migration: the link's name only.

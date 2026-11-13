@@ -126,8 +126,11 @@ export function ComputerFrames({ computers, opened, shown, throughPublicName = f
             <PairThroughLink computer={c} onCode={(url) => setPairing((p) => ({ ...p, [c.id]: url }))} />
           )}
           {pairing[c.id]
+            // The same handle as the page's frame: after pairing through the link this frame goes on as that computer's
+            // page, and its messages (a vouch, #313; its settings) are told apart by it (browser check of PR #315).
             ? <iframe key="pairing" className="cframe" style={computerStyle(c)} src={pairing[c.id]}
-              title={`${c.name}'s Ledung`} allow="publickey-credentials-get; publickey-credentials-create" />
+              title={`${c.name}'s Ledung`} allow="publickey-credentials-get; publickey-credentials-create"
+              ref={(el) => { frames.current[c.id] = el; }} />
             : <iframe key="page" className="cframe" style={computerStyle(c)} src={c.url!}
               title={`${c.name}'s Ledung`} allow="publickey-credentials-get; publickey-credentials-create"
               ref={(el) => { frames.current[c.id] = el; }} onLoad={() => loaded(c)} />}
