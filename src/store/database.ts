@@ -783,6 +783,11 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE devices ADD COLUMN paired_via_link TEXT;
   `,
+  // The fork a run is in (issue #193), as JSON RunFork (src/shared/flow-run.ts): a position per branch, each moving on
+  // its own until the join. Null: the run holds one position, at.
+  `
+  ALTER TABLE flow_runs ADD COLUMN fork TEXT;
+  `,
 ];
 
 export function databaseFile(dir = userDataDir()): string {

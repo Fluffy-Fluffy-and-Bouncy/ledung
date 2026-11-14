@@ -1207,3 +1207,133 @@ test('ledung#142: a sub-step brief is named where it is, a plain one in the work
   assert.ok(lines.some((l) => l.includes('process/briefs/security.md')));
   assert.ok(!lines.some((l) => l.includes('folder:')));
 });
+
+// #193: a fork starts every branch at once, and the join waits for each. Shaped as the flow the issue was found in:
+// Build → fork "Both reviews" → Code review and Test review → join "Both approved"; findings go to Route, then Fix.
+const FORKED = {
+  version: 1, title: 'Reviews at once', start: 'build',
+  blocks: [
+    { id: 'build', kind: 'work', title: 'Build', runs: 'new-session', outcomes: [{ word: 'PR opened', to: 'fork' }] },
+    { id: 'fork', kind: 'fork', title: 'Both reviews', outcomes: [{ word: 'Code', to: 'code-review' }, { word: 'Tests', to: 'test-review' }] },
+    { id: 'code-review', kind: 'check', title: 'Code review', runs: 'new-session', outcomes: [{ word: 'Approved', to: 'join' }, { word: 'Changes requested', to: 'route' }, { word: 'Reject', end: true }] },
+    { id: 'test-review', kind: 'check', title: 'Test review', runs: 'new-session', outcomes: [{ word: 'Tests hold', to: 'join' }, { word: 'Needs better test', to: 'route' }] },
+    { id: 'route', kind: 'check', title: 'Route', runs: 'manager', outcomes: [{ word: 'Needs fixes', to: 'fix' }] },
+    { id: 'fix', kind: 'work', title: 'Fix', runs: 'continue', continues: 'build', outcomes: [{ word: 'PR updated', to: 'fork' }, { word: 'Test fix', to: 'test-review' }] },
+    { id: 'join', kind: 'join', title: 'Both approved', outcomes: [{ word: 'Both approved', to: 'merge' }] },
+    { id: 'merge', kind: 'work', title: 'Merge', runs: 'manager', outcomes: [{ word: 'Merged', end: true }] },
+  ],
+};
+
+async function forked(join?: object) {
+  const flow = parseFlow(JSON.stringify(join ? { ...FORKED, blocks: FORKED.blocks.map((b) => (b.id === 'join' ? { ...b, ...join } : b)) } : FORKED)).flow;
+  assert.ok(flow);
+  return { folder: '/work/.ledung/workflow', flows: new Map([['main', flow]]), titles: new Map([['main', 'Reviews at once']]), text: async () => null };
+}
+
+test('#193: at a fork Ledung starts every branch at once, flow_status shows each, a branch steps while the other runs, and the join waits for both', async () => {
+  const { runs, ports, started, replies } = await engine({ flows: await forked() });
+  await runs.start('manager-1', { title: 'Fix the cart', ref: '#7' });
+  const at = await runs.step('manager-1', { run: 'run-1', outcome: 'PR opened', note: 'PR #8' });
+  // Both branches' sessions, at once, from one step; each told which branch it is and given what Build handed on.
+  assert.deepEqual(started.map((s) => s.title), ['Build: Fix the cart', 'Code review: Fix the cart', 'Test review: Fix the cart']);
+  assert.match(at, /At "Both reviews" \(fork\), a fork: Ledung started every branch at once\.\n- "Code" at "Code review" \(code-review\): Ledung started session "Code review: Fix the cart"[^\n]*\n- "Tests" at "Test review" \(test-review\): Ledung started session "Test review: Fix the cart"/);
+  assert.match(started[1]!.task, /This is the "Code" branch of the fork "Both reviews": its other branches \("Tests" at "Test review"\) run at the same time/);
+  assert.match(started[2]!.task, /What "Build" handed on:\n\nPR #8/);
+  const run = ports.runs.get('run-1')!;
+  assert.deepEqual(run.fork!.branches.map((b) => [b.word, b.at, b.joined]), [['Code', 'code-review', false], ['Tests', 'test-review', false]]);
+  assert.equal(run.sessions['code-review'], 'block-2');
+  assert.equal(run.sessions['test-review'], 'block-3');
+  // flow_status: every position the run holds.
+  assert.match(await runs.status('manager-1', 'run-1'), /in the fork "Both reviews", with a branch at each of: "Code" at "Code review" since [^;]+; "Tests" at "Test review" since/);
+  assert.match(await runs.status('manager-1'), /run-1 "Fix the cart" \(#7\), flow "Reviews at once": in the fork "Both reviews", with a branch at each of: "Code" at "Code review"/);
+  // Several branches out: the block must be named; the fork itself is not reported on.
+  await assert.rejects(runs.step('manager-1', { run: 'run-1', outcome: 'Tests hold' }), /at several blocks at once: give the block you report on\. Its branches: "Code" at "Code review" \(code-review\), "Tests" at "Test review" \(test-review\)\. Nothing was recorded\./);
+  await assert.rejects(runs.step('manager-1', { run: 'run-1', outcome: 'Code', block: 'fork' }), /Ledung started every branch of the fork "Both reviews" itself/);
+  // The second branch's step is accepted while the first still runs; the join waits for the other.
+  replies.set('block-3', 'The cart test fails without the fix.');
+  const tests = await runs.step('manager-1', { run: 'run-1', outcome: 'Tests hold', block: 'Test review' });
+  assert.match(tests, /Recorded "Tests hold" for "Test review", the "Tests" branch: it has reached the join "Both approved", which waits for "Code" \(at "Code review"\)\./);
+  const waiting = ports.runs.get('run-1')!;
+  assert.equal(waiting.at, 'fork');
+  assert.equal(waiting.state, 'running');
+  assert.deepEqual(waiting.fork!.branches.map((b) => [b.word, b.at, b.joined]), [['Code', 'code-review', false], ['Tests', 'join', true]]);
+  assert.match(await runs.status('manager-1', 'run-1'), /"Tests" waiting at the join "Both approved"/);
+  // A report for the block that branch has left, or for the branch at the join, records nothing.
+  await assert.rejects(runs.step('manager-1', { run: 'run-1', outcome: 'Tests hold', block: 'test-review' }), /No branch of run-1 "Fix the cart" \(#7\) is at "test-review"\. Its branches: "Code" at "Code review" \(code-review\), "Tests" waits at the join "Both approved"\. Nothing was recorded\./);
+  await assert.rejects(runs.step('manager-1', { run: 'run-1', outcome: 'Both approved', block: 'Tests' }), /The "Tests" branch of run-1 "Fix the cart" \(#7\) has reached the join "Both approved" and waits there for the others/);
+  assert.equal(ports.runs.get('run-1')!.history.length, waiting.history.length);
+  // The last branch in: the join moves on, with each branch's outcome; its one way on is taken.
+  const code = await runs.step('manager-1', { run: 'run-1', outcome: 'Approved', block: 'code-review', note: 'No findings.' });
+  assert.match(code, /every branch has reached the join "Both approved"\. Each branch's outcome:\n- "Code": Approved: No findings\.\n- "Tests": Tests hold: The cart test fails without the fix\.\n\nIt has one way on, so Ledung took it: Recorded "Both approved" for "Both approved": run-1 "Fix the cart" \(#7\) goes to "Merge"\./);
+  const merged = ports.runs.get('run-1')!;
+  assert.equal(merged.at, 'merge');
+  assert.equal(merged.fork, null);
+  assert.deepEqual(merged.history.map((h) => [h.block, h.word, h.branch ?? '', h.to]), [
+    ['build', 'PR opened', '', 'fork'], ['fork', 'Code', 'Code', 'code-review'], ['fork', 'Tests', 'Tests', 'test-review'],
+    ['test-review', 'Tests hold', 'Tests', 'join'], ['code-review', 'Approved', 'Code', 'join'], ['join', 'Both approved', '', 'merge'],
+  ]);
+  assert.match(merged.history.at(-1)!.by, /every branch in/);
+  // One position again: a step needs no block.
+  assert.match(await runs.step('manager-1', { run: 'run-1', outcome: 'Merged' }), /has ended: "Merged"/);
+});
+
+test('#193: a branch with findings goes on alone while the other waits at the join; back at the fork every branch starts afresh', async () => {
+  const { runs, ports, started, continued } = await engine({ flows: await forked() });
+  await runs.start('manager-1', { title: 'Fix the cart' });
+  await runs.step('manager-1', { run: 'run-1', outcome: 'PR opened' });
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Approved', block: 'code-review' });
+  // The test review's findings: that branch goes to Route, the coordinator's own step; the code branch keeps waiting.
+  const route = await runs.step('manager-1', { run: 'run-1', outcome: 'Needs better test', block: 'test-review' });
+  assert.match(route, /the "Tests" branch: the branch goes to "Route"\. "Tests" at "Route" \(route\): your own step\./);
+  assert.deepEqual(ports.runs.get('run-1')!.fork!.branches.map((b) => [b.word, b.at, b.joined]), [['Code', 'join', true], ['Tests', 'route', false]]);
+  // Only one branch out: its step needs no block.
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Needs fixes' });
+  assert.equal(continued.at(-1)!.id, 'block-1');
+  // The fix asked for the test review only: that one runs again, and the join takes both.
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Test fix' });
+  assert.equal(started.at(-1)!.title, 'Test review: Fix the cart');
+  const both = await runs.step('manager-1', { run: 'run-1', outcome: 'Tests hold' });
+  assert.match(both, /Each branch's outcome:\n- "Code": Approved[^\n]*\n- "Tests": Tests hold/);
+  assert.equal(ports.runs.get('run-1')!.at, 'merge');
+
+  // A second run: findings from the code review, the fix goes back to the fork, and both reviews start again.
+  await runs.start('manager-1', { title: 'Fix the till' });
+  await runs.step('manager-1', { run: 'run-2', outcome: 'PR opened' });
+  const before = started.length;
+  await runs.step('manager-1', { run: 'run-2', outcome: 'Changes requested', block: 'code-review' });
+  await runs.step('manager-1', { run: 'run-2', outcome: 'Needs fixes', block: 'route' });
+  const again = await runs.step('manager-1', { run: 'run-2', outcome: 'PR updated', block: 'fix' });
+  assert.match(again, /goes to "Both reviews"\. Its other branches \("Tests" at "Test review"\) are dropped: the fork starts every branch afresh\. At "Both reviews" \(fork\), a fork: Ledung started every branch at once\./);
+  assert.deepEqual(started.slice(before).map((s) => s.title), ['Code review: Fix the till', 'Test review: Fix the till']);
+  assert.deepEqual(ports.runs.get('run-2')!.fork!.branches.map((b) => [b.word, b.at, b.joined]), [['Code', 'code-review', false], ['Tests', 'test-review', false]]);
+});
+
+test("#193: two branches meeting at one block go on as one; a branch that ends the flow ends the run; a join with a choice is the coordinator's", async () => {
+  const { runs, ports, started } = await engine({ flows: await forked({ outcomes: [{ word: 'Merge', to: 'merge' }, { word: 'Hold', end: true }] }) });
+  await runs.start('manager-1', { title: 'Fix the cart' });
+  await runs.step('manager-1', { run: 'run-1', outcome: 'PR opened' });
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Changes requested', block: 'code-review' });
+  const met = await runs.step('manager-1', { run: 'run-1', outcome: 'Needs better test', block: 'test-review' });
+  assert.match(met, /it goes to "Route", where the "Code" branch already is, so the two go on as one there, as "Code"; nothing more was started\./);
+  assert.deepEqual(ports.runs.get('run-1')!.fork!.branches.map((b) => [b.word, b.at]), [['Code', 'route']]);
+  // Back through the fork, both in: the join has two ways on, so the coordinator is told each branch's outcome and picks.
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Needs fixes' });
+  await runs.step('manager-1', { run: 'run-1', outcome: 'PR updated' });
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Approved', block: 'code-review' });
+  const choice = await runs.step('manager-1', { run: 'run-1', outcome: 'Tests hold', block: 'test-review' });
+  assert.match(choice, /Each branch's outcome:\n- "Code": Approved\n- "Tests": Tests hold\n\nAt "Both approved" \(join\): a step for you to see through\.[\s\S]*Its outcomes: "Merge" → Merge; "Hold" ends the flow\./);
+  const atJoin = ports.runs.get('run-1')!;
+  assert.equal(atJoin.at, 'join');
+  assert.equal(atJoin.fork, null);
+  assert.match(await runs.step('manager-1', { run: 'run-1', outcome: 'Hold' }), /has ended: "Hold"/);
+
+  // A branch whose outcome ends the flow ends the whole run, the other branch with it.
+  await runs.start('manager-1', { title: 'Fix the till' });
+  await runs.step('manager-1', { run: 'run-2', outcome: 'PR opened' });
+  const n = started.length;
+  assert.match(await runs.step('manager-1', { run: 'run-2', outcome: 'Reject', block: 'code-review' }), /run-2 "Fix the till" has ended: "Reject"/);
+  const ended = ports.runs.get('run-2')!;
+  assert.equal(ended.state, 'ended');
+  assert.equal(ended.fork, null);
+  assert.equal(started.length, n);
+});

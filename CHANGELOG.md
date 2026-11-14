@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-14
+- Workflow runs: a fork now starts every branch at once (a session for each branch that runs one), each branch moves on by its own report, and the join goes on only when every branch has reached it, with each branch's outcome. The workflow page and the run's status show where each branch is. (#193)
+
 ## 2026-11-13
 - Trusted computer: in Settings → Linked computers, **Trust its own screen** lets that computer's tab act on this one with no passkey: it logs on, sends, and allows prompts (sensitive ones too), `!` commands and away mode with no Touch ID or Windows Hello. The prompts still show. Opening lockdown and loosening the sensitive gate in a project's or the chats' settings still need a passkey or this computer's own screen; "Allow always, though sensitive" on a held call is covered like any prompt. Set or removed on the computer itself, or from a phone with its passkey; removing it logs that tab off at once. A trusted computer's tab shows a 🔑. Phones keep their passkey. (#313)
 - Managers no longer stop on a prompt of their own, whether you are away or here. A manager's AskUserQuestion or plan approval is declined at once, and the manager asks you with ask_user instead. A manager's settings change and its other sensitive calls that aren't shell commands come to Waiting for you as a question (Allow once, Deny). The manager goes on and gets its sessions' reports. On Allow once, it retries that exact call once if it is still needed; a settings change goes through only while it still changes exactly what the question showed. Workers' prompts are unchanged. The Waiting for you group for these questions is now called "Calls refused or held for you". (#308)

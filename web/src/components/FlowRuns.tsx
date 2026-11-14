@@ -22,6 +22,8 @@ function stateLine(r: FlowRun, blockTitle: (flow: string, id: string) => string,
   const at = r.at ? blockTitle(r.flow, r.at) : '?';
   // In line (part 3f): to start, or before a block that takes only so many at once.
   if (r.state === 'queued') return `${r.queue === 'flow' ? 'queued to start' : `queued before ${at}`}, number ${placeInLine(runs, r)} in line, for ${since(r.atSince)}`;
+  // In a fork, where each branch is (#193).
+  if (r.fork) return r.fork.branches.map((b) => `${b.word}: ${b.joined ? `waiting at ${blockTitle(r.flow, b.at)}` : `at ${blockTitle(r.flow, b.at)}`}`).join(' · ');
   return r.state === 'waiting' ? `waiting at ${at} for ${since(r.atSince)}` : `at ${at}`;
 }
 

@@ -722,7 +722,7 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
         run,
         outcome: z.string().min(1).max(200).describe("The outcome's word, e.g. \"Approved\"; with stop, why."),
         note: z.string().min(1).max(4000).optional().describe('What to hand on to the next step: the PR, the findings.'),
-        block: z.string().min(1).max(80).optional().describe('The block you report on; refused if the run has left it.'),
+        block: z.string().min(1).max(80).optional().describe('The block you report on; refused if the run has left it. In a fork, the branch\'s block.'),
         stop: z.boolean().optional().describe('Stop the run where it is.'),
       }, async (a) => safely(() => r.step(a))) as never,
       tool('flow_status', "Your project's runs: where each is, or one in full (counts, sessions, history).", {
