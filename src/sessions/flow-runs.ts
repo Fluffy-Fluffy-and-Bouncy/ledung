@@ -109,8 +109,6 @@ function briefPlace(folder: string, brief: string): string {
 
 /** EXERCISED #142 is logged once per run of Ledung, not per step. */
 let exercised142 = false;
-/** EXERCISED #193 too: once per run of Ledung, at the first fork that starts its branches. */
-let exercised193 = false;
 
 /** How long a person block waits for its coordinator's write-up before Ledung asks its own card (#291). */
 export const WRITE_UP_MINUTES = 10;
@@ -723,10 +721,6 @@ export class FlowRuns {
     const outs = [...byWord.values()];
     // Fewer than two branches, or none that goes anywhere but a join (nothing would ever move it; self-check, 2).
     if (outs.length < 2 || outs.every((o) => flow.blocks.find((b) => b.id === o.to)!.kind === 'join')) return null;
-    if (!exercised193) {
-      exercised193 = true;
-      exercisedLine('EXERCISED #193 fork started every branch at once');
-    }
     const now = this.now();
     const blockOf = (id: string) => flow.blocks.find((b) => b.id === id)!;
     const branches: RunBranch[] = outs.map((o) => (blockOf(o.to!).kind === 'join'
