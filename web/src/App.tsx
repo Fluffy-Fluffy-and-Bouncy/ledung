@@ -100,6 +100,7 @@ import { useSessionSecrets } from './useSessionSecrets.ts';
 import { suggestSecretName } from '../../src/shared/secrets.ts';
 import { errorText, isStalePageError } from './pageError.ts';
 import { guardFor, heldRecently, noteHeld, setLeaveGuard, workflowFromHash, workflowHash } from './flowNav.ts';
+import { badgeTitle, type WaitingFocus } from './waitingFocus.ts';
 
 /** Shown in a frame on another computer's page (issue #241): fixed for the page's life. */
 const IN_FRAME = inFrame();
@@ -492,7 +493,14 @@ export function App() {
   // The sidebar is memoized (issue #233): a message or other live event that changes nothing it shows doesn't redraw
   // it. Its handlers keep their identity for that; they are only called on a click.
   const sidebarRun = useStableCallback(run);
-  const sidebarOpen = useStableCallback(open);
+  // A badge's project (issue #322) lasts while Waiting for you is open; anything else opened from the sidebar, the
+  // Waiting for you entry too, leaves it, so opening Waiting for you the usual way shows the kept filter.
+  const [waitingFocus, setWaitingFocus] = useState<WaitingFocus | null>(null);
+  useEffect(() => {
+    if (waitingFocus && !isDeskView(openId)) setWaitingFocus(null);
+  }, [openId, waitingFocus]);
+  const sidebarOpen = useStableCallback((id: string) => { setWaitingFocus(null); open(id); });
+  const sidebarOpenWaiting = useStableCallback((focus: WaitingFocus) => { setWaitingFocus(focus); open('waiting'); });
   const sidebarCloseSettings = useStableCallback(closeSettings);
   // The helper's entry and New project, stable so the memoized sidebar isn't drawn again for them (issue #233).
   const sidebarOpenHelper = useStableCallback(() => void openHelper());
@@ -612,6 +620,7 @@ export function App() {
           questions={ledung.questions}
           helper={ledung.helper}
           onOpenHelper={sidebarOpenHelper}
+          onOpenWaiting={sidebarOpenWaiting}
           onNewProject={sidebarNewProject}
         />
         {!noSidebar && <SidebarResizer />}
@@ -652,6 +661,8 @@ export function App() {
               orders={ledung.orders}
               linkPairings={ledung.linkPairings}
               run={run}
+              focus={waitingFocus}
+              onClearFocus={() => setWaitingFocus(null)}
             />
           ) : openId === 'board' ? (
             <BoardListView board={ledung.board} onOpen={open} onOpenSettings={() => open(bannerView('board'))} />
@@ -786,6 +797,8 @@ const Sidebar = memo(function Sidebar(props: {
   /** The Ledung Helper (docs/steps/ledung-helper.md): its entry under Chats, and New project in a heading's menu. */
   helper: HelperInfo | null;
   onOpenHelper: () => void;
+  /** A row's question badge (issue #322): Waiting for you on its project. */
+  onOpenWaiting: (focus: WaitingFocus) => void;
   onNewProject: () => void;
 }) {
   // A tree per project: the project, its manager with the sessions it runs, then sessions started
@@ -1009,6 +1022,14 @@ const Sidebar = memo(function Sidebar(props: {
   const shows = compactRows(compact);
   // "Archived (N)" at the end of each group, when switched on in Settings (#157, #95).
   const [archivedShown] = useArchivedLink();
+  // A row's count of open questions and prompts, a button of its own beside the row's (no button inside a button), so
+  // a click opens Waiting for you on the row's project and never the chat too (issue #322).
+  const countBadge = (count: number, focus: WaitingFocus) => count ? (
+    <button className="badge-button" title={badgeTitle(count, focus.project)} aria-label={badgeTitle(count, focus.project)}
+      onClick={() => props.onOpenWaiting(focus)}>
+      <span className="badge">{count}</span>
+    </button>
+  ) : null;
   // The caret sits beside the row's button, not in it (no button inside a button), and carries no data-drag.
   const item = ({ s, depth, drag: group, hidden, folds, folded: isFolded }: FoldedRow<Row>) => {
     const time = `${formatTime(s.createdAt)}${s.backgroundTasks > 0 ? ` · ${s.backgroundTasks} in background` : ''}`;
@@ -1066,9 +1087,13 @@ const Sidebar = memo(function Sidebar(props: {
             return mode && <span className={`session-ship ${statusLook(s)}`}><SailingShip mode={mode} width={10} sizeButton={false} hideWhenSunk maxSize={shows.shipMax} /></span>;
           })()}
           {hiddenChip(hidden, hidden?.count === 1 ? 'sub-session' : 'sub-sessions')}
-          {(props.pending[s.id] ?? 0) + (hidden?.pending ?? 0) ? <span className="badge">{(props.pending[s.id] ?? 0) + (hidden?.pending ?? 0)}</span> : null}
         </button>
         )}
+        {renaming !== s.id && countBadge((props.pending[s.id] ?? 0) + (hidden?.pending ?? 0), {
+          project: s.project, from: s.title,
+          // Folded sessions add their count to this row's, so their items are its too.
+          sessions: [s.id, ...(hidden ? props.index.childrenOf(s.id).map((c) => c.id) : [])],
+        })}
       </div>
     );
   };
@@ -1126,7 +1151,7 @@ ${moreHint}`}
 ${moreHint}`} onClick={() => props.onOpen('chat')}><Named colour={props.chats?.colour ?? null}>Chats</Named></button>
                   ) : <span className="project-name muted">{g.name}</span>}
                   {hiddenChip(g.view.project, g.view.project?.count === 1 ? 'session' : 'sessions')}
-                  {g.view.project?.pending ? <span className="badge">{g.view.project.pending}</span> : null}
+                  {countBadge(g.view.project?.pending ?? 0, { project: g.name, sessions: [], from: projectLabel(g.name) })}
                   {g.project && props.workflows[g.name] && (
                     <WorkflowButton
                       counts={workflowButton(props.runs[g.name] ?? [], (id) => props.questions[id]?.status === 'open')}

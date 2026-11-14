@@ -10,6 +10,7 @@ import { findTickets } from '../../../src/shared/tickets.ts';
 import { api } from '../api.ts';
 import { conversationOf } from '../conversation.ts';
 import { opened, readFilter, waitingLists, writeFilter, type Filter, type Item } from '../waitingLists.ts';
+import { focusFilter, showAll, withManager, type WaitingFocus } from '../waitingFocus.ts';
 import { nameTint, questionLabel, withChatsColour } from '../nameTint.ts';
 import { Markdown } from './Markdown.tsx';
 import { formatTime } from './MessageList.tsx';
@@ -63,9 +64,15 @@ export function WaitingView(props: {
   /** Reads Waiting for you history (issue #306), when the view opens. */
   onLoadHistory?: () => Promise<void>;
   run: (action: () => Promise<unknown>) => Promise<void>;
+  /** A sidebar badge's project, shown for this visit without changing the kept filter (issue #322). */
+  focus?: WaitingFocus | null;
+  /** Leaves the badge's project: the filter controls, or Show all, were used. */
+  onClearFocus?: () => void;
 }) {
-  const [filter, setFilterState] = useState(() => readFilter(localStorage));
+  const [saved, setFilterState] = useState(() => readFilter(localStorage));
+  const filter = focusFilter(saved, props.focus ?? null);
   const setFilter = (f: Filter) => {
+    props.onClearFocus?.();
     setFilterState(f);
     writeFilter(localStorage, f);
   };
@@ -159,6 +166,9 @@ export function WaitingView(props: {
       done={done}
       permsForYou={permsForYou}
       tiers={visibleTiers}
+      focus={props.focus ?? null}
+      withManager={props.focus ? withManager(props.focus, props.questions, props.permissions) : 0}
+      onShowAll={() => setFilter(showAll(saved))}
     />
   );
 }
@@ -222,6 +232,9 @@ function Queue(p: {
   done: Item[];
   permsForYou: PermissionInfo[];
   tiers: string[];
+  focus: WaitingFocus | null;
+  withManager: number;
+  onShowAll: () => void;
 }) {
   const { props, nameOf, titleOf, projectOf, tierColor, tintOf, header } = p.ctx;
   const { filter, setFilter } = p;
@@ -248,6 +261,34 @@ function Queue(p: {
   });
 
   const waiting = p.forYou.length + p.permsForYou.length + props.newComputers.length + props.linkPairings.length;
+  // A session's badge (issue #322): its first item in the order shown is selected and takes the keyboard focus.
+  const firstOfFocus = (() => {
+    const mine = new Set(p.focus?.sessions ?? []);
+    if (!mine.size) return null;
+    const qs = (list: Item[]) => list.map((i) => ({ key: `q:${i.q.id}`, sessionId: i.q.sessionId }));
+    const special = (i: Item) => i.q.details?.refusal || i.q.details?.order;
+    const order = [
+      ...qs(p.forYou.filter((i) => i.q.details?.order && !i.q.details.order.confirm)),
+      ...qs(p.forYou.filter((i) => i.q.details?.order?.confirm)),
+      ...qs(p.forYou.filter((i) => i.q.details?.refusal)),
+      ...p.permsForYou.map((perm) => ({ key: `p:${perm.id}`, sessionId: perm.sessionId })),
+      ...[...p.tiers, null].flatMap((t) => qs(p.forYou.filter((i) => i.tier === t && !special(i)))),
+    ];
+    return order.find((o) => mine.has(o.sessionId))?.key ?? null;
+  })();
+  // The clicked row's own items, when the project has more, so the badge's count can be found in the view (Done looks like 7).
+  const fromRow = (() => {
+    const mine = new Set(p.focus?.sessions ?? []);
+    return p.forYou.filter((i) => mine.has(i.q.sessionId)).length + p.permsForYou.filter((x) => mine.has(x.sessionId)).length;
+  })();
+  const focusedFor = useRef<WaitingFocus | null>(null);
+  useEffect(() => {
+    if (!p.focus || focusedFor.current === p.focus || !firstOfFocus) return;
+    focusedFor.current = p.focus;
+    const el = document.querySelector<HTMLElement>('.desk-body .focus-first');
+    el?.focus({ preventScroll: true });
+    el?.scrollIntoView({ block: 'nearest' });
+  }, [p.focus, firstOfFocus]);
   const answered = p.done.filter((i) => i.q.status === 'answered').length;
   const row = (i: Item, place: number | null) => {
     const { q, v } = i;
@@ -256,7 +297,7 @@ function Queue(p: {
     const tint = tintOf(q.sessionId);
     return (
       <div key={q.id} className="qrow-wrap">
-        <button className={`qrow name-tinted${tint ? ' tinted' : ''}${isDone ? ' done' : ''}`} style={tint} onClick={() => props.onOpenQuestion(q.id)}>
+        <button className={`qrow name-tinted${tint ? ' tinted' : ''}${isDone ? ' done' : ''}${firstOfFocus === `q:${q.id}` && !isDone ? ' focus-first' : ''}`} style={tint} onClick={() => props.onOpenQuestion(q.id)}>
           <span className="border-label">{questionLabel(i.tier, i.project)}</span>
           <span className="place">{isDone ? (q.status === 'answered' ? '✓' : '–') : place ?? '·'}</span>
           <span className="t">{v.title}{disagree(v.opinions) && !isDone && <> <span className="split">They disagree</span></>}</span>
@@ -282,7 +323,7 @@ function Queue(p: {
     );
   };
   const permission = (perm: PermissionInfo) => (
-    <div key={perm.id} className="waiting-permission">
+    <div key={perm.id} className={`waiting-permission${firstOfFocus === `p:${perm.id}` ? ' focus-first' : ''}`} tabIndex={firstOfFocus === `p:${perm.id}` ? -1 : undefined}>
       <div className="waiting-from">
         <button className="link" onClick={() => props.onOpenSession(perm.sessionId)}>{titleOf(perm.sessionId)}</button>
         <span className="muted"> ({projectLabel(projectOf(perm.sessionId))}) · {formatTime(perm.at)}</span>
@@ -332,7 +373,18 @@ function Queue(p: {
       <div className="desk">
         <div className="desk-body">
           <p className="lede muted">Ordered by what each answer unblocks, and each answer takes you to the next.<span className="kbd-hint"> <kbd>Enter</kbd> opens the first question.</span></p>
-          {!waiting && <div className="empty-box">Nothing is waiting for you{filter.mode === 'one' && filter.one ? ` in ${filter.one}` : ''}. New questions appear here as they are asked.</div>}
+          {p.focus && (
+            // What a badge opened (issue #322): said plainly, with the way back to every project.
+            <div className="focus-line" role="status">
+              {p.forYou.length + p.permsForYou.length
+                ? <>Showing: <b>{projectLabel(p.focus.project)}</b></>
+                : <>Nothing waiting for <b>{projectLabel(p.focus.project)}</b></>}
+              {fromRow > 0 && fromRow < p.forYou.length + p.permsForYou.length && <span className="muted"> · {fromRow} of these from {p.focus.from}</span>}
+              {p.withManager > 0 && <span className="muted"> · {p.withManager} from {p.focus.from} {p.withManager === 1 ? 'is' : 'are'} with its manager, not here</span>}
+              {' · '}<button className="link" onClick={p.onShowAll}>Show all</button>
+            </div>
+          )}
+          {!waiting && !p.focus && <div className="empty-box">Nothing is waiting for you{filter.mode === 'one' && filter.one ? ` in ${filter.one}` : ''}. New questions appear here as they are asked.</div>}
           {keep.length > 0 && <div className="group">{groupHead('Orders from your away time: keep them?', 'var(--danger)', keep.length)}{keep.map((i) => row(i, ++place))}</div>}
           {confirm.length > 0 && <div className="group">{groupHead('Orders to confirm', 'var(--danger)', confirm.length)}{confirm.map((i) => row(i, ++place))}</div>}
           {orders.length > 0 && <div className="group">{groupHead('Orders', 'var(--accent)', orders.length)}{orders.map((o) => (
