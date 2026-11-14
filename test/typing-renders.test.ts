@@ -250,11 +250,14 @@ test('"Show earlier messages" draws the next batch at once; at the first item it
   // Exactly the STEP above them, and nothing drawn again.
   assert.deepEqual(drawn, Array.from({ length: STEP }, (_, i) => textOf(800 - TAIL - STEP + 1 + i)));
 
+  // Batch by batch, down to the first loaded one, each drawn once; now the button asks Ledung for more.
   drawn.length = 0;
-  await page.act(async () => button(view.host, 'Show earlier messages')!.click());
-  // The rest, down to the first loaded one; now the button asks Ledung for more.
+  for (let i = 0; i < 20 && button(view.host, 'Show earlier messages'); i++) {
+    await page.act(async () => button(view.host, 'Show earlier messages')!.click());
+  }
   assert.equal(drawn.length, 700 - TAIL - STEP);
-  assert.equal(drawn[0], textOf(101));
+  assert.equal(new Set(drawn).size, drawn.length, 'nothing drawn twice');
+  assert.ok(drawn.includes(textOf(101)), 'down to the first loaded one');
   assert.equal(button(view.host, 'Show earlier messages'), undefined);
   assert.ok(button(view.host, 'Load earlier messages'), 'the button now loads from Ledung');
 
@@ -283,4 +286,17 @@ test('your latest message above the drawn part sticks to the top, and a click on
   // Drawn down from it: the message itself in the list, and the replies after it.
   assert.equal(inList().length, 1);
   assert.ok(drawn.includes(textOf(2)), 'the replies above the old drawn part are drawn');
+});
+
+test('a tool-heavy conversation opens with the latest TAIL replies drawn, hidden tool calls not counted (issue #329)', async (t) => {
+  localStorage.clear();
+  drawn.length = 0;
+  // Each reply follows four tool calls, hidden while tool calls are not shown: 1000 items, 200 replies.
+  const tool = (id: number) => ({ id, at: 1_700_000_000_000 + id * 1000, kind: 'sdk', data: { type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'tool_use', id: `t${id}`, name: 'Bash', input: { command: 'ls' } }] } } });
+  const messages = Array.from({ length: 1000 }, (_, i) => ((i + 1) % 5 === 0 ? assistant(i + 1, textOf(i + 1)) : tool(i + 1)));
+  const view = await mount(ledung(messages));
+  t.after(() => view.unmount());
+  assert.equal(drawn.length, TAIL);
+  assert.equal(drawn[0], textOf(1000 - 5 * (TAIL - 1)));
+  assert.equal(view.host.querySelectorAll('.msg.assistant').length, TAIL);
 });

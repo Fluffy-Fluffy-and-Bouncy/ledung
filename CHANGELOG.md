@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-15
+- Opening a long chat is faster, most of all one with many long replies on a phone: it first draws the latest 40 messages you can see (hidden tool calls no longer count), and earlier ones as you scroll up, 40 at a time. (#329)
+
 ## 2026-11-14
 - Sidebar: the yellow count next to a manager, a session, a folded project or a chat now opens **Waiting for you** on that project alone, with the session's first item selected; a click on the rest of the row still opens the chat. A "Showing: <project> · Show all" line says what is shown ("Nothing waiting for <project>" when nothing is), and names the sessions whose questions are with their manager instead, as links to them; the count's tooltip says how many of them are with a manager. The filter you set in Waiting for you is unchanged, so opening it the usual way shows what it always did. (#322)
 - Switching from one chat to another is faster, most of all on a phone or a slow computer: the new chat no longer draws the previous chat's messages before loading its own. (#328)
