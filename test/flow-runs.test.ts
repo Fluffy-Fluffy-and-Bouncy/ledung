@@ -1337,3 +1337,32 @@ test("#193: two branches meeting at one block go on as one; a branch that ends t
   assert.equal(ended.fork, null);
   assert.equal(started.length, n);
 });
+
+test('#193 self-check: a join whose way on is not drawn yet keeps the branch step and says so; a fork with only joins to go to is the coordinator\'s', async () => {
+  // The join's one outcome leads nowhere yet: the last branch's step is recorded, and the run waits at the join.
+  const { runs, ports } = await engine({ flows: await forked({ outcomes: [{ word: 'Both approved' }] }) });
+  await runs.start('manager-1', { title: 'Fix the cart' });
+  await runs.step('manager-1', { run: 'run-1', outcome: 'PR opened' });
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Tests hold', block: 'test-review' });
+  const last = await runs.step('manager-1', { run: 'run-1', outcome: 'Approved', block: 'code-review' });
+  assert.match(last, /Ledung could not take the join's way on: "Both approved" of "Both approved" leads nowhere yet[^\n]* The run is at "Both approved": report its outcome yourself/);
+  assert.doesNotMatch(last, /Nothing was recorded/);
+  const run = ports.runs.get('run-1')!;
+  assert.equal(run.at, 'join');
+  assert.equal(run.fork, null);
+  assert.deepEqual(run.history.at(-1)!.block, 'code-review');
+
+  // Every fork outcome goes straight to the join: no branch to start, so the fork is the coordinator's step as before.
+  const only = await forked();
+  only.flows.get('main')!.blocks.find((b) => b.id === 'fork')!.outcomes = [{ word: 'Code', to: 'join' }, { word: 'Tests', to: 'join' }];
+  const e = await engine({ flows: only });
+  await e.runs.start('manager-1', { title: 'Fix the cart' });
+  const at = await e.runs.step('manager-1', { run: 'run-1', outcome: 'PR opened' });
+  assert.match(at, /At "Both reviews" \(fork\): a step for you to see through\./);
+  assert.equal(e.ports.runs.get('run-1')!.fork, null);
+  // Positive branch of the same probe: a fork with somewhere to go does start its branches.
+  const both = await engine({ flows: await forked() });
+  await both.runs.start('manager-1', { title: 'Fix the cart' });
+  assert.match(await both.runs.step('manager-1', { run: 'run-1', outcome: 'PR opened' }), /a fork: Ledung started every branch at once/);
+  assert.match(await e.runs.step('manager-1', { run: 'run-1', outcome: 'Code' }), /goes to "Both approved"/);
+});

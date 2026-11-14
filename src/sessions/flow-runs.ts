@@ -288,8 +288,6 @@ export class FlowRuns {
       if (run.state === 'queued') throw new FlowRunError(`${runLabel(run)} is in line (${this.stateLine(run, (b) => b ?? '')}): it has no step to report yet. Stop it with stop: true, or ${this.p.userName} can start it anyway.`);
       const flows = await this.flowsOf(run.project);
       const flow = this.flowOf(flows, run);
-      const block = flow.blocks.find((b) => b.id === run.at);
-      if (!block) throw new FlowRunError(`${runLabel(run)} is at "${run.at}", which is no block of the flow any more. Stop it with stop: true, and start it again.`);
       if (run.fork) {
         // In a fork (#193): the step is a branch's, the one at the block given.
         const branch = this.pickBranch(run, flow, args.block);
@@ -297,6 +295,9 @@ export class FlowRuns {
         if (!at) throw new FlowRunError(`The "${branch.word}" branch of ${runLabel(run)} is at "${branch.at}", which is no block of the flow any more. Stop it with stop: true, and start it again.`);
         return this.applyStep(flows, flow, run, at, args.outcome, this.who(callerId), args.note, branch.word);
       }
+      // Only for one position: a run in a fork goes by its branches' blocks, whatever became of the fork's (self-check, 4).
+      const block = flow.blocks.find((b) => b.id === run.at);
+      if (!block) throw new FlowRunError(`${runLabel(run)} is at "${run.at}", which is no block of the flow any more. Stop it with stop: true, and start it again.`);
       if (args.block?.trim() && args.block.trim().toLowerCase() !== block.id && args.block.trim().toLowerCase() !== block.title.toLowerCase()) {
         throw new FlowRunError(`${runLabel(run)} is at "${block.title}" (${block.id}), not "${args.block.trim()}": nothing was recorded. flow_status shows its history.`);
       }
@@ -720,7 +721,8 @@ export class FlowRuns {
       if (!byWord.has(k) || (byWord.get(k)!.times && !o.times)) byWord.set(k, o);
     }
     const outs = [...byWord.values()];
-    if (outs.length < 2) return null;
+    // Fewer than two branches, or none that goes anywhere but a join (nothing would ever move it; self-check, 2).
+    if (outs.length < 2 || outs.every((o) => flow.blocks.find((b) => b.id === o.to)!.kind === 'join')) return null;
     if (!exercised193) {
       exercised193 = true;
       exercisedLine('EXERCISED #193 fork started every branch at once');
@@ -813,7 +815,12 @@ export class FlowRuns {
     const given: Handoff = { from: `the branches of "${forkTitle}"`, text: `Each branch's outcome:\n${each}` };
     const words = FlowRuns.words(join);
     if (words.length <= 1) {
-      return `Each branch's outcome:\n${each}\n\nIt has one way on, so Ledung took it: ${await this.applyStep(flows, flow, run, join, words[0] ?? join.title, 'Ledung (every branch in)', given.text)}`;
+      try {
+        return `Each branch's outcome:\n${each}\n\nIt has one way on, so Ledung took it: ${await this.applyStep(flows, flow, run, join, words[0] ?? join.title, 'Ledung (every branch in)', given.text)}`;
+      } catch (e) {
+        // The branch's step is saved and the run is at the join: said as such, not as "nothing was recorded" (self-check, 1).
+        return `Each branch's outcome:\n${each}\n\nLedung could not take the join's way on: ${(e as Error).message.replace(/ Nothing was recorded\.$/, '')} The run is at "${join.title}": report its outcome yourself with flow_step once the flow says where it goes, or stop the run.`;
+      }
     }
     return `Each branch's outcome:\n${each}\n\n${await this.arrive(flows, run, flow, join, given)}`;
   }
