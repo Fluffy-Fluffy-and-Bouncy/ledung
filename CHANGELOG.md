@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-14
+- Opening a long chat is quicker on a phone or another computer: Ledung's answers to the page (a chat's messages, lists, settings) now come compressed when they are over 1 kB, a long chat's messages at a fraction of their size. Nothing else changes in what you see. (#330)
+
 ## 2026-11-12
 - Sidebar, CPU, Memory and GPU bars: drag the handle on a bar's limit line to set the limit. A label shows the value as you drag ("GPU 50%", "Memory 48 GB", in steps of 5% or 1 GB), it applies when you let go, and dragging to the right end removes the limit. With no limit the handle waits at the right end and shows when you point at the bar. The keyboard works too: arrow keys, Home and End, then Enter. The number editor now opens with a double-click (a tap on a phone) and has a slider next to the number field; on a phone it is the way to set a limit. (#295)
 - Machine panel: virtual displays (Parsec's, a virtual monitor driver) no longer show up as extra copies of your graphics card under "Other GPUs"; a GPU limit you set on the card while it was listed as "#1" still applies to it. (#304)

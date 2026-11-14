@@ -2654,6 +2654,37 @@ test('shortcuts are made only on this computer: a signed-in page on the local ne
   }
 });
 
+// Issue #330, Done 3: the phone on the home network gets the same compressed answer.
+test('API answers go compressed on the local network address too (issue #330)', async (t) => {
+  const ip = networkAddress();
+  if (!ip) return t.skip('this computer has no network address to come from');
+  const zlib = await import('node:zlib');
+  const lanPort = await freePort();
+  const lan = new LedungServer({ port: lanPort, token: TOKEN, store: paneStore, manager: sessions, webRoot, lanBind: ip, lanNames: [ip] });
+  await lan.listen();
+  try {
+    paneStore.createSession({ id: 'pack330lan', project: 'p', runner: 'local', title: 'long chat', parentId: null, permissionMode: 'default', role: 'session' });
+    for (let i = 0; i < 100; i++) {
+      paneStore.addMessage('pack330lan', 'sdk', { type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'text', text: `Reply ${i}, over the network.` }] } });
+    }
+    const got = await new Promise<{ status: number; headers: http.IncomingHttpHeaders; bytes: Buffer }>((resolve, reject) => {
+      const req = http.request({ host: ip, port: lanPort, path: '/api/sessions/pack330lan/messages', headers: { host: `${ip}:${lanPort}`, cookie: COOKIE, 'accept-encoding': 'br' } }, (res) => {
+        const parts: Buffer[] = [];
+        res.on('data', (c: Buffer) => parts.push(c));
+        res.on('end', () => resolve({ status: res.statusCode!, headers: res.headers, bytes: Buffer.concat(parts) }));
+      });
+      req.on('error', reject);
+      req.end();
+    });
+    assert.equal(got.status, 200, got.bytes.toString());
+    assert.equal(got.headers['content-encoding'], 'br');
+    const answer = JSON.parse(zlib.brotliDecompressSync(got.bytes).toString());
+    assert.equal(answer.length, 100);
+  } finally {
+    await lan.close();
+  }
+});
+
 // The launchers' open-or-start check (review of PR #432, Important 1): Ledung proves it holds the token for the
 // launcher's nonce, so the launcher never sends the token to another program on the port.
 test('/running answers the proof of the token without the token, and only on this computer (issue #415)', async () => {
@@ -3414,6 +3445,49 @@ test('page text files go compressed by Accept-Encoding, plain without it; pictur
   const changed = Buffer.from('export const answer = "changed";\n'.repeat(400));
   fs.writeFileSync(path.join(assets, 'main-Zz99Yy88.js'), changed);
   assert.deepEqual(zlib.brotliDecompressSync((await rawGet('/assets/main-Zz99Yy88.js', { 'accept-encoding': 'br' })).bytes), changed);
+});
+
+test('API answers above a small size go compressed by Accept-Encoding, the same JSON either way (issue #330)', async () => {
+  const zlib = await import('node:zlib');
+  paneStore.createSession({ id: 'pack330', project: 'p', runner: 'local', title: 'long chat', parentId: null, permissionMode: 'default', role: 'session' });
+  for (let i = 0; i < 200; i++) {
+    paneStore.addMessage('pack330', 'sdk', { type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'text', text: `Reply ${i}: the same kind of words again and again.` }] } });
+  }
+  const url = '/api/sessions/pack330/messages?limit=500';
+  const plain = await rawGet(url, { cookie: COOKIE });
+  assert.equal(plain.status, 200);
+  assert.equal(plain.headers['content-encoding'], undefined, 'no Accept-Encoding: as before');
+  assert.equal(plain.headers.vary, 'Accept-Encoding');
+  assert.equal(plain.headers['content-type'], 'application/json');
+  const json = plain.bytes.toString();
+  assert.ok(json.length > 20_000, `a big answer: ${json.length}`);
+
+  const br = await rawGet(url, { cookie: COOKIE, 'accept-encoding': 'gzip, deflate, br, zstd' });
+  assert.equal(br.headers['content-encoding'], 'br');
+  assert.equal(br.headers.vary, 'Accept-Encoding');
+  assert.equal(Number(br.headers['content-length']), br.bytes.length);
+  assert.ok(br.bytes.length < json.length / 4, `compressed: ${br.bytes.length} of ${json.length}`);
+  assert.equal(zlib.brotliDecompressSync(br.bytes).toString(), json, 'the same answer');
+  // Every security header as on the plain answer.
+  for (const name of Object.keys(securityHeaders(PORT)).map((n) => n.toLowerCase())) assert.equal(br.headers[name], plain.headers[name], name);
+
+  const gz = await rawGet(url, { cookie: COOKIE, 'accept-encoding': 'br;q=0, gzip' });
+  assert.equal(gz.headers['content-encoding'], 'gzip');
+  assert.equal(zlib.gunzipSync(gz.bytes).toString(), json);
+  assert.equal((await rawGet(url, { cookie: COOKIE, 'accept-encoding': 'identity' })).headers['content-encoding'], undefined);
+
+  // A small answer goes as it is, and so does a refusal: the checks come first and are the same.
+  const small = await rawGet('/api/sessions/pack330/messages?limit=1', { cookie: COOKIE, 'accept-encoding': 'br' });
+  assert.equal(small.headers['content-encoding'], undefined);
+  assert.ok(small.bytes.length < 1024, `small: ${small.bytes.length}`);
+  assert.equal((await rawGet(url, { 'accept-encoding': 'br' })).status, 401, 'no cookie');
+  assert.equal((await rawGet(url, { cookie: COOKIE, host: 'evil.example:80', 'accept-encoding': 'br' })).status, 403, 'another Host');
+
+  // Pictures go as they are.
+  const png = await rawGet('/api/sessions/s1/image?path=a.png', { cookie: COOKIE, 'accept-encoding': 'gzip, br' });
+  assert.equal(png.status, 200);
+  assert.equal(png.headers['content-encoding'], undefined);
+  assert.deepEqual(png.bytes, fs.readFileSync(path.join(projectRoot, 'a.png')));
 });
 
 test('hello carries recent and named archived sessions, counts the older ones, and the full list needs the sign-in (issue #229)', async () => {

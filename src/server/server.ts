@@ -46,7 +46,7 @@ import { MAX_IMAGE_BYTES } from '../board/attachments.ts';
 import { ManagementError, type SettingsPort } from '../sessions/management.ts';
 import { waitingCount } from '../shared/waiting.ts';
 import { helloSessions } from '../shared/hello-sessions.ts';
-import { compressible, IMMUTABLE, isHashedAsset, PackedFiles, pickEncoding } from './static-files.ts';
+import { compressible, IMMUTABLE, isHashedAsset, PACK_MIN_BYTES, PackedFiles, packAnswer, pickEncoding } from './static-files.ts';
 
 /** Calls a linked computer may make in a minute (#245). */
 const LINK_PER_MINUTE = 60;
@@ -871,7 +871,7 @@ export class LedungServer {
           return { name: device.name };
         })
         : await passkeyCall(() => passkeys.registrationOptions(device));
-      this.json(res, 200, result);
+      await this.json(res, 200, result);
       return;
     }
 
@@ -894,7 +894,7 @@ export class LedungServer {
       if (req.method !== 'GET') throw new HttpError(405, 'Method not allowed.');
       const nonce = url.searchParams.get('nonce') ?? '';
       if (!NONCE.test(nonce)) throw new HttpError(400, 'A nonce of 32 hex characters is needed.');
-      this.json(res, 200, { proof: this.guard.runningProof(nonce) });
+      await this.json(res, 200, { proof: this.guard.runningProof(nonce) });
       return;
     }
 
@@ -927,7 +927,7 @@ export class LedungServer {
         return;
       }
       const result = await this.api(req.method ?? 'GET', url, req);
-      this.json(res, 200, result ?? { ok: true });
+      await this.json(res, 200, result ?? { ok: true });
       return;
     }
 
@@ -970,7 +970,7 @@ export class LedungServer {
       return;
     }
     if (route === '/link/file') {
-      this.json(res, 200, await this.linkFile(req, url, from));
+      await this.json(res, 200, await this.linkFile(req, url, from));
       return;
     }
     // The header when there is one; the bytes read when the body comes chunked (review 254, Important 1).
@@ -1054,7 +1054,7 @@ export class LedungServer {
       if (e instanceof ManagementError) throw new HttpError(400, e.message);
       throw e;
     }
-    this.json(res, 200, answer);
+    await this.json(res, 200, answer);
   }
 
   /**
@@ -2486,9 +2486,26 @@ export class LedungServer {
     return this.publicResponses.has(res) ? this.publicHeaders : this.headers;
   }
 
-  private json(res: ServerResponse, status: number, body: unknown): void {
-    res.writeHead(status, { ...this.headersFor(res), 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(body));
+  /**
+   * A JSON answer. One above PACK_MIN_BYTES goes compressed when the request takes it (issue #330); the same JSON
+   * either way, and the headers are the same apart from the encoding. Never fails: if compressing does, it goes plain.
+   */
+  private async json(res: ServerResponse, status: number, body: unknown): Promise<void> {
+    const data = Buffer.from(JSON.stringify(body));
+    const headers = { ...this.headersFor(res), 'Content-Type': 'application/json', Vary: 'Accept-Encoding' };
+    const encoding = data.length >= PACK_MIN_BYTES ? pickEncoding(res.req.headers['accept-encoding']) : null;
+    if (encoding) {
+      const packed = await packAnswer(data, encoding).catch(() => null);
+      // The client may have gone while it was compressed.
+      if (res.destroyed) return;
+      if (packed) {
+        res.writeHead(status, { ...headers, 'Content-Encoding': encoding, 'Content-Length': packed.length });
+        res.end(packed);
+        return;
+      }
+    }
+    res.writeHead(status, headers);
+    res.end(data);
   }
 
   private fail(res: ServerResponse, e: unknown): void {
@@ -2498,7 +2515,7 @@ export class LedungServer {
       res.destroy();
       return;
     }
-    this.json(res, status, { error: e instanceof Error ? e.message : String(e) });
+    void this.json(res, status, { error: e instanceof Error ? e.message : String(e) });
   }
 }
 
