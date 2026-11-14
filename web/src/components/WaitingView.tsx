@@ -10,7 +10,7 @@ import { findTickets } from '../../../src/shared/tickets.ts';
 import { api } from '../api.ts';
 import { conversationOf } from '../conversation.ts';
 import { opened, readFilter, waitingLists, writeFilter, type Filter, type Item } from '../waitingLists.ts';
-import { focusFilter, showAll, withManager, type WaitingFocus } from '../waitingFocus.ts';
+import { focusFilter, showAll, withManager, type Aside, type WaitingFocus } from '../waitingFocus.ts';
 import { nameTint, questionLabel, withChatsColour } from '../nameTint.ts';
 import { Markdown } from './Markdown.tsx';
 import { formatTime } from './MessageList.tsx';
@@ -167,7 +167,7 @@ export function WaitingView(props: {
       permsForYou={permsForYou}
       tiers={visibleTiers}
       focus={props.focus ?? null}
-      withManager={props.focus ? withManager(props.focus, props.questions, props.permissions) : 0}
+      withManager={props.focus ? withManager(props.focus, props.questions, props.permissions, projectOf) : []}
       onShowAll={() => setFilter(showAll(saved))}
     />
   );
@@ -233,7 +233,7 @@ function Queue(p: {
   permsForYou: PermissionInfo[];
   tiers: string[];
   focus: WaitingFocus | null;
-  withManager: number;
+  withManager: Aside[];
   onShowAll: () => void;
 }) {
   const { props, nameOf, titleOf, projectOf, tierColor, tintOf, header } = p.ctx;
@@ -380,7 +380,12 @@ function Queue(p: {
                 ? <>Showing: <b>{projectLabel(p.focus.project)}</b></>
                 : <>Nothing waiting for <b>{projectLabel(p.focus.project)}</b></>}
               {fromRow > 0 && fromRow < p.forYou.length + p.permsForYou.length && <span className="muted"> · {fromRow} of these from {p.focus.from}</span>}
-              {p.withManager > 0 && <span className="muted"> · {p.withManager} from {p.focus.from} {p.withManager === 1 ? 'is' : 'are'} with its manager, not here</span>}
+              {p.withManager.length > 0 && (
+                // Named by the session that asked, a link to its conversation, since the item itself is not here.
+                <span className="muted"> · {p.withManager.map((a, i) => (
+                  <Fragment key={a.sessionId}>{i ? ', ' : ''}{a.count} from <button className="link" onClick={() => props.onOpenSession(a.sessionId)}>{titleOf(a.sessionId)}</button></Fragment>
+                ))} {p.withManager.length === 1 && p.withManager[0]!.count === 1 ? 'is' : 'are'} with {p.withManager.length === 1 ? 'its manager' : 'their managers'}, not here</span>
+              )}
               {' · '}<button className="link" onClick={p.onShowAll}>Show all</button>
             </div>
           )}

@@ -100,7 +100,7 @@ import { useSessionSecrets } from './useSessionSecrets.ts';
 import { suggestSecretName } from '../../src/shared/secrets.ts';
 import { errorText, isStalePageError } from './pageError.ts';
 import { guardFor, heldRecently, noteHeld, setLeaveGuard, workflowFromHash, workflowHash } from './flowNav.ts';
-import { badgeTitle, type WaitingFocus } from './waitingFocus.ts';
+import { asideCount, badgeTitle, type WaitingFocus } from './waitingFocus.ts';
 
 /** Shown in a frame on another computer's page (issue #241): fixed for the page's life. */
 const IN_FRAME = inFrame();
@@ -412,6 +412,13 @@ export function App() {
     for (const q of questions) if (q.status === 'open') counts[q.sessionId] = (counts[q.sessionId] ?? 0) + 1;
     return counts;
   }, [permissions, questions]);
+  // Of those, what is addressed to a manager: not in Waiting for you, so a badge's tooltip says so (issue #322).
+  const withManagerBySession = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const p of permissions) if (p.status === 'pending' && p.addressedTo !== 'user') counts[p.sessionId] = (counts[p.sessionId] ?? 0) + 1;
+    for (const q of questions) if (q.status === 'open' && q.addressedTo !== 'user') counts[q.sessionId] = (counts[q.sessionId] ?? 0) + 1;
+    return counts;
+  }, [permissions, questions]);
 
   // The list indexed once per change (issue #233): rows, headers and lookups by id read it instead of scanning the list.
   const index = useMemo(() => indexSessions(ledung.sessions), [ledung.sessions]);
@@ -599,6 +606,7 @@ export function App() {
           projects={ledung.projects}
           chats={ledung.chats}
           pending={pendingBySession}
+          withManager={withManagerBySession}
           waiting={waiting}
           limits={ledung.limits}
           usageStops={ledung.usageStops}
@@ -799,6 +807,8 @@ const Sidebar = memo(function Sidebar(props: {
   onOpenHelper: () => void;
   /** A row's question badge (issue #322): Waiting for you on its project. */
   onOpenWaiting: (focus: WaitingFocus) => void;
+  /** Per session, its open questions and prompts addressed to a manager (in pending too): for the badge's tooltip. */
+  withManager: Record<string, number>;
   onNewProject: () => void;
 }) {
   // A tree per project: the project, its manager with the sessions it runs, then sessions started
@@ -1024,12 +1034,15 @@ const Sidebar = memo(function Sidebar(props: {
   const [archivedShown] = useArchivedLink();
   // A row's count of open questions and prompts, a button of its own beside the row's (no button inside a button), so
   // a click opens Waiting for you on the row's project and never the chat too (issue #322).
-  const countBadge = (count: number, focus: WaitingFocus) => count ? (
-    <button className="badge-button" title={badgeTitle(count, focus.project)} aria-label={badgeTitle(count, focus.project)}
-      onClick={() => props.onOpenWaiting(focus)}>
-      <span className="badge">{count}</span>
-    </button>
-  ) : null;
+  const countBadge = (count: number, focus: WaitingFocus) => {
+    if (!count) return null;
+    const title = badgeTitle(count, focus.project, asideCount(focus, props.withManager, (id) => props.index.byId.get(id)?.project ?? ''));
+    return (
+      <button className="badge-button" title={title} aria-label={title} onClick={() => props.onOpenWaiting(focus)}>
+        <span className="badge">{count}</span>
+      </button>
+    );
+  };
   // The caret sits beside the row's button, not in it (no button inside a button), and carries no data-drag.
   const item = ({ s, depth, drag: group, hidden, folds, folded: isFolded }: FoldedRow<Row>) => {
     const time = `${formatTime(s.createdAt)}${s.backgroundTasks > 0 ? ` · ${s.backgroundTasks} in background` : ''}`;

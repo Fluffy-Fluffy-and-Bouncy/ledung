@@ -23,18 +23,34 @@ export function focusFilter(saved: Filter, focus: WaitingFocus | null): Filter {
 /** "Show all": every project the All filter shows, kept in the browser like a press on All. */
 export const showAll = (saved: Filter): Filter => ({ ...saved, mode: 'all' });
 
+/** Who asked something that is with a manager, and how much: named on the line, since it is not in the view. */
+export interface Aside { sessionId: string; count: number }
+
 /**
  * Of the badge's count, what is not in Waiting for you because it is addressed to a manager (the sidebar badge counts
- * those too, on the session that asked), so the line can say where the rest is (Done looks like 7).
+ * those too, on the session that asked), per session that asked, so the line can say whose it is and where (Done
+ * looks like 7). A folded project's badge (no sessions) is about every session of its project.
  */
-export function withManager(focus: WaitingFocus, questions: QuestionInfo[], permissions: PermissionInfo[]): number {
-  if (!focus.sessions.length) return 0;
+export function withManager(focus: WaitingFocus, questions: QuestionInfo[], permissions: PermissionInfo[], projectOf: (sessionId: string) => string): Aside[] {
   const mine = new Set(focus.sessions);
-  return questions.filter((q) => q.status === 'open' && q.addressedTo !== 'user' && mine.has(q.sessionId)).length
-    + permissions.filter((p) => p.status === 'pending' && p.addressedTo !== 'user' && mine.has(p.sessionId)).length;
+  const inScope = (id: string) => (mine.size ? mine.has(id) : projectOf(id) === focus.project);
+  const counts = new Map<string, number>();
+  const add = (id: string) => counts.set(id, (counts.get(id) ?? 0) + 1);
+  for (const q of questions) if (q.status === 'open' && q.addressedTo !== 'user' && inScope(q.sessionId)) add(q.sessionId);
+  for (const p of permissions) if (p.status === 'pending' && p.addressedTo !== 'user' && inScope(p.sessionId)) add(p.sessionId);
+  return [...counts].map(([sessionId, count]) => ({ sessionId, count }));
 }
 
-/** The badge's tooltip and label (Done looks like 5). */
-export function badgeTitle(count: number, project: string): string {
-  return `${count} waiting in ${projectLabel(project)} — open Waiting for you for it`;
+/** A row's count of what is with a manager, from the counts per asking session (the sidebar's badge tooltip). */
+export function asideCount(focus: WaitingFocus, bySession: Record<string, number>, projectOf: (sessionId: string) => string): number {
+  const ids = focus.sessions.length ? focus.sessions : Object.keys(bySession).filter((id) => projectOf(id) === focus.project);
+  return ids.reduce((n, id) => n + (bySession[id] ?? 0), 0);
+}
+
+/** The badge's tooltip and label (Done looks like 5), honest about what is with a manager rather than with you. */
+export function badgeTitle(count: number, project: string, aside = 0): string {
+  const where = projectLabel(project);
+  if (!aside) return `${count} waiting for you in ${where} — open`;
+  if (aside >= count) return `${count} in ${where} ${count === 1 ? 'is' : 'are'} with a manager, not waiting for you — open Waiting for you on ${where}`;
+  return `${count} open in ${where}: ${count - aside} waiting for you, ${aside} with a manager — open`;
 }

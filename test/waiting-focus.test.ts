@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { CHATS, type PermissionInfo, type QuestionInfo } from '../src/shared/protocol.ts';
-import { badgeTitle, focusFilter, showAll, withManager } from '../web/src/waitingFocus.ts';
+import { asideCount, badgeTitle, focusFilter, showAll, withManager } from '../web/src/waitingFocus.ts';
 import { readFilter, waitingLists, writeFilter } from '../web/src/waitingLists.ts';
 
 const q = (id: number, sessionId: string, addressedTo: string, status = 'open') =>
@@ -37,17 +37,31 @@ test("the badge's count matches what the view shows for its project, and what is
   // The manager's badge counts its 2 open questions and 1 pending prompt: 3, and the view shows those 3.
   assert.deepEqual(forYou.map((i) => i.q.id), [1, 2]);
   assert.equal(forYou.length + perms.length, 3);
-  // A worker's badge counts its question and prompt to its manager: Waiting for you says where they are.
-  assert.equal(withManager({ project: 'Ledung', sessions: ['worker'], from: 'Worker' }, questions, permissions), 2);
-  assert.equal(withManager({ project: 'Ledung', sessions: ['mgr'], from: 'Manager' }, questions, permissions), 0);
-  // A folded project's badge is about the whole project: nothing to count apart.
-  assert.equal(withManager({ project: 'Ledung', sessions: [], from: 'Ledung' }, questions, permissions), 0);
+  // A worker's badge counts its question and prompt to its manager: Waiting for you says whose they are and where.
+  assert.deepEqual(withManager({ project: 'Ledung', sessions: ['worker'], from: 'Worker' }, questions, permissions, projectOf), [{ sessionId: 'worker', count: 2 }]);
+  assert.deepEqual(withManager({ project: 'Ledung', sessions: ['mgr'], from: 'Manager' }, questions, permissions, projectOf), []);
+  // A manager with its sessions folded counts the worker's too: named by the worker that asked, not the manager.
+  assert.deepEqual(withManager({ project: 'Ledung', sessions: ['mgr', 'worker'], from: 'Manager' }, questions, permissions, projectOf), [{ sessionId: 'worker', count: 2 }]);
+  // A folded project's badge (acceptance round 1: 4 counted, 3 shown, nothing said): every session of the project,
+  // and only that project's.
+  assert.deepEqual(withManager({ project: 'Ledung', sessions: [], from: 'Ledung' }, questions, permissions, projectOf), [{ sessionId: 'worker', count: 2 }]);
+  assert.deepEqual(withManager({ project: 'Other', sessions: [], from: 'Other' }, [...questions, q(7, 'x', 'mgr')], permissions, projectOf), [{ sessionId: 'x', count: 1 }]);
+  // So for the folded project: badge = shown + with a manager. The badge counts all 5 open ones in Ledung.
+  const badge = questions.filter((x) => x.status === 'open' && projectOf(x.sessionId) === 'Ledung').length
+    + permissions.filter((x) => x.status === 'pending' && projectOf(x.sessionId) === 'Ledung').length;
+  assert.equal(badge, forYou.length + perms.length + 2);
   // Chats are filtered like a project (Done looks like 8).
   const chats = waitingLists(questions, projectOf, () => [], (p) => p === CHATS, []).forYou;
   assert.deepEqual(chats.map((i) => i.q.id), [6]);
 });
 
 test("the badge's tooltip names the count and the project", () => {
-  assert.equal(badgeTitle(3, 'Ledung'), '3 waiting in Ledung — open Waiting for you for it');
-  assert.match(badgeTitle(1, CHATS), /^1 waiting in Chats/);
+  assert.equal(badgeTitle(3, 'Ledung'), '3 waiting for you in Ledung — open');
+  assert.match(badgeTitle(1, CHATS), /^1 waiting for you in Chats/);
+  // What is with a manager is not called waiting for you.
+  assert.equal(badgeTitle(4, 'Ledung', 1), '4 open in Ledung: 3 waiting for you, 1 with a manager — open');
+  assert.equal(badgeTitle(1, 'Ledung', 1), '1 in Ledung is with a manager, not waiting for you — open Waiting for you on Ledung');
+  const projectOf = (id: string) => (id === 'x' ? 'Other' : 'Ledung');
+  assert.equal(asideCount({ project: 'Ledung', sessions: ['w1'], from: 'W' }, { w1: 1, w2: 2, x: 5 }, projectOf), 1);
+  assert.equal(asideCount({ project: 'Ledung', sessions: [], from: 'Ledung' }, { w1: 1, w2: 2, x: 5 }, projectOf), 3);
 });
