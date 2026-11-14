@@ -52,3 +52,21 @@ test("part 3c: the chosen run's path: the blocks it went through, and where it i
   ] });
   assert.deepEqual([...runPath(r)], [['issue', 'passed'], ['build', 'passed'], ['code-review', 'passed'], ['fix', 'here']]);
 });
+
+test('#193: a run in a fork has a marker at each branch\'s block, a branch at its join waiting, and its path is here at each', () => {
+  const forked = run({
+    id: 'run-5', ref: '#193', at: 'split',
+    fork: { block: 'split', branches: [{ word: 'Code', at: 'code-review', atSince: 0, joined: false }, { word: 'Tests', at: 'both', atSince: 0, joined: true, outcome: 'Tests hold' }] },
+    history: [{ block: 'split', word: 'Code', n: 1, to: 'code-review', by: 'Ledung', at: 0, branch: 'Code' }],
+  });
+  const at = blockRuns([forked, run({ id: 'run-6', at: 'build' })], 'main');
+  // Each branch's block, not the fork's own.
+  assert.deepEqual([...at.keys()].sort(), ['both', 'build', 'code-review']);
+  assert.deepEqual(at.get('code-review')!.map((m) => [m.id, m.waiting]), [['run-5', false]]);
+  assert.deepEqual(at.get('both')!.map((m) => [m.id, m.waiting]), [['run-5', true]]);
+  assert.match(at.get('both')![0]!.title, /the "Tests" branch, waiting for the others/);
+  const path = runPath(forked);
+  assert.equal(path.get('code-review'), 'here');
+  assert.equal(path.get('both'), 'here');
+  assert.equal(path.get('split'), 'passed');
+});

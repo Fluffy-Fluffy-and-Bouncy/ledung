@@ -5,7 +5,19 @@
 import type { PageEvent, StoredMessage } from '../../src/shared/protocol.ts';
 import { fetchNewer, PAGE, withNewer } from './catchUp.ts';
 
-export type OpenSessionView = { messages: StoredMessage[]; hasEarlier: boolean };
+/** The messages shown and the session they belong to: for one render after a switch the page still has the old ones. */
+export type OpenSessionView = { sessionId: string | null; messages: StoredMessage[]; hasEarlier: boolean };
+
+const NONE: StoredMessage[] = [];
+
+/**
+ * The view as the session `sessionId` may show it: none of another session's messages (issue #328). A chat opened from
+ * another chat is drawn before its open runs; drawn with the previous chat's messages, it converted and laid them all out
+ * again (0.9-1.3 s at 4x CPU) only to clear them.
+ */
+export function viewFor(view: OpenSessionView, sessionId: string | null): OpenSessionView {
+  return view.sessionId === sessionId ? view : { sessionId, messages: NONE, hasEarlier: false };
+}
 
 export type OpenSessionDeps = {
   /** Sends a frame on the live connection. Called only between the connection's hello and its close. */
@@ -141,6 +153,6 @@ export class OpenSession {
   }
 
   private emit(): void {
-    this.deps.changed({ messages: this.shown, hasEarlier: this.hasEarlier });
+    this.deps.changed({ sessionId: this.id, messages: this.shown, hasEarlier: this.hasEarlier });
   }
 }
