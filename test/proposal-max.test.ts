@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Flow } from '../src/shared/flow.ts';
 import type { ProposalFlow } from '../src/shared/flow-proposal.ts';
-import { changedBlocks, isMaxEntry, MAX_ENTRY, maxEntryAction, selectedIn, sideNote, staleMaxEntry, withMaxEntry } from '../web/src/proposalSides.ts';
+import { changedBlocks, isMaxEntry, MAX_ENTRY, maxEntryAction, selectedIn, sideNote, staleMaxEntry, tabTarget, withMaxEntry } from '../web/src/proposalSides.ts';
 
 const flow = (blocks: { id: string; title: string }[]): Flow => ({ blocks: blocks.map((b) => ({ kind: 'work', ...b })) } as unknown as Flow);
 const side = (f: Flow | null): ProposalFlow => ({ name: 'main', file: '.ledung/flows/main.json', title: 'Main', flow: f });
@@ -111,4 +111,26 @@ test('even on a marked entry not yet left, opening reuses it, so one close is en
   b.close();
   assert.equal(b.h.open, false);
   assert.deepEqual(b.state(), { ledungDesk: 1 });
+});
+
+test('Tab in the big view skips the diagram under a note and wraps round inside the view', () => {
+  // The bar's buttons, then the covered diagram's controls (inert), as in the page's order.
+  const el = (name: string, inert = false) => ({ name, closest: (s: string) => (s === '[inert]' && inert ? {} : null) });
+  const before = el('Before'), after = el('After'), close = el('Close');
+  const zoom = el('Zoom in', true), fit = el('Fit', true);
+  const all = [before, after, close, zoom, fit];
+  // Tab on Close: the last reachable button, so back to Before, not out of the view past the inert controls.
+  assert.equal(tabTarget(all, close, false), before);
+  // Shift+Tab on Before: to Close, which can take focus, not to an inert control.
+  assert.equal(tabTarget(all, before, true), close);
+  // In between, the browser moves focus itself.
+  assert.equal(tabTarget(all, before, false), null);
+  assert.equal(tabTarget(all, close, true), null);
+  // Focus outside the reachable ones (on the page, or on an inert one): back into the view.
+  assert.equal(tabTarget(all, null, false), before);
+  assert.equal(tabTarget(all, zoom, true), close);
+  // With no note nothing is inert, and the diagram's controls are part of the round.
+  const open = [before, after, close, el('Zoom in'), el('Fit')];
+  assert.equal(tabTarget(open, close, false), null);
+  assert.equal(tabTarget(open, open[4], false), before);
 });

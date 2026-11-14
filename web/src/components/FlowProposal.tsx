@@ -7,7 +7,7 @@ import { createPortal } from 'react-dom';
 import { api } from '../api.ts';
 import type { FlowProposal, ProposalFlow } from '../../../src/shared/flow-proposal.ts';
 import { layoutFlow } from '../flowLayout.ts';
-import { changedBlocks, isMaxEntry, maxEntryAction, selectedIn, sideNote, staleMaxEntry, withMaxEntry, type SideName } from '../proposalSides.ts';
+import { changedBlocks, isMaxEntry, maxEntryAction, selectedIn, sideNote, staleMaxEntry, tabTarget, withMaxEntry, type SideName } from '../proposalSides.ts';
 import { Diagram } from './WorkflowView.tsx';
 import { useNarrow } from './FlowDiagram.tsx';
 import { Markdown } from './Markdown.tsx';
@@ -91,12 +91,8 @@ function Maximised({ f, start, narrow, titles, decided, onClosed }: { f: Changed
       e.stopPropagation();
       if (e.key === 'Escape') { e.preventDefault(); close(); return; }
       if (e.key !== 'Tab' || !box.current) return;
-      const all = [...box.current.querySelectorAll<HTMLElement>('button:not(:disabled), [href], [tabindex]:not([tabindex="-1"])')];
-      const i = all.indexOf(document.activeElement as HTMLElement);
-      if (i === -1 || (e.shiftKey ? i === 0 : i === all.length - 1)) {
-        e.preventDefault();
-        all[e.shiftKey ? all.length - 1 : 0]?.focus();
-      }
+      const to = tabTarget(box.current.querySelectorAll<HTMLElement>('button:not(:disabled), [href], [tabindex]:not([tabindex="-1"])'), document.activeElement, e.shiftKey);
+      if (to) { e.preventDefault(); to.focus(); }
     };
     const root = document.documentElement;
     const overflow = root.style.overflow;

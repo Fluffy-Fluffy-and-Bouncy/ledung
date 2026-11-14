@@ -50,3 +50,16 @@ export function withMaxEntry(state: unknown): Record<string, unknown> {
 export function staleMaxEntry(state: unknown, open: boolean): boolean {
   return !open && isMaxEntry(state);
 }
+
+/**
+ * Where Tab goes in the big view: the elements it may reach are those outside an inert part (the diagram under a
+ * side's note), and from the last one (or the first, with Shift) or from outside them it wraps round. Null leaves it
+ * to the browser. Inert elements are left out because the browser skips them: kept in, Tab from the last reachable
+ * button would leave the dialog and Shift+Tab would aim at an element that cannot take focus (#334, re-review 2).
+ */
+export function tabTarget<T extends { closest(selector: string): unknown }>(elements: Iterable<T>, active: unknown, back: boolean): T | null {
+  const all = [...elements].filter((el) => !el.closest('[inert]'));
+  const i = all.indexOf(active as T);
+  if (i !== -1 && (back ? i > 0 : i < all.length - 1)) return null;
+  return all[back ? all.length - 1 : 0] ?? null;
+}
