@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-14
+- Switching from one chat to another is faster, most of all on a phone or a slow computer: the new chat no longer draws the previous chat's messages before loading its own. (#328)
 - Workflow runs: a fork now starts every branch at once (a session for each branch that runs one), each branch moves on by its own report, and the join goes on only when every branch has reached it, with each branch's outcome. The workflow page and the run's status show where each branch is. (#193)
 
 ## 2026-11-13
