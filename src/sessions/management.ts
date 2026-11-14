@@ -183,8 +183,8 @@ export interface ManagementContext {
    */
   evidenceFile?(sessionId: string, file: string): { file: string; kind: 'image' | 'text' };
   /**
-   * A container project's screenshots and evidence, read from its container and kept in Ledung (issue #122): the names
-   * the question stores, in order; a local project's as given. Left out in tests of other parts: as given.
+   * A project's screenshots and evidence, read now and kept in Ledung (a container's since issue #122, every project's
+   * since #306), images as WebP: the names the question stores, in order. Left out in tests of other parts: as given.
    */
   keepContainerFiles?(sessionId: string, files: { file: string; as: 'shot' | 'evidence' }[]): Promise<string[]>;
   /** Orders on record (issue #105); left out where none are kept (tests of other parts): an order is then refused. */
@@ -537,7 +537,7 @@ export class Management {
     });
   }
 
-  /** ask_user's container files, kept before they are checked (keepContainerFiles). */
+  /** ask_user's files, kept before they are checked (keepContainerFiles; every project's since issue #306). */
   keepFiles(sessionId: string, files: { file: string; as: 'shot' | 'evidence' }[]): Promise<string[]> {
     return this.ctx.keepContainerFiles ? this.ctx.keepContainerFiles(sessionId, files) : Promise.resolve(files.map((f) => f.file));
   }

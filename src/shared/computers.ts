@@ -45,6 +45,11 @@ export interface ComputerInfo {
   linked?: boolean;
   /** How much waits for the user there (issue #273), as that computer told over the link; left out: not known, or offline. */
   waiting?: number;
+  /**
+   * That computer trusts this one's own screen (issue #313), as it told over the link: its tab shows a key, and its
+   * frame here acts with this screen's vouch instead of a passkey.
+   */
+  trustsUs?: boolean;
   /** The name and colour from the config, under any the page changed (issue #240). */
   config: { name: string; colour: ComputerColour };
 }

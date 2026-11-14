@@ -85,6 +85,8 @@ button.ctab:hover { background: color-mix(in srgb, var(--cc) 8%, transparent); c
 a.ctab:hover { background: color-mix(in srgb, var(--cc) 8%, transparent); color: var(--text); }
 a.ctab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .ctab .sw { width: 9px; height: 9px; border-radius: 2px; background: var(--cc); flex: none; }
+/* A computer that trusts this one's screen (issue #313): a small key after its name. */
+.ctab .ctab-key { font-size: 0.85em; line-height: 1; flex: none; }
 .ctab.on { background: var(--panel); color: var(--text); font-weight: 600; border-color: var(--border); margin-bottom: -1px; box-shadow: inset 0 3px 0 var(--cc); }
 .ctabs .spacer { flex: 1; }
 /* In remote mode the strip ends in the frame's own label; with no strip, the label is a band on the frame's top edge. */
@@ -1303,6 +1305,10 @@ body.sidebar-dragging, body.sidebar-dragging * { cursor: grabbing !important; }
 .chip.lock { border-color: var(--accent); white-space: nowrap; }
 .chip.lock.b { border-color: var(--danger); }
 /* Settings → Devices (#160). */
+/* Settings → Linked computers: a computer whose own screen this one trusts (issue #313). */
+.trust-tag { font-size: 0.8em; padding: 1px 6px; border-radius: 4px; margin-left: 0.4rem; background: color-mix(in srgb, var(--ok, #9ece6a) 22%, var(--panel)); color: var(--ok, #9ece6a); }
+.trust-row { margin: 0.15rem 0 0.7rem; padding: 0.4rem 0.7rem; border: 1px solid var(--border); border-radius: 6px; }
+.trust-row p { margin: 0.2rem 0; }
 .device-row { display: flex; justify-content: space-between; align-items: center; gap: 0.6rem; margin: 0.3rem 0; }
 /* Browsers and phones (Project-Ledung#482): Rename and Remove side by side, the browser this page runs in marked. */
 .device-actions { display: flex; align-items: center; gap: 0.4rem; flex-shrink: 0; }

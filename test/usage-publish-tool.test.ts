@@ -80,13 +80,24 @@ function ledung(published: Partial<UsagePublishView> = {}) {
     const reason = out.hookSpecificOutput?.permissionDecisionReason ?? '';
     return { decision, reason, result: decision === 'allow' ? await run(id, tool, input) : null };
   };
-  /** An asked call, as Claude Code hands it to Ledung's permission flow: the prompt it makes. */
-  const ask = (id: string, tool: string, input: Record<string, unknown>) => {
-    void live(id).onPermission(`mcp__ledung__${tool}`, input, { signal: new AbortController().signal, toolUseID: `tu-${++n}` });
-    return store.pendingPermissions().find((p) => p.sessionId === id && p.status === 'pending')!;
+  /**
+   * An asked call, as Claude Code hands it to Ledung's permission flow. Since issue #308 a manager's own is a question
+   * to the user at once, not a prompt: what it shows, with `sensitive` the rule a prompt would have shown.
+   */
+  const ask = async (id: string, tool: string, input: Record<string, unknown>) => {
+    const out = await live(id).onPermission(`mcp__ledung__${tool}`, input, { signal: new AbortController().signal, toolUseID: `tu-${++n}` }) as { behavior: string };
+    assert.equal(out.behavior, 'deny', 'returned at once');
+    assert.equal(store.pendingPermissions().filter((p) => p.sessionId === id && p.status === 'pending').length, 0, 'no prompt');
+    const q = store.listQuestions(100).find((x) => x.sessionId === id && x.status === 'open' && x.details?.refusal?.held === 'prompt')!;
+    return { id: q.id, addressedTo: q.addressedTo, sensitive: q.details!.refusal!.reason };
+  };
+  /** The user's Allow once on that question, then the manager's exact retry through the hook: its decision. */
+  const allowOnce = async (id: string, questionId: number, tool: string, input: Record<string, unknown>) => {
+    assert.ok(store.answerQuestion(questionId, 'Allow once', 'user'));
+    return (await (await options(id)).hooks!.PreToolUse![0]!.hooks[0]!({ tool_name: `mcp__ledung__${tool}`, tool_input: input }, `tu-${++n}`)).hookSpecificOutput?.permissionDecision ?? null;
   };
   const project = (name: string) => manager.projects().find((p) => p.name === name)!;
-  return { manager, store, view, switched, start, run, call, ask, live, project, at };
+  return { manager, store, view, switched, start, run, call, ask, allowOnce, live, project, at };
 }
 
 test("a project's published name: shown, switching it on loosens what reaches others, switching off does not", () => {
@@ -110,7 +121,7 @@ test('usage_publish is never unasked by the tool list; the hook decides', () => 
 });
 
 test('project_settings shows publishUsageName; switching it on waits for the user, switching it off runs at once', async () => {
-  const { start, run, call, ask, live, project } = ledung();
+  const { start, run, call, ask, allowOnce, project } = ledung();
   const id = await start('home');
   const all = JSON.parse((await run(id, 'project_settings')).text);
   assert.equal(all.other.publishUsageName, false);
@@ -126,10 +137,10 @@ test('project_settings shows publishUsageName; switching it on waits for the use
   assert.equal(unallowed.error, true);
   assert.match(unallowed.text, /Simon did not allow it; nothing was saved/);
   // The prompt is the user's alone, and once allowed the tool saves it.
-  const asked = ask(id, 'set_project_settings', input);
+  const asked = await ask(id, 'set_project_settings', input);
   assert.equal(asked.addressedTo, 'user');
   assert.match(asked.sensitive!, /usage published under its name "other"/);
-  assert.ok(live(id).decide(asked.id, { behavior: 'allow', scope: 'once' }, 'user'));
+  assert.equal(await allowOnce(id, asked.id, 'set_project_settings', input), 'allow', 'the exact retry, on the Allow once');
   const saved = await run(id, 'set_project_settings', input);
   assert.equal(saved.error, false, saved.text);
   assert.match(saved.text, /Saved publishUsageName for "other"/);
@@ -156,7 +167,7 @@ test("a locked project's published name is refused outright, its own manager's i
 });
 
 test('usage_publish: switching on waits for the user and runs exactly once; switching off runs at once', async () => {
-  const { start, run, call, ask, live, switched, view } = ledung();
+  const { start, run, call, ask, allowOnce, switched, view } = ledung();
   const id = await start('home');
   const input = { enabled: true, repo: 'acme/usage' };
   const c = await call(id, 'usage_publish', input);
@@ -169,10 +180,10 @@ test('usage_publish: switching on waits for the user and runs exactly once; swit
   assert.match(unallowed.text, /Simon did not allow it; nothing changed/);
   assert.deepEqual(switched, []);
   // The prompt is the user's alone, whatever grant the manager has.
-  const asked = ask(id, 'usage_publish', input);
+  const asked = await ask(id, 'usage_publish', input);
   assert.equal(asked.addressedTo, 'user');
   assert.match(asked.sensitive!, /publishing this computer's usage to the GitHub repository "acme\/usage"/);
-  assert.ok(live(id).decide(asked.id, { behavior: 'allow', scope: 'once' }, 'user'));
+  assert.equal(await allowOnce(id, asked.id, 'usage_publish', input), 'allow', 'the exact retry, on the Allow once');
   const on = await run(id, 'usage_publish', input);
   assert.equal(on.error, false, on.text);
   assert.match(on.text, /Publishing usage \(Settings → Claude & usage\): on, to "acme\/usage" as "Studio"; last published/);
@@ -200,17 +211,23 @@ test('usage_publish: switching on waits for the user and runs exactly once; swit
 });
 
 test('an allowed switch-on that no longer matches what the prompt showed is refused', async () => {
-  const { start, run, call, ask, live, switched, view } = ledung();
+  const { start, run, call, ask, allowOnce, switched, view } = ledung();
   const id = await start('home');
   const input = { enabled: true, repo: 'acme/usage' };
   assert.equal((await call(id, 'usage_publish', input)).decision, 'ask');
-  const asked = ask(id, 'usage_publish', input);
-  // While the prompt waits, publishing is switched on in the page to another repo.
+  const asked = await ask(id, 'usage_publish', input);
+  // Allowed, and the retry let through; before the tool runs, publishing is switched on in the page to another repo.
+  assert.equal(await allowOnce(id, asked.id, 'usage_publish', input), 'allow', 'the exact retry, on the Allow once');
   Object.assign(view, { enabled: true, repo: 'acme/elsewhere' });
-  assert.ok(live(id).decide(asked.id, { behavior: 'allow', scope: 'once' }, 'user'));
   const late = await run(id, 'usage_publish', input);
   assert.equal(late.error, true);
   assert.match(late.text, /changed while Simon was asked, so this is no longer what they allowed; nothing changed/);
+  assert.deepEqual(switched, []);
+  // Issue #308: switched while the question waited, the retry is not let through at all: it now shows something else.
+  const again = await ask(id, 'usage_publish', input);
+  assert.match(again.sensitive, /"acme\/usage" instead of "acme\/elsewhere"/);
+  Object.assign(view, { enabled: true, repo: 'acme/third' });
+  assert.equal(await allowOnce(id, again.id, 'usage_publish', input), 'ask', 'asked again, not let through on an answer to something else');
   assert.deepEqual(switched, []);
 });
 
@@ -304,7 +321,7 @@ test("#380: a project's usage repo: shown, set or cleared only with the user's a
   assert.deepEqual(looseningChanges(moved, back), ['usage published to this computer\'s default usage repository instead of the repository "team/usage"']);
   assert.throws(() => parseProject(applyPatch(base, { project: 'p', usageRepo: 'https://github.com/team/usage' })), /owner\/name/);
 
-  const { start, run, call, ask, live, project } = ledung();
+  const { start, run, call, ask, allowOnce, project } = ledung();
   const id = await start('home');
   assert.equal(JSON.parse((await run(id, 'project_settings')).text).other.usageRepo, null);
   const input = { project: 'other', usageRepo: 'team/usage' };
@@ -312,9 +329,9 @@ test("#380: a project's usage repo: shown, set or cleared only with the user's a
   assert.equal(c.decision, 'ask');
   assert.match(c.reason, /usage published to the repository "team\/usage"/);
   assert.equal(project('other').usageRepo, null, 'nothing ran');
-  const asked = ask(id, 'set_project_settings', input);
+  const asked = await ask(id, 'set_project_settings', input);
   assert.equal(asked.addressedTo, 'user');
-  assert.ok(live(id).decide(asked.id, { behavior: 'allow', scope: 'once' }, 'user'));
+  assert.equal(await allowOnce(id, asked.id, 'set_project_settings', input), 'allow', 'the exact retry, on the Allow once');
   const saved = await run(id, 'set_project_settings', input);
   assert.equal(saved.error, false, saved.text);
   assert.equal(project('other').usageRepo, 'team/usage');

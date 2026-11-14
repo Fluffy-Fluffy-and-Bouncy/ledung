@@ -778,6 +778,16 @@ const MIGRATIONS: string[] = [
     UNIQUE (project, tool_name, command)
   );
   `,
+  // The link a device paired through the link came by (issue #313): its id in this computer's links, so a computer
+  // that trusts that link's own screen knows the device is its frame. Null: paired here, or before this column.
+  `
+  ALTER TABLE devices ADD COLUMN paired_via_link TEXT;
+  `,
+  // The fork a run is in (issue #193), as JSON RunFork (src/shared/flow-run.ts): a position per branch, each moving on
+  // its own until the join. Null: the run holds one position, at.
+  `
+  ALTER TABLE flow_runs ADD COLUMN fork TEXT;
+  `,
 ];
 
 export function databaseFile(dir = userDataDir()): string {

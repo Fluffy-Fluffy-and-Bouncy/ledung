@@ -9,7 +9,7 @@ import { disagree, MAX_BORDER_PARTS, mergeTiers, type DeskOpinion } from '../../
 import { findTickets } from '../../../src/shared/tickets.ts';
 import { api } from '../api.ts';
 import { conversationOf } from '../conversation.ts';
-import { readFilter, waitingLists, writeFilter, type Filter, type Item } from '../waitingLists.ts';
+import { opened, readFilter, waitingLists, writeFilter, type Filter, type Item } from '../waitingLists.ts';
 import { nameTint, questionLabel, withChatsColour } from '../nameTint.ts';
 import { Markdown } from './Markdown.tsx';
 import { formatTime } from './MessageList.tsx';
@@ -60,6 +60,8 @@ export function WaitingView(props: {
   linkPairings: LinkPairingInfo[];
   /** Orders on record (issue #105): shown first, each with Cancel. */
   orders: OrderInfo[];
+  /** Reads Waiting for you history (issue #306), when the view opens. */
+  onLoadHistory?: () => Promise<void>;
   run: (action: () => Promise<unknown>) => Promise<void>;
 }) {
   const [filter, setFilterState] = useState(() => readFilter(localStorage));
@@ -92,7 +94,11 @@ export function WaitingView(props: {
     items.filter((i) => i.q.status === 'open' && i.q.addressedTo === 'user' && i.project === name).length +
     props.permissions.filter((p) => p.status === 'pending' && p.addressedTo === 'user' && projectOf(p.sessionId) === name).length;
 
-  const current = props.questionId === null ? null : items.find((i) => i.q.id === props.questionId) ?? null;
+  // History is read when the view opens (issue #306); a light entry opened is read whole before it is shown.
+  useEffect(() => { props.onLoadHistory?.().catch(() => {}); }, []);
+  const found = props.questionId === null ? null : items.find((i) => i.q.id === props.questionId) ?? null;
+  const whole = useWholeQuestion(found?.q ?? null);
+  const current = found && opened(found, whole);
 
   const header = (sub: ReactNode, controls: ReactNode, conv?: QuestionInfo) => (
     <header className="desk-head">
@@ -117,11 +123,14 @@ export function WaitingView(props: {
   const ctx: DeskContext = { props, nameOf, titleOf, projectOf, tierColor, tintOf, settingsOf, header };
 
   if (props.questionId !== null) {
-    if (!current) {
+    // Not here, or a history entry still being read whole (issue #306).
+    if (!current || current.q.light) {
       return (
         <div className="waiting-view desk-view">
           {header('', <button onClick={() => props.onOpenQuestion(null)}>← Queue</button>)}
-          <div className="desk"><div className="desk-body"><div className="empty-box">Question #{props.questionId} is not here: it may be older than the recent ones Ledung keeps in view.</div></div></div>
+          <div className="desk"><div className="desk-body"><div className="empty-box">{current
+            ? `Loading question #${current.q.id}…`
+            : `Question #${props.questionId} is not here: it may be older than the recent ones Ledung keeps in view.`}</div></div></div>
         </div>
       );
     }
@@ -152,6 +161,22 @@ export function WaitingView(props: {
       tiers={visibleTiers}
     />
   );
+}
+
+/**
+ * A light history entry (issue #306) read whole once it is opened; null while it comes and for a whole question. A
+ * failed read gives the light one back marked whole, so the page shows what it has rather than waiting.
+ */
+function useWholeQuestion(q: QuestionInfo | null): QuestionInfo | null {
+  const [whole, setWhole] = useState<QuestionInfo | null>(null);
+  const id = q?.light ? q.id : null;
+  useEffect(() => {
+    if (id === null) return;
+    let live = true;
+    api.question(id).then((full) => { if (live) setWhole(full); }, () => { if (live && q) setWhole({ ...q, light: false }); });
+    return () => { live = false; };
+  }, [id]);
+  return whole;
 }
 
 interface DeskContext {
@@ -298,7 +323,7 @@ function Queue(p: {
   const confirm = p.forYou.filter((i) => i.q.details?.order?.confirm);
   // The orders themselves, in the projects shown.
   const orders = props.orders.filter((o) => filter.mode === 'all' ? !filter.hidden.includes(o.project) : o.project === filter.one);
-  // Calls the auto mode classifier refused (issue #104), first in the list: a session waits on each now.
+  // Calls the auto mode classifier refused (issue #104), and a manager's calls away mode held (#262), first in the list.
   const refused = p.forYou.filter((i) => i.q.details?.refusal);
   let place = 0;
   return (
@@ -313,7 +338,7 @@ function Queue(p: {
           {orders.length > 0 && <div className="group">{groupHead('Orders', 'var(--accent)', orders.length)}{orders.map((o) => (
             <OrderCard key={o.id} order={o} userName={props.userName} sessionTitle={titleOf} onOpenSession={props.onOpenSession} run={props.run} />
           ))}</div>}
-          {refused.length > 0 && <div className="group">{groupHead('Refused by auto mode', 'var(--danger)', refused.length)}{refused.map((i) => row(i, ++place))}</div>}
+          {refused.length > 0 && <div className="group">{groupHead('Calls refused or held for you', 'var(--danger)', refused.length)}{refused.map((i) => row(i, ++place))}</div>}
           {props.newComputers.length > 0 && <>{groupHead('New computers', 'var(--warn-border)', props.newComputers.length)}{props.newComputers.map((c) => <NewComputerCard key={c.name} computer={c} run={props.run} />)}</>}
           {props.linkPairings.length > 0 && <>{groupHead('Paired through the link', 'var(--warn-border)', props.linkPairings.length)}{props.linkPairings.map((l) => <LinkPairingCard key={l.id} pairing={l} run={props.run} />)}</>}
           {p.permsForYou.length > 0 && <>{groupHead('Permission prompts', 'var(--warn-border)', p.permsForYou.length)}{p.permsForYou.map(permission)}</>}

@@ -64,6 +64,8 @@ export interface Device {
   cookieAt: number | null;
   /** The linked computer whose page asked for its pairing code (issue #273); null: paired from this computer. */
   pairedVia: string | null;
+  /** The id of the link it was paired through (issue #313); null: paired here, or before links kept it. */
+  pairedViaLink: string | null;
 }
 
 export interface DeviceView {
@@ -89,7 +91,7 @@ function toDevice(r: Row): Device {
     passkeyAt: r.passkey_at == null ? null : Number(r.passkey_at),
     kind: r.kind === 'computer' || r.kind === 'browser' ? r.kind : 'phone', partitioned: !!r.partitioned,
     loggedOnAt: r.logged_on_at == null ? null : Number(r.logged_on_at), cookieAt: r.cookie_at == null ? null : Number(r.cookie_at),
-    pairedVia: r.paired_via ?? null,
+    pairedVia: r.paired_via ?? null, pairedViaLink: r.paired_via_link ?? null,
   };
 }
 
@@ -165,9 +167,9 @@ export class Devices {
    */
   pair(code: unknown, name: unknown, partitioned = false): { device: Device; cookie: string } | null {
     if (!this.codeValid(code)) return null;
-    const { kind, via } = this.code!;
+    const { kind, via, viaLink } = this.code!;
     this.code = null;
-    return this.add(kind, deviceName(name, kind === 'browser' ? 'Browser' : 'Phone'), partitioned, via);
+    return this.add(kind, deviceName(name, kind === 'browser' ? 'Browser' : 'Phone'), partitioned, via, viaLink);
   }
 
   /**
@@ -194,12 +196,12 @@ export class Devices {
       .run(this.now(), this.now() - BROWSER_UNUSED_MS);
   }
 
-  private add(kind: DeviceKind, name: string, partitioned: boolean, via: string | null): { device: Device; cookie: string } {
+  private add(kind: DeviceKind, name: string, partitioned: boolean, via: string | null, viaLink: string | null = null): { device: Device; cookie: string } {
     const cookie = crypto.randomBytes(32).toString('hex');
     const id = crypto.randomUUID();
     const at = this.now();
-    this.db.prepare('INSERT INTO devices (id, name, cookie_hash, created_at, last_used_at, kind, partitioned, cookie_at, paired_via) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(id, name, hash(cookie), at, at, kind, partitioned ? 1 : 0, at, via);
+    this.db.prepare('INSERT INTO devices (id, name, cookie_hash, created_at, last_used_at, kind, partitioned, cookie_at, paired_via, paired_via_link) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, name, hash(cookie), at, at, kind, partitioned ? 1 : 0, at, via, viaLink);
     return { device: this.get(id)!, cookie };
   }
 
@@ -298,6 +300,16 @@ export class Devices {
 
   logOff(id: string): void {
     this.db.prepare('UPDATE devices SET logged_on_at = NULL WHERE id = ?').run(id);
+  }
+
+  /**
+   * The live computer devices paired through a link (issue #313): those whose link id is kept, and older ones by the
+   * name the link had when they paired, when one link alone has that name here (`name`; null: none).
+   */
+  pairedThrough(linkId: string, name: string | null): Device[] {
+    const rows = this.db.prepare("SELECT * FROM devices WHERE revoked_at IS NULL AND kind = 'computer' AND (paired_via_link = ? OR (paired_via_link IS NULL AND paired_via = ?))")
+      .all(linkId, name) as Row[];
+    return rows.map(toDevice);
   }
 
   /**

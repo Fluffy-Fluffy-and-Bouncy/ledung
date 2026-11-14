@@ -57,6 +57,10 @@ let chatImagesDir: string;
 let sessions: SessionManager;
 const questionAbout: Record<string, number> = {};
 let refusalQuestion = 0;
+/** Ledung's question about a manager's call away mode held (issue #262). */
+let heldQuestion = 0;
+/** Ledung's question about a manager's settings change, asked instead of its prompt (issue #308). */
+let promptQuestion = 0;
 let allowedRule = 0;
 let alwaysQuestion = 0;
 let keepQuestion = 0;
@@ -114,6 +118,14 @@ before(async () => {
   const rq = store.createQuestion({ sessionId: 's1', question: 'refused', options: ['Allow once', 'Deny'], addressedTo: 'user', details: { refusal: { toolName: 'Bash', input: { command: 'x' }, reason: 'r', toolUseId: 't' } } });
   store.withdrawQuestion(rq.id, 'test');
   refusalQuestion = rq.id;
+  // A manager's call away mode held, asked the same way (issue #262), no longer open.
+  const hq = store.createQuestion({ sessionId: 's1', question: 'held', options: ['Allow once', 'Allow always, though sensitive', 'Deny'], addressedTo: 'user', details: { refusal: { toolName: 'Bash', input: { command: 'gh pr merge 5 -R o/r --merge' }, reason: 'held for Simon: failing checks: ci', toolUseId: 't3', held: 'away', always: 'sensitive', sensitiveRule: 'gh pr merge' } } });
+  store.withdrawQuestion(hq.id, 'test');
+  heldQuestion = hq.id;
+  // A manager's settings change asked the same way instead of its prompt (issue #308), no longer open.
+  const pq = store.createQuestion({ sessionId: 's1', question: 'asked', options: ['Allow once', 'Deny'], addressedTo: 'user', details: { refusal: { toolName: 'mcp__ledung__set_project_settings', input: { project: 'p', managerGrant: 'anything' }, reason: 'a change to "p" that loosens what reaches you: manager grant none → "anything"', toolUseId: 't4', held: 'prompt' } } });
+  store.withdrawQuestion(pq.id, 'test');
+  promptQuestion = pq.id;
   // An Allow always rule of project p (issue #225), for the removal route.
   allowedRule = store.addAllowedCall({ project: 'p', toolName: 'Bash', command: 'npm run publish:dev', sensitive: false, allowedBy: 'Simon', questionId: rq.id }).id;
   // An open refused-call question that offers Allow always, for the answer route (issue #225).
@@ -1008,6 +1020,26 @@ test("answering Ledung's question about a refused call, whose Allow once lets th
   assert.match(errorOf(passed), /no longer open/);
 });
 
+test("answering Ledung's question about a call away mode held, whose Allow once lets the retry through, needs the live page too (issue #262)", async () => {
+  const answer = { answer: 'Allow once' };
+  assert.equal((await change(`/api/questions/${heldQuestion}/answer`, answer)).status, 403);
+  const page = await livePage();
+  const passed = await change(`/api/questions/${heldQuestion}/answer`, answer, { 'x-ledung-page': page.key });
+  page.close();
+  assert.equal(passed.status, 400);
+  assert.match(errorOf(passed), /no longer open/);
+});
+
+test("answering Ledung's question about a manager's settings change asked instead of its prompt, whose Allow once lets the retry through, needs the live page too (issue #308)", async () => {
+  const answer = { answer: 'Allow once' };
+  assert.equal((await change(`/api/questions/${promptQuestion}/answer`, answer)).status, 403);
+  const page = await livePage();
+  const passed = await change(`/api/questions/${promptQuestion}/answer`, answer, { 'x-ledung-page': page.key });
+  page.close();
+  assert.equal(passed.status, 400);
+  assert.match(errorOf(passed), /no longer open/);
+});
+
 test("the person's Allow always through the answer route records the exact command for the project, and only from the live page (issue #225)", async () => {
   const commands = async () => (JSON.parse((await request({ path: '/api/projects', headers: { cookie: COOKIE } })).body) as { name: string; allowedCalls?: { command: string; questionId: number }[] }[])
     .find((x) => x.name === 'p')!.allowedCalls!.filter((c) => c.questionId === alwaysQuestion).map((c) => c.command);
@@ -1865,6 +1897,34 @@ test('computers are linked and unlinked only on this computer: a paired device, 
       assert.equal(res.status, 403, `${p}: ${res.body}`);
       assert.match(errorOf(res), here, p);
     }
+  } finally {
+    d.page.close();
+  }
+});
+
+test('a trusted computer\'s vouch (issue #313): link-vouch only on this computer, and a vouch header counts for no phone', async () => {
+  const d = await deviceWithPasskey('Vouching phone');
+  try {
+    assert.equal((await pubChange('/api/device-unlock', '{}', d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign('/api/device-unlock', '{}') })).status, 200);
+    // Unlocked, with the page key and this very request signed: link-vouch is still this computer's own screen's alone.
+    const body = JSON.stringify({ id: 'mac.l.example.com', challenge: 'A'.repeat(43) });
+    const vouch = await pubChange('/api/link-vouch', body, d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign('/api/link-vouch', body) });
+    assert.equal(vouch.status, 403, vouch.body);
+    assert.match(errorOf(vouch), /Only this computer's own screen vouches/);
+    // Locally without the open page's key (the token alone), refused before anything else.
+    const noPage = await change('/api/link-vouch', JSON.parse(body));
+    assert.equal(noPage.status, 403, noPage.body);
+    // A phone's vouch header, in place of its passkey, allows nothing: no phone is a trusted computer's frame.
+    const away = JSON.stringify({ until: '23:59' });
+    const viaVouch = await pubChange('/api/away', away, d.cookie, { ...d.withKey, 'x-ledung-vouch': 'A'.repeat(43) });
+    assert.equal(viaVouch.status, 403, viaVouch.body);
+    assert.match(errorOf(viaVouch), /does not trust that computer's screen/);
+    // Premise: the same request with its passkey goes through.
+    assert.equal((await pubChange('/api/away', away, d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign('/api/away', away) })).status, 200);
+    // And a phone's challenge is a passkey's, never one to vouch for.
+    const offered = JSON.parse((await pubChange('/api/passkey-challenge', { method: 'POST', path: '/api/away', body: away }, d.cookie)).body);
+    assert.equal(offered.vouch, undefined);
+    assert.equal(typeof offered.challenge, 'string');
   } finally {
     d.page.close();
   }
