@@ -6,7 +6,7 @@
 import type { QuestionInfo, RunBlock, SessionInfo, StoredMessage } from '../shared/protocol.ts';
 import { DEFAULT_FLOW, DEFAULT_TIDY, endingKey, flowFileOf, ordinal, STOPPED_ENDING, type Flow, type FlowBlock } from '../shared/flow.ts';
 import { makeWorktree, removeWorktree, type WorktreeHost } from './run-worktrees.ts';
-import { decideStep, OPEN_STATES, outcomeList, runLabel, startBlock, type FlowRun, type RunStep, type StepQuestions } from '../shared/flow-run.ts';
+import { decideStep, OPEN_STATES, outcomeList, runLabel, startBlock, type FlowRun, type RunBranch, type RunFork, type RunStep, type StepQuestions } from '../shared/flow-run.ts';
 import { inFolder, sessionOf } from '../shared/flow-check.ts';
 import { exercisedLine } from '../platform/exercised.ts';
 import { ACCEPTED, CHANGES_NEEDED, optionAnswer, questionText, type QuestionDetails, type QuestionOption, type QuestionRun } from '../shared/questions.ts';
@@ -109,6 +109,8 @@ function briefPlace(folder: string, brief: string): string {
 
 /** EXERCISED #142 is logged once per run of Ledung, not per step. */
 let exercised142 = false;
+/** EXERCISED #193 too: once per run of Ledung, at the first fork that starts its branches. */
+let exercised193 = false;
 
 /** How long a person block waits for its coordinator's write-up before Ledung asks its own card (#291). */
 export const WRITE_UP_MINUTES = 10;
@@ -222,7 +224,7 @@ export class FlowRuns {
         const already = this.p.runs.list(caller.project, { open: true, limit: 10000 }).find((r) => r.ref?.trim().toLowerCase() === ref.toLowerCase());
         if (already) {
           const titleOf = (id: string | null) => flows.flows.get(already.flow)?.blocks.find((b) => b.id === id)?.title ?? id ?? '';
-          throw new FlowRunError(`${runLabel(already)} is already under way for ${ref} (${this.stateLine(already, titleOf(already.at))}): report on it, or start another with again: true.`);
+          throw new FlowRunError(`${runLabel(already)} is already under way for ${ref} (${this.stateLine(already, titleOf)}): report on it, or start another with again: true.`);
         }
       }
       // Full, or others already in line: a new run never jumps the line (review of 3f).
@@ -283,9 +285,17 @@ export class FlowRuns {
         const stopped = this.stopRun(run, args.outcome.trim() || 'stopped', this.who(callerId), flows);
         return `${stopped} ${await this.afterEnd(flows, this.p.runs.get(run.id)!, STOPPED_ENDING)}`.trim();
       }
-      if (run.state === 'queued') throw new FlowRunError(`${runLabel(run)} is in line (${this.stateLine(run, run.at ?? '')}): it has no step to report yet. Stop it with stop: true, or ${this.p.userName} can start it anyway.`);
+      if (run.state === 'queued') throw new FlowRunError(`${runLabel(run)} is in line (${this.stateLine(run, (b) => b ?? '')}): it has no step to report yet. Stop it with stop: true, or ${this.p.userName} can start it anyway.`);
       const flows = await this.flowsOf(run.project);
       const flow = this.flowOf(flows, run);
+      if (run.fork) {
+        // In a fork (#193): the step is a branch's, the one at the block given.
+        const branch = this.pickBranch(run, flow, args.block);
+        const at = flow.blocks.find((b) => b.id === branch.at);
+        if (!at) throw new FlowRunError(`The "${branch.word}" branch of ${runLabel(run)} is at "${branch.at}", which is no block of the flow any more. Stop it with stop: true, and start it again.`);
+        return this.applyStep(flows, flow, run, at, args.outcome, this.who(callerId), args.note, branch.word);
+      }
+      // Only for one position: a run in a fork goes by its branches' blocks, whatever became of the fork's (self-check, 4).
       const block = flow.blocks.find((b) => b.id === run.at);
       if (!block) throw new FlowRunError(`${runLabel(run)} is at "${run.at}", which is no block of the flow any more. Stop it with stop: true, and start it again.`);
       if (args.block?.trim() && args.block.trim().toLowerCase() !== block.id && args.block.trim().toLowerCase() !== block.title.toLowerCase()) {
@@ -307,17 +317,17 @@ export class FlowRuns {
       const counts = Object.entries(run.counts).flatMap(([b, words]) => Object.entries(words).map(([w, n]) => `${titleOf(run, b)}: "${w}" ×${n}`));
       const sessions = Object.entries(run.sessions).map(([b, s]) => `${b === CALLER ? 'handed by its caller' : titleOf(run, b)}: ${s}`);
       return [
-        `${runLabel(run)} in the flow "${flows?.titles.get(run.flow) ?? run.flow}", coordinated by ${this.who(run.coordinator)}: ${this.stateLine(run, titleOf(run, run.at))}.`,
+        `${runLabel(run)} in the flow "${flows?.titles.get(run.flow) ?? run.flow}", coordinated by ${this.who(run.coordinator)}: ${this.stateLine(run, (b) => titleOf(run, b))}.`,
         run.parent ? `Started by "${run.parent.block}" of ${run.parent.run}, which waits for it.` : '',
         run.worktree ? `Worktree: ${run.worktree.path} (branch ${run.worktree.branch}, from ${run.worktree.base}${run.worktree.own ? '' : `, its parent's`}).` : '',
         counts.length ? `Counts: ${counts.join('; ')}.` : '',
         sessions.length ? `Sessions: ${sessions.join('; ')}.` : '',
-        run.history.length ? `History:\n${run.history.map((h) => `- ${new Date(h.at).toISOString().slice(0, 16).replace('T', ' ')} ${titleOf(run, h.block)}: "${h.word}"${h.n > 1 ? ` (${ordinal(h.n)} time)` : ''} by ${h.by} → ${h.to === null ? 'end' : titleOf(run, h.to)}`).join('\n')}` : 'No steps yet.',
+        run.history.length ? `History:\n${run.history.map((h) => `- ${new Date(h.at).toISOString().slice(0, 16).replace('T', ' ')} ${titleOf(run, h.block)}${h.branch ? ` ("${h.branch}" branch)` : ''}: "${h.word}"${h.n > 1 ? ` (${ordinal(h.n)} time)` : ''} by ${h.by} → ${h.to === null ? 'end' : titleOf(run, h.to)}`).join('\n')}` : 'No steps yet.',
       ].filter(Boolean).join('\n');
     }
     const runs = this.p.runs.list(caller.project, { limit: STATUS_LISTED });
     if (!runs.length) return 'No runs in your project yet; flow_start starts one.';
-    return runs.map((r) => `- ${runLabel(r)}, flow "${flows?.titles.get(r.flow) ?? r.flow}": ${this.stateLine(r, titleOf(r, r.at))}`).join('\n');
+    return runs.map((r) => `- ${runLabel(r)}, flow "${flows?.titles.get(r.flow) ?? r.flow}": ${this.stateLine(r, (b) => titleOf(r, b))}`).join('\n');
   }
 
   /** The project's runs for the page, the latest changed first: the open ones and the latest others. */
@@ -327,18 +337,49 @@ export class FlowRuns {
 
   // --- moving a run ----------------------------------------------------------------------------------
 
-  private stateLine(run: FlowRun, at: string): string {
+  private stateLine(run: FlowRun, titleOf: (block: string | null) => string): string {
+    const since = (t: number) => new Date(t).toISOString().slice(0, 16).replace('T', ' ');
     if (run.state === 'ended') return `ended "${run.ending}"`;
     if (run.state === 'stopped') return `stopped (${run.ending})`;
-    if (run.state === 'queued') return `queued ${run.queue === 'flow' ? 'to start' : `before "${at}"`}, number ${this.place(run)} in line`;
-    return `${run.state === 'waiting' ? 'waiting' : 'at'} "${at}" since ${new Date(run.atSince).toISOString().slice(0, 16).replace('T', ' ')}`;
+    if (run.state === 'queued') return `queued ${run.queue === 'flow' ? 'to start' : `before "${titleOf(run.at)}"`}, number ${this.place(run)} in line`;
+    // Every position it holds (#193): a branch's block, or the join it waits at.
+    if (run.fork) {
+      return `in the fork "${titleOf(run.fork.block)}", with a branch at each of: ${run.fork.branches.map((b) => `"${b.word}" ${b.joined ? `waiting at the join "${titleOf(b.at)}"` : `at "${titleOf(b.at)}"`} since ${since(b.atSince)}`).join('; ')}`;
+    }
+    return `${run.state === 'waiting' ? 'waiting' : 'at'} "${titleOf(run.at)}" since ${since(run.atSince)}`;
+  }
+
+  /**
+   * The branch of a run's fork a step is for (#193): the one at the block given (by id or title), or by its word; none
+   * given, the only one still out. Refused with every branch listed.
+   */
+  private pickBranch(run: FlowRun, flow: Flow, name: string | undefined): RunBranch {
+    const fork = run.fork!;
+    const titleOf = (id: string) => flow.blocks.find((b) => b.id === id)?.title ?? id;
+    const list = `Its branches: ${fork.branches.map((b) => `"${b.word}" ${b.joined ? `waits at the join "${titleOf(b.at)}"` : `at "${titleOf(b.at)}" (${b.at})`}`).join(', ')}. Nothing was recorded.`;
+    const out = fork.branches.filter((b) => !b.joined);
+    const want = name?.trim().toLowerCase();
+    if (!want) {
+      if (out.length === 1) return out[0]!;
+      throw new FlowRunError(`${runLabel(run)} is in the fork "${titleOf(fork.block)}", at several blocks at once: give the block you report on. ${list}`);
+    }
+    const at = (b: RunBranch) => b.at === want || titleOf(b.at).toLowerCase() === want;
+    const found = out.find(at) ?? out.find((b) => b.word.toLowerCase() === want);
+    if (found) return found;
+    if (want === fork.block || titleOf(fork.block).toLowerCase() === want) {
+      throw new FlowRunError(`Ledung started every branch of the fork "${titleOf(fork.block)}" itself: report each branch's outcome at its own block. ${list}`);
+    }
+    const joined = fork.branches.find((b) => b.joined && (at(b) || b.word.toLowerCase() === want));
+    throw new FlowRunError(joined
+      ? `The "${joined.word}" branch of ${runLabel(run)} has reached the join "${titleOf(joined.at)}" and waits there for the others. ${list}`
+      : `No branch of ${runLabel(run)} is at "${name!.trim()}". ${list}`);
   }
 
   /**
    * Records a step and moves the run on; what the coordinator does next. A run a Run flow block started hands its
    * ending to that block (part 3b), which then moves its own run.
    */
-  private async applyStep(flows: ProjectFlows, flow: Flow, run: FlowRun, block: FlowBlock, word: string, by: string, note: string | undefined): Promise<string> {
+  private async applyStep(flows: ProjectFlows, flow: Flow, run: FlowRun, block: FlowBlock, word: string, by: string, note: string | undefined, branch?: string): Promise<string> {
     let decision;
     try {
       decision = decideStep(flow, block.id, word, run.counts[block.id]);
@@ -354,6 +395,7 @@ export class FlowRuns {
     const step: RunStep = {
       block: block.id, word: said, n: decision.n, to: decision.kind === 'move' ? decision.to : null, by, at: this.now(),
       ...(note?.trim() ? { note: short(note.trim(), NOTE_KEPT) } : {}),
+      ...(branch ? { branch } : {}),
     };
     const history = [...run.history, step];
     // Reported without the person's answer (the coordinator's word goes, the workflow guides): the question goes.
@@ -362,13 +404,15 @@ export class FlowRuns {
     const counted = decision.kind === 'move' && decision.outcome.times ? ` (its ${ordinal(decision.n)} time)` : '';
     const handoff = this.handoff(run, flow, block, note);
     if (decision.kind === 'end') {
-      const ended = this.p.runs.update(run.id, { at: null, atSince: this.now(), counts, history, state: 'ended', ending: decision.word, question: null }, this.now());
+      // A branch that ends the flow ends the whole run, its other branches with it (#193).
+      const ended = this.p.runs.update(run.id, { at: null, atSince: this.now(), counts, history, state: 'ended', ending: decision.word, question: null, fork: null }, this.now());
       this.p.changed(run.project);
       const after = await this.afterEnd(flows, ended, decision.word);
       const done = `Recorded "${said}" for "${block.title}". ${runLabel(ended)} has ended: "${decision.word}".${after ? ` ${after}` : ''}`;
       return ended.parent ? `${done} ${await this.childEnded(flows, ended, handoff)}` : done;
     }
     const next = flow.blocks.find((b) => b.id === decision.to)!;
+    if (branch && run.fork) return this.branchMoved(flows, flow, { ...run, counts, history }, run.fork, branch, next, `Recorded "${said}" for "${block.title}"${counted}, the "${branch}" branch`, said, handoff);
     const moved = this.p.runs.update(run.id, { at: next.id, atSince: this.now(), counts, history, state: 'running', question: null }, this.now());
     this.p.changed(run.project);
     const text = `Recorded "${said}" for "${block.title}"${counted}: ${runLabel(moved)} goes to "${next.title}". ${await this.enterBlock(flows, moved, flow, next, handoff, false)}`;
@@ -630,6 +674,10 @@ export class FlowRuns {
       if (block.kind === 'person') return await this.askPerson(flows, run, flow, block, handoff);
       if (block.kind === 'flow') return await this.startChild(flows, run, block, handoff);
       if (block.kind === 'wait') return await this.waitAt(flows, run, flow, block, handoff);
+      if (block.kind === 'fork') {
+        const forked = await this.forkAt(flows, run, flow, block, handoff);
+        if (forked) return forked;
+      }
       if (block.runs === 'new-session' || block.runs === 'continue') {
         const s = await this.blockSession(flows, run, flow, block, handoff);
         return `At ${at}: ${s}. Ledung tells you when it finishes a turn. ${outs} ${report}`;
@@ -655,6 +703,126 @@ export class FlowRuns {
     const given = handoff ? `\n\n"${handoff.from}" handed on:\n\n${handoff.text}` : '';
     return `At "${block.title}" (${block.id}), a wait: ${run.id} waits there (the workflow page shows how long) until you report how it came out.${given}${brief ? `\n\n${brief}` : ''}\n\n` +
       `Its outcomes: ${outcomeList(flow, block, run.counts[block.id])}. Report with flow_step (run "${run.id}", the outcome's word) when it comes.`;
+  }
+
+  // --- #193: a fork starts every branch at once, and the join waits for each ---------------------------
+
+  /**
+   * A fork (#193): one position per branch, each of the fork's outcomes, and every branch's block acts at once (a session
+   * block gets its session). The run stays at the fork's block while it is in it. Null: a fork with fewer than two
+   * branches to start, which the coordinator goes through as before.
+   */
+  private async forkAt(flows: ProjectFlows, run: FlowRun, flow: Flow, fork: FlowBlock, handoff: Handoff): Promise<string | null> {
+    // One branch per word, its plain outcome (a fork's outcomes are its branches; a count on one means nothing here).
+    const byWord = new Map<string, NonNullable<FlowBlock['outcomes']>[number]>();
+    for (const o of fork.outcomes ?? []) {
+      if (o.end || o.to === undefined || !flow.blocks.some((b) => b.id === o.to)) continue;
+      const k = endingKey(o.word);
+      if (!byWord.has(k) || (byWord.get(k)!.times && !o.times)) byWord.set(k, o);
+    }
+    const outs = [...byWord.values()];
+    // Fewer than two branches, or none that goes anywhere but a join (nothing would ever move it; self-check, 2).
+    if (outs.length < 2 || outs.every((o) => flow.blocks.find((b) => b.id === o.to)!.kind === 'join')) return null;
+    if (!exercised193) {
+      exercised193 = true;
+      exercisedLine('EXERCISED #193 fork started every branch at once');
+    }
+    const now = this.now();
+    const blockOf = (id: string) => flow.blocks.find((b) => b.id === id)!;
+    const branches: RunBranch[] = outs.map((o) => (blockOf(o.to!).kind === 'join'
+      ? { word: o.word, at: o.to!, atSince: now, joined: true, outcome: o.word }
+      : { word: o.word, at: o.to!, atSince: now, joined: false }));
+    const history = [...run.history, ...outs.map((o): RunStep => ({ block: fork.id, word: o.word, n: 1, to: o.to!, by: 'Ledung', at: now, branch: o.word }))];
+    this.p.runs.update(run.id, { at: fork.id, atSince: now, history, state: 'running', fork: { block: fork.id, branches } }, now);
+    this.p.changed(run.project);
+    const lines: string[] = [];
+    for (const b of branches) {
+      const block = blockOf(b.at);
+      lines.push(b.joined
+        ? `- "${b.word}" goes straight to the join "${block.title}" (${block.id}).`
+        // Read again for each: the branch before may have recorded its session.
+        : `- ${await this.branchArrive(flows, this.p.runs.get(run.id)!, flow, block, b.word, handoff)}`);
+    }
+    return `At "${fork.title}" (${fork.id}), a fork: Ledung started every branch at once.\n${lines.join('\n')}\n\n` +
+      `Each branch moves on its own: report each one's outcome with flow_step (run "${run.id}"), giving its block. A join moves on only when every branch has reached it.`;
+  }
+
+  /** A branch comes to a block (#193): a session block gets its session; any other step is the coordinator's to see through. */
+  private async branchArrive(flows: ProjectFlows, run: FlowRun, flow: Flow, block: FlowBlock, word: string, handoff: Handoff): Promise<string> {
+    const at = `"${word}" at "${block.title}" (${block.id})`;
+    const outs = `Its outcomes: ${outcomeList(flow, block, run.counts[block.id])}.`;
+    if ((block.kind === 'work' || block.kind === 'check') && (block.runs === 'new-session' || block.runs === 'continue')) {
+      try {
+        return `${at}: ${await this.blockSession(flows, run, flow, block, handoff)}. ${outs}`;
+      } catch (e) {
+        return `${at}, but Ledung could not do it: ${(e as Error).message} Do the step yourself, or stop the run. ${outs}`;
+      }
+    }
+    // A person, a wait, a Run flow block inside a branch is not run by Ledung yet: it holds one question and one wait per
+    // run. The coordinator sees it through and reports it, as at a manager's step.
+    const kind = block.kind === 'person' ? "a person's step" : block.kind === 'wait' ? 'a wait' : block.kind === 'flow' ? 'a Run flow block' : '';
+    const brief = await this.briefOf(flows, block);
+    return `${at}: ${kind ? `${kind}, which Ledung does not run inside a fork's branch yet: see it through yourself` : block.runs === 'manager' ? 'your own step' : 'a step for you to see through'}.${brief ? ` ${brief.replace(/\n+/g, ' ')}` : ''} ${outs}`;
+  }
+
+  /**
+   * A branch's step moved it (#193): to a join, where it waits until every branch is there; back to a fork, which starts
+   * every branch afresh (the others are dropped); to the block another branch is at, where the two go on as one; or on
+   * to its next block. `run` carries the step's counts and history, not yet saved.
+   */
+  private async branchMoved(flows: ProjectFlows, flow: Flow, run: FlowRun, fork: RunFork, word: string, next: FlowBlock, head: string, said: string, handoff: Handoff): Promise<string> {
+    const now = this.now();
+    const titleOf = (id: string) => flow.blocks.find((b) => b.id === id)?.title ?? id;
+    const save = (f: RunFork | null, more: { at?: string; atSince?: number } = {}) => {
+      const saved = this.p.runs.update(run.id, { counts: run.counts, history: run.history, fork: f, state: 'running', ...more }, now);
+      this.p.changed(run.project);
+      return saved;
+    };
+    const others = fork.branches.filter((b) => b.word !== word);
+    if (next.kind === 'fork') {
+      const moved = save(null, { at: next.id, atSince: now });
+      const dropped = others.length ? ` Its other branches (${others.map((b) => `"${b.word}" at "${titleOf(b.at)}"`).join(', ')}) are dropped: the fork starts every branch afresh.` : '';
+      return `${head}: ${runLabel(moved)} goes to "${next.title}".${dropped} ${await this.enterBlock(flows, moved, flow, next, handoff, false)}`;
+    }
+    if (next.kind === 'join') {
+      const branches = fork.branches.map((b) => (b.word === word ? { word, at: next.id, atSince: now, joined: true, outcome: said, ...(handoff ? { note: short(handoff.text, NOTE_KEPT) } : {}) } : b));
+      const waiting = branches.filter((b) => !b.joined || b.at !== next.id);
+      if (waiting.length) {
+        save({ ...fork, branches });
+        return `${head}: it has reached the join "${next.title}", which waits for ${waiting.map((b) => `"${b.word}" (${b.joined ? `at the join "${titleOf(b.at)}"` : `at "${titleOf(b.at)}"`})`).join(', ')}. Report each with flow_step, giving its block.`;
+      }
+      const moved = save(null, { at: next.id, atSince: now });
+      return `${head}: every branch has reached the join "${next.title}". ${await this.joinTaken(flows, flow, moved, next, branches, titleOf(fork.block))}`;
+    }
+    const meeting = others.find((b) => !b.joined && b.at === next.id);
+    if (meeting) {
+      // One position per block: the step there is done once, for both.
+      save({ ...fork, branches: others });
+      return `${head}: it goes to "${next.title}", where the "${meeting.word}" branch already is, so the two go on as one there, as "${meeting.word}"; nothing more was started.` +
+        (handoff ? ` If that step needs what "${handoff.from}" handed on, pass it on yourself:\n\n${handoff.text}` : '');
+    }
+    const moved = save({ ...fork, branches: fork.branches.map((b) => (b.word === word ? { word, at: next.id, atSince: now, joined: false } : b)) });
+    return `${head}: the branch goes to "${next.title}". ${await this.branchArrive(flows, moved, flow, next, word, handoff)}`;
+  }
+
+  /**
+   * Every branch has reached the join (#193): each one's outcome and what it handed on goes to the join. A join with one
+   * outcome (or none, ending the flow) has no choice to make, so Ledung takes it; with several, the coordinator reads
+   * the branches' outcomes and reports which (#1184: Ledung never picks one from text).
+   */
+  private async joinTaken(flows: ProjectFlows, flow: Flow, run: FlowRun, join: FlowBlock, branches: RunBranch[], forkTitle: string): Promise<string> {
+    const each = branches.map((b) => `- "${b.word}": ${b.outcome}${b.note ? `: ${b.note}` : ''}`).join('\n');
+    const given: Handoff = { from: `the branches of "${forkTitle}"`, text: `Each branch's outcome:\n${each}` };
+    const words = FlowRuns.words(join);
+    if (words.length <= 1) {
+      try {
+        return `Each branch's outcome:\n${each}\n\nIt has one way on, so Ledung took it: ${await this.applyStep(flows, flow, run, join, words[0] ?? join.title, 'Ledung (every branch in)', given.text)}`;
+      } catch (e) {
+        // The branch's step is saved and the run is at the join: said as such, not as "nothing was recorded" (self-check, 1).
+        return `Each branch's outcome:\n${each}\n\nLedung could not take the join's way on: ${(e as Error).message.replace(/ Nothing was recorded\.$/, '')} The run is at "${join.title}": report its outcome yourself with flow_step once the flow says where it goes, or stop the run.`;
+      }
+    }
+    return `Each branch's outcome:\n${each}\n\n${await this.arrive(flows, run, flow, join, given)}`;
   }
 
   /** The block's brief as the one doing it reads it: its text, or where it is when it is long or can't be read. */
@@ -687,9 +855,16 @@ export class FlowRuns {
   /** The step for a block's session: which run and block, the brief, the sub-steps, the handoff, the words to end with. */
   private async handoffText(flows: ProjectFlows, run: FlowRun, block: FlowBlock, handoff: Handoff): Promise<string> {
     const words = [...new Map((block.outcomes ?? []).map((o) => [endingKey(o.word), o.word])).values()];
+    const flow = flows.flows.get(run.flow);
+    const titleOf = (id: string) => flow?.blocks.find((b) => b.id === id)?.title ?? id;
+    const mine = run.fork?.branches.find((b) => !b.joined && b.at === block.id);
+    const branchOf = mine ? { word: mine.word, fork: run.fork!.block } : null;
+    const others = run.fork?.branches.filter((b) => b !== mine).map((b) => `"${b.word}" at "${titleOf(b.at)}"`).join(', ') ?? '';
     return [
       `You run "${block.title}" (block ${block.id}) of ${runLabel(run)}, in the flow "${flows.titles.get(run.flow) ?? run.flow}". Ledung started this from the flow; ${this.who(run.coordinator)} coordinates the run.`,
       run.worktree ? `The run has its own git worktree, ${run.worktree.path}, on branch ${run.worktree.branch} (from ${run.worktree.base}): work and commit there, not in the project folder.` : '',
+      // #193: a branch's session knows the others run beside it.
+      branchOf ? `This is the "${branchOf.word}" branch of the fork "${titleOf(branchOf.fork)}": its other branches (${others}) run at the same time, each in its own step.` : '',
       await this.briefOf(flows, block),
       block.substeps?.length ? this.substepsLine(flows, block) : '',
       handoff ? `What "${handoff.from}" handed on:\n\n${handoff.text}` : '',
@@ -1054,7 +1229,9 @@ export class FlowRuns {
   onSessionTurn(sessionId: string, lastReply: string): void {
     const s = this.p.getSession(sessionId);
     const run = s?.runBlock ? this.p.runs.get(s.runBlock.run) : undefined;
-    if (!s || !run || run.state === 'ended' || run.state === 'stopped' || run.at !== s.runBlock!.block) return;
+    // In a fork, each branch's session is heard (#193).
+    const here = run?.fork ? run.fork.branches.some((b) => !b.joined && b.at === s!.runBlock!.block) : run?.at === s?.runBlock?.block;
+    if (!s || !run || run.state === 'ended' || run.state === 'stopped' || !here) return;
     const parent = s.parentId ? this.p.getSession(s.parentId) : undefined;
     if (parent?.role === 'manager' && parent.id === run.coordinator) return;
     this.tellCoordinator(run, `Ledung: session "${s.title}" (${s.id}), which runs "${s.runBlock!.block}" of ${runLabel(run)}, finished a turn. Its last reply began:\n\n${short(lastReply, 600) || '(no text)'}\n\nJudge it against the block's outcomes and report with flow_step.`);

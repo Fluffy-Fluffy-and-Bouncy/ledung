@@ -1,7 +1,7 @@
 // What the workflow page shows of the runs (workflow part 3c): the markers on the blocks, a counted pin's progress and
 // the chosen run's path; the components are in components/FlowRuns.tsx.
 import { endingKey, type Flow } from '../../src/shared/flow.ts';
-import { OPEN_STATES, type FlowRun } from '../../src/shared/flow-run.ts';
+import { OPEN_STATES, runPositions, type FlowRun } from '../../src/shared/flow-run.ts';
 
 /** What the diagram shows of the runs, by block id. */
 export interface RunMarks {
@@ -20,9 +20,17 @@ export function blockRuns(runs: readonly FlowRun[], flow: string): RunMarks['at'
   const at: RunMarks['at'] = new Map();
   for (const r of runs) {
     if (r.flow !== flow || !open(r) || !r.at) continue;
-    const list = at.get(r.at) ?? [];
-    list.push({ id: r.id, label: r.ref ?? (r.title.length > 18 ? `${r.title.slice(0, 17)}…` : r.title), title: `${r.id} "${r.title}"${r.ref ? ` (${r.ref})` : ''}${r.state === 'waiting' ? ', waiting' : ''}`, waiting: r.state === 'waiting' });
-    at.set(r.at, list);
+    const label = r.ref ?? (r.title.length > 18 ? `${r.title.slice(0, 17)}…` : r.title);
+    // In a fork, a marker at each branch's block (#193); a branch at its join waits there for the others.
+    const places = r.fork
+      ? r.fork.branches.map((b) => ({ block: b.at, waiting: b.joined, said: `, the "${b.word}" branch${b.joined ? ', waiting for the others' : ''}` }))
+      : [{ block: r.at, waiting: r.state === 'waiting', said: r.state === 'waiting' ? ', waiting' : '' }];
+    for (const p of places) {
+      const list = at.get(p.block) ?? [];
+      if (list.some((m) => m.id === r.id)) continue;
+      list.push({ id: r.id, label, title: `${r.id} "${r.title}"${r.ref ? ` (${r.ref})` : ''}${p.said}`, waiting: p.waiting });
+      at.set(p.block, list);
+    }
   }
   return at;
 }
@@ -77,7 +85,7 @@ export function followLine(flow: Flow | null): string {
 /** The blocks a run has been through, and where it is now. */
 export function runPath(run: FlowRun): RunMarks['path'] {
   const path: RunMarks['path'] = new Map(run.history.map((h) => [h.block, 'passed' as const]));
-  if (run.at) path.set(run.at, 'here');
+  for (const at of runPositions(run)) path.set(at, 'here');
   return path;
 }
 

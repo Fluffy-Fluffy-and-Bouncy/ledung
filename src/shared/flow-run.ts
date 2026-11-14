@@ -26,6 +26,31 @@ export interface RunStep {
   at: number;
   /** What was handed on, shortened; none: nothing given. */
   note?: string;
+  /** For a step of a fork's branch (#193): the branch, by the fork outcome's word ("Code", "Tests"). */
+  branch?: string;
+}
+
+/**
+ * One branch of a fork a run is in (#193): Ledung starts every branch at once, and each moves on its own until it
+ * reaches the join, which waits for each.
+ */
+export interface RunBranch {
+  /** The fork outcome's word that made it: "Code", "Tests". */
+  word: string;
+  /** The block it is at; once it has reached a join, that join. */
+  at: string;
+  atSince: number;
+  /** It has reached the join at `at` and waits there for the other branches. */
+  joined: boolean;
+  /** The outcome's word that took it to the join, and what it handed on; for the join to read. */
+  outcome?: string;
+  note?: string;
+}
+
+/** The fork a run is in (#193): its block, and every branch it holds. */
+export interface RunFork {
+  block: string;
+  branches: RunBranch[];
 }
 
 /**
@@ -54,8 +79,13 @@ export interface FlowRun {
   ref: string | null;
   /** The flow's name: "main" for flow.json, else its file's name in flows/. */
   flow: string;
-  /** The block it is at; null once it has ended or was stopped before its first block. */
+  /**
+   * The block it is at; null once it has ended or was stopped before its first block. In a fork (`fork`), the fork's
+   * block: the run is at each branch's block.
+   */
   at: string | null;
+  /** The fork it is in, with a position per branch (#193); null or none: one position, `at`. */
+  fork?: RunFork | null;
   /** Since when it is at that block (for a wait: how long). */
   atSince: number;
   /** Per block, per outcome word (endingKey), how many times it has happened. */
@@ -143,6 +173,11 @@ export function countBadge(run: Pick<FlowRun, 'counts'>, blockId: string, o: { w
   if (!o.times) return null;
   const n = run.counts[blockId]?.[endingKey(o.word)] ?? 0;
   return n ? `${o.word} ${Math.min(n, o.times)} of ${o.times}` : null;
+}
+
+/** Every block a run is at now: each branch's in a fork (#193), else its one. */
+export function runPositions(run: Pick<FlowRun, 'at' | 'fork'>): string[] {
+  return run.fork ? run.fork.branches.map((b) => b.at) : run.at ? [run.at] : [];
 }
 
 /** The run as one line, for tools and notes: `run-3 "Fix the cart" (#142)`. */
