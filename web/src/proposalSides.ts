@@ -29,3 +29,24 @@ export const MAX_ENTRY = 'ledungMaxDiagram';
 export function isMaxEntry(state: unknown): boolean {
   return typeof state === 'object' && state !== null && (state as Record<string, unknown>)[MAX_ENTRY] === 1;
 }
+
+/**
+ * How opening the big view marks history: a new entry, or the current one when it already carries the mark (a stale
+ * one, left by a reload or reached by Forward), so one Back always closes the view.
+ */
+export function maxEntryAction(state: unknown): 'push' | 'replace' {
+  return isMaxEntry(state) ? 'replace' : 'push';
+}
+
+/** The entry's state with the big view's mark, keeping the review's own (desk depth and the like). */
+export function withMaxEntry(state: unknown): Record<string, unknown> {
+  return { ...(typeof state === 'object' && state !== null ? state : {}), [MAX_ENTRY]: 1 };
+}
+
+/**
+ * Whether the current entry is a big view's with no big view open: after a reload, after Forward, or when the review
+ * was redrawn while it was open. Such an entry is left with Back, or the review's own Close would land one entry short.
+ */
+export function staleMaxEntry(state: unknown, open: boolean): boolean {
+  return !open && isMaxEntry(state);
+}

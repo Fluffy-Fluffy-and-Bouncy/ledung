@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Flow } from '../src/shared/flow.ts';
 import type { ProposalFlow } from '../src/shared/flow-proposal.ts';
-import { changedBlocks, isMaxEntry, MAX_ENTRY, selectedIn, sideNote } from '../web/src/proposalSides.ts';
+import { changedBlocks, isMaxEntry, MAX_ENTRY, maxEntryAction, selectedIn, sideNote, staleMaxEntry, withMaxEntry } from '../web/src/proposalSides.ts';
 
 const flow = (blocks: { id: string; title: string }[]): Flow => ({ blocks: blocks.map((b) => ({ kind: 'work', ...b })) } as unknown as Flow);
 const side = (f: Flow | null): ProposalFlow => ({ name: 'main', file: '.ledung/flows/main.json', title: 'Main', flow: f });
@@ -38,4 +38,77 @@ test('the big view\'s history entry is told apart from the review\'s own', () =>
   assert.equal(isMaxEntry({ ledungDesk: 1 }), false);
   assert.equal(isMaxEntry(null), false);
   assert.equal(isMaxEntry(undefined), false);
+});
+
+// The review's history as a list, with the steps the page takes: enough to replay the reviewer's cases (PR #335).
+function browser(first: unknown) {
+  const h = { stack: [first], at: 0, open: false };
+  const state = () => h.stack[h.at];
+  const back = () => { h.at -= 1; onPop(); };
+  // What the review does on a step through history: the big view closes on an unmarked entry, a stale one is left.
+  const onPop = () => {
+    if (h.open && !isMaxEntry(state())) h.open = false;
+    if (staleMaxEntry(state(), h.open)) back();
+  };
+  return {
+    h, state,
+    maximise() {
+      const next = withMaxEntry(state());
+      if (maxEntryAction(state()) === 'replace') h.stack[h.at] = next;
+      else { h.stack = [...h.stack.slice(0, h.at + 1), next]; h.at += 1; }
+      h.open = true;
+    },
+    close() { if (isMaxEntry(state())) back(); else h.open = false; },
+    back,
+    forward() { h.at += 1; onPop(); },
+    reload() { h.open = false; if (staleMaxEntry(state(), h.open)) back(); },
+  };
+}
+
+test("opening the big view marks a new entry, or reuses one already marked, and keeps the review's own state", () => {
+  assert.equal(maxEntryAction({ ledungDesk: 1 }), 'push');
+  assert.equal(maxEntryAction(null), 'push');
+  assert.equal(maxEntryAction({ ledungDesk: 1, [MAX_ENTRY]: 1 }), 'replace');
+  assert.deepEqual(withMaxEntry({ ledungDesk: 2, ledungDeskRoot: false }), { ledungDesk: 2, ledungDeskRoot: false, [MAX_ENTRY]: 1 });
+  assert.deepEqual(withMaxEntry(null), { [MAX_ENTRY]: 1 });
+  assert.equal(staleMaxEntry({ [MAX_ENTRY]: 1 }, false), true);
+  assert.equal(staleMaxEntry({ [MAX_ENTRY]: 1 }, true), false);
+  assert.equal(staleMaxEntry({ ledungDesk: 1 }, false), false);
+});
+
+test("after a reload on the big view's entry, the review is back on its own entry and one close closes", () => {
+  const b = browser({ ledungDesk: 1 });
+  b.maximise();
+  b.reload();
+  assert.deepEqual(b.state(), { ledungDesk: 1 }, "the stale entry is left, so the review's Close counts right");
+  b.maximise();
+  assert.equal(b.h.open, true);
+  b.close();
+  assert.equal(b.h.open, false, 'one close closes it');
+  assert.deepEqual(b.state(), { ledungDesk: 1 });
+});
+
+test("Forward onto the big view's entry leaves it again, and the next big view closes with one press", () => {
+  const b = browser({ ledungDesk: 1 });
+  b.maximise();
+  b.back();
+  assert.equal(b.h.open, false);
+  b.forward();
+  assert.equal(b.h.open, false);
+  assert.deepEqual(b.state(), { ledungDesk: 1 });
+  b.maximise();
+  b.close();
+  assert.equal(b.h.open, false);
+  assert.deepEqual(b.state(), { ledungDesk: 1 });
+});
+
+test('even on a marked entry not yet left, opening reuses it, so one close is enough', () => {
+  const b = browser({ ledungDesk: 1 });
+  b.maximise();
+  b.h.open = false; // the review redrawn while the big view was open, before it tidied up
+  b.maximise();
+  assert.equal(b.h.stack.length, 2, 'no second marked entry');
+  b.close();
+  assert.equal(b.h.open, false);
+  assert.deepEqual(b.state(), { ledungDesk: 1 });
 });

@@ -7,7 +7,7 @@ import { createPortal } from 'react-dom';
 import { api } from '../api.ts';
 import type { FlowProposal, ProposalFlow } from '../../../src/shared/flow-proposal.ts';
 import { layoutFlow } from '../flowLayout.ts';
-import { changedBlocks, isMaxEntry, MAX_ENTRY, selectedIn, sideNote, type SideName } from '../proposalSides.ts';
+import { changedBlocks, isMaxEntry, maxEntryAction, selectedIn, sideNote, staleMaxEntry, withMaxEntry, type SideName } from '../proposalSides.ts';
 import { Diagram } from './WorkflowView.tsx';
 import { useNarrow } from './FlowDiagram.tsx';
 import { Markdown } from './Markdown.tsx';
@@ -16,6 +16,9 @@ type Changed = FlowProposal['flows'][number];
 
 const NO_MARKS = { at: new Map(), counts: new Map(), path: new Map() };
 const LABEL: Record<SideName, string> = { before: 'Before', after: 'After' };
+// A Back taken to leave a stale big-view entry and not yet arrived, so it is taken once (React runs effects twice in
+// development, and both would see the entry before the first Back lands).
+let leavingStale = false;
 
 /** What a side's diagram needs: its layout, its changed blocks outlined, and its briefs named. */
 function useSideView(side: ProposalFlow | null, other: ProposalFlow | null) {
@@ -120,7 +123,7 @@ function Maximised({ f, start, narrow, titles, decided, onClosed }: { f: Changed
       </div>
       <div className="proposal-max-stage">
         {view.flow && view.layout && (
-          <div className={`proposal-max-diagram${note ? ' covered' : ''}`} aria-hidden={note ? true : undefined}>
+          <div className={`proposal-max-diagram${note ? ' covered' : ''}`} inert={note ? true : undefined}>
             <Diagram flow={view.flow} layout={view.layout} texts={view.texts} selected={selectedIn(view.flow, selected)} onSelect={setSelected} onClear={clear} narrow={narrow} flowTitle={(n) => titles[n]} marks={view.marks} fit />
           </div>
         )}
@@ -138,6 +141,20 @@ export default function FlowProposalView({ project, id }: { project: string; id:
   // The side maximised, and the button that opened it, which takes the focus back on closing (#334).
   const [max, setMax] = useState<{ flow: string; side: SideName } | null>(null);
   const opener = useRef<HTMLButtonElement | null>(null);
+  const maxOpen = useRef(false);
+  useEffect(() => {
+    // A big view's entry with no big view open (a reload, Forward, or the review redrawn while it was open) is left
+    // with Back: otherwise the next close lands on it and does nothing, and the review's own Close lands one short.
+    const tidy = () => {
+      if (leavingStale || !staleMaxEntry(history.state, maxOpen.current)) return;
+      leavingStale = true;
+      history.back();
+    };
+    const onPop = () => { leavingStale = false; tidy(); };
+    tidy();
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
   useEffect(() => {
     let live = true;
     api.proposal(project, id).then((v) => live && setP(v), (e: Error) => live && setError(e.message));
@@ -146,10 +163,14 @@ export default function FlowProposalView({ project, id }: { project: string; id:
   const maximise = (flow: string, side: SideName, from: HTMLButtonElement) => {
     opener.current = from;
     // An entry of its own, at the same address, so Back closes the big view instead of leaving the review.
-    history.pushState({ ...(history.state ?? {}), [MAX_ENTRY]: 1 }, '');
+    // One entry only: on a stale one (not yet left) it is reused, so a single Back still closes the view.
+    if (maxEntryAction(history.state) === 'replace') history.replaceState(withMaxEntry(history.state), '');
+    else history.pushState(withMaxEntry(history.state), '');
+    maxOpen.current = true;
     setMax({ flow, side });
   };
   const closed = useCallback(() => {
+    maxOpen.current = false;
     setMax(null);
     opener.current?.focus({ preventScroll: true });
   }, []);
