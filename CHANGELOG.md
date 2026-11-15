@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-15
+- Reviewing a proposed workflow change: each Before and After diagram has a **Maximise** button that opens it over the whole window, with zoom and drag, and a Before / After switch that keeps where you are. Esc, the close button or Back return to the review. (#334)
+
 ## 2026-11-14
 - Opening a long chat is quicker on a phone or another computer: Ledung's answers to the page (a chat's messages, lists, settings) now come compressed when they are over 1 kB, a long chat's messages at a fraction of their size. Nothing else changes in what you see. (#330)
 - Sidebar: the yellow count next to a manager, a session, a folded project or a chat now opens **Waiting for you** on that project alone, with the session's first item selected; a click on the rest of the row still opens the chat. A "Showing: <project> · Show all" line says what is shown ("Nothing waiting for <project>" when nothing is), and names the sessions whose questions are with their manager instead, as links to them; the count's tooltip says how many of them are with a manager. The filter you set in Waiting for you is unchanged, so opening it the usual way shows what it always did. (#322)
