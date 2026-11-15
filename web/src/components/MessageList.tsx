@@ -55,6 +55,8 @@ export function formatTime(at: number): string {
     day: new Intl.DateTimeFormat([], { month: 'short', day: 'numeric' }),
   };
   const d = new Date(at), now = new Date();
+  // format() throws on a bad date where toLocaleTimeString said "Invalid Date"; one bad time must not break a view.
+  if (Number.isNaN(d.getTime())) return 'Invalid Date';
   const time = formats.time.format(d);
   const today = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
   return today ? time : `${formats.day.format(d)}, ${time}`;

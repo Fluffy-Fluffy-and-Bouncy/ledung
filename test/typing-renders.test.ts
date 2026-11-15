@@ -46,6 +46,7 @@ before(async () => {
     stdin: {
       contents: [
         "export { SessionView } from './web/src/App.tsx';",
+        "export { formatTime } from './web/src/components/MessageList.tsx';",
         "export { createElement, act } from 'react';",
         "export { createRoot } from 'react-dom/client';",
       ].join('\n'),
@@ -146,6 +147,15 @@ async function type(box: HTMLTextAreaElement, text: string) {
 }
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+test('a time that is not a date reads "Invalid Date", as before the formatters were reused, instead of breaking the view (issue #329)', () => {
+  assert.equal(page.formatTime(NaN), 'Invalid Date');
+  assert.equal(page.formatTime(Date.parse('not a date')), 'Invalid Date');
+  assert.equal(page.formatTime(8.64e15 + 1), 'Invalid Date');
+  const now = new Date();
+  assert.doesNotMatch(page.formatTime(now.getTime()), /,/, 'today: the time alone');
+  assert.match(page.formatTime(now.getTime() - 3 * 86_400_000), /, /, 'another day: the day, then the time');
+});
 
 test('typing in a conversation of 500 long messages draws no message again', async () => {
   localStorage.clear();
