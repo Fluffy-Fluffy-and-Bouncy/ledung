@@ -1909,7 +1909,26 @@ button.settings-menu-item.danger { color: var(--danger); }
 .proposal-flow-title { margin: 0.5rem 0; }
 .proposal-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
 .proposal-side { min-width: 0; border: 1px solid var(--border); border-radius: 6px; padding: 0.4rem; }
-.proposal-side h5 { margin: 0 0 0.3rem; color: var(--muted); }
+.proposal-side-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin: 0 0 0.3rem; }
+.proposal-side h5 { margin: 0; color: var(--muted); }
+.proposal-max-open { display: inline-flex; align-items: center; gap: 0.3rem; }
+.proposal-max-open svg { width: 14px; height: 14px; }
+/* A side maximised (#334): over the whole window, in the page's colours; the bar stays reachable on a phone. */
+.proposal.proposal-max { position: fixed; inset: 0; z-index: 50; margin: 0; display: flex; flex-direction: column; background: var(--bg); overscroll-behavior: contain;
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px); }
+.proposal-max-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--border); background: var(--panel); }
+.proposal-max-title { flex: 1; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.proposal-max-switch { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.proposal-max-switch button { border: 0; border-radius: 0; background: transparent; color: var(--text); padding: 0.3rem 0.8rem; min-height: 2rem; }
+.proposal-max-switch button.on { background: var(--accent); color: var(--accent-text); }
+.proposal-max-bar button.icon { width: 2.5rem; height: 2.5rem; }
+.proposal-max-stage { flex: 1; min-height: 0; position: relative; display: flex; }
+.proposal-max-diagram { flex: 1; min-width: 0; display: flex; }
+/* Kept for the way back but not seen: React Flow sets its nodes visible, so visibility on the box would not hide them. */
+.proposal-max-diagram.covered { opacity: 0; pointer-events: none; }
+.proposal-max .flow-canvas { flex: 1; height: auto; min-height: 0; }
+.proposal-max-note { position: absolute; inset: 40% 1rem auto; text-align: center; margin: 0; color: var(--muted); }
+.proposal-max-note.flow-problem-inline { color: var(--danger); }
 .proposal-side .flow-canvas { height: 420px; min-height: 0; }
 @media (max-width: 760px) {
   .proposal-sides { grid-template-columns: 1fr; }
