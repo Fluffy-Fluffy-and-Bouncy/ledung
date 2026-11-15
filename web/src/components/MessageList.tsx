@@ -46,10 +46,20 @@ interface ToolResult {
   cut: number;
 }
 
+// Made once: toLocaleTimeString made new formatters for every message, a tenth of drawing a chat (issue #329).
+let formats: { time: Intl.DateTimeFormat; day: Intl.DateTimeFormat } | null = null;
+
 export function formatTime(at: number): string {
-  const d = new Date(at);
-  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  return d.toDateString() === new Date().toDateString() ? time : `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${time}`;
+  formats ??= {
+    time: new Intl.DateTimeFormat([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+    day: new Intl.DateTimeFormat([], { month: 'short', day: 'numeric' }),
+  };
+  const d = new Date(at), now = new Date();
+  // format() throws on a bad date where toLocaleTimeString said "Invalid Date"; one bad time must not break a view.
+  if (Number.isNaN(d.getTime())) return 'Invalid Date';
+  const time = formats.time.format(d);
+  const today = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  return today ? time : `${formats.day.format(d)}, ${time}`;
 }
 
 function resultText(content: unknown): string {
@@ -133,6 +143,36 @@ function decisionsFrom(messages: StoredMessage[]): Map<string, Decision> {
   const map = new Map();
   for (const m of messages) if (m.kind === 'decision') map.set(m.data.permissionId, { ...m.data, at: m.at });
   return map;
+}
+
+/** What decides whether an item draws anything, besides the item. */
+interface Shown {
+  showTechnical: boolean;
+  question?: QuestionInfo;
+  live?: PermissionInfo;
+  decision?: Decision;
+  renderCard?: unknown;
+}
+
+/**
+ * Whether an item draws anything: the drawn part is counted in these (issue #329), and one that draws nothing
+ * skips its time. MessageItem returns nothing for exactly these.
+ */
+function draws(item: Item, s: Shown): boolean {
+  switch (item.type) {
+    case 'user': {
+      const text = item.byLedung && !s.showTechnical ? withoutContextSentence(item.text) : item.text;
+      const segments = deliveryParts(item.byLedung, text, item.context, s.showTechnical);
+      return !segments || segments.length > 0;
+    }
+    case 'assistant': return s.showTechnical || !(item.sub || item.quiet);
+    case 'card': return !!s.renderCard;
+    case 'question': return !!s.question;
+    case 'note': return s.showTechnical || !item.technical;
+    case 'tool': return s.showTechnical || (isBoardPostTool(item.name) && !item.sub);
+    case 'permission': return s.live?.status === 'pending' || s.showTechnical || s.decision?.behavior === 'denied';
+    default: return true;
+  }
 }
 
 const DECIDED: Record<string, string> = { allowed: 'Allowed', denied: 'Denied', cancelled: 'Withdrawn' };
@@ -235,7 +275,18 @@ export const MessageList = memo(function MessageList(props: {
     : focusMessage !== null ? items.findIndex((it) => it.type === 'assistant' && it.anchor === focusMessage) : -1;
   // FROM_TOP: drawn from the very first item, so messages "Load earlier" adds above it are drawn too (self-check 2).
   const keyed = firstKey === null ? undefined : firstKey === FROM_TOP ? 0 : indexOfKey.get(firstKey);
-  const start = windowStart(keyed ?? tailStart(items.length), items.length, mustShow);
+  // Counted in messages that show (issue #329): a tool-heavy chat's hidden calls don't use up the window.
+  const shows = (i: number) => {
+    const it = items[i]!;
+    return draws(it, {
+      showTechnical,
+      question: it.type === 'question' ? props.questions[it.questionId] : undefined,
+      live: it.type === 'permission' ? permissions[it.permissionId] : undefined,
+      decision: it.type === 'permission' ? decisions.get(it.permissionId) : undefined,
+      renderCard: props.renderCard,
+    });
+  };
+  const start = windowStart(keyed ?? tailStart(items.length, shows), items.length, mustShow);
   const keyAt = (i: number) => (i === 0 ? FROM_TOP : items[i]!.key);
   const ownAt = own ? items.indexOf(own) : -1;
   /** Where the reader was before a batch above was drawn, so drawing it doesn't move what they see. */
@@ -248,7 +299,7 @@ export const MessageList = memo(function MessageList(props: {
     const el = scroller.current;
     if (!el || start === 0 || Date.now() < holdUntil.current) return;
     before.current = { top: el.scrollTop, height: el.scrollHeight };
-    setFirstKey(keyAt(stepUp(start)));
+    setFirstKey(keyAt(stepUp(start, shows)));
   };
   useLayoutEffect(() => {
     const el = scroller.current, was = before.current;
@@ -465,6 +516,7 @@ function sameItem(a: ItemProps, b: ItemProps): boolean {
 
 const MessageItem = memo(function MessageItem(props: ItemProps) {
   const { item, showTechnical, sessionId } = props;
+  if (!draws(item, props)) return null;
   const time = <time className="time">{formatTime(item.at)}</time>;
   const quote = (who: string, text: string) =>
     props.onQuote && (
@@ -520,7 +572,6 @@ const MessageItem = memo(function MessageItem(props: ItemProps) {
       );
     }
     case 'assistant':
-      if ((item.sub || item.quiet) && !showTechnical) return null;
       return (
         <div
           id={item.anchor !== undefined ? `mc-${item.anchor}` : undefined}
@@ -538,7 +589,7 @@ const MessageItem = memo(function MessageItem(props: ItemProps) {
     case 'event':
       return <div className="event">{item.text} {time}</div>;
     case 'card':
-      return props.renderCard ? <div className="helper-card-row">{props.renderCard(item.card, item.answered)}</div> : null;
+      return <div className="helper-card-row">{props.renderCard!(item.card, item.answered)}</div>;
     case 'reply':
       return (
         <>
@@ -581,7 +632,6 @@ ${b.stderr.replace(/\s+$/, '')}`}</span> : null}</pre>
     case 'divider':
       return <div className="divider"><span>{item.text}</span> {time}</div>;
     case 'note':
-      if (item.technical && !showTechnical) return null;
       return <div className={`note${item.technical ? ' technical' : ''}`}>{item.text} {time}</div>;
     case 'tool':
       // The manager's own board posts are always shown (marked), not only with the technical messages.
@@ -595,7 +645,6 @@ ${b.stderr.replace(/\s+$/, '')}`}</span> : null}</pre>
           </div>
         );
       }
-      if (!showTechnical) return null;
       return (
         <details className={`tool${item.result?.isError ? ' failed' : ''}`}>
           <summary>
@@ -611,7 +660,6 @@ ${b.stderr.replace(/\s+$/, '')}`}</span> : null}</pre>
       // In the Ledung Helper's chat, in plain words (docs/steps/ledung-helper.md).
       if (live?.status === 'pending') return <PermissionCard permission={live} managerTitle={props.titleOf?.(live.addressedTo)} plain={props.renderCard ? helperApprovalText(live.toolName, live.input, live.sensitive ?? null) : null} />;
       const d = props.decision;
-      if (!showTechnical && d?.behavior !== 'denied') return null;
       // In the helper's chat, a plain line, never a tool's name (acceptance round 6, 16).
       if (props.renderCard && d?.behavior === 'denied') return <div className="note decision denied">{helperDeclinedText(item.toolName, item.input)} {time}</div>;
       const by = d && d.by !== 'user' && d.by !== 'simon' && d.by !== 'ledung' ? ` by manager "${props.titleOf?.(d.by) ?? 'manager'}"` : '';

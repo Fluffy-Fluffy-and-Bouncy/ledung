@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-15
+- Opening a long chat is faster, most of all one with many long replies on a phone: it first draws the latest 40 messages you can see (hidden tool calls no longer count), and earlier ones as you scroll up, 40 at a time. (#329)
 - Reviewing a proposed workflow change: each Before and After diagram has a **Maximise** button that opens it over the whole window, with zoom and drag, and a Before / After switch that keeps where you are. Esc, the close button or Back return to the review. (#334)
 
 ## 2026-11-14
