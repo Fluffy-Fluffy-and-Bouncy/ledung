@@ -606,6 +606,7 @@ export class Session {
       relayAdminKey: () => m.relayAdminKey(id),
       linkCode: () => m.linkCode(id),
       linkComputer: (code, name) => m.linkComputer(id, code, name),
+      unlinkComputer: (computer) => m.unlinkComputer(id, computer),
       inviteComputer: (owner, name) => m.inviteComputer(id, owner, name),
       usagePublish: (args) => m.usagePublish(id, args),
     };

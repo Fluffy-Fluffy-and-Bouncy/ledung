@@ -13,6 +13,7 @@ import { Duplex } from 'node:stream';
 import tls from 'node:tls';
 import WebSocket from 'ws';
 import { parseConfig } from '../src/config.ts';
+import { RelayAdmin } from '../src/remote/admin.ts';
 import { LINK_CODE_MS, LINKS_FILE, parseLinkCode } from '../src/remote/linked.ts';
 import { LedungServer } from '../src/server/server.ts';
 import { SessionManager } from '../src/sessions/manager.ts';
@@ -35,7 +36,7 @@ after(async () => {
 let clock = Date.now();
 const now = () => clock;
 
-interface Node { name: string; server: LedungServer; port: number; dir: string; cert: string; store: Store }
+interface Node { name: string; server: LedungServer; port: number; dir: string; cert: string; store: Store; manager: SessionManager }
 /** Every test Ledung by public name, so each can reach the others through their tunnels. */
 const nodes = new Map<string, Node>();
 
@@ -62,10 +63,13 @@ async function ledung(name: string, required = true): Promise<Node> {
   fs.writeFileSync(path.join(webRoot, 'index.html'), '<!doctype html><title>Ledung</title>');
   const store = new Store(openDatabase(':memory:'));
   const manager = refuseRealSignInStores(new SessionManager(parseConfig({ port }), store, () => {}));
-  const server = new LedungServer({ port, token: TOKEN, store, manager, webRoot, publicName: name, tunnelTls: { dir, required }, now, linkConnect: connect });
+  // Settings → Relay, as main.ts always gives one, so a manager's settings_status reads as in Ledung (issue #346); never
+  // started, and nothing may reach a relay.
+  const relayAdmin = new RelayAdmin({ dir, onComputers: () => {}, log: () => {}, fetch: (async (url: string | URL | Request) => { throw new Error(`must not reach ${String(url)}`); }) as typeof fetch });
+  const server = new LedungServer({ port, token: TOKEN, store, manager, webRoot, publicName: name, tunnelTls: { dir, required }, now, linkConnect: connect, relayAdmin });
   cleanup.push(() => server.close(), () => removeTemp(dir), () => removeTemp(webRoot));
   await server.listen();
-  const node = { name, server, port, dir, cert: pair.cert, store };
+  const node = { name, server, port, dir, cert: pair.cert, store, manager };
   nodes.set(name, node);
   return node;
 }
@@ -280,6 +284,66 @@ test('unlinking takes effect at once here and is passed on to the other computer
   await until(async () => (await xPage('GET', 'links')).json.links.length === 0, 'X to drop the link');
   assert.equal((await viaTunnel('x.link.test', '/link/hello', { headers: { authorization: `Bearer ${yKey}` } })).status, 401);
   assert.equal((await yPage('POST', `links/${link.id}/remove`, {})).status, 400);
+});
+
+// Issue #346: a person who reaches Ledung only through its public name can't open Settings → Linked computers, so a
+// manager unlinks and links again with its tools alone. Martin, 2026-11-17 00:18: "I want a manager to be able to
+// unlink_computer tool and connect to a computer tool." The managers' own code runs here, on the real servers' Settings;
+// who allows each call is the hook's, tested in settings-word.test.ts.
+test('#346: managers link two computers with their tools alone, and after a reinstall unlink_computer lets the same name link again', { timeout: HANG_MS }, async () => {
+  type Tools = {
+    linkCode(id: string): string; linkComputer(id: string, code: string, name?: string): Promise<string>;
+    unlinkComputer(id: string, computer: string): string; settingsStatus(id: string): string;
+  };
+  const tools = (node: Node) => (node.manager as unknown as { management: Tools }).management;
+  const codeIn = (text: string) => /: (\S+\/[a-z0-9]{24})$/.exec(text)![1]!;
+  const tabs = (node: Node) => (node.server as unknown as { computers(): { id: string; linked?: boolean }[] }).computers();
+  const mac = await ledung('mac-346.link.test');
+  let pc = await ledung('pc-346.link.test');
+
+  // Linking with the tools alone: link_code on the PC, link_computer with it on the Mac.
+  assert.match(await tools(mac).linkComputer('m1', codeIn(tools(pc).linkCode('m1')), 'PC'), /Linked with "PC" \(pc-346\.link\.test\)/);
+  assert.match(tools(mac).settingsStatus('m1'), /Linked computers: "PC" \(pc-346\.link\.test\)\./);
+  assert.match(tools(pc).settingsStatus('m1'), /Linked computers: "mac-346" \(mac-346\.link\.test\)\./);
+  assert.equal((await viaTunnel('pc-346.link.test', '/link/hello', { headers: { authorization: `Bearer ${keyFor(mac, pc)}` } })).status, 200);
+
+  // The PC is reinstalled: the same public name, no links. The Mac still lists it, so linking again is refused there.
+  pc = await ledung('pc-346.link.test');
+  await assert.rejects(tools(mac).linkComputer('m1', codeIn(tools(pc).linkCode('m1')), 'PC'), /already linked with pc-346\.link\.test\. Unlink it first/);
+
+  // A name that is no linked computer's is refused with the ones there are; nothing is unlinked.
+  assert.throws(() => tools(mac).unlinkComputer('m1', 'Laptop'), /No linked computer is called "Laptop"\. Linked computers: "PC" \(pc-346\.link\.test\)/);
+  assert.match(tools(mac).settingsStatus('m1'), /Linked computers: "PC"/);
+  // unlink_computer by its name, as settings_status lists it: gone from the list and from the computer tabs at once.
+  assert.match(tools(mac).unlinkComputer('m1', 'pc'), /Unlinked "PC" \(pc-346\.link\.test\)/);
+  assert.match(tools(mac).settingsStatus('m1'), /Linked computers: none\./);
+  assert.ok(!tabs(mac).some((c) => c.id === 'pc-346.link.test' && c.linked), 'no linked tab left');
+
+  // And the same name links again, both sides listing each other, the tab back and the link's keys working both ways.
+  assert.match(await tools(mac).linkComputer('m1', codeIn(tools(pc).linkCode('m1')), 'PC'), /Linked with "PC"/);
+  assert.match(tools(mac).settingsStatus('m1'), /Linked computers: "PC" \(pc-346\.link\.test\)\./);
+  assert.match(tools(pc).settingsStatus('m1'), /Linked computers: "mac-346" \(mac-346\.link\.test\)\./);
+  assert.ok(tabs(mac).some((c) => c.id === 'pc-346.link.test' && c.linked), 'the PC\'s tab on the Mac');
+  assert.ok(tabs(pc).some((c) => c.id === 'mac-346.link.test' && c.linked), 'the Mac\'s tab on the PC');
+  assert.equal((await viaTunnel('pc-346.link.test', '/link/hello', { headers: { authorization: `Bearer ${keyFor(mac, pc)}` } })).status, 200);
+  assert.equal((await viaTunnel('mac-346.link.test', '/link/hello', { headers: { authorization: `Bearer ${keyFor(pc, mac)}` } })).status, 200);
+});
+
+test('#346: unlink_computer by public name tells the other computer, which drops its side; a name two links share asks for the public name', { timeout: HANG_MS }, async () => {
+  const tools = (node: Node) => (node.manager as unknown as { management: { linkCode(id: string): string; linkComputer(id: string, code: string, name?: string): Promise<string>; unlinkComputer(id: string, computer: string): string; settingsStatus(id: string): string } }).management;
+  const codeIn = (text: string) => /: (\S+\/[a-z0-9]{24})$/.exec(text)![1]!;
+  const hub = await ledung('hub-346.link.test');
+  const a = await ledung('a-346.link.test');
+  const b = await ledung('b-346.link.test');
+  await tools(hub).linkComputer('m1', codeIn(tools(a).linkCode('m1')), 'Laptop');
+  await tools(hub).linkComputer('m1', codeIn(tools(b).linkCode('m1')), 'Laptop');
+  assert.throws(() => tools(hub).unlinkComputer('m1', 'laptop'), /2 linked computers are called "laptop": give the public name .*a-346\.link\.test, b-346\.link\.test/);
+  assert.match(tools(hub).settingsStatus('m1'), /"Laptop" \(a-346\.link\.test\), "Laptop" \(b-346\.link\.test\)/, 'both still linked');
+
+  assert.match(tools(hub).unlinkComputer('m1', 'B-346.link.test'), /Unlinked "Laptop" \(b-346\.link\.test\)/);
+  assert.match(tools(hub).settingsStatus('m1'), /Linked computers: "Laptop" \(a-346\.link\.test\)\./);
+  await until(() => /Linked computers: none\./.test(tools(b).settingsStatus('m1')), 'B to drop its side');
+  assert.match(tools(a).settingsStatus('m1'), /Linked computers: "hub-346" \(hub-346\.link\.test\)\./, 'A keeps its link');
 });
 
 test('without end-to-end encryption through the relay there is no linking', { timeout: HANG_MS }, async () => {
