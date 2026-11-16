@@ -50,6 +50,7 @@ function ledung(published: Partial<UsagePublishView> = {}) {
     invite: async () => { throw new Error('not used'); },
     linkCode: () => { throw new Error('not used'); },
     link: async () => { throw new Error('not used'); },
+    unlink: () => { throw new Error('not used'); },
     links: () => ({ problem: null, links: [] }),
     computers: () => [],
     usagePublish: () => ({ ...view }),
