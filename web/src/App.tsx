@@ -1908,12 +1908,18 @@ function Composer({ session, tint, run, quoteInto, actionsInto, bangShell }: {
   });
   // Any other file dropped or picked (issue #339): Ledung saves a copy in the session's folder and its path goes into
   // the box where the caret was, one after another. Saved for the session it was dropped on, also if another is open by then.
-  const sessionNow = useRef(session.id);
+  // The box is drawn anew for each session (SessionView's key), so a box left behind is marked here when it goes; its
+  // late path then goes to the end of that session's saved draft, which the box wrote when it went (self-check, #339).
+  const sessionNow = useRef<string | null>(session.id);
   sessionNow.current = session.id;
+  useEffect(() => {
+    sessionNow.current = session.id;
+    return () => { sessionNow.current = null; };
+  }, [session.id]);
   const dropAt = useRef<number | null>(null);
   const [saving, setSaving] = useState(0);
   const putPath = (sessionId: string, token: string) => {
-    if (sessionId !== sessionNow.current) {
+    if (sessionId !== sessionNow.current || !area.current) {
       const draft = readDraft(localStorage, sessionId);
       writeDraft(localStorage, sessionId, insertAt(draft, draft.length, token).text);
       return;

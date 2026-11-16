@@ -102,9 +102,17 @@ test('#339: path parts and odd characters land as a plain name inside .ledung/dr
   // Everything is in the drops folder; nothing next to the project or above it.
   assert.ok(filesIn(root).every((f) => f.startsWith('.ledung/drops/')), filesIn(root).join(', '));
   assert.deepEqual(fs.readdirSync(path.dirname(root)).filter((f) => !/^(project|repo|taken|odd|big|link|swap|data|mgr)-\d+$/.test(f)), [], 'nothing beside the project');
-  // A long name is cut, keeping its extension, so the whole name stays within 120 characters.
+  // A long name is cut, keeping its extension, so the whole name with date and number stays within 200 UTF-8 bytes
+  // (ext4 counts bytes, 255 at most): 200 - 11 for "yyyy-mm-dd-" - 4 for "-999" = 185 for the name itself.
   const long = plainDropName(`${'x'.repeat(300)}.pdf`);
-  assert.ok(long.endsWith('.pdf') && long.length <= 120 - 11 - 4, `${long.length}`);
+  assert.equal(long, `${'x'.repeat(181)}.pdf`);
+  // Three bytes each: 60 of them fit in the 181 bytes before ".pdf"; never half a character.
+  const cjk = plainDropName(`${'報'.repeat(105)}.pdf`);
+  assert.equal(cjk, `${'報'.repeat(60)}.pdf`);
+  const saved = saveDrop(root, `${'報'.repeat(105)}.pdf`, PDF, DAY);
+  assert.ok(Buffer.byteLength(path.basename(saved.full)) <= 200, path.basename(saved.full));
+  // Taken: the number still fits.
+  assert.ok(Buffer.byteLength(path.basename(saveDrop(root, `${'報'.repeat(105)}.pdf`, PDF, DAY).full)) <= 200);
 });
 
 test('#339: a file over 50 MB is refused with the limit named, and nothing is written', () => {

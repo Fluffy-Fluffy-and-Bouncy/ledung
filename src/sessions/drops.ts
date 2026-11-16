@@ -24,8 +24,14 @@ import { FileError } from './files.ts';
 export const MAX_DROP_BYTES = 50 * 1024 * 1024;
 /** Where drops are kept, relative to the session's folder, with forward slashes as the message names them. */
 export const DROPS_FOLDER = '.ledung/drops';
-/** The longest file name a drop keeps, the date and number included: well inside every file system's 255. */
-const MAX_NAME = 120;
+/**
+ * The longest file name a drop keeps, in UTF-8 bytes, the date and number included: inside 255 bytes (ext4 and most
+ * Linux file systems, APFS) and so inside 255 UTF-16 units too (NTFS), whatever the script (self-check of #339).
+ */
+const MAX_NAME_BYTES = 200;
+/** The longest extension a cut name keeps, in UTF-8 bytes; a longer "extension" is just part of the name. */
+const MAX_EXT_BYTES = 16;
+const bytes = (s: string) => Buffer.byteLength(s, 'utf8');
 // Characters no Windows file name holds (":" also opens an alternate data stream), control characters, and the
 // separators of every system: a name never becomes a path.
 const ODD = /[<>:"|?*\\/\u0000-\u001f\u007f]/g;
@@ -40,11 +46,14 @@ function day(now: Date): string {
   return `${now.getFullYear()}-${two(now.getMonth() + 1)}-${two(now.getDate())}`;
 }
 
-/** Cuts `s` to at most `max` UTF-16 units without splitting a surrogate pair. */
+/** Cuts `s` to at most `max` UTF-8 bytes, a whole character at a time. */
 function cut(s: string, max: number): string {
-  if (s.length <= max) return s;
-  const end = /[\ud800-\udbff]/.test(s[max - 1]!) ? max - 1 : max;
-  return s.slice(0, end);
+  let out = '';
+  for (const ch of s) {
+    if (bytes(out) + bytes(ch) > max) break;
+    out += ch;
+  }
+  return out;
 }
 
 /**
@@ -55,11 +64,11 @@ export function plainDropName(name: string): string {
   let plain = String(name ?? '').normalize('NFC').replace(ODD, '_').replace(/^[ .]+|[ .]+$/g, '');
   if (!plain) plain = 'file';
   if (DEVICE.test(plain)) plain = `_${plain}`;
-  const room = MAX_NAME - 'yyyy-mm-dd-'.length - '-999'.length;
-  if (plain.length > room) {
+  const room = MAX_NAME_BYTES - 'yyyy-mm-dd-'.length - '-999'.length;
+  if (bytes(plain) > room) {
     const ext = path.extname(plain);
-    const keep = ext.length > 0 && ext.length <= 16 ? ext : '';
-    plain = `${cut(plain.slice(0, plain.length - keep.length), room - keep.length).replace(/[ .]+$/, '')}${keep}`;
+    const keep = ext.length > 0 && bytes(ext) <= MAX_EXT_BYTES ? ext : '';
+    plain = `${cut(plain.slice(0, plain.length - keep.length), room - bytes(keep)).replace(/[ .]+$/, '')}${keep}`;
   }
   return plain || 'file';
 }
