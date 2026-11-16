@@ -10,7 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-17
-- Ledung is now dark by default, whatever your computer's setting, from the first moment the page shows. Settings → Look & feel → Appearance offers Dark and Light (basic); System, which followed the computer, is gone and becomes Dark. A Light you chose before is kept. (#345)
+- Ledung is now dark by default, whatever your computer's setting, from the first moment the page shows. Settings → Look & feel → Appearance offers Dark and Light (basic); System, which followed the computer, is gone and becomes Dark. A Light you chose before is kept, and the Ledung Helper offers only Dark or Light too. (#345)
 
 ## 2026-11-16
 - Managers can now see what waits for you from their own project: a new read-only tool lists its open questions and reviews (run reviews and workflow proposals included), run person steps and permission prompts, in Waiting for you's order with the same count as its "One project" view, what waits for the manager itself apart, and what you answered in the last day. Never another project's or the chats' items, and nothing is answered or marked read. (#338)

@@ -11,6 +11,7 @@ import { lockdownOf } from '../projects/lockdown.ts';
 import { loosensGate } from '../projects/gate.ts';
 import { PERMISSION_MODES, type PermissionMode } from '../shared/protocol.ts';
 import { framingPages } from '../shared/computers.ts';
+import { APPLY_VALUES } from '../shared/helper-cards.ts';
 
 /** What the settings need from Ledung: the running config and its file, and the page's own setters. */
 export interface SettingsCtx {
@@ -584,7 +585,7 @@ function projectPlan(ctx: SettingsCtx, id: string, value: unknown, projectName: 
 export function planSetting(ctx: SettingsCtx, id: string, value: unknown, project?: string): SettingPlan {
   const secret = SECRET_SETTINGS.find((s) => s.id === id);
   if (secret) throw new SettingRefused(`${secret.label} holds a secret, which never passes through you: reply with a link card { kind: "link", to: "${secret.open}" }, which opens ${secret.where}, where they type it themselves.`);
-  if ((BROWSER_SETTINGS as readonly string[]).includes(id)) throw new SettingRefused(`${id} is kept in their browser: reply with an apply card ({ kind: "apply", setting: "${id}", value }); its button sets it there.`);
+  if ((BROWSER_SETTINGS as readonly string[]).includes(id)) throw new SettingRefused(`${id} is kept in their browser: reply with an apply card ({ kind: "apply", setting: "${id}", value${browserValues(id) ? `: ${browserValues(id)}` : ''} }); its button sets it there.`);
   if (id === 'projects') throw new SettingRefused('Projects are added and changed with add_project, create_project and the project tools.');
   if (id === 'maxWorkingSessions') return pagePlan(ctx, 'workingLimit', value);
   if (id === 'usageStops') throw new SettingRefused('Usage stops go one at a time: setting "usageStop" with { account, kind, percent }.');
@@ -600,6 +601,12 @@ export function settingRule(plan: SettingPlan): string | null {
   return `a change to Ledung's settings that opens up: ${plan.opens.join('; ')}${plan.risk ? `. Risk: ${plan.risk}` : ''}${plan.narrower ? ` Narrower: ${plan.narrower}.` : ''}`;
 }
 
+/** The values a browser setting takes where they are a fixed few (helper-cards.ts APPLY_VALUES), as the helper is told them. */
+function browserValues(id: string): string | null {
+  const values = APPLY_VALUES[id as keyof typeof APPLY_VALUES];
+  return values ? values.map((v) => `"${v}"`).join(' or ') : null;
+}
+
 /** Every setting with its current value (never a secret), for ledung_settings. */
 export function settingsList(ctx: SettingsCtx): string {
   const c = ctx.config() as unknown as Record<string, unknown>;
@@ -612,7 +619,7 @@ export function settingsList(ctx: SettingsCtx): string {
     `- macros, skillDefaults, chatsSensitive, chatsColour: as Settings shows them`,
     ...PAGE_SETTINGS.map((d) => `  ${d.id}: give ${d.value}`),
     "A project's (give project): " + PROJECT_SETTINGS.map((d) => `${d.id} (${d.value})`).join('; ') + '. Model, effort, mode, account, grant, sensitive list, workflow, tiers, tickets: set_project_basics and set_project_settings.',
-    `Their browser's own (an apply card): ${BROWSER_SETTINGS.join(', ')}. Notifications and Install as app: a link card to "settings" (the browser asks them itself).`,
+    `Their browser's own (an apply card): ${BROWSER_SETTINGS.map((id) => browserValues(id) ? `${id} (${browserValues(id)})` : id).join(', ')}. Notifications and Install as app: a link card to "settings" (the browser asks them itself).`,
     `Secrets, never through you (a link card): ${SECRET_SETTINGS.map((s) => s.label).join(', ')}.`,
   ];
   return lines.join('\n');

@@ -18,7 +18,7 @@ export const THEME_KEY = 'ledung.theme';
 
 /** The parts of `localStorage` and the root element used here, so tests can pass their own. */
 export type ThemeStore = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
-export type ThemeRoot = { setAttribute(name: string, value: string): void; removeAttribute(name: string): void };
+export type ThemeRoot = { setAttribute(name: string, value: string): void };
 
 /**
  * A stored value back into use: Light or Dark as stored; nothing, a "system" from before #345, or anything unknown

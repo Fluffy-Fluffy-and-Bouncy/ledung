@@ -127,7 +127,7 @@ import type { FlowProposal } from '../shared/flow-proposal.ts';
 import { helperFolder, HELPER_BUILT_IN_TOOLS, HELPER_DEFAULT_MODEL, HELPER_MODELS, HELPER_PROFILE, setupKickoff, setupPromptLine } from './helper.ts';
 import type { HelperHandlers } from './helper-tools.ts';
 import { planSetting, settingRule, settingsList, type SettingPlan, type SettingsCtx } from './helper-settings.ts';
-import { cardLooksLikeApproval, CardSchema, type HelperCard } from '../shared/helper-cards.ts';
+import { applyCardProblem, cardLooksLikeApproval, CardSchema, type HelperCard } from '../shared/helper-cards.ts';
 import { isSetupStep, markProblem, setupView, stepLine, type HelperInfo, type SetupFacts, type SetupPhase, type SetupState, type SetupStepId, type SetupView } from '../shared/setup.ts';
 import { ASKED_KEY as SHORTCUTS_ASKED_KEY } from '../platform/shortcuts.ts';
 import { NOTICE_KEY as CHECKIN_NOTICE_KEY } from '../update/checkin.ts';
@@ -3104,6 +3104,8 @@ export class SessionManager {
       if (!parsed.success) throw new Error(`Not shown: the card is not valid (${parsed.error.issues.map((i) => `${i.path.join('.') || 'card'}: ${i.message}`).join('; ')}). Fix that, or reply without a card.`);
       const fake = cardLooksLikeApproval(parsed.data);
       if (fake) throw new Error(`Not shown: the card's "${fake}" reads as an approval, and approvals are Ledung's own cards. Reply without those words, or call the tool that needs the approval; Ledung asks.`);
+      const value = applyCardProblem(parsed.data);
+      if (value) throw new Error(`Not shown: the card is not valid (${value}). Fix that, or reply without a card.`);
       const sv = this.setupView();
       if (sv.phase === 'helper' && sv.current) throw new Error(`Not shown: a setup step is open ("${sv.current}"), and Ledung shows that step's own card under your reply. Reply again with the text only.`);
       card = parsed.data;

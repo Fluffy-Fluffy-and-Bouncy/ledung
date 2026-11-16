@@ -15,7 +15,7 @@ function memoryStore(): ThemeStore & { data: Map<string, string> } {
 
 function fakeRoot(): ThemeRoot & { attrs: Map<string, string> } {
   const attrs = new Map<string, string>();
-  return { attrs, setAttribute: (k: string, v: string) => { attrs.set(k, v); }, removeAttribute: (k: string) => { attrs.delete(k); } };
+  return { attrs, setAttribute: (k: string, v: string) => { attrs.set(k, v); } };
 }
 
 test('nothing stored, a "system" from before, or anything unknown is Dark (the default, #345)', () => {
