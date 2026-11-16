@@ -466,6 +466,51 @@ test('images for a message (issue #128): uploaded with the sign-in and Ledung\'s
   assert.equal((await request({ method: 'POST', path: '/api/sessions/m1/images', headers: good, body: png })).status, 403);
 });
 
+test('a dropped file for a message (issue #339): saved in the session\'s folder with the sign-in, this host and Ledung\'s own origin, within 50 MB', async () => {
+  const pdf = Buffer.from('%PDF-1.7\n%%EOF\n', 'latin1');
+  const drop = (headers: Record<string, string>, body: Buffer = pdf, name = 'report.pdf', session = 's1') =>
+    request({ method: 'POST', path: `/api/sessions/${session}/drops?name=${encodeURIComponent(name)}`, headers: { 'content-length': String(body.length), ...headers }, body });
+  const good = { cookie: COOKIE, origin: ORIGIN, 'content-type': 'application/octet-stream' };
+  const drops = path.join(projectRoot, '.ledung', 'drops');
+  const kept = () => (fs.existsSync(drops) ? fs.readdirSync(drops).filter((f) => f !== '.gitignore') : []);
+  const two = (v: number) => String(v).padStart(2, '0');
+  const now = new Date();
+  const day = `${now.getFullYear()}-${two(now.getMonth() + 1)}-${two(now.getDate())}`;
+  try {
+    assert.equal((await drop({ origin: ORIGIN, 'content-type': 'application/octet-stream' })).status, 401, 'no sign-in');
+    assert.equal((await drop({ cookie: COOKIE, 'content-type': 'application/octet-stream' })).status, 403, 'no Origin');
+    assert.equal((await drop({ ...good, origin: 'http://evil.example' })).status, 403, 'another origin');
+    assert.equal((await drop({ ...good, host: 'evil.example:80' })).status, 403, 'another host');
+    assert.equal((await drop({ ...good, 'content-type': 'text/html' })).status, 415, 'only as plain bytes');
+    // Too large: refused by its declared length before it is read, with the limit named, and by what arrives.
+    const big = Buffer.alloc(50 * 1024 * 1024 + 1);
+    const declared = await drop(good, big);
+    assert.equal(declared.status, 413);
+    assert.match(JSON.parse(declared.body).error, /at most 50 MB/);
+    const chunked = await request({ method: 'POST', path: '/api/sessions/s1/drops?name=big.bin', headers: good, body: big }).catch((e: Error) => ({ status: 0, error: e.message }));
+    assert.ok(chunked.status === 413 || chunked.status === 0, `refused while it arrives: ${JSON.stringify(chunked).slice(0, 200)}`);
+    assert.deepEqual(kept(), [], 'nothing kept of what was refused');
+    assert.equal((await drop(good, pdf, 'report.pdf', 'nope')).status, 400, 'no such session');
+    // A manager's drops need the open page, like its messages and images (#104 review, finding F1).
+    assert.equal((await drop(good, pdf, 'report.pdf', 'm1')).status, 403);
+    assert.deepEqual(kept(), [], 'nothing kept of what was refused');
+
+    const ok = await drop(good);
+    assert.equal(ok.status, 200, ok.body);
+    assert.deepEqual(JSON.parse(ok.body), { path: `.ledung/drops/${day}-report.pdf` });
+    assert.deepEqual(fs.readFileSync(path.join(drops, `${day}-report.pdf`)), pdf);
+    // Path parts in the name land inside the drops folder, under a plain name; nothing beside the project.
+    const beside = fs.readdirSync(path.dirname(projectRoot));
+    const climbed = await drop(good, pdf, '../../x.pdf');
+    assert.equal(climbed.status, 200, climbed.body);
+    assert.deepEqual(JSON.parse(climbed.body), { path: `.ledung/drops/${day}-_.._x.pdf` });
+    assert.deepEqual(fs.readdirSync(path.dirname(projectRoot)), beside);
+    assert.deepEqual(kept().sort(), [`${day}-_.._x.pdf`, `${day}-report.pdf`]);
+  } finally {
+    fs.rmSync(path.join(projectRoot, '.ledung'), { recursive: true, force: true });
+  }
+});
+
 test("a session with its own folder reads files only from that folder, behind the same sign-in", async () => {
   assert.equal((await request({ path: '/api/sessions/s2/file?path=notes.md' })).status, 401);
   const ok = await request({ path: '/api/sessions/s2/file?path=notes.md', headers: { cookie: COOKIE } });
@@ -2232,6 +2277,24 @@ test('through the public name an image for a message needs the device unlocked, 
     assert.equal((await upload()).status, 200);
   } finally {
     d.page.close();
+  }
+});
+
+test('through the public name a dropped file needs the device unlocked, like an image (issue #339)', async () => {
+  const d = await deviceWithPasskey();
+  const pdf = Buffer.from('%PDF-1.7\n%%EOF\n', 'latin1');
+  const drop = () => pub({ method: 'POST', path: '/api/sessions/s1/drops?name=r.pdf', headers: { cookie: d.cookie, origin: PUBLIC_ORIGIN, 'content-type': 'application/octet-stream', ...d.withKey }, body: pdf });
+  const drops = path.join(projectRoot, '.ledung', 'drops');
+  try {
+    assert.match(errorOf(await drop()), /locked/);
+    assert.equal(fs.existsSync(drops) ? fs.readdirSync(drops).filter((f) => f !== '.gitignore').length : 0, 0, 'nothing saved while locked');
+    assert.equal((await pubChange('/api/device-unlock', '{}', d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign('/api/device-unlock', '{}') })).status, 200);
+    const ok = await drop();
+    assert.equal(ok.status, 200, ok.body);
+    assert.match(JSON.parse(ok.body).path, /^\.ledung\/drops\/\d{4}-\d{2}-\d{2}-r\.pdf$/);
+  } finally {
+    d.page.close();
+    fs.rmSync(path.join(projectRoot, '.ledung'), { recursive: true, force: true });
   }
 });
 
