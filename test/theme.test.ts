@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
-import { THEMES, THEME_KEY, applyTheme, parseTheme, readTheme, saveTheme, type ThemeRoot, type ThemeStore } from '../web/src/theme.ts';
+import { DEFAULT_THEME, THEMES, THEME_KEY, applyTheme, parseTheme, readTheme, saveTheme, type ThemeRoot, type ThemeStore } from '../web/src/theme.ts';
 
 function memoryStore(): ThemeStore & { data: Map<string, string> } {
   const data = new Map<string, string>();
@@ -18,31 +18,34 @@ function fakeRoot(): ThemeRoot & { attrs: Map<string, string> } {
   return { attrs, setAttribute: (k: string, v: string) => { attrs.set(k, v); }, removeAttribute: (k: string) => { attrs.delete(k); } };
 }
 
-test('nothing stored, or anything unknown, is Dark (the default, #345), whatever the computer says', () => {
-  for (const raw of [null, '', 'dark', 'Dark', 'blue', 'System']) assert.equal(parseTheme(raw), 'dark');
+test('nothing stored, a "system" from before, or anything unknown is Dark (the default, #345)', () => {
+  assert.equal(DEFAULT_THEME, 'dark');
+  for (const raw of [null, '', 'dark', 'Dark', 'blue', 'system', 'System']) assert.equal(parseTheme(raw), 'dark');
+  const store = memoryStore();
+  store.data.set(THEME_KEY, 'system'); // System, stored before #345, is gone
+  assert.equal(readTheme(store), 'dark');
   assert.equal(readTheme(memoryStore()), 'dark');
 });
 
-test('a stored Light or System is kept: only the default changed (#345)', () => {
+test('a stored Light is kept: only the default changed (#345)', () => {
   assert.equal(parseTheme('light'), 'light');
-  assert.equal(parseTheme('system'), 'system');
   const store = memoryStore();
   store.data.set(THEME_KEY, 'light'); // stored before #345
   assert.equal(readTheme(store), 'light');
 });
 
-test('every choice is saved by name and read back, as after a reload; System too', () => {
+test('every choice is saved by name and read back, as after a reload; the default too', () => {
   const store = memoryStore();
-  for (const theme of ['light', 'system', 'dark'] as const) {
+  for (const theme of ['light', 'dark'] as const) {
     saveTheme(store, theme);
     assert.equal(store.data.get(THEME_KEY), theme);
     assert.equal(readTheme(store), theme);
   }
 });
 
-test('Settings offers Dark first, then Light (basic), then System', () => {
-  assert.deepEqual(THEMES.map((t) => t.id), ['dark', 'light', 'system']);
-  assert.deepEqual(THEMES.map((t) => t.label), ['Dark', 'Light (basic)', 'System']);
+test('Settings offers Dark first, then Light (basic), and no System (question #2026)', () => {
+  assert.deepEqual(THEMES.map((t) => t.id), ['dark', 'light']);
+  assert.deepEqual(THEMES.map((t) => t.label), ['Dark', 'Light (basic)']);
 });
 
 test('a store that throws (private mode) neither breaks reading nor saving', () => {
@@ -55,9 +58,9 @@ test('a store that throws (private mode) neither breaks reading nor saving', () 
   assert.doesNotThrow(() => saveTheme(broken, 'light'));
 });
 
-test('applying marks the root with the choice, System included', () => {
+test('applying marks the root with the choice', () => {
   const root = fakeRoot();
-  for (const theme of ['dark', 'light', 'system'] as const) {
+  for (const theme of ['dark', 'light'] as const) {
     applyTheme(root, theme);
     assert.equal(root.attrs.get('data-theme'), theme);
   }
@@ -67,10 +70,10 @@ test('applying marks the root with the choice, System included', () => {
 // a `prefers-color-scheme` rule ignores the mark the choice sets.
 const css = readFileSync(new URL('../web/src/styles.css', import.meta.url), 'utf8');
 
-test('the stylesheet lets the mark decide: dark with no mark, each other mark sets color-scheme, and no rule asks the computer', () => {
+test('the stylesheet lets the mark decide: dark with no mark, light by its mark, and no rule asks the computer', () => {
   assert.match(css, /:root\s*\{[^}]*color-scheme:\s*dark;/, 'dark before the page code has run (#345)');
   assert.match(css, /:root\[data-theme="light"\]\s*\{\s*color-scheme:\s*light;\s*\}/);
-  assert.match(css, /:root\[data-theme="system"\]\s*\{\s*color-scheme:\s*light dark;\s*\}/);
+  assert.doesNotMatch(css, /color-scheme:\s*light dark/, 'no scheme left to the computer');
   assert.doesNotMatch(css, /prefers-color-scheme/);
 });
 

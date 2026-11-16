@@ -345,7 +345,7 @@ function CompactSlider() {
   );
 }
 
-/** Dark (the default), Light or System for this page; System follows the computer's setting (#113, #345). */
+/** Dark (the default) or Light for this page (#113, #345). */
 function ThemeChoice() {
   const [theme, setTheme] = useState<Theme>(() => readTheme(localStorage));
   const choose = (t: Theme) => {
@@ -360,7 +360,7 @@ function ThemeChoice() {
           <button key={t.id} className={theme === t.id ? 'on' : ''} aria-pressed={theme === t.id} onClick={() => choose(t.id)}>{t.label}</button>
         ))}
       </div>
-      <p className="muted">Dark is the default. Light gets basic support: readable, with less polish. System follows the computer's light or dark setting.</p>
+      <p className="muted">Dark is the default. Light gets basic support: readable, with less polish.</p>
     </>
   );
 }

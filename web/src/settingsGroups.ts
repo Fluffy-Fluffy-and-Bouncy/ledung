@@ -88,7 +88,7 @@ export const LEDUNG_GROUPS: SettingsGroup[] = [
   {
     id: 'look', label: 'Look & feel', part: 'browser',
     settings: [
-      { label: 'Appearance', storedIn: 'browser', about: 'Dark (the default), light or the computer\'s own', keywords: ['theme', 'dark', 'light', 'mode', 'colour', 'color', 'system'] },
+      { label: 'Appearance', storedIn: 'browser', about: 'Dark (the default) or light', keywords: ['theme', 'dark', 'light', 'mode', 'colour', 'color'] },
       { label: 'Autocorrect', storedIn: 'browser', about: 'Whether the browser corrects words as you type', keywords: ['spelling', 'typing', 'spell'] },
       { label: 'Status dot', storedIn: 'browser', about: 'The coloured dot by each session in the sidebar', keywords: ['sidebar', 'dot', 'colour', 'color'] },
       { label: 'Show "Archived" in the sidebar', storedIn: 'browser', about: 'The Archived entry under each project', keywords: ['archive', 'sidebar'] },

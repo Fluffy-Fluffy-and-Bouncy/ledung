@@ -1,7 +1,7 @@
 :root {
-  /* Each colour is a light-dark() pair: the root's color-scheme picks one, from the choice in Settings or, for
-     System, the computer's setting (issue #113, web/src/theme.ts). Dark is the default and the designed one; a new
-     colour's light value only has to be readable (issue #345). */
+  /* Each colour is a light-dark() pair: the root's color-scheme picks one, from the choice in Settings (issue #113,
+     web/src/theme.ts). Dark is the default and the designed one; a new colour's light value only has to be readable
+     (issue #345). */
   --bg: light-dark(#f6f7f9, #16181d);
   --panel: light-dark(#ffffff, #1d2026);
   --panel-2: light-dark(#eef0f4, #252932);
@@ -31,7 +31,6 @@
   color-scheme: dark;
 }
 :root[data-theme="light"] { color-scheme: light; }
-:root[data-theme="system"] { color-scheme: light dark; }
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; }
