@@ -1,6 +1,7 @@
 // Waiting for you's lists: what waits for the user, sorted by tier, and the recently answered. A question
 // a manager is handling is in neither (issue #96) but still opens on its own. Pure, so it can be tested.
 import type { QuestionInfo } from '../../src/shared/protocol.ts';
+import { waitingFirst } from '../../src/shared/waiting.ts';
 import { deskCompare, deskQuestion, HISTORY_DAYS, HISTORY_PER_PROJECT, tierOf, type DeskQuestion } from '../../src/shared/questions.ts';
 
 /** The part of `localStorage` used here, so tests can pass their own. */
@@ -31,8 +32,8 @@ export function renameInFilter(store: FilterStore, from: string, to: string): vo
 
 export interface Item { q: QuestionInfo; v: DeskQuestion; project: string; tier: string | null }
 
-/** 3: an order's keep-it question (issue #105); 2: a proposed order to confirm (#105); 1: a refused call (issue #104); 0: any other. */
-const first = (i: Item) => (i.q.details?.order ? (i.q.details.order.confirm ? 2 : 3) : i.q.details?.refusal ? 1 : 0);
+/** Its place ahead of the tiers (waitingFirst), the same as the managers' waiting_for_you (issue #338). */
+const first = (i: Item) => waitingFirst(i.q);
 
 /**
  * Waiting for you history (issue #306), from the closed questions newest first: per project the last 100 answered

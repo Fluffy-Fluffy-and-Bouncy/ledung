@@ -34,6 +34,7 @@ import { refusalAnswerText, refusalOf } from './refusals.ts';
 import { keepAnswerText, orderPreamble, orderRecorded, type Orders, type OrderSpec } from './orders.ts';
 import type { OrderInfo } from '../shared/orders.ts';
 import { formatWorkHistory, workHistory } from '../usage/work-history.ts';
+import { waitingForYou } from './waiting-tool.ts';
 
 /** What managers need of the linked computers (#245): who they are, and one call to one of them. */
 export interface LinkedPort {
@@ -974,6 +975,15 @@ ${note}`);
   workHistory(managerId: string, days?: number, limit?: number): string {
     const project = this.store.getSession(managerId)!.project;
     return formatWorkHistory(workHistory(this.store.database, project, { days }), limit ?? 10);
+  }
+
+  /** waiting_for_you (issue #338): the manager's own project only, whatever its lockdown; reads, changes nothing. */
+  waitingForYou(managerId: string, answeredHours?: number): string {
+    return waitingForYou({
+      store: this.store, managerId, userName: this.ctx.userName, answeredHours,
+      tiers: (project) => this.ctx.projects().find((p) => p.name === project)?.questionTiers,
+      request: (p) => requestText(p),
+    });
   }
 
   /** normal or high on the manager's own judgement; critical only on the user's answer to one of its questions. */
