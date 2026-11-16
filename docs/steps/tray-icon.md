@@ -2,6 +2,8 @@
 
 Nov 17, 2026 · **Proposal**, not decided. Issue [#347](https://github.com/Fluffy-Fluffy-and-Bouncy/ledung/issues/347). Nothing is built until Simon says go, part by part.
 
+Revised the same night: **Windows and macOS are both first-class** and built together (Simon, through the manager, 2026-11-17). Linux stays later.
+
 ## Why
 
 Simon (2026-11-17): "Right now, it's difficult to know if Ledung is actually running. Same if we want to close it. What if we have a small icon in the taskbar/activity field … Clicking on it could open the Ledung page/web app. Right-clicking on it could have an 'exit' maybe."
@@ -10,106 +12,147 @@ Since #456 Ledung runs in the background with no window. That is quieter, but no
 
 ## What it does
 
-While Ledung runs, a small Ledung icon sits in the Windows notification area (bottom right, next to the clock).
+The same icon, menu and rules on both systems; only where it sits and how it is clicked follow each system's habits.
 
-- **Hover:** the tooltip says `Ledung · 127.0.0.1:41579`, and `· 2 waiting for you` when something waits.
-- **Left-click:** opens Ledung's page in the default browser, signed in, as the start does today.
-- **Right-click:** a menu:
+### The menu (both)
 
-  ```
-  3 working · 2 waiting for you      (grey, not clickable)
-  ─────────────────────────────
-  Open Ledung                        (bold: what left-click does)
-  Restart Ledung                     (only when a launcher can start it again)
-  ─────────────────────────────
-  Exit Ledung
-  ```
+```
+3 working · 2 waiting for you      (grey, not clickable)
+─────────────────────────────
+Open Ledung
+Restart Ledung                     (only when a launcher can start it again)
+─────────────────────────────
+Exit Ledung
+```
 
-  With nothing going on the first line reads `Nothing working`.
-- **Something waits for you:** while a question or permission prompt is addressed to the person, the icon gets a small amber dot. It uses the same rule as the page's notifications and phone push (`waitingCount`, `src/shared/waiting.ts`), so all three agree.
-- **Exit Ledung** stops Ledung the way **Stop Ledung** in Settings does (choice C). When sessions are working, it asks first, in a small Windows dialog:
+With nothing going on the first line reads `Nothing working`.
+
+- **Something waits for you:** while a question or permission prompt is addressed to the person, the icon shows it (an amber dot on Windows, a number on the Mac; below). It uses the same rule as the page's notifications and phone push (`waitingCount`, `src/shared/waiting.ts`), so all three agree.
+- **Exit Ledung** stops Ledung the way **Stop Ledung** in Settings does (choice C). When sessions are working, it asks first, in a small system dialog:
 
   > 3 sessions are working. Exiting Ledung stops them; you can resume them after the next start.
   > [Exit Ledung]  [Cancel]
 
   With nothing working it exits straight away.
 - **The icon goes away** when Ledung stops, however it stops: Exit, Stop Ledung in Settings, `ledung stop`, Ctrl+C, a crash, or the process being killed. **It comes back** a few seconds after Restart Ledung (it is gone during the restart itself; choice B).
-- **Windows 11 hides new tray icons** in the `^` overflow at first. Ledung cannot pin itself (Windows has no way to do that from a program); Settings says how: drag it onto the taskbar, or switch it on under Windows Settings → Personalization → Taskbar → Other system tray icons. That list names it **Windows PowerShell**, not Ledung (see choice A); its tooltip and menu say Ledung.
+- No notifications pop out of the icon: the page and phone push already do that, and two would be noise.
 
-No notifications pop out of the icon: the page and phone push already do that, and two would be noise.
+### On Windows
+
+The icon sits in the **notification area**, bottom right next to the clock, in Ledung's own colours.
+
+- **Hover:** the tooltip says `Ledung · 127.0.0.1:41579`, and `· 2 waiting for you` when something waits.
+- **Left-click** opens Ledung's page in the default browser, signed in, as the start does today.
+- **Right-click** opens the menu above; **Open Ledung** is in bold, as the left-click's action.
+- **Waiting:** a small amber dot on the icon's corner.
+- **Windows 11 hides new tray icons** in the `^` overflow at first. Ledung cannot pin itself (Windows offers programs no way to); Settings says how: drag it onto the taskbar, or switch it on under Windows Settings → Personalization → Taskbar → Other system tray icons. That list names it **Windows PowerShell**, not Ledung (choice A); its tooltip and menu say Ledung.
+
+### On the Mac (for someone who hasn't used one)
+
+A Mac has no taskbar at the bottom. Instead there is the **menu bar**: a thin strip along the **top** of the screen, always visible. Its left part belongs to whichever program is in front (File, Edit, …); its **right part holds small icons** from programs running in the background (Wi-Fi, battery, clock, Dropbox and the like). Ledung's icon goes there, as one of those small icons.
+
+- **Look:** Mac menu bar icons are by habit **one colour, without colours of their own**: black on a light menu bar, white on a dark one, drawn by macOS itself from a "template" image. So the Mac icon is a plain silhouette of Ledung's mark, not the coloured icon (choice G). It needs a new small black-and-transparent picture of the mark, about 18 by 18 points.
+- **A normal click opens the menu** (there is no separate left-click action as on Windows; that is how every menu bar icon behaves). So **Open Ledung** is the first item; opening the page takes two clicks, icon then Open Ledung. A right-click (or Control-click) opens the same menu.
+- **No tooltip** on hover: Mac menu bar icons usually don't have one. The address is shown in the menu instead, as a grey line under the status: `127.0.0.1:41579`.
+- **Waiting:** a small number next to the icon, `2`, in the menu bar's own text colour, the way Mac mail and chat programs show unread items. It goes when nothing waits.
+- **No Dock icon:** the helper tells macOS it is a background program, so nothing appears in the Dock (the row of program icons at the bottom) and it never shows in the Cmd+Tab program switcher.
+- **The Exit question** is a normal Mac alert box in the middle of the screen, brought to the front.
+- **Crowded menu bars:** on MacBooks with a camera notch, icons that don't fit are silently hidden behind the notch; macOS has no overflow like Windows' `^`. Nothing Ledung can do; Settings mentions it. Recent macOS versions also list menu bar programs in System Settings → Menu Bar, where they can be switched off; the spike checks what name the helper has there (most likely **osascript**, choice A).
 
 ## How it is built
 
-### The helper (Windows)
+### One part in Ledung, one small helper per system
 
-A short PowerShell script that Ledung ships inside its own source, run by the **Windows PowerShell 5.1 that comes with every Windows 10 and 11** (signed by Microsoft). It uses .NET's `NotifyIcon` and a right-click menu from Windows Forms, also part of Windows. No download, no npm package, no exe of ours or anyone else's.
+**Ledung's side is shared:** `src/platform/tray.ts` starts the helper, tells it what to show and acts on what it sends back. Only the helper script differs per system. Both are plain text inside Ledung's own source and both run on a program **the system already has and its maker already signed**:
 
-It is started the way Ledung already starts its process-list PowerShell (`src/platform/powershell-worker.ts`): the full path `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`, `-NoProfile -NonInteractive -WindowStyle Hidden -Command <script>`, no window. The script travels in the command, not in a file another program could swap.
+- **Windows:** **Windows PowerShell 5.1**, on every Windows 10 and 11, with .NET's `NotifyIcon` and a right-click menu from Windows Forms, also part of Windows. Started the way Ledung already starts its process-list PowerShell (`src/platform/powershell-worker.ts`): the full path `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`, `-NoProfile -NonInteractive -WindowStyle Hidden -Command <script>`, no window.
+- **macOS:** **`/usr/bin/osascript -l JavaScript`**, on every Mac, Apple's own scripting program, which can use macOS's own menu bar parts (`NSStatusItem`, `NSMenu`, `NSAlert` from AppKit) through its bridge to them. It sets itself to "accessory" (no Dock icon) and runs until its input closes. The script is passed in the command (`-e`), not as a file another program could swap.
 
-Ledung and the helper talk **only over the helper's own stdin and stdout**, one line of JSON at a time:
+No download, no npm package, no exe or Mac program of ours or anyone else's.
 
-- Ledung → helper: `{"tip":"Ledung · 127.0.0.1:41579","status":"3 working · 2 waiting for you","dot":true,"restart":true,"confirm":"3 sessions are working…"}` when any of it changes (at most once a second).
+**Gatekeeper, plainly.** Gatekeeper is the Mac's check on programs downloaded from the internet; it blocks those not signed and notarised by a registered Apple developer. `osascript` is part of macOS, signed by Apple, so Gatekeeper never stops it, and the script is text, not a program. The same goes for files Ledung makes on the computer itself (the Ledung.app shortcut already relies on this, `src/platform/shortcuts.ts`): they carry no "downloaded" mark, so Gatekeeper doesn't check them.
+
+**What the alternative would cost.** A small native Mac program (Swift) would look the most native and be listed as "Ledung". Shipped ready-made in the npm package it would need signing with a **Developer ID** and **notarising** by Apple to be trusted: an **Apple Developer Program membership (99 USD a year)** in Martin's or the company's name, a Mac to build and sign every release (or a macOS CI runner with the certificate as a secret), and Apple's notary service on each release. Built on the Mac at first start instead, it needs Apple's developer tools, which most Macs don't have. Neither is worth it for a menu, so it is the fallback only if the spike shows osascript can't do the job (choice A).
+
+### Talking to the helper
+
+Ledung and the helper talk **only over the helper's own stdin and stdout**, one line of JSON at a time, the same on both systems:
+
+- Ledung → helper: `{"tip":"Ledung · 127.0.0.1:41579","status":"3 working · 2 waiting for you","waiting":2,"restart":true,"confirm":"3 sessions are working…","parent":12345}` when any of it changes (at most once a second).
 - Helper → Ledung: one of a fixed set of words: `open`, `restart`, `exit`, `exit-confirmed`. Anything else is ignored.
 
-The icon image is Ledung's own 256-pixel PNG (the one the shortcuts use, `src/platform/icons.ts`), scaled down by the helper; the amber dot is drawn on it by the helper at run time, so no second image is shipped.
+The Windows icon is Ledung's own 256-pixel PNG (the one the shortcuts use, `src/platform/icons.ts`), scaled down by the helper, with the amber dot drawn on it at run time. The Mac icon is the new silhouette PNG (one file, at 1× and 2×), shipped with the page's other icons.
 
 ### Which process owns it (choice B)
 
-**The Ledung server (`src/main.ts`) starts the helper and is its only owner.** When the server ends, in any way, Windows closes the pipe, the helper reads end-of-input, removes the icon and exits. As a second net the helper checks every few seconds that the server's process still exists (its id is in the first message), in case the pipe stays open for some reason. On Restart Ledung the old server's helper goes and the new server starts a new one.
+**The Ledung server (`src/main.ts`) starts the helper and is its only owner.** When the server ends, in any way, the system closes the pipe, the helper reads end-of-input, removes the icon and exits. As a second net the helper checks every few seconds that the server's process (`parent`) still exists. On Restart Ledung the old server's helper goes and the new server starts a new one.
 
-The launchers stay as they are. There are three of them (the release `launcher.mjs`, the npm `ledung` command in `src/cli.ts`, and none at all for `npm start`), so putting the icon in the server is the one place that covers the npm install, a release and a clone alike.
+The launchers stay as they are. There are three of them (the release `launcher.mjs`, the npm `ledung` command in `src/cli.ts`, and none at all for `npm start`), and on the Mac Ledung may also be started by Ledung.app or the sign-in LaunchAgent; putting the icon in the server covers all of them alike.
 
 ### Opening the page signed in (choice D)
 
-The helper never sees the sign-in token. A left-click sends `open`; **the server** opens `http://127.0.0.1:<port>/login?token=…` with the same `openBrowser` it uses at every start. So the token goes exactly where it goes today and nowhere new.
+The helper never sees the sign-in token. **Open Ledung** (and a left-click on Windows) sends `open`; **the server** opens `http://127.0.0.1:<port>/login?token=…` with the same `openBrowser` it uses at every start (`rundll32` on Windows, `open` on the Mac). So the token goes exactly where it goes today and nowhere new.
 
 ### Exit and Restart
 
-`exit` runs the same `shutdown(false)` as Stop Ledung, `ledung stop` and Ctrl+C: sessions stop, they can be resumed after the next start. Before that, if sessions are working, the server sends the helper the confirm text; the helper shows a Windows dialog, and only **Exit Ledung** in it sends `exit-confirmed`. `restart` runs the same restart as the page's Restart Ledung, offered only when a launcher can start Ledung again (`LEDUNG_LAUNCHER=1`).
+`exit` runs the same `shutdown(false)` as Stop Ledung, `ledung stop` and Ctrl+C: sessions stop, they can be resumed after the next start. Before that, if sessions are working, the server sends the helper the confirm text; the helper shows the system dialog, and only **Exit Ledung** in it sends `exit-confirmed`. `restart` runs the same restart as the page's Restart Ledung, offered only when a launcher can start Ledung again (`LEDUNG_LAUNCHER=1`).
 
 ### Settings
 
-Settings → Update & restart gets one switch: **Show Ledung's icon in the notification area** (on by default). It is kept per computer, in the data folder's meta table, like the update channel, and applies at once: off stops the helper, on starts it. A Ledung started with its own data folder (`LEDUNG_DATA_DIR`: throwaway copies, tests) has it **off by default**, so a session testing Ledung doesn't fill Simon's notification area (choice F).
+Settings → Update & restart gets one switch: **Show Ledung's icon in the notification area** (on the Mac: **in the menu bar**), on by default. It is kept per computer, in the data folder's meta table, like the update channel, and applies at once: off stops the helper, on starts it. A Ledung started with its own data folder (`LEDUNG_DATA_DIR`: throwaway copies, tests) has it **off by default**, so a session testing Ledung doesn't fill the real tray; the config's `"trayIcon": true` turns it on for such a copy, which is how it is tried out (choice F).
 
-If the helper can't start (no desktop, e.g. a Ledung run over SSH or as a service; PowerShell missing), Ledung writes one line to its log and goes on without the icon. A helper that dies on its own is started again once after a minute, then left alone until the next start.
+If the helper can't start (no desktop, e.g. a Ledung run over SSH or as a service; PowerShell or osascript missing), Ledung writes one line to its log and goes on without the icon. A helper that dies on its own is started again once after a minute, then left alone until the next start.
 
-### macOS and Linux (choice E)
+### Linux (choice E)
 
-- **macOS, menu bar:** the same design with `osascript -l JavaScript`, which every Mac has (signed by Apple), using its bridge to AppKit's `NSStatusItem`. Same pipe, same messages, same menu. Built after Windows, once a Mac is at hand for a check, as its own issue.
-- **Linux:** there is no tray that works the same everywhere: GNOME shows none without an extension, others use the StatusNotifierItem standard over D-Bus. Proposal: later, and only where `python3` with the AppIndicator library is already installed; elsewhere Settings says the icon isn't available on this desktop. Its own issue, low priority.
-
-On both, until they are built, the switch in Settings is not shown.
+There is no tray that works the same everywhere: GNOME shows none without an extension, others use the StatusNotifierItem standard over D-Bus. Proposal: later, as its own issue, only where `python3` with the AppIndicator library is already installed; elsewhere the switch isn't shown.
 
 ## Security
 
 - **No new network exposure.** The helper opens no port and makes no HTTP request; nothing reaches it over the local network or the relay, and nothing about it is added to the API.
-- **Other programs can't steer it.** Its only input is the pipe the server created for it; another program can't write to that pipe. A program running as the same Windows user could already read the token file, so that stays the trust line, as for the rest of Ledung.
+- **Other programs can't steer it.** Its only input is the pipe the server created for it; another program can't write to that pipe. A program running as the same user could already read the token file, so that stays the trust line, as for the rest of Ledung.
 - **It holds nothing secret.** No token, no sign-in link, no session names, no question text: only counts, the address and fixed menu words. The words it sends back are a fixed list; anything else is dropped.
-- **Exit and Restart from the tray are local by nature:** someone at this computer's screen. They don't change who may stop Ledung through the API (`/api/stop` stays as it is).
-- **No profile or path tricks:** PowerShell by its full path with `-NoProfile`, so neither a changed PATH nor the user's PowerShell profile changes what runs.
-- Rejected: npm tray packages. `systray2` ships a 3.6 MB Go program for Windows that is **not signed**; `trayicon` ships a small exe signed by a company we don't know (checked 2026-11-17); `ctray` needs a C++ compiler at install. All three last changed in 2022.
+- **Exit and Restart from the icon are local by nature:** someone at this computer's screen. They don't change who may stop Ledung through the API (`/api/stop` stays as it is).
+- **No profile or path tricks:** the helper's program by its full path (`powershell.exe` under System32 with `-NoProfile`; `/usr/bin/osascript`), so neither a changed PATH nor a user's profile changes what runs.
+- **Nothing for Gatekeeper or antivirus to judge:** both helpers are scripts run by the system's own signed programs.
+- Rejected: npm tray packages. `systray2` ships ready-made programs for Windows (3.6 MB, **not signed**), macOS and Linux; a downloaded, unsigned Mac program is just what Gatekeeper and Apple Silicon's signing rules trip over. `trayicon` is Windows-only and ships a small exe signed by a company we don't know; `ctray` needs a C++ compiler at install. All three last changed in 2022 (checked 2026-11-17).
+
+## Testing on the Mac
+
+Simon has no Mac, so the Mac side is checked by Martin (or another Mac user), as earlier Mac checks were (e.g. the Mac check of PR #432):
+
+- **Automatic, everywhere:** `src/platform/tray.ts` is tested with a fake helper, as `powershell-worker` is: what is sent when counts change, that only the fixed words are acted on, that Exit asks only with sessions working, that the helper is started again only once. These run in `npm run check` on any system, and in CI's weekly macOS run.
+- **The helper scripts themselves** need a screen, so no CI runs them. On the Mac, a **checklist** (about 10 minutes), in a clone on the PR's branch, with a throwaway copy:
+  `LEDUNG_CONFIG=<temp>/config.json LEDUNG_DATA_DIR=<temp>/data node src/main.ts` with `"port": 4396, "trayIcon": true` in that config. Then: the icon appears in the menu bar, black on a light menu bar and white on a dark one (switch in System Settings → Appearance); a click opens the menu; Open Ledung opens the page signed in; asking a test session a question shows `1` next to the icon, answering removes it; Restart brings the icon back; Exit with a working session asks first; Ctrl+C in the terminal, and `kill -9` of the server, each remove the icon; nothing in the Dock or Cmd+Tab. Screenshots in dark mode of the menu bar and the open menu.
+- The same checklist, with the Windows items, is run on this PC.
 
 ## Parts
 
-Each part is its own go-ahead.
+Each part is its own go-ahead. Windows and macOS are built together from part 2 on; only the spike is split, because the Mac half needs a Mac.
 
-1. **Spike: the helper on its own** (≈ 30 min session time). A throwaway script that shows the icon, the menu and the dialog, and goes away when its parent is closed normally and when it is killed. Measure what it costs while idle (memory, CPU) and the restart gap.
-   *Done when:* the spike's numbers and two dark-mode screenshots (icon with tooltip, menu open) are in `docs/steps/tray-icon-spike/`, and Simon has seen them.
-2. **The Windows icon** (≈ 60–90 min). `src/platform/tray.ts` (the script and the pipe), started from `src/main.ts`: icon, tooltip, left-click opens the page, menu with Open, Restart and Exit, gone on any stop, back after a restart. Tests with a fake helper, as `powershell-worker` has.
-   *Done when:* on this PC, a throwaway Ledung shows the icon; left-click opens its page signed in; Restart brings the icon back; Exit, `ledung stop` and killing the server each remove it; `npm run check` passes.
-3. **Status and the waiting dot** (≈ 30–45 min). The status line, the tooltip count and the dot, from the session manager's working count and `waitingCount`.
-   *Done when:* asking a test session a question puts the dot and `1 waiting for you` on the icon, and answering it takes them away.
+1. **Spike: the two helpers on their own.**
+   - 1a, **Windows** (≈ 30 min session time, on this PC): a throwaway script that shows the icon, the menu and the dialog, and goes away when its parent is closed normally and when it is killed. Measure its idle cost (memory, CPU) and the restart gap.
+   - 1b, **macOS** (≈ 30 min to write, plus ≈ 15 min of Martin's on a Mac): the same with osascript. This is the riskier half: the open point is whether osascript can keep the menu bar icon alive while reading its input, and what name macOS shows for it. If it can't, we come back with the Swift choice and its cost before building.
+   *Done when:* both work, their numbers and dark-mode screenshots (icon, open menu, Exit dialog) are in `docs/steps/tray-icon-spike/`, and Simon has seen them.
+2. **The icon on both systems** (≈ 90–120 min). `src/platform/tray.ts` and the two helper scripts, started from `src/main.ts`: icon, Windows tooltip and left-click, the menu with Open, Restart and Exit, gone on any stop, back after a restart; the Mac silhouette icon. Tests with a fake helper.
+   *Done when:* the checklist above passes on this PC and on a Mac; `npm run check` passes.
+3. **Status and waiting** (≈ 30–45 min). The status line, the Windows tooltip count and dot, the Mac number, from the session manager's working count and `waitingCount`.
+   *Done when:* asking a test session a question shows the dot (Windows) or `1` (Mac) and `1 waiting for you` in the menu, and answering takes them away, on both.
 4. **Exit asks first** (≈ 20–30 min). The confirm when sessions are working.
-   *Done when:* Exit with a working session shows the dialog, Cancel leaves everything running, Exit Ledung stops it; with nothing working Exit stops at once.
-5. **The switch in Settings** (≈ 30 min). On by default, off by default for a Ledung with its own data folder, applies at once, text on pinning the icon in Windows 11; works at 390 px; CHANGELOG bullet; README line.
+   *Done when:* on both, Exit with a working session shows the dialog, Cancel leaves everything running, Exit Ledung stops it; with nothing working Exit stops at once.
+5. **The switch in Settings** (≈ 30 min). On by default, off for a Ledung with its own data folder unless the config says `"trayIcon": true`, applies at once, the wording per system (notification area / menu bar) and the hints on pinning (Windows 11) and the notch (Mac); works at 390 px; CHANGELOG bullet; README line.
    *Done when:* switching it off removes the icon at once and it stays off after a restart; the Settings section reads well on a phone-width screen.
-6. **macOS menu bar** and 7. **Linux**: separate issues, after Windows (choice E).
+6. **Linux**: a separate issue, later (choice E).
+
+Parts 2–5 can be one PR with the Mac checklist run before it merges, or each its own PR; one PR means one Mac check instead of four (recommended).
 
 ## Choices for Simon
 
-- **A. How the Windows icon is shown.** Recommended: **the PowerShell helper above** (nothing to download or sign; the catch is that Windows' own icon list calls it "Windows PowerShell"). Alternatives: an npm tray package (ships unsigned or unknown exes; ruled out by the issue), or a tiny C# program compiled on the PC at first start by the C# compiler that comes with Windows (named "Ledung" in that list, but an unsigned exe made on the spot is what antivirus is wary of).
-- **B. Who owns it.** Recommended: **the Ledung server**, so it is the same for npm, release and clone, and goes away even on a crash. The cost: the icon disappears for the few seconds of a restart. The alternative, the launcher, would keep it through a restart but means three launchers to change and none for `npm start`.
+- **A. How the icon is shown.** Recommended: **scripts run by the system's own signed programs**: PowerShell on Windows, osascript on the Mac. Nothing to download, sign or notarise; antivirus and Gatekeeper have nothing to object to. The catch: the systems' own lists of tray and menu bar programs call it "Windows PowerShell" and (most likely) "osascript", not Ledung. Alternatives: npm tray packages (ship unsigned or unknown programs; ruled out by the issue); or a small native program per system, named "Ledung": on Windows compiled on the PC by the C# compiler Windows has (an unsigned exe made on the spot, which antivirus is wary of); on the Mac shipped signed and notarised, which costs an Apple Developer membership (99 USD a year), a Mac or macOS CI to sign each release, and notarising each release.
+- **B. Who owns it.** Recommended: **the Ledung server**, so it is the same for npm, release, clone, Ledung.app and the sign-in start, and goes away even on a crash. The cost: the icon disappears for the few seconds of a restart. The alternative, the launchers, would keep it through a restart but means several launchers to change and none for `npm start`.
 - **C. What Exit does.** Recommended: **stop everything, as Stop Ledung does**, asking first when sessions are working. The alternative, stopping only the server and leaving sessions running in their hosts, would leave Claude working (and spending usage) with no icon and no page, which is the "is it running?" problem again.
 - **D. Opening signed in.** Recommended: **the server opens the same sign-in link as at start**; the helper never gets the token. A one-use, short-lived link for both the start and the icon would be a little tidier; if wanted, that is its own issue.
-- **E. Platforms.** Recommended: **Windows first**; macOS menu bar next as its own issue; Linux later, only where AppIndicator is already there.
-- **F. Default.** Recommended: **on by default** with a switch in Settings, **off by default for throwaway copies** (own data folder).
+- **E. Platforms.** Recommended: **Windows and macOS together**, after a spike on each; Linux later, as its own issue, only where AppIndicator is already there.
+- **F. Default.** Recommended: **on by default** with a switch in Settings, **off by default for throwaway copies** (own data folder), which `"trayIcon": true` in their config turns on.
+- **G. The Mac icon.** Recommended: **a one-colour silhouette of Ledung's mark**, as Mac menu bar icons are by habit, with the waiting count as a number beside it. The alternative, the coloured icon as on Windows, would stand out among the other menu bar icons and doesn't adapt to a dark menu bar. Someone has to draw the silhouette: from the existing icon, in part 2.
+- **H. Who checks on a Mac.** Recommended: **Martin**, with the checklist above, once for the spike (1b) and once before the PR merges.
