@@ -83,6 +83,7 @@ let exercised463 = false;
 const LINKED_HERE = 'Computers are linked and unlinked';
 import type { CertificateStatus, LinkPairingInfo, NewComputerInfo, SourceOffer } from '../shared/protocol.ts';
 import { MAX_CHAT_IMAGE_BYTES } from '../sessions/chat-images.ts';
+import { DROP_TOO_LARGE, MAX_DROP_BYTES } from '../sessions/drops.ts';
 import { computerFrames, computerList, editComputer, knownComputers, readComputerEdits, withEdits, type ComputerInfo, type ComputerSetting } from '../shared/computers.ts';
 
 const MAX_BODY = 1024 * 1024;
@@ -2303,6 +2304,26 @@ export class LedungServer {
         if (!CHAT_IMAGE_TYPES.includes(type)) throw new HttpError(415, 'Only PNG, JPEG, GIF and WebP images can be sent.');
         if (Number(req.headers['content-length'] ?? 0) > MAX_CHAT_IMAGE_BYTES) throw new HttpError(413, 'The image is too large.');
         return manager.uploadImage(id, await readBody(req, MAX_CHAT_IMAGE_BYTES));
+      }
+      // A file dropped in the message box that isn't an image Ledung sends (issue #339): its bytes alone, its name in the
+      // query, saved in the session's folder under .ledung/drops by a name Ledung makes plain; the message names it.
+      // The image route's locks: the open page for a manager, and through the public name the unlocked device, never a
+      // signature (one would be checked over the first MB only and refused). Too large or a container project is
+      // refused before the bytes are read.
+      case 'POST sessions/:id/drops': {
+        this.requirePageForManager(req, id);
+        const type = String(req.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase();
+        if (type !== 'application/octet-stream') throw new HttpError(415, 'Send the file as application/octet-stream.');
+        if (Number(req.headers['content-length'] ?? 0) > MAX_DROP_BYTES) throw new HttpError(413, DROP_TOO_LARGE);
+        manager.dropCheck(id);
+        const name = url.searchParams.get('name') ?? '';
+        let bytes: Buffer;
+        try {
+          bytes = await readBody(req, MAX_DROP_BYTES);
+        } catch (e) {
+          throw e instanceof HttpError && e.status === 413 ? new HttpError(413, DROP_TOO_LARGE) : e;
+        }
+        return manager.saveDrop(id, name, bytes);
       }
       // A "!" command from the message box (issue #212). People only: no tool reaches these routes.
       case 'GET sessions/:id/shell-check':

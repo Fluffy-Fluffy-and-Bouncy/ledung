@@ -69,6 +69,7 @@ import {
 } from '../shared/protocol.ts';
 import { resolveWorkFolder, WorkFolderError } from './work-folder.ts';
 import { saveIntoWorktree, type Saved } from './save-file.ts';
+import { saveDrop, type Dropped } from './drops.ts';
 import { FileError, handoffProblem, hiddenProblem, readProjectFile, readProjectImage, type ProjectFile, type ProjectImage } from './files.ts';
 import { listTree, type TreeListing } from './tree.ts';
 import type { PaneFolderKey, PaneFolders } from '../shared/files-pane.ts';
@@ -210,6 +211,7 @@ let exercised425 = false;
 let exercised96 = false;
 let exercised160 = false;
 let exercised306 = false;
+let exercised339 = false;
 
 /** How long the sidebar's read of which projects have a flow waits for one project (a container's docker exec). */
 const WORKFLOWS_READ_MS = 5000;
@@ -578,6 +580,35 @@ export class SessionManager {
     } catch (e) {
       throw e instanceof ChatImageError ? new UserError(e.message) : e;
     }
+  }
+
+  // --- Files dropped in the message box (issue #339) --------------------------------------------------
+
+  /**
+   * Why a dropped file can't go to this session, or nothing: asked before its bytes are read, so a container project
+   * is refused without 50 MB coming in first. A container project's folder is inside the container; Ledung knows only
+   * the container's name and the path in it, not where that folder is on this computer (src/sessions/drops.ts).
+   */
+  dropCheck(sessionId: string): void {
+    const { info, project } = this.paneSession(sessionId);
+    if (project.runner !== 'local') throw new UserError(`"${info.title}" works in a container project; Ledung can't put a dropped file into a container yet. Only images can be sent there. Nothing was saved.`);
+  }
+
+  /** Saves a dropped file in the folder the session works in, under .ledung/drops; its path is what the message names. */
+  saveDrop(sessionId: string, name: string, bytes: Buffer): { path: string } {
+    this.dropCheck(sessionId);
+    const { info, project } = this.paneSession(sessionId);
+    let saved: Dropped;
+    try {
+      saved = saveDrop(this.sessionFolder(info, project), name, bytes);
+    } catch (e) {
+      throw e instanceof FileError ? new UserError(`Not saved: ${e.message}`) : e;
+    }
+    if (!exercised339) {
+      exercised339 = true;
+      exercisedLine('EXERCISED #339 a dropped file saved into a session\'s folder under .ledung/drops');
+    }
+    return { path: saved.path };
   }
 
   // --- Locked secrets (issue #468) -------------------------------------------------------------------

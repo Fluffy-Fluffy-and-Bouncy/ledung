@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-16
+- Message box: drop (or pick with 📎) any file that isn't a PNG, JPEG, GIF or WebP image, and Ledung saves a copy in the session's folder under `.ledung/drops/` and puts `[file: .ledung/drops/<date>-<name>]` in the message where the cursor is, so Claude can open it. It works from a linked computer's tab or a phone too, and the file lands on the computer the session runs on. Up to 50 MB per file; git doesn't see the drops folder. Images still go in as images. Not yet for container projects: Ledung says so and saves nothing. (#339)
+
 ## 2026-11-15
 - Opening a long chat is faster, most of all one with many long replies on a phone: it first draws the latest 40 messages you can see (hidden tool calls no longer count), and earlier ones as you scroll up, 40 at a time. (#329)
 - Reviewing a proposed workflow change: each Before and After diagram has a **Maximise** button that opens it over the whole window, with zoom and drag, and a Before / After switch that keeps where you are. Esc, the close button or Back return to the review. (#334)

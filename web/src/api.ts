@@ -257,6 +257,9 @@ export const api = {
   send: (sessionId: string, text: string, images?: string[]) => call('POST', `/api/sessions/${sessionId}/messages`, images?.length ? { text, images } : { text }),
   /** An image for the next message, scaled down already (issue #128); its name goes with send. */
   uploadImage: (sessionId: string, image: Blob) => call<{ id: string }>('POST', `/api/sessions/${sessionId}/images`, undefined, image),
+  /** A dropped file Ledung can't attach as an image (issue #339): saved in the session's folder; its path goes in the box. */
+  uploadDrop: (sessionId: string, file: Blob, name: string) =>
+    call<{ path: string }>('POST', `/api/sessions/${sessionId}/drops?name=${encodeURIComponent(name)}`, undefined, new Blob([file], { type: 'application/octet-stream' })),
   /** A "!" command (issue #212): whether it is refused here, and the sensitive rule it matches, before it runs. */
   shellCheck: (sessionId: string, command: string) =>
     call<{ rule: string | null; refused: string | null }>('GET', `/api/sessions/${sessionId}/shell-check?command=${encodeURIComponent(command)}`),
