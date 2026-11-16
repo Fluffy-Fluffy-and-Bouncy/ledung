@@ -7,7 +7,7 @@ import type { HelperCard } from '../../src/shared/helper-cards.ts';
 import { helperHasSpoken } from './helper/cardOrder.ts';
 import { backToSetupMarked, clearBackToSetup, helperToolWords, markBackToSetup } from './helper/helperNav.ts';
 import { api } from './api.ts';
-import { CHAT_IMAGE_TYPES, dataUrl, imageFiles, MAX_CHAT_IMAGES, prepareImage, SECRETS_HINT } from './chatImages.ts';
+import { dataUrl, imageFiles, MAX_CHAT_IMAGES, prepareImage, SECRETS_HINT } from './chatImages.ts';
 import { MessageList, formatTime } from './components/MessageList.tsx';
 import { WorkingIndicator } from './components/WorkingIndicator.tsx';
 import { SailingShip, shipMode } from './components/SailingShip.tsx';
@@ -56,6 +56,8 @@ import { deskStepsInto, isDeskView, leaveShots } from './deskNav.ts';
 import { backToList, deskFallback, phoneClass, type ListSteps } from './phonePane.ts';
 import { NARROW_QUERY } from './sidebarSize.ts';
 import { useDraft } from './useDraft.ts';
+import { readDraft, writeDraft } from './drafts.ts';
+import { dropProblem, dropToken, insertAt, splitDropped } from './drops.ts';
 import { useStableCallback } from './useStableCallback.ts';
 import { canInterrupt, escapeClosesMenu, isToolCallsKey, MCP_STATUS_LABEL, sessionControls, showsMcp, TOOL_CALLS_KEY } from './sessionMenu.ts';
 import { formatTokens, LimitMeters, pct, prLabel } from './usage/charts.tsx';
@@ -1529,7 +1531,7 @@ export function SessionView(props: {
             extra={<MacroChips key={session.id} macros={macros} onUse={fireMacro} onEdit={() => (location.hash = '#/settings/macros')}
               actions={[
                 { id: 'secret', label: '🔑 Lock a secret…', title: 'Type or paste it into a masked field; Claude gets only its name', disabled: composerClosed(session), onPick: () => composerActions.current?.secret() },
-                { id: 'images', label: '📎 Add images…', title: 'PNG, JPEG, GIF or WebP (or paste or drop them on the box)', disabled: composerClosed(session), onPick: () => composerActions.current?.images() },
+                { id: 'images', label: '📎 Add images…', title: 'PNG, JPEG, GIF or WebP go as images; any other file is saved in the session\'s folder and its path put in the message (or drop them on the box)', disabled: composerClosed(session), onPick: () => composerActions.current?.images() },
               ]} />} />
           <Composer session={session} tint={tint} run={run} quoteInto={quoteInto} actionsInto={composerActions} bangShell={ledung.bangShell} />
         </div>
@@ -1904,6 +1906,54 @@ function Composer({ session, tint, run, quoteInto, actionsInto, bangShell }: {
     }
     if (refused.length) throw new Error(refused.join(' '));
   });
+  // Any other file dropped or picked (issue #339): Ledung saves a copy in the session's folder and its path goes into
+  // the box where the caret was, one after another. Saved for the session it was dropped on, also if another is open by then.
+  const sessionNow = useRef(session.id);
+  sessionNow.current = session.id;
+  const dropAt = useRef<number | null>(null);
+  const [saving, setSaving] = useState(0);
+  const putPath = (sessionId: string, token: string) => {
+    if (sessionId !== sessionNow.current) {
+      const draft = readDraft(localStorage, sessionId);
+      writeDraft(localStorage, sessionId, insertAt(draft, draft.length, token).text);
+      return;
+    }
+    const current = area.current?.value ?? text;
+    const put = insertAt(current, dropAt.current ?? current.length, token);
+    saveNow(put.text);
+    dropAt.current = put.caret;
+    requestAnimationFrame(() => area.current?.setSelectionRange(put.caret, put.caret));
+  };
+  const addDrops = (files: File[]) => void run(async () => {
+    const sessionId = session.id;
+    const a = area.current;
+    dropAt.current = a ? a.selectionEnd : null;
+    // Each that can be saved is; what can't is said, together, after.
+    const refused: string[] = [];
+    for (const file of files) {
+      const problem = dropProblem(file);
+      if (problem) {
+        refused.push(problem);
+        continue;
+      }
+      setSaving((n) => n + 1);
+      try {
+        const { path } = await api.uploadDrop(sessionId, file, file.name);
+        putPath(sessionId, dropToken(path));
+      } catch (e) {
+        refused.push(`${file.name || 'A file'}: ${(e as Error).message}`);
+      } finally {
+        setSaving((n) => n - 1);
+      }
+    }
+    if (refused.length) throw new Error(refused.join(' '));
+  });
+  /** Dropped or picked: PNG, JPEG, GIF and WebP go as images, as before; every other file is saved and its path put in. */
+  const addFiles = (files: File[]) => {
+    const { images: pictures, others } = splitDropped(files);
+    if (pictures.length) addImages(pictures);
+    if (others.length) addDrops(others);
+  };
   const removeImage = (key: number) => setImages((list) => list.filter((i) => i.key !== key));
   const send = async () => {
     const t = text;
@@ -1947,7 +1997,7 @@ function Composer({ session, tint, run, quoteInto, actionsInto, bangShell }: {
         setDragging(false);
         if (ended || !e.dataTransfer.files.length) return;
         e.preventDefault();
-        addImages([...e.dataTransfer.files]);
+        addFiles([...e.dataTransfer.files]);
       }}
     >
       {grip}
@@ -1972,7 +2022,7 @@ function Composer({ session, tint, run, quoteInto, actionsInto, bangShell }: {
         />
       )}
       {selection && <SelectionKey left={selection.left} top={selection.top} onLock={lockSelected} />}
-      {(session.shell || ask || command || showChips || images.length > 0) && (
+      {(session.shell || ask || command || showChips || images.length > 0 || saving > 0) && (
       <div className="bang-strips">
       {showChips && <SecretChips known={chips.known} missing={chips.missing} onOpen={setEditing} />}
       {session.shell && (
@@ -1989,6 +2039,7 @@ function Composer({ session, tint, run, quoteInto, actionsInto, bangShell }: {
         </div>
       )}
       {command && !ask && <div className="bang-hint muted">{bangHint(bangShell, session.runner)}</div>}
+      {saving > 0 && <div className="bang-hint muted" role="status">Saving {saving === 1 ? 'a file' : `${saving} files`} into the session's folder…</div>}
       {images.length > 0 && (
         <div className="composer-images">
           {images.map((i, n) => (
@@ -2042,11 +2093,11 @@ function Composer({ session, tint, run, quoteInto, actionsInto, bangShell }: {
         </button>
         <div className="send-row">
           <input
-            ref={picker} type="file" hidden multiple accept={CHAT_IMAGE_TYPES.join(',')}
+            ref={picker} type="file" hidden multiple
             onChange={(e) => {
               const files = [...(e.target.files ?? [])];
               e.target.value = '';
-              if (files.length) addImages(files);
+              if (files.length) addFiles(files);
             }}
           />
           <button
