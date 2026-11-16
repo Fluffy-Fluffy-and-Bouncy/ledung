@@ -1,13 +1,15 @@
-// The page's colour scheme (issue #113): System follows the computer, Light and Dark override it.
-// Kept per browser like the page's other choices; the stylesheet does the rest through
-// `color-scheme` on the root (styles.css), so a choice switches the page without a reload.
+// The page's colour scheme (issue #113): Dark, Light or System, which follows the computer.
+// Dark is the default whatever the computer's setting, and Light is kept as a basic option (issue #345, Simon
+// 2026-11-17): new colours get a designed dark value and a light value that only has to be readable.
+// Kept per browser like the page's other choices; the stylesheet does the rest through `color-scheme` on the root
+// (styles.css), so a choice switches the page without a reload.
 
 export type Theme = 'system' | 'light' | 'dark';
 
 export const THEMES: { id: Theme; label: string }[] = [
-  { id: 'system', label: 'System' },
-  { id: 'light', label: 'Light' },
   { id: 'dark', label: 'Dark' },
+  { id: 'light', label: 'Light (basic)' },
+  { id: 'system', label: 'System' },
 ];
 
 export const THEME_KEY = 'ledung.theme';
@@ -16,25 +18,27 @@ export const THEME_KEY = 'ledung.theme';
 export type ThemeStore = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 export type ThemeRoot = { setAttribute(name: string, value: string): void; removeAttribute(name: string): void };
 
-/** A stored value back into use: anything but Light or Dark is System, the default. */
+/**
+ * A stored value back into use. Nothing stored, or anything unknown, is Dark, the default (#345). Before #345 an
+ * explicit System was stored as nothing, the same as never choosing; it is stored as "system" now.
+ */
 export function parseTheme(raw: string | null): Theme {
-  return raw === 'light' || raw === 'dark' ? raw : 'system';
+  return raw === 'light' || raw === 'system' ? raw : 'dark';
 }
 
 export function readTheme(store: ThemeStore): Theme {
-  try { return parseTheme(store.getItem(THEME_KEY)); } catch { return 'system'; }
+  try { return parseTheme(store.getItem(THEME_KEY)); } catch { return 'dark'; }
 }
 
-/** Saves the choice; System is the default, so it removes the entry. */
+/** Saves the choice, every one of them by name, so a later change of default leaves it alone. */
 export function saveTheme(store: ThemeStore, theme: Theme): void {
-  try {
-    if (theme === 'system') store.removeItem(THEME_KEY);
-    else store.setItem(THEME_KEY, theme);
-  } catch { /* private mode: kept for this visit only */ }
+  try { store.setItem(THEME_KEY, theme); } catch { /* private mode: kept for this visit only */ }
 }
 
-/** Marks the root with the choice; no mark leaves the scheme to the computer. */
+/**
+ * Marks the root with the choice. With no mark (before this runs) the stylesheet is dark, so the first paint is
+ * already dark (#345); System's mark hands the scheme to the computer.
+ */
 export function applyTheme(root: ThemeRoot, theme: Theme): void {
-  if (theme === 'system') root.removeAttribute('data-theme');
-  else root.setAttribute('data-theme', theme);
+  root.setAttribute('data-theme', theme);
 }
