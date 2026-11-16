@@ -19,6 +19,7 @@ import path from 'node:path';
 import { within } from '../projects/lockdown.ts';
 import { userDataDir } from '../platform/paths.ts';
 import { FileError } from './files.ts';
+import { nativeWithin } from './save-file.ts';
 
 /** The most a dropped file may have (issue #339). */
 export const MAX_DROP_BYTES = 50 * 1024 * 1024;
@@ -113,8 +114,11 @@ export function saveDrop(root: string, name: string, bytes: Buffer, now = new Da
   } catch {
     throw new FileError("The session's folder is not there.");
   }
-  // Read on each call, so the folder a test or a throwaway Ledung sets is the one refused.
-  if (within(userDataDir(), realRoot)) throw new FileError("The session's folder is in Ledung's own data folder; Ledung saves no dropped file there.");
+  // Read on each call, so the folder a test or a throwaway Ledung sets is the one refused. Both forms, as save-file.ts
+  // compares them: realRoot is the native real path (long names), which `within`'s JS realpath doesn't give for a data
+  // folder set as an 8.3 name (C:\Users\RUNNER~1), so on Windows it alone missed it (Windows CI on PR #342).
+  const data = userDataDir();
+  if (within(data, realRoot) || nativeWithin(data, realRoot)) throw new FileError("The session's folder is in Ledung's own data folder; Ledung saves no dropped file there.");
   const ledung = path.join(realRoot, '.ledung');
   const drops = path.join(ledung, 'drops');
   folderAt(ledung, '.ledung');

@@ -157,6 +157,18 @@ test("#339: a session folder inside Ledung's own data folder is refused", () => 
   try {
     assert.throws(() => saveDrop(inside, 'r.pdf', PDF, DAY), /Ledung's own data folder/);
     assert.deepEqual(fs.readdirSync(inside), []);
+    // The data folder given in another form than the one on disk: Windows CI on PR #342 had it as an 8.3 name
+    // (C:\Users\RUNNER~1). On a disk that ignores case (macOS, Windows) the same miss shows with the case changed:
+    // the session's folder is compared in its native real form, which has the case on disk.
+    if (process.platform === 'darwin' || process.platform === 'win32') {
+      process.env.LEDUNG_DATA_DIR = data.toUpperCase();
+      try {
+        assert.throws(() => saveDrop(inside, 'r.pdf', PDF, DAY), /Ledung's own data folder/, 'the data folder in upper case');
+      } finally {
+        process.env.LEDUNG_DATA_DIR = data;
+      }
+      assert.deepEqual(fs.readdirSync(inside), []);
+    }
     // The same call for a folder outside it saves.
     assert.equal(saveDrop(fresh('data'), 'r.pdf', PDF, DAY).path, '.ledung/drops/2026-11-16-r.pdf');
   } finally {
