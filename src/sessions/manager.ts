@@ -211,7 +211,6 @@ let exercised425 = false;
 let exercised96 = false;
 let exercised160 = false;
 let exercised306 = false;
-let exercised339 = false;
 
 /** How long the sidebar's read of which projects have a flow waits for one project (a container's docker exec). */
 const WORKFLOWS_READ_MS = 5000;
@@ -603,10 +602,6 @@ export class SessionManager {
       saved = saveDrop(this.sessionFolder(info, project), name, bytes);
     } catch (e) {
       throw e instanceof FileError ? new UserError(`Not saved: ${e.message}`) : e;
-    }
-    if (!exercised339) {
-      exercised339 = true;
-      exercisedLine('EXERCISED #339 a dropped file saved into a session\'s folder under .ledung/drops');
     }
     return { path: saved.path };
   }
