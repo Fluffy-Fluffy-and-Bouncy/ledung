@@ -91,6 +91,7 @@ async function main(): Promise<void> {
     await ok('leave setup', page.api('POST', 'setup', { action: 'leave' }));
     await ok('add Orchard', page.api('POST', 'projects', { name: 'Orchard', runner: 'local', path: project }));
     const w = await ok('session', page.api('POST', 'sessions', { project: 'Orchard', text: 'Hello.' })) as { id: string };
+    const w2 = await ok('second session', page.api('POST', 'sessions', { project: 'Orchard', text: 'Hello again.' })) as { id: string };
     await new Promise((r) => setTimeout(r, 4000));
     const ctx = await b.newContext({ viewport: { width: 1280, height: 800 }, colorScheme: 'dark' });
     const tab = await ctx.newPage();
@@ -144,6 +145,30 @@ async function main(): Promise<void> {
     await tab.setInputFiles('.composer input[type=file]', picked);
     await until(async () => (await boxText(tab)).includes(`${day}-picked.csv]`), 'the picked file in the box');
     check(fs.readFileSync(path.join(drops, `${day}-picked.csv`), 'utf8') === 'a,b\n1,2\n', '📎: a picked CSV is saved and linked as a drop is');
+
+    // --- Switched to another session while the file uploads (self-check of #339; test review of PR #342, finding 3):
+    // the other box keeps what is typed there, and the path goes to the end of the first session's saved draft ------
+    await tab.route(/\/drops\?name=late\.pdf$/, async (r: any) => {
+      await new Promise((res) => setTimeout(res, 3000));
+      await r.continue();
+    });
+    await tab.fill('.composer textarea', 'Second look:');
+    await drop(tab, [{ name: 'late.pdf', type: 'application/pdf', text: 'late' }]);
+    // Typed after the drop, before the switch: the late path must not write over it.
+    await tab.fill('.composer textarea', 'Second look: and this');
+    await tab.evaluate((id: string) => { location.hash = `#/s/${id}`; }, w2.id);
+    // The second session's box, drawn anew with its own (empty) draft.
+    await until(async () => (await boxText(tab).catch(() => null)) === '' || null, 'the second session open');
+    await tab.fill('.composer textarea', 'typed in two');
+    await until(() => fs.existsSync(path.join(drops, `${day}-late.pdf`)) || null, 'the late file saved');
+    await tab.waitForTimeout(500);
+    check(await boxText(tab) === 'typed in two', 'switched: the other session\'s box keeps what was typed there', await boxText(tab));
+    const draft = await tab.evaluate((id: string) => localStorage.getItem(`ledung.draft.${id}`), w.id);
+    check(draft === `Second look: and this [file: .ledung/drops/${day}-late.pdf]`, 'switched: the path is at the end of the first session\'s saved draft', String(draft));
+    await tab.unroute(/\/drops\?name=late\.pdf$/);
+    await tab.evaluate((id: string) => { location.hash = `#/s/${id}`; }, w.id);
+    await until(async () => (await boxText(tab)).includes('late.pdf') || null, 'the first session\'s box with the late path');
+    check(await boxText(tab) === `Second look: and this [file: .ledung/drops/${day}-late.pdf]`, 'switched back: the first session\'s box shows the path', await boxText(tab));
 
     // --- git sees nothing new; the EXERCISED line ran -----------------------------------------------------------
     const status = git('status', '--porcelain', '--untracked-files=all');

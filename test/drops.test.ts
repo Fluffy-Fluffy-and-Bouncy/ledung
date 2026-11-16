@@ -180,6 +180,16 @@ test('#339: the manager saves into the folder the session works in, and refuses 
   const day = `${today.getFullYear()}-${two(today.getMonth() + 1)}-${two(today.getDate())}`;
   assert.deepEqual(manager.saveDrop('here', 'spec.pdf', PDF), { path: `.ledung/drops/${day}-spec.pdf` });
   assert.deepEqual(fs.readFileSync(path.join(folder, '.ledung', 'drops', `${day}-spec.pdf`)), PDF);
+  // A session that moved itself into a worktree with EnterWorktree (issue #225): its drop lands in that worktree, where
+  // the relative path resolves for Claude, not in the project's top folder (test review of PR #342, finding 1).
+  const worktree = path.join(folder, '.claude', 'worktrees', 'fix-1');
+  fs.mkdirSync(worktree, { recursive: true });
+  store.createSession({ id: 'moved', project: 'p', runner: 'local', title: 'moved', parentId: null, permissionMode: 'default', role: 'session' });
+  store.addMessage('moved', 'sdk', { type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'tool_use', id: 'toolu_moved', name: 'EnterWorktree', input: { name: 'fix-1' } }] } });
+  store.addMessage('moved', 'sdk', { type: 'user', parent_tool_use_id: null, message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_moved', content: `Created worktree at ${worktree} on branch worktree-fix-1.` }] } });
+  assert.deepEqual(manager.saveDrop('moved', 'plan.pdf', PDF), { path: `.ledung/drops/${day}-plan.pdf` });
+  assert.deepEqual(fs.readFileSync(path.join(worktree, '.ledung', 'drops', `${day}-plan.pdf`)), PDF, 'in the worktree');
+  assert.equal(fs.existsSync(path.join(folder, '.ledung', 'drops', `${day}-plan.pdf`)), false, 'not in the project\'s top folder');
   assert.throws(() => manager.dropCheck('boxed'), /"boxed" works in a container project; Ledung can't put a dropped file into a container yet/);
   assert.throws(() => manager.saveDrop('boxed', 'spec.pdf', PDF), /container project/);
   assert.throws(() => manager.saveDrop('nope', 'spec.pdf', PDF), /No such session/);
