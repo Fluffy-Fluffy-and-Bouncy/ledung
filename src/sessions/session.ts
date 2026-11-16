@@ -583,6 +583,7 @@ export class Session {
       listPermissions: () => m.listPermissions(id),
       machineStatus: () => m.machineStatus(id),
       workHistory: (days, limit) => m.workHistory(id, days, limit),
+      waitingForYou: (hours) => m.waitingForYou(id, hours),
       setPriority: (sid, priority, q) => m.setPriority(id, sid, priority, q),
       setPaused: (sid, paused) => m.setPaused(id, sid, paused),
       mcpStatus: (sid) => m.mcpStatus(id, sid),

@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-16
+- Managers can now see what waits for you from their own project: a new read-only tool lists its open questions and reviews (run reviews and workflow proposals included), run person steps and permission prompts, in Waiting for you's order with the same count as its "One project" view, what waits for the manager itself apart, and what you answered in the last day. Never another project's or the chats' items, and nothing is answered or marked read. (#338)
+
 ## 2026-11-15
 - Opening a long chat is faster, most of all one with many long replies on a phone: it first draws the latest 40 messages you can see (hidden tool calls no longer count), and earlier ones as you scroll up, 40 at a time. (#329)
 - Reviewing a proposed workflow change: each Before and After diagram has a **Maximise** button that opens it over the whole window, with zoom and drag, and a Before / After switch that keeps where you are. Esc, the close button or Back return to the review. (#334)

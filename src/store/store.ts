@@ -681,6 +681,12 @@ export class Store {
       .all(sessionId, since).map((r) => toQuestion({ ...(r as Row), earlier: null, sources: null }));
   }
 
+  /** Every question answered since `since`, newest first, without its stored context: waiting_for_you's answered window (issue #338). */
+  answeredAfter(since: number): QuestionInfo[] {
+    return this.db.prepare(`SELECT * FROM questions WHERE status = 'answered' AND answered_at > ? ORDER BY answered_at DESC, id DESC`)
+      .all(since).map((r) => toQuestion({ ...(r as Row), earlier: null, sources: null }));
+  }
+
   /**
    * A session's questions about an auto mode classifier refusal (issue #104), open ones first (oldest first), then
    * the rest newest first, without their stored context: read when a refusal comes in (issue #232). The match on
