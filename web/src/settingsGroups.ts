@@ -33,6 +33,8 @@ export const LEDUNG_GROUPS: SettingsGroup[] = [
       { label: 'Restart Ledung', about: 'Starts Ledung again on its newest version; sessions keep running', keywords: ['reload', 'reboot'] },
       // Stopping Ledung from the page, start at sign-in and the background log (issue #456).
       { label: 'Stop Ledung', about: 'Stops Ledung and its sessions', keywords: ['quit', 'exit', 'shut down', 'close', 'background'] },
+      // Ledung's icon in the notification area or menu bar (issue #347).
+      { label: 'Tray icon', about: "Ledung's icon in the notification area or menu bar: open, restart, exit", keywords: ['tray', 'notification area', 'menu bar', 'system tray', 'taskbar', 'icon', 'exit', 'quit'] },
       // A Ledung icon that starts Ledung (issue #415).
       { label: 'Shortcuts', about: 'A Ledung icon on the Desktop and in the Start menu, or in Applications', keywords: ['desktop', 'icon', 'start menu', 'applications', 'launcher', 'dock', 'shortcut'] },
       { label: 'Start at sign-in', about: 'Start Ledung in the background when you sign in', keywords: ['startup', 'autostart', 'login', 'log in', 'boot', 'windows', 'launch agent'] },

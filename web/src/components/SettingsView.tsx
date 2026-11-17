@@ -39,7 +39,7 @@ import { useCompactSidebar } from '../useCompactSidebar.ts';
 import { useArchivedLink } from '../useArchivedLink.ts';
 import { COMPACT_STEPS, type CompactStep } from '../compactSidebar.ts';
 import { InstallSettings } from './InstallApp.tsx';
-import { ShortcutSettings, StopSettings } from './Shortcuts.tsx';
+import { ShortcutSettings, StopSettings, TraySettings } from './Shortcuts.tsx';
 import { CheckInSettings } from './CheckIn.tsx';
 import { AccountsSettings, type DefaultIdentity } from '../projects/AccountsView.tsx';
 import { RestartButton, SettingsSplit, Where, useNarrow, type UpdateState } from './SettingsFrame.tsx';
@@ -116,6 +116,7 @@ function GroupContent(props: GroupProps) {
             )}
           </section>
           <StopSettings />
+          <TraySettings run={props.run} />
           <ShortcutSettings run={props.run} />
         </>
       );

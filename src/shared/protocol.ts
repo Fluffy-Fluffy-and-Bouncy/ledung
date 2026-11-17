@@ -1161,6 +1161,12 @@ export interface ShortcutPlace {
 }
 
 /** The first-run question and Settings → Shortcuts (GET /api/shortcuts, issue #415). */
+/** Settings' switch for Ledung's tray icon (issue #347); `kind` null where this system has none (Linux, for now). */
+export interface TrayView {
+  kind: 'windows' | 'mac' | null;
+  on: boolean;
+}
+
 export interface ShortcutsView {
   kind: 'windows' | 'mac' | 'other';
   /** False where Ledung makes no shortcuts (Linux); `reason` says so. */

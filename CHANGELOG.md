@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-17
+- **Ledung's icon** in the notification area next to the clock (Windows) and in the menu bar (macOS) while Ledung runs: a click opens the page on Windows, and the menu shows what is working and waiting for you, Open Ledung, Restart Ledung and Exit Ledung, which stops Ledung like Stop Ledung and asks first when sessions are working. An amber dot (Windows) or a number (macOS) says something waits for you. It goes away whenever Ledung stops. On by default; Settings → Update & restart switches it off. (#347)
 - Ledung is now dark by default, whatever your computer's setting, from the first moment the page shows. Settings → Look & feel → Appearance offers Dark and Light (basic); System, which followed the computer, is gone and becomes Dark. A Light you chose before is kept, and the Ledung Helper offers only Dark or Light too. (#345)
 - Managers can now unlink a linked computer for you, by its name or public name, as Settings → Linked computers → Unlink does, so a reinstalled computer can be linked again under its old name from the page opened through the public name too: unlink it, then a link code on one computer and linking with it on the other. You approve it in Ledung unless you told that manager, on this computer, to unlink that computer. (#346)
 

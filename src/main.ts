@@ -10,6 +10,8 @@ import path from 'node:path';
 import { boardConfig, configPath, createDefaultConfig, loadConfig } from './config.ts';
 import { ConfigWatcher } from './config-watch.ts';
 import { openBrowser } from './platform/open-browser.ts';
+import { Tray, trayIconFile, trayKind, TraySwitch } from './platform/tray.ts';
+import { waitingCount } from './shared/waiting.ts';
 import { exercisedLine } from './platform/exercised.ts';
 import { lanNames } from './platform/network.ts';
 import { iconFiles, launchTarget, Shortcuts } from './platform/shortcuts.ts';
@@ -71,7 +73,12 @@ async function main(): Promise<void> {
   let server: LedungServer | null = null;
   let link: RemoteLink | null = null;
   let watcher: ConfigWatcher | null = null;
-  const manager = new SessionManager(config, store, (event) => server?.broadcast(event));
+  let tray: Tray | null = null;
+  const manager = new SessionManager(config, store, (event) => {
+    server?.broadcast(event);
+    // Its status line and waiting count follow sessions, questions and prompts (#347); sent only when they change.
+    tray?.changed();
+  });
   // The message boards between managers: each project names its repo (docs/steps/message-board.md, "Per project").
   const pollMs = boardConfig(config).pollSeconds * 1000;
   // Board attachments are kept in the data folder's board cache, never in a project folder.
@@ -103,6 +110,8 @@ async function main(): Promise<void> {
   const shutdown = async (restart: boolean) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    // The icon goes first: it would only offer what is now stopping (#347).
+    tray?.stop();
     manager.boards?.stop();
     usagePublisher.stop();
     checkIn.stop();
@@ -126,6 +135,23 @@ async function main(): Promise<void> {
   const canRestart = envSetting('LAUNCHER') === '1';
   const lan = lanNames(config.lan);
   const onRestart = canRestart ? () => void shutdown(true) : undefined;
+  const loginUrl = `http://127.0.0.1:${config.port}/login?token=${loadOrCreateToken()}`;
+  // The tray icon (issue #347): owned by this server, so it goes however Ledung stops (choice B). The helper never
+  // gets the token: its Open asks the server, which opens the sign-in link as at start (choice D).
+  const kind = trayKind();
+  tray = kind && new Tray({
+    kind, address: `127.0.0.1:${config.port}`, iconFile: trayIconFile(kind, appDir()), canRestart,
+    counts: () => ({ working: manager.workingCount(), waiting: waitingCount(manager.questions(), store.pendingPermissions()) }),
+    onOpen: () => openBrowser(loginUrl),
+    onRestart: () => void shutdown(true),
+    // Exit is Stop Ledung (choice C); the tray asks first when sessions are working.
+    onExit: () => void shutdown(false),
+    log: (line) => console.log(line),
+  });
+  const traySwitch = new TraySwitch({
+    tray, meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) },
+    configured: () => manager.currentConfig.trayIcon, ownDataDir: !!envSetting('DATA_DIR'),
+  });
   // Settings → Relay, for whoever runs a relay (issue #237); its settings and keys stay in the data folder.
   // Publishing usage to a shared repo (issue #363): off until switched on in Settings.
   const remotes = new ProjectRemotes((name) => {
@@ -171,6 +197,7 @@ async function main(): Promise<void> {
     shortcuts: new Shortcuts({ launch: launchTarget(), iconDir: userDataDir(), icons: iconFiles(), meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) } }),
     updater,
     checkIn,
+    tray: traySwitch,
     lanNames: lan,
     lanBind: config.lan === true ? '0.0.0.0' : config.lan || undefined,
     lanOpen: !config.lanSignIn,
@@ -207,6 +234,7 @@ async function main(): Promise<void> {
     file: configPath(), started: config, log: (line) => console.log(line),
     apply: (next, changed) => {
       manager.applyConfig(next, changed);
+      if (changed.includes('trayIcon')) traySwitch.apply();
       if (changed.includes('keepToolResultsDays')) void trimmer.run().catch((e) => console.log(`Shrinking old tool results failed: ${(e as Error).message}`));
     },
     onStatus: (status) => manager.setConfigStatus(status),
@@ -229,7 +257,7 @@ async function main(): Promise<void> {
   link.start();
   relayAdmin.start();
 
-  const loginUrl = `http://127.0.0.1:${config.port}/login?token=${loadOrCreateToken()}`;
+  traySwitch.apply();
   console.log(`Ledung is running at http://127.0.0.1:${config.port}`);
   console.log(`Config: ${configPath()}`);
   console.log(`Data:   ${userDataDir()}`);
