@@ -1,5 +1,6 @@
 // Ledung in a desktop window (issue #358, epic #357): one window showing this computer's running Ledung, signed in.
-// It never starts a Ledung (D5, #362): with none running, the window says so and offers Retry.
+// With none running, the window says so and offers Start Ledung, which runs the installed `ledung` command (D5, #362,
+// desktop/start.ts), and Retry.
 //
 // The page is Ledung's own page at http://127.0.0.1:<port>/, loaded like a browser loads it, so the core's Host
 // check, sign-in cookie, Origin check and "no embedding" apply unchanged. Sign-in sets the cookie from this main
@@ -9,6 +10,7 @@ import { app, BrowserWindow, session, shell, type Session, type WebContents } fr
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findRunning } from './attach.ts';
+import { runStart } from './start.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const NOT_RUNNING_PAGE = path.join(here, 'not-running.html');
@@ -21,6 +23,8 @@ let win: BrowserWindow | null = null;
 /** The origin the window may show: the attached Ledung's, or none while the "not running" page is up. */
 let ownOrigin: string | null = null;
 let attaching = false;
+/** A start (#362) is under way: the page says so, and neither Start nor Retry does anything until it ends. */
+let starting = false;
 
 /** An address the person's browser may open: plain web links only, never file:, javascript: or custom schemes. */
 function webLink(url: string): boolean {
@@ -57,9 +61,12 @@ function lockNavigation(wc: WebContents): void {
     if (webLink(url) && !sameOrigin(url)) void shell.openExternal(url);
     return { action: 'deny' };
   });
-  // The "not running" page's Retry is a link to #retry: an in-page move, so it needs no script bridge.
+  // The "not running" page's Retry and Start Ledung are links to #retry and #start: in-page moves, so they need no
+  // script bridge.
   wc.on('did-navigate-in-page', (_event, url) => {
-    if (ownOrigin === null && url.startsWith('file:') && url.endsWith('#retry')) void attach();
+    if (ownOrigin !== null || !url.startsWith('file:')) return;
+    if (url.endsWith('#retry')) void attach();
+    else if (url.endsWith('#start')) void start();
   });
   // Ledung's page failed to load after attaching (it stopped, or a reload found nothing): back to the page with Retry
   // instead of Chromium's error page, which has none (self-check finding 1g). -3 is a load the app itself replaced.
@@ -68,9 +75,10 @@ function lockNavigation(wc: WebContents): void {
   });
 }
 
-async function showNotRunning(reason: string): Promise<void> {
+/** The page with Start Ledung and Retry, saying why; `state` "starting" shows a start under way and no buttons. */
+async function showNotRunning(reason: string, state: 'stopped' | 'starting' | 'failed' = 'stopped'): Promise<void> {
   ownOrigin = null;
-  if (win && !win.isDestroyed()) await win.loadFile(NOT_RUNNING_PAGE, { query: { reason } });
+  if (win && !win.isDestroyed()) await win.loadFile(NOT_RUNNING_PAGE, { query: { reason, state } });
 }
 
 /**
@@ -87,15 +95,18 @@ async function signIn(ses: Session, origin: string, token: string): Promise<void
   await ses.cookies.set({ url: origin, name: COOKIE_NAME, value: token, httpOnly: true, sameSite: 'strict' });
 }
 
-/** Finds the running Ledung and shows it, or the "not running" page with Retry. */
-async function attach(): Promise<void> {
-  if (attaching || !win) return;
+/**
+ * Finds the running Ledung and shows it, or the "not running" page. With `failed`, a start that ended without a Ledung
+ * answering: the page shows that line instead of the plain reason.
+ */
+async function attach(failed?: string): Promise<void> {
+  if (attaching || starting || !win) return;
   attaching = true;
   try {
     const found = await findRunning();
     if (!win || win.isDestroyed()) return;
     if (!found.running) {
-      await showNotRunning(found.reason);
+      await showNotRunning(failed ?? found.reason, failed ? 'failed' : 'stopped');
       return;
     }
     const origin = `http://127.0.0.1:${found.port}`;
@@ -108,6 +119,42 @@ async function attach(): Promise<void> {
   } finally {
     attaching = false;
   }
+}
+
+/** How long a started Ledung may take to answer after `ledung` returned (it returns early when still starting). */
+const ANSWER_MS = 60_000;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Start Ledung (#362): runs the installed `ledung --no-open` with a clean environment, then attaches as on Retry. A
+ * Ledung that was already started elsewhere meanwhile is simply found. What failed is one line on the page, with
+ * Start Ledung and Retry again; nothing here shows a dialog or throws (Mac spike surprise 3).
+ */
+async function start(): Promise<void> {
+  if (starting || attaching || !win) return;
+  starting = true;
+  let failed: string | undefined;
+  try {
+    await showNotRunning('Starting Ledung in the background…', 'starting');
+    const result = await runStart();
+    if (!result.ok) failed = result.line;
+    else {
+      const deadline = Date.now() + ANSWER_MS;
+      let answered = false;
+      // Waits whether or not the window is open: one closed and opened again meanwhile shows the outcome too.
+      while (!answered && Date.now() < deadline) {
+        answered = (await findRunning()).running;
+        if (!answered) await sleep(500);
+      }
+      if (!answered) failed = `Ledung was started but did not answer within ${ANSWER_MS / 1000} s; see ledung.log in its data folder.`;
+    }
+  } catch (e) {
+    failed = `Could not start Ledung: ${(e as Error).message}`;
+  } finally {
+    starting = false;
+  }
+  if (failed) console.error(`Ledung desktop: ${failed}`);
+  await attach(failed);
 }
 
 /**
@@ -142,6 +189,8 @@ function createWindow(): void {
     },
   });
   lockNavigation(win.webContents);
+  // A window opened again (the Dock) while a start runs shows that it runs; the start shows the outcome in it.
+  if (starting) void showNotRunning('Starting Ledung in the background…', 'starting');
   win.on('closed', () => {
     win = null;
   });
