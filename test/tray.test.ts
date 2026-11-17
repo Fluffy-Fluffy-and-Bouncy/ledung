@@ -5,7 +5,9 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
-import { exitQuestion, statusLine, tipLine, Tray, TraySwitch, trayKind, type TrayCounts, type TrayOptions } from '../src/platform/tray.ts';
+import { exitQuestion, helperSpawn, statusLine, tipLine, Tray, TraySwitch, trayKind, type TrayCounts, type TrayOptions } from '../src/platform/tray.ts';
+import { MAC_TRAY_SCRIPT } from '../src/platform/tray-mac.ts';
+import { WINDOWS_TRAY_SCRIPT } from '../src/platform/tray-windows.ts';
 
 /** A helper that only records what it is told and says what the test makes it say. */
 class FakeHelper extends EventEmitter {
@@ -132,12 +134,13 @@ test('Exit stops at once with nothing working, and asks first, counted now, when
   tray.stop();
 });
 
-test('stopping closes the helper\'s input, so it removes the icon; words after that are ignored', async () => {
+test('stopping tells the helper to stop and closes its input, so it removes the icon; words after that are ignored', async () => {
   const { tray, helpers, calls } = setup();
   tray.start();
   const h = helpers[0]!;
   tray.stop();
   await tick();
+  assert.deepEqual(h.lines.at(-1), { stop: true });
   assert.equal(h.ended, true);
   h.say('open');
   await tick();
@@ -203,4 +206,46 @@ test('the switch: on by default, off for a Ledung with its own data folder unles
   const none = new TraySwitch({ tray: null, meta: store, configured: () => undefined, ownDataDir: false });
   assert.deepEqual(none.view(), { kind: null, on: false });
   assert.throws(() => none.set(true), /no tray icon/);
+});
+
+test('the helper outlives Ledung long enough to remove its own icon (acceptance round 1, point 5)', () => {
+  // Windows: PowerShell is started by cmd.exe, so it isn't in the job Node kills its own children with on exit (a
+  // killed helper's icon stays drawn). The script goes in the environment, cmd.exe's command line being too short.
+  const [cmd, args, options] = helperSpawn('windows', 'icon.png');
+  assert.match(cmd, /System32[\\/]cmd\.exe$/i);
+  assert.equal(options.detached, undefined, 'detached, Windows PowerShell has no console and exits at once');
+  assert.equal(options.windowsHide, true);
+  assert.equal(options.windowsVerbatimArguments, true);
+  assert.deepEqual(args.slice(0, 3), ['/d', '/s', '/c']);
+  assert.match(args[3]!, /^""[^"]+System32[\\/]WindowsPowerShell[\\/]v1\.0[\\/]powershell\.exe" -NoProfile -NonInteractive -WindowStyle Hidden -Command iex \$env:LEDUNG_TRAY_SCRIPT"$/);
+  assert.ok(args[3]!.length < 8000, 'within cmd.exe\'s command line');
+  assert.equal(options.env?.LEDUNG_TRAY_SCRIPT, WINDOWS_TRAY_SCRIPT);
+  assert.equal(options.env?.LEDUNG_TRAY_PARENT, String(process.pid));
+  assert.equal(options.env?.LEDUNG_TRAY_ICON, 'icon.png');
+  // Mac: osascript directly; macOS doesn't end children with their parent, and it checks the parent itself.
+  const [osa, , macOptions] = helperSpawn('mac', 'tray-mac.png');
+  assert.equal(osa, '/usr/bin/osascript');
+  assert.equal(macOptions.env?.LEDUNG_TRAY_PARENT, String(process.pid));
+});
+
+test('every way out of the helper scripts removes the icon: {stop}, end of input, parent gone', () => {
+  // Windows: Quit hides and disposes the icon, reached from {stop}, the end of input and the parent check; a finally
+  // around the message loop covers anything else.
+  const win = WINDOWS_TRAY_SCRIPT.replace(/\s+/g, ' ');
+  for (const part of [
+    'function Remove-Icon { try { $icon.Visible = $false } catch { } try { $icon.Dispose() } catch { } }',
+    'if ($null -ne $script:dialog) { $script:dialog.Close() } Remove-Icon [System.Windows.Forms.Application]::Exit()',
+    'if ($m.stop) { Quit; return }',
+    'if ($null -eq $line) { Quit; return }',
+    'if ($parent.HasExited) { Quit; return }',
+    'try { [System.Windows.Forms.Application]::Run() } finally { Remove-Icon }',
+  ]) assert.ok(win.includes(part), part);
+  // Mac: quit() removes the status item, from {stop}, the end of input and the parent check.
+  const mac = MAC_TRAY_SCRIPT.replace(/\s+/g, ' ');
+  for (const part of [
+    'function quit() { if (item) $.NSStatusBar.systemStatusBar.removeStatusItem(item); $.exit(0); }',
+    'if (m.stop) { quit(); return; }',
+    'data.length === 0) { quit(); return; }',
+    'if (!parentAlive()) quit();',
+  ]) assert.ok(mac.includes(part), part);
 });

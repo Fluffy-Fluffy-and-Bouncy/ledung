@@ -2,10 +2,12 @@
 // .NET's NotifyIcon and a Windows Forms menu, all part of Windows, so there is no program of ours to download, sign or
 // trust (choice A). It talks to Ledung only over its own stdin and stdout, one line at a time (src/platform/tray.ts).
 //
-// - In: a JSON line, either the state ({tip, status, waiting, restart}) or {ask} with the Exit question's text.
+// - In: a JSON line: the state ({tip, status, waiting, restart}), {ask} with the Exit question's text, or {stop}.
 // - Out: one of the fixed words open, restart, exit, exit-confirmed.
-// - It removes the icon and exits when its input ends (Ledung stopped, however it stopped) or, as a second net, when
-//   the process in LEDUNG_TRAY_PARENT is gone.
+// - It removes the icon and exits on {stop}, when its input ends (Ledung stopped, however it stopped) or, as a second
+//   net, when the process in LEDUNG_TRAY_PARENT is gone (checked every second). The icon is hidden and disposed on
+//   every way out, in a finally too: an icon whose process ends without that stays drawn until the mouse passes over
+//   it (acceptance round 1, point 5).
 //
 // Input is read with ReadLineAsync on its own StreamReader and polled from a Forms timer, so the menu stays live while
 // it waits: Console.In's own ReadLineAsync blocks in .NET Framework. Handlers assign through $script:, as Windows
@@ -132,6 +134,7 @@ function Confirm-Exit([string]$text) {
 
 function Apply([string]$line) {
   $m = $line | ConvertFrom-Json
+  if ($m.stop) { Quit; return }
   if ($m.ask) {
     # One question at a time; a second Exit while it is open just leaves it open.
     if ($null -eq $script:dialog -and (Confirm-Exit ([string]$m.ask)) -and -not $script:quitting) { Send 'exit-confirmed' }
@@ -146,13 +149,17 @@ function Apply([string]$line) {
   if ([int]$m.waiting -gt 0) { $icon.Icon = $dotted } else { $icon.Icon = $plain }
 }
 
+function Remove-Icon {
+  try { $icon.Visible = $false } catch { }
+  try { $icon.Dispose() } catch { }
+}
+
 function Quit {
   if ($script:quitting) { return }
   $script:quitting = $true
   $script:timer.Stop()
   if ($null -ne $script:dialog) { $script:dialog.Close() }
-  $icon.Visible = $false
-  $icon.Dispose()
+  Remove-Icon
   [System.Windows.Forms.Application]::Exit()
 }
 
@@ -176,12 +183,12 @@ $script:timer.add_Tick({
       try { Apply $line } catch { }
     }
     $script:ticks++
-    if ($script:ticks % 25 -eq 0 -and $null -ne $parent) {
+    if ($script:ticks % 5 -eq 0 -and $null -ne $parent) {
       $parent.Refresh()
       if ($parent.HasExited) { Quit; return }
     }
   } catch { Quit }
 })
 $script:timer.Start()
-[System.Windows.Forms.Application]::Run()
+try { [System.Windows.Forms.Application]::Run() } finally { Remove-Icon }
 `;

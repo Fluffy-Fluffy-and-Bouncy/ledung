@@ -5,10 +5,10 @@
 // helper's input closes and it removes the icon. The helper is a script run by the system's own signed program,
 // Windows PowerShell or osascript (choice A), and talks to Ledung only over its stdin and stdout:
 // - Ledung → helper, a JSON line: the state ({tip, status, address, waiting, restart}) when it changes, at most once
-//   a second, or {ask} with the Exit question's text.
+//   a second, {ask} with the Exit question's text, or {stop}: remove the icon and exit.
 // - Helper → Ledung: one of the fixed words in WORDS; anything else is dropped.
 // It never gets the sign-in token: Open Ledung sends "open", and the server opens the sign-in link (choice D).
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -73,13 +73,31 @@ export interface TrayOptions {
   retryMs?: number;
 }
 
-/** The helper's program, by its full path so neither PATH nor a profile changes what runs. */
-function helperCommand(kind: TrayKind): [string, string[]] {
+/**
+ * How the helper is started (exported for tests): the system's own programs by their full paths, so neither PATH nor
+ * a profile changes what runs. It gets only what it needs, by name: the picture and whose child it is (its second net
+ * when the pipe stays open).
+ *
+ * On Windows it is started through cmd.exe, so that it outlives Ledung long enough to remove its icon. Node puts the
+ * children it starts in a job that kills them when Node exits, and a killed process's icon stays drawn until the mouse
+ * passes over it (acceptance round 1, point 5: a dead icon after Exit, Stop, Restart or a kill). That job lets its
+ * members' own children break away, so PowerShell, started by cmd.exe, is not killed with Ledung: it sees its input end
+ * and removes the icon, however Ledung stopped. cmd.exe is killed instead, which costs nothing. Starting PowerShell
+ * detached instead doesn't work: without a console Windows PowerShell exits before running anything (tried,
+ * 2026-11-17). The script goes in the environment, as cmd.exe's command line is too short for it.
+ */
+export function helperSpawn(kind: TrayKind, iconFile: string): [string, string[], SpawnOptions] {
+  const env: NodeJS.ProcessEnv = { ...process.env, LEDUNG_TRAY_ICON: iconFile, LEDUNG_TRAY_PARENT: String(process.pid) };
   if (kind === 'windows') {
-    const ps = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-    return [ps, ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', WINDOWS_TRAY_SCRIPT]];
+    const system = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32');
+    const ps = path.join(system, 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const command = `"${ps}" -NoProfile -NonInteractive -WindowStyle Hidden -Command iex $env:LEDUNG_TRAY_SCRIPT`;
+    return [path.join(system, 'cmd.exe'), ['/d', '/s', '/c', `"${command}"`], {
+      stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, windowsVerbatimArguments: true,
+      env: { ...env, LEDUNG_TRAY_SCRIPT: WINDOWS_TRAY_SCRIPT },
+    }];
   }
-  return ['/usr/bin/osascript', ['-l', 'JavaScript', '-e', MAC_TRAY_SCRIPT]];
+  return ['/usr/bin/osascript', ['-l', 'JavaScript', '-e', MAC_TRAY_SCRIPT], { stdio: ['pipe', 'pipe', 'pipe'], env }];
 }
 
 export class Tray {
@@ -119,7 +137,9 @@ export class Tray {
     const child = this.child;
     this.child = null;
     if (!child) return;
-    child.stdin?.end();
+    // Said and then the input closed: either makes the helper remove its icon and exit.
+    if (child.stdin && !child.stdin.destroyed) child.stdin.end(`${JSON.stringify({ stop: true })}
+`);
     // A helper that doesn't go within a few seconds is ended.
     const kill = setTimeout(() => child.kill(), 5000);
     kill.unref();
@@ -161,13 +181,7 @@ export class Tray {
   }
 
   private spawnHelper(): ChildProcess {
-    const [command, args] = helperCommand(this.opts.kind);
-    return spawn(command, args, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-      // Only what it needs, by name: the picture and whose child it is (its second net when the pipe stays open).
-      env: { ...process.env, LEDUNG_TRAY_ICON: this.opts.iconFile, LEDUNG_TRAY_PARENT: String(process.pid) },
-    });
+    return spawn(...helperSpawn(this.opts.kind, this.opts.iconFile));
   }
 
   private heard(child: ChildProcess, word: string): void {

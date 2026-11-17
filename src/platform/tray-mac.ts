@@ -3,11 +3,12 @@
 // macOS and signed by Apple, and this is text, so there is nothing for Gatekeeper to check (choice A). It talks to
 // Ledung only over its own stdin and stdout, as the Windows helper does (src/platform/tray.ts):
 //
-// - In: a JSON line, either the state ({status, address, waiting, restart}) or {ask} with the Exit question's text.
+// - In: a JSON line: the state ({status, address, waiting, restart}), {ask} with the Exit question's text, or {stop}.
 // - Out: one of the fixed words open, restart, exit, exit-confirmed.
 // - It is an "accessory" program: no Dock icon, not in Cmd+Tab.
 // - The picture is a template image (choice G): macOS paints it in the menu bar's own colour, light or dark.
-// - It removes the icon and exits when its input ends or, as a second net, when its parent (Ledung) is gone.
+// - It removes the icon and exits on {stop}, when its input ends or, as a second net, when its parent (Ledung) is gone
+//   (checked every second). macOS doesn't end a child with its parent, so it outlives a killed Ledung to do that.
 //
 // Input and the parent check also run while the Exit alert is open (its run loop mode is listed), so Ledung stopping
 // takes the alert away with the icon, as on Windows.
@@ -43,6 +44,7 @@ function quit() {
 }
 
 function apply(m) {
+  if (m.stop) { quit(); return; }
   if (m.ask) {
     if (asking) return;
     asking = true;
@@ -120,7 +122,7 @@ item.setMenu(menu);
 
 $.NSNotificationCenter.defaultCenter.addObserverSelectorNameObject(target, 'read:', $.NSFileHandleReadCompletionNotification, input);
 input.readInBackgroundAndNotifyForModes(modes);
-const timer = $.NSTimer.timerWithTimeIntervalTargetSelectorUserInfoRepeats(5, target, 'tick:', null, true);
+const timer = $.NSTimer.timerWithTimeIntervalTargetSelectorUserInfoRepeats(1, target, 'tick:', null, true);
 $.NSRunLoop.currentRunLoop.addTimerForMode(timer, $.NSRunLoopCommonModes);
 app.run;
 `;
