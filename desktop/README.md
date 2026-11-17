@@ -30,6 +30,9 @@ One window opens with your running Ledung's page, signed in. Nothing opens in th
   (`mailto:`), is not opened yet.
 - **When Ledung stops.** If the page can't load any more (Ledung stopped, then a reload), the window goes back to
   "Ledung is not running" with Retry.
+- **Permissions.** Ledung's page may show notifications and copy to the clipboard, the two things it uses. Everything
+  else a page can ask for (camera, microphone, screen, location, reading the clipboard) is refused: Electron would
+  otherwise grant it without asking, where a browser asks you.
 
 ## Trying it against a throwaway Ledung
 
@@ -52,9 +55,11 @@ Stop the throwaway Ledung by the process listening on its port, never by name: t
 **The loopback check.** `probe/` loads the real `main.ts` and checks the window from inside, against the throwaway
 Ledung the two settings name, printing `PROBE {…}` lines; opening the default browser is intercepted, so nothing opens.
 From this folder, with the settings as above: `PROBE_PHASE=attach npx electron probe` (a Ledung runs: sign-in, address,
-settings, refused navigation, links), `again` (a second start keeps its device), `notrunning` and `stopped` (these
-start and stop the config's Ledung themselves: the "not running" page, Retry, and a Ledung that stops under the
-window). Never run it with the real Ledung's config.
+settings, permissions, refused navigation, links), then `again` (a second start keeps the devices `attach` saw),
+`notrunning` and `stopped` (these start and stop the config's Ledung themselves: the "not running" page, Retry, and a
+Ledung that stops under the window). Each check it makes prints `"event":"fail"` when it doesn't hold; the exit code is
+0 only when all held, 1 otherwise, 2 when it refused to run. It refuses without both settings, on the default port,
+and on Windows (it reads command lines with `ps`; macOS and Linux only for now).
 
 ## How it is built
 

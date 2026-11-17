@@ -3,11 +3,13 @@
 // these run with the root tests; the window itself is checked by hand (desktop/README.md).
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   candidatePorts, configFiles, configuredPort as appConfiguredPort, dataDir, DEFAULT_PORT as APP_DEFAULT_PORT, findRunning,
   runningProof as appProof, savedToken as appSavedToken,
@@ -115,6 +117,23 @@ test('a data folder with no token: not running, and the reason says so', async (
   const found = await findRunning({ LEDUNG_DATA_DIR: dir, LEDUNG_CONFIG: path.join(dir, 'none.json') }, 500);
   assert.equal(found.running, false);
   assert.match(!found.running ? found.reason : '', /No sign-in token/);
+});
+
+test("without LEDUNG_DATA_DIR the app's data folder is the core's, on this system (test review of PR #366, finding 3)", () => {
+  // In a child with its home and the platform's data settings in a temp folder, so the core's userDataDir() makes its
+  // folder there, never in the person's real data folder.
+  const home = path.join(base, 'home');
+  fs.mkdirSync(home, { recursive: true });
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: path.join(home, 'AppData', 'Roaming'), XDG_DATA_HOME: path.join(home, 'xdg') };
+  delete env.LEDUNG_DATA_DIR;
+  const url = (file: string) => JSON.stringify(pathToFileURL(path.join(import.meta.dirname, '..', file)).href);
+  const script = `const { userDataDir } = await import(${url('src/platform/paths.ts')}); const { dataDir } = await import(${url('desktop/attach.ts')});
+    console.log(JSON.stringify({ core: userDataDir(), app: dataDir() }));`;
+  const run = spawnSync(process.execPath, ['--input-type=module', '-e', script], { env, encoding: 'utf8' });
+  assert.equal(run.status, 0, run.stderr);
+  const { core, app } = JSON.parse(run.stdout) as { core: string; app: string };
+  assert.ok(core.startsWith(home), `the core's folder is in the temp home: ${core}`);
+  assert.equal(app, core);
 });
 
 test('LEDUNG_CONFIG and LEDUNG_DATA_DIR are read like the core reads them', () => {

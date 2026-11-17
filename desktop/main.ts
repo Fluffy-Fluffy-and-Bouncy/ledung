@@ -110,7 +110,25 @@ async function attach(): Promise<void> {
   }
 }
 
+/**
+ * What the page may use without asking: notifications (and push, which Electron asks as notifications) and writing to
+ * the clipboard, the two the page uses, and only for Ledung's own address. Everything else (camera, microphone,
+ * screen, location, reading the clipboard …) is refused: Electron would grant it silently where a browser asks the
+ * person (code review of PR #366, Minor 2; Electron's checklist, "Handle session permission requests").
+ */
+const ALLOWED_PERMISSIONS = new Set(['notifications', 'clipboard-sanitized-write']);
+
+function allowed(permission: string, origin: string | undefined): boolean {
+  return ALLOWED_PERMISSIONS.has(permission) && origin !== undefined && sameOrigin(origin);
+}
+
+function limitPermissions(ses: Session): void {
+  ses.setPermissionRequestHandler((_wc, permission, callback, details) => callback(allowed(permission, details.requestingUrl)));
+  ses.setPermissionCheckHandler((_wc, permission, requestingOrigin) => allowed(permission, requestingOrigin));
+}
+
 function createWindow(): void {
+  limitPermissions(session.fromPartition(PARTITION));
   win = new BrowserWindow({
     width: 1280,
     height: 860,
