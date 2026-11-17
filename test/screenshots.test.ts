@@ -173,7 +173,8 @@ test("ask_user through a session's own tools: a bad screenshot stores nothing, g
   assert.equal(good.isError, undefined);
   const [q] = store.listQuestions();
   assert.match(good.content[0]!.text, new RegExp(`^Question #${q!.id} with 2 screenshots is recorded`));
-  assert.deepEqual(q!.shots!.map((s) => [s.path, s.group]), [['shots/cart.png', '#1 Cart'], ['shots/mobile.jpg', 'Screenshots']]);
+  // Stored as Ledung's own copies, by their path relative to the folder (issue #306).
+  assert.deepEqual(q!.shots!.map((s) => [s.path.replace(/^kept:[0-9a-f]{32}\//, 'kept:<hash>/'), s.group]), [['kept:<hash>/shots/cart.png', '#1 Cart'], ['kept:<hash>/shots/mobile.jpg', 'Screenshots']]);
 });
 
 test("a session's group or file name can't add lines to the answer (review of PR #63)", () => {

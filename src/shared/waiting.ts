@@ -12,3 +12,12 @@ export const permissionWaits = (p: PermissionInfo): boolean => p.status === 'pen
 export function waitingCount(questions: QuestionInfo[], permissions: PermissionInfo[]): number {
   return questions.filter(questionWaits).length + permissions.filter(permissionWaits).length;
 }
+
+/**
+ * Where a question goes in Waiting for you ahead of the tiers, highest first: 3 an order's keep-it question (issue #105),
+ * 2 a proposed order to confirm (#105), 1 a refused call (issue #104), 0 any other. Shared by the page's queue and the
+ * managers' waiting_for_you (issue #338), so both list in one order.
+ */
+export function waitingFirst(q: Pick<QuestionInfo, 'details'>): number {
+  return q.details?.order ? (q.details.order.confirm ? 2 : 3) : q.details?.refusal ? 1 : 0;
+}

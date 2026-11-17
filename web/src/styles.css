@@ -1,6 +1,7 @@
 :root {
-  /* Each colour is a light-dark() pair: the root's color-scheme picks one, from the computer's
-     setting or from the choice in Settings (issue #113, web/src/theme.ts). */
+  /* Each colour is a light-dark() pair: the root's color-scheme picks one, from the choice in Settings (issue #113,
+     web/src/theme.ts). Dark is the default and the designed one; a new colour's light value only has to be readable
+     (issue #345). */
   --bg: light-dark(#f6f7f9, #16181d);
   --panel: light-dark(#ffffff, #1d2026);
   --panel-2: light-dark(#eef0f4, #252932);
@@ -26,10 +27,10 @@
   /* Data colours (step 5): the validated categorical palette, in fixed order; status colours are separate. */
   --s1: light-dark(#2a78d6, #3987e5); --s2: light-dark(#eb6834, #d95926); --s3: light-dark(#1baf7a, #199e70); --s4: light-dark(#eda100, #c98500); --s5: light-dark(#e87ba4, #d55181); --s6: #008300; --s7: light-dark(#4a3aa7, #9085e9); --s-other: light-dark(#9aa1ad, #6b7280);
   --st-good: #0ca30c; --st-warning: #fab219; --st-critical: #d03b3b;
-  color-scheme: light dark;
+  /* Dark until a choice says otherwise, so the first paint is dark (#345). */
+  color-scheme: dark;
 }
 :root[data-theme="light"] { color-scheme: light; }
-:root[data-theme="dark"] { color-scheme: dark; }
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; }
@@ -85,6 +86,8 @@ button.ctab:hover { background: color-mix(in srgb, var(--cc) 8%, transparent); c
 a.ctab:hover { background: color-mix(in srgb, var(--cc) 8%, transparent); color: var(--text); }
 a.ctab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .ctab .sw { width: 9px; height: 9px; border-radius: 2px; background: var(--cc); flex: none; }
+/* A computer that trusts this one's screen (issue #313): a small key after its name. */
+.ctab .ctab-key { font-size: 0.85em; line-height: 1; flex: none; }
 .ctab.on { background: var(--panel); color: var(--text); font-weight: 600; border-color: var(--border); margin-bottom: -1px; box-shadow: inset 0 3px 0 var(--cc); }
 .ctabs .spacer { flex: 1; }
 /* In remote mode the strip ends in the frame's own label; with no strip, the label is a band on the frame's top edge. */
@@ -146,6 +149,18 @@ a.ctab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .session-ship.ended { color: var(--danger); }
 .session-sub { font-size: 0.8em; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .badge { background: var(--dot-waiting); color: #000; border-radius: 999px; font-size: 0.75em; padding: 0 0.45rem; font-weight: 600; }
+/* A sidebar row's count opens Waiting for you on its project (issue #322): a button of its own, beside the row's, with
+   room around the pill so a finger finds it; on a session row it sits over the row's right end, which keeps room for it. */
+.badge-button { flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; min-width: 2rem; min-height: 1.6rem; padding: 0 0.3rem; background: none; border: none; border-radius: 6px; cursor: pointer; }
+.badge-button:hover .badge, .badge-button:focus-visible .badge { outline: 2px solid var(--text); outline-offset: 1px; }
+.badge-button:hover { background: var(--panel-2); }
+.session-row > .badge-button { position: absolute; right: 0.15rem; top: 0; bottom: 2px; min-height: 0; z-index: 1; }
+.session-row:has(> .badge-button) > .session-item { padding-right: 2.3rem; }
+@media (pointer: coarse) {
+  .badge-button { min-width: 2.75rem; min-height: 2.25rem; }
+  .session-row > .badge-button { min-height: 0; }
+  .session-row:has(> .badge-button) > .session-item { padding-right: 3rem; }
+}
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; background: var(--dot-ended); }
 .dot.running { background: var(--dot-running); }
 .dot.waiting { background: var(--dot-waiting); }
@@ -1303,6 +1318,10 @@ body.sidebar-dragging, body.sidebar-dragging * { cursor: grabbing !important; }
 .chip.lock { border-color: var(--accent); white-space: nowrap; }
 .chip.lock.b { border-color: var(--danger); }
 /* Settings → Devices (#160). */
+/* Settings → Linked computers: a computer whose own screen this one trusts (issue #313). */
+.trust-tag { font-size: 0.8em; padding: 1px 6px; border-radius: 4px; margin-left: 0.4rem; background: color-mix(in srgb, var(--ok, #9ece6a) 22%, var(--panel)); color: var(--ok, #9ece6a); }
+.trust-row { margin: 0.15rem 0 0.7rem; padding: 0.4rem 0.7rem; border: 1px solid var(--border); border-radius: 6px; }
+.trust-row p { margin: 0.2rem 0; }
 .device-row { display: flex; justify-content: space-between; align-items: center; gap: 0.6rem; margin: 0.3rem 0; }
 /* Browsers and phones (Project-Ledung#482): Rename and Remove side by side, the browser this page runs in marked. */
 .device-actions { display: flex; align-items: center; gap: 0.4rem; flex-shrink: 0; }
@@ -1877,7 +1896,26 @@ button.settings-menu-item.danger { color: var(--danger); }
 .proposal-flow-title { margin: 0.5rem 0; }
 .proposal-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
 .proposal-side { min-width: 0; border: 1px solid var(--border); border-radius: 6px; padding: 0.4rem; }
-.proposal-side h5 { margin: 0 0 0.3rem; color: var(--muted); }
+.proposal-side-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin: 0 0 0.3rem; }
+.proposal-side h5 { margin: 0; color: var(--muted); }
+.proposal-max-open { display: inline-flex; align-items: center; gap: 0.3rem; }
+.proposal-max-open svg { width: 14px; height: 14px; }
+/* A side maximised (#334): over the whole window, in the page's colours; the bar stays reachable on a phone. */
+.proposal.proposal-max { position: fixed; inset: 0; z-index: 50; margin: 0; display: flex; flex-direction: column; background: var(--bg); overscroll-behavior: contain;
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px); }
+.proposal-max-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--border); background: var(--panel); }
+.proposal-max-title { flex: 1; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.proposal-max-switch { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.proposal-max-switch button { border: 0; border-radius: 0; background: transparent; color: var(--text); padding: 0.3rem 0.8rem; min-height: 2rem; }
+.proposal-max-switch button.on { background: var(--accent); color: var(--accent-text); }
+.proposal-max-bar button.icon { width: 2.5rem; height: 2.5rem; }
+.proposal-max-stage { flex: 1; min-height: 0; position: relative; display: flex; }
+.proposal-max-diagram { flex: 1; min-width: 0; display: flex; }
+/* Kept for the way back but not seen: React Flow sets its nodes visible, so visibility on the box would not hide them. */
+.proposal-max-diagram.covered { opacity: 0; pointer-events: none; }
+.proposal-max .flow-canvas { flex: 1; height: auto; min-height: 0; }
+.proposal-max-note { position: absolute; inset: 40% 1rem auto; text-align: center; margin: 0; color: var(--muted); }
+.proposal-max-note.flow-problem-inline { color: var(--danger); }
 .proposal-side .flow-canvas { height: 420px; min-height: 0; }
 @media (max-width: 760px) {
   .proposal-sides { grid-template-columns: 1fr; }
@@ -2054,3 +2092,7 @@ button.link-button:hover:not(:disabled) { border: none; }
 .job-actions { display: flex; gap: 0.35rem; margin-top: 0.3rem; }
 .job-actions .danger { color: var(--danger); }
 .resource-line .link, .job-card-head .link { text-align: left; }
+/* What a sidebar badge opened in Waiting for you (issue #322): the project shown, Show all, and the session's first
+   item marked as the one selected. */
+.desk-body .focus-line { padding: 0.45rem 0.7rem; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); }
+.desk-body .focus-first { outline: 2px solid var(--accent); outline-offset: 1px; }

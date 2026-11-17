@@ -20,7 +20,7 @@ import { refuseRealSignInStores } from './signin-stores.ts';
 
 process.env.LEDUNG_DATA_DIR ??= fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-settings-word-data-'));
 
-const ACTIONS = ['relay_address', 'relay_admin_key', 'link_code', 'link_computer', 'invite_computer'];
+const ACTIONS = ['relay_address', 'relay_admin_key', 'link_code', 'link_computer', 'unlink_computer', 'invite_computer'];
 const CODE = 'pc-2.relay.example.test/K7QM3XR9TPLW';
 
 // --- Which words name which action ------------------------------------------------------------------------
@@ -49,6 +49,24 @@ test('a typed instruction allows an action only with its arguments as the user g
   assert.ok(!named('invite_computer', { owner: 'Anna', name: 'other' }, 'invite a computer for Anna'), 'a name the user did not give');
   // The owner is who the user named, not any word of the line (review of #263, finding 3).
   for (const owner of ['a', 'for', 'computer', 'invite']) assert.ok(!named('invite_computer', { owner }, 'invite a computer for Anna'), `owner "${owner}"`);
+
+  // Unlinking (issue #346): the computer exactly as the user named it, by its name or public name.
+  assert.ok(named('unlink_computer', { computer: 'Laptop' }, 'unlink Laptop'));
+  assert.ok(named('unlink_computer', { computer: 'laptop' }, 'Please unlink the computer Laptop.'));
+  assert.ok(named('unlink_computer', { computer: "Martin's PC" }, 'unlink "Martin\'s PC" from linked computers'));
+  assert.ok(named('unlink_computer', { computer: 'pc-2.relay.example.test' }, 'Remove the link with pc-2.relay.example.test.'));
+  assert.ok(!named('unlink_computer', { computer: 'Desktop' }, 'unlink Laptop'), 'another computer');
+  assert.ok(!named('unlink_computer', { computer: 'pc-2.relay.example.test' }, 'unlink Laptop'), 'named another way: asks');
+  assert.ok(!named('unlink_computer', {}, 'unlink Laptop'), 'no computer given');
+  for (const words of ['unlink a computer', 'unlink this one', 'unlink it', 'unlink the old one', 'unlink all']) {
+    assert.ok(!named('unlink_computer', { computer: words.slice('unlink '.length) }, words), words);
+  }
+  assert.ok(!named('unlink_computer', { computer: 'Laptop' }, "Don't unlink Laptop yet"), 'held back');
+  assert.ok(!named('unlink_computer', { computer: 'Laptop' }, 'Should I unlink Laptop?'), 'a question');
+  // Unlink and link again in one message, as a reinstall needs.
+  const relink = `Unlink Laptop, then link with ${CODE} as Laptop.`;
+  assert.ok(named('unlink_computer', { computer: 'Laptop' }, relink));
+  assert.ok(named('link_computer', { code: CODE, name: 'Laptop' }, relink));
 
   // A hold anywhere in the words stops it, even meant for something else: one prompt rather than a guess
   // (review of #263, round 2, finding 1).
@@ -223,6 +241,8 @@ function ledung(projectToolsUnasked = false) {
   const manager = refuseRealSignInStores(new SessionManager(parseConfig({ userName: 'Simon', projects: [{ name: 'p', runner: 'local', path: path.join(root, 'missing'), projectToolsUnasked }] }), store, () => {}));
   // A stand-in for the server's Settings, counting what runs; the routes' own code is the server's.
   const ran: string[] = [];
+  // One linked computer, for unlink_computer (issue #346).
+  const linked = [{ id: 'l2', name: 'Laptop', publicName: 'laptop.relay.example.test', linkedAt: 0, lastUsedAt: null }];
   const port: SettingsPort = {
     relay: () => ({ relay: null, keySha256: null, tokenSet: false }),
     setRelay: (relay) => { ran.push(`relay ${relay}`); return { relay, keySha256: null, tokenSet: false }; },
@@ -230,7 +250,12 @@ function ledung(projectToolsUnasked = false) {
     invite: async (owner) => { ran.push(`invite ${owner}`); return { id: 'i1', owner, name: 'x', host: 'x.relay.example.test', expiresAt: Date.now() + 60_000, code: 'JOIN' }; },
     linkCode: () => { ran.push('code'); return { code: 'here/SECRET', expiresAt: Date.now() + 60_000 }; },
     link: async (code, name) => { ran.push(`link ${code}`); return { id: 'l1', name: name ?? 'pc-2', publicName: 'pc-2.relay.example.test', linkedAt: 0, lastUsedAt: null }; },
-    links: () => ({ problem: null, links: [] }),
+    unlink: (id) => {
+      const gone = linked.find((l) => l.id === id) ?? null;
+      if (gone) { ran.push(`unlink ${gone.publicName}`); linked.splice(linked.indexOf(gone), 1); }
+      return gone;
+    },
+    links: () => ({ problem: null, links: [...linked] }),
     computers: () => [],
   };
   manager.setSettings(port);
@@ -265,15 +290,43 @@ test('a manager without the user\'s word gets a prompt to the user, even in a pr
   for (const unasked of [false, true]) {
     const { start, call, ran, store, manager } = ledung(unasked);
     const id = await start('manager');
-    for (const t of ACTIONS) assert.equal((await call(id, t, { relay: 'wss://r.example.org', code: CODE, owner: 'Anna' })).decision, 'ask', `${t}, unasked ${unasked}`);
+    for (const t of ACTIONS) assert.equal((await call(id, t, { relay: 'wss://r.example.org', code: CODE, owner: 'Anna', computer: 'Laptop' })).decision, 'ask', `${t}, unasked ${unasked}`);
     assert.deepEqual(ran, [], 'nothing ran');
-    // Claude Code then hands the call to Ledung's permission flow: a sensitive prompt for the user, not a grant's.
-    const live = (manager as unknown as { live: Map<string, { onPermission(t: string, i: object, o: object): Promise<unknown> }> }).live.get(id)!;
-    void live.onPermission('mcp__ledung__relay_admin_key', {}, { signal: new AbortController().signal, toolUseID: 'tu-x' });
-    const asked = store.pendingPermissions().find((p) => p.sessionId === id)!;
-    assert.equal(asked.sensitive, SETTINGS_RULE);
+    // Claude Code then hands the call to Ledung's permission flow: the user's, not a grant's. Since issue #308 a
+    // manager's own call is asked as a question at once, under the same rule, not a prompt that stops its turn.
+    const live = (manager as unknown as { live: Map<string, { onPermission(t: string, i: object, o: object): Promise<{ behavior: string }> }> }).live.get(id)!;
+    const out = await live.onPermission('mcp__ledung__relay_admin_key', {}, { signal: new AbortController().signal, toolUseID: 'tu-x' });
+    assert.equal(out.behavior, 'deny');
+    assert.equal(store.pendingPermissions().length, 0, 'no prompt');
+    const asked = store.listQuestions(10).find((q) => q.sessionId === id && q.details?.refusal)!;
+    assert.equal(asked.details!.refusal!.reason, SETTINGS_RULE);
+    assert.equal(asked.details!.refusal!.held, 'prompt');
     assert.equal(asked.addressedTo, 'user');
   }
+});
+
+test("#308: the user's Allow once on the question asked instead of a Settings action's prompt runs that exact call once; a refused call's question never does", async () => {
+  const { start, call, ran, store, manager } = ledung();
+  const id = await start('manager');
+  const live = (manager as unknown as { live: Map<string, { onPermission(t: string, i: object, o: object): Promise<{ behavior: string }> }> }).live.get(id)!;
+  const tool = 'mcp__ledung__relay_address';
+  const input = { relay: 'wss://r.example.org' };
+  // A question about the same call as the auto mode classifier's refusal (#104), answered Allow once: Settings actions
+  // keep their own rule, so it grants nothing.
+  const refused = store.createQuestion({ sessionId: id, question: 'x', options: ['Allow once', 'Deny'], addressedTo: 'user', details: { title: 'x', issue: 'x', refusal: { toolName: tool, input, reason: 'r', toolUseId: 'tu-r' } } });
+  store.answerQuestion(refused.id, 'Allow once', 'user', null, true);
+  assert.equal((await call(id, 'relay_address', input)).decision, 'ask', "a refused call's Allow once");
+  await live.onPermission(tool, input, { signal: new AbortController().signal, toolUseID: 'tu-p' });
+  const asked = store.listQuestions(10).find((q) => q.details?.refusal?.held === 'prompt')!;
+  // Before the answer, and after a Deny, nothing runs.
+  assert.equal((await call(id, 'relay_address', input)).decision, 'ask', 'not before the answer');
+  store.answerQuestion(asked.id, 'Allow once', 'user', null, false);
+  assert.equal((await call(id, 'relay_address', { relay: 'wss://other.example.org' })).decision, 'ask', 'another relay: not covered');
+  const retry = await call(id, 'relay_address', input);
+  assert.equal(retry.decision, 'allow', 'the exact retry');
+  assert.match(retry.note!, new RegExp(`question #${asked.id}`));
+  assert.equal((await call(id, 'relay_address', input)).decision, 'ask', 'once');
+  assert.deepEqual(ran, ['relay wss://r.example.org']);
 });
 
 test("with the user's word typed on this computer the action runs once, and the session is told who allowed it", async () => {
@@ -398,6 +451,24 @@ test('an invite runs on the instruction that names its owner, once', async () =>
   assert.match(allowed.result!, /join code.*JOIN/);
   assert.equal((await call(id, 'invite_computer', { owner: 'Anna' })).decision, 'ask');
   assert.deepEqual(ran, ['invite Anna']);
+});
+
+test('#346: unlink_computer runs on the words that name that computer, once; from the phone it asks', async () => {
+  const { start, call, typed, ran } = ledung();
+  const id = await start('manager');
+  typed(id, 'unlink Laptop', false);
+  assert.equal((await call(id, 'unlink_computer', { computer: 'Laptop' })).decision, 'ask', 'typed through the public name (question #447, b)');
+  typed(id, 'Unlink Laptop, then link with ' + CODE + ' as Laptop.', true);
+  assert.equal((await call(id, 'unlink_computer', { computer: 'laptop.relay.example.test' })).decision, 'ask', 'not the name the user gave');
+  assert.deepEqual(ran, []);
+  const allowed = await call(id, 'unlink_computer', { computer: 'Laptop' });
+  assert.equal(allowed.decision, 'allow');
+  assert.match(allowed.result!, /Unlinked "Laptop" \(laptop\.relay\.example\.test\)/);
+  assert.match(allowed.note!, /Simon asked for this \(unlink computer\)/);
+  assert.equal((await call(id, 'unlink_computer', { computer: 'Laptop' })).decision, 'ask', 'once');
+  // The same message's link runs too, the reinstalled computer linking again under its old name.
+  assert.equal((await call(id, 'link_computer', { code: CODE, name: 'Laptop' })).decision, 'allow');
+  assert.deepEqual(ran, ['unlink laptop.relay.example.test', `link ${CODE}`]);
 });
 
 test("a worker's call is asked, however the user's words read in it", async () => {

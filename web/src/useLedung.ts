@@ -8,10 +8,11 @@ import type { Macro } from '../../src/shared/macros.ts';
 import type { FlowRun } from '../../src/shared/flow-run.ts';
 import type { ComputerInfo } from '../../src/shared/computers.ts';
 import { api, connectionHello, openConnection, setReconnect } from './api.ts';
-import { OpenSession, type OpenSessionView } from './openSession.ts';
+import { OpenSession, viewFor, type OpenSessionView } from './openSession.ts';
 import { secretsChanged } from './secretLock.ts';
 import { pollWhileShown } from './pollShown.ts';
-import { withArchived, withSession, type KnownSessions } from '../../src/shared/hello-sessions.ts';
+import { withArchived, withNamed, withSession, type KnownSessions } from '../../src/shared/hello-sessions.ts';
+import { withHistory } from './waitingLists.ts';
 
 export type Connection = 'connecting' | 'open' | 'closed';
 
@@ -25,7 +26,9 @@ export function useLedung(openSessionId: string | null) {
   const helloAtRef = useRef(0);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [permissions, setPermissions] = useState<Record<string, PermissionInfo>>({});
-  const [{ messages, hasEarlier }, setView] = useState<OpenSessionView>({ messages: [], hasEarlier: false });
+  const [view, setView] = useState<OpenSessionView>({ sessionId: null, messages: [], hasEarlier: false });
+  // Only the shown session's own messages: right after a switch the view still holds the previous chat's (issue #328).
+  const { messages, hasEarlier } = viewFor(view, openSessionId);
   const [canRestart, setCanRestart] = useState(false);
   /** How many times hello has arrived: a new one after a restart means Ledung is back. */
   const [hellos, setHellos] = useState(0);
@@ -91,6 +94,16 @@ export function useLedung(openSessionId: string | null) {
     setKnown((known) => withArchived(known, archived));
   }, []);
 
+  // Waiting for you history (issue #306): read when the view opens, not with every page load, and again after each
+  // hello once it has been read, since a hello replaces the questions.
+  const historyWanted = useRef(false);
+  const loadHistory = useCallback(async () => {
+    historyWanted.current = true;
+    const history = await api.questionHistory();
+    setQuestions((have) => withHistory(have, history.questions));
+    setKnown((known) => withNamed(known, history.sessions));
+  }, []);
+
   const loadEarlier = useCallback(() => open.loadEarlier().catch(() => {}), [open]);
 
   useEffect(() => {
@@ -142,6 +155,7 @@ export function useLedung(openSessionId: string | null) {
             setUserName(event.userName);
             setSource(event.source ?? null);
             setQuestions(Object.fromEntries(event.questions.map((q) => [q.id, q])));
+            if (historyWanted.current) loadHistory().catch(() => {});
             setLimits(event.limits);
             setUsageStops(event.usageStops ?? []);
             setMacros(event.macros ?? []);
@@ -328,5 +342,5 @@ export function useLedung(openSessionId: string | null) {
     };
   }, []);
 
-  return { runs, workflows, connection, loaded, canRestart, hellos, updated, userName, source, questions, limits, usageStops, macros, signedOut, claudeProblem, claudeLooked, accountProblems, overview, machine, away, orders, accounts, accountChoices, defaultIdentity, board, github, remote, computers, newComputers, linkPairings, throughPublicName, configStatus, chats, helper, profiles, lockdownB, bangShell, sessions, olderArchived, loadArchived, projects, permissions, messages, hasEarlier, loadEarlier };
+  return { runs, workflows, connection, loaded, canRestart, hellos, updated, userName, source, questions, limits, usageStops, macros, signedOut, claudeProblem, claudeLooked, accountProblems, overview, machine, away, orders, accounts, accountChoices, defaultIdentity, board, github, remote, computers, newComputers, linkPairings, throughPublicName, configStatus, chats, helper, profiles, lockdownB, bangShell, sessions, olderArchived, loadArchived, loadHistory, projects, permissions, messages, hasEarlier, loadEarlier };
 }

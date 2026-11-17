@@ -9,7 +9,7 @@ import { indexSessions, REMOVED_PROJECTS, sidebarTree, usageRows } from '../web/
 import { shipMode } from '../web/src/components/shipMode.ts';
 import { onTick, runningClocks } from '../web/src/clock.ts';
 import { pollWhileShown, type Page } from '../web/src/pollShown.ts';
-import { NEAR_TOP, STEP, TAIL, stepUp, tailStart, windowStart } from '../web/src/messageWindow.ts';
+import { MAX_ITEMS, NEAR_TOP, STEP, TAIL, stepUp, tailStart, windowStart } from '../web/src/messageWindow.ts';
 
 /** A session with what the tree and the ship read; createdAt orders undragged siblings newest first. */
 function s(id: string, project: string, more: Partial<SessionInfo> = {}): SessionInfo {
@@ -163,7 +163,7 @@ test('a long conversation is drawn from its end, a batch further up at a time, a
   assert.equal(tailStart(5000), 5000 - TAIL);
   assert.equal(tailStart(40), 0);
   assert.equal(stepUp(5000 - TAIL), 5000 - TAIL - STEP);
-  assert.equal(stepUp(50), 0);
+  assert.equal(stepUp(STEP - 10), 0);
   // Nothing to keep on screen: as it is.
   assert.equal(windowStart(4700, 5000, -1), 4700);
   // A question at 1000: drawn from a little above it.
@@ -174,6 +174,21 @@ test('a long conversation is drawn from its end, a batch further up at a time, a
   assert.equal(windowStart(9000, 5000, -1), 4999);
   assert.equal(windowStart(0, 0, -1), 0);
   assert.ok(NEAR_TOP > 0);
+});
+
+test('the drawn part is counted in messages that show, not in hidden items (issue #329)', () => {
+  // Every third item shows (two hidden tool calls between replies): TAIL shown ones reach 3 x TAIL items back.
+  const third = (i: number) => i % 3 === 0;
+  const start = tailStart(3000, third);
+  assert.equal(start, 3000 - 3 * TAIL);
+  assert.equal(Array.from({ length: 3000 - start }, (_, i) => start + i).filter(third).length, TAIL);
+  // A step up passes STEP more shown ones.
+  const up = stepUp(start, third);
+  assert.equal(Array.from({ length: start - up }, (_, i) => up + i).filter(third).length, STEP);
+  // Nothing shows: stops after MAX_ITEMS items, not at the first.
+  assert.equal(tailStart(5000, () => false), 5000 - MAX_ITEMS);
+  // A short conversation is drawn whole, whatever shows.
+  assert.equal(tailStart(30, third), 0);
 });
 
 // The class (issue #233): a component that ticks or polls on a timer of its own. Each mounted copy ran one, so a

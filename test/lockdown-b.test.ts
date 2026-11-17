@@ -57,6 +57,8 @@ test('a level B manager gets only its own-session tools and ask_user; its instru
   const reaching = ['add_project', 'board_post', 'board_read', 'board_threads', 'create_project', 'list_managers', 'list_projects', 'message_manager', 'start_manager', 'stop_manager',
     // Settings' page-only actions (issue #263), as the other tools that reach beyond the project.
     'invite_computer', 'link_code', 'link_computer', 'relay_address', 'relay_admin_key', 'settings_status',
+    // Unlinking (issue #346), beside the link tools.
+    'unlink_computer',
     // Projects' workflow settings (issue #306).
     'project_settings', 'set_project_settings',
     // Publishing usage (issue #376).

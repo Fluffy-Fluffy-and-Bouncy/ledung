@@ -7,7 +7,7 @@ import type { HelperCard } from '../../src/shared/helper-cards.ts';
 import { helperHasSpoken } from './helper/cardOrder.ts';
 import { backToSetupMarked, clearBackToSetup, helperToolWords, markBackToSetup } from './helper/helperNav.ts';
 import { api } from './api.ts';
-import { CHAT_IMAGE_TYPES, dataUrl, imageFiles, MAX_CHAT_IMAGES, prepareImage, SECRETS_HINT } from './chatImages.ts';
+import { dataUrl, imageFiles, MAX_CHAT_IMAGES, prepareImage, SECRETS_HINT } from './chatImages.ts';
 import { MessageList, formatTime } from './components/MessageList.tsx';
 import { WorkingIndicator } from './components/WorkingIndicator.tsx';
 import { SailingShip, shipMode } from './components/SailingShip.tsx';
@@ -56,6 +56,8 @@ import { deskStepsInto, isDeskView, leaveShots } from './deskNav.ts';
 import { backToList, deskFallback, phoneClass, type ListSteps } from './phonePane.ts';
 import { NARROW_QUERY } from './sidebarSize.ts';
 import { useDraft } from './useDraft.ts';
+import { readDraft, writeDraft } from './drafts.ts';
+import { dropProblem, dropToken, insertAt, splitDropped } from './drops.ts';
 import { useStableCallback } from './useStableCallback.ts';
 import { canInterrupt, escapeClosesMenu, isToolCallsKey, MCP_STATUS_LABEL, sessionControls, showsMcp, TOOL_CALLS_KEY } from './sessionMenu.ts';
 import { formatTokens, LimitMeters, pct, prLabel } from './usage/charts.tsx';
@@ -99,6 +101,7 @@ import { useSessionSecrets } from './useSessionSecrets.ts';
 import { suggestSecretName } from '../../src/shared/secrets.ts';
 import { errorText, isStalePageError } from './pageError.ts';
 import { guardFor, heldRecently, noteHeld, setLeaveGuard, workflowFromHash, workflowHash } from './flowNav.ts';
+import { asideCount, badgeTitle, type WaitingFocus } from './waitingFocus.ts';
 
 /** Shown in a frame on another computer's page (issue #241): fixed for the page's life. */
 const IN_FRAME = inFrame();
@@ -410,6 +413,13 @@ export function App() {
     for (const q of questions) if (q.status === 'open') counts[q.sessionId] = (counts[q.sessionId] ?? 0) + 1;
     return counts;
   }, [permissions, questions]);
+  // Of those, what is addressed to a manager: not in Waiting for you, so a badge's tooltip says so (issue #322).
+  const withManagerBySession = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const p of permissions) if (p.status === 'pending' && p.addressedTo !== 'user') counts[p.sessionId] = (counts[p.sessionId] ?? 0) + 1;
+    for (const q of questions) if (q.status === 'open' && q.addressedTo !== 'user') counts[q.sessionId] = (counts[q.sessionId] ?? 0) + 1;
+    return counts;
+  }, [permissions, questions]);
 
   // The list indexed once per change (issue #233): rows, headers and lookups by id read it instead of scanning the list.
   const index = useMemo(() => indexSessions(ledung.sessions), [ledung.sessions]);
@@ -491,7 +501,14 @@ export function App() {
   // The sidebar is memoized (issue #233): a message or other live event that changes nothing it shows doesn't redraw
   // it. Its handlers keep their identity for that; they are only called on a click.
   const sidebarRun = useStableCallback(run);
-  const sidebarOpen = useStableCallback(open);
+  // A badge's project (issue #322) lasts while Waiting for you is open; anything else opened from the sidebar, the
+  // Waiting for you entry too, leaves it, so opening Waiting for you the usual way shows the kept filter.
+  const [waitingFocus, setWaitingFocus] = useState<WaitingFocus | null>(null);
+  useEffect(() => {
+    if (waitingFocus && !isDeskView(openId)) setWaitingFocus(null);
+  }, [openId, waitingFocus]);
+  const sidebarOpen = useStableCallback((id: string) => { setWaitingFocus(null); open(id); });
+  const sidebarOpenWaiting = useStableCallback((focus: WaitingFocus) => { setWaitingFocus(focus); open('waiting'); });
   const sidebarCloseSettings = useStableCallback(closeSettings);
   // The helper's entry and New project, stable so the memoized sidebar isn't drawn again for them (issue #233).
   const sidebarOpenHelper = useStableCallback(() => void openHelper());
@@ -588,6 +605,7 @@ export function App() {
           projects={ledung.projects}
           chats={ledung.chats}
           pending={pendingBySession}
+          withManager={withManagerBySession}
           waiting={waiting}
           limits={ledung.limits}
           usageStops={ledung.usageStops}
@@ -609,6 +627,7 @@ export function App() {
           questions={ledung.questions}
           helper={ledung.helper}
           onOpenHelper={sidebarOpenHelper}
+          onOpenWaiting={sidebarOpenWaiting}
           onNewProject={sidebarNewProject}
         />
         {!noSidebar && <SidebarResizer />}
@@ -630,6 +649,7 @@ export function App() {
           ) :  isDeskView(openId) ? (
             <WaitingView
               questions={questions}
+              onLoadHistory={ledung.loadHistory}
               permissions={permissions}
               sessions={ledung.sessions}
               projects={ledung.projects}
@@ -648,6 +668,8 @@ export function App() {
               orders={ledung.orders}
               linkPairings={ledung.linkPairings}
               run={run}
+              focus={waitingFocus}
+              onClearFocus={() => setWaitingFocus(null)}
             />
           ) : openId === 'board' ? (
             <BoardListView board={ledung.board} onOpen={open} onOpenSettings={() => open(bannerView('board'))} />
@@ -782,6 +804,10 @@ const Sidebar = memo(function Sidebar(props: {
   /** The Ledung Helper (docs/steps/ledung-helper.md): its entry under Chats, and New project in a heading's menu. */
   helper: HelperInfo | null;
   onOpenHelper: () => void;
+  /** A row's question badge (issue #322): Waiting for you on its project. */
+  onOpenWaiting: (focus: WaitingFocus) => void;
+  /** Per session, its open questions and prompts addressed to a manager (in pending too): for the badge's tooltip. */
+  withManager: Record<string, number>;
   onNewProject: () => void;
 }) {
   // A tree per project: the project, its manager with the sessions it runs, then sessions started
@@ -1005,6 +1031,17 @@ const Sidebar = memo(function Sidebar(props: {
   const shows = compactRows(compact);
   // "Archived (N)" at the end of each group, when switched on in Settings (#157, #95).
   const [archivedShown] = useArchivedLink();
+  // A row's count of open questions and prompts, a button of its own beside the row's (no button inside a button), so
+  // a click opens Waiting for you on the row's project and never the chat too (issue #322).
+  const countBadge = (count: number, focus: WaitingFocus) => {
+    if (!count) return null;
+    const title = badgeTitle(count, focus.project, asideCount(focus, props.withManager, (id) => props.index.byId.get(id)?.project ?? ''));
+    return (
+      <button className="badge-button" title={title} aria-label={title} onClick={() => props.onOpenWaiting(focus)}>
+        <span className="badge">{count}</span>
+      </button>
+    );
+  };
   // The caret sits beside the row's button, not in it (no button inside a button), and carries no data-drag.
   const item = ({ s, depth, drag: group, hidden, folds, folded: isFolded }: FoldedRow<Row>) => {
     const time = `${formatTime(s.createdAt)}${s.backgroundTasks > 0 ? ` · ${s.backgroundTasks} in background` : ''}`;
@@ -1062,9 +1099,13 @@ const Sidebar = memo(function Sidebar(props: {
             return mode && <span className={`session-ship ${statusLook(s)}`}><SailingShip mode={mode} width={10} sizeButton={false} hideWhenSunk maxSize={shows.shipMax} /></span>;
           })()}
           {hiddenChip(hidden, hidden?.count === 1 ? 'sub-session' : 'sub-sessions')}
-          {(props.pending[s.id] ?? 0) + (hidden?.pending ?? 0) ? <span className="badge">{(props.pending[s.id] ?? 0) + (hidden?.pending ?? 0)}</span> : null}
         </button>
         )}
+        {renaming !== s.id && countBadge((props.pending[s.id] ?? 0) + (hidden?.pending ?? 0), {
+          project: s.project, from: s.title,
+          // Folded sessions add their count to this row's, so their items are its too.
+          sessions: [s.id, ...(hidden ? props.index.childrenOf(s.id).map((c) => c.id) : [])],
+        })}
       </div>
     );
   };
@@ -1122,7 +1163,7 @@ ${moreHint}`}
 ${moreHint}`} onClick={() => props.onOpen('chat')}><Named colour={props.chats?.colour ?? null}>Chats</Named></button>
                   ) : <span className="project-name muted">{g.name}</span>}
                   {hiddenChip(g.view.project, g.view.project?.count === 1 ? 'session' : 'sessions')}
-                  {g.view.project?.pending ? <span className="badge">{g.view.project.pending}</span> : null}
+                  {countBadge(g.view.project?.pending ?? 0, { project: g.name, sessions: [], from: projectLabel(g.name) })}
                   {g.project && props.workflows[g.name] && (
                     <WorkflowButton
                       counts={workflowButton(props.runs[g.name] ?? [], (id) => props.questions[id]?.status === 'open')}
@@ -1487,7 +1528,7 @@ export function SessionView(props: {
             extra={<MacroChips key={session.id} macros={macros} onUse={fireMacro} onEdit={() => (location.hash = '#/settings/macros')}
               actions={[
                 { id: 'secret', label: '🔑 Lock a secret…', title: 'Type or paste it into a masked field; Claude gets only its name', disabled: composerClosed(session), onPick: () => composerActions.current?.secret() },
-                { id: 'images', label: '📎 Add images…', title: 'PNG, JPEG, GIF or WebP (or paste or drop them on the box)', disabled: composerClosed(session), onPick: () => composerActions.current?.images() },
+                { id: 'images', label: '📎 Add images…', title: 'PNG, JPEG, GIF or WebP go as images; any other file is saved in the session\'s folder and its path put in the message (or drop them on the box)', disabled: composerClosed(session), onPick: () => composerActions.current?.images() },
               ]} />} />
           <Composer session={session} tint={tint} run={run} quoteInto={quoteInto} actionsInto={composerActions} bangShell={ledung.bangShell} />
         </div>
@@ -1862,6 +1903,60 @@ function Composer({ session, tint, run, quoteInto, actionsInto, bangShell }: {
     }
     if (refused.length) throw new Error(refused.join(' '));
   });
+  // Any other file dropped or picked (issue #339): Ledung saves a copy in the session's folder and its path goes into
+  // the box where the caret was, one after another. Saved for the session it was dropped on, also if another is open by then.
+  // The box is drawn anew for each session (SessionView's key), so a box left behind is marked here when it goes; its
+  // late path then goes to the end of that session's saved draft, which the box wrote when it went (self-check, #339).
+  const sessionNow = useRef<string | null>(session.id);
+  sessionNow.current = session.id;
+  useEffect(() => {
+    sessionNow.current = session.id;
+    return () => { sessionNow.current = null; };
+  }, [session.id]);
+  const dropAt = useRef<number | null>(null);
+  const [saving, setSaving] = useState(0);
+  const putPath = (sessionId: string, token: string) => {
+    if (sessionId !== sessionNow.current || !area.current) {
+      const draft = readDraft(localStorage, sessionId);
+      writeDraft(localStorage, sessionId, insertAt(draft, draft.length, token).text);
+      return;
+    }
+    const current = area.current?.value ?? text;
+    const put = insertAt(current, dropAt.current ?? current.length, token);
+    saveNow(put.text);
+    dropAt.current = put.caret;
+    requestAnimationFrame(() => area.current?.setSelectionRange(put.caret, put.caret));
+  };
+  const addDrops = (files: File[]) => void run(async () => {
+    const sessionId = session.id;
+    const a = area.current;
+    dropAt.current = a ? a.selectionEnd : null;
+    // Each that can be saved is; what can't is said, together, after.
+    const refused: string[] = [];
+    for (const file of files) {
+      const problem = dropProblem(file);
+      if (problem) {
+        refused.push(problem);
+        continue;
+      }
+      setSaving((n) => n + 1);
+      try {
+        const { path } = await api.uploadDrop(sessionId, file, file.name);
+        putPath(sessionId, dropToken(path));
+      } catch (e) {
+        refused.push(`${file.name || 'A file'}: ${(e as Error).message}`);
+      } finally {
+        setSaving((n) => n - 1);
+      }
+    }
+    if (refused.length) throw new Error(refused.join(' '));
+  });
+  /** Dropped or picked: PNG, JPEG, GIF and WebP go as images, as before; every other file is saved and its path put in. */
+  const addFiles = (files: File[]) => {
+    const { images: pictures, others } = splitDropped(files);
+    if (pictures.length) addImages(pictures);
+    if (others.length) addDrops(others);
+  };
   const removeImage = (key: number) => setImages((list) => list.filter((i) => i.key !== key));
   const send = async () => {
     const t = text;
@@ -1905,7 +2000,7 @@ function Composer({ session, tint, run, quoteInto, actionsInto, bangShell }: {
         setDragging(false);
         if (ended || !e.dataTransfer.files.length) return;
         e.preventDefault();
-        addImages([...e.dataTransfer.files]);
+        addFiles([...e.dataTransfer.files]);
       }}
     >
       {grip}
@@ -1930,7 +2025,7 @@ function Composer({ session, tint, run, quoteInto, actionsInto, bangShell }: {
         />
       )}
       {selection && <SelectionKey left={selection.left} top={selection.top} onLock={lockSelected} />}
-      {(session.shell || ask || command || showChips || images.length > 0) && (
+      {(session.shell || ask || command || showChips || images.length > 0 || saving > 0) && (
       <div className="bang-strips">
       {showChips && <SecretChips known={chips.known} missing={chips.missing} onOpen={setEditing} />}
       {session.shell && (
@@ -1947,6 +2042,7 @@ function Composer({ session, tint, run, quoteInto, actionsInto, bangShell }: {
         </div>
       )}
       {command && !ask && <div className="bang-hint muted">{bangHint(bangShell, session.runner)}</div>}
+      {saving > 0 && <div className="bang-hint muted" role="status">Saving {saving === 1 ? 'a file' : `${saving} files`} into the session's folder…</div>}
       {images.length > 0 && (
         <div className="composer-images">
           {images.map((i, n) => (
@@ -2000,11 +2096,11 @@ function Composer({ session, tint, run, quoteInto, actionsInto, bangShell }: {
         </button>
         <div className="send-row">
           <input
-            ref={picker} type="file" hidden multiple accept={CHAT_IMAGE_TYPES.join(',')}
+            ref={picker} type="file" hidden multiple
             onChange={(e) => {
               const files = [...(e.target.files ?? [])];
               e.target.value = '';
-              if (files.length) addImages(files);
+              if (files.length) addFiles(files);
             }}
           />
           <button

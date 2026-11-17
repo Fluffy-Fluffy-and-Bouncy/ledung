@@ -34,6 +34,7 @@ import { refusalAnswerText, refusalOf } from './refusals.ts';
 import { keepAnswerText, orderPreamble, orderRecorded, type Orders, type OrderSpec } from './orders.ts';
 import type { OrderInfo } from '../shared/orders.ts';
 import { formatWorkHistory, workHistory } from '../usage/work-history.ts';
+import { waitingForYou } from './waiting-tool.ts';
 
 /** What managers need of the linked computers (#245): who they are, and one call to one of them. */
 export interface LinkedPort {
@@ -54,6 +55,8 @@ export interface LinkedPort {
 let exercised159 = false;
 /** The EXERCISED line of issue #177, once per run. */
 let exercised177 = false;
+/** The EXERCISED line of issue #346, once per run. */
+let exercised346 = false;
 
 /**
  * Settings' page-only actions for managers (issue #263): the same calls Settings' routes make, set by the server.
@@ -67,6 +70,8 @@ export interface SettingsPort {
   invite(owner: string, name?: string): Promise<RelayInviteInfo & { code: string }>;
   linkCode(): { code: string; expiresAt: number };
   link(code: string, name?: string): Promise<LinkedComputer>;
+  /** Settings' Unlink button (issue #346): the link goes here and the other computer is told; null: no such link. */
+  unlink(id: string): LinkedComputer | null;
   /** The linked computers, and why linking is not possible here (null: it is). */
   links(): { problem: string | null; links: LinkedComputer[] };
   computers(): ComputerInfo[];
@@ -183,8 +188,8 @@ export interface ManagementContext {
    */
   evidenceFile?(sessionId: string, file: string): { file: string; kind: 'image' | 'text' };
   /**
-   * A container project's screenshots and evidence, read from its container and kept in Ledung (issue #122): the names
-   * the question stores, in order; a local project's as given. Left out in tests of other parts: as given.
+   * A project's screenshots and evidence, read now and kept in Ledung (a container's since issue #122, every project's
+   * since #306), images as WebP: the names the question stores, in order. Left out in tests of other parts: as given.
    */
   keepContainerFiles?(sessionId: string, files: { file: string; as: 'shot' | 'evidence' }[]): Promise<string[]>;
   /** Orders on record (issue #105); left out where none are kept (tests of other parts): an order is then refused. */
@@ -537,7 +542,7 @@ export class Management {
     });
   }
 
-  /** ask_user's container files, kept before they are checked (keepContainerFiles). */
+  /** ask_user's files, kept before they are checked (keepContainerFiles; every project's since issue #306). */
   keepFiles(sessionId: string, files: { file: string; as: 'shot' | 'evidence' }[]): Promise<string[]> {
     return this.ctx.keepContainerFiles ? this.ctx.keepContainerFiles(sessionId, files) : Promise.resolve(files.map((f) => f.file));
   }
@@ -974,6 +979,15 @@ ${note}`);
   workHistory(managerId: string, days?: number, limit?: number): string {
     const project = this.store.getSession(managerId)!.project;
     return formatWorkHistory(workHistory(this.store.database, project, { days }), limit ?? 10);
+  }
+
+  /** waiting_for_you (issue #338): the manager's own project only, whatever its lockdown; reads, changes nothing. */
+  waitingForYou(managerId: string, answeredHours?: number): string {
+    return waitingForYou({
+      store: this.store, managerId, userName: this.ctx.userName, answeredHours,
+      tiers: (project) => this.ctx.projects().find((p) => p.name === project)?.questionTiers,
+      request: (p) => requestText(p),
+    });
   }
 
   /** normal or high on the manager's own judgement; critical only on the user's answer to one of its questions. */
@@ -1539,6 +1553,28 @@ ${note}`);
   async linkComputer(managerId: string, code: string, name?: string): Promise<string> {
     const linked = await this.settingsPort(managerId).link(code, name);
     return `Linked with "${linked.name}" (${linked.publicName}).`;
+  }
+
+  /**
+   * unlink_computer (issue #346): a linked computer by its name or public name, as settings_status lists them, unlinked
+   * as Settings' Unlink button does. A name two links share is refused, so the public name says which.
+   */
+  unlinkComputer(managerId: string, computer: string): string {
+    const port = this.settingsPort(managerId);
+    const { links } = port.links();
+    const wanted = computer.trim().toLowerCase();
+    const byPublicName = links.filter((l) => l.publicName.toLowerCase() === wanted);
+    const hits = byPublicName.length ? byPublicName : links.filter((l) => l.name.toLowerCase() === wanted);
+    const listed = links.length ? links.map((l) => `"${l.name}" (${l.publicName})`).join(', ') : 'none';
+    if (hits.length > 1) throw new ManagementError(`${hits.length} linked computers are called "${computer.trim()}": give the public name of the one to unlink (${hits.map((l) => l.publicName).join(', ')}).`);
+    if (!hits.length) throw new ManagementError(`No linked computer is called "${computer.trim()}". Linked computers: ${listed}.`);
+    const gone = port.unlink(hits[0]!.id);
+    if (!gone) throw new ManagementError(`"${computer.trim()}" is no longer linked.`);
+    if (!exercised346) {
+      exercised346 = true;
+      exercisedLine('EXERCISED #346 a manager unlinked a linked computer through Settings\' own unlink');
+    }
+    return `Unlinked "${gone.name}" (${gone.publicName}) here; that computer is told to drop its side too. To link it again: link_code on one computer, link_computer with that code on the other.`;
   }
 
   async inviteComputer(managerId: string, owner: string, name?: string): Promise<string> {
