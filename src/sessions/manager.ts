@@ -80,7 +80,7 @@ import {
 } from './container-files.ts';
 import { toWebp } from './webp.ts';
 import { checkLineComments, formatLineComments, lineCommentsMessage, openReviewFor, reviewAnswerWithComments } from '../shared/line-comments.ts';
-import { Management, type LinkedMessage, type LinkedPort, type SettingsPort } from './management.ts';
+import { FLOW_SOURCE, Management, type LinkedMessage, type LinkedPort, type SettingsPort } from './management.ts';
 import { findTickets } from '../usage/links.ts';
 import { claudeEnvironment, Session, type TurnGate } from './session.ts';
 import {
@@ -395,14 +395,14 @@ export class SessionManager {
       following: (project) => this.projectStore.get(project)?.config.followFlow !== false,
       // A coordinator that ended is resumed, as a continued block's session is (final review of part 3, finding 3).
       tell: (id, text) => {
-        this.store.addInbox(id, 'ledung', text);
+        this.store.addInbox(id, FLOW_SOURCE, text);
         void this.resumeIfEnded(id).then(() => this.live.get(id)?.deliver(), (e: Error) => {
           // One that can't be resumed: its project's manager is told what it was told, so the run is not stranded.
           const s = this.store.getSession(id);
           const manager = s ? this.projectStore.get(s.project)?.managerId : null;
           console.warn(`Workflow: could not resume ${id} to tell it: ${e.message}`);
           if (!manager || manager === id) return;
-          this.store.addInbox(manager, 'ledung', `Ledung could not resume "${s!.title}" (${id}), which coordinates a run, to tell it this (${e.message}); you may coordinate its runs:\n\n${text}`);
+          this.store.addInbox(manager, FLOW_SOURCE, `Ledung could not resume "${s!.title}" (${id}), which coordinates a run, to tell it this (${e.message}); you may coordinate its runs:\n\n${text}`);
           void this.resumeIfEnded(manager).then(() => this.live.get(manager)?.deliver(), () => {});
         });
       },
@@ -429,7 +429,7 @@ export class SessionManager {
           await this.management.freshStep(id, fresh.by, fresh.context, step);
           return;
         }
-        this.store.addInbox(id, 'ledung', step);
+        this.store.addInbox(id, FLOW_SOURCE, step);
         await this.resumeIfEnded(id);
         this.live.get(id)?.deliver();
       },

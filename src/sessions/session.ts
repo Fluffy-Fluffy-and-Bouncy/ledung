@@ -2206,13 +2206,13 @@ export class Session {
       this.beginTurn('manager');
       return;
     }
-    const { userText: deliveredText, context } = buildDelivery(this.userName, answers, inbox, (id) => this.management.title(id), (id) => this.store.getOrder(id));
+    const { userText: deliveredText, context, quotable } = buildDelivery(this.userName, answers, inbox, (id) => this.management.title(id), (id) => this.store.getOrder(id));
     this.store.markDelivered(answers.map((a) => a.id));
     this.store.markInboxDelivered(inbox.map((i) => i.id));
     this.store.setHeldMessages(this.id, []);
     // Simon's held messages are already in the history (send() stored them); only Ledung's part is new.
     if (answers.length || inbox.length) {
-      this.record('user', { text: deliveredText, from: 'ledung', answerTo: answers.map((a) => a.id), context: context || undefined });
+      this.record('user', { text: deliveredText, from: 'ledung', answerTo: answers.map((a) => a.id), context: context || undefined, ...(quotable !== undefined ? { quotable } : {}) });
     }
     if (status === 'queued') this.record('event', { text: force ? `Started now by ${this.userName}, above the limit.` : 'A place came free; starting.' });
     const userText = [...held, deliveredText].filter(Boolean).join('\n\n');

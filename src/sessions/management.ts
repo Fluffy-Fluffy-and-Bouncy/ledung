@@ -2132,7 +2132,19 @@ export interface Delivery {
   userText: string;
   /** Everything else, attached as context (not the user's words). Empty when there is none. */
   context: string;
+  /**
+   * The context without Ledung's workflow process text (FLOW_SOURCE items), when it had any: what a question's
+   * "Earlier in the conversation" may quote (#351 acceptance, round 1). Absent when it is the whole context.
+   */
+  quotable?: string;
 }
+
+/**
+ * The inbox source of what a workflow run tells a session (#351 acceptance, round 1): a coordinator's hand-off at a
+ * person step, with its brief "for you, not for" the person, and a worker's step. Process text for the session, so
+ * it is never quoted to the person in a question's "Earlier in the conversation".
+ */
+export const FLOW_SOURCE = 'ledung:flow';
 
 /**
  * How waiting answers and inbox messages reach a session (step 4, findings in
@@ -2145,7 +2157,7 @@ export interface Delivery {
 export function buildDelivery(
   userName: string,
   answers: QuestionInfo[],
-  inbox: { text: string }[],
+  inbox: { text: string; source?: string }[],
   titleOf: (id: string) => string,
   orderOf: (id: number) => OrderInfo | undefined = () => undefined,
 ): Delivery {
@@ -2175,10 +2187,16 @@ export function buildDelivery(
       );
     }
   }
-  for (const item of inbox) context.push(item.text);
+  const quotable = [...context];
+  for (const item of inbox) {
+    context.push(item.text);
+    if (item.source !== FLOW_SOURCE) quotable.push(item.text);
+  }
   // Anything besides the user's own answers: the fixed sentence points to it.
   if (inbox.length || answers.some((q) => q.answeredBy !== 'user')) userParts.push(CONTEXT_SENTENCE(userName));
-  return { userText: userParts.join('\n\n'), context: context.join('\n\n---\n\n') };
+  const joined = context.join('\n\n---\n\n');
+  const shown = quotable.join('\n\n---\n\n');
+  return { userText: userParts.join('\n\n'), context: joined, ...(shown !== joined ? { quotable: shown } : {}) };
 }
 
 interface UsagePublishInput { enabled?: boolean; repo: string | null; allAccounts?: boolean; accounts?: Record<string, boolean> }
