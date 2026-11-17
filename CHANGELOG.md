@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-17
+- Desktop app: the window behaves like an app. Closing it (its button, ⌘W or Ctrl+W) hides it and the app keeps running, so notifications keep coming; starting it again, or clicking it in the Dock, shows the window instead of opening a second app. ⌘Q on the Mac, File → Quit or Alt+F4 on Windows end the app and leave Ledung running, asking first when the page has unsaved changes. ⌘O on the Mac does what Ctrl+O does (Show tool calls). A hidden window keeps its timers at full speed. (#359)
 - Settings → Devices names the desktop app "Ledung app on macOS" or "Ledung app on Windows" when it first signs in, instead of "Chrome on …" next to your real Chrome. A device already listed keeps its name. (#363)
 - Desktop app: with no Ledung running, the window now offers **Start Ledung**, which starts Ledung in the background as the `ledung` command does in a terminal and then shows its page, signed in. Quitting the app leaves that Ledung running. If the start fails, the window says what failed in one line and offers Start Ledung and Retry again. (#362)
 - A desktop app, run from a clone: `npm install` then `npm start` in `desktop/` opens your running Ledung's page in a window of its own, signed in, with no browser tab and no sign-in link; links elsewhere open in your browser. With no Ledung running it says so and offers Retry. Unsigned and not part of the npm package. (#358, #15)

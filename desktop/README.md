@@ -39,6 +39,15 @@ One window opens with your running Ledung's page, signed in. Nothing opens in th
   (`mailto:`), is not opened yet.
 - **When Ledung stops.** If the page can't load any more (Ledung stopped, then a reload), the window goes back to
   "Ledung is not running" with Retry.
+- **Closing hides it.** The window's close button and ⌘W (Ctrl+W on Windows) hide the window; the app keeps running,
+  so notifications keep coming. Show it again by starting the app again (`npm start` shows the window that's there
+  and starts no second app) or, on the Mac, by clicking it in the Dock.
+- **Quitting.** ⌘Q on the Mac, File → Quit or Alt+F4 on Windows end the app. Ledung itself is another program and
+  keeps running. With unsaved changes on the page (a workflow being edited) the app asks first, as a browser does.
+- **⌘O on the Mac** does what Ctrl+O does in the page: Show tool calls. (In a browser the page keeps to Ctrl+O on
+  every system, so that ⌘O stays the browser's; in the app ⌘O is the app's own.)
+- **A hidden window keeps its pace.** Its timers run at full speed, so notifications come on time. The page also counts
+  as shown then, so it keeps polling (the usage panels refresh while hidden).
 - **Permissions.** Ledung's page may show notifications and copy to the clipboard, the two things it uses. Everything
   else a page can ask for (camera, microphone, screen, location, reading the clipboard) is refused: Electron would
   otherwise grant it without asking, where a browser asks you.
@@ -80,11 +89,16 @@ settings, permissions, refused navigation, links), then `again` (a second start 
 Ledung that stops under the window), `start` (none runs; with `LEDUNG_DESKTOP_START` set as above and an `ELECTRON_*`
 variable of your own, e.g. `ELECTRON_PROBE=1`: presses Start Ledung, the page signed in within 15 s, no `ELECTRON_*`
 or `npm_*` variable in the started Ledung or its launcher; it leaves that Ledung running, so check it still answers
-after the app quit, then stop it) and `startfail` (none runs, `LEDUNG_DESKTOP_START` naming a script that isn't there:
-the one line saying what failed, Start Ledung and Retry again, no error dialog, and Quit still ends the app). Both
-refuse to run without `LEDUNG_DESKTOP_START`. Each check it makes prints `"event":"fail"` when it doesn't hold; the exit code is
-0 only when all held, 1 otherwise, 2 when it refused to run. It refuses without both settings, on the default port,
-and on Windows (it reads command lines with `ps`; macOS and Linux only for now).
+after the app quit, then stop it), `startfail` (none runs, `LEDUNG_DESKTOP_START` naming a script that isn't there:
+the one line saying what failed, Start Ledung and Retry again, no error dialog, and Quit still ends the app; both
+refuse to run without `LEDUNG_DESKTOP_START`) and `window` (a Ledung runs: closing hides, the Dock and a second start
+show the window again, ⌘O reaches the page as its Ctrl+O, Quit on a page with unsaved changes asks and Stay keeps the
+app, closing from full screen, a 100 ms timer in the hidden window, then Quit ends the app and the Ledung still
+answers; `PROBE_HIDDEN_SECONDS` sets the hidden time, 60 by default). A fresh data folder shows Ledung's Welcome,
+which has no sidebar, so finish or leave the welcome in the page before the first run. Each check it makes prints
+`"event":"fail"` when it doesn't hold; the exit code is 0 only when all held, 1 otherwise, 2 when it refused to run.
+It refuses without both settings, on the default port, and on Windows (it reads command lines with `ps`; macOS and
+Linux only for now).
 
 ## How it is built
 

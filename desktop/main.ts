@@ -6,7 +6,7 @@
 // check, sign-in cookie, Origin check and "no embedding" apply unchanged. Sign-in sets the cookie from this main
 // process (Mac spike 2026-11-17: GET /api/state 200 with no token in any URL); the token never goes into a URL or a
 // command line.
-import { app, BrowserWindow, session, shell, type Session, type WebContents } from 'electron';
+import { app, BrowserWindow, dialog, Menu, session, shell, type MenuItemConstructorOptions, type Session, type WebContents } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findRunning } from './attach.ts';
@@ -20,6 +20,10 @@ const COOKIE_NAME = 'ledung_auth';
 const PARTITION = 'persist:ledung';
 
 let win: BrowserWindow | null = null;
+/** Set once the app is really quitting (⌘Q, File → Quit, Alt+F4, logging off): from then on closing closes. */
+let quitting = false;
+/** Windows is logging off or shutting down: nothing may hold that up, not even unsaved changes. */
+let sessionEnding = false;
 /** The origin the window may show: the attached Ledung's, or none while the "not running" page is up. */
 let ownOrigin: string | null = null;
 let attaching = false;
@@ -174,6 +178,82 @@ function limitPermissions(ses: Session): void {
   ses.setPermissionCheckHandler((_wc, permission, requestingOrigin) => allowed(permission, requestingOrigin));
 }
 
+/** Brings the hidden (or minimised) window back to the front: a second start, a click in the Dock. */
+function showWindow(): void {
+  if (!app.isReady()) return;
+  if (!win || win.isDestroyed()) {
+    createWindow();
+    return;
+  }
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+  // Started again from a terminal, the app is not the active one on the Mac, and focus alone leaves it behind.
+  if (process.platform === 'darwin') app.focus({ steal: true });
+}
+
+/** Closing the window, by its button or ⌘W/Ctrl+W, only hides it: the app stays, so notifications keep coming (#359). */
+function hideWindow(): void {
+  if (!win || win.isDestroyed()) return;
+  // Hidden while in full screen, a Mac window leaves an empty black Space behind: leave full screen first (self-check
+  // finding 2).
+  if (win.isFullScreen()) {
+    const w = win;
+    w.once('leave-full-screen', () => {
+      if (!w.isDestroyed()) w.hide();
+    });
+    w.setFullScreen(false);
+    return;
+  }
+  win.hide();
+}
+
+/** Ends the app: the window may close for real now. The Ledung it attached to is another program, and stays. */
+function quit(): void {
+  quitting = true;
+  app.quit();
+}
+
+/**
+ * Ctrl+O, as the page hears it: the page binds Show tool calls to Ctrl+O on every system so that ⌘O stays the
+ * browser's (web/src/sessionMenu.ts). In the app ⌘O is the app's own, so it hands the page the page's key.
+ */
+function sendToolCallsKey(): void {
+  if (!win || win.isDestroyed() || ownOrigin === null) return;
+  win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'O', modifiers: ['control'] });
+  win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'O', modifiers: ['control'] });
+}
+
+/**
+ * The app's menu owns the keys a browser keeps (#359): ⌘W/Ctrl+W hides the window instead of closing it, ⌘O on the
+ * Mac is the page's Ctrl+O, ⌘Q (Mac) and File → Quit (Windows, Linux) end the app. Edit, View and Window keep their
+ * standard items, so copy and paste, reload and zoom work as in the default menu. The ids let the probe press items.
+ */
+function buildMenu(): Menu {
+  const mac = process.platform === 'darwin';
+  const closeWindow: MenuItemConstructorOptions = { id: 'close-window', label: 'Close Window', accelerator: 'CmdOrCtrl+W', click: hideWindow };
+  const quitItem: MenuItemConstructorOptions = { id: 'quit', label: mac ? 'Quit Ledung' : 'Quit', accelerator: mac ? 'Cmd+Q' : 'Alt+F4', click: quit };
+  const toolCalls: MenuItemConstructorOptions = { id: 'tool-calls', label: 'Show Tool Calls', accelerator: 'Cmd+O', click: sendToolCallsKey };
+  const separator: MenuItemConstructorOptions = { type: 'separator' };
+  const template: MenuItemConstructorOptions[] = [
+    ...(mac
+      ? [{
+          label: 'Ledung',
+          submenu: [
+            { role: 'about' }, separator, { role: 'services' }, separator,
+            { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, separator, quitItem,
+          ],
+        } satisfies MenuItemConstructorOptions]
+      : []),
+    { label: 'File', submenu: mac ? [toolCalls, closeWindow] : [closeWindow, separator, quitItem] },
+    { role: 'editMenu' },
+    { role: 'viewMenu' },
+    // Spelled out: the standard Window menu on Windows has a Close of its own on Ctrl+W.
+    { label: 'Window', submenu: mac ? [{ role: 'minimize' }, { role: 'zoom' }, separator, { role: 'front' }] : [{ role: 'minimize' }] },
+  ];
+  return Menu.buildFromTemplate(template);
+}
+
 function createWindow(): void {
   limitPermissions(session.fromPartition(PARTITION));
   win = new BrowserWindow({
@@ -186,9 +266,50 @@ function createWindow(): void {
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
+      // A hidden window keeps its timers at full speed, so notifications come on time (Windows spike: one 13–14 ms
+      // after a prompt, 400 s hidden). The page also stays "visible" then, so its polls keep running (#359).
+      backgroundThrottling: false,
     },
   });
   lockNavigation(win.webContents);
+  win.on('close', (event) => {
+    if (quitting) return;
+    event.preventDefault();
+    hideWindow();
+  });
+  // Windows: logging off or shutting down closes the window; let it, or the app would hold the logoff up.
+  win.on('session-end', () => {
+    quitting = true;
+    sessionEnding = true;
+  });
+  // A page with unsaved changes (the flow builder's) asks before it is left, by quitting or reloading. A browser asks
+  // the person then; Electron would silently stay instead, and a cancelled quit would leave `quitting` set, so the next
+  // close would end the app instead of hiding it (self-check finding 1). Ask as a browser does; Stay keeps everything.
+  win.webContents.on('will-prevent-unload', (event) => {
+    // Logging off: leave without asking, or the question would hold the logoff up (code review of PR #372, Minor 2).
+    if (sessionEnding) {
+      event.preventDefault();
+      return;
+    }
+    // The question belongs to the window: asked of a hidden one (⌘W, then Quit from the Dock) it may never be seen,
+    // and the app would wait on it for good (code review of PR #372, Minor 2). Show the window first.
+    showWindow();
+    const choice = dialog.showMessageBoxSync(win!, {
+      type: 'question',
+      buttons: ['Leave', 'Stay'],
+      defaultId: 1,
+      cancelId: 1,
+      message: 'Leave this page?',
+      detail: 'Changes you made may not be saved.',
+    });
+    if (choice === 0) event.preventDefault();
+    else quitting = false;
+  });
+  // Alt+F4 on Windows quits, where the window's close button hides; the system turns both into the same close, so the
+  // key is noted on its way in, in case the system handles it before the menu's accelerator does.
+  win.webContents.on('before-input-event', (_event, input) => {
+    if (process.platform === 'win32' && input.type === 'keyDown' && input.alt && !input.control && !input.meta && input.key === 'F4') quitting = true;
+  });
   // A window opened again (the Dock) while a start runs shows that it runs; the start shows the outcome in it.
   if (starting) void showNotRunning('Starting Ledung in the background…', 'starting');
   win.on('closed', () => {
@@ -197,11 +318,21 @@ function createWindow(): void {
   void attach();
 }
 
-// Plain window behaviour for now; closing hides, one instance and the shortcuts are D2 (#359).
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
-});
-app.on('activate', () => {
-  if (!win && app.isReady()) createWindow();
-});
-void app.whenReady().then(createWindow);
+// One app per computer: a second start shows the first one's window and ends (#359). Asked before anything else, so
+// the second never opens a window or signs in.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', showWindow);
+  app.on('before-quit', () => {
+    quitting = true;
+  });
+  // Reached only while quitting, since closing otherwise hides.
+  app.on('window-all-closed', () => app.quit());
+  // A click on the app in the Dock (Mac), the window hidden or not.
+  app.on('activate', showWindow);
+  void app.whenReady().then(() => {
+    Menu.setApplicationMenu(buildMenu());
+    createWindow();
+  });
+}
