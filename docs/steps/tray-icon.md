@@ -1,6 +1,6 @@
 # A tray icon: see that Ledung runs, open it, exit it — design
 
-Nov 17, 2026 · **Approved** by Simon (2026-11-16 23:59, the recommended choices; [decisions](../decisions.md)) and built in one PR, parts 2–5. Issue [#347](https://github.com/Fluffy-Fluffy-and-Bouncy/ledung/issues/347).
+Nov 17, 2026 · **Approved (Simon, 2026-11-17, #2027)**, with all recommended choices ([decisions](../decisions.md)), and built in one PR, parts 2–5. Issue [#347](https://github.com/Fluffy-Fluffy-and-Bouncy/ledung/issues/347).
 
 Revised the same night: **Windows and macOS are both first-class** and built together (Simon, through the manager, 2026-11-17). Linux stays later.
 
