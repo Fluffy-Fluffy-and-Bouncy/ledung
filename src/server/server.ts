@@ -22,6 +22,7 @@ import { linkedPushItem, Push, PushError, type LinkedPushItem } from './push.ts'
 import type { UsageQueries } from '../usage/queries.ts';
 import { readRunningRelease, type Updater } from '../update/updater.ts';
 import type { CheckIn } from '../update/checkin.ts';
+import type { TraySwitch } from '../platform/tray.ts';
 import { capTurnCores, typicalCosts } from '../resources/typical.ts';
 import { BoardError } from '../board/types.ts';
 import type { ProjectConfig } from '../config.ts';
@@ -176,6 +177,8 @@ export interface ServerOptions {
   shortcuts?: Shortcuts;
   /** The anonymous daily check-in: its notice and Settings switch (#220). */
   checkIn?: CheckIn;
+  /** Settings' switch for Ledung's icon in the notification area or menu bar (issue #347). */
+  tray?: TraySwitch;
   /** Settings → Relay: inviting computers to a relay this Ledung is admin of (issue #237). */
   relayAdmin?: RelayAdmin;
   /** Publishing usage to a shared repo, and reading every computer's file there (issue #363). */
@@ -2458,6 +2461,21 @@ export class LedungServer {
           throw new HttpError(400, (e as Error).message);
         }
       }
+      // Ledung's tray icon (issue #347) shows on this computer's screen, so only its own page switches it.
+      case 'GET tray':
+        this.requireScreen(req);
+        return this.tray().view();
+      case 'POST tray': {
+        this.requireScreen(req);
+        await this.requirePage(req, url);
+        const on = (await readJson(req)).on;
+        if (typeof on !== 'boolean') throw new HttpError(400, '"on" is true or false.');
+        try {
+          return this.tray().set(on);
+        } catch (e) {
+          throw new HttpError(400, (e as Error).message);
+        }
+      }
       case 'GET update':
         return this.updater().view();
       case 'POST update-check':
@@ -2599,6 +2617,17 @@ export class LedungServer {
   private requireThisComputer(req: IncomingMessage): void {
     this.requireLocal(req, 'Shortcuts are made');
     if (!fromThisComputer(req)) throw new HttpError(403, 'Shortcuts are made in Settings on the computer Ledung runs on.');
+  }
+
+  private tray(): TraySwitch {
+    if (!this.opts.tray) throw new HttpError(404, 'The tray icon is not available.');
+    return this.opts.tray;
+  }
+
+  /** A page on this computer itself, for what shows on its screen (the tray icon). */
+  private requireScreen(req: IncomingMessage): void {
+    this.requireLocal(req, "Ledung's icon is switched");
+    if (!fromThisComputer(req)) throw new HttpError(403, "Ledung's icon is switched in Settings on the computer Ledung runs on.");
   }
 
   private checkIn(): CheckIn {

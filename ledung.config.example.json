@@ -7,6 +7,7 @@
   "maxWorkingSessions": 10,
   "$usageStops": "Hold new turns on an account at a share of a plan window, e.g. \"usageStops\": { \"default\": { \"seven_day\": 98, \"five_hour\": 95 } } (\"default\": this computer's own login; windows five_hour and seven_day). Settings → Usage stops changes them for this Ledung, and lifts a reached one until the window resets.",
   "keepToolResultsDays": 3,
+  "$trayIcon": "Ledung's icon in the notification area (Windows) or menu bar (macOS). Unset, it is on, except for a Ledung started with its own data folder (LEDUNG_DATA_DIR), which \"trayIcon\": true turns it on for. Switching it in Settings → Update & restart is kept and wins over this.",
   "$keepToolResultsDays": "Ledung keeps its own copy of each conversation for the page. Tool output is stored up to 64 KB per result and screenshots without their image; this many days after a session ends, its tool output is cut to the first lines. The full output stays in Claude Code's own transcript of the session.",
   "remoteControl": true,
   "claudeExecutable": "installed",

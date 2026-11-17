@@ -2,7 +2,9 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, type ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
@@ -24,6 +26,7 @@ import { FakePasskey } from './fake-passkey.ts';
 import { RelayAdmin } from '../src/remote/admin.ts';
 import { RemoteLink } from '../src/remote/link.ts';
 import { iconFiles, Shortcuts } from '../src/platform/shortcuts.ts';
+import { Tray, TraySwitch } from '../src/platform/tray.ts';
 import { appDir } from '../src/platform/paths.ts';
 import { removeTemp } from './temp.ts';
 import { refuseRealSignInStores } from './signin-stores.ts';
@@ -77,6 +80,7 @@ let relayDir: string;
 // Settings → Shortcuts (issue #415): made in a folder inside .test/, never on the real Desktop or Applications.
 let shortcutDir: string;
 let shortcuts: Shortcuts;
+let traySwitch: TraySwitch;
 // A repo directory that records what the page asks it to create (the picker's one GitHub write).
 const created: string[] = [];
 const directory: RepoDirectory = {
@@ -174,7 +178,13 @@ before(async () => {
     launch: { node: process.execPath, script: path.join(shortcutDir, 'launcher.mjs') }, iconDir: shortcutDir, icons: iconFiles(appDir()), platform: 'darwin',
     meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) }, folders: async () => ({ applications: path.join(shortcutDir, 'Applications') }),
   });
-  server = new LedungServer({ port: PORT, token: TOKEN, store, manager, webRoot, updater, publicName: PUBLIC, relayAdmin, shortcuts, now: () => Date.now() + clockShift, openFolder: async (f) => {
+  // The tray icon's switch (issue #347), with a helper that starts nothing.
+  const fakeHelper = () => Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: () => true, unref: () => {} }) as unknown as ChildProcess;
+  traySwitch = new TraySwitch({
+    tray: new Tray({ kind: 'windows', address: '127.0.0.1', iconFile: 'icon.png', canRestart: false, counts: () => ({ working: 0, waiting: 0 }), onOpen: () => {}, onRestart: () => {}, onExit: () => {}, log: () => {}, spawn: fakeHelper }),
+    meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) }, configured: () => undefined, ownDataDir: true,
+  });
+  server = new LedungServer({ port: PORT, token: TOKEN, store, manager, webRoot, updater, publicName: PUBLIC, relayAdmin, shortcuts, tray: traySwitch, now: () => Date.now() + clockShift, openFolder: async (f) => {
     openedFolders.push(f);
     if (openFolderFails) throw new Error(openFolderFails);
   } });
@@ -876,7 +886,7 @@ test('API reads that do work need Ledung\'s own page; plain reads are unchanged 
   // Every work route above is outside the plain reads, and the kinds named in the issue stay so.
   for (const route of ['GET board-owners', 'GET board-projects/:id/people', 'GET board-projects/:id/repos', 'GET usage-publish-repos', 'GET usage-shared',
     'GET containers', 'GET browse-container', 'GET skills', 'GET workflows', 'GET claude-code', 'GET sessions/:id/mcp', 'GET sessions/:id/changes',
-    'GET sessions/:id/tree', 'GET sessions/:id/file', 'GET sessions/:id/image', 'GET relay-computers', 'GET relay-owners', 'GET shortcuts', 'GET projects/:id/flow']) {
+    'GET sessions/:id/tree', 'GET sessions/:id/file', 'GET sessions/:id/image', 'GET relay-computers', 'GET relay-owners', 'GET shortcuts', 'GET tray', 'GET projects/:id/flow']) {
     assert.equal(PLAIN_READS.has(route), false, `${route} does work`);
   }
 });
@@ -2605,6 +2615,49 @@ test('shortcuts are made only on this computer: a paired device, unlocked and si
     assert.equal(res.status, 403, res.body);
     assert.match(errorOf(res), here);
     assert.equal(fs.existsSync(path.join(shortcutDir, 'Applications', 'Ledung.app')), false);
+  } finally {
+    d.page.close();
+  }
+});
+
+test("the tray icon's switch needs the sign-in, and switching it the open page on this computer (issue #347)", async () => {
+  assert.equal((await request({ path: '/api/tray' })).status, 401);
+  const view = await request({ path: '/api/tray', headers: { cookie: COOKIE } });
+  assert.equal(view.status, 200, view.body);
+  assert.deepEqual(JSON.parse(view.body), { kind: 'windows', on: false });
+  const body = { on: true };
+  assert.equal((await request({ method: 'POST', path: '/api/tray', headers: { cookie: COOKIE, 'content-type': 'application/json' }, body: JSON.stringify(body) })).status, 403, 'no origin');
+  const refused = await change('/api/tray', body);
+  assert.equal(refused.status, 403);
+  assert.match(errorOf(refused), /open page/);
+  const page = await livePage();
+  try {
+    const wrong = await change('/api/tray', { on: 'yes' }, { 'x-ledung-page': page.key });
+    assert.equal(wrong.status, 400);
+    const on = await change('/api/tray', body, { 'x-ledung-page': page.key });
+    assert.equal(on.status, 200, on.body);
+    assert.deepEqual(JSON.parse(on.body), { kind: 'windows', on: true });
+    const off = await change('/api/tray', { on: false }, { 'x-ledung-page': page.key });
+    assert.deepEqual(JSON.parse(off.body), { kind: 'windows', on: false });
+  } finally {
+    page.close();
+  }
+  assert.equal(traySwitch.wanted(), false);
+});
+
+test("the tray icon is switched only on this computer: a paired device, unlocked and signing, is refused (issue #347)", async () => {
+  const d = await deviceWithPasskey('Tray phone');
+  try {
+    assert.equal((await pubChange('/api/device-unlock', '{}', d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign('/api/device-unlock', '{}') })).status, 200);
+    const here = /Ledung's icon is switched in Settings on the computer Ledung runs on/;
+    const view = await pub({ path: '/api/tray', headers: { cookie: d.cookie } });
+    assert.equal(view.status, 403, view.body);
+    assert.match(errorOf(view), here);
+    const body = JSON.stringify({ on: true });
+    const res = await pubChange('/api/tray', body, d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign('/api/tray', body) });
+    assert.equal(res.status, 403, res.body);
+    assert.match(errorOf(res), here);
+    assert.equal(traySwitch.wanted(), false);
   } finally {
     d.page.close();
   }
