@@ -385,8 +385,8 @@ const Config = z.object({
   pluginsOff: z.array(z.string().min(1)).default([]),
   /**
    * Features being tried out before they are on for everyone, by name (#293, Martin 2026-11-12, Ledung question #881:
-   * "feature-flag it"): "step-questions-picker", the first-run picker for how workflow-step questions are written.
-   * A name Ledung doesn't know is ignored, so the same list works across versions.
+   * "feature-flag it"). None is being tried out now ("step-questions-picker" went with its setting, #351). A name Ledung
+   * doesn't know is ignored, so the same list works across versions.
    */
   testFeatures: z.array(z.string().min(1)).default([]),
   /** Managers turn on Remote Control, as "<project> lead" in the Claude app (#19); false: none do. */

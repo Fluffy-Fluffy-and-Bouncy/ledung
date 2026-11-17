@@ -116,7 +116,7 @@ import type { SecretInfo, SecretLifetime } from '../shared/secrets.ts';
 import { FlowRunError, FlowRuns, lastReplyOf } from './flow-runs.ts';
 import { dockerWorktreeHost, localWorktreeHost } from './run-worktrees.ts';
 import { RunStore } from './run-store.ts';
-import { STEP_QUESTIONS, type FlowRun, type StepQuestions, type StepQuestionsView } from '../shared/flow-run.ts';
+import type { FlowRun } from '../shared/flow-run.ts';
 import type { RunBlock } from '../shared/protocol.ts';
 import type { ProposeHandlers, RunHandlers } from './tools.ts';
 import { buildProposal, ProposalStore, proposalSummary, type ProposedChange } from './flow-propose.ts';
@@ -144,14 +144,6 @@ const ANSWERED_CARDS_KEY = 'helper-answered-cards';
 const USER_NAME = /^[\p{L}\p{M}][\p{L}\p{M} .'’-]{0,39}$/u;
 /** The meta key, with the project's name, that says "Record where this came from" was dismissed (workflow-origin.md, section 4). */
 const ORIGIN_DISMISSED = 'flow-origin-dismissed:';
-/** Where Settings → Questions at a workflow step is kept (#291): this Ledung's own data, not the config file. */
-const STEP_QUESTIONS_KEY = 'step-questions';
-/** Set when the first-run picker for it was skipped (#293), so it is not asked again; a saved choice does the same. */
-const STEP_QUESTIONS_SKIPPED_KEY = 'step-questions-skipped';
-/** The testFeatures name that turns the first-run picker on (#293, Martin 2026-11-12, Ledung question #881). */
-export const STEP_QUESTIONS_PICKER = 'step-questions-picker';
-/** The picker's EXERCISED line once per run, as the page reads the setting at every load. */
-let pickerTraced = false;
 
 /** Ledung's own plugin with the "workflow building" skill (part 3e, #1577), shipped beside src/ and web/. */
 export const WORKFLOW_PLUGIN = () => path.join(appDir(), 'plugins', 'ledung-workflow');
@@ -474,7 +466,6 @@ export class SessionManager {
         if (this.store.withdrawQuestion(id, reason)) this.publish({ type: 'question', question: this.store.getQuestion(id)! });
       },
       tiers: (project) => tiersOf(this.projectStore.get(project)?.config.questionTiers),
-      stepQuestions: () => this.stepQuestions(),
       get userName() { return self.config.userName; },
     });
     this.gate = {
@@ -1042,41 +1033,6 @@ export class SessionManager {
     } catch (e) {
       throw new UserError((e as Error).message);
     }
-  }
-
-  /**
-   * Settings → Questions at a workflow step (#291, Martin 2026-11-12, Ledung questions #873 and #875): Ledung's card
-   * (the default, as before) or the manager's full write-up, kept in this Ledung's own data for all its projects.
-   */
-  stepQuestions(): StepQuestions {
-    const v = this.store.getMeta(STEP_QUESTIONS_KEY);
-    return v === 'write-up' ? 'write-up' : 'card';
-  }
-
-  setStepQuestions(value: unknown): StepQuestions {
-    if (!STEP_QUESTIONS.includes(value as StepQuestions)) throw new UserError(`Questions at a workflow step are ${STEP_QUESTIONS.map((s) => `"${s}"`).join(' or ')}.`);
-    this.store.setMeta(STEP_QUESTIONS_KEY, value as StepQuestions);
-    return this.stepQuestions();
-  }
-
-  /**
-   * The setting with the first-run picker's state (#293): asked, behind its test feature, while nothing was saved
-   * and it was not skipped; a Ledung that already has a choice never sees it.
-   */
-  stepQuestionsView(): StepQuestionsView {
-    const picker = this.config.testFeatures.includes(STEP_QUESTIONS_PICKER);
-    const ask = picker && this.store.getMeta(STEP_QUESTIONS_KEY) === null && this.store.getMeta(STEP_QUESTIONS_SKIPPED_KEY) === null;
-    if (ask && !pickerTraced) {
-      pickerTraced = true;
-      exercisedLine('EXERCISED #293 first-run picker for workflow-step questions asked');
-    }
-    return { choice: this.stepQuestions(), picker, ask };
-  }
-
-  /** Skip in the first-run picker (#293): the default stays, and the picker is not asked again. */
-  skipStepQuestions(): StepQuestionsView {
-    this.store.setMeta(STEP_QUESTIONS_SKIPPED_KEY, new Date().toISOString());
-    return this.stepQuestionsView();
   }
 
   setResourceSettings(body: Record<string, unknown>): void {

@@ -184,7 +184,7 @@ export interface RunHandlers {
   step(args: { run: string; outcome: string; note?: string; block?: string; stop?: boolean }): Promise<string>;
   status(run?: string): Promise<string>;
   /** ask_user at a run's person step (#291): checked before anything is stored; the tag and the options as the flow spells them. */
-  writeUp?(args: { run: string; block: string; review: boolean; options?: (string | QuestionOption)[] }): Promise<{ tag: QuestionRun; options?: (string | QuestionOption)[] }>;
+  writeUp?(args: { run: string; block: string; review: boolean; options?: (string | QuestionOption)[] }): Promise<{ tag: QuestionRun; tier: string; options?: (string | QuestionOption)[] }>;
   /** The write-up stored: the run waits for its answer; throws (the question withdrawn) when the run moved meanwhile. */
   writeUpAsked?(q: QuestionInfo): void;
 }
@@ -502,7 +502,8 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
     const extra = (['about_question', 'about_request', 'order_command', 'screenshots'] as const).filter((k) => args[k] !== undefined);
     if (extra.length) throw new Error(`A run's person step is asked without ${extra.join(', ')}. Nothing was asked.`);
     const checked = await step.writeUp({ run: args.run.trim(), block: args.block.trim(), review: !!args.review, options: args.options });
-    const asked = askedQuestion({ ...args, options: checked.options as AskArgs['options'] });
+    // The step says the tier (#351): a review and a question are not all "Blocks a finished PR", whatever is given.
+    const asked = askedQuestion({ ...args, tier: checked.tier, options: checked.options as AskArgs['options'] });
     const details: QuestionDetails = { ...asked.details, run: checked.tag };
     const evidence = details.review?.evidence ?? [];
     if (h.keepFiles && evidence.length) {

@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-17
+- Workflow runs: at a step where you decide (a question or a review), the run's manager now always writes the question for you, with the work's background and evidence, instead of Ledung's card built from the step's instructions. If no question comes within 10 minutes, Ledung asks a short card of its own, headed as Ledung's, without the step's instructions. A review goes under your first question tier and a question under the second, unless the step names its own tier (new "Question tier" field on a person block). Settings → Sessions → **Questions at a workflow step** and its first-run picker are gone; a choice saved there is ignored. (#351)
+
 ## 2026-11-12
 - Sidebar, CPU, Memory and GPU bars: drag the handle on a bar's limit line to set the limit. A label shows the value as you drag ("GPU 50%", "Memory 48 GB", in steps of 5% or 1 GB), it applies when you let go, and dragging to the right end removes the limit. With no limit the handle waits at the right end and shows when you point at the bar. The keyboard works too: arrow keys, Home and End, then Enter. The number editor now opens with a double-click (a tap on a phone) and has a slider next to the number field; on a phone it is the way to set a limit. (#295)
 - Machine panel: virtual displays (Parsec's, a virtual monitor driver) no longer show up as extra copies of your graphics card under "Other GPUs"; a GPU limit you set on the card while it was listed as "#1" still applies to it. (#304)
