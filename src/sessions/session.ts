@@ -83,8 +83,6 @@ let kindDroppedExercised = false;
 let byHandExercised = false;
 /** The EXERCISED line of issue #150, once per run. */
 let subagentGrantExercised = false;
-/** The EXERCISED line of issue #262, once per run. */
-let heldReturnsExercised = false;
 /** The EXERCISED line of issue #308, once per run. */
 let askedReturnsExercised = false;
 
@@ -1924,10 +1922,6 @@ export class Session {
       : `Away mode held a ${toolName} call; it did not run, and Ledung asked ${this.userName} (question #${q.id}).` });
     this.record('question', { questionId: q.id });
     this.publish({ type: 'question', question: q });
-    if (held === 'away' && !heldReturnsExercised) {
-      heldReturnsExercised = true;
-      exercisedLine(`EXERCISED #262 a manager's own call away mode held returned at once as question #${q.id}, not a prompt`);
-    }
     if (held === 'prompt' && !askedReturnsExercised) {
       askedReturnsExercised = true;
       exercisedLine(`EXERCISED #308 a manager's own ${toolName} call that needs the person's allow returned at once as question #${q.id}, not a prompt`);
