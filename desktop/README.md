@@ -25,8 +25,11 @@ One window opens with your running Ledung's page, signed in. Nothing opens in th
   a command line; the window's address is `http://127.0.0.1:<port>/`. On the first start Ledung turns that into a
   paired browser of its own, listed in Settings → Devices as "Chrome on <system>" for now (#363). Later starts keep it;
   if you remove it there, the next start signs in again.
-- **Links.** The window shows Ledung's page only. A link elsewhere (a pull request in a chat) opens in your default
-  browser; a link that would open a new window of Ledung itself (a board image) is not opened yet.
+- **Links.** The window shows Ledung's page only. A web link elsewhere (a pull request in a chat) opens in your default
+  browser; a link that would open a new window of Ledung itself (a board image), or one that isn't a web address
+  (`mailto:`), is not opened yet.
+- **When Ledung stops.** If the page can't load any more (Ledung stopped, then a reload), the window goes back to
+  "Ledung is not running" with Retry.
 
 ## Trying it against a throwaway Ledung
 
@@ -41,9 +44,17 @@ LEDUNG_CONFIG=$PWD/../.test/a/config.json LEDUNG_DATA_DIR=$PWD/../.test/a/data n
 ```
 
 `.test/a/config.json` names the port, e.g. `{ "port": 4396, "projects": [] }`. The app keeps its cookies in its own
-folder (Electron's user data for "ledung-desktop"), apart from any browser.
+folder (Electron's user data for "ledung-desktop"), apart from any browser. Cookies on `127.0.0.1` are shared by every
+port (#52), so pointing the app at another Ledung and back signs it in again, as a new device in that Ledung.
 
 Stop the throwaway Ledung by the process listening on its port, never by name: the real Ledung is a `node` process too.
+
+**The loopback check.** `probe/` loads the real `main.ts` and checks the window from inside, against the throwaway
+Ledung the two settings name, printing `PROBE {…}` lines; opening the default browser is intercepted, so nothing opens.
+From this folder, with the settings as above: `PROBE_PHASE=attach npx electron probe` (a Ledung runs: sign-in, address,
+settings, refused navigation, links), `again` (a second start keeps its device), `notrunning` and `stopped` (these
+start and stop the config's Ledung themselves: the "not running" page, Retry, and a Ledung that stops under the
+window). Never run it with the real Ledung's config.
 
 ## How it is built
 

@@ -4,8 +4,9 @@
 // with another data folder, counts as not running and learns nothing.
 //
 // A mirror, not an import: src/platform/running.ts pulls in the core's config and its dependencies, which the root
-// `npm install` brings, and desktop/ installs only its own (issue #358, open point 2). test/desktop.test.ts checks
-// this proof against the core's, so the two can't drift apart. No Electron here, so the root tests can run it.
+// `npm install` brings, and desktop/ installs only its own (issue #358, open point 2). test/desktop.test.ts compares
+// the proof, the default port, the port reading and the token check with the core's; the data folder and config
+// lookups are checked against what the core does today, not compared live. No Electron here, so the root tests run it.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';

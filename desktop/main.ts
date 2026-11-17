@@ -61,6 +61,16 @@ function lockNavigation(wc: WebContents): void {
   wc.on('did-navigate-in-page', (_event, url) => {
     if (ownOrigin === null && url.startsWith('file:') && url.endsWith('#retry')) void attach();
   });
+  // Ledung's page failed to load after attaching (it stopped, or a reload found nothing): back to the page with Retry
+  // instead of Chromium's error page, which has none (self-check finding 1g). -3 is a load the app itself replaced.
+  wc.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
+    if (isMainFrame && code !== -3 && ownOrigin !== null && sameOrigin(url)) void showNotRunning(`Ledung's page did not load (${description}).`);
+  });
+}
+
+async function showNotRunning(reason: string): Promise<void> {
+  ownOrigin = null;
+  if (win && !win.isDestroyed()) await win.loadFile(NOT_RUNNING_PAGE, { query: { reason } });
 }
 
 /**
@@ -85,8 +95,7 @@ async function attach(): Promise<void> {
     const found = await findRunning();
     if (!win || win.isDestroyed()) return;
     if (!found.running) {
-      ownOrigin = null;
-      await win.loadFile(NOT_RUNNING_PAGE, { query: { reason: found.reason } });
+      await showNotRunning(found.reason);
       return;
     }
     const origin = `http://127.0.0.1:${found.port}`;
@@ -94,6 +103,7 @@ async function attach(): Promise<void> {
     ownOrigin = origin;
     await win.loadURL(`${origin}/`);
   } catch (e) {
+    // A failed page load is shown by did-fail-load; this only says it in the terminal.
     console.error(`Ledung desktop: ${(e as Error).message}`);
   } finally {
     attaching = false;

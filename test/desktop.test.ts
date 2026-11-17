@@ -8,9 +8,12 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { candidatePorts, configFiles, dataDir, DEFAULT_PORT as APP_DEFAULT_PORT, findRunning, runningProof as appProof } from '../desktop/attach.ts';
+import {
+  candidatePorts, configFiles, configuredPort as appConfiguredPort, dataDir, DEFAULT_PORT as APP_DEFAULT_PORT, findRunning,
+  runningProof as appProof, savedToken as appSavedToken,
+} from '../desktop/attach.ts';
 import { DEFAULT_PORT } from '../src/config.ts';
-import { runningProof } from '../src/platform/running.ts';
+import { configuredPort, runningProof, savedToken as coreSavedToken } from '../src/platform/running.ts';
 import { listenOk } from './free-port.ts';
 import { removeTemp } from './temp.ts';
 
@@ -49,6 +52,26 @@ test("the app's proof is the core's, for any token and nonce", () => {
     assert.equal(appProof(token, nonce), runningProof(token, nonce));
   }
   assert.equal(APP_DEFAULT_PORT, DEFAULT_PORT);
+});
+
+test("the app reads a config's port and a data folder's token as the core does", () => {
+  const dir = path.join(base, 'same');
+  fs.mkdirSync(dir, { recursive: true });
+  const configs: Record<string, string | null> = { none: null, empty: '{}', port: '{"port":4398}', text: '{"port":"4398"}', broken: '{ not json', float: '{"port":43.5}' };
+  for (const [name, body] of Object.entries(configs)) {
+    const file = path.join(dir, `${name}.json`);
+    if (body !== null) fs.writeFileSync(file, body);
+    assert.equal(appConfiguredPort(file), configuredPort(file), name);
+  }
+  assert.equal(appConfiguredPort(path.join(dir, 'port.json')), 4398, 'a port is read at all');
+  const tokens: Record<string, string | null> = { missing: null, good: `${'a1'.repeat(32)}\n`, short: 'abc', upper: 'A1'.repeat(32) };
+  for (const [name, body] of Object.entries(tokens)) {
+    const data = path.join(dir, `data-${name}`);
+    fs.mkdirSync(data, { recursive: true });
+    if (body !== null) fs.writeFileSync(path.join(data, 'auth-token'), body);
+    assert.equal(appSavedToken(data), coreSavedToken(data), name);
+  }
+  assert.equal(appSavedToken(path.join(dir, 'data-good')), 'a1'.repeat(32), 'a token is read at all');
 });
 
 test('the Ledung holding the data folder\'s token is found on its port; another program there counts as not running', async () => {
