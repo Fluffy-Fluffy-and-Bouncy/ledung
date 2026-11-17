@@ -7,6 +7,7 @@ import { removeSignIn } from '../accounts/signin-store.ts';
 import type { AccountChoices, AccountInfoView, AwayInfo, AwayKind, HeavyCommandInfo, JobKindInfo, SignInProblem } from '../shared/protocol.ts';
 import { Away } from './away.ts';
 import { Orders } from './orders.ts';
+import { WaitingLines } from './waiting-lines.ts';
 import { ChatImageError, type ChatImages } from './chat-images.ts';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -281,8 +282,11 @@ export class SessionManager {
     this.config = config;
     this.store = store;
     // New plan-limit figures may reach or pass a usage stop (issue #278).
+    // A question or permission prompt for the person gets its line in a manager's chat (issue #350).
+    const lines = new WaitingLines({ store, publish, userName: () => this.config.userName });
     this.publish = (event) => {
       publish(event);
+      lines.seen(event);
       if (event.type === 'limits') this.refreshStops();
       // The helper's turns, for the setup's one-turn-per-step rule (acceptance round 1, 6.4).
       if (event.type === 'session' && event.session.project === HELPER) this.onHelperStatus(event.session);
@@ -298,7 +302,8 @@ export class SessionManager {
     const self = this;
     this.away = new Away(store, publish, { get userName() { return self.config.userName; }, notify: (text) => this.tellManagers(text), onEnded: (since, end) => void this.orders.settleAway(since, end) });
     this.orders = new Orders({
-      store, get userName() { return self.config.userName; }, publish,
+      // Through this.publish, so its questions get their Waiting for you lines (issue #350).
+      store, get userName() { return self.config.userName; }, publish: this.publish,
       tierOf: (managerId) => this.management.questionTiers(managerId)[0],
       tell: (id, text) => {
         this.store.addInbox(id, 'ledung', text);
@@ -319,7 +324,7 @@ export class SessionManager {
       store,
       // Read when used, so a name given in the setup reaches it at once.
       get userName() { return self.config.userName; },
-      publish,
+      publish: this.publish,
       orders: this.orders,
       away: () => this.away.current(),
       wake: (id) => this.live.get(id)?.deliver(),

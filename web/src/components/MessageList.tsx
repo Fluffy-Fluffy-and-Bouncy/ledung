@@ -20,6 +20,7 @@ import { distanceFromBottom, isStuck, restoredScrollTop } from '../scrollAnchor.
 import { insertByTime, lastOwnMessage, shownWoven, wovenQuestions } from '../conversation.ts';
 import { SENT_IMAGE_PREFIX, sentImageUrl } from '../chatImages.ts';
 import { NEAR_TOP, stepUp, tailStart, windowStart } from '../messageWindow.ts';
+import { lineHead, lineOutcome, permissionLine, questionLine, type WaitingLine } from '../../../src/shared/waiting-line.ts';
 
 /** The drawn part's first key when it starts at the very first item, whatever is loaded above later. */
 const FROM_TOP = '\u0000top';
@@ -34,6 +35,8 @@ type Item =
   | { key: string; at: number; type: 'tool'; name: string; input: Record<string, any>; result: ToolResult | null; sub: boolean }
   | { key: string; at: number; type: 'permission'; permissionId: string; toolName: string; input: Record<string, any> }
   | { key: string; at: number; type: 'note'; text: string; technical: boolean }
+  /** A "Waiting for you" line (issue #350): a question or prompt for the person, with Open. */
+  | { key: string; at: number; type: 'waiting'; line: WaitingLine }
   /** A card in the Ledung Helper's chat (docs/steps/ledung-helper.md); answered once the person wrote after it. */
   | { key: string; at: number; type: 'card'; card: HelperCard; answered: boolean }
   /** The Ledung Helper's one message of a turn, with its card (src/sessions/helper-tools.ts, reply). */
@@ -80,6 +83,7 @@ function toItems(messages: StoredMessage[]): Item[] {
     }
     else if (m.kind === 'question') items.push({ ...base, key: `${m.id}`, type: 'question', questionId: m.data.questionId });
     else if (m.kind === 'event') items.push({ ...base, key: `${m.id}`, type: 'event', text: m.data.text });
+    else if (m.kind === 'waiting') items.push({ ...base, key: `${m.id}`, type: 'waiting', line: m.data });
     else if (m.kind === 'shell') items.push({ ...base, key: `${m.id}`, type: 'shell', block: m.data });
     else if (m.kind === 'card') items.push({ ...base, key: `${m.id}`, type: 'card', card: m.data.card, answered: false });
     else if (m.kind === 'reply') items.push({ ...base, key: `${m.id}`, type: 'reply', text: m.data.text, card: m.data.card ?? null, answered: false, messageId: m.id });
@@ -198,6 +202,8 @@ export const MessageList = memo(function MessageList(props: {
   focusMessage?: number | null;
   /** Opens a question in Waiting for you. */
   onOpenQuestion?: (id: number) => void;
+  /** Opens Waiting for you on what a session asked: a permission prompt's line (issue #350). */
+  onOpenWaitingFor?: (sessionId: string) => void;
   /** Opens a board thread of this conversation's project in the Board view; none: the project has no board. */
   onOpenBoardThread?: (threadId: string) => void;
   /** The session's name colour (issue #269): its own messages get the message box's tint; undefined: no tint. */
@@ -413,10 +419,13 @@ export const MessageList = memo(function MessageList(props: {
             onOpenFile={props.onOpenFile}
             onOpenBoardThread={props.onOpenBoardThread}
             onOpenQuestion={props.onOpenQuestion}
-            titleOf={item.type === 'question' || item.type === 'permission' ? props.titleOf : undefined}
-            question={item.type === 'question' ? props.questions[item.questionId] : undefined}
+            onOpenWaitingFor={item.type === 'waiting' ? props.onOpenWaitingFor : undefined}
+            titleOf={item.type === 'question' || item.type === 'permission' || item.type === 'waiting' ? props.titleOf : undefined}
+            question={item.type === 'question' ? props.questions[item.questionId]
+              : item.type === 'waiting' && item.line.item === 'question' ? props.questions[Number(item.line.ref)] : undefined}
             focused={item.type === 'question' ? item.questionId === focus : item.type === 'assistant' && item.anchor !== undefined && item.anchor === focusMessage}
-            live={item.type === 'permission' ? permissions[item.permissionId] : undefined}
+            live={item.type === 'permission' ? permissions[item.permissionId]
+              : item.type === 'waiting' && item.line.item === 'permission' ? permissions[item.line.ref] : undefined}
             decision={item.type === 'permission' ? decisions.get(item.permissionId) : undefined}
             renderCard={item.type === 'card' || item.type === 'reply' || item.type === 'permission' ? props.renderCard : undefined}
             assistantName={props.assistantName}
@@ -480,6 +489,7 @@ interface ItemProps {
   onOpenFile?: (path: string) => void;
   onOpenBoardThread?: (threadId: string) => void;
   onOpenQuestion?: (id: number) => void;
+  onOpenWaitingFor?: (sessionId: string) => void;
   titleOf?: (id: string) => string;
   /** The question of a question item, as it is now. */
   question?: QuestionInfo;
@@ -588,6 +598,8 @@ const MessageItem = memo(function MessageItem(props: ItemProps) {
       );
     case 'event':
       return <div className="event">{item.text} {time}</div>;
+    case 'waiting':
+      return <WaitingLineRow {...props} line={item.line} time={time} />;
     case 'card':
       return <div className="helper-card-row">{props.renderCard!(item.card, item.answered)}</div>;
     case 'reply':
@@ -673,3 +685,31 @@ ${b.stderr.replace(/\s+$/, '')}`}</span> : null}</pre>
     }
   }
 }, sameItem);
+
+/**
+ * A "Waiting for you" line (issue #350): drawn from the item as the page has it now, else as Ledung stored it (an older
+ * item the page has not loaded). Plain text only (Done looks like 5). A question's Open stays once it is answered and
+ * leads to its page; a decided permission prompt has no page, so its Open goes.
+ */
+function WaitingLineRow(props: ItemProps & { line: WaitingLine; time: ReactNode }) {
+  const titleOf = props.titleOf;
+  const l = props.question ? questionLine(props.question, props.userName, (id) => titleOf?.(id))
+    : props.live ? permissionLine(props.live, props.userName, (id) => titleOf?.(id))
+    : props.line;
+  const outcome = lineOutcome(l);
+  const open = l.item === 'question'
+    ? props.onOpenQuestion && (() => props.onOpenQuestion!(Number(l.ref)))
+    : l.state === 'waiting' && props.onOpenWaitingFor ? () => props.onOpenWaitingFor!(l.sessionId) : undefined;
+  return (
+    <div className={`waiting-line ${l.state}`}>
+      <span className="waiting-line-text">
+        {!outcome && <strong>Waiting for you: </strong>}
+        {lineHead(l)}
+        {outcome && <span className="waiting-line-outcome"> · {outcome}{l.at ? ` · ${formatTime(l.at)}` : ''}</span>}
+      </span>
+      {open && <> · <button className="link waiting-line-open" title={outcome ? 'Open it in Waiting for you' : 'Answer it in Waiting for you'} onClick={open}>Open</button></>}
+      {/* One time: when it was asked while it waits, when it was decided after (Done looks like 3). */}
+      {!outcome && <>{' '}{props.time}</>}
+    </div>
+  );
+}

@@ -788,6 +788,16 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE flow_runs ADD COLUMN fork TEXT;
   `,
+  // A "Waiting for you" line in a manager's chat (issue #350): the one message per question or permission request, so
+  // a line is never added twice (Done looks like 8) and is found to update in place when it is decided.
+  `
+  CREATE TABLE waiting_lines (
+    item TEXT NOT NULL,
+    ref TEXT NOT NULL,
+    message_id INTEGER NOT NULL REFERENCES messages(id),
+    PRIMARY KEY (item, ref)
+  );
+  `,
 ];
 
 export function databaseFile(dir = userDataDir()): string {

@@ -561,7 +561,8 @@ export interface StoredMessage {
   at: number;
   /** card: a card in the Ledung Helper's chat (src/shared/helper-cards.ts). */
   /** reply: the Ledung Helper's one message of a turn, with its card (src/sessions/helper-tools.ts, reply). */
-  kind: 'user' | 'sdk' | 'permission' | 'decision' | 'event' | 'question' | 'shell' | 'card' | 'reply';
+  /** waiting: a "Waiting for you" line in a manager's chat (issue #350, src/shared/waiting-line.ts). */
+  kind: 'user' | 'sdk' | 'permission' | 'decision' | 'event' | 'question' | 'shell' | 'card' | 'reply' | 'waiting';
   data: any;
 }
 

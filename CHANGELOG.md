@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-17
+- A manager's chat now shows a line when something waits for you there: "Waiting for you: Review #N — <title> · Open" for a run's person step, and the same for a question or permission prompt one of its sessions put to you. Open goes straight to it in Waiting for you, and Back returns to the chat. Once decided, the same line says how ("Accepted by Simon", "Answered by Simon: <option>", "Denied", "Withdrawn") with the time. No new notifications. (#350)
+
 ## 2026-11-16
 - Managers can now see what waits for you from their own project: a new read-only tool lists its open questions and reviews (run reviews and workflow proposals included), run person steps and permission prompts, in Waiting for you's order with the same count as its "One project" view, what waits for the manager itself apart, and what you answered in the last day. Never another project's or the chats' items, and nothing is answered or marked read. (#338)
 - Message box: drop (or pick with 📎) any file that isn't a PNG, JPEG, GIF or WebP image, and Ledung saves a copy in the session's folder under `.ledung/drops/` and puts `[file: .ledung/drops/<date>-<name>]` in the message where the cursor is, so Claude can open it. It works from a linked computer's tab or a phone too, and the file lands on the computer the session runs on. Up to 50 MB per file; git doesn't see the drops folder. Images still go in as images. Not yet for container projects: Ledung says so and saves nothing. (#339)

@@ -117,8 +117,11 @@ export class OpenSession {
 
   /** A message from the live connection; one of another session (sent before Ledung read a watch) is not shown. */
   message(m: StoredMessage): void {
-    if (m.sessionId !== this.id || this.shown.some((x) => x.id === m.id)) return;
-    this.set([...this.shown, m]);
+    if (m.sessionId !== this.id) return;
+    // A message sent again is one changed in place (a Waiting for you line once decided, issue #350): replaced.
+    const at = this.shown.findIndex((x) => x.id === m.id);
+    if (at < 0) this.set([...this.shown, m]);
+    else if (JSON.stringify(this.shown[at]!.data) !== JSON.stringify(m.data)) this.set(this.shown.map((x, i) => (i === at ? m : x)));
   }
 
   async loadEarlier(): Promise<void> {

@@ -74,3 +74,16 @@ test('no chat open shows nothing, and a late read of the previous chat is not sh
   open.open(null);
   assert.deepEqual(viewFor(views.at(-1)!, null).messages, []);
 });
+
+test('a message sent again with new data replaces the one shown, in place (a Waiting for you line decided, issue #350)', async () => {
+  const line = msg('X', 'waiting');
+  const later = msg('X', 'later');
+  const { open, views, release } = harness({ X: [line, later] });
+  open.open('X');
+  await release();
+  const count = views.length;
+  open.message({ ...line, data: { text: 'waiting' } });
+  assert.equal(views.length, count, 'the same data again changes nothing');
+  open.message({ ...line, data: { text: 'answered' } });
+  assert.deepEqual(views.at(-1)!.messages.map((m) => m.data.text), ['answered', 'later']);
+});
