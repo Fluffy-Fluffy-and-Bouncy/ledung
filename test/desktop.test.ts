@@ -15,7 +15,7 @@ import {
   candidatePorts, configFiles, configuredPort as appConfiguredPort, dataDir, DEFAULT_PORT as APP_DEFAULT_PORT, findRunning,
   runningProof as appProof, savedToken as appSavedToken,
 } from '../desktop/attach.ts';
-import { runStart, START_SCRIPT_ENV, startCommand, startEnv } from '../desktop/start.ts';
+import { findOnPath, runStart, START_SCRIPT_ENV, startCommand, startEnv } from '../desktop/start.ts';
 import { DEFAULT_PORT } from '../src/config.ts';
 import { configuredPort, runningProof, savedToken as coreSavedToken } from '../src/platform/running.ts';
 import { listenOk } from './free-port.ts';
@@ -218,6 +218,23 @@ test('a start command that is not installed gives one line saying so, and nothin
   const result = await runStart({ command: 'ledung-desktop-test-no-such-command', args: ['--no-open'] }, startEnv());
   assert.equal(result.ok, false);
   assert.match((result as { line: string }).line, /^Could not start Ledung: the "ledung-desktop-test-no-such-command" command was not found\./);
+});
+
+test('the command is looked up on PATH as a shell would: a runnable file, by PATHEXT on Windows; none gives null', () => {
+  const bin = path.join(base, 'path bin');
+  const other = path.join(base, 'other');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.mkdirSync(other, { recursive: true });
+  fs.writeFileSync(path.join(bin, 'ledung'), '#!/bin/sh\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(other, 'ledung'), 'not runnable', { mode: 0o644 });
+  fs.writeFileSync(path.join(bin, 'ledung.cmd'), '@echo off\r\n');
+  if (process.platform !== 'win32') {
+    assert.equal(findOnPath('ledung', { PATH: [other, bin].join(':') }, 'darwin'), path.join(bin, 'ledung'), 'the runnable one, past one that is not');
+    assert.equal(findOnPath('ledung', { PATH: other }, 'darwin'), null, 'a file that is not runnable is not the command');
+  }
+  assert.equal(findOnPath('ledung', { Path: [other, bin].join(';'), PathExt: '.COM;.EXE;.CMD' }, 'win32'), path.join(bin, 'ledung.cmd'), 'Windows: ledung.cmd by PATHEXT, a bare file skipped');
+  assert.equal(findOnPath('ledung', { PATH: '' }, process.platform), null, 'an empty PATH finds nothing');
+  assert.equal(findOnPath('ledung-desktop-test-no-such-command', startEnv(), process.platform), null);
 });
 
 test('a start that does not return in time is given up on, with one line', async () => {

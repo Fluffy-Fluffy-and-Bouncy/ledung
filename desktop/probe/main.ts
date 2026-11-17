@@ -301,6 +301,7 @@ async function run(): Promise<void> {
       await pressStart(w);
       const startingText = (await page(await showing('file:'), `document.body.innerText`)).replace(/\s+/g, ' ');
       out('starting', { text: startingText });
+      expect(startingText.includes('Starting Ledung') && !startingText.includes('Retry'), 'pressing Start shows "Starting Ledung…" with no buttons', startingText);
       await signedIn(await showing(`${origin}/`));
       const seconds = (Date.now() - pressed) / 1000;
       out('started', { seconds });

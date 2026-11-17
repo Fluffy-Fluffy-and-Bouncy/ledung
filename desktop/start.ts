@@ -3,6 +3,7 @@
 // src/platform/background.ts). Never a core from the clone with the real data folder: one real Ledung per computer,
 // the npm one. No Electron in this file, so the root tests run it (test/desktop.test.ts).
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 
 /**
@@ -67,13 +68,39 @@ export function lastLine(output: string): string {
   return lines.findLast((line) => /^(\w*Error|Error)\b/.test(line)) ?? lines.at(-1) ?? '';
 }
 
+/**
+ * Where the command is on the start's PATH, as the system's shell would find it, or null when it is not there. Looked
+ * up first, so a missing command is the same "not found" on every system: on Windows the shell would otherwise turn
+ * it into an exit code and a sentence of its own (self-check finding 1). PATHEXT on Windows (ledung is ledung.cmd).
+ */
+export function findOnPath(command: string, env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): string | null {
+  const get = (name: string) => Object.entries(env).find(([key]) => key.toUpperCase() === name)?.[1] ?? '';
+  const exts = platform === 'win32' ? ['', ...get('PATHEXT').split(';').filter(Boolean).map((e) => e.toLowerCase())] : [''];
+  const dirs = path.isAbsolute(command) ? [''] : get('PATH').split(platform === 'win32' ? ';' : ':').filter(Boolean);
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const file = dir ? path.join(dir, command + ext) : command + ext;
+      try {
+        if (!fs.statSync(file).isFile()) continue;
+        if (platform !== 'win32') fs.accessSync(file, fs.constants.X_OK);
+        else if (ext === '') continue; // Windows runs a file by its extension: a bare name is not a program.
+        return file;
+      } catch {
+        // Not here, or not runnable.
+      }
+    }
+  }
+  return null;
+}
+
 /** Past this the start is given up on; `ledung` itself returns after at most 60 s (background.ts READY_MS). */
 const START_MS = 75_000;
 
 /**
  * Runs the start command and waits for it to return. A command that can't be run, that exits with an error or that
  * doesn't return in time gives one line saying what failed; nothing here throws, so no Electron error dialog can come
- * of it (Mac spike surprise 3). The command is detached: quitting the app while it waits leaves the start going.
+ * of it (Mac spike surprise 3). The command is detached: quitting the app while it waits leaves the start going, and
+ * one that doesn't return in time is left running, not killed, since it may still be bringing Ledung up.
  */
 export function runStart(cmd: StartCommand = startCommand(), env: NodeJS.ProcessEnv = startEnv(), timeoutMs = START_MS): Promise<StartResult> {
   const shown = [path.basename(cmd.command), ...cmd.args.map((a) => (path.isAbsolute(a) ? path.basename(a) : a))].join(' ');
@@ -86,17 +113,20 @@ export function runStart(cmd: StartCommand = startCommand(), env: NodeJS.Process
       clearTimeout(timer);
       resolve(result);
     };
+    const file = findOnPath(cmd.command, env);
+    if (file === null) {
+      resolve({ ok: false, line: `Could not start Ledung: the "${path.basename(cmd.command)}" command was not found. Install Ledung, or start it from a terminal.` });
+      return;
+    }
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(cmd.command, cmd.args, {
-        env,
-        detached: true,
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        // `ledung` is ledung.cmd on Windows, which Node runs only through the shell; the arguments are fixed, not
-        // the person's text.
-        shell: process.platform === 'win32',
-      });
+      const options = { env, detached: true, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] as ('ignore' | 'pipe')[] };
+      // `ledung` is ledung.cmd on Windows, which Node runs only through the shell. One quoted command line, so a path
+      // with spaces holds together and Node gives no warning about arguments with a shell; they are fixed, never the
+      // person's text.
+      child = /\.(cmd|bat)$/i.test(file)
+        ? spawn([file, ...cmd.args].map((a) => `"${a}"`).join(' '), { ...options, shell: true })
+        : spawn(file, cmd.args, options);
     } catch (e) {
       resolve({ ok: false, line: `Could not run "${shown}": ${(e as Error).message}` });
       return;
@@ -111,7 +141,7 @@ export function runStart(cmd: StartCommand = startCommand(), env: NodeJS.Process
       finish({
         ok: false,
         line: e.code === 'ENOENT'
-          ? `Could not start Ledung: the "${path.basename(cmd.command)}" command was not found. Install Ledung, or start it from a terminal.`
+          ? `Could not start Ledung: the "${path.basename(cmd.command)}" command was not found. Install Ledung, or start it from a terminal.` // Gone since it was looked up.
           : `Could not run "${shown}": ${e.message}`,
       });
     });

@@ -141,7 +141,8 @@ async function start(): Promise<void> {
     else {
       const deadline = Date.now() + ANSWER_MS;
       let answered = false;
-      while (!answered && Date.now() < deadline && win && !win.isDestroyed()) {
+      // Waits whether or not the window is open: one closed and opened again meanwhile shows the outcome too.
+      while (!answered && Date.now() < deadline) {
         answered = (await findRunning()).running;
         if (!answered) await sleep(500);
       }
@@ -188,6 +189,8 @@ function createWindow(): void {
     },
   });
   lockNavigation(win.webContents);
+  // A window opened again (the Dock) while a start runs shows that it runs; the start shows the outcome in it.
+  if (starting) void showNotRunning('Starting Ledung in the background…', 'starting');
   win.on('closed', () => {
     win = null;
   });
