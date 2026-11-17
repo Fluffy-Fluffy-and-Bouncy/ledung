@@ -7,7 +7,7 @@ import type {
   ClaudeCodeView,
   ProfilesView,
   SkillListView, SignInProblem,
-  ShortcutAction, ShortcutsView,
+  ShortcutAction, ShortcutsView, TrayView,
   CheckInAction, CheckInView,
   HeavyCommandInfo, JobKindInfo,
 } from '../../src/shared/protocol.ts';
@@ -245,6 +245,8 @@ export const api = {
   stopLedung: () => call('POST', '/api/stop', {}),
   /** The first-run question and Settings → Shortcuts (issue #415). */
   shortcuts: () => call<ShortcutsView>('GET', '/api/shortcuts'),
+  tray: () => call<TrayView>('GET', '/api/tray'),
+  setTray: (on: boolean) => call<TrayView>('POST', '/api/tray', { on }),
   shortcutsAct: (action: ShortcutAction) => call<ShortcutsView>('POST', '/api/shortcuts', { action }),
   /** The anonymous daily check-in's notice and switch (#220). */
   checkIn: () => call<CheckInView>('GET', '/api/checkin'),

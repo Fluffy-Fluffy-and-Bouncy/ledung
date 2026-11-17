@@ -1,6 +1,6 @@
 # A tray icon: see that Ledung runs, open it, exit it — design
 
-Nov 17, 2026 · **Proposal**, not decided. Issue [#347](https://github.com/Fluffy-Fluffy-and-Bouncy/ledung/issues/347). Nothing is built until Simon says go, part by part.
+Nov 17, 2026 · **Approved** by Simon (2026-11-16 23:59, the recommended choices; [decisions](../decisions.md)) and built in one PR, parts 2–5. Issue [#347](https://github.com/Fluffy-Fluffy-and-Bouncy/ledung/issues/347).
 
 Revised the same night: **Windows and macOS are both first-class** and built together (Simon, through the manager, 2026-11-17). Linux stays later.
 
@@ -156,3 +156,14 @@ Parts 2–5 can be one PR with the Mac checklist run before it merges, or each i
 - **F. Default.** Recommended: **on by default** with a switch in Settings, **off by default for throwaway copies** (own data folder), which `"trayIcon": true` in their config turns on.
 - **G. The Mac icon.** Recommended: **a one-colour silhouette of Ledung's mark**, as Mac menu bar icons are by habit, with the waiting count as a number beside it. The alternative, the coloured icon as on Windows, would stand out among the other menu bar icons and doesn't adapt to a dark menu bar. Someone has to draw the silhouette: from the existing icon, in part 2.
 - **H. Who checks on a Mac.** Recommended: **Martin**, with the checklist above, once for the spike (1b) and once before the PR merges.
+
+## Built (2026-11-17)
+
+Parts 2–5 in one PR. The Windows spike (1a) was done while building; the Mac spike (1b) waits for a Mac, with the checklist above.
+
+- `src/platform/tray.ts` (shared: starting, state lines, the fixed words, Exit's question, one restart after a minute, the Settings switch), `src/platform/tray-windows.ts` and `src/platform/tray-mac.ts` (the two helper scripts), started from `src/main.ts`; `GET`/`POST /api/tray` for the switch, only from this computer's own page. The Mac silhouette is `web/public/tray-mac.png`, drawn by `scripts/tray-mac-icon.ts` from icon.svg's middle boat and wave.
+- **Windows findings.** (1) Started hidden, Windows hides the *first window* the helper shows, whatever it asks for: the Exit dialog opened invisible and waited for an answer no one could give. The helper now shows an invisible window once at start to take that turn. (2) `Console.In.ReadLineAsync` blocks in .NET Framework; the helper reads with its own `StreamReader` and polls from a Forms timer, so the menu stays live, also while the Exit dialog is open (Ledung stopping then closes the dialog with the icon). (3) The page's `icon-256.png` is square with white corners; the helper cuts out the rounded square. (4) A helper that is *killed* leaves a stale icon until the mouse passes over it (Windows' own behaviour); every normal end, including Ledung being killed, goes through the helper's own exit, which removes it.
+- **Windows numbers** (this PC, 3440×1440 at 100%): the helper idles at about 98 MB working set, 129 MB private, and no measurable CPU over 30 s; the icon appears about a second after Ledung starts (PowerShell loading). Restart: the old server exited at 01:24:01.89, the new one started at 01:24:01.91 and its helper at 01:24:02.62, so the icon is gone for about 2 s.
+- **Not like the rest of Windows:** the menu and dialog are Windows Forms' light ones, also in dark mode; Windows' own tray menus follow the dark theme.
+- **Screenshots** (this folder's `tray-icon-spike/`, dark mode, cropped to the icon's own windows): the icon plain and with the waiting dot, the menu with nothing working and Restart (a launcher), the menu with `1 working · 1 waiting for you`, the Exit question, the Settings section at desktop width and at 390 px, and the Mac template icon drawn black on a light bar and white on a dark one (a preview made here, not on a Mac).
+- **Not tried here:** the Windows tooltip (needs the mouse resting on the icon), and the whole Mac half, which waits for Martin's checklist.

@@ -995,6 +995,11 @@ export class SessionManager {
    * Sessions working now: in a turn (running, or waiting on a permission prompt mid-turn, which goes on
    * as soon as it is answered), not paused. Managers, and sessions between turns, don't count.
    */
+  /** Sessions working now, as the Machine panel counts them (the tray icon's status line, #347). */
+  workingCount(): number {
+    return this.working();
+  }
+
   private working(): number {
     let n = 0;
     for (const s of this.live.values()) {

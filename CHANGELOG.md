@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-17
+- **Ledung's icon** in the notification area next to the clock (Windows) and in the menu bar (macOS) while Ledung runs: a click opens the page on Windows, and the menu shows what is working and waiting for you, Open Ledung, Restart Ledung and Exit Ledung, which stops Ledung like Stop Ledung and asks first when sessions are working. An amber dot (Windows) or a number (macOS) says something waits for you. It goes away whenever Ledung stops. On by default; Settings → Update & restart switches it off. (#347)
+
 ## 2026-11-12
 - Sidebar, CPU, Memory and GPU bars: drag the handle on a bar's limit line to set the limit. A label shows the value as you drag ("GPU 50%", "Memory 48 GB", in steps of 5% or 1 GB), it applies when you let go, and dragging to the right end removes the limit. With no limit the handle waits at the right end and shows when you point at the bar. The keyboard works too: arrow keys, Home and End, then Enter. The number editor now opens with a double-click (a tap on a phone) and has a slider next to the number field; on a phone it is the way to set a limit. (#295)
 - Machine panel: virtual displays (Parsec's, a virtual monitor driver) no longer show up as extra copies of your graphics card under "Other GPUs"; a GPU limit you set on the card while it was listed as "#1" still applies to it. (#304)
