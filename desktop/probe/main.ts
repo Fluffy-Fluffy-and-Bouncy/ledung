@@ -11,15 +11,25 @@
 //   PROBE_PHASE=notrunning  none runs: the "not running" page; the probe starts one, presses Retry, page loads
 //   PROBE_PHASE=stopped     the probe starts one, the app attaches, the probe stops it and reloads: the "not
 //                           running" page again; it starts it again, presses Retry, page loads
+//   PROBE_PHASE=start       none runs: presses Start Ledung (#362), which runs LEDUNG_DESKTOP_START's script (the
+//                           worktree's src/cli.ts) as the app's start; the page loads signed in within 15 s, and
+//                           neither the started Ledung nor its launcher has an ELECTRON_* or npm_* variable. Leaves
+//                           that Ledung running, so the shell can check it still answers after the app quit. Run it
+//                           with an ELECTRON_* variable of your own set (ELECTRON_PROBE=1) and through npx, which
+//                           adds npm_*: the probe checks the app has both, so their absence in Ledung means something
+//   PROBE_PHASE=startfail   none runs, LEDUNG_DESKTOP_START names a script that isn't there: Start fails, the page
+//                           says so in one line and offers Start and Retry, no error dialog, and the menu's Quit ends
+//                           the app
 //
 // Run from desktop/: `LEDUNG_CONFIG=… LEDUNG_DATA_DIR=… PROBE_PHASE=attach npx electron probe`. macOS and Linux
 // only for now: it reads command lines with `ps` (code review of PR #366, Minor 3).
-import { app, BrowserWindow, shell } from 'electron';
+import { app, BrowserWindow, dialog, Menu, shell, type MenuItem } from 'electron';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { candidatePorts, configFiles, dataDir, DEFAULT_PORT } from '../attach.ts';
+import { START_SCRIPT_ENV } from '../start.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const clone = path.resolve(here, '..', '..');
@@ -31,7 +41,9 @@ const refused = process.platform === 'win32'
   ? 'Windows has no ps to read command lines with; run this on macOS or Linux'
   : !process.env.LEDUNG_CONFIG || !process.env.LEDUNG_DATA_DIR
     ? 'LEDUNG_CONFIG and LEDUNG_DATA_DIR must both name a throwaway Ledung'
-    : port === undefined || port === DEFAULT_PORT ? `the config's port is ${port ?? 'unreadable'}; use a test port, never the real Ledung's` : null;
+    : port === undefined || port === DEFAULT_PORT ? `the config's port is ${port ?? 'unreadable'}; use a test port, never the real Ledung's`
+      // Start Ledung runs the real `ledung` command without the test setting; a session never may (CLAUDE.local.md).
+      : (phase === 'start' || phase === 'startfail') && !process.env[START_SCRIPT_ENV] ? `${START_SCRIPT_ENV} must name the start script (the worktree's src/cli.ts)` : null;
 const origin = `http://127.0.0.1:${port}`;
 /** The device list "attach" saved, for "again" to compare with: in the throwaway's data folder. */
 const devicesFile = path.join(dataDir(), 'desktop-probe-devices.json');
@@ -39,6 +51,11 @@ let failed = false;
 const external: string[] = [];
 (shell as { openExternal: (url: string) => Promise<void> }).openExternal = async (url: string) => {
   external.push(url);
+};
+/** Error dialogs the main process tried to show (Mac spike surprise 3: an uncaught error shows one nobody can close). */
+const errorDialogs: string[] = [];
+(dialog as { showErrorBox: (title: string, content: string) => void }).showErrorBox = (title: string, content: string) => {
+  errorDialogs.push(`${title}: ${content}`);
 };
 const out = (event: string, data: unknown = {}) => console.log('PROBE ' + JSON.stringify({ phase, event, data }));
 /** A check the PR relies on: a failing one is printed and makes the run exit 1. */
@@ -144,16 +161,76 @@ async function permissions(w: BrowserWindow): Promise<void> {
 async function notRunningPage(): Promise<BrowserWindow> {
   const w = await showing('file:');
   const text = (await page(w, `document.body.innerText`)).replace(/\s+/g, ' ');
-  const retryLink = await page(w, `document.querySelector('a.button')?.getAttribute('href') ?? null`);
-  out('not-running', { text, retryLink });
+  const links = await page(w, `[...document.querySelectorAll('a.button')].filter((a) => a.offsetParent !== null).map((a) => [a.textContent, a.getAttribute('href')])`);
+  out('not-running', { text, links });
   expect(text.includes('Ledung is not running'), 'the page says "Ledung is not running"', text);
-  expect(retryLink === '#retry' && text.includes('Retry'), 'the page has its Retry button', retryLink);
+  expect(JSON.stringify(links) === JSON.stringify([['Start Ledung', '#start'], ['Retry', '#retry']]), 'the page has its Start Ledung and Retry buttons', links);
   return w;
 }
 async function retry(w: BrowserWindow): Promise<string[]> {
-  await page(w, `document.querySelector('a.button').click(); 1`);
+  await page(w, `document.querySelector('a#retry').click(); 1`);
   out('retry-pressed');
   return signedIn(await showing(`${origin}/`));
+}
+
+/** The environment of a process of this user, as `NAME=value` lines' names; macOS reads it with ps -E, Linux in /proc. */
+function envNames(pid: string): string[] {
+  if (process.platform === 'linux') return fs.readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0').map((e) => e.split('=')[0]!).filter(Boolean);
+  const line = execFileSync('ps', ['-E', '-ww', '-o', 'command=', '-p', pid], { encoding: 'utf8', maxBuffer: 16 << 20 });
+  return [...line.matchAll(/(?:^|\s)([A-Za-z_][A-Za-z0-9_]*)=/g)].map((m) => m[1]!);
+}
+
+/** The started Ledung (the process listening on the port) and its launcher, `ledung --foreground`: no ELECTRON_*, no npm_*. */
+function startedEnv(): void {
+  // The app itself has both kinds (`npx electron` adds npm_*, the run sets an ELECTRON_* one), so leaving them out is
+  // what the check below sees, not their absence to begin with.
+  const own = Object.keys(process.env);
+  expect(own.some((n) => n.startsWith('ELECTRON_')) && own.some((n) => n.startsWith('npm_')), 'the app has ELECTRON_* and npm_* variables to leave out', own.filter((n) => /^(ELECTRON_|npm_)/.test(n)).length);
+  const pid = execFileSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf8' }).trim().split('\n')[0]!;
+  const parent = execFileSync('ps', ['-o', 'ppid=', '-p', pid], { encoding: 'utf8' }).trim();
+  const parentCommand = execFileSync('ps', ['-ww', '-o', 'command=', '-p', parent], { encoding: 'utf8' }).trim();
+  for (const [who, p] of [['ledung', pid], ['launcher', parent]] as const) {
+    const names = envNames(p);
+    const leaked = names.filter((n) => /^(ELECTRON_|npm_)/i.test(n));
+    out('started-env', { who, pid: p, variables: names.length, leaked, hasConfig: names.includes('LEDUNG_CONFIG') });
+    // The positive branch: the same read finds a variable that is there, so an empty read can't pass.
+    expect(names.includes('LEDUNG_CONFIG'), `the ${who}'s environment was read (LEDUNG_CONFIG found)`, names.length);
+    expect(leaked.length === 0, `the ${who} has no ELECTRON_* and no npm_* variable`, leaked);
+  }
+  expect(parentCommand.includes('--foreground'), 'the launcher is `ledung --foreground`, as a terminal start makes', parentCommand);
+}
+
+/** Presses Start Ledung on the "not running" page; returns when the page says it is starting. */
+async function pressStart(w: BrowserWindow): Promise<void> {
+  await page(w, `document.querySelector('a#start').click(); 1`);
+  out('start-pressed');
+}
+
+/** Presses the application menu's Quit, as ⌘Q or File → Quit does, and waits for the app to begin quitting (no dialog in the way). */
+async function menuQuit(): Promise<boolean> {
+  const find = (items: MenuItem[]): MenuItem | undefined => {
+    for (const item of items) {
+      if (item.role?.toLowerCase() === 'quit' || item.id === 'quit') return item;
+      const inner = item.submenu ? find(item.submenu.items) : undefined;
+      if (inner) return inner;
+    }
+    return undefined;
+  };
+  const item = find(Menu.getApplicationMenu()?.items ?? []);
+  out('menu-quit', { found: item ? { role: item.role ?? null, id: item.id || null, label: item.label, accelerator: item.accelerator ?? null } : null });
+  if (!item) return false;
+  const quitting = new Promise<boolean>((resolve) => {
+    app.once('will-quit', (event) => {
+      event.preventDefault();
+      resolve(true);
+    });
+    setTimeout(() => resolve(false), 5000);
+  });
+  // The default menu's Quit on the Mac is the system's own terminate:, which a click from here doesn't reach; it ends
+  // in app.quit() as this does. A Quit item of the app's own (#359's menu) is clicked as it is.
+  if (item.role === 'quit' && process.platform === 'darwin') app.quit();
+  else item.click();
+  return quitting;
 }
 
 async function run(): Promise<void> {
@@ -218,6 +295,39 @@ async function run(): Promise<void> {
       core = startCore();
       await sleep(4000);
       await retry(w);
+    } else if (phase === 'start') {
+      const w = await notRunningPage();
+      const pressed = Date.now();
+      await pressStart(w);
+      const startingText = (await page(await showing('file:'), `document.body.innerText`)).replace(/\s+/g, ' ');
+      out('starting', { text: startingText });
+      await signedIn(await showing(`${origin}/`));
+      const seconds = (Date.now() - pressed) / 1000;
+      out('started', { seconds });
+      expect(seconds <= 15, 'the page showed signed in within 15 s of pressing Start Ledung', seconds);
+      startedEnv();
+      expect(errorDialogs.length === 0, 'no error dialog', errorDialogs);
+    } else if (phase === 'startfail') {
+      const w = await notRunningPage();
+      await pressStart(w);
+      // The start runs, fails, and the page comes back with what failed.
+      let failedPage: BrowserWindow | null = null;
+      for (let i = 0; i < 100 && !failedPage; i++) {
+        await sleep(200);
+        const now = win();
+        if (now && !now.webContents.isLoading() && now.webContents.getURL().includes('state=failed')) failedPage = now;
+      }
+      expect(failedPage !== null, 'the "not running" page came back after the failed start');
+      if (failedPage) {
+        const reason = await page(failedPage, `document.getElementById('reason').textContent`);
+        out('start-failed', { reason });
+        expect(/exited with code 1: Error: Cannot find module/.test(reason) && reason.includes('--no-open'), 'the page says what failed: the command, its exit and its error', reason);
+        expect(!/[\r\n]/.test(reason), 'what failed is one line', reason);
+        await notRunningPage();
+      }
+      expect(errorDialogs.length === 0, 'no error dialog', errorDialogs);
+      expect(BrowserWindow.getAllWindows().length === 1, 'no other window', BrowserWindow.getAllWindows().length);
+      expect(await menuQuit(), "the menu's Quit ends the app");
     } else {
       expect(false, `no phase named ${phase}`);
     }

@@ -1,6 +1,7 @@
 // The desktop app's attach check (issue #358, desktop/attach.ts): it finds the running Ledung the way the `ledung`
-// command does, and its mirror of the `/running` proof stays the core's. desktop/attach.ts has no Electron in it, so
-// these run with the root tests; the window itself is checked by hand (desktop/README.md).
+// command does, and its mirror of the `/running` proof stays the core's. Its start (issue #362, desktop/start.ts): what
+// it runs, with which environment, and the one line a failed start gives. Neither file has Electron in it, so these
+// run with the root tests; the window itself is checked by the probe and by hand (desktop/README.md).
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -14,6 +15,7 @@ import {
   candidatePorts, configFiles, configuredPort as appConfiguredPort, dataDir, DEFAULT_PORT as APP_DEFAULT_PORT, findRunning,
   runningProof as appProof, savedToken as appSavedToken,
 } from '../desktop/attach.ts';
+import { runStart, START_SCRIPT_ENV, startCommand, startEnv } from '../desktop/start.ts';
 import { DEFAULT_PORT } from '../src/config.ts';
 import { configuredPort, runningProof, savedToken as coreSavedToken } from '../src/platform/running.ts';
 import { listenOk } from './free-port.ts';
@@ -160,4 +162,66 @@ test("without LEDUNG_CONFIG: the npm package's config, then the release launcher
   assert.deepEqual(candidatePorts(configFiles({}, dir)), [4400]);
   fs.writeFileSync(releaseConfig, '{ not json');
   assert.deepEqual(candidatePorts(configFiles({}, dir)), [4400], 'a config that cannot be read gives no port');
+});
+
+// Start Ledung (issue #362). The real `ledung` command is never run here: a test start is a script of the test's own.
+
+test('Start runs the installed `ledung --no-open`; the test setting runs a script with Node instead', () => {
+  assert.deepEqual(startCommand({}), { command: 'ledung', args: ['--no-open'] });
+  const file = path.join(base, 'wt', 'src', 'cli.ts');
+  assert.deepEqual(startCommand({ [START_SCRIPT_ENV]: file }), { command: 'node', args: [file, '--no-open'] });
+  assert.deepEqual(startCommand({ [START_SCRIPT_ENV]: 'wt/src/cli.ts' }).args, [path.resolve('wt/src/cli.ts'), '--no-open'], 'a relative path is made absolute');
+});
+
+test("the start's environment has no ELECTRON_*, no npm_* and none of npm's additions; the rest stays", () => {
+  const npmBins = ['/c/desktop/node_modules/.bin', '/c/node_modules/.bin', '/usr/lib/node_modules/npm/node_modules/@npmcli/run-script/lib/node-gyp-bin'];
+  const env = startEnv({
+    ELECTRON_RUN_AS_NODE: '1', ELECTRON_NO_ATTACH_CONSOLE: '1', npm_lifecycle_event: 'start', npm_config_user_agent: 'npm/11',
+    NPM_CONFIG_PREFIX: '/p', INIT_CWD: '/c/desktop', NODE: '/usr/bin/node', COLOR: '0', [START_SCRIPT_ENV]: '/wt/src/cli.ts',
+    HOME: '/home/me', LEDUNG_CONFIG: '/t/config.json', LEDUNG_DATA_DIR: '/t/data', EDITOR: 'nano', NODE_OPTIONS: '--x',
+    PATH: [...npmBins, '/opt/homebrew/bin', '/usr/bin', '/my/node_modules/.binaries'].join(':'),
+  }, 'darwin');
+  assert.deepEqual(env, {
+    HOME: '/home/me', LEDUNG_CONFIG: '/t/config.json', LEDUNG_DATA_DIR: '/t/data', EDITOR: 'nano', NODE_OPTIONS: '--x',
+    PATH: '/opt/homebrew/bin:/usr/bin:/my/node_modules/.binaries',
+  });
+
+  const win = startEnv({ Path: 'C:\\c\\desktop\\node_modules\\.bin;C:\\Program Files\\nodejs;', Electron_Run_As_Node: '1', SystemRoot: 'C:\\Windows' }, 'win32');
+  assert.deepEqual(win, { Path: 'C:\\Program Files\\nodejs', SystemRoot: 'C:\\Windows' }, 'Windows: Path by any spelling, split on ;');
+});
+
+/** A script the test start runs: writes its arguments and environment next to itself, then does what `body` says. */
+function startScript(name: string, body: string): string {
+  const file = path.join(base, 'start', `${name}.mjs`);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `import fs from 'node:fs';\nfs.writeFileSync(${JSON.stringify(`${file}.out`)}, JSON.stringify({ argv: process.argv.slice(2), env: process.env }));\n${body}\n`);
+  return file;
+}
+
+test('a start that returns 0 is ok, and the command got the clean environment and --no-open', async () => {
+  const file = startScript('ok', 'process.exit(0);');
+  const env = startEnv({ ...process.env, ELECTRON_RUN_AS_NODE: '1', npm_lifecycle_event: 'start', LEDUNG_CONFIG: '/t/config.json', [START_SCRIPT_ENV]: file });
+  assert.deepEqual(await runStart(startCommand({ [START_SCRIPT_ENV]: file }), env), { ok: true });
+  const got = JSON.parse(fs.readFileSync(`${file}.out`, 'utf8')) as { argv: string[]; env: Record<string, string> };
+  assert.deepEqual(got.argv, ['--no-open']);
+  assert.deepEqual(Object.keys(got.env).filter((n) => /^(ELECTRON_|npm_)/i.test(n)), [], 'no ELECTRON_* and no npm_* in the started process');
+  assert.equal(got.env.LEDUNG_CONFIG, '/t/config.json', 'the started process does see the variables that were passed on');
+});
+
+test('a start that fails gives one line: the exit code and the last thing the command said', async () => {
+  const file = startScript('fails', "console.log('Starting...'); console.error('Ledung stopped while starting (exit code 1).\\nError: listen EADDRINUSE 127.0.0.1:4397\\n    at Server.setupListenHandle (node:net:1940:16)\\n\\nNode.js v24.11.0'); process.exit(2);");
+  const result = await runStart(startCommand({ [START_SCRIPT_ENV]: file }), startEnv());
+  assert.deepEqual(result, { ok: false, line: '"node fails.mjs --no-open" exited with code 2: Error: listen EADDRINUSE 127.0.0.1:4397' });
+});
+
+test('a start command that is not installed gives one line saying so, and nothing throws', async () => {
+  const result = await runStart({ command: 'ledung-desktop-test-no-such-command', args: ['--no-open'] }, startEnv());
+  assert.equal(result.ok, false);
+  assert.match((result as { line: string }).line, /^Could not start Ledung: the "ledung-desktop-test-no-such-command" command was not found\./);
+});
+
+test('a start that does not return in time is given up on, with one line', async () => {
+  const file = startScript('hangs', 'setTimeout(() => {}, 1000);');
+  const result = await runStart(startCommand({ [START_SCRIPT_ENV]: file }), startEnv(), 300);
+  assert.deepEqual(result, { ok: false, line: '"node hangs.mjs --no-open" did not finish within 0.3 s.' });
 });

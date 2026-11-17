@@ -1,0 +1,127 @@
+// Starting Ledung from the app when none runs (issue #362, epic #357 choice 3): the app runs the installed `ledung`
+// command, `ledung --no-open`, which starts Ledung in the background and returns once it answers (src/cli.ts,
+// src/platform/background.ts). Never a core from the clone with the real data folder: one real Ledung per computer,
+// the npm one. No Electron in this file, so the root tests run it (test/desktop.test.ts).
+import { spawn } from 'node:child_process';
+import path from 'node:path';
+
+/**
+ * A test points the start at a worktree with this: the path of a Node script, normally `<worktree>/src/cli.ts`, run as
+ * `node <script> --no-open` instead of the `ledung` command, so no session ever runs the real one (CLAUDE.local.md on
+ * magto-mini). Read with LEDUNG_CONFIG and LEDUNG_DATA_DIR, which pick the throwaway Ledung.
+ */
+export const START_SCRIPT_ENV = 'LEDUNG_DESKTOP_START';
+
+/** What the start runs: the command and its arguments. */
+export interface StartCommand {
+  command: string;
+  args: string[];
+}
+
+export function startCommand(env: NodeJS.ProcessEnv = process.env): StartCommand {
+  const script = env[START_SCRIPT_ENV];
+  if (script) return { command: 'node', args: [path.resolve(script), '--no-open'] };
+  return { command: 'ledung', args: ['--no-open'] };
+}
+
+/** Variables `npm start` adds besides its npm_* ones (npm 11, checked on macOS 2026-11-17). */
+const NPM_ADDED = ['INIT_CWD', 'NODE', 'COLOR'];
+
+/** A PATH entry `npm start` put in front: a node_modules/.bin folder (this folder's Electron among them) or node-gyp's. */
+function npmPathEntry(entry: string): boolean {
+  const parts = entry.split(/[\\/]+/).filter(Boolean);
+  const last = parts.at(-1);
+  return (last === '.bin' && parts.at(-2) === 'node_modules') || last === 'node-gyp-bin';
+}
+
+/**
+ * The environment the start runs with: the app's own, minus what Electron and `npm start` add, so the background
+ * Ledung looks as if started from a terminal (#362). No ELECTRON_* (a session would inherit ELECTRON_RUN_AS_NODE,
+ * #361), no npm_*, none of npm's other additions, and PATH without npm's node_modules/.bin entries. The test start's
+ * own setting goes too; LEDUNG_CONFIG and LEDUNG_DATA_DIR stay, since they pick which Ledung starts.
+ */
+export function startEnv(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): NodeJS.ProcessEnv {
+  const clean: NodeJS.ProcessEnv = {};
+  for (const [name, value] of Object.entries(env)) {
+    const upper = name.toUpperCase();
+    if (upper.startsWith('ELECTRON_') || upper.startsWith('NPM_') || NPM_ADDED.includes(upper) || upper === START_SCRIPT_ENV) continue;
+    clean[name] = value;
+  }
+  // Windows spells it Path, and environment names are not case-sensitive there.
+  const pathName = Object.keys(clean).find((name) => name.toUpperCase() === 'PATH');
+  if (pathName !== undefined) {
+    const sep = platform === 'win32' ? ';' : ':';
+    clean[pathName] = (clean[pathName] ?? '').split(sep).filter((entry) => entry !== '' && !npmPathEntry(entry)).join(sep);
+  }
+  return clean;
+}
+
+export type StartResult = { ok: true } | { ok: false; line: string };
+
+/**
+ * The line worth showing from what the command printed: the last error line (`Error: listen EADDRINUSE …`), else the
+ * last line; never Node's closing `Node.js v24…` line or a stack frame, which say nothing about what failed.
+ */
+export function lastLine(output: string): string {
+  const lines = output.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== '' && !/^Node\.js v\d/.test(line) && !/^at /.test(line));
+  return lines.findLast((line) => /^(\w*Error|Error)\b/.test(line)) ?? lines.at(-1) ?? '';
+}
+
+/** Past this the start is given up on; `ledung` itself returns after at most 60 s (background.ts READY_MS). */
+const START_MS = 75_000;
+
+/**
+ * Runs the start command and waits for it to return. A command that can't be run, that exits with an error or that
+ * doesn't return in time gives one line saying what failed; nothing here throws, so no Electron error dialog can come
+ * of it (Mac spike surprise 3). The command is detached: quitting the app while it waits leaves the start going.
+ */
+export function runStart(cmd: StartCommand = startCommand(), env: NodeJS.ProcessEnv = startEnv(), timeoutMs = START_MS): Promise<StartResult> {
+  const shown = [path.basename(cmd.command), ...cmd.args.map((a) => (path.isAbsolute(a) ? path.basename(a) : a))].join(' ');
+  return new Promise((resolve) => {
+    let output = '';
+    let done = false;
+    const finish = (result: StartResult) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(cmd.command, cmd.args, {
+        env,
+        detached: true,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        // `ledung` is ledung.cmd on Windows, which Node runs only through the shell; the arguments are fixed, not
+        // the person's text.
+        shell: process.platform === 'win32',
+      });
+    } catch (e) {
+      resolve({ ok: false, line: `Could not run "${shown}": ${(e as Error).message}` });
+      return;
+    }
+    const timer = setTimeout(() => finish({ ok: false, line: `"${shown}" did not finish within ${timeoutMs / 1000} s.` }), timeoutMs);
+    const keep = (chunk: Buffer) => {
+      output = (output + chunk.toString('utf8')).slice(-4096);
+    };
+    child.stdout?.on('data', keep);
+    child.stderr?.on('data', keep);
+    child.on('error', (e: NodeJS.ErrnoException) => {
+      finish({
+        ok: false,
+        line: e.code === 'ENOENT'
+          ? `Could not start Ledung: the "${path.basename(cmd.command)}" command was not found. Install Ledung, or start it from a terminal.`
+          : `Could not run "${shown}": ${e.message}`,
+      });
+    });
+    child.on('close', (code, signal) => {
+      if (code === 0) finish({ ok: true });
+      else {
+        const said = lastLine(output);
+        finish({ ok: false, line: `"${shown}" ${code === null ? `was stopped (${signal})` : `exited with code ${code}`}${said ? `: ${said}` : '.'}` });
+      }
+    });
+    child.unref();
+  });
+}
