@@ -8,7 +8,6 @@ import type { GhAnswer, GitState } from '../sessions/pr-poll.ts';
 import type { ShellKind, ShellSpawn } from './shell-run.ts';
 import type { SkillFile } from '../sessions/skills.ts';
 import type { ClaudeChoice } from './claude-program.ts';
-import { exercisedLine } from '../platform/exercised.ts';
 
 export interface Runner {
   readonly kind: 'local' | 'docker';
@@ -96,22 +95,13 @@ export const PLUGIN_FILES = { config: ['settings.json', 'plugins/installed_plugi
  */
 const NOT_INHERITED = ['LEDUNG_', 'ELECTRON_'];
 
-/** The EXERCISED line of issue #361, once per run. */
-let electronDropTraced = false;
-
 /** The environment for Claude Code: what the SDK passes, without the variables NOT_INHERITED names. */
 export function sessionEnv(options: Pick<SpawnOptions, 'env'>): Record<string, string> {
   const kept: Record<string, string> = {};
-  let droppedElectron = false;
   for (const [name, value] of Object.entries(options.env)) {
     if (value === undefined) continue;
     const prefix = NOT_INHERITED.find((p) => name.startsWith(p));
-    if (prefix === 'ELECTRON_') droppedElectron = true;
     if (!prefix) kept[name] = value;
-  }
-  if (droppedElectron && !electronDropTraced) {
-    electronDropTraced = true;
-    exercisedLine('EXERCISED #361 ELECTRON_* settings kept out of a session');
   }
   return kept;
 }
