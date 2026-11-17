@@ -71,8 +71,9 @@ window again, ⌘O reaches the page as its Ctrl+O, Quit on a page with unsaved c
 closing from full screen, a 100 ms timer in the hidden window, then Quit ends the app and the Ledung still answers;
 `PROBE_HIDDEN_SECONDS` sets the hidden time, 60 by default). A fresh data folder shows Ledung's Welcome, which has no
 sidebar, so finish or leave the welcome in the page before the first run. Each check it makes prints `"event":"fail"`
-when it doesn't hold; the exit code is 0 only when all held, 1 otherwise, 2 when it refused to run. It refuses without both settings, on the default port,
-and on Windows (it reads command lines with `ps`; macOS and Linux only for now).
+when it doesn't hold; the exit code is 0 only when all held, 1 otherwise, 2 when it refused to run. It refuses
+without both settings, on the default port, and on Windows (it reads command lines with `ps`; macOS and Linux only
+for now).
 
 ## How it is built
 

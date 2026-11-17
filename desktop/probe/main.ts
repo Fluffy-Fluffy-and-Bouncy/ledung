@@ -297,8 +297,9 @@ async function windowPhase(w: BrowserWindow): Promise<void> {
   };
   out('hidden-timers', timers);
   // Under 150 ms is the Windows bar (#359), where Chromium's throttling gives about 1000 ms. On macOS a hidden window
-  // ran at about 180 ms with throttling on or off (2026-11-17, Electron 45.3.3, 60 s: the system's own timer
-  // coalescing, not Chromium's), so there the figure proves nothing about the setting and only rules out 1 s ticks.
+  // ran at 176–181 ms with throttling off (60 s) and on (5 s and 60 s) alike (2026-11-17, Electron 45.3.3: the
+  // system's own timer coalescing, not Chromium's), so there the figure proves nothing about the setting and only
+  // rules out 1 s ticks.
   const bar = process.platform === 'win32' ? 150 : 500;
   expect(timers.hiddenThroughout && avg !== null && avg < bar, `a hidden window keeps a 100 ms interval under ${bar} ms a tick`, timers);
   w.show();
