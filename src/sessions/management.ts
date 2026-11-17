@@ -55,6 +55,8 @@ export interface LinkedPort {
 let exercised159 = false;
 /** The EXERCISED line of issue #177, once per run. */
 let exercised177 = false;
+/** The EXERCISED line of issue #346, once per run. */
+let exercised346 = false;
 
 /**
  * Settings' page-only actions for managers (issue #263): the same calls Settings' routes make, set by the server.
@@ -68,6 +70,8 @@ export interface SettingsPort {
   invite(owner: string, name?: string): Promise<RelayInviteInfo & { code: string }>;
   linkCode(): { code: string; expiresAt: number };
   link(code: string, name?: string): Promise<LinkedComputer>;
+  /** Settings' Unlink button (issue #346): the link goes here and the other computer is told; null: no such link. */
+  unlink(id: string): LinkedComputer | null;
   /** The linked computers, and why linking is not possible here (null: it is). */
   links(): { problem: string | null; links: LinkedComputer[] };
   computers(): ComputerInfo[];
@@ -1549,6 +1553,28 @@ ${note}`);
   async linkComputer(managerId: string, code: string, name?: string): Promise<string> {
     const linked = await this.settingsPort(managerId).link(code, name);
     return `Linked with "${linked.name}" (${linked.publicName}).`;
+  }
+
+  /**
+   * unlink_computer (issue #346): a linked computer by its name or public name, as settings_status lists them, unlinked
+   * as Settings' Unlink button does. A name two links share is refused, so the public name says which.
+   */
+  unlinkComputer(managerId: string, computer: string): string {
+    const port = this.settingsPort(managerId);
+    const { links } = port.links();
+    const wanted = computer.trim().toLowerCase();
+    const byPublicName = links.filter((l) => l.publicName.toLowerCase() === wanted);
+    const hits = byPublicName.length ? byPublicName : links.filter((l) => l.name.toLowerCase() === wanted);
+    const listed = links.length ? links.map((l) => `"${l.name}" (${l.publicName})`).join(', ') : 'none';
+    if (hits.length > 1) throw new ManagementError(`${hits.length} linked computers are called "${computer.trim()}": give the public name of the one to unlink (${hits.map((l) => l.publicName).join(', ')}).`);
+    if (!hits.length) throw new ManagementError(`No linked computer is called "${computer.trim()}". Linked computers: ${listed}.`);
+    const gone = port.unlink(hits[0]!.id);
+    if (!gone) throw new ManagementError(`"${computer.trim()}" is no longer linked.`);
+    if (!exercised346) {
+      exercised346 = true;
+      exercisedLine('EXERCISED #346 a manager unlinked a linked computer through Settings\' own unlink');
+    }
+    return `Unlinked "${gone.name}" (${gone.publicName}) here; that computer is told to drop its side too. To link it again: link_code on one computer, link_computer with that code on the other.`;
   }
 
   async inviteComputer(managerId: string, owner: string, name?: string): Promise<string> {

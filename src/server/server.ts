@@ -37,7 +37,7 @@ import { exercisedLine } from '../platform/exercised.ts';
 import type { RelayAdmin } from '../remote/admin.ts';
 import type { UsagePublisher } from '../usage/publisher.ts';
 import type { Shortcuts } from '../platform/shortcuts.ts';
-import { LinkError, LinkedComputers } from '../remote/linked.ts';
+import { LinkError, LinkedComputers, type LinkedComputer } from '../remote/linked.ts';
 import { LinkedFileError } from '../remote/linked-files.ts';
 import type { StreamOffer } from '../remote/linked-outbox.ts';
 import { pipeline } from 'node:stream/promises';
@@ -338,6 +338,7 @@ export class LedungServer {
       invite: (owner, name) => this.relayAdmin().invite(owner, name),
       linkCode: () => this.requireLinked().newCode(),
       link: (code, name) => this.requireLinked().join(code, name),
+      unlink: (id) => this.unlinkComputer(id),
       links: () => ({ problem: this.linkProblem(), links: this.linksWithBytes() }),
       computers: () => this.computers(),
       // Publishing usage (issue #376): the page's switch; usage_publish asks the user before switching on.
@@ -1362,6 +1363,15 @@ export class LedungServer {
     return null;
   }
 
+  /**
+   * Settings' Unlink, the button's route and a manager's unlink_computer alike (issue #346): its trust ends first, so its
+   * frames here log off, then the link goes and the other computer is told. Null: no such link.
+   */
+  private unlinkComputer(id: string): LinkedComputer | null {
+    this.untrust(id);
+    return this.requireLinked().remove(id);
+  }
+
   private requireLinked(): LinkedComputers {
     if (!this.linked) throw new HttpError(400, this.linkProblem() ?? 'Linking is not available.');
     return this.linked;
@@ -1696,8 +1706,7 @@ export class LedungServer {
         return;
       case 'POST links/:id/remove':
         this.requireLocal(req, LINKED_HERE);
-        this.untrust(decodeURIComponent(id));
-        if (!this.requireLinked().remove(decodeURIComponent(id))) throw new HttpError(400, 'No such linked computer.');
+        if (!this.unlinkComputer(decodeURIComponent(id))) throw new HttpError(400, 'No such linked computer.');
         return;
       case 'POST devices/:id/revoke':
         this.requireLocal(req);
