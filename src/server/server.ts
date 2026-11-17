@@ -17,7 +17,7 @@ import type { Store } from '../store/store.ts';
 import { AWAY_DEFAULT, AWAY_KINDS, EFFORT_LEVELS, HELPER, type AwayKind, type PermissionDecision, type PermissionMode, type RemoteStatus, type ServerEvent, parseWatch } from '../shared/protocol.ts';
 import { browserCookieHeader, deviceCookieHeader, Guard, readCookies, securityHeaders } from './security.ts';
 import { browserName, DEVICE_COOKIE, type Device, type DeviceKind, deviceName, Devices, deviceView, LEGACY_BROWSER_NAME } from './devices.ts';
-import { actionOf, DEVICE_LOCKED, PASSKEY_HEADER, PasskeyError, Passkeys } from './passkeys.ts';
+import { actionOf, DEVICE_LOCKED, PASSKEY_HEADER, PASSKEY_NEEDED, PASSKEY_ONLY, PasskeyError, Passkeys, VOUCH_HEADER } from './passkeys.ts';
 import { linkedPushItem, Push, PushError, type LinkedPushItem } from './push.ts';
 import type { UsageQueries } from '../usage/queries.ts';
 import { readRunningRelease, type Updater } from '../update/updater.ts';
@@ -38,7 +38,7 @@ import { exercisedLine } from '../platform/exercised.ts';
 import type { RelayAdmin } from '../remote/admin.ts';
 import type { UsagePublisher } from '../usage/publisher.ts';
 import type { Shortcuts } from '../platform/shortcuts.ts';
-import { LinkError, LinkedComputers } from '../remote/linked.ts';
+import { LinkError, LinkedComputers, type LinkedComputer } from '../remote/linked.ts';
 import { LinkedFileError } from '../remote/linked-files.ts';
 import type { StreamOffer } from '../remote/linked-outbox.ts';
 import { pipeline } from 'node:stream/promises';
@@ -47,7 +47,7 @@ import { MAX_IMAGE_BYTES } from '../board/attachments.ts';
 import { ManagementError, type SettingsPort } from '../sessions/management.ts';
 import { waitingCount } from '../shared/waiting.ts';
 import { helloSessions } from '../shared/hello-sessions.ts';
-import { compressible, IMMUTABLE, isHashedAsset, PackedFiles, pickEncoding } from './static-files.ts';
+import { compressible, IMMUTABLE, isHashedAsset, PACK_MIN_BYTES, PackedFiles, packAnswer, pickEncoding } from './static-files.ts';
 
 /** Calls a linked computer may make in a minute (#245). */
 const LINK_PER_MINUTE = 60;
@@ -84,6 +84,7 @@ let exercised463 = false;
 const LINKED_HERE = 'Computers are linked and unlinked';
 import type { CertificateStatus, LinkPairingInfo, NewComputerInfo, SourceOffer } from '../shared/protocol.ts';
 import { MAX_CHAT_IMAGE_BYTES } from '../sessions/chat-images.ts';
+import { DROP_TOO_LARGE, MAX_DROP_BYTES } from '../sessions/drops.ts';
 import { computerFrames, computerList, editComputer, knownComputers, readComputerEdits, withEdits, type ComputerInfo, type ComputerSetting } from '../shared/computers.ts';
 
 const MAX_BODY = 1024 * 1024;
@@ -109,11 +110,11 @@ const OPEN_WHILE_LOCKED = new Set(['/api/device-unlock', '/api/passkey-challenge
  * page check, so a new route is checked until it is added on purpose.
  */
 export const PLAIN_READS = new Set([
-  'GET state', 'GET devices', 'GET links', 'GET device', 'GET push', 'GET sessions/:id/messages', 'GET usage',
+  'GET state', 'GET devices', 'GET links', 'GET link-trust', 'GET device', 'GET push', 'GET sessions/:id/messages', 'GET usage',
   'GET sessions/:id/usage', 'GET overview', 'GET projects', 'GET accounts', 'GET browse', 'GET profiles',
   'GET workflow-check', 'GET projects-folder', 'GET projects/:id/proposals/:id', 'GET projects/:id/runs', 'GET board',
   'GET board-threads', 'GET board-thread', 'GET usage-publish', 'GET machine', 'GET sessions/:id/turns', 'GET typical-costs',
-  'GET sessions/:id/folders', 'GET questions/:id/evidence/:id', 'GET chats', 'GET sessions/:id/shell-check',
+  'GET sessions/:id/folders', 'GET questions/:id', 'GET question-history', 'GET questions/:id/evidence/:id', 'GET chats', 'GET sessions/:id/shell-check',
   'GET sessions/:id/secrets', 'GET update', 'GET checkin', 'GET remote-link', 'GET relay-admin',
   'GET sessions/:id/sent-images/:id', 'GET board-attachment',
 ]);
@@ -256,6 +257,8 @@ export class LedungServer {
   private tunnelTls: { dir: string; required: boolean } | null = null;
   /** Requests through the public name whose passkey signature for themselves was checked (requireUnlocked). */
   private readonly signed = new WeakSet<IncomingMessage>();
+  /** Of those, the ones a trusted computer's screen vouched for instead of a passkey (issue #313): requirePasskeyPage refuses them. */
+  private readonly vouched = new WeakSet<IncomingMessage>();
   private headers: Record<string, string>;
   /** The same for responses through the public name, which the other computers' pages may frame (issue #241). */
   private publicHeaders: Record<string, string> = {};
@@ -338,6 +341,7 @@ export class LedungServer {
       invite: (owner, name) => this.relayAdmin().invite(owner, name),
       linkCode: () => this.requireLinked().newCode(),
       link: (code, name) => this.requireLinked().join(code, name),
+      unlink: (id) => this.unlinkComputer(id),
       links: () => ({ problem: this.linkProblem(), links: this.linksWithBytes() }),
       computers: () => this.computers(),
       // Publishing usage (issue #376): the page's switch; usage_publish asks the user before switching on.
@@ -784,10 +788,11 @@ export class LedungServer {
   private computers(): ComputerInfo[] {
     const linked = new Set((this.linked?.list() ?? []).map((l) => l.publicName));
     const ids = new Map((this.linked?.list() ?? []).map((l) => [l.publicName, l.id]));
+    const trustsUs = new Set((this.linked?.list() ?? []).filter((l) => l.trustsUs).map((l) => l.publicName));
     return withEdits(this.computerTabs(), readComputerEdits(this.opts.store.getMeta(COMPUTER_EDITS_KEY))).map((c) => {
       if (!linked.has(c.id)) return c;
       const waiting = this.waitingThere.get(ids.get(c.id)!);
-      return { ...c, linked: true, ...(waiting !== undefined ? { waiting } : {}) };
+      return { ...c, linked: true, ...(waiting !== undefined ? { waiting } : {}), ...(trustsUs.has(c.id) ? { trustsUs: true } : {}) };
     });
   }
 
@@ -874,7 +879,7 @@ export class LedungServer {
           return { name: device.name };
         })
         : await passkeyCall(() => passkeys.registrationOptions(device));
-      this.json(res, 200, result);
+      await this.json(res, 200, result);
       return;
     }
 
@@ -897,7 +902,7 @@ export class LedungServer {
       if (req.method !== 'GET') throw new HttpError(405, 'Method not allowed.');
       const nonce = url.searchParams.get('nonce') ?? '';
       if (!NONCE.test(nonce)) throw new HttpError(400, 'A nonce of 32 hex characters is needed.');
-      this.json(res, 200, { proof: this.guard.runningProof(nonce) });
+      await this.json(res, 200, { proof: this.guard.runningProof(nonce) });
       return;
     }
 
@@ -930,7 +935,7 @@ export class LedungServer {
         return;
       }
       const result = await this.api(req.method ?? 'GET', url, req);
-      this.json(res, 200, result ?? { ok: true });
+      await this.json(res, 200, result ?? { ok: true });
       return;
     }
 
@@ -973,7 +978,7 @@ export class LedungServer {
       return;
     }
     if (route === '/link/file') {
-      this.json(res, 200, await this.linkFile(req, url, from));
+      await this.json(res, 200, await this.linkFile(req, url, from));
       return;
     }
     // The header when there is one; the bytes read when the body comes chunked (review 254, Important 1).
@@ -991,8 +996,33 @@ export class LedungServer {
         case '/link/hello':
           answer = { publicName: this.publicName, ...linked.hello(from().id, body) };
           break;
-        case '/link/unlink':
-          linked.dropped(from().id);
+        case '/link/unlink': {
+          const computer = from();
+          this.untrust(computer.id);
+          linked.dropped(computer.id);
+          answer = { ok: true };
+          break;
+        }
+        // That computer's own screen vouches for a challenge its frame here was given (issue #313, choice 3a): only
+        // when this computer trusts it, and only for a computer device paired through this very link.
+        case '/link/vouch': {
+          const computer = from();
+          this.linkRate(computer.id);
+          if (!linked.trusted(computer.id)) throw new HttpError(403, 'This computer does not trust that one\'s screen.');
+          if (!this.passkeys) throw new HttpError(403, 'Passkeys are not available.');
+          try {
+            this.passkeys.vouch(body.challenge, (device) => this.trustedLink(device) === computer.id);
+          } catch (e) {
+            if (e instanceof PasskeyError) throw new HttpError(403, e.message);
+            throw e;
+          }
+          answer = { ok: true };
+          break;
+        }
+        // That computer trusts this one's own screen, or stopped (issue #313): the key on its tab here.
+        case '/link/trust':
+          this.linkRate(from().id);
+          linked.noteTrustsUs(from().id, body.trusts === true);
           answer = { ok: true };
           break;
         // The Waiting-for-you counts (issue #273): the caller's for its tab here, this one's back. A number only.
@@ -1057,7 +1087,7 @@ export class LedungServer {
       if (e instanceof ManagementError) throw new HttpError(400, e.message);
       throw e;
     }
-    this.json(res, 200, answer);
+    await this.json(res, 200, answer);
   }
 
   /**
@@ -1189,6 +1219,17 @@ export class LedungServer {
     return (this.linked?.list() ?? []).map((l) => ({ ...l, files: this.opts.manager.linkBytes(l.id) }));
   }
 
+  /**
+   * Trust in a linked computer's screen ends (issue #313): its frames here, logged on by its vouch, are logged off at
+   * once, so the next change from them asks for the passkey (or only looks, with none).
+   */
+  private untrust(linkId: string): void {
+    const link = this.linked?.list().find((l) => l.id === linkId);
+    if (!link || typeof link.trustedAt !== 'number') return;
+    const sameName = this.linked!.list().filter((l) => l.name === link.name).length === 1 ? link.name : null;
+    for (const device of this.devices.pairedThrough(link.id, sameName)) this.passkeys?.lock(device.id);
+  }
+
   /** Calls per linked computer in the last minute: past LINK_PER_MINUTE, 429 (manager-link.md, "Loops and floods"). */
   private readonly linkCalls = new Map<string, number[]>();
   private linkRate(id: string): void {
@@ -1249,7 +1290,8 @@ export class LedungServer {
 
   /** What waits for the user here, as this computer's page counts it (App: questions, prompts, cards). */
   private waitingNow(): number {
-    return waitingCount(this.opts.manager.questions(), this.opts.store.pendingPermissions())
+    // Only the open questions count; the closed ones are not read for it (code review of PR #307).
+    return waitingCount(this.opts.store.listQuestions(0, false), this.opts.store.pendingPermissions())
       + (this.opts.relayAdmin?.newComputers().length ?? 0) + this.linkPairings().length;
   }
 
@@ -1324,6 +1366,15 @@ export class LedungServer {
     return null;
   }
 
+  /**
+   * Settings' Unlink, the button's route and a manager's unlink_computer alike (issue #346): its trust ends first, so its
+   * frames here log off, then the link goes and the other computer is told. Null: no such link.
+   */
+  private unlinkComputer(id: string): LinkedComputer | null {
+    this.untrust(id);
+    return this.requireLinked().remove(id);
+  }
+
   private requireLinked(): LinkedComputers {
     if (!this.linked) throw new HttpError(400, this.linkProblem() ?? 'Linking is not available.');
     return this.linked;
@@ -1389,7 +1440,7 @@ export class LedungServer {
    */
   private async requireSignedPage(req: IncomingMessage, url: URL): Promise<void> {
     const device = this.guard.isPublic(req) ? this.guard.deviceOf(req) : null;
-    if (device && this.passkeys?.unlockedUntil(device.id) === null) throw new HttpError(403, device.credentialId ? DEVICE_LOCKED : NO_PASSKEY_LOCKED);
+    if (device && this.passkeys?.unlockedUntil(device.id) === null) throw new HttpError(403, this.lockedWords(device));
     await this.requirePage(req, url);
   }
 
@@ -1417,16 +1468,62 @@ export class LedungServer {
     if (OPEN_WHILE_LOCKED.has(url.pathname)) return;
     const device = this.guard.deviceOf(req);
     if (!device || !this.passkeys) throw new HttpError(401, NOT_PAIRED);
-    if (req.headers[PASSKEY_HEADER] !== undefined) return this.verifySigned(req, url, device);
-    if (this.passkeys.unlockedUntil(device.id) === null) throw new HttpError(403, device.credentialId ? DEVICE_LOCKED : NO_PASSKEY_LOCKED);
+    if (req.headers[PASSKEY_HEADER] !== undefined || req.headers[VOUCH_HEADER] !== undefined) return this.verifySigned(req, url, device);
+    if (this.passkeys.unlockedUntil(device.id) === null) throw new HttpError(403, this.lockedWords(device));
   }
 
-  /** Checks the passkey signature this request carries for exactly itself, once; the request then counts as signed. */
+  /**
+   * Why a locked device is refused: one that can log on (its passkey, or a trusted computer's frame, issue #313) is
+   * told to, and the page logs on and sends again; one that can't is told it can only look.
+   */
+  private lockedWords(device: Device): string {
+    return device.credentialId || this.trustedLink(device) ? DEVICE_LOCKED : NO_PASSKEY_LOCKED;
+  }
+
+  /**
+   * The link whose computer this device is a frame of, when this computer trusts that computer's own screen (issue
+   * #313, docs/steps/trusted-computer.md); null otherwise. Only a computer device paired through that link: never a
+   * phone, never one paired here. A device paired before the link id was kept counts by the link's name, when only one
+   * link has it.
+   */
+  private trustedLink(device: Device): string | null {
+    if (device.kind !== 'computer' || !this.linked || (device.pairedViaLink === null && device.pairedVia === null)) return null;
+    const links = this.linked.list();
+    const link = device.pairedViaLink !== null
+      ? links.find((l) => l.id === device.pairedViaLink)
+      : links.filter((l) => l.name === device.pairedVia).length === 1 ? links.find((l) => l.name === device.pairedVia) : undefined;
+    return link && typeof link.trustedAt === 'number' ? link.id : null;
+  }
+
+  /**
+   * Checks the passkey signature this request carries for exactly itself, once; the request then counts as signed. A
+   * trusted computer's frame may carry its own screen's vouch instead (issue #313, choice 3a), checked as strictly.
+   */
   private async verifySigned(req: IncomingMessage, url: URL, device: Device): Promise<void> {
     if (!this.passkeys) throw new HttpError(403, 'Passkeys are not available.');
     const action = actionOf(req.method ?? '', url.pathname, await readBody(req));
-    await passkeyCall(() => this.passkeys!.verify(device, action, req.headers[PASSKEY_HEADER]));
+    if (req.headers[VOUCH_HEADER] !== undefined) {
+      if (!this.trustedLink(device)) throw new HttpError(403, 'This computer does not trust that computer\'s screen; use the passkey.');
+      await passkeyCall(async () => this.passkeys!.verifyVouch(device, action, req.headers[VOUCH_HEADER]));
+      this.vouched.add(req);
+    } else {
+      // A trusted computer's frame sent no proof yet: "needs your passkey" is the refusal the page answers with a proof,
+      // here the vouch. Without this a frame with no passkey of its own was told it had none, and the page stopped
+      // there (browser check of PR #315, round 2).
+      if (req.headers[PASSKEY_HEADER] === undefined && this.trustedLink(device)) throw new HttpError(403, PASSKEY_NEEDED);
+      await passkeyCall(() => this.passkeys!.verify(device, action, req.headers[PASSKEY_HEADER]));
+    }
     this.signed.add(req);
+  }
+
+  /**
+   * requirePage for what a trusted computer's vouch doesn't cover (issue #313, choice 2a: Martin, 2026-11-13, question
+   * #890): opening a locked project up, loosening the sensitive gate and removing a locked project. Through the public name
+   * these still take the passkey, or this computer's own screen.
+   */
+  private async requirePasskeyPage(req: IncomingMessage, url: URL): Promise<void> {
+    if (this.vouched.has(req)) throw new HttpError(403, PASSKEY_ONLY);
+    await this.requirePage(req, url);
   }
 
   /**
@@ -1498,6 +1595,9 @@ export class LedungServer {
     switch (route) {
       case 'GET state':
         return this.hello(this.guard.isPublic(req));
+      // Waiting for you history (issue #306): read when it opens, not with every page load.
+      case 'GET question-history':
+        return manager.questionHistory();
       // Every archived session, for an Archived list: hello carries only the recent ones (issue #229).
       case 'GET archived-sessions':
         return manager.sessions().filter((s) => s.archivedAt);
@@ -1522,6 +1622,50 @@ export class LedungServer {
       case 'GET links':
         this.requireLocal(req, LINKED_HERE);
         return { publicName: this.publicName, problem: this.linkProblem(), links: this.linksWithBytes() };
+      // What a phone needs to trust a linked computer's screen from there (issue #313): each link's id, name and trust,
+      // nothing else of it. On this computer too; never to a computer's frame.
+      case 'GET link-trust': {
+        if (this.guard.isPublic(req) && this.guard.deviceOf(req)?.kind !== 'phone') throw new HttpError(403, 'Trust is set on this computer\'s own screen, or from a phone with its passkey.');
+        return { links: (this.linked?.list() ?? []).map(({ id, name, trustedAt, trustedFrom, trustsUs }) => ({ id, name, trustedAt, trustedFrom, trustsUs })) };
+      }
+      // Trust a linked computer's own screen, or stop (issue #313, choice 1a: Martin, 2026-11-13, question #890): on
+      // this computer's own page, or from a phone with its passkey for this very request, so a headless computer can
+      // be set from the phone. Never from a computer's frame, trusted or not, and never with a vouch.
+      case 'POST links/:id/trust': {
+        const device = this.guard.isPublic(req) ? this.guard.deviceOf(req) : null;
+        if (this.guard.isPublic(req) && device?.kind !== 'phone') throw new HttpError(403, 'Trust is set on this computer\'s own screen, or from a phone with its passkey.');
+        await this.requirePasskeyPage(req, url);
+        const body = await readJson(req);
+        const linkId = decodeURIComponent(id);
+        const on = body.on === true;
+        if (!on) this.untrust(linkId);
+        const link = this.requireLinked().setTrust(linkId, on, device ? 'phone' : 'here');
+        if (!link) throw new HttpError(400, 'No such linked computer.');
+        console.log(`Linked computers: ${on ? 'trusts' : 'no longer trusts'} ${link.name}'s own screen (set ${device ? `from ${device.name}` : 'here'}).`);
+        return link;
+      }
+      // This computer's own page vouches for a challenge its frame of a linked computer was given (issue #313, choice
+      // 3a): local and the open page only, so neither a phone, anything on this computer's public name, nor a script
+      // with the install token alone can; the link key never reaches a browser. That computer decides whether it counts.
+      case 'POST link-vouch': {
+        // This computer itself: not its public name, and not another computer on the local network with "lan" on, which
+        // would act on every computer that trusts this screen (self-check finding 2).
+        if (this.guard.isPublic(req) || !fromThisComputer(req)) throw new HttpError(403, 'Only this computer\'s own screen vouches for its frames.');
+        await this.requirePage(req, url);
+        const linked = this.requireLinked();
+        const body = await readJson(req);
+        const computer = linked.list().find((l) => l.publicName === body.id);
+        if (!computer) throw new HttpError(400, 'That computer is not linked with this one.');
+        if (typeof body.challenge !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(body.challenge)) throw new HttpError(400, 'Send the challenge.');
+        this.linkRate(`vouch:${computer.id}`);
+        try {
+          await linked.callLinked(computer.id, '/link/vouch', { challenge: body.challenge });
+        } catch (e) {
+          if (e instanceof LinkError) throw new HttpError(502, e.message);
+          throw e;
+        }
+        return { ok: true };
+      }
       case 'POST links-code':
         this.requireLocal(req, LINKED_HERE);
         await this.requirePage(req, url);
@@ -1565,7 +1709,7 @@ export class LedungServer {
         return;
       case 'POST links/:id/remove':
         this.requireLocal(req, LINKED_HERE);
-        if (!this.requireLinked().remove(decodeURIComponent(id))) throw new HttpError(400, 'No such linked computer.');
+        if (!this.unlinkComputer(decodeURIComponent(id))) throw new HttpError(400, 'No such linked computer.');
         return;
       case 'POST devices/:id/revoke':
         this.requireLocal(req);
@@ -1655,11 +1799,15 @@ export class LedungServer {
       // A challenge for one request the page is about to send: its method, path and exact body (requirePage).
       case 'POST passkey-challenge': {
         const { device, passkeys } = this.requireDevice(req);
-        const { method, path: target, body: payload } = await readJson(req);
+        const { method, path: target, body: payload, passkey } = await readJson(req);
         if (typeof method !== 'string' || method.toUpperCase() === 'GET' || typeof target !== 'string' || !target.startsWith('/api/') || typeof payload !== 'string') {
           throw new HttpError(400, 'Send method, path (under /api/) and body (the exact text that will be sent).');
         }
-        return passkeyCall(() => passkeys.challenge(device, actionOf(method, new URL(target, 'http://127.0.0.1').pathname, payload)));
+        const action = actionOf(method, new URL(target, 'http://127.0.0.1').pathname, payload);
+        // A trusted computer's frame (issue #313): a challenge for its own screen to vouch for, unless the page asks for
+        // the passkey itself, as it does after a refusal for what a vouch doesn't cover (PASSKEY_ONLY).
+        if (passkey !== true && this.trustedLink(device)) return { vouch: passkeys.vouchChallenge(device, action) };
+        return passkeyCall(() => passkeys.challenge(device, action));
       }
       case 'GET sessions/:id/messages': {
         const before = Number(url.searchParams.get('before')) || undefined;
@@ -1700,14 +1848,14 @@ export class LedungServer {
       case 'POST projects': {
         const body = await readJson(req);
         // A new project's grant, dev ship command or unasked tools let through what reached the user (issue #107).
-        if (manager.gateLoosens(null, body)) await this.requirePage(req, url);
+        if (manager.gateLoosens(null, body)) await this.requirePasskeyPage(req, url);
         return manager.addProject(projectFrom(body));
       }
       case 'POST projects/:id': {
         const body = await readJson(req);
         // Opening a locked project up is the user's alone, from the open page, like a sensitive call (issue #109).
         // So is loosening the sensitive gate: a pattern removed, a new grant, unasked tools (issue #107).
-        if (manager.lockdownOpensUp(decodeURIComponent(id), body) || manager.gateLoosens(decodeURIComponent(id), body)) await this.requirePage(req, url);
+        if (manager.lockdownOpensUp(decodeURIComponent(id), body) || manager.gateLoosens(decodeURIComponent(id), body)) await this.requirePasskeyPage(req, url);
         return manager.updateProject(decodeURIComponent(id), projectFrom(body));
       }
       case 'GET accounts':
@@ -1770,7 +1918,7 @@ export class LedungServer {
         const body = await readJson(req);
         // A task goes to the new project's manager as the user's words (requirePageForManager).
         // Settings that loosen the sensitive gate need the page and, through the public name, a signature (issue #107).
-        if (manager.gateLoosens(null, (body.settings ?? {}) as Record<string, unknown>)) await this.requirePage(req, url);
+        if (manager.gateLoosens(null, (body.settings ?? {}) as Record<string, unknown>)) await this.requirePasskeyPage(req, url);
         else if (typeof body.task === 'string' && body.task.trim()) this.requireOpenPage(req);
         return manager.createProject({
           parent: typeof body.parent === 'string' ? body.parent : undefined,
@@ -1844,8 +1992,13 @@ export class LedungServer {
       }
       // A new name (issue #116): the user's alone, from the open page; no manager tool renames a project.
       case 'POST projects/:id/rename': {
-        await this.requirePage(req, url);
         const body = await readJson(req);
+        // Settings sent with it that open a locked project up or loosen the gate are passkey-only, as on their own
+        // route (issue #313, self-check finding 1): a trusted computer's vouch is not enough for them.
+        const sent = (body.settings ?? null) as Record<string, unknown> | null;
+        const project = decodeURIComponent(id);
+        if (sent && (manager.lockdownOpensUp(project, sent) || manager.gateLoosens(project, sent))) await this.requirePasskeyPage(req, url);
+        else await this.requirePage(req, url);
         // The other settings come along, so a refused one leaves the name as it was (review-116 m1).
         return manager.renameProject(decodeURIComponent(id), body.name, body.settings ? projectFrom(body.settings as Record<string, unknown>) : undefined);
       }
@@ -1861,7 +2014,7 @@ export class LedungServer {
       }
       case 'POST projects/:id/remove':
         // Removing a locked project ends its lockdown too (issue #109).
-        if (manager.lockdownOpensUp(decodeURIComponent(id), null)) await this.requirePage(req, url);
+        if (manager.lockdownOpensUp(decodeURIComponent(id), null)) await this.requirePasskeyPage(req, url);
         return manager.removeProject(decodeURIComponent(id));
       case 'POST projects/:id/manager': {
         // Always to a manager, as the user's words (requirePageForManager).
@@ -2073,6 +2226,9 @@ export class LedungServer {
         const body = await readJson(req);
         return manager.sendLineComments(id, body);
       }
+      // One whole question (issue #306): older Waiting for you history comes light, and the page asks when it opens one.
+      case 'GET questions/:id':
+        return manager.question(Number(id));
       // A review's text file (docs/steps/pr-review.md): only one the review names, read-only.
       case 'GET questions/:id/evidence/:id':
         return manager.readEvidenceText(Number(id), /^\d+$/.test(parts[3] ?? '') ? Number(parts[3]) : -1);
@@ -2094,7 +2250,7 @@ export class LedungServer {
         return manager.chats();
       case 'POST chats': {
         const body = await readJson(req);
-        if (manager.chatsLoosen(body)) await this.requirePage(req, url);
+        if (manager.chatsLoosen(body)) await this.requirePasskeyPage(req, url);
         return manager.updateChats(body);
       }
       // Their name colour (issue #222), one for all chats: checked like a project's (#83), cookie and origin.
@@ -2161,6 +2317,26 @@ export class LedungServer {
         if (Number(req.headers['content-length'] ?? 0) > MAX_CHAT_IMAGE_BYTES) throw new HttpError(413, 'The image is too large.');
         return manager.uploadImage(id, await readBody(req, MAX_CHAT_IMAGE_BYTES));
       }
+      // A file dropped in the message box that isn't an image Ledung sends (issue #339): its bytes alone, its name in the
+      // query, saved in the session's folder under .ledung/drops by a name Ledung makes plain; the message names it.
+      // The image route's locks: the open page for a manager, and through the public name the unlocked device, never a
+      // signature (one would be checked over the first MB only and refused). Too large or a container project is
+      // refused before the bytes are read.
+      case 'POST sessions/:id/drops': {
+        this.requirePageForManager(req, id);
+        const type = String(req.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase();
+        if (type !== 'application/octet-stream') throw new HttpError(415, 'Send the file as application/octet-stream.');
+        if (Number(req.headers['content-length'] ?? 0) > MAX_DROP_BYTES) throw new HttpError(413, DROP_TOO_LARGE);
+        manager.dropCheck(id);
+        const name = url.searchParams.get('name') ?? '';
+        let bytes: Buffer;
+        try {
+          bytes = await readBody(req, MAX_DROP_BYTES);
+        } catch (e) {
+          throw e instanceof HttpError && e.status === 413 ? new HttpError(413, DROP_TOO_LARGE) : e;
+        }
+        return manager.saveDrop(id, name, bytes);
+      }
       // A "!" command from the message box (issue #212). People only: no tool reaches these routes.
       case 'GET sessions/:id/shell-check':
         return manager.shellCheck(id, url.searchParams.get('command') ?? '');
@@ -2169,7 +2345,7 @@ export class LedungServer {
         // unlocked device and a passkey signature for each command (decision 2 of #212, Martin 2026-10-18 18:09).
         // A signed request alone passes requireUnlocked, so the unlock is checked here as well.
         const device = this.guard.isPublic(req) ? this.guard.deviceOf(req) : null;
-        if (device && this.passkeys?.unlockedUntil(device.id) === null) throw new HttpError(403, device.credentialId ? DEVICE_LOCKED : NO_PASSKEY_LOCKED);
+        if (device && this.passkeys?.unlockedUntil(device.id) === null) throw new HttpError(403, this.lockedWords(device));
         await this.requirePage(req, url);
         const body = await readJson(req);
         await manager.runShell(id, String(body.command ?? ''), body.confirmed === true);
@@ -2515,9 +2691,26 @@ export class LedungServer {
     return this.publicResponses.has(res) ? this.publicHeaders : this.headers;
   }
 
-  private json(res: ServerResponse, status: number, body: unknown): void {
-    res.writeHead(status, { ...this.headersFor(res), 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(body));
+  /**
+   * A JSON answer. One above PACK_MIN_BYTES goes compressed when the request takes it (issue #330); the same JSON
+   * either way, and the headers are the same apart from the encoding. Never fails: if compressing does, it goes plain.
+   */
+  private async json(res: ServerResponse, status: number, body: unknown): Promise<void> {
+    const data = Buffer.from(JSON.stringify(body));
+    const headers = { ...this.headersFor(res), 'Content-Type': 'application/json', Vary: 'Accept-Encoding' };
+    const encoding = data.length >= PACK_MIN_BYTES ? pickEncoding(res.req.headers['accept-encoding']) : null;
+    if (encoding) {
+      const packed = await packAnswer(data, encoding).catch(() => null);
+      // The client may have gone while it was compressed.
+      if (res.destroyed) return;
+      if (packed) {
+        res.writeHead(status, { ...headers, 'Content-Encoding': encoding, 'Content-Length': packed.length });
+        res.end(packed);
+        return;
+      }
+    }
+    res.writeHead(status, headers);
+    res.end(data);
   }
 
   private fail(res: ServerResponse, e: unknown): void {
@@ -2527,7 +2720,7 @@ export class LedungServer {
       res.destroy();
       return;
     }
-    this.json(res, status, { error: e instanceof Error ? e.message : String(e) });
+    void this.json(res, status, { error: e instanceof Error ? e.message : String(e) });
   }
 }
 

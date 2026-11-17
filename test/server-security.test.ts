@@ -60,6 +60,10 @@ let chatImagesDir: string;
 let sessions: SessionManager;
 const questionAbout: Record<string, number> = {};
 let refusalQuestion = 0;
+/** Ledung's question about a manager's call away mode held (issue #262). */
+let heldQuestion = 0;
+/** Ledung's question about a manager's settings change, asked instead of its prompt (issue #308). */
+let promptQuestion = 0;
 let allowedRule = 0;
 let alwaysQuestion = 0;
 let keepQuestion = 0;
@@ -118,6 +122,14 @@ before(async () => {
   const rq = store.createQuestion({ sessionId: 's1', question: 'refused', options: ['Allow once', 'Deny'], addressedTo: 'user', details: { refusal: { toolName: 'Bash', input: { command: 'x' }, reason: 'r', toolUseId: 't' } } });
   store.withdrawQuestion(rq.id, 'test');
   refusalQuestion = rq.id;
+  // A manager's call away mode held, asked the same way (issue #262), no longer open.
+  const hq = store.createQuestion({ sessionId: 's1', question: 'held', options: ['Allow once', 'Allow always, though sensitive', 'Deny'], addressedTo: 'user', details: { refusal: { toolName: 'Bash', input: { command: 'gh pr merge 5 -R o/r --merge' }, reason: 'held for Simon: failing checks: ci', toolUseId: 't3', held: 'away', always: 'sensitive', sensitiveRule: 'gh pr merge' } } });
+  store.withdrawQuestion(hq.id, 'test');
+  heldQuestion = hq.id;
+  // A manager's settings change asked the same way instead of its prompt (issue #308), no longer open.
+  const pq = store.createQuestion({ sessionId: 's1', question: 'asked', options: ['Allow once', 'Deny'], addressedTo: 'user', details: { refusal: { toolName: 'mcp__ledung__set_project_settings', input: { project: 'p', managerGrant: 'anything' }, reason: 'a change to "p" that loosens what reaches you: manager grant none → "anything"', toolUseId: 't4', held: 'prompt' } } });
+  store.withdrawQuestion(pq.id, 'test');
+  promptQuestion = pq.id;
   // An Allow always rule of project p (issue #225), for the removal route.
   allowedRule = store.addAllowedCall({ project: 'p', toolName: 'Bash', command: 'npm run publish:dev', sensitive: false, allowedBy: 'Simon', questionId: rq.id }).id;
   // An open refused-call question that offers Allow always, for the answer route (issue #225).
@@ -462,6 +474,51 @@ test('images for a message (issue #128): uploaded with the sign-in and Ledung\'s
   assert.equal((await send(Array(11).fill(id))).status, 400);
   // A manager's images need the open page, like its messages (#104 review, finding F1).
   assert.equal((await request({ method: 'POST', path: '/api/sessions/m1/images', headers: good, body: png })).status, 403);
+});
+
+test('a dropped file for a message (issue #339): saved in the session\'s folder with the sign-in, this host and Ledung\'s own origin, within 50 MB', async () => {
+  const pdf = Buffer.from('%PDF-1.7\n%%EOF\n', 'latin1');
+  const drop = (headers: Record<string, string>, body: Buffer = pdf, name = 'report.pdf', session = 's1') =>
+    request({ method: 'POST', path: `/api/sessions/${session}/drops?name=${encodeURIComponent(name)}`, headers: { 'content-length': String(body.length), ...headers }, body });
+  const good = { cookie: COOKIE, origin: ORIGIN, 'content-type': 'application/octet-stream' };
+  const drops = path.join(projectRoot, '.ledung', 'drops');
+  const kept = () => (fs.existsSync(drops) ? fs.readdirSync(drops).filter((f) => f !== '.gitignore') : []);
+  const two = (v: number) => String(v).padStart(2, '0');
+  const now = new Date();
+  const day = `${now.getFullYear()}-${two(now.getMonth() + 1)}-${two(now.getDate())}`;
+  try {
+    assert.equal((await drop({ origin: ORIGIN, 'content-type': 'application/octet-stream' })).status, 401, 'no sign-in');
+    assert.equal((await drop({ cookie: COOKIE, 'content-type': 'application/octet-stream' })).status, 403, 'no Origin');
+    assert.equal((await drop({ ...good, origin: 'http://evil.example' })).status, 403, 'another origin');
+    assert.equal((await drop({ ...good, host: 'evil.example:80' })).status, 403, 'another host');
+    assert.equal((await drop({ ...good, 'content-type': 'text/html' })).status, 415, 'only as plain bytes');
+    // Too large: refused by its declared length before it is read, with the limit named, and by what arrives.
+    const big = Buffer.alloc(50 * 1024 * 1024 + 1);
+    const declared = await drop(good, big);
+    assert.equal(declared.status, 413);
+    assert.match(JSON.parse(declared.body).error, /at most 50 MB/);
+    const chunked = await request({ method: 'POST', path: '/api/sessions/s1/drops?name=big.bin', headers: good, body: big }).catch((e: Error) => ({ status: 0, error: e.message }));
+    assert.ok(chunked.status === 413 || chunked.status === 0, `refused while it arrives: ${JSON.stringify(chunked).slice(0, 200)}`);
+    assert.deepEqual(kept(), [], 'nothing kept of what was refused');
+    assert.equal((await drop(good, pdf, 'report.pdf', 'nope')).status, 400, 'no such session');
+    // A manager's drops need the open page, like its messages and images (#104 review, finding F1).
+    assert.equal((await drop(good, pdf, 'report.pdf', 'm1')).status, 403);
+    assert.deepEqual(kept(), [], 'nothing kept of what was refused');
+
+    const ok = await drop(good);
+    assert.equal(ok.status, 200, ok.body);
+    assert.deepEqual(JSON.parse(ok.body), { path: `.ledung/drops/${day}-report.pdf` });
+    assert.deepEqual(fs.readFileSync(path.join(drops, `${day}-report.pdf`)), pdf);
+    // Path parts in the name land inside the drops folder, under a plain name; nothing beside the project.
+    const beside = fs.readdirSync(path.dirname(projectRoot));
+    const climbed = await drop(good, pdf, '../../x.pdf');
+    assert.equal(climbed.status, 200, climbed.body);
+    assert.deepEqual(JSON.parse(climbed.body), { path: `.ledung/drops/${day}-_.._x.pdf` });
+    assert.deepEqual(fs.readdirSync(path.dirname(projectRoot)), beside);
+    assert.deepEqual(kept().sort(), [`${day}-_.._x.pdf`, `${day}-report.pdf`]);
+  } finally {
+    fs.rmSync(path.join(projectRoot, '.ledung'), { recursive: true, force: true });
+  }
 });
 
 test("a session with its own folder reads files only from that folder, behind the same sign-in", async () => {
@@ -1013,6 +1070,26 @@ test("answering Ledung's question about a refused call, whose Allow once lets th
   assert.match(errorOf(plain), /no longer open/);
   const page = await livePage();
   const passed = await change(`/api/questions/${refusalQuestion}/answer`, answer, { 'x-ledung-page': page.key });
+  page.close();
+  assert.equal(passed.status, 400);
+  assert.match(errorOf(passed), /no longer open/);
+});
+
+test("answering Ledung's question about a call away mode held, whose Allow once lets the retry through, needs the live page too (issue #262)", async () => {
+  const answer = { answer: 'Allow once' };
+  assert.equal((await change(`/api/questions/${heldQuestion}/answer`, answer)).status, 403);
+  const page = await livePage();
+  const passed = await change(`/api/questions/${heldQuestion}/answer`, answer, { 'x-ledung-page': page.key });
+  page.close();
+  assert.equal(passed.status, 400);
+  assert.match(errorOf(passed), /no longer open/);
+});
+
+test("answering Ledung's question about a manager's settings change asked instead of its prompt, whose Allow once lets the retry through, needs the live page too (issue #308)", async () => {
+  const answer = { answer: 'Allow once' };
+  assert.equal((await change(`/api/questions/${promptQuestion}/answer`, answer)).status, 403);
+  const page = await livePage();
+  const passed = await change(`/api/questions/${promptQuestion}/answer`, answer, { 'x-ledung-page': page.key });
   page.close();
   assert.equal(passed.status, 400);
   assert.match(errorOf(passed), /no longer open/);
@@ -1880,6 +1957,34 @@ test('computers are linked and unlinked only on this computer: a paired device, 
   }
 });
 
+test('a trusted computer\'s vouch (issue #313): link-vouch only on this computer, and a vouch header counts for no phone', async () => {
+  const d = await deviceWithPasskey('Vouching phone');
+  try {
+    assert.equal((await pubChange('/api/device-unlock', '{}', d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign('/api/device-unlock', '{}') })).status, 200);
+    // Unlocked, with the page key and this very request signed: link-vouch is still this computer's own screen's alone.
+    const body = JSON.stringify({ id: 'mac.l.example.com', challenge: 'A'.repeat(43) });
+    const vouch = await pubChange('/api/link-vouch', body, d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign('/api/link-vouch', body) });
+    assert.equal(vouch.status, 403, vouch.body);
+    assert.match(errorOf(vouch), /Only this computer's own screen vouches/);
+    // Locally without the open page's key (the token alone), refused before anything else.
+    const noPage = await change('/api/link-vouch', JSON.parse(body));
+    assert.equal(noPage.status, 403, noPage.body);
+    // A phone's vouch header, in place of its passkey, allows nothing: no phone is a trusted computer's frame.
+    const away = JSON.stringify({ until: '23:59' });
+    const viaVouch = await pubChange('/api/away', away, d.cookie, { ...d.withKey, 'x-ledung-vouch': 'A'.repeat(43) });
+    assert.equal(viaVouch.status, 403, viaVouch.body);
+    assert.match(errorOf(viaVouch), /does not trust that computer's screen/);
+    // Premise: the same request with its passkey goes through.
+    assert.equal((await pubChange('/api/away', away, d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign('/api/away', away) })).status, 200);
+    // And a phone's challenge is a passkey's, never one to vouch for.
+    const offered = JSON.parse((await pubChange('/api/passkey-challenge', { method: 'POST', path: '/api/away', body: away }, d.cookie)).body);
+    assert.equal(offered.vouch, undefined);
+    assert.equal(typeof offered.challenge, 'string');
+  } finally {
+    d.page.close();
+  }
+});
+
 test("an account's folder opens only on this computer, from its open page (issue #414)", async () => {
   // An account straight in the database: adding it through the manager would check its sign-in with Claude Code.
   const folder = path.join(projectRoot, 'account-work');
@@ -2182,6 +2287,24 @@ test('through the public name an image for a message needs the device unlocked, 
     assert.equal((await upload()).status, 200);
   } finally {
     d.page.close();
+  }
+});
+
+test('through the public name a dropped file needs the device unlocked, like an image (issue #339)', async () => {
+  const d = await deviceWithPasskey();
+  const pdf = Buffer.from('%PDF-1.7\n%%EOF\n', 'latin1');
+  const drop = () => pub({ method: 'POST', path: '/api/sessions/s1/drops?name=r.pdf', headers: { cookie: d.cookie, origin: PUBLIC_ORIGIN, 'content-type': 'application/octet-stream', ...d.withKey }, body: pdf });
+  const drops = path.join(projectRoot, '.ledung', 'drops');
+  try {
+    assert.match(errorOf(await drop()), /locked/);
+    assert.equal(fs.existsSync(drops) ? fs.readdirSync(drops).filter((f) => f !== '.gitignore').length : 0, 0, 'nothing saved while locked');
+    assert.equal((await pubChange('/api/device-unlock', '{}', d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign('/api/device-unlock', '{}') })).status, 200);
+    const ok = await drop();
+    assert.equal(ok.status, 200, ok.body);
+    assert.match(JSON.parse(ok.body).path, /^\.ledung\/drops\/\d{4}-\d{2}-\d{2}-r\.pdf$/);
+  } finally {
+    d.page.close();
+    fs.rmSync(path.join(projectRoot, '.ledung'), { recursive: true, force: true });
   }
 });
 
@@ -2702,6 +2825,37 @@ test('shortcuts are made only on this computer: a signed-in page on the local ne
     assert.match(errorOf(res), here);
     assert.equal((await requestAt(ip, lanPort, { path: `/running?nonce=${'0'.repeat(32)}` })).status, 404, 'the open-or-start check answers only this computer');
     assert.equal(fs.existsSync(path.join(shortcutDir, 'Applications', 'Ledung.app')), false);
+  } finally {
+    await lan.close();
+  }
+});
+
+// Issue #330, Done 3: the phone on the home network gets the same compressed answer.
+test('API answers go compressed on the local network address too (issue #330)', async (t) => {
+  const ip = networkAddress();
+  if (!ip) return t.skip('this computer has no network address to come from');
+  const zlib = await import('node:zlib');
+  const lanPort = await freePort();
+  const lan = new LedungServer({ port: lanPort, token: TOKEN, store: paneStore, manager: sessions, webRoot, lanBind: ip, lanNames: [ip] });
+  await lan.listen();
+  try {
+    paneStore.createSession({ id: 'pack330lan', project: 'p', runner: 'local', title: 'long chat', parentId: null, permissionMode: 'default', role: 'session' });
+    for (let i = 0; i < 100; i++) {
+      paneStore.addMessage('pack330lan', 'sdk', { type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'text', text: `Reply ${i}, over the network.` }] } });
+    }
+    const got = await new Promise<{ status: number; headers: http.IncomingHttpHeaders; bytes: Buffer }>((resolve, reject) => {
+      const req = http.request({ host: ip, port: lanPort, path: '/api/sessions/pack330lan/messages', headers: { host: `${ip}:${lanPort}`, cookie: COOKIE, 'accept-encoding': 'br' } }, (res) => {
+        const parts: Buffer[] = [];
+        res.on('data', (c: Buffer) => parts.push(c));
+        res.on('end', () => resolve({ status: res.statusCode!, headers: res.headers, bytes: Buffer.concat(parts) }));
+      });
+      req.on('error', reject);
+      req.end();
+    });
+    assert.equal(got.status, 200, got.bytes.toString());
+    assert.equal(got.headers['content-encoding'], 'br');
+    const answer = JSON.parse(zlib.brotliDecompressSync(got.bytes).toString());
+    assert.equal(answer.length, 100);
   } finally {
     await lan.close();
   }
@@ -3467,6 +3621,49 @@ test('page text files go compressed by Accept-Encoding, plain without it; pictur
   const changed = Buffer.from('export const answer = "changed";\n'.repeat(400));
   fs.writeFileSync(path.join(assets, 'main-Zz99Yy88.js'), changed);
   assert.deepEqual(zlib.brotliDecompressSync((await rawGet('/assets/main-Zz99Yy88.js', { 'accept-encoding': 'br' })).bytes), changed);
+});
+
+test('API answers above a small size go compressed by Accept-Encoding, the same JSON either way (issue #330)', async () => {
+  const zlib = await import('node:zlib');
+  paneStore.createSession({ id: 'pack330', project: 'p', runner: 'local', title: 'long chat', parentId: null, permissionMode: 'default', role: 'session' });
+  for (let i = 0; i < 200; i++) {
+    paneStore.addMessage('pack330', 'sdk', { type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'text', text: `Reply ${i}: the same kind of words again and again.` }] } });
+  }
+  const url = '/api/sessions/pack330/messages?limit=500';
+  const plain = await rawGet(url, { cookie: COOKIE });
+  assert.equal(plain.status, 200);
+  assert.equal(plain.headers['content-encoding'], undefined, 'no Accept-Encoding: as before');
+  assert.equal(plain.headers.vary, 'Accept-Encoding');
+  assert.equal(plain.headers['content-type'], 'application/json');
+  const json = plain.bytes.toString();
+  assert.ok(json.length > 20_000, `a big answer: ${json.length}`);
+
+  const br = await rawGet(url, { cookie: COOKIE, 'accept-encoding': 'gzip, deflate, br, zstd' });
+  assert.equal(br.headers['content-encoding'], 'br');
+  assert.equal(br.headers.vary, 'Accept-Encoding');
+  assert.equal(Number(br.headers['content-length']), br.bytes.length);
+  assert.ok(br.bytes.length < json.length / 4, `compressed: ${br.bytes.length} of ${json.length}`);
+  assert.equal(zlib.brotliDecompressSync(br.bytes).toString(), json, 'the same answer');
+  // Every security header as on the plain answer.
+  for (const name of Object.keys(securityHeaders(PORT)).map((n) => n.toLowerCase())) assert.equal(br.headers[name], plain.headers[name], name);
+
+  const gz = await rawGet(url, { cookie: COOKIE, 'accept-encoding': 'br;q=0, gzip' });
+  assert.equal(gz.headers['content-encoding'], 'gzip');
+  assert.equal(zlib.gunzipSync(gz.bytes).toString(), json);
+  assert.equal((await rawGet(url, { cookie: COOKIE, 'accept-encoding': 'identity' })).headers['content-encoding'], undefined);
+
+  // A small answer goes as it is, and so does a refusal: the checks come first and are the same.
+  const small = await rawGet('/api/sessions/pack330/messages?limit=1', { cookie: COOKIE, 'accept-encoding': 'br' });
+  assert.equal(small.headers['content-encoding'], undefined);
+  assert.ok(small.bytes.length < 1024, `small: ${small.bytes.length}`);
+  assert.equal((await rawGet(url, { 'accept-encoding': 'br' })).status, 401, 'no cookie');
+  assert.equal((await rawGet(url, { cookie: COOKIE, host: 'evil.example:80', 'accept-encoding': 'br' })).status, 403, 'another Host');
+
+  // Pictures go as they are.
+  const png = await rawGet('/api/sessions/s1/image?path=a.png', { cookie: COOKIE, 'accept-encoding': 'gzip, br' });
+  assert.equal(png.status, 200);
+  assert.equal(png.headers['content-encoding'], undefined);
+  assert.deepEqual(png.bytes, fs.readFileSync(path.join(projectRoot, 'a.png')));
 });
 
 test('hello carries recent and named archived sessions, counts the older ones, and the full list needs the sign-in (issue #229)', async () => {

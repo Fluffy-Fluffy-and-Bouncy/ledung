@@ -241,7 +241,7 @@ function nativeReal(p: string): string {
 }
 
 /** Is `inner` the folder `outer` or inside it, both in their native real form; without case on macOS and Windows. */
-function nativeWithin(outer: string, inner: string): boolean {
+export function nativeWithin(outer: string, inner: string): boolean {
   const fold = (s: string) => (process.platform === 'darwin' || process.platform === 'win32' ? s.normalize('NFC').toLowerCase() : s);
   const rel = path.relative(fold(nativeReal(outer)), fold(nativeReal(inner)));
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));

@@ -692,6 +692,11 @@ export interface QuestionInfo {
   earlier?: ConversationLine[] | null;
   /** What the asker attached with ask_user's sources (issue #369), in its order, fetched and kept when it asked. Null: none. */
   sources?: AttachedSource[] | null;
+  /**
+   * Sent without `original`, `earlier` and `sources` (older Waiting for you history, issue #306): the page asks for the
+   * whole question (GET /api/questions/:id) when it is opened.
+   */
+  light?: boolean;
 }
 
 /**

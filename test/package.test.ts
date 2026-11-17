@@ -53,7 +53,8 @@ test("the package's own package.json has no scripts or devDependencies (npm warn
   assert.equal(manifest.scripts, undefined);
   assert.equal(manifest.devDependencies, undefined);
   // acme-client: Ledung's own certificate by ACME (issue #202, "a new dependency, bundled by pack").
-  assert.deepEqual(Object.keys(manifest.dependencies as object).sort(), ['@anthropic-ai/claude-agent-sdk', '@simplewebauthn/server', 'acme-client', 'ws', 'zod']);
+  // @jsquash/*: question screenshots kept as WebP, by WebAssembly codecs with no native build (issue #306).
+  assert.deepEqual(Object.keys(manifest.dependencies as object).sort(), ['@anthropic-ai/claude-agent-sdk', '@jsquash/jpeg', '@jsquash/png', '@jsquash/webp', '@simplewebauthn/server', 'acme-client', 'ws', 'zod']);
   assert.equal(manifest.bin && (manifest.bin as Record<string, string>).ledung, 'dist/cli.js');
   // npm's page for the package links to these (#340).
   for (const field of ['author', 'repository', 'homepage', 'bugs']) assert.deepEqual(manifest[field], clonePackage()[field], `${field} is kept`);
