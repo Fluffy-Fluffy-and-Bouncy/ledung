@@ -123,3 +123,20 @@ test('a structured option is named by its label; a manager decision by its title
   store.decidePermission('x', 'allowed', 'mgr', null, 'once');
   assert.equal(lineOutcome(permissionLine(store.getPermission('x')!, 'Simon', (id) => store.getSession(id)?.title)), 'Allowed by Manager: p');
 });
+
+test('a locked secret in a question or prompt is blanked in its line (Done looks like 5)', () => {
+  const t = setup();
+  t.store.setBlanker({ text: (s) => s.replaceAll('hunter2', '••••'), deep: (d) => JSON.parse(JSON.stringify(d).replaceAll('hunter2', '••••')) });
+  const q = t.store.createQuestion({ sessionId: 'w1', question: 'Use hunter2?', options: null, addressedTo: 'user', details: { title: 'Log in with hunter2' } });
+  // Published as the asker had it, secret and all: the line is still stored and sent blanked.
+  t.publish({ type: 'question', question: { ...q, details: { title: 'Log in with hunter2' } } });
+  const p = t.store.createPermission({ id: 'perm-s', sessionId: 'w1', toolName: 'Bash', input: { command: 'login -p hunter2' }, title: null, reason: null });
+  t.publish({ type: 'permission', permission: { ...p, input: { command: 'login -p hunter2' } } });
+  const stored = t.lineMessages('mgr');
+  assert.equal(stored.length, 2);
+  assert.ok(stored.every((m) => !JSON.stringify(m.data).includes('hunter2')), JSON.stringify(stored.map((m) => m.data)));
+  assert.equal(lineHead(stored[0]!.data), `Question #${q.id} — Log in with ••••`);
+  assert.equal(lineHead(stored[1]!.data), 'Permission prompt — Bash: login -p ••••');
+  const sent = t.sent.filter((e) => e.type === 'message');
+  assert.ok(sent.length === 2 && !JSON.stringify(sent).includes('hunter2'), 'what is sent to the page is blanked too');
+});

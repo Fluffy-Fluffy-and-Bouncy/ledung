@@ -17,6 +17,7 @@ import { PermissionCard } from './PermissionCard.tsx';
 import { QuestionCard } from './QuestionCard.tsx';
 import { toolSummary } from './ToolPreview.tsx';
 import { distanceFromBottom, isStuck, restoredScrollTop } from '../scrollAnchor.ts';
+import { dropReturnPlace, keepReturnPlace, peekReturnPlace, returnScrollTop } from '../returnPlace.ts';
 import { insertByTime, lastOwnMessage, shownWoven, wovenQuestions } from '../conversation.ts';
 import { SENT_IMAGE_PREFIX, sentImageUrl } from '../chatImages.ts';
 import { NEAR_TOP, stepUp, tailStart, windowStart } from '../messageWindow.ts';
@@ -260,6 +261,8 @@ export const MessageList = memo(function MessageList(props: {
     el.scrollTo({ top, behavior: reduced ? 'auto' : 'smooth' });
   };
   const stick = useRef(true);
+  /** How far the reader is from the chat's end, kept for a resize. */
+  const distance = useRef(0);
   /** The question already scrolled to, so later messages don't pull the view away again or back to it. */
   const focused = useRef<string | null>(null);
   const focusMessage = props.focusMessage ?? null;
@@ -275,10 +278,13 @@ export const MessageList = memo(function MessageList(props: {
     const timers = [0, 300, 900].map((ms) => setTimeout(() => { const el = scroller.current; if (el) el.scrollTop = el.scrollHeight; }, ms));
     return () => timers.forEach(clearTimeout);
   }, [props.follow, lastKey, props.footerKey, items.length]);
-  // The question or reply it was opened at is always drawn, and so is everything after it.
+  // A chat left by a waiting line's Open comes back at that line (issue #350, acceptance round 1 point 2).
+  const returnPlace = sessionId && focus === null && focusMessage === null ? peekReturnPlace(sessionId) : undefined;
+  // The question or reply it was opened at is always drawn, and so is everything after it; so is the line returned to.
   const mustShow = focus !== null
     ? items.findIndex((it) => it.type === 'question' && it.questionId === focus)
-    : focusMessage !== null ? items.findIndex((it) => it.type === 'assistant' && it.anchor === focusMessage) : -1;
+    : focusMessage !== null ? items.findIndex((it) => it.type === 'assistant' && it.anchor === focusMessage)
+    : returnPlace ? indexOfKey.get(returnPlace.key) ?? -1 : -1;
   // FROM_TOP: drawn from the very first item, so messages "Load earlier" adds above it are drawn too (self-check 2).
   const keyed = firstKey === null ? undefined : firstKey === FROM_TOP ? 0 : indexOfKey.get(firstKey);
   // Counted in messages that show (issue #329): a tool-heavy chat's hidden calls don't use up the window.
@@ -321,6 +327,21 @@ export const MessageList = memo(function MessageList(props: {
   useLayoutEffect(() => {
     const el = scroller.current;
     if (!el) return;
+    if (returnPlace && sessionId && messages.length > 0) {
+      dropReturnPlace(sessionId);
+      const line = el.querySelector(`[data-key="${CSS.escape(returnPlace.key)}"]`);
+      if (line) {
+        el.scrollTop = returnScrollTop(el.scrollTop, line.getBoundingClientRect().top - el.getBoundingClientRect().top, returnPlace.offset);
+        // Kept off the end: the effect below and a resize keep this place, not the chat's end.
+        focused.current = `return:${returnPlace.key}`;
+        stick.current = false;
+        distance.current = distanceFromBottom(el.scrollHeight, el.scrollTop, el.clientHeight) ?? 0;
+        // The drawn part stays as it is, the line in it, now the place is no longer kept.
+        if (firstKey === null) setFirstKey(keyAt(start));
+        updatePinned();
+        return;
+      }
+    }
     // Only once the history is in: before that the cards of other sessions are all there is, and the place would be lost.
     if (target !== null && focused.current !== target && messages.length > 0) {
       const card = el.querySelector(target);
@@ -346,8 +367,8 @@ export const MessageList = memo(function MessageList(props: {
     stick.current = focused.current === null;
   }, [messages.length === 0]);
 
-  // Moving the tab to another window or rotating a phone resizes the scroller, briefly to no height; keep the reader's place.
-  const distance = useRef(0);
+  // Moving the tab to another window or rotating a phone resizes the scroller, briefly to no height; keep the reader's place
+  // (distance, declared above).
   // The size last restored at. A narrower column (the Files pane opened or dragged wider, issue #198) makes the browser
   // move the text itself, with a scroll event before the observer runs; taken as the reader's, it unstuck the chat
   // from its end. A scroll at a size not yet restored at is left to the observer.
@@ -364,6 +385,16 @@ export const MessageList = memo(function MessageList(props: {
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
+
+  /** A waiting line's Open, keeping where the line is on screen first, so Back comes to it again. */
+  function leaving<A>(key: string, open: ((a: A) => void) | undefined): ((a: A) => void) | undefined {
+    if (!open) return undefined;
+    return (a: A) => {
+      const el = scroller.current, line = el?.querySelector(`[data-key="${CSS.escape(key)}"]`);
+      if (sessionId && el && line) keepReturnPlace(sessionId, { key, offset: line.getBoundingClientRect().top - el.getBoundingClientRect().top });
+      open(a);
+    };
+  }
 
   return (
     <div
@@ -418,8 +449,8 @@ export const MessageList = memo(function MessageList(props: {
             onQuote={props.onQuote}
             onOpenFile={props.onOpenFile}
             onOpenBoardThread={props.onOpenBoardThread}
-            onOpenQuestion={props.onOpenQuestion}
-            onOpenWaitingFor={item.type === 'waiting' ? props.onOpenWaitingFor : undefined}
+            onOpenQuestion={item.type === 'waiting' ? leaving(item.key, props.onOpenQuestion) : props.onOpenQuestion}
+            onOpenWaitingFor={item.type === 'waiting' ? leaving(item.key, props.onOpenWaitingFor) : undefined}
             titleOf={item.type === 'question' || item.type === 'permission' || item.type === 'waiting' ? props.titleOf : undefined}
             question={item.type === 'question' ? props.questions[item.questionId]
               : item.type === 'waiting' && item.line.item === 'question' ? props.questions[Number(item.line.ref)] : undefined}
@@ -701,7 +732,7 @@ function WaitingLineRow(props: ItemProps & { line: WaitingLine; time: ReactNode 
     ? props.onOpenQuestion && (() => props.onOpenQuestion!(Number(l.ref)))
     : l.state === 'waiting' && props.onOpenWaitingFor ? () => props.onOpenWaitingFor!(l.sessionId) : undefined;
   return (
-    <div className={`waiting-line ${l.state}`}>
+    <div className={`waiting-line ${l.state}`} data-key={props.item.key}>
       <span className="waiting-line-text">
         {!outcome && <strong>Waiting for you: </strong>}
         {lineHead(l)}
