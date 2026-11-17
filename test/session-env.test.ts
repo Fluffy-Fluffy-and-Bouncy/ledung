@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { sessionEnv } from '../src/runners/runner.ts';
 import { runtimeRefusal } from '../src/platform/runtime.ts';
 import { HANG_MS } from './limits.ts';
@@ -58,7 +59,8 @@ test('a core started on Electron stops at once, before it opens the database (#3
       return { ...r, database: fs.existsSync(path.join(dir, 'data', 'ledung.db')) };
     };
 
-    const electron = run('electron', ['--import', preload]);
+    // --import takes a module specifier: a Windows path would read as a URL with the drive as its scheme (CI, PR #364).
+    const electron = run('electron', ['--import', pathToFileURL(preload).href]);
     assert.equal(electron.status, 1, electron.stderr);
     const lines = electron.stderr.trim().split(/\r?\n/);
     assert.equal(lines.length, 1, electron.stderr);
