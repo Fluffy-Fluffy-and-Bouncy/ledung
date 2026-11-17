@@ -84,6 +84,7 @@ export function useLedung(openSessionId: string | null) {
     messages: (id) => api.messages(id),
     messagesBefore: (id, before) => api.messages(id, before),
     messagesAfter: (id, after) => api.messagesAfter(id, after),
+    waitingLines: (id, from) => api.waitingLines(id, from),
     changed: setView,
   });
   const open = openRef.current;

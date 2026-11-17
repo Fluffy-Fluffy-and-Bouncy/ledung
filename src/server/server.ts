@@ -1810,6 +1810,8 @@ export class LedungServer {
         const before = Number(url.searchParams.get('before')) || undefined;
         const after = Number(url.searchParams.get('after')) || undefined;
         const limit = Number(url.searchParams.get('limit')) || undefined;
+        // The chat's Waiting for you lines as they are now, for a page that reconnects (#350).
+        if (url.searchParams.get('kind') === 'waiting') return store.waitingLinesIn(id, Number(url.searchParams.get('from')) || 0);
         return store.listMessages(id, { beforeId: before, afterId: after, limit });
       }
       case 'GET usage': {

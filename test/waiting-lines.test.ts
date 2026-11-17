@@ -140,3 +140,19 @@ test('a locked secret in a question or prompt is blanked in its line (Done looks
   const sent = t.sent.filter((e) => e.type === 'message');
   assert.ok(sent.length === 2 && !JSON.stringify(sent).includes('hunter2'), 'what is sent to the page is blanked too');
 });
+
+test("a chat's lines are read again by a reconnecting page, as stored now and from the message it gives on (code review finding 1)", () => {
+  const t = setup();
+  const early = t.store.createQuestion({ sessionId: 'w1', question: 'Early?', options: null, addressedTo: 'user' });
+  t.publish({ type: 'question', question: early });
+  t.store.addMessage('mgr', 'user', { text: 'between' });
+  const p = t.store.createPermission({ id: 'perm-r', sessionId: 'w1', toolName: 'Bash', input: { command: 'ls' }, title: null, reason: null });
+  t.publish({ type: 'permission', permission: p });
+  t.store.decidePermission('perm-r', 'denied', 'user', 'no');
+  t.publish({ type: 'permission', permission: t.store.getPermission('perm-r')! });
+  const [first, second] = t.lineMessages('mgr');
+  assert.deepEqual(t.store.waitingLinesIn('mgr', 0).map((m) => m.id), [first!.id, second!.id]);
+  assert.deepEqual(t.store.waitingLinesIn('mgr', first!.id + 1).map((m) => m.id), [second!.id], 'only from the message given');
+  assert.equal((t.store.waitingLinesIn('mgr', 0)[1]!.data as WaitingLine).state, 'denied', 'as stored now');
+  assert.deepEqual(t.store.waitingLinesIn('w1', 0), [], "none of another chat's");
+});

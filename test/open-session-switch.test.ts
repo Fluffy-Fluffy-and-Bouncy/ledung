@@ -19,6 +19,7 @@ function harness(stored: Record<string, StoredMessage[]>) {
     messages: (id) => new Promise((resolve) => pending.push(() => resolve(stored[id] ?? []))),
     messagesBefore: async () => [],
     messagesAfter: async () => [],
+    waitingLines: async () => [],
     changed: (v) => views.push(v),
   });
   const release = async () => {

@@ -233,6 +233,9 @@ export const api = {
   /** The messages after `afterId`, oldest first, at most 500: what a reconnecting page missed. */
   messagesAfter: (sessionId: string, afterId: number) =>
     call<StoredMessage[]>('GET', `/api/sessions/${sessionId}/messages?limit=500&after=${afterId}`),
+  /** The chat's "Waiting for you" lines from message `fromId` on, as Ledung has them now (#350). */
+  waitingLines: (sessionId: string, fromId: number) =>
+    call<StoredMessage[]>('GET', `/api/sessions/${sessionId}/messages?kind=waiting&from=${fromId}`),
   /** Every archived session: the live connection's hello carries only the recent ones (issue #229). */
   archivedSessions: () => call<SessionInfo[]>('GET', '/api/archived-sessions'),
   start: (project: string, profile?: string) => call<SessionInfo>('POST', '/api/sessions', { project, role: 'session', ...(profile ? { profile } : {}) }),
