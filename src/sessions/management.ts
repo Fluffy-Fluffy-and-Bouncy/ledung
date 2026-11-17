@@ -55,8 +55,6 @@ export interface LinkedPort {
 let exercised159 = false;
 /** The EXERCISED line of issue #177, once per run. */
 let exercised177 = false;
-/** The EXERCISED line of issue #346, once per run. */
-let exercised346 = false;
 
 /**
  * Settings' page-only actions for managers (issue #263): the same calls Settings' routes make, set by the server.
@@ -1570,10 +1568,6 @@ ${note}`);
     if (!hits.length) throw new ManagementError(`No linked computer is called "${computer.trim()}". Linked computers: ${listed}.`);
     const gone = port.unlink(hits[0]!.id);
     if (!gone) throw new ManagementError(`"${computer.trim()}" is no longer linked.`);
-    if (!exercised346) {
-      exercised346 = true;
-      exercisedLine('EXERCISED #346 a manager unlinked a linked computer through Settings\' own unlink');
-    }
     return `Unlinked "${gone.name}" (${gone.publicName}) here; that computer is told to drop its side too. To link it again: link_code on one computer, link_computer with that code on the other.`;
   }
 

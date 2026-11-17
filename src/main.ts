@@ -42,11 +42,19 @@ import { remoteSecretText } from './remote/secret.ts';
 import { Secrets } from './secrets/secrets.ts';
 import { osGuard, Vault } from './secrets/vault.ts';
 import { localSecretsDir } from './secrets/runtime.ts';
+import { runtimeRefusal } from './platform/runtime.ts';
 
 /** Exit code that asks the launcher to start Ledung again (see scripts/release.ts, and src/cli.ts for the npm package). */
 const RESTART_CODE = 75;
 
 async function main(): Promise<void> {
+  // Never on Electron's binary: its hosts would need ELECTRON_RUN_AS_NODE, which sessions must not inherit (#361).
+  // First of all, so it stops before the database or any host is touched.
+  const refusal = runtimeRefusal(process.versions);
+  if (refusal) {
+    console.error(refusal);
+    process.exit(1);
+  }
   // Before the config is read: a computer new to the relay may not have a remote block yet.
   if (process.argv[2] === 'remote-secret') {
     console.log(remoteSecretText());

@@ -8,6 +8,7 @@ import type { GhAnswer, GitState } from '../sessions/pr-poll.ts';
 import type { ShellKind, ShellSpawn } from './shell-run.ts';
 import type { SkillFile } from '../sessions/skills.ts';
 import type { ClaudeChoice } from './claude-program.ts';
+import { exercisedLine } from '../platform/exercised.ts';
 
 export interface Runner {
   readonly kind: 'local' | 'docker';
@@ -86,12 +87,33 @@ export function failureReason(e: unknown, timeoutMs: number): string {
 /** Where plugins are named, relative to Claude Code's config folder and to the project folder. */
 export const PLUGIN_FILES = { config: ['settings.json', 'plugins/installed_plugins.json'], project: ['.claude/settings.json', '.claude/settings.local.json'] };
 
-/** The environment for Claude Code: what the SDK passes, without Ledung's own LEDUNG_* settings, so
- *  a Ledung started from inside a session doesn't silently use this Ledung's config or data. */
+/**
+ * Prefixes of variables a session never inherits. LEDUNG_*: a Ledung started from inside a session would silently
+ * use this Ledung's config or data. ELECTRON_* (issue #361): a Ledung started from an Electron program inherits
+ * ELECTRON_RUN_AS_NODE and the like, and every Electron program a session starts (the `code` CLI, an Electron tool)
+ * would then run as plain Node instead of as itself. The core refuses to run on Electron's binary (src/platform/
+ * runtime.ts), so the hosts it starts with process.execPath are never Electron apps that need them.
+ */
+const NOT_INHERITED = ['LEDUNG_', 'ELECTRON_'];
+
+/** The EXERCISED line of issue #361, once per run. */
+let electronDropTraced = false;
+
+/** The environment for Claude Code: what the SDK passes, without the variables NOT_INHERITED names. */
 export function sessionEnv(options: Pick<SpawnOptions, 'env'>): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(options.env).filter((e): e is [string, string] => e[1] !== undefined && !e[0].startsWith('LEDUNG_')),
-  );
+  const kept: Record<string, string> = {};
+  let droppedElectron = false;
+  for (const [name, value] of Object.entries(options.env)) {
+    if (value === undefined) continue;
+    const prefix = NOT_INHERITED.find((p) => name.startsWith(p));
+    if (prefix === 'ELECTRON_') droppedElectron = true;
+    if (!prefix) kept[name] = value;
+  }
+  if (droppedElectron && !electronDropTraced) {
+    electronDropTraced = true;
+    exercisedLine('EXERCISED #361 ELECTRON_* settings kept out of a session');
+  }
+  return kept;
 }
 
 /** Runs a command with `input` on its standard input; rejects like execFile, with what it printed on `stdout`. */
