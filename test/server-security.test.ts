@@ -2,7 +2,9 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, type ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
@@ -24,6 +26,7 @@ import { FakePasskey } from './fake-passkey.ts';
 import { RelayAdmin } from '../src/remote/admin.ts';
 import { RemoteLink } from '../src/remote/link.ts';
 import { iconFiles, Shortcuts } from '../src/platform/shortcuts.ts';
+import { Tray, TraySwitch } from '../src/platform/tray.ts';
 import { appDir } from '../src/platform/paths.ts';
 import { removeTemp } from './temp.ts';
 import { refuseRealSignInStores } from './signin-stores.ts';
@@ -77,6 +80,7 @@ let relayDir: string;
 // Settings → Shortcuts (issue #415): made in a folder inside .test/, never on the real Desktop or Applications.
 let shortcutDir: string;
 let shortcuts: Shortcuts;
+let traySwitch: TraySwitch;
 // A repo directory that records what the page asks it to create (the picker's one GitHub write).
 const created: string[] = [];
 const directory: RepoDirectory = {
@@ -174,7 +178,13 @@ before(async () => {
     launch: { node: process.execPath, script: path.join(shortcutDir, 'launcher.mjs') }, iconDir: shortcutDir, icons: iconFiles(appDir()), platform: 'darwin',
     meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) }, folders: async () => ({ applications: path.join(shortcutDir, 'Applications') }),
   });
-  server = new LedungServer({ port: PORT, token: TOKEN, store, manager, webRoot, updater, publicName: PUBLIC, relayAdmin, shortcuts, now: () => Date.now() + clockShift, openFolder: async (f) => {
+  // The tray icon's switch (issue #347), with a helper that starts nothing.
+  const fakeHelper = () => Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: () => true, unref: () => {} }) as unknown as ChildProcess;
+  traySwitch = new TraySwitch({
+    tray: new Tray({ kind: 'windows', address: '127.0.0.1', iconFile: 'icon.png', canRestart: false, counts: () => ({ working: 0, waiting: 0 }), onOpen: () => {}, onRestart: () => {}, onExit: () => {}, log: () => {}, spawn: fakeHelper }),
+    meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) }, configured: () => undefined, ownDataDir: true,
+  });
+  server = new LedungServer({ port: PORT, token: TOKEN, store, manager, webRoot, updater, publicName: PUBLIC, relayAdmin, shortcuts, tray: traySwitch, now: () => Date.now() + clockShift, openFolder: async (f) => {
     openedFolders.push(f);
     if (openFolderFails) throw new Error(openFolderFails);
   } });
@@ -876,7 +886,7 @@ test('API reads that do work need Ledung\'s own page; plain reads are unchanged 
   // Every work route above is outside the plain reads, and the kinds named in the issue stay so.
   for (const route of ['GET board-owners', 'GET board-projects/:id/people', 'GET board-projects/:id/repos', 'GET usage-publish-repos', 'GET usage-shared',
     'GET containers', 'GET browse-container', 'GET skills', 'GET workflows', 'GET claude-code', 'GET sessions/:id/mcp', 'GET sessions/:id/changes',
-    'GET sessions/:id/tree', 'GET sessions/:id/file', 'GET sessions/:id/image', 'GET relay-computers', 'GET relay-owners', 'GET shortcuts', 'GET projects/:id/flow']) {
+    'GET sessions/:id/tree', 'GET sessions/:id/file', 'GET sessions/:id/image', 'GET relay-computers', 'GET relay-owners', 'GET shortcuts', 'GET tray', 'GET projects/:id/flow']) {
     assert.equal(PLAIN_READS.has(route), false, `${route} does work`);
   }
 });
@@ -1153,58 +1163,14 @@ test('setting or lifting a usage stop needs the live page, so a session cannot f
   assert.match(errorOf(lift), /not holding/);
 });
 
-test('Questions at a workflow step (#291): Ledung\'s card by default, changed only from the live page, to one of its two values', async () => {
-  const read = async () => JSON.parse((await request({ path: '/api/step-questions', headers: { cookie: COOKIE } })).body).choice;
-  assert.equal(await read(), 'card');
-  // A session holding the cookie can't pick the write-up for itself.
-  assert.equal((await change('/api/step-questions', { choice: 'write-up' })).status, 403);
-  assert.equal(await read(), 'card');
+test('#351: the "Questions at a workflow step" setting and its picker are gone: their routes answer 404, even from the live page', async () => {
+  assert.equal((await request({ path: '/api/step-questions', headers: { cookie: COOKIE } })).status, 404);
   const page = await livePage();
   try {
-    const bad = await change('/api/step-questions', { choice: 'mine' }, { 'x-ledung-page': page.key });
-    assert.equal(bad.status, 400);
-    assert.match(errorOf(bad), /"card" or "write-up"/);
-    const set = await change('/api/step-questions', { choice: 'write-up' }, { 'x-ledung-page': page.key });
-    assert.equal(set.status, 200, set.body);
-    assert.equal(await read(), 'write-up');
-    assert.equal((await change('/api/step-questions', { choice: 'card' }, { 'x-ledung-page': page.key })).status, 200);
-    assert.equal(await read(), 'card');
+    assert.equal((await change('/api/step-questions', { choice: 'card' }, { 'x-ledung-page': page.key })).status, 404);
+    assert.equal((await change('/api/step-questions-skip', {}, { 'x-ledung-page': page.key })).status, 404);
   } finally {
     page.close();
-  }
-});
-
-test('the first-run picker (#293): asked only behind its test feature and only until a choice is saved or it is skipped; Skip needs the live page', async () => {
-  const view = async () => JSON.parse((await request({ path: '/api/step-questions', headers: { cookie: COOKIE } })).body);
-  const started = sessions.currentConfig;
-  // A fresh Ledung: nothing saved, nothing skipped (the test above saved a choice).
-  paneStore.deleteMeta('step-questions');
-  paneStore.deleteMeta('step-questions-skipped');
-  const page = await livePage();
-  try {
-    // The feature off (the default): never asked, though nothing is saved.
-    assert.deepEqual(await view(), { choice: 'card', picker: false, ask: false });
-    sessions.applyConfig({ ...started, testFeatures: ['step-questions-picker'] }, ['testFeatures']);
-    assert.deepEqual(await view(), { choice: 'card', picker: true, ask: true });
-    // A session holding the cookie can't skip it for the person.
-    assert.equal((await change('/api/step-questions-skip', {})).status, 403);
-    assert.equal((await view()).ask, true);
-    const skipped = await change('/api/step-questions-skip', {}, { 'x-ledung-page': page.key });
-    assert.equal(skipped.status, 200, skipped.body);
-    assert.deepEqual(JSON.parse(skipped.body), { choice: 'card', picker: true, ask: false }, 'Skip keeps the default');
-    assert.deepEqual(await view(), { choice: 'card', picker: true, ask: false });
-    // Fresh again: a choice made in the picker is saved into the setting and ends the question too.
-    paneStore.deleteMeta('step-questions-skipped');
-    assert.equal((await view()).ask, true);
-    const chose = await change('/api/step-questions', { choice: 'write-up' }, { 'x-ledung-page': page.key });
-    assert.equal(chose.status, 200, chose.body);
-    assert.deepEqual(JSON.parse(chose.body), { choice: 'write-up', picker: true, ask: false });
-    // A Ledung that already has a choice, Ledung's card included, doesn't see it.
-    assert.equal((await change('/api/step-questions', { choice: 'card' }, { 'x-ledung-page': page.key })).status, 200);
-    assert.deepEqual(await view(), { choice: 'card', picker: true, ask: false });
-  } finally {
-    page.close();
-    sessions.applyConfig(started, ['testFeatures']);
   }
 });
 
@@ -2649,6 +2615,49 @@ test('shortcuts are made only on this computer: a paired device, unlocked and si
     assert.equal(res.status, 403, res.body);
     assert.match(errorOf(res), here);
     assert.equal(fs.existsSync(path.join(shortcutDir, 'Applications', 'Ledung.app')), false);
+  } finally {
+    d.page.close();
+  }
+});
+
+test("the tray icon's switch needs the sign-in, and switching it the open page on this computer (issue #347)", async () => {
+  assert.equal((await request({ path: '/api/tray' })).status, 401);
+  const view = await request({ path: '/api/tray', headers: { cookie: COOKIE } });
+  assert.equal(view.status, 200, view.body);
+  assert.deepEqual(JSON.parse(view.body), { kind: 'windows', on: false });
+  const body = { on: true };
+  assert.equal((await request({ method: 'POST', path: '/api/tray', headers: { cookie: COOKIE, 'content-type': 'application/json' }, body: JSON.stringify(body) })).status, 403, 'no origin');
+  const refused = await change('/api/tray', body);
+  assert.equal(refused.status, 403);
+  assert.match(errorOf(refused), /open page/);
+  const page = await livePage();
+  try {
+    const wrong = await change('/api/tray', { on: 'yes' }, { 'x-ledung-page': page.key });
+    assert.equal(wrong.status, 400);
+    const on = await change('/api/tray', body, { 'x-ledung-page': page.key });
+    assert.equal(on.status, 200, on.body);
+    assert.deepEqual(JSON.parse(on.body), { kind: 'windows', on: true });
+    const off = await change('/api/tray', { on: false }, { 'x-ledung-page': page.key });
+    assert.deepEqual(JSON.parse(off.body), { kind: 'windows', on: false });
+  } finally {
+    page.close();
+  }
+  assert.equal(traySwitch.wanted(), false);
+});
+
+test("the tray icon is switched only on this computer: a paired device, unlocked and signing, is refused (issue #347)", async () => {
+  const d = await deviceWithPasskey('Tray phone');
+  try {
+    assert.equal((await pubChange('/api/device-unlock', '{}', d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign('/api/device-unlock', '{}') })).status, 200);
+    const here = /Ledung's icon is switched in Settings on the computer Ledung runs on/;
+    const view = await pub({ path: '/api/tray', headers: { cookie: d.cookie } });
+    assert.equal(view.status, 403, view.body);
+    assert.match(errorOf(view), here);
+    const body = JSON.stringify({ on: true });
+    const res = await pubChange('/api/tray', body, d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign('/api/tray', body) });
+    assert.equal(res.status, 403, res.body);
+    assert.match(errorOf(res), here);
+    assert.equal(traySwitch.wanted(), false);
   } finally {
     d.page.close();
   }

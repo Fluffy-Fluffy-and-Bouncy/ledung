@@ -350,6 +350,11 @@ const Config = z.object({
   lan: z.union([z.boolean(), z.ipv4()]).default(false),
   /** With "lan": false here means other computers need no sign-in; anyone on that network can use Ledung. */
   lanSignIn: z.boolean().default(true),
+  /**
+   * Ledung's icon in the notification area or menu bar (issue #347): its default before it is switched in Settings.
+   * Unset: on, except for a Ledung with its own data folder (LEDUNG_DATA_DIR), where `true` turns it on.
+   */
+  trayIcon: z.boolean().optional(),
   projects: z.array(Project).default([]),
   /** Claude accounts written in the file (issue #425): added when Ledung doesn't have them; the page adds and removes too. */
   claudeAccounts: ClaudeAccountsSetting,
@@ -385,8 +390,8 @@ const Config = z.object({
   pluginsOff: z.array(z.string().min(1)).default([]),
   /**
    * Features being tried out before they are on for everyone, by name (#293, Martin 2026-11-12, Ledung question #881:
-   * "feature-flag it"): "step-questions-picker", the first-run picker for how workflow-step questions are written.
-   * A name Ledung doesn't know is ignored, so the same list works across versions.
+   * "feature-flag it"). None is being tried out now ("step-questions-picker" went with its setting, #351). A name Ledung
+   * doesn't know is ignored, so the same list works across versions.
    */
   testFeatures: z.array(z.string().min(1)).default([]),
   /** Managers turn on Remote Control, as "<project> lead" in the Claude app (#19); false: none do. */
@@ -547,6 +552,7 @@ export const SETTING_RELOAD = {
   userName: 'restart',
   lan: 'restart',
   lanSignIn: 'restart',
+  trayIcon: 'live',
   projects: 'live',
   claudeAccounts: 'live',
   sensitive: 'live',

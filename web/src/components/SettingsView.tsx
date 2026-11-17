@@ -17,7 +17,6 @@ import type { AccountChoices, AccountInfoView, BoardStatus, CertificateStatus, C
 import { UsageStopsSettings } from './UsageStopsSettings.tsx';
 import { SkillDefaults } from './SkillPicker.tsx';
 import { ProfilesSettings } from './ProfilesSettings.tsx';
-import { StepQuestionsSettings } from './StepQuestionsSettings.tsx';
 import { ClaudeCodeSettings } from './ClaudeCodeSettings.tsx';
 import { CopyButton } from './Markdown.tsx';
 import { certificateLine, remoteLine } from '../remoteStatus.ts';
@@ -39,7 +38,7 @@ import { useCompactSidebar } from '../useCompactSidebar.ts';
 import { useArchivedLink } from '../useArchivedLink.ts';
 import { COMPACT_STEPS, type CompactStep } from '../compactSidebar.ts';
 import { InstallSettings } from './InstallApp.tsx';
-import { ShortcutSettings, StopSettings } from './Shortcuts.tsx';
+import { ShortcutSettings, StopSettings, TraySettings } from './Shortcuts.tsx';
 import { CheckInSettings } from './CheckIn.tsx';
 import { AccountsSettings, type DefaultIdentity } from '../projects/AccountsView.tsx';
 import { RestartButton, SettingsSplit, Where, useNarrow, type UpdateState } from './SettingsFrame.tsx';
@@ -116,6 +115,7 @@ function GroupContent(props: GroupProps) {
             )}
           </section>
           <StopSettings />
+          <TraySettings run={props.run} />
           <ShortcutSettings run={props.run} />
         </>
       );
@@ -134,7 +134,6 @@ function GroupContent(props: GroupProps) {
         <>
           <SkillDefaults run={props.run} />
           <ProfilesSettings />
-          <StepQuestionsSettings run={props.run} />
         </>
       );
     case 'helper':

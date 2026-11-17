@@ -10,7 +10,7 @@ import { SessionManager } from '../src/sessions/manager.ts';
 import { Session } from '../src/sessions/session.ts';
 import { LEDUNG_SERVER } from '../src/sessions/tools.ts';
 import { FakeBackend, FakeBoard } from '../src/board/fake.ts';
-import { DEFAULT_TIERS, ledungTier, tiersOf, type QuestionDetails } from '../src/shared/questions.ts';
+import { DEFAULT_TIERS, ledungTier, stepTier, tiersOf, type QuestionDetails } from '../src/shared/questions.ts';
 import { refuseRealSignInStores } from './signin-stores.ts';
 
 // The Question Desk's five, in its order (agent-workflow a8e7520, v84), as the issue quotes them.
@@ -27,6 +27,15 @@ test('a project with no tiers of its own, or an empty list, has the five in orde
 test("Ledung's own questions take Process, or the project's first tier when it has none called that", () => {
   assert.equal(ledungTier(FIVE), 'Process');
   assert.equal(ledungTier(['Now', 'Later']), 'Now');
+});
+
+test("#351: a workflow person step's tier: the block's own when the project has it, else a review's the first and a question's the second", () => {
+  assert.equal(stepTier(FIVE, 'review'), 'Blocks a finished PR');
+  assert.equal(stepTier(FIVE, 'question'), 'Blocks a card from Ready');
+  assert.equal(stepTier(FIVE, 'question', ' process '), 'Process');
+  assert.equal(stepTier(FIVE, 'review', 'Someday'), 'Blocks a finished PR', 'a tier the project lacks falls back');
+  assert.equal(stepTier(['Only'], 'question'), 'Only');
+  assert.equal(stepTier(['Now', 'Later'], undefined), 'Later');
 });
 
 /** A session manager with two projects, one with its own tiers, and live sessions in them. */

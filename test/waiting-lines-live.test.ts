@@ -48,7 +48,7 @@ function setup() {
     store.updateSession(id, { status: 'idle' });
     return s;
   };
-  make('mgr', 'p', null, 'manager');
+  const mgr = make('mgr', 'p', null, 'manager');
   const worker = make('w', 'p', 'mgr');
   make('other', 'q', null, 'manager');
   const stray = make('stray', 'q', 'other');
@@ -57,7 +57,7 @@ function setup() {
     void s.onPermission('Bash', { command }, { signal: new AbortController().signal, toolUseID: `tu-${command}` });
     return store.pendingPermissions().at(-1)!;
   };
-  return { store, manager, worker, stray, lines, prompt, done: () => fs.rmSync(dir, { recursive: true, force: true }) };
+  return { store, manager, mgr, worker, stray, lines, prompt, done: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }
 
 test("a running worker's permission prompt gets a line in its manager's chat, and the line says the manager decided it", async () => {
@@ -120,6 +120,30 @@ test("a session's prompt gets its line in its own manager's chat only, not anoth
     t.prompt(t.stray, 'rm -rf build');
     assert.equal(t.lines('other').length, 1, "the stray session's own manager gets its line");
     assert.equal(t.lines('mgr').length, 0, 'not another project\'s manager');
+  } finally {
+    t.done();
+  }
+});
+
+test("a run's person step: the manager's own write-up (#351) shows as its card in its chat, Ledung's fallback card gets a line", async () => {
+  // After #351 the coordinator asks a run's person step itself with ask_user (run and block given): the ask goes through
+  // the manager's Session.ask with the run's tag, writeUp set (tools.ts askStep), so its card is recorded in the manager's
+  // own chat with Open; a line too would show the same item twice (Done looks like 8). Ledung's own card, asked when no
+  // write-up came within WRITE_UP_MINUTES (FlowRuns' ask port), is in no chat: that one gets the line (Done 1).
+  const t = setup();
+  try {
+    const tag = { run: 'run-1', block: 'review', runTitle: 'Cart', blockTitle: 'Review', writeUp: true };
+    const own = (t.mgr as unknown as { ask(q: string, o: null, a: null, r: null, d: object): { id: number } })
+      .ask('Does the cart look right?', null, null, null, { tier: 'Blocks a finished PR', title: 'Review: Cart', review: { solving: 's', done: 'd' }, run: tag });
+    const chat = t.store.listMessages('mgr', { limit: 100 });
+    assert.ok(chat.some((m) => m.kind === 'question' && m.data.questionId === own.id), "the write-up's card is in the manager's chat");
+    assert.equal(t.lines('mgr').length, 0, 'no second entry for it');
+    const ports = (t.manager as unknown as { flowRuns: { p: { ask(a: { coordinator: string; question: string; options: null; details: object }): { id: number } } } }).flowRuns.p;
+    const late = ports.ask({ coordinator: 'mgr', question: 'q', options: null, details: { tier: 'Blocks a finished PR', title: 'Review: Menu', review: { solving: 's', done: 'd' }, run: { ...tag, writeUp: undefined, block: 'b2' } } });
+    const [line] = t.lines('mgr');
+    assert.ok(line, "Ledung's own card gets a line in the coordinator's chat");
+    assert.equal((line.data as WaitingLine).ref, String(late.id));
+    assert.equal(lineHead(line.data as WaitingLine), `Review #${late.id} — Review: Menu`);
   } finally {
     t.done();
   }
