@@ -203,7 +203,6 @@ export function resumedState(info: SessionInfo): {
 let exercised425 = false;
 let exercised96 = false;
 let exercised160 = false;
-let exercised306 = false;
 
 /** How long the sidebar's read of which projects have a flow waits for one project (a container's docker exec). */
 const WORKFLOWS_READ_MS = 5000;
@@ -3957,10 +3956,6 @@ ${firstMessage}`);
       // Ledung question #2148: "a — Keep the mark"): kept under that name, which shownFile shows as it is.
       const name = f.file.startsWith(LINKED_FILE_PREFIX) ? `${LINKED_MARK}${read.path}` : read.path;
       const ref = keepCopy(this.containerCopiesDir(), project, name, kept, KEPT_FILE_PREFIX);
-      if (!exercised306) {
-        exercised306 = true;
-        exercisedLine("EXERCISED #306 a question's file kept as Ledung's own copy, outside the project's folder");
-      }
       return ref;
     }
     const { access, root } = box;
