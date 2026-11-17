@@ -15,8 +15,17 @@ npm start
 
 One window opens with your running Ledung's page, signed in. Nothing opens in the browser.
 
-- **It attaches, it never starts a Ledung.** With none running the window says "Ledung is not running" and offers
-  **Retry**; start Ledung, then press it. (Starting one from the app is #362.)
+- **It attaches to the Ledung that runs.** With none running the window says "Ledung is not running" and offers
+  **Start Ledung** and **Retry** (Retry: you started Ledung yourself meanwhile).
+- **Start Ledung** runs the installed `ledung` command, `ledung --no-open`, exactly as a terminal would: it starts Ledung
+  in the background (its output in `ledung.log` in the data folder) and returns, and the window then shows its page,
+  signed in. It never starts a Ledung from this clone, so there is still one real Ledung per computer, the npm one
+  (#362). The start leaves out what Electron and `npm start` add to the app's environment (every `ELECTRON_*` and
+  `npm_*` variable, npm's `INIT_CWD`, `NODE` and `COLOR`, and the `node_modules/.bin` folders npm put in front of
+  `PATH`), so the background Ledung looks as if started from a terminal. Quitting the app leaves that Ledung running,
+  as closing the browser does; stop it with Settings → Stop Ledung, the tray's Exit or `ledung stop`. If the start
+  fails (no `ledung` command, or it exits with an error), the window says what failed in one line and offers Start
+  Ledung and Retry again.
 - **Which Ledung.** The same one the `ledung` command finds: the port from the config, the sign-in token from the data
   folder, and the `/running` check that proves the program on the port holds that token (another program there counts
   as not running). Without `LEDUNG_CONFIG` it tries the npm package's config in the data folder first, then the one the
@@ -46,7 +55,18 @@ LEDUNG_CONFIG=$PWD/.test/a/config.json LEDUNG_DATA_DIR=$PWD/.test/a/data node sr
 LEDUNG_CONFIG=$PWD/../.test/a/config.json LEDUNG_DATA_DIR=$PWD/../.test/a/data npm start
 ```
 
-`.test/a/config.json` names the port, e.g. `{ "port": 4396, "projects": [] }`. The app keeps its cookies in its own
+`.test/a/config.json` names the port, e.g. `{ "port": 4396, "projects": [] }`.
+
+**Start Ledung against a worktree.** Never let a test press Start Ledung without this: it would run the real `ledung`
+command. `LEDUNG_DESKTOP_START` names a Node script that Start runs instead, as `node <script> --no-open`; point it at
+the clone's own command, `src/cli.ts`, which starts Ledung in the background exactly as `ledung` does:
+
+```sh
+# from desktop/, with no Ledung running on the config's port
+LEDUNG_CONFIG=$PWD/../.test/a/config.json LEDUNG_DATA_DIR=$PWD/../.test/a/data LEDUNG_DESKTOP_START=$PWD/../src/cli.ts npm start
+```
+
+Stop the Ledung it started with the same settings: `node ../src/cli.ts stop`. The app keeps its cookies in its own
 folder (Electron's user data for "ledung-desktop"), apart from any browser. Cookies on `127.0.0.1` are shared by every
 port (#52), so pointing the app at another Ledung and back signs it in again, as a new device in that Ledung.
 
@@ -57,7 +77,12 @@ Ledung the two settings name, printing `PROBE {…}` lines; opening the default 
 From this folder, with the settings as above: `PROBE_PHASE=attach npx electron probe` (a Ledung runs: sign-in, address,
 settings, permissions, refused navigation, links), then `again` (a second start keeps the devices `attach` saw),
 `notrunning` and `stopped` (these start and stop the config's Ledung themselves: the "not running" page, Retry, and a
-Ledung that stops under the window). Each check it makes prints `"event":"fail"` when it doesn't hold; the exit code is
+Ledung that stops under the window), `start` (none runs; with `LEDUNG_DESKTOP_START` set as above and an `ELECTRON_*`
+variable of your own, e.g. `ELECTRON_PROBE=1`: presses Start Ledung, the page signed in within 15 s, no `ELECTRON_*`
+or `npm_*` variable in the started Ledung or its launcher; it leaves that Ledung running, so check it still answers
+after the app quit, then stop it) and `startfail` (none runs, `LEDUNG_DESKTOP_START` naming a script that isn't there:
+the one line saying what failed, Start Ledung and Retry again, no error dialog, and Quit still ends the app). Both
+refuse to run without `LEDUNG_DESKTOP_START`. Each check it makes prints `"event":"fail"` when it doesn't hold; the exit code is
 0 only when all held, 1 otherwise, 2 when it refused to run. It refuses without both settings, on the default port,
 and on Windows (it reads command lines with `ps`; macOS and Linux only for now).
 
@@ -68,7 +93,9 @@ and on Windows (it reads command lines with `ps`; macOS and Linux only for now).
   (checked 2026-11-17 on macOS, Electron 45.3.3 with Node 24.22.3).
 - `attach.ts`: finding the running Ledung. No Electron in it, so the root `npm run check` tests it
   (`test/desktop.test.ts`), including that its proof matches the core's.
-- `not-running.html`: the page shown when no Ledung answers.
+- `start.ts`: Start Ledung: the command, its clean environment and the one line a failed start gives. No Electron in
+  it either, so `test/desktop.test.ts` runs it, with scripts of its own in place of `ledung`.
+- `not-running.html`: the page shown when no Ledung answers, with Start Ledung and Retry.
 - `npm run typecheck` checks this folder; the root `npm run check` does not cover `main.ts` (it would need Electron's
   types at the root).
 
