@@ -11,15 +11,20 @@
 //   PROBE_PHASE=notrunning  none runs: the "not running" page; the probe starts one, presses Retry, page loads
 //   PROBE_PHASE=stopped     the probe starts one, the app attaches, the probe stops it and reloads: the "not
 //                           running" page again; it starts it again, presses Retry, page loads
+//   PROBE_PHASE=window      a Ledung runs: closing hides, the Dock and a second start show the window again, ⌘O is
+//                           the page's Ctrl+O, timers keep their pace while hidden, Quit ends the app and not
+//                           Ledung (#359). PROBE_HIDDEN_SECONDS sets how long the timers run hidden (60)
+//   (PROBE_PHASE=child is the second start "window" launches itself)
 //
 // Run from desktop/: `LEDUNG_CONFIG=… LEDUNG_DATA_DIR=… PROBE_PHASE=attach npx electron probe`. macOS and Linux
 // only for now: it reads command lines with `ps` (code review of PR #366, Minor 3).
-import { app, BrowserWindow, shell } from 'electron';
+import { app, BrowserWindow, Menu, shell } from 'electron';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { candidatePorts, configFiles, dataDir, DEFAULT_PORT } from '../attach.ts';
+import { isToolCallsKey } from '../../web/src/sessionMenu.ts';
+import { answersSignIn, candidatePorts, configFiles, dataDir, DEFAULT_PORT } from '../attach.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const clone = path.resolve(here, '..', '..');
@@ -102,8 +107,7 @@ async function signedIn(w: BrowserWindow): Promise<string[]> {
   const t = token();
   const commandLines = execFileSync('ps', ['-axww', '-o', 'command='], { encoding: 'utf8', maxBuffer: 64 << 20 });
   const history = wc.navigationHistory.getAllEntries().map((e) => e.url);
-  const sidebar = await page(w, `!!document.querySelector('nav, aside, .sidebar')`);
-  const report = {
+  const sidebar = await page(w, `!!document.querySelector('nav, aside, .sidebar')`);  const report = {
     url: wc.getURL(), history: history.map((u) => u.replace(/\?.*/, '?…')), title: wc.getTitle(), windows: BrowserWindow.getAllWindows().length,
     apiState: state.status, devicesState: devices.status, sidebar, devices: ids.map((id) => id.slice(0, 8)),
     cookie: cookies.map((c) => ({ httpOnly: c.httpOnly, sameSite: c.sameSite, isToken: c.value === t })),
@@ -156,8 +160,129 @@ async function retry(w: BrowserWindow): Promise<string[]> {
   return signedIn(await showing(`${origin}/`));
 }
 
+/** The window's state as a person would see it, and whether the page still answers. */
+async function windowState(w: BrowserWindow) {
+  const answers = await Promise.race([page(w, '1 + 1').then((v) => v === 2, () => false), sleep(3000).then(() => false)]);
+  return { visible: w.isVisible(), destroyed: w.isDestroyed(), windows: BrowserWindow.getAllWindows().length, pageAnswers: answers, url: w.webContents.getURL() };
+}
+const menuItem = (id: string) => Menu.getApplicationMenu()?.getMenuItemById(id) ?? null;
+
+/** The window behaves like an app (#359). Ends the app with its own Quit; the probe exits from will-quit. */
+async function windowPhase(w: BrowserWindow): Promise<void> {
+  const throttling = w.webContents.getBackgroundThrottling();
+  out('prefs', { backgroundThrottling: throttling });
+  expect(throttling === false, 'the page runs without background throttling', throttling);
+
+  // The window's close (its red button, Alt+F4's twin) hides it, and the app and the page stay.
+  w.close();
+  await sleep(800);
+  const closed = await windowState(w);
+  out('closed', closed);
+  expect(!closed.visible && !closed.destroyed && closed.windows === 1 && closed.pageAnswers && closed.url === `${origin}/`,
+    'closing hid the window; it and its page are still there', closed);
+
+  // A click on the app in the Dock.
+  app.emit('activate', {}, false);
+  await sleep(800);
+  const activated = await windowState(w);
+  out('activated', activated);
+  expect(activated.visible && activated.windows === 1, 'the Dock click showed the window', activated);
+
+  // ⌘W / Ctrl+W: the menu's Close Window.
+  const close = menuItem('close-window');
+  out('close-item', { accelerator: close?.accelerator ?? null });
+  expect(close?.accelerator === 'CmdOrCtrl+W', 'Close Window is on ⌘W / Ctrl+W', close?.accelerator);
+  close?.click();
+  await sleep(800);
+  const hidden = await windowState(w);
+  out('close-window', hidden);
+  expect(!hidden.visible && !hidden.destroyed && hidden.windows === 1 && hidden.pageAnswers, 'Close Window hid the window', hidden);
+
+  // A second start of the app shows this window and ends; Electron's own binary, the same app folder.
+  const started = Date.now();
+  const second = spawn(process.execPath, [here], { env: { ...process.env, PROBE_PHASE: 'child' }, stdio: 'ignore' });
+  const exit = await Promise.race([
+    new Promise<number | null>((r) => second.once('exit', (code) => r(code))),
+    sleep(20_000).then(() => 'still running' as const),
+  ]);
+  if (exit === 'still running') second.kill('SIGKILL');
+  await sleep(800);
+  const again = { exit, ms: Date.now() - started, ...(await windowState(w)) };
+  out('second-start', again);
+  expect(exit === 0, 'the second start ended by itself', exit);
+  expect(again.visible && again.windows === 1, 'the second start showed the first window', again);
+
+  // ⌘O on the Mac: the page hears its own Ctrl+O, as its Show tool calls key reads it (web/src/sessionMenu.ts).
+  const toolCalls = menuItem('tool-calls');
+  if (process.platform === 'darwin') {
+    await page(w, `window.__probeKeys = []; window.addEventListener('keydown', (e) => window.__probeKeys.push({ key: e.key, code: e.code,
+      ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey, shiftKey: e.shiftKey, isComposing: e.isComposing }), true); 1`);
+    toolCalls?.click();
+    await sleep(500);
+    const keys = await page(w, 'window.__probeKeys');
+    out('cmd-o', { accelerator: toolCalls?.accelerator ?? null, keys });
+    expect(toolCalls?.accelerator === 'Cmd+O', 'the item is on ⌘O', toolCalls?.accelerator);
+    expect(keys.length === 1 && isToolCallsKey(keys[0]), 'the page heard one key, and its Ctrl+O handler takes it', keys);
+  } else {
+    expect(toolCalls === null, 'no ⌘O item off the Mac', toolCalls?.accelerator);
+  }
+
+  // Timers while hidden: a 100 ms interval keeps near its pace (throttled, it would tick about once a second).
+  const seconds = Number(process.env.PROBE_HIDDEN_SECONDS ?? 60);
+  await page(w, `window.__probeTicks = []; window.__probeTimer = setInterval(() => window.__probeTicks.push(performance.now()), 100); 1`);
+  w.hide();
+  await sleep(seconds * 1000);
+  const ticks: number[] = await page(w, `clearInterval(window.__probeTimer); window.__probeTicks`);
+  const avg = ticks.length > 1 ? (ticks.at(-1)! - ticks[0]!) / (ticks.length - 1) : null;
+  const gaps = ticks.slice(1).map((t, i) => t - ticks[i]!).sort((a, b) => a - b);
+  const round = (n: number | undefined) => (n === undefined ? null : Math.round(n * 10) / 10);
+  const timers = {
+    seconds, hiddenThroughout: !w.isVisible(), ticks: ticks.length, avgMs: avg === null ? null : round(avg),
+    medianMs: round(gaps[Math.floor(gaps.length / 2)]), maxMs: round(gaps.at(-1)),
+  };
+  out('hidden-timers', timers);
+  // Under 150 ms is the Windows bar (#359), where Chromium's throttling gives about 1000 ms. On macOS a hidden window
+  // ran at about 180 ms with throttling on or off (2026-11-17, Electron 45.3.3, 60 s: the system's own timer
+  // coalescing, not Chromium's), so there the figure proves nothing about the setting and only rules out 1 s ticks.
+  const bar = process.platform === 'win32' ? 150 : 500;
+  expect(timers.hiddenThroughout && avg !== null && avg < bar, `a hidden window keeps a 100 ms interval under ${bar} ms a tick`, timers);
+  w.show();
+
+  // Quit (⌘Q / File → Quit): the window closes for real, the app ends, the Ledung it attached to still answers.
+  const quit = menuItem('quit');
+  out('quit-item', { label: quit?.label ?? null, accelerator: quit?.accelerator ?? null });
+  expect(quit?.accelerator === (process.platform === 'darwin' ? 'Cmd+Q' : 'Alt+F4'), 'Quit is on ⌘Q (Mac) / Alt+F4', quit?.accelerator);
+  const t = token();
+  quitExpected = true;
+  app.once('will-quit', (event) => {
+    event.preventDefault();
+    void (async () => {
+      const after = { windows: BrowserWindow.getAllWindows().length, ledungAnswers: t !== null && port !== undefined && (await answersSignIn(port, t)) };
+      out('quit', after);
+      expect(after.windows === 0, 'Quit closed the window', after.windows);
+      expect(after.ledungAnswers, 'the Ledung still answers on its port after Quit');
+      out('done', { passed: !failed });
+      app.exit(failed ? 1 : 0);
+    })();
+  });
+  quit?.click();
+  await sleep(10_000);
+  expect(false, 'Quit ended the app');
+}
+
+/** Set just before the probe presses Quit; any other quit (the window closing for real, say) is a failure. */
+let quitExpected = false;
+
 async function run(): Promise<void> {
   let core: ChildProcess | null = null;
+  // Without this, an app that quits on its own would end the probe with exit code 0 (found by the #359 revert check).
+  app.on('will-quit', (event) => {
+    if (quitExpected) return;
+    event.preventDefault();
+    expect(false, 'the app quit when the probe did not ask it to');
+    out('done', { passed: false });
+    app.exit(1);
+  });
   try {
     out('ready', { electron: process.versions.electron, node: process.versions.node, port });
     if (phase === 'attach' || phase === 'again') {
@@ -218,6 +343,10 @@ async function run(): Promise<void> {
       core = startCore();
       await sleep(4000);
       await retry(w);
+    } else if (phase === 'window') {
+      const w = await showing(`${origin}/`);
+      await signedIn(w);
+      await windowPhase(w);
     } else {
       expect(false, `no phase named ${phase}`);
     }
@@ -235,6 +364,9 @@ async function run(): Promise<void> {
 if (refused) {
   out('error', { message: `refused: ${refused}` });
   app.exit(2);
+} else if (phase === 'child') {
+  // The second start "window" launches: the app alone, which should hand over to the first and end.
+  void import('../main.ts');
 } else {
   // Not awaited: Electron holds its ready event until a top-level await in the entry module settles.
   void import('../main.ts').then(() => app.whenReady()).then(run);
