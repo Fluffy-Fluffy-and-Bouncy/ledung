@@ -12,7 +12,6 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { exercisedLine } from './exercised.ts';
 
 const run = promisify(execFile);
 
@@ -66,8 +65,6 @@ const luidKey = (high: string, low: string) => `${high.toLowerCase()}_${low.toLo
 const FLAG_REMOTE = 1;
 const FLAG_SOFTWARE = 2;
 const FLAG_NO_RENDER = 256;
-/** The EXERCISED line of issue #304, once per run. */
-let exercised304 = false;
 
 /**
  * The GPU lines of one batch from the PowerShell loop (processes.ts):
@@ -95,10 +92,6 @@ export function parseWindowsGpu(lines: string[]): GpuRaw {
       // A virtual display (Parsec's, a virtual monitor driver) shows in DXGI's list as a copy of the card that renders
       // for it, same name and memory, under its own id: only the kernel's "can't render" tells it apart (#304).
       if ((Number(flags) & FLAG_NO_RENDER) !== 0) {
-        if (!exercised304) {
-          exercised304 = true;
-          exercisedLine('EXERCISED #304 a GPU that cannot render left out of the GPU list');
-        }
         continue;
       }
       const bytes = Number(vram);
