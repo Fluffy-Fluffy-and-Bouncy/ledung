@@ -21,7 +21,7 @@ import { dropReturnPlace, keepReturnPlace, peekReturnPlace, returnScrollTop } fr
 import { insertByTime, lastOwnMessage, shownWoven, wovenQuestions } from '../conversation.ts';
 import { SENT_IMAGE_PREFIX, sentImageUrl } from '../chatImages.ts';
 import { NEAR_TOP, stepUp, tailStart, windowStart } from '../messageWindow.ts';
-import { lineHead, lineOutcome, permissionLine, questionLine, type WaitingLine } from '../../../src/shared/waiting-line.ts';
+import { lineHead, lineLead, lineOutcome, permissionLine, questionLine, type WaitingLine } from '../../../src/shared/waiting-line.ts';
 
 /** The drawn part's first key when it starts at the very first item, whatever is loaded above later. */
 const FROM_TOP = '\u0000top';
@@ -204,7 +204,7 @@ export const MessageList = memo(function MessageList(props: {
   /** Opens a question in Waiting for you. */
   onOpenQuestion?: (id: number) => void;
   /** Opens Waiting for you on what a session asked: a permission prompt's line (issue #350). */
-  onOpenWaitingFor?: (sessionId: string) => void;
+  onOpenWaitingFor?: (sessionId: string, inChat?: boolean) => void;
   /** Opens a board thread of this conversation's project in the Board view; none: the project has no board. */
   onOpenBoardThread?: (threadId: string) => void;
   /** The session's name colour (issue #269): its own messages get the message box's tint; undefined: no tint. */
@@ -387,12 +387,12 @@ export const MessageList = memo(function MessageList(props: {
   }, []);
 
   /** A waiting line's Open, keeping where the line is on screen first, so Back comes to it again. */
-  function leaving<A>(key: string, open: ((a: A) => void) | undefined): ((a: A) => void) | undefined {
+  function leaving<A extends unknown[]>(key: string, open: ((...a: A) => void) | undefined): ((...a: A) => void) | undefined {
     if (!open) return undefined;
-    return (a: A) => {
+    return (...a: A) => {
       const el = scroller.current, line = el?.querySelector(`[data-key="${CSS.escape(key)}"]`);
       if (sessionId && el && line) keepReturnPlace(sessionId, { key, offset: line.getBoundingClientRect().top - el.getBoundingClientRect().top });
-      open(a);
+      open(...a);
     };
   }
 
@@ -520,7 +520,7 @@ interface ItemProps {
   onOpenFile?: (path: string) => void;
   onOpenBoardThread?: (threadId: string) => void;
   onOpenQuestion?: (id: number) => void;
-  onOpenWaitingFor?: (sessionId: string) => void;
+  onOpenWaitingFor?: (sessionId: string, inChat?: boolean) => void;
   titleOf?: (id: string) => string;
   /** The question of a question item, as it is now. */
   question?: QuestionInfo;
@@ -728,17 +728,19 @@ function WaitingLineRow(props: ItemProps & { line: WaitingLine; time: ReactNode 
     : props.live ? permissionLine(props.live, props.userName, (id) => titleOf?.(id))
     : props.line;
   const outcome = lineOutcome(l);
+  // A prompt with the manager isn't in Waiting for you: its Open goes to the asking session's chat, where it can be
+  // decided (re-review of #350, finding 2).
   const open = l.item === 'question'
     ? props.onOpenQuestion && (() => props.onOpenQuestion!(Number(l.ref)))
-    : l.state === 'waiting' && props.onOpenWaitingFor ? () => props.onOpenWaitingFor!(l.sessionId) : undefined;
+    : l.state === 'waiting' && props.onOpenWaitingFor ? () => props.onOpenWaitingFor!(l.sessionId, !!l.toManager) : undefined;
   return (
     <div className={`waiting-line ${l.state}`} data-key={props.item.key}>
       <span className="waiting-line-text">
-        {!outcome && <strong>Waiting for you: </strong>}
+        {!outcome && <strong>{lineLead(l)}: </strong>}
         {lineHead(l)}
         {outcome && <span className="waiting-line-outcome"> · {outcome}{l.at ? ` · ${formatTime(l.at)}` : ''}</span>}
       </span>
-      {open && <> · <button className="link waiting-line-open" title={outcome ? 'Open it in Waiting for you' : 'Answer it in Waiting for you'} onClick={open}>Open</button></>}
+      {open && <> · <button className="link waiting-line-open" title={l.item === 'permission' && l.toManager ? `Decide it in ${titleOf?.(l.sessionId) ?? 'its session'}'s chat` : outcome ? 'Open it in Waiting for you' : 'Answer it in Waiting for you'} onClick={open}>Open</button></>}
       {/* One time: when it was asked while it waits, when it was decided after (Done looks like 3). */}
       {!outcome && <>{' '}{props.time}</>}
     </div>

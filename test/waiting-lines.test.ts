@@ -88,15 +88,20 @@ test("a worker's permission prompt for the person gets a line in its manager's c
   assert.equal(lineOutcome(t.lineMessages('mgr')[0]!.data), 'Denied by Simon');
 });
 
-test('no line for a prompt addressed to a manager, nor across projects', () => {
+test("a prompt addressed to the session's own manager gets a line there (re-review, finding 2); none to another manager, nor across projects", () => {
   const t = setup();
   const p = t.store.createPermission({ id: 'perm-2', sessionId: 'w1', toolName: 'Bash', input: { command: 'ls' }, title: null, reason: null, addressedTo: 'mgr' });
   t.publish({ type: 'permission', permission: p });
+  assert.equal(t.lineMessages('mgr').length, 1);
+  assert.equal((t.lineMessages('mgr')[0]!.data as WaitingLine).toManager, true);
+  const elsewhere = t.store.createPermission({ id: 'perm-4', sessionId: 'w1', toolName: 'Bash', input: { command: 'ls' }, title: null, reason: null, addressedTo: 'other' });
+  t.publish({ type: 'permission', permission: elsewhere });
+  assert.equal(t.lineMessages('mgr').length + t.lineMessages('other').length, 1, 'not for a manager that is not its own');
   const s = t.store.createPermission({ id: 'perm-3', sessionId: 'stray', toolName: 'Bash', input: { command: 'ls' }, title: null, reason: null });
   t.publish({ type: 'permission', permission: s });
   const q = t.store.createQuestion({ sessionId: 'stray', question: 'x', options: null, addressedTo: 'user' });
   t.publish({ type: 'question', question: q });
-  assert.equal(t.lineMessages('mgr').length + t.lineMessages('other').length, 0);
+  assert.equal(t.lineMessages('mgr').length + t.lineMessages('other').length, 1, "nothing from another project's session");
 });
 
 test('the line survives a new Ledung on the same database (Done looks like 7)', () => {

@@ -510,8 +510,10 @@ export function App() {
   }, [openId, waitingFocus]);
   const sidebarOpen = useStableCallback((id: string) => { setWaitingFocus(null); open(id); });
   const sidebarOpenWaiting = useStableCallback((focus: WaitingFocus) => { setWaitingFocus(focus); open('waiting'); });
-  // A permission prompt's line in a manager's chat (issue #350): Waiting for you on what that session asked, as its badge.
-  const openWaitingFor = useStableCallback((sessionId: string) => {
+  // A permission prompt's line in a manager's chat (issue #350): Waiting for you on what that session asked, as its badge;
+  // one with the manager, which Waiting for you doesn't list, opens the session's chat where its prompt is (re-review, 2).
+  const openWaitingFor = useStableCallback((sessionId: string, inChat?: boolean) => {
+    if (inChat && index.byId.has(sessionId)) { sidebarOpen(sessionId); return; }
     const s = index.byId.get(sessionId);
     if (s) sidebarOpenWaiting({ project: s.project, sessions: [s.id], from: s.title });
     else open('waiting');
@@ -1265,7 +1267,7 @@ export function SessionView(props: {
   cameFrom: CameFrom | null;
   onOpenQuestion: (id: number) => void;
   /** Opens Waiting for you on what a session asked (a permission prompt's line, issue #350). */
-  onOpenWaitingFor?: (sessionId: string) => void;
+  onOpenWaitingFor?: (sessionId: string, inChat?: boolean) => void;
   /** Opens a board thread in the Board view. */
   onOpenBoardThread: (repo: string, id: string) => void;
   /** Opens a project's workflow page (issue #310), from a manager's ⚙. */
@@ -1355,7 +1357,7 @@ export function SessionView(props: {
   const loadEarlier = useCallback(() => run(ledung.loadEarlier), [ledung.loadEarlier]);
   const titleOf = useCallback((id: string) => index.byId.get(id)?.title ?? 'unknown', [index]);
   const openQuestion = useStableCallback(props.onOpenQuestion);
-  const openWaitingFor = useStableCallback((id: string) => props.onOpenWaitingFor?.(id));
+  const openWaitingFor = useStableCallback((id: string, inChat?: boolean) => props.onOpenWaitingFor?.(id, inChat));
   const boardRepo = ledung.board?.projects[session.project]?.repo;
   const openBoardThread = useStableCallback((id: string) => props.onOpenBoardThread(boardRepo!, id));
 

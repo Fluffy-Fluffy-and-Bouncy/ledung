@@ -35,10 +35,16 @@ export class WaitingLines {
     this.place(line, () => this.questionChat(q));
   }
 
+  /**
+   * A manager's session's prompt is addressed to that manager (Management.addresseeFor), not to the person: a running
+   * session's prompt is never to the person while it has a manager (re-review of #350, finding 2). The person can
+   * decide it too ("Its manager asks you about it"), and a sensitive one only the person can allow, so it gets its line.
+   */
   private permission(p: PermissionInfo): void {
-    if (p.addressedTo !== 'user') return;
+    const manager = this.managerOf(p.sessionId);
+    if (p.addressedTo !== 'user' && p.addressedTo !== manager) return;
     const line = permissionLine(p, this.d.userName(), this.titleOf);
-    this.place(line, () => this.managerOf(p.sessionId));
+    this.place(line, () => manager);
   }
 
   /** Updates the item's line if it has one; else adds it to `chat()`'s chat while the item is still waiting. */

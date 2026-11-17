@@ -1,7 +1,7 @@
 // A "Waiting for you" line in a manager's chat (issue #350, Simon 2026-11-17: "it's weird that I have a question here,
-// but I have to look in the bar to the left to even get to the screen to answer it"). A run's person step, and a
-// question or permission prompt one of the manager's sessions put to the person, get one line in the manager's chat
-// with Open; the line says how it ended once decided. Shared: Ledung stores the line's state with it (it survives a
+// but I have to look in the bar to the left to even get to the screen to answer it"). A run's person step, a question
+// one of the manager's sessions put to the person, and a permission prompt from one of them (addressed to the manager,
+// which the person may decide too), get one line in the manager's chat with Open; the line says how it ended once decided. Shared: Ledung stores the line's state with it (it survives a
 // restart, Done looks like 7) and the page draws it from the live item when it has one. Plain text only (Done 5).
 import type { PermissionInfo, QuestionInfo } from './protocol.ts';
 import { ACCEPTED, CHANGES_NEEDED, deskQuestion } from './questions.ts';
@@ -25,6 +25,13 @@ export interface WaitingLine {
   /** Who decided, by name. */
   by: string | null;
   at: number | null;
+  /**
+   * A permission prompt addressed to the session's manager, not the person (re-review of #350, finding 2): Waiting
+   * for you doesn't list it, so Open goes to the session's chat, where its prompt can be decided. Absent: the person.
+   */
+  toManager?: boolean;
+  /** A sensitive prompt, which only the person can allow: it waits for the person even when it is with a manager. */
+  sensitive?: boolean;
 }
 
 const MAX_TITLE = 140;
@@ -68,7 +75,10 @@ function permissionTitle(p: PermissionInfo): string {
 }
 
 export function permissionLine(p: PermissionInfo, userName: string, titleOf: (id: string) => string | undefined): WaitingLine {
-  const base = { item: 'permission' as const, ref: p.id, sessionId: p.sessionId, label: 'Permission prompt' as const, number: null, title: permissionTitle(p), answer: null };
+  const base = {
+    item: 'permission' as const, ref: p.id, sessionId: p.sessionId, label: 'Permission prompt' as const, number: null, title: permissionTitle(p), answer: null,
+    ...(p.addressedTo !== 'user' ? { toManager: true } : {}), ...(p.sensitive ? { sensitive: true } : {}),
+  };
   const by = whoName(p.decidedBy, userName, titleOf);
   if (p.status === 'pending') return { ...base, state: 'waiting', by: null, at: null };
   if (p.status === 'allowed') return { ...base, state: 'allowed', by, at: p.decidedAt };
@@ -79,6 +89,14 @@ export function permissionLine(p: PermissionInfo, userName: string, titleOf: (id
 /** Whether two lines say the same: an unchanged one is not stored or sent again. */
 export function sameLine(a: WaitingLine, b: WaitingLine): boolean {
   return a.state === b.state && a.title === b.title && a.answer === b.answer && a.by === b.by && a.at === b.at;
+}
+
+/**
+ * The words before a waiting line's head. A prompt with the manager that the person may decide but the manager
+ * usually does isn't "waiting for you" (the sidebar badge says the same, issue #322): it waits for a decision.
+ */
+export function lineLead(l: WaitingLine): string {
+  return l.toManager && !l.sensitive ? 'Waiting for a decision' : 'Waiting for you';
 }
 
 /** What the line says before Open: "Waiting for you: Review #12 — Build: shop". */

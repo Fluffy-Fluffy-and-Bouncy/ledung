@@ -135,6 +135,10 @@ export class OpenSession {
   private replace(m: StoredMessage): boolean {
     const at = this.shown.findIndex((x) => x.id === m.id);
     if (at < 0) return false;
+    // A line only goes from waiting to decided: a reconnect's read that left the server before a decision arrived
+    // live must not put "waiting" back (re-review of #350).
+    const was = this.shown[at]!;
+    if (m.kind === 'waiting' && (m.data as { state?: string }).state === 'waiting' && (was.data as { state?: string }).state !== 'waiting') return true;
     if (JSON.stringify(this.shown[at]!.data) !== JSON.stringify(m.data)) this.set(this.shown.map((x, i) => (i === at ? m : x)));
     return true;
   }

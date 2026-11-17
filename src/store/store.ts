@@ -406,11 +406,11 @@ export class Store {
   /**
    * A chat's "Waiting for you" lines from message `fromId` on, oldest first: a page that reconnects reads them again,
    * since a line decided while it was away was changed in place and is older than what it catches up on (code review
-   * of #350, finding 1).
+   * of #350, finding 1). At most the newest 500 (re-review: the newest are the likelier to be waiting).
    */
   waitingLinesIn(sessionId: string, fromId: number): StoredMessage[] {
-    return this.db.prepare('SELECT m.* FROM waiting_lines w JOIN messages m ON m.id = w.message_id WHERE m.session_id = ? AND m.id >= ? ORDER BY m.id LIMIT 500')
-      .all(sessionId, fromId).map(toMessage);
+    return this.db.prepare('SELECT m.* FROM waiting_lines w JOIN messages m ON m.id = w.message_id WHERE m.session_id = ? AND m.id >= ? ORDER BY m.id DESC LIMIT 500')
+      .all(sessionId, fromId).map(toMessage).reverse();
   }
 
   /** A "Waiting for you" line says how its item ended: the same message, changed in place (Done looks like 3). */
