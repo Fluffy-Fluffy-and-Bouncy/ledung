@@ -15,13 +15,18 @@ import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { candidatePorts, configFiles, dataDir } from '../attach.ts';
-import '../main.ts';
+import { candidatePorts, configFiles, dataDir, DEFAULT_PORT } from '../attach.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const clone = path.resolve(here, '..', '..');
 const phase = process.env.PROBE_PHASE ?? 'attach';
 const port = candidatePorts(configFiles())[0];
+// Only a throwaway Ledung: without both settings the app would find the real one (self-check round 2, finding 1).
+// Checked before the app is loaded, since it attaches as soon as Electron is ready.
+const refused = !process.env.LEDUNG_CONFIG || !process.env.LEDUNG_DATA_DIR
+  ? 'LEDUNG_CONFIG and LEDUNG_DATA_DIR must both name a throwaway Ledung'
+  : port === undefined || port === DEFAULT_PORT ? `the config's port is ${port ?? 'unreadable'}; use a test port, never the real Ledung's` : null;
+let failed = false;
 const external: string[] = [];
 (shell as { openExternal: (url: string) => Promise<void> }).openExternal = async (url: string) => {
   external.push(url);
@@ -140,10 +145,18 @@ async function run(): Promise<void> {
     }
   } catch (e) {
     out('error', { message: (e as Error).message });
+    failed = true;
   }
   if (core) await stopCore(core);
   await win()?.webContents.session.cookies.flushStore();
   await sleep(500);
-  app.exit(0);
+  app.exit(failed ? 1 : 0);
 }
-void app.whenReady().then(run);
+
+if (refused) {
+  out('error', { message: `refused: ${refused}` });
+  app.exit(2);
+} else {
+  // Not awaited: Electron holds its ready event until a top-level await in the entry module settles.
+  void import('../main.ts').then(() => app.whenReady()).then(run);
+}
