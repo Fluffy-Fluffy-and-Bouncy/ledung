@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<!-- Shown by main.ts when no Ledung answers (issue #358). Nothing to fetch: everything is in this file. -->
+<!-- Shown by main.ts when no Ledung answers (issues #358, #362). Nothing to fetch: everything is in this file. -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
 <title>Ledung is not running</title>
 <style>
@@ -15,19 +15,33 @@
   a.button { display: inline-block; margin-top: 1rem; padding: .5rem 1.4rem; border-radius: 6px; background: #3b6fd8;
     color: #fff; text-decoration: none; font-weight: 600; }
   a.button:hover { background: #4a7ee6; }
+  a.button.secondary { background: #2c3038; margin-left: .5rem; }
+  a.button.secondary:hover { background: #383d47; }
+  #reason.failed { color: #f08a7e; overflow-wrap: anywhere; }
+  .starting .buttons { display: none; }
 </style>
 </head>
 <body>
 <main>
   <h1>Ledung is not running</h1>
-  <p>Start Ledung on this computer, then press Retry.</p>
+  <p id="hint">Start it here, or start Ledung on this computer yourself and press Retry.</p>
   <p id="reason"></p>
-  <a class="button" href="#retry">Retry</a>
+  <div class="buttons">
+    <a class="button" id="start" href="#start">Start Ledung</a><a class="button secondary" id="retry" href="#retry">Retry</a>
+  </div>
 </main>
 <script>
-  // main.ts passes why in the address's query: which ports were tried, never the token.
+  // main.ts passes why in the address's query: which ports were tried, or what failed in a start; never the token.
   const q = new URLSearchParams(location.search);
-  document.getElementById('reason').textContent = q.get('reason') || '';
+  const state = q.get('state') || 'stopped';
+  const reason = document.getElementById('reason');
+  reason.textContent = q.get('reason') || '';
+  if (state === 'failed') reason.className = 'failed';
+  if (state === 'starting') {
+    document.body.className = 'starting';
+    document.querySelector('h1').textContent = document.title = 'Starting Ledung…';
+    document.getElementById('hint').textContent = '';
+  }
 </script>
 </body>
 </html>
