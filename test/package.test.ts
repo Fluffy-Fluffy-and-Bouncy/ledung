@@ -48,6 +48,23 @@ test('package.json has what a publish needs, and the command is the bundled cli'
   assert.equal(pkg.maintainers, undefined);
 });
 
+test('the desktop app stays out of the package and out of the root install (issue #358)', () => {
+  const pkg = clonePackage();
+  // desktop/ is run from a clone only (Martin, 2026-11-17, Ledung question #338): never shipped.
+  const desktopEntries = (files: string[]) => files.filter((entry) => /desktop/i.test(entry));
+  assert.deepEqual(desktopEntries(['dist/', 'desktop/', 'web/dist/']), ['desktop/'], 'the check finds a desktop entry');
+  assert.ok(Array.isArray(pkg.files) && pkg.files.length > 0);
+  assert.deepEqual(desktopEntries(pkg.files as string[]), []);
+  // Electron comes with desktop/'s own npm install; the root one (CI, every worktree) downloads none.
+  const electronIn = (manifest: Record<string, Record<string, string> | undefined>) =>
+    ['dependencies', 'devDependencies', 'optionalDependencies'].filter((field) => manifest[field]?.electron !== undefined);
+  assert.deepEqual(electronIn({ devDependencies: { electron: '^45.3.3' } }), ['devDependencies'], 'the check finds electron');
+  assert.deepEqual(electronIn(pkg), []);
+  const rootLock = JSON.parse(fs.readFileSync(path.join(appDir(), 'package-lock.json'), 'utf8')) as { packages: Record<string, unknown> };
+  assert.ok(Object.keys(rootLock.packages).includes('node_modules/typescript'), 'the root lockfile is read');
+  assert.deepEqual(Object.keys(rootLock.packages).filter((k) => /(^|\/)electron$/.test(k)), []);
+});
+
 test("the package's own package.json has no scripts or devDependencies (npm warns about a prepare script on install)", () => {
   const manifest = packageManifest(clonePackage());
   assert.equal(manifest.scripts, undefined);

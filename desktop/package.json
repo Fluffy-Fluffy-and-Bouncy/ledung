@@ -1,0 +1,21 @@
+{
+  "name": "ledung-desktop",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Ledung in a desktop window (issue #358): run from a clone, unsigned, not shipped.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "main": "main.ts",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "electron .",
+    "typecheck": "tsc -p ."
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.1",
+    "electron": "^45.3.3",
+    "typescript": "^7.0.2"
+  }
+}

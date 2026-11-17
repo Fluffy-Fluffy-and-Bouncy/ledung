@@ -41,6 +41,14 @@ A running Ledung keeps its release until it is restarted. **Restart Ledung** (Se
 
 For development, `npm start` runs Ledung straight from this folder (use another `port` in a separate config via `LEDUNG_CONFIG`, and `LEDUNG_DATA_DIR` for separate data, if a released Ledung is running too). `npm run build` rebuilds the page. `npm start` runs Ledung in the foreground; `node src/cli.ts` is the `ledung` command, which starts it in the background (log in the data folder's `ledung.log`, stopped with `node src/cli.ts stop`), and `node src/cli.ts --foreground` keeps it in the terminal with Restart Ledung working.
 
+### The desktop app
+
+`desktop/` holds an Electron app that shows the running Ledung's page in a window of its own, signed in, with no
+browser tab (epic #357). It is run from a clone and never shipped: `npm install` then `npm start` in `desktop/`, with
+Ledung already running. Electron is that folder's own dependency, so the root `npm install` brings none. It reads
+`LEDUNG_CONFIG` and `LEDUNG_DATA_DIR` as the core does, so it can be pointed at a throwaway Ledung;
+[desktop/README.md](../desktop/README.md) says how.
+
 ## The npm package
 
 **The package installs exactly the dependency versions Ledung was tested with.** Its `package.json` names the lockfile's versions, and an `npm-shrinkwrap.json` made from this folder's `package-lock.json` pins everything below them, so the Agent SDK, and the Claude Code version it needs, are the ones `npm run check` ran. The shrinkwrap leaves out the Agent SDK's per-platform copies of Claude Code: npm would install all eight of them on every computer. So an npm-installed Ledung has no Claude Code of its own, and `"claudeExecutable": "bundled"` says so; it runs your installed one.
