@@ -41,6 +41,18 @@ export function ledungTier(projectTiers: readonly string[]): string {
   return projectTiers.includes('Process') ? 'Process' : projectTiers[0] ?? DEFAULT_TIERS[2]!;
 }
 
+/**
+ * The tier of a workflow person step's question (#351, Simon 2026-11-17, question #2032): the block's own when it names
+ * one of the project's tiers; else a review goes under the first tier (in the five, "Blocks a finished PR") and a
+ * question under the second ("Blocks a card from Ready": the run's work waits on it, but nothing finished does).
+ */
+export function stepTier(projectTiers: readonly string[], ask: 'question' | 'review' | undefined, own?: string): string {
+  const named = own?.trim() ? projectTiers.find((t) => t.toLowerCase() === own.trim().toLowerCase()) : undefined;
+  if (named) return named;
+  const first = projectTiers[0] ?? DEFAULT_TIERS[0]!;
+  return ask === 'review' ? first : projectTiers[1] ?? first;
+}
+
 /** One view on a question: who gave it, the option it picks (none: no pick among the options) and why. */
 export interface Opinion {
   who: string;

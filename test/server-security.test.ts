@@ -1163,58 +1163,14 @@ test('setting or lifting a usage stop needs the live page, so a session cannot f
   assert.match(errorOf(lift), /not holding/);
 });
 
-test('Questions at a workflow step (#291): Ledung\'s card by default, changed only from the live page, to one of its two values', async () => {
-  const read = async () => JSON.parse((await request({ path: '/api/step-questions', headers: { cookie: COOKIE } })).body).choice;
-  assert.equal(await read(), 'card');
-  // A session holding the cookie can't pick the write-up for itself.
-  assert.equal((await change('/api/step-questions', { choice: 'write-up' })).status, 403);
-  assert.equal(await read(), 'card');
+test('#351: the "Questions at a workflow step" setting and its picker are gone: their routes answer 404, even from the live page', async () => {
+  assert.equal((await request({ path: '/api/step-questions', headers: { cookie: COOKIE } })).status, 404);
   const page = await livePage();
   try {
-    const bad = await change('/api/step-questions', { choice: 'mine' }, { 'x-ledung-page': page.key });
-    assert.equal(bad.status, 400);
-    assert.match(errorOf(bad), /"card" or "write-up"/);
-    const set = await change('/api/step-questions', { choice: 'write-up' }, { 'x-ledung-page': page.key });
-    assert.equal(set.status, 200, set.body);
-    assert.equal(await read(), 'write-up');
-    assert.equal((await change('/api/step-questions', { choice: 'card' }, { 'x-ledung-page': page.key })).status, 200);
-    assert.equal(await read(), 'card');
+    assert.equal((await change('/api/step-questions', { choice: 'card' }, { 'x-ledung-page': page.key })).status, 404);
+    assert.equal((await change('/api/step-questions-skip', {}, { 'x-ledung-page': page.key })).status, 404);
   } finally {
     page.close();
-  }
-});
-
-test('the first-run picker (#293): asked only behind its test feature and only until a choice is saved or it is skipped; Skip needs the live page', async () => {
-  const view = async () => JSON.parse((await request({ path: '/api/step-questions', headers: { cookie: COOKIE } })).body);
-  const started = sessions.currentConfig;
-  // A fresh Ledung: nothing saved, nothing skipped (the test above saved a choice).
-  paneStore.deleteMeta('step-questions');
-  paneStore.deleteMeta('step-questions-skipped');
-  const page = await livePage();
-  try {
-    // The feature off (the default): never asked, though nothing is saved.
-    assert.deepEqual(await view(), { choice: 'card', picker: false, ask: false });
-    sessions.applyConfig({ ...started, testFeatures: ['step-questions-picker'] }, ['testFeatures']);
-    assert.deepEqual(await view(), { choice: 'card', picker: true, ask: true });
-    // A session holding the cookie can't skip it for the person.
-    assert.equal((await change('/api/step-questions-skip', {})).status, 403);
-    assert.equal((await view()).ask, true);
-    const skipped = await change('/api/step-questions-skip', {}, { 'x-ledung-page': page.key });
-    assert.equal(skipped.status, 200, skipped.body);
-    assert.deepEqual(JSON.parse(skipped.body), { choice: 'card', picker: true, ask: false }, 'Skip keeps the default');
-    assert.deepEqual(await view(), { choice: 'card', picker: true, ask: false });
-    // Fresh again: a choice made in the picker is saved into the setting and ends the question too.
-    paneStore.deleteMeta('step-questions-skipped');
-    assert.equal((await view()).ask, true);
-    const chose = await change('/api/step-questions', { choice: 'write-up' }, { 'x-ledung-page': page.key });
-    assert.equal(chose.status, 200, chose.body);
-    assert.deepEqual(JSON.parse(chose.body), { choice: 'write-up', picker: true, ask: false });
-    // A Ledung that already has a choice, Ledung's card included, doesn't see it.
-    assert.equal((await change('/api/step-questions', { choice: 'card' }, { 'x-ledung-page': page.key })).status, 200);
-    assert.deepEqual(await view(), { choice: 'card', picker: true, ask: false });
-  } finally {
-    page.close();
-    sessions.applyConfig(started, ['testFeatures']);
   }
 });
 

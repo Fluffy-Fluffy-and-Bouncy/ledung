@@ -36,10 +36,13 @@ export function conversationBefore(messages: readonly StoredMessage[]): Conversa
   return fit(lines.slice(-EARLIER_LINES));
 }
 
-/** A user message as the session got it: the user's words, or what Ledung delivered, without its fixed sentence. */
+/**
+ * A user message as the session got it: the user's words, or what Ledung delivered, without its fixed sentence, and
+ * without Ledung's workflow process text (`quotable`, #351 acceptance round 1), which is for the session, not the person.
+ */
 function userText(data: any): string {
   const own = withoutContextSentence(String(data?.text ?? '')).trim();
-  const context = typeof data?.context === 'string' ? data.context.trim() : '';
+  const context = typeof data?.quotable === 'string' ? data.quotable.trim() : typeof data?.context === 'string' ? data.context.trim() : '';
   return [own, context].filter(Boolean).join('\n\n');
 }
 

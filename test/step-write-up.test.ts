@@ -22,7 +22,7 @@ test('#291: a write-up from a session that has a manager goes to the person; its
   // The run engine stands in here: this test is about where Session puts the question, not about the run's checks.
   const runs: RunHandlers = {
     step: async () => '', status: async () => '',
-    writeUp: async (a) => ({ tag: { run: a.run, block: a.block, runTitle: 'Cart', blockTitle: 'Owner decides', flow: 'main', writeUp: true }, options: a.options }),
+    writeUp: async (a) => ({ tag: { run: a.run, block: a.block, runTitle: 'Cart', blockTitle: 'Owner decides', flow: 'main', writeUp: true }, tier: 'Process', options: a.options }),
     writeUpAsked: (q) => { linked.push(q.id); },
   };
   const session = new Session({
@@ -49,5 +49,7 @@ test('#291: a write-up from a session that has a manager goes to the person; its
   assert.equal(q.addressedTo, 'user');
   assert.equal(q.sessionId, 'w');
   assert.equal(q.details!.run!.run, 'run-1');
+  // The step's tier, not the one given (#351).
+  assert.equal(q.details!.tier, 'Process');
   assert.deepEqual(linked, [q.id]);
 });

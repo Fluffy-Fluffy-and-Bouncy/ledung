@@ -68,6 +68,7 @@ Keep what is drawn: leave each block's `at` (its place on the canvas) and the `f
 | `outcomes` | where the work goes next (below) |
 | `ask` | person blocks: `"question"` or `"review"` |
 | `person` | person blocks: whose call it is, e.g. `"the owner"` |
+| `tier` | person blocks: the question tier its question is filed under, one of the project's; none: a review's the first tier, a question's the second |
 | `flow` | Run flow blocks: the flow it runs (`"main"` for flow.json) |
 | `session` | Run flow blocks: `"caller"` hands the latest work step's session to the flow it runs |
 | `timer` | timer blocks: `{ "every": 30, "of": "merges" }` or `{ "clock": "daily" }` |
@@ -77,7 +78,7 @@ What each kind is for:
 
 - **work**: someone does something (build, write, fix). Usually `runs: "new-session"` with a brief.
 - **check**: someone judges work (code review, tests). A check must not `continue` the session of the work it checks: the author would review their own work. Give it its own `new-session`; for the author's own look over their work, use a check **sub-step** inside the work block.
-- **person**: the person decides. `ask: "review"` shows a review page answered "Accepted." or "Changes needed: …"; `ask: "question"` asks with the outcome words as buttons. Its outcomes are the answers; the answer moves the work by itself.
+- **person**: the person decides. The run's manager writes the question when the run gets there (Ledung asks a short card of its own after 10 minutes without one). `ask: "review"` makes it a review page answered "Accepted." or "Changes needed: …"; `ask: "question"` a question whose options each lead to an outcome. Its outcomes are the answers; the answer moves the work by itself.
 - **wait**: the work waits on something outside the flow (CI, a merge queue, someone else's approval) until the manager reports how it came out. Nobody runs it; a brief may say what it waits for.
 - **flow** (Run flow): runs another flow as a piece of work of its own and waits; the word that flow ends with is this block's outcome. No runs, brief or model of its own.
 - **fork**/**join**: split work and bring it together; nobody runs them.
