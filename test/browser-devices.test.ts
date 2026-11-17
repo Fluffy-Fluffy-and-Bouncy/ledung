@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import WebSocket from 'ws';
 import { parseConfig } from '../src/config.ts';
+import { browserName } from '../src/server/devices.ts';
 import { LedungServer } from '../src/server/server.ts';
 import { SessionManager } from '../src/sessions/manager.ts';
 import { openDatabase } from '../src/store/database.ts';
@@ -27,6 +28,14 @@ const MIN = 60_000;
 const DAY = 24 * 60 * MIN;
 const FIREFOX_MAC = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14.6; rv:132.0) Gecko/20100101 Firefox/132.0';
 const CHROME_WIN = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+const CHROME_MAC = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+const EDGE_WIN = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0';
+const SAFARI_MAC = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15';
+// The desktop app (#363): Electron's default User-Agent is Chrome's with the app's name and version and
+// `Electron/<version>` added before Safari (the app sets none of its own); the desktop package is ledung-desktop 0.0.0
+// on Electron 45. The Chrome version in it doesn't matter.
+const APP_MAC = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) ledung-desktop/0.0.0 Chrome/142.0.0.0 Electron/45.3.3 Safari/537.36';
+const APP_WIN = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) ledung-desktop/0.0.0 Chrome/142.0.0.0 Electron/45.3.3 Safari/537.36';
 const sha = (value: string) => crypto.createHash('sha256').update(value).digest('hex');
 
 let clock = 0;
@@ -94,6 +103,27 @@ async function serve(file: string) {
 const closed = (ws: WebSocket) => new Promise<number>((resolve) => {
   if (ws.readyState === ws.CLOSED) resolve(-1);
   ws.once('close', (code) => resolve(code));
+});
+
+test('the desktop app is named "Ledung app on <system>", not Chrome; real browsers keep their names (#363)', () => {
+  assert.equal(browserName(APP_MAC), 'Ledung app on macOS');
+  assert.equal(browserName(APP_WIN), 'Ledung app on Windows');
+  assert.equal(browserName(CHROME_MAC), 'Chrome on macOS');
+  assert.equal(browserName(CHROME_WIN), 'Chrome on Windows');
+  assert.equal(browserName(EDGE_WIN), 'Edge on Windows');
+  assert.equal(browserName(SAFARI_MAC), 'Safari on macOS');
+  assert.equal(browserName(FIREFOX_MAC), 'Firefox on macOS');
+});
+
+test("the desktop app's first sign-in is listed as \"Ledung app on macOS\" next to Chrome; a browser already listed keeps its name (#363)", async () => {
+  clock = 0;
+  const { signIn, list, request } = await serve(path.join(dir, 'app.db'));
+  const chrome = await signIn(CHROME_MAC);
+  const app = await signIn(APP_MAC);
+  assert.deepEqual((await list(app)).devices.map((d) => d.name), ['Chrome on macOS', 'Ledung app on macOS']);
+  // The row listed as Chrome, used from the app with its cookie, keeps its name: renaming is the person's.
+  assert.equal((await request({ path: '/api/state', cookie: chrome, ua: APP_MAC })).status, 200);
+  assert.deepEqual((await list(chrome)).devices.map((d) => d.name), ['Chrome on macOS', 'Ledung app on macOS']);
 });
 
 test('a browser signed in before the update stays signed in through it: its #476 sign-in becomes a browser row with the same hash, and no sign-in hash stays in meta', async () => {
