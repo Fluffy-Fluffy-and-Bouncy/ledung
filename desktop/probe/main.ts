@@ -18,7 +18,7 @@
 //
 // Run from desktop/: `LEDUNG_CONFIG=… LEDUNG_DATA_DIR=… PROBE_PHASE=attach npx electron probe`. macOS and Linux
 // only for now: it reads command lines with `ps` (code review of PR #366, Minor 3).
-import { app, BrowserWindow, Menu, shell } from 'electron';
+import { app, BrowserWindow, dialog, Menu, shell } from 'electron';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -107,7 +107,8 @@ async function signedIn(w: BrowserWindow): Promise<string[]> {
   const t = token();
   const commandLines = execFileSync('ps', ['-axww', '-o', 'command='], { encoding: 'utf8', maxBuffer: 64 << 20 });
   const history = wc.navigationHistory.getAllEntries().map((e) => e.url);
-  const sidebar = await page(w, `!!document.querySelector('nav, aside, .sidebar')`);  const report = {
+  const sidebar = await page(w, `!!document.querySelector('nav, aside, .sidebar')`);
+  const report = {
     url: wc.getURL(), history: history.map((u) => u.replace(/\?.*/, '?…')), title: wc.getTitle(), windows: BrowserWindow.getAllWindows().length,
     apiState: state.status, devicesState: devices.status, sidebar, devices: ids.map((id) => id.slice(0, 8)),
     cookie: cookies.map((c) => ({ httpOnly: c.httpOnly, sameSite: c.sameSite, isToken: c.value === t })),
@@ -225,6 +226,60 @@ async function windowPhase(w: BrowserWindow): Promise<void> {
     expect(keys.length === 1 && isToolCallsKey(keys[0]), 'the page heard one key, and its Ctrl+O handler takes it', keys);
   } else {
     expect(toolCalls === null, 'no ⌘O item off the Mac', toolCalls?.accelerator);
+  }
+
+  // A page with unsaved changes asks before Quit; Stay keeps the app, and the next close still hides (self-check
+  // finding 1). The question is answered here, as the browser is: nothing shows on the screen.
+  const asked: string[] = [];
+  (dialog as unknown as { showMessageBoxSync: (w: unknown, o: { message: string }) => number }).showMessageBoxSync = (_w, o) => {
+    asked.push(o.message);
+    return 1;
+  };
+  // With a user gesture, or Chromium ignores the page's request to be asked.
+  await w.webContents.executeJavaScript(`window.addEventListener('beforeunload', (e) => e.preventDefault()); 1`, true);
+  menuItem('quit')?.click();
+  await sleep(1500);
+  const stayed = { asked: [...asked], ...(await windowState(w)) };
+  out('quit-stay', stayed);
+  expect(stayed.asked.length === 1 && stayed.visible && !stayed.destroyed && stayed.windows === 1 && stayed.pageAnswers,
+    'Quit on a page with unsaved changes asked once, and Stay kept the app and its window', stayed);
+  w.close();
+  await sleep(800);
+  const afterStay = await windowState(w);
+  out('close-after-stay', afterStay);
+  expect(!afterStay.visible && !afterStay.destroyed && afterStay.windows === 1, 'after Stay, closing still hides the window', afterStay);
+  // Leave lets the page go: a reload answered Leave goes through, and drops the probe's unsaved-changes handler.
+  (dialog as unknown as { showMessageBoxSync: (w: unknown, o: { message: string }) => number }).showMessageBoxSync = (_w, o) => {
+    asked.push(o.message);
+    return 0;
+  };
+  const marked = await page(w, `window.__probeMark = 1; 1`);
+  w.webContents.reload();
+  await sleep(1000);
+  await showing(`${origin}/`);
+  await sleep(1500);
+  const left = { asked: asked.length, reloaded: marked === 1 && (await page(w, `window.__probeMark === undefined`)) };
+  out('reload-leave', left);
+  expect(left.asked === 2 && left.reloaded, 'a reload answered Leave asked once and went through', left);
+  w.show();
+
+  // Full screen on the Mac: closing leaves full screen first, then hides (self-check finding 2).
+  if (process.platform === 'darwin') {
+    w.focus();
+    w.setFullScreen(true);
+    for (let i = 0; i < 40 && !w.isFullScreen(); i++) await sleep(250);
+    if (!w.isFullScreen()) {
+      // A Mac with no display attached (a headless one reached by Screen Sharing) may never enter full screen.
+      w.setFullScreen(false);
+      out('fullscreen-close', { checked: false, why: 'the window did not enter full screen within 10 s on this computer' });
+    } else {
+      w.close();
+      for (let i = 0; i < 40 && (w.isFullScreen() || w.isVisible()); i++) await sleep(250);
+      const full = { checked: true, fullScreenAfter: w.isFullScreen(), visibleAfter: w.isVisible() };
+      out('fullscreen-close', full);
+      expect(!full.fullScreenAfter && !full.visibleAfter, 'closing from full screen left full screen and hid the window', full);
+    }
+    w.show();
   }
 
   // Timers while hidden: a 100 ms interval keeps near its pace (throttled, it would tick about once a second).

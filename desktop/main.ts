@@ -5,7 +5,7 @@
 // check, sign-in cookie, Origin check and "no embedding" apply unchanged. Sign-in sets the cookie from this main
 // process (Mac spike 2026-11-17: GET /api/state 200 with no token in any URL); the token never goes into a URL or a
 // command line.
-import { app, BrowserWindow, Menu, session, shell, type MenuItemConstructorOptions, type Session, type WebContents } from 'electron';
+import { app, BrowserWindow, dialog, Menu, session, shell, type MenuItemConstructorOptions, type Session, type WebContents } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findRunning } from './attach.ts';
@@ -145,7 +145,18 @@ function showWindow(): void {
 
 /** Closing the window, by its button or ⌘W/Ctrl+W, only hides it: the app stays, so notifications keep coming (#359). */
 function hideWindow(): void {
-  if (win && !win.isDestroyed()) win.hide();
+  if (!win || win.isDestroyed()) return;
+  // Hidden while in full screen, a Mac window leaves an empty black Space behind: leave full screen first (self-check
+  // finding 2).
+  if (win.isFullScreen()) {
+    const w = win;
+    w.once('leave-full-screen', () => {
+      if (!w.isDestroyed()) w.hide();
+    });
+    w.setFullScreen(false);
+    return;
+  }
+  win.hide();
 }
 
 /** Ends the app: the window may close for real now. The Ledung it attached to is another program, and stays. */
@@ -220,6 +231,21 @@ function createWindow(): void {
   // Windows: logging off or shutting down closes the window; let it, or the app would hold the logoff up.
   win.on('session-end', () => {
     quitting = true;
+  });
+  // A page with unsaved changes (the flow builder's) asks before it is left, by quitting or reloading. A browser asks
+  // the person then; Electron would silently stay instead, and a cancelled quit would leave `quitting` set, so the next
+  // close would end the app instead of hiding it (self-check finding 1). Ask as a browser does; Stay keeps everything.
+  win.webContents.on('will-prevent-unload', (event) => {
+    const choice = dialog.showMessageBoxSync(win!, {
+      type: 'question',
+      buttons: ['Leave', 'Stay'],
+      defaultId: 1,
+      cancelId: 1,
+      message: 'Leave this page?',
+      detail: 'Changes you made may not be saved.',
+    });
+    if (choice === 0) event.preventDefault();
+    else quitting = false;
   });
   // Alt+F4 on Windows quits, where the window's close button hides; the system turns both into the same close, so the
   // key is noted on its way in, in case the system handles it before the menu's accelerator does.
