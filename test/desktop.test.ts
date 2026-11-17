@@ -233,6 +233,7 @@ test('the command is looked up on PATH as a shell would: a runnable file, by PAT
     assert.equal(findOnPath('ledung', { PATH: other }, 'darwin'), null, 'a file that is not runnable is not the command');
   }
   assert.equal(findOnPath('ledung', { Path: [other, bin].join(';'), PathExt: '.COM;.EXE;.CMD' }, 'win32'), path.join(bin, 'ledung.cmd'), 'Windows: ledung.cmd by PATHEXT, a bare file skipped');
+  assert.equal(findOnPath('ledung', { Path: `"${bin}"`, PATHEXT: '.CMD' }, 'win32'), path.join(bin, 'ledung.cmd'), 'Windows: a quoted Path entry');
   assert.equal(findOnPath('ledung', { PATH: '' }, process.platform), null, 'an empty PATH finds nothing');
   assert.equal(findOnPath('ledung-desktop-test-no-such-command', startEnv(), process.platform), null);
 });
