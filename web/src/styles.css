@@ -1,6 +1,7 @@
 :root {
-  /* Each colour is a light-dark() pair: the root's color-scheme picks one, from the computer's
-     setting or from the choice in Settings (issue #113, web/src/theme.ts). */
+  /* Each colour is a light-dark() pair: the root's color-scheme picks one, from the choice in Settings (issue #113,
+     web/src/theme.ts). Dark is the default and the designed one; a new colour's light value only has to be readable
+     (issue #345). */
   --bg: light-dark(#f6f7f9, #16181d);
   --panel: light-dark(#ffffff, #1d2026);
   --panel-2: light-dark(#eef0f4, #252932);
@@ -26,10 +27,10 @@
   /* Data colours (step 5): the validated categorical palette, in fixed order; status colours are separate. */
   --s1: light-dark(#2a78d6, #3987e5); --s2: light-dark(#eb6834, #d95926); --s3: light-dark(#1baf7a, #199e70); --s4: light-dark(#eda100, #c98500); --s5: light-dark(#e87ba4, #d55181); --s6: #008300; --s7: light-dark(#4a3aa7, #9085e9); --s-other: light-dark(#9aa1ad, #6b7280);
   --st-good: #0ca30c; --st-warning: #fab219; --st-critical: #d03b3b;
-  color-scheme: light dark;
+  /* Dark until a choice says otherwise, so the first paint is dark (#345). */
+  color-scheme: dark;
 }
 :root[data-theme="light"] { color-scheme: light; }
-:root[data-theme="dark"] { color-scheme: dark; }
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; }

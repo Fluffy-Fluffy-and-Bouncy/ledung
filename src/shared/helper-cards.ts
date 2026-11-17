@@ -18,6 +18,8 @@ export type CardLink = typeof CARD_LINKS[number];
 const title = z.string().min(1).max(80);
 /** Settings kept in the person's browser that an apply card sets (helper-settings.ts BROWSER_SETTINGS). */
 export const APPLY_SETTINGS = ['theme', 'autocorrect', 'statusDot', 'archivedLink', 'compactSidebar', 'shortcuts', 'signInStart'] as const;
+/** The only values an apply card may give where the page takes a fixed few: the theme is Dark or Light, no System (#345, question #2026). */
+export const APPLY_VALUES: Partial<Record<typeof APPLY_SETTINGS[number], readonly string[]>> = { theme: ['dark', 'light'] };
 /** Showing a card with the same id (else the same kind and title) again in a turn replaces it: shown once. */
 const id = z.string().regex(/^[a-z0-9-]{1,40}$/).optional();
 
@@ -45,6 +47,14 @@ const APPROVAL_WORDS = /\b(allow|approve|approved|deny|denied|confirm order)\b/i
 export function cardLooksLikeApproval(card: z.infer<typeof CardSchema>): string | null {
   const words = [card.title, ...(card.kind === 'choice' ? card.options.flatMap((o) => [o.label, o.hint ?? '']) : [])];
   return words.find((w) => APPROVAL_WORDS.test(w)) ?? null;
+}
+
+/** Why an apply card's value can't be set, or null: its button would offer a choice the page doesn't have (#345 review). */
+export function applyCardProblem(card: z.infer<typeof CardSchema>): string | null {
+  if (card.kind !== 'apply') return null;
+  const values = APPLY_VALUES[card.setting];
+  if (!values || values.includes(card.value as string)) return null;
+  return `${card.setting} is ${values.map((v) => `"${v}"`).join(' or ')}, not ${JSON.stringify(card.value)}`;
 }
 
 /** A card as stored in the conversation (message kind "card"). */

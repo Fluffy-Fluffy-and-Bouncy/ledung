@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-17
+- Ledung is now dark by default, whatever your computer's setting, from the first moment the page shows. Settings → Look & feel → Appearance offers Dark and Light (basic); System, which followed the computer, is gone and becomes Dark. A Light you chose before is kept, and the Ledung Helper offers only Dark or Light too. (#345)
 - Managers can now unlink a linked computer for you, by its name or public name, as Settings → Linked computers → Unlink does, so a reinstalled computer can be linked again under its old name from the page opened through the public name too: unlink it, then a link code on one computer and linking with it on the other. You approve it in Ledung unless you told that manager, on this computer, to unlink that computer. (#346)
 
 ## 2026-11-16
