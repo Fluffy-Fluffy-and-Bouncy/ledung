@@ -23,6 +23,7 @@ import { isAskUser, quietTexts, type TurnEntry } from '../shared/quiet-reply.ts'
 import { elevates, raisesUac } from '../shared/elevation.ts';
 import { COPY_REFS, lightQuestion, type QuestionDetails } from '../shared/questions.ts';
 import type { OrderInfo, OrderStatus } from '../shared/orders.ts';
+import type { WaitingLine } from '../shared/waiting-line.ts';
 import { trimForStorage } from './trim.ts';
 import { exercisedLine } from '../platform/exercised.ts';
 
@@ -373,6 +374,48 @@ export class Store {
     const r = this.db
       .prepare('INSERT INTO messages (session_id, at, kind, data) VALUES (?, ?, ?, ?) RETURNING *')
       .get(sessionId, at, kind, this.json(data));
+    return toMessage(r!);
+  }
+
+  /**
+   * A "Waiting for you" line (issue #350): added to `sessionId`'s chat unless the item already has one, in one write, so
+   * the same item never gets two (Done looks like 8). Null: it had one.
+   */
+  addWaitingLine(sessionId: string, line: WaitingLine, at = Date.now()): StoredMessage | null {
+    if (this.db.prepare('SELECT 1 FROM waiting_lines WHERE item = ? AND ref = ?').get(line.item, line.ref)) return null;
+    // A savepoint, not BEGIN: this runs from Ledung's publish, which may be inside another write's transaction.
+    this.db.exec('SAVEPOINT waiting_line');
+    try {
+      const m = this.addMessage(sessionId, 'waiting', line, at);
+      this.db.prepare('INSERT INTO waiting_lines (item, ref, message_id) VALUES (?, ?, ?)').run(line.item, line.ref, m.id);
+      this.db.exec('RELEASE waiting_line');
+      return m;
+    } catch (e) {
+      this.db.exec('ROLLBACK TO waiting_line');
+      this.db.exec('RELEASE waiting_line');
+      throw e;
+    }
+  }
+
+  /** An item's "Waiting for you" line, if it has one. */
+  waitingLineOf(item: WaitingLine['item'], ref: string): StoredMessage | null {
+    const r = this.db.prepare('SELECT m.* FROM waiting_lines w JOIN messages m ON m.id = w.message_id WHERE w.item = ? AND w.ref = ?').get(item, ref);
+    return r ? toMessage(r) : null;
+  }
+
+  /**
+   * A chat's "Waiting for you" lines from message `fromId` on, oldest first: a page that reconnects reads them again,
+   * since a line decided while it was away was changed in place and is older than what it catches up on (code review
+   * of #350, finding 1). At most the newest 500 (re-review: the newest are the likelier to be waiting).
+   */
+  waitingLinesIn(sessionId: string, fromId: number): StoredMessage[] {
+    return this.db.prepare('SELECT m.* FROM waiting_lines w JOIN messages m ON m.id = w.message_id WHERE m.session_id = ? AND m.id >= ? ORDER BY m.id DESC LIMIT 500')
+      .all(sessionId, fromId).map(toMessage).reverse();
+  }
+
+  /** A "Waiting for you" line says how its item ended: the same message, changed in place (Done looks like 3). */
+  updateWaitingLine(messageId: number, line: WaitingLine): StoredMessage {
+    const r = this.db.prepare(`UPDATE messages SET data = ? WHERE id = ? AND kind = 'waiting' RETURNING *`).get(this.json(line), messageId);
     return toMessage(r!);
   }
 

@@ -19,6 +19,7 @@ function harness(stored: Record<string, StoredMessage[]>) {
     messages: (id) => new Promise((resolve) => pending.push(() => resolve(stored[id] ?? []))),
     messagesBefore: async () => [],
     messagesAfter: async () => [],
+    waitingLines: async () => [],
     changed: (v) => views.push(v),
   });
   const release = async () => {
@@ -73,4 +74,28 @@ test('no chat open shows nothing, and a late read of the previous chat is not sh
   assert.deepEqual(viewFor(views.at(-1)!, 'Y').messages, []);
   open.open(null);
   assert.deepEqual(viewFor(views.at(-1)!, null).messages, []);
+});
+
+test('a message sent again with new data replaces the one shown, in place (a Waiting for you line decided, issue #350)', async () => {
+  const line = msg('X', 'waiting');
+  const later = msg('X', 'later');
+  const { open, views, release } = harness({ X: [line, later] });
+  open.open('X');
+  await release();
+  const count = views.length;
+  open.message({ ...line, data: { text: 'waiting' } });
+  assert.equal(views.length, count, 'the same data again changes nothing');
+  open.message({ ...line, data: { text: 'answered' } });
+  assert.deepEqual(views.at(-1)!.messages.map((m) => m.data.text), ['answered', 'later']);
+});
+
+test('a waiting line already shown decided is not put back to waiting by an older read (re-review of #350)', async () => {
+  const line = (state: string) => ({ id: 900, sessionId: 'X', role: 'ledung', kind: 'waiting', data: { item: 'permission', ref: 'p1', state }, createdAt: 0 }) as unknown as StoredMessage;
+  const { open, views, release } = harness({ X: [line('waiting')] });
+  open.open('X');
+  await release();
+  open.message(line('denied'));
+  open.message(line('waiting')); // a reconnect's read that left the server before the decision
+  const shown = viewFor(views.at(-1)!, 'X').messages;
+  assert.deepEqual(shown.map((m) => [m.id, (m.data as { state: string }).state]), [[900, 'denied']], 'decided, and shown once');
 });

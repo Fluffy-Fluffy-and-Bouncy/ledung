@@ -487,6 +487,11 @@ a.file-link { text-decoration-style: dotted; }
 @media (max-width: 760px) { .pinned-text { max-height: 2.8em; } }
 .event, .note, .divider { font-size: 0.85em; color: var(--muted); text-align: center; }
 .note.technical { text-align: left; }
+/* A "Waiting for you" line in a manager's chat (issue #350): one compact line, marked while it waits, quiet once decided. */
+.waiting-line { font-size: 0.85em; color: var(--muted); max-width: 920px; padding: 0.3rem 0.6rem; border-left: 3px solid var(--border); overflow-wrap: anywhere; }
+.waiting-line.waiting { color: var(--text); border-left-color: var(--warn-border); background: color-mix(in srgb, var(--warn-border) 10%, transparent); border-radius: 4px; }
+.waiting-line.changes .waiting-line-outcome, .waiting-line.denied .waiting-line-outcome { color: var(--danger); }
+.waiting-line .time { margin-left: 0.25rem; }
 .note.decision.denied { color: var(--danger); text-align: left; }
 .divider { display: flex; align-items: center; gap: 0.5rem; }
 .divider::before, .divider::after { content: ""; flex: 1; border-top: 1px dashed var(--border); }

@@ -17,9 +17,11 @@ import { PermissionCard } from './PermissionCard.tsx';
 import { QuestionCard } from './QuestionCard.tsx';
 import { toolSummary } from './ToolPreview.tsx';
 import { distanceFromBottom, isStuck, restoredScrollTop } from '../scrollAnchor.ts';
+import { dropReturnPlace, keepReturnPlace, peekReturnPlace, returnScrollTop } from '../returnPlace.ts';
 import { insertByTime, lastOwnMessage, shownWoven, wovenQuestions } from '../conversation.ts';
 import { SENT_IMAGE_PREFIX, sentImageUrl } from '../chatImages.ts';
 import { NEAR_TOP, stepUp, tailStart, windowStart } from '../messageWindow.ts';
+import { lineHead, lineLead, lineOutcome, permissionLine, questionLine, type WaitingLine } from '../../../src/shared/waiting-line.ts';
 
 /** The drawn part's first key when it starts at the very first item, whatever is loaded above later. */
 const FROM_TOP = '\u0000top';
@@ -34,6 +36,8 @@ type Item =
   | { key: string; at: number; type: 'tool'; name: string; input: Record<string, any>; result: ToolResult | null; sub: boolean }
   | { key: string; at: number; type: 'permission'; permissionId: string; toolName: string; input: Record<string, any> }
   | { key: string; at: number; type: 'note'; text: string; technical: boolean }
+  /** A "Waiting for you" line (issue #350): a question or prompt for the person, with Open. */
+  | { key: string; at: number; type: 'waiting'; line: WaitingLine }
   /** A card in the Ledung Helper's chat (docs/steps/ledung-helper.md); answered once the person wrote after it. */
   | { key: string; at: number; type: 'card'; card: HelperCard; answered: boolean }
   /** The Ledung Helper's one message of a turn, with its card (src/sessions/helper-tools.ts, reply). */
@@ -80,6 +84,7 @@ function toItems(messages: StoredMessage[]): Item[] {
     }
     else if (m.kind === 'question') items.push({ ...base, key: `${m.id}`, type: 'question', questionId: m.data.questionId });
     else if (m.kind === 'event') items.push({ ...base, key: `${m.id}`, type: 'event', text: m.data.text });
+    else if (m.kind === 'waiting') items.push({ ...base, key: `${m.id}`, type: 'waiting', line: m.data });
     else if (m.kind === 'shell') items.push({ ...base, key: `${m.id}`, type: 'shell', block: m.data });
     else if (m.kind === 'card') items.push({ ...base, key: `${m.id}`, type: 'card', card: m.data.card, answered: false });
     else if (m.kind === 'reply') items.push({ ...base, key: `${m.id}`, type: 'reply', text: m.data.text, card: m.data.card ?? null, answered: false, messageId: m.id });
@@ -198,6 +203,8 @@ export const MessageList = memo(function MessageList(props: {
   focusMessage?: number | null;
   /** Opens a question in Waiting for you. */
   onOpenQuestion?: (id: number) => void;
+  /** Opens Waiting for you on what a session asked: a permission prompt's line (issue #350). */
+  onOpenWaitingFor?: (sessionId: string, inChat?: boolean) => void;
   /** Opens a board thread of this conversation's project in the Board view; none: the project has no board. */
   onOpenBoardThread?: (threadId: string) => void;
   /** The session's name colour (issue #269): its own messages get the message box's tint; undefined: no tint. */
@@ -254,6 +261,8 @@ export const MessageList = memo(function MessageList(props: {
     el.scrollTo({ top, behavior: reduced ? 'auto' : 'smooth' });
   };
   const stick = useRef(true);
+  /** How far the reader is from the chat's end, kept for a resize. */
+  const distance = useRef(0);
   /** The question already scrolled to, so later messages don't pull the view away again or back to it. */
   const focused = useRef<string | null>(null);
   const focusMessage = props.focusMessage ?? null;
@@ -269,10 +278,13 @@ export const MessageList = memo(function MessageList(props: {
     const timers = [0, 300, 900].map((ms) => setTimeout(() => { const el = scroller.current; if (el) el.scrollTop = el.scrollHeight; }, ms));
     return () => timers.forEach(clearTimeout);
   }, [props.follow, lastKey, props.footerKey, items.length]);
-  // The question or reply it was opened at is always drawn, and so is everything after it.
+  // A chat left by a waiting line's Open comes back at that line (issue #350, acceptance round 1 point 2).
+  const returnPlace = sessionId && focus === null && focusMessage === null ? peekReturnPlace(sessionId) : undefined;
+  // The question or reply it was opened at is always drawn, and so is everything after it; so is the line returned to.
   const mustShow = focus !== null
     ? items.findIndex((it) => it.type === 'question' && it.questionId === focus)
-    : focusMessage !== null ? items.findIndex((it) => it.type === 'assistant' && it.anchor === focusMessage) : -1;
+    : focusMessage !== null ? items.findIndex((it) => it.type === 'assistant' && it.anchor === focusMessage)
+    : returnPlace ? indexOfKey.get(returnPlace.key) ?? -1 : -1;
   // FROM_TOP: drawn from the very first item, so messages "Load earlier" adds above it are drawn too (self-check 2).
   const keyed = firstKey === null ? undefined : firstKey === FROM_TOP ? 0 : indexOfKey.get(firstKey);
   // Counted in messages that show (issue #329): a tool-heavy chat's hidden calls don't use up the window.
@@ -315,6 +327,21 @@ export const MessageList = memo(function MessageList(props: {
   useLayoutEffect(() => {
     const el = scroller.current;
     if (!el) return;
+    if (returnPlace && sessionId && messages.length > 0) {
+      dropReturnPlace(sessionId);
+      const line = el.querySelector(`[data-key="${CSS.escape(returnPlace.key)}"]`);
+      if (line) {
+        el.scrollTop = returnScrollTop(el.scrollTop, line.getBoundingClientRect().top - el.getBoundingClientRect().top, returnPlace.offset);
+        // Kept off the end: the effect below and a resize keep this place, not the chat's end.
+        focused.current = `return:${returnPlace.key}`;
+        stick.current = false;
+        distance.current = distanceFromBottom(el.scrollHeight, el.scrollTop, el.clientHeight) ?? 0;
+        // The drawn part stays as it is, the line in it, now the place is no longer kept.
+        if (firstKey === null) setFirstKey(keyAt(start));
+        updatePinned();
+        return;
+      }
+    }
     // Only once the history is in: before that the cards of other sessions are all there is, and the place would be lost.
     if (target !== null && focused.current !== target && messages.length > 0) {
       const card = el.querySelector(target);
@@ -340,8 +367,8 @@ export const MessageList = memo(function MessageList(props: {
     stick.current = focused.current === null;
   }, [messages.length === 0]);
 
-  // Moving the tab to another window or rotating a phone resizes the scroller, briefly to no height; keep the reader's place.
-  const distance = useRef(0);
+  // Moving the tab to another window or rotating a phone resizes the scroller, briefly to no height; keep the reader's place
+  // (distance, declared above).
   // The size last restored at. A narrower column (the Files pane opened or dragged wider, issue #198) makes the browser
   // move the text itself, with a scroll event before the observer runs; taken as the reader's, it unstuck the chat
   // from its end. A scroll at a size not yet restored at is left to the observer.
@@ -358,6 +385,16 @@ export const MessageList = memo(function MessageList(props: {
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
+
+  /** A waiting line's Open, keeping where the line is on screen first, so Back comes to it again. */
+  function leaving<A extends unknown[]>(key: string, open: ((...a: A) => void) | undefined): ((...a: A) => void) | undefined {
+    if (!open) return undefined;
+    return (...a: A) => {
+      const el = scroller.current, line = el?.querySelector(`[data-key="${CSS.escape(key)}"]`);
+      if (sessionId && el && line) keepReturnPlace(sessionId, { key, offset: line.getBoundingClientRect().top - el.getBoundingClientRect().top });
+      open(...a);
+    };
+  }
 
   return (
     <div
@@ -412,11 +449,14 @@ export const MessageList = memo(function MessageList(props: {
             onQuote={props.onQuote}
             onOpenFile={props.onOpenFile}
             onOpenBoardThread={props.onOpenBoardThread}
-            onOpenQuestion={props.onOpenQuestion}
-            titleOf={item.type === 'question' || item.type === 'permission' ? props.titleOf : undefined}
-            question={item.type === 'question' ? props.questions[item.questionId] : undefined}
+            onOpenQuestion={item.type === 'waiting' ? leaving(item.key, props.onOpenQuestion) : props.onOpenQuestion}
+            onOpenWaitingFor={item.type === 'waiting' ? leaving(item.key, props.onOpenWaitingFor) : undefined}
+            titleOf={item.type === 'question' || item.type === 'permission' || item.type === 'waiting' ? props.titleOf : undefined}
+            question={item.type === 'question' ? props.questions[item.questionId]
+              : item.type === 'waiting' && item.line.item === 'question' ? props.questions[Number(item.line.ref)] : undefined}
             focused={item.type === 'question' ? item.questionId === focus : item.type === 'assistant' && item.anchor !== undefined && item.anchor === focusMessage}
-            live={item.type === 'permission' ? permissions[item.permissionId] : undefined}
+            live={item.type === 'permission' ? permissions[item.permissionId]
+              : item.type === 'waiting' && item.line.item === 'permission' ? permissions[item.line.ref] : undefined}
             decision={item.type === 'permission' ? decisions.get(item.permissionId) : undefined}
             renderCard={item.type === 'card' || item.type === 'reply' || item.type === 'permission' ? props.renderCard : undefined}
             assistantName={props.assistantName}
@@ -480,6 +520,7 @@ interface ItemProps {
   onOpenFile?: (path: string) => void;
   onOpenBoardThread?: (threadId: string) => void;
   onOpenQuestion?: (id: number) => void;
+  onOpenWaitingFor?: (sessionId: string, inChat?: boolean) => void;
   titleOf?: (id: string) => string;
   /** The question of a question item, as it is now. */
   question?: QuestionInfo;
@@ -588,6 +629,8 @@ const MessageItem = memo(function MessageItem(props: ItemProps) {
       );
     case 'event':
       return <div className="event">{item.text} {time}</div>;
+    case 'waiting':
+      return <WaitingLineRow {...props} line={item.line} time={time} />;
     case 'card':
       return <div className="helper-card-row">{props.renderCard!(item.card, item.answered)}</div>;
     case 'reply':
@@ -673,3 +716,33 @@ ${b.stderr.replace(/\s+$/, '')}`}</span> : null}</pre>
     }
   }
 }, sameItem);
+
+/**
+ * A "Waiting for you" line (issue #350): drawn from the item as the page has it now, else as Ledung stored it (an older
+ * item the page has not loaded). Plain text only (Done looks like 5). A question's Open stays once it is answered and
+ * leads to its page; a decided permission prompt has no page, so its Open goes.
+ */
+function WaitingLineRow(props: ItemProps & { line: WaitingLine; time: ReactNode }) {
+  const titleOf = props.titleOf;
+  const l = props.question ? questionLine(props.question, props.userName, (id) => titleOf?.(id))
+    : props.live ? permissionLine(props.live, props.userName, (id) => titleOf?.(id))
+    : props.line;
+  const outcome = lineOutcome(l);
+  // A prompt with the manager isn't in Waiting for you: its Open goes to the asking session's chat, where it can be
+  // decided (re-review of #350, finding 2).
+  const open = l.item === 'question'
+    ? props.onOpenQuestion && (() => props.onOpenQuestion!(Number(l.ref)))
+    : l.state === 'waiting' && props.onOpenWaitingFor ? () => props.onOpenWaitingFor!(l.sessionId, !!l.toManager) : undefined;
+  return (
+    <div className={`waiting-line ${l.state}`} data-key={props.item.key}>
+      <span className="waiting-line-text">
+        {!outcome && <strong>{lineLead(l)}: </strong>}
+        {lineHead(l)}
+        {outcome && <span className="waiting-line-outcome"> · {outcome}{l.at ? ` · ${formatTime(l.at)}` : ''}</span>}
+      </span>
+      {open && <> · <button className="link waiting-line-open" title={l.item === 'permission' && l.toManager ? `Decide it in ${titleOf?.(l.sessionId) ?? 'its session'}'s chat` : outcome ? 'Open it in Waiting for you' : 'Answer it in Waiting for you'} onClick={open}>Open</button></>}
+      {/* One time: when it was asked while it waits, when it was decided after (Done looks like 3). */}
+      {!outcome && <>{' '}{props.time}</>}
+    </div>
+  );
+}
