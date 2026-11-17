@@ -173,6 +173,8 @@ export interface ManagerHandlers {
   relayAdminKey(): string;
   linkCode(): string;
   linkComputer(code: string, name?: string): Promise<string>;
+  /** Settings' Unlink (issue #346): by the name or public name settings_status lists. */
+  unlinkComputer(computer: string): string;
   inviteComputer(owner: string, name?: string): Promise<string>;
   /** Publishing usage on this computer (issue #376); switching on is asked of the user by the hook. */
   usagePublish(args: { enabled?: boolean; repo?: string; allAccounts?: boolean; accounts?: Record<string, boolean> }): Promise<string>;
@@ -910,6 +912,9 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
         code: z.string().min(10).max(300).describe('The link code, as name.example.com/abc…'),
         name: z.string().min(1).max(60).optional().describe('What to call that computer here; default: from its public name.'),
       }, async (a) => safely(() => m.linkComputer(a.code, a.name))) as never,
+      tool('unlink_computer', `Unlink a linked computer, as Settings → Linked computers → Unlink does: the link goes here at once, and that computer is told to drop its side. Linking it again takes a new link code (link_code there, link_computer here, or the other way round). Only when ${who} asks; ${who} approves it in Ledung unless ${who}'s own words tell you to unlink that computer, by the name you give.`, {
+        computer: z.string().min(1).max(253).describe('The linked computer, by its name or its public name as settings_status lists them.'),
+      }, async (a) => safely(() => m.unlinkComputer(a.computer))) as never,
       tool('usage_publish', `Switch publishing this computer's usage to a shared GitHub repository on or off, per Claude account, as Settings → Claude & usage → Publish usage does; settings_status shows it now. Anything that shares more (on, another repository, all accounts, an account switched on) waits for ${who}'s approval in Ledung; switching off, or an account off, runs at once and removes that usage from the repository. The repository is this computer's default: a project with a usageRepo of its own publishes there instead. Projects are published as other# and a hash unless their publishUsageName is on (set_project_settings, also approved by ${who}, as is a project's usageRepo). Only this computer: for a linked one, ask its manager.`, {
         enabled: z.boolean().optional().describe('true: publish (from off: every account, unless allAccounts or accounts say otherwise); false: stop, every account off.'),
         repo: z.string().min(3).optional().describe('The default repository as owner/name; leave out to keep the one set.'),

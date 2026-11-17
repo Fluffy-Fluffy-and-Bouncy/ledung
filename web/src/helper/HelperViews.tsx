@@ -424,7 +424,7 @@ function RestartNow({ run }: { run: Run }) {
     : <button className="small primary" onClick={() => void run(async () => { setAsked(true); await api.restart(); })}>Restart Ledung</button>;
 }
 
-const THEME_WORDS: Record<string, string> = { dark: 'dark', light: 'light', system: "the computer's own" };
+const THEME_WORDS: Record<string, string> = { dark: 'dark', light: 'light' };
 
 /**
  * A setting kept in this browser (docs/steps/ledung-helper.md, "Every setting"): the person's press sets it here, as
@@ -442,7 +442,7 @@ function ApplyInBrowser({ setting, value, done, onApplied, run }: { setting: str
     : setting === 'shortcuts' ? (value === 'remove' ? 'Remove the shortcuts' : 'Add the shortcuts')
     : `${on ? 'Switch on' : 'Switch off'} ${({ autocorrect: 'autocorrect', statusDot: 'the status dot', archivedLink: '"Archived" in the sidebar', signInStart: 'start at sign-in' } as Record<string, string>)[setting] ?? setting}`;
   const apply = () => run(async () => {
-    if (setting === 'theme' && (value === 'dark' || value === 'light' || value === 'system')) {
+    if (setting === 'theme' && (value === 'dark' || value === 'light')) {
       saveTheme(localStorage, value);
       applyTheme(document.documentElement, value);
     } else if (setting === 'compactSidebar') setCompact(Math.max(1, Math.min(4, Number(value))) as never);
