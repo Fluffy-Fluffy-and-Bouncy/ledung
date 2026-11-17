@@ -16,7 +16,7 @@ import { UserError } from '../sessions/manager.ts';
 import type { Store } from '../store/store.ts';
 import { AWAY_DEFAULT, AWAY_KINDS, EFFORT_LEVELS, HELPER, type AwayKind, type PermissionDecision, type PermissionMode, type RemoteStatus, type ServerEvent, parseWatch } from '../shared/protocol.ts';
 import { browserCookieHeader, deviceCookieHeader, Guard, readCookies, securityHeaders } from './security.ts';
-import { APP_NAME, browserName, DEVICE_COOKIE, type Device, type DeviceKind, deviceName, Devices, deviceView, LEGACY_BROWSER_NAME } from './devices.ts';
+import { browserName, DEVICE_COOKIE, type Device, type DeviceKind, deviceName, Devices, deviceView, LEGACY_BROWSER_NAME } from './devices.ts';
 import { actionOf, DEVICE_LOCKED, PASSKEY_HEADER, PASSKEY_NEEDED, PASSKEY_ONLY, PasskeyError, Passkeys, VOUCH_HEADER } from './passkeys.ts';
 import { linkedPushItem, Push, PushError, type LinkedPushItem } from './push.ts';
 import type { UsageQueries } from '../usage/queries.ts';
@@ -79,8 +79,6 @@ const WAITING_POLL_MS = 30_000;
 const WAITING_PUSH_MS = 1000;
 /** Logged once, the first time a late answer after close is let go (#463). */
 let exercised463 = false;
-/** Logged once, the first time the desktop app signs in and is named as the app (#363). */
-let exercised363 = false;
 
 /** Why linking refuses through the public name (#245 step 1: on the computer itself only). */
 const LINKED_HERE = 'Computers are linked and unlinked';
@@ -1585,10 +1583,6 @@ export class LedungServer {
     const { device, cookie, removed } = this.devices.addBrowser(browserName(req.headers['user-agent']));
     for (const id of removed) this.revokeDevice(id);
     console.log(`Browsers: "${device.name}" signed in.`);
-    if (!exercised363 && device.name.startsWith(APP_NAME)) {
-      exercised363 = true;
-      exercisedLine(`EXERCISED #363 the desktop app signed in as "${device.name}"`);
-    }
     return browserCookieHeader(cookie);
   }
 
