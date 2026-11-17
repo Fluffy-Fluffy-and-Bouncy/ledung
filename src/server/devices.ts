@@ -103,11 +103,17 @@ export function deviceName(raw: unknown, fallback = 'Phone'): string {
   return name || fallback;
 }
 
+/**
+ * What the desktop app is called in Settings (issue #363): it signs in as a browser, and its Electron User-Agent also
+ * says Chrome, so it was listed as "Chrome on macOS" next to the real Chrome (Mac spike surprise 6).
+ */
+export const APP_NAME = 'Ledung app';
+
 /** A browser's name from its User-Agent, such as "Firefox on macOS": what Settings lists it as until it is renamed. */
 export function browserName(userAgent: string | undefined): string {
   const ua = userAgent ?? '';
-  // Order matters: Edge and Opera also say Chrome, Chrome also says Safari.
-  const browser = /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Firefox\//.test(ua) ? 'Firefox'
+  // Order matters: Electron (the desktop app, #363), Edge and Opera also say Chrome, Chrome also says Safari.
+  const browser = /Electron\//.test(ua) ? APP_NAME : /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Firefox\//.test(ua) ? 'Firefox'
     : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : 'Browser';
   const os = /iPhone|iPad/.test(ua) ? 'iOS' : /Android/.test(ua) ? 'Android' : /Windows/.test(ua) ? 'Windows'
     : /Mac OS X|Macintosh/.test(ua) ? 'macOS' : /Linux|X11/.test(ua) ? 'Linux' : null;
