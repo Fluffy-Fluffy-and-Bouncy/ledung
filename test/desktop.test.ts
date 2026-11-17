@@ -1,0 +1,121 @@
+// The desktop app's attach check (issue #358, desktop/attach.ts): it finds the running Ledung the way the `ledung`
+// command does, and its mirror of the `/running` proof stays the core's. desktop/attach.ts has no Electron in it, so
+// these run with the root tests; the window itself is checked by hand (desktop/README.md).
+import { after, before, test } from 'node:test';
+import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
+import { candidatePorts, configFiles, dataDir, DEFAULT_PORT as APP_DEFAULT_PORT, findRunning, runningProof as appProof } from '../desktop/attach.ts';
+import { DEFAULT_PORT } from '../src/config.ts';
+import { runningProof } from '../src/platform/running.ts';
+import { listenOk } from './free-port.ts';
+import { removeTemp } from './temp.ts';
+
+let base: string;
+before(() => {
+  base = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-desktop-'));
+});
+after(() => removeTemp(base));
+
+/** A data folder with a token, and a config naming the port. */
+function install(name: string, port: number): { env: NodeJS.ProcessEnv; token: string } {
+  const dir = path.join(base, name);
+  fs.mkdirSync(path.join(dir, 'data'), { recursive: true });
+  const token = crypto.randomBytes(32).toString('hex');
+  fs.writeFileSync(path.join(dir, 'data', 'auth-token'), token);
+  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ port }));
+  return { env: { LEDUNG_CONFIG: path.join(dir, 'config.json'), LEDUNG_DATA_DIR: path.join(dir, 'data') }, token };
+}
+
+/** A server on a free port that answers `/running` as `answer` says; the core's own proof is the real Ledung's. */
+async function listener(answer: (nonce: string) => { status: number; body: string }) {
+  const server = http.createServer((req, res) => {
+    const nonce = new URL(req.url ?? '/', 'http://x').searchParams.get('nonce') ?? '';
+    const { status, body } = answer(nonce);
+    res.writeHead(status, { 'Content-Type': 'application/json' });
+    res.end(body);
+  });
+  const port = await listenOk(server);
+  return { port, close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
+}
+
+test("the app's proof is the core's, for any token and nonce", () => {
+  for (let i = 0; i < 20; i++) {
+    const token = crypto.randomBytes(32).toString('hex');
+    const nonce = crypto.randomBytes(16).toString('hex');
+    assert.equal(appProof(token, nonce), runningProof(token, nonce));
+  }
+  assert.equal(APP_DEFAULT_PORT, DEFAULT_PORT);
+});
+
+test('the Ledung holding the data folder\'s token is found on its port; another program there counts as not running', async () => {
+  let token = '';
+  let impostor = false;
+  // The real Ledung's answer is the core's own proof; an impostor answers 200 with a proof made from another token.
+  const server = await listener((nonce) => ({
+    status: 200,
+    body: JSON.stringify({ proof: runningProof(impostor ? 'f'.repeat(64) : token, nonce) }),
+  }));
+  try {
+    const installed = install('found', server.port);
+    token = installed.token;
+    assert.deepEqual(await findRunning(installed.env, 2000), { running: true, port: server.port, token });
+
+    impostor = true;
+    const found = await findRunning(installed.env, 2000);
+    assert.equal(found.running, false);
+    assert.match(!found.running ? found.reason : '', new RegExp(`Nothing answered as this computer's Ledung on port ${server.port}`));
+  } finally {
+    await server.close();
+  }
+});
+
+test('an old Ledung that serves its page on /running, or nothing on the port, counts as not running', async () => {
+  const page = await listener(() => ({ status: 200, body: '<!doctype html><title>Project Ledung</title>' }));
+  const installed = install('page', page.port);
+  try {
+    assert.equal((await findRunning(installed.env, 2000)).running, false);
+  } finally {
+    await page.close();
+  }
+  // The port is free now: nothing answers.
+  const found = await findRunning(installed.env, 2000);
+  assert.deepEqual(found.running ? null : found.ports, [page.port]);
+});
+
+test('a data folder with no token: not running, and the reason says so', async () => {
+  const dir = path.join(base, 'fresh');
+  fs.mkdirSync(dir, { recursive: true });
+  const found = await findRunning({ LEDUNG_DATA_DIR: dir, LEDUNG_CONFIG: path.join(dir, 'none.json') }, 500);
+  assert.equal(found.running, false);
+  assert.match(!found.running ? found.reason : '', /No sign-in token/);
+});
+
+test('LEDUNG_CONFIG and LEDUNG_DATA_DIR are read like the core reads them', () => {
+  const dir = path.join(base, 'paths');
+  assert.equal(dataDir({ LEDUNG_DATA_DIR: dir }), path.resolve(dir));
+  assert.deepEqual(configFiles({ LEDUNG_CONFIG: 'some/config.json', LEDUNG_DATA_DIR: dir }), [path.resolve('some/config.json')]);
+});
+
+test("without LEDUNG_CONFIG: the npm package's config, then the release launcher's, each port once, the default for none", () => {
+  const dir = path.join(base, 'both');
+  fs.mkdirSync(dir, { recursive: true });
+  assert.deepEqual(configFiles({}, dir), [path.join(dir, 'ledung.config.json')]);
+  assert.deepEqual(candidatePorts(configFiles({}, dir)), [DEFAULT_PORT], 'no config file: the default port');
+
+  const releaseConfig = path.join(base, 'clone', 'ledung.config.local.json');
+  fs.mkdirSync(path.dirname(releaseConfig), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'current.json'), JSON.stringify({ dir: '/x', config: releaseConfig }));
+  fs.writeFileSync(path.join(dir, 'ledung.config.json'), JSON.stringify({ port: 4400 }));
+  fs.writeFileSync(releaseConfig, JSON.stringify({ port: 4401 }));
+  assert.deepEqual(configFiles({}, dir), [path.join(dir, 'ledung.config.json'), releaseConfig]);
+  assert.deepEqual(candidatePorts(configFiles({}, dir)), [4400, 4401]);
+
+  fs.writeFileSync(releaseConfig, JSON.stringify({ port: 4400 }));
+  assert.deepEqual(candidatePorts(configFiles({}, dir)), [4400]);
+  fs.writeFileSync(releaseConfig, '{ not json');
+  assert.deepEqual(candidatePorts(configFiles({}, dir)), [4400], 'a config that cannot be read gives no port');
+});
