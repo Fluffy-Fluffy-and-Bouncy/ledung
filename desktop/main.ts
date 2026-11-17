@@ -20,6 +20,8 @@ const PARTITION = 'persist:ledung';
 let win: BrowserWindow | null = null;
 /** Set once the app is really quitting (⌘Q, File → Quit, Alt+F4, logging off): from then on closing closes. */
 let quitting = false;
+/** Windows is logging off or shutting down: nothing may hold that up, not even unsaved changes. */
+let sessionEnding = false;
 /** The origin the window may show: the attached Ledung's, or none while the "not running" page is up. */
 let ownOrigin: string | null = null;
 let attaching = false;
@@ -231,11 +233,20 @@ function createWindow(): void {
   // Windows: logging off or shutting down closes the window; let it, or the app would hold the logoff up.
   win.on('session-end', () => {
     quitting = true;
+    sessionEnding = true;
   });
   // A page with unsaved changes (the flow builder's) asks before it is left, by quitting or reloading. A browser asks
   // the person then; Electron would silently stay instead, and a cancelled quit would leave `quitting` set, so the next
   // close would end the app instead of hiding it (self-check finding 1). Ask as a browser does; Stay keeps everything.
   win.webContents.on('will-prevent-unload', (event) => {
+    // Logging off: leave without asking, or the question would hold the logoff up (code review of PR #372, Minor 2).
+    if (sessionEnding) {
+      event.preventDefault();
+      return;
+    }
+    // The question belongs to the window: asked of a hidden one (⌘W, then Quit from the Dock) it may never be seen,
+    // and the app would wait on it for good (code review of PR #372, Minor 2). Show the window first.
+    showWindow();
     const choice = dialog.showMessageBoxSync(win!, {
       type: 'question',
       buttons: ['Leave', 'Stay'],

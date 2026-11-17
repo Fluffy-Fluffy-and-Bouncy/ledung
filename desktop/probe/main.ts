@@ -229,20 +229,30 @@ async function windowPhase(w: BrowserWindow): Promise<void> {
   }
 
   // A page with unsaved changes asks before Quit; Stay keeps the app, and the next close still hides (self-check
-  // finding 1). The question is answered here, as the browser is: nothing shows on the screen.
+  // finding 1). Asked with the window hidden, it shows the window first (code review of PR #372, Minor 2). The
+  // question is answered here, as the browser is: nothing shows on the screen.
   const asked: string[] = [];
+  /** Whether the window was shown at each question: one asked of a hidden window may never be seen (code review of
+   *  PR #372, Minor 2). */
+  const shownWhenAsked: boolean[] = [];
   (dialog as unknown as { showMessageBoxSync: (w: unknown, o: { message: string }) => number }).showMessageBoxSync = (_w, o) => {
     asked.push(o.message);
+    shownWhenAsked.push(w.isVisible());
     return 1;
   };
   // With a user gesture, or Chromium ignores the page's request to be asked.
   await w.webContents.executeJavaScript(`window.addEventListener('beforeunload', (e) => e.preventDefault()); 1`, true);
+  // The window hidden first, as after ⌘W, then Quit (from the Dock, say).
+  w.hide();
+  await sleep(500);
+  const hiddenBefore = !w.isVisible();
   menuItem('quit')?.click();
   await sleep(1500);
-  const stayed = { asked: [...asked], ...(await windowState(w)) };
+  const stayed = { asked: [...asked], hiddenBefore, shownWhenAsked: [...shownWhenAsked], ...(await windowState(w)) };
   out('quit-stay', stayed);
   expect(stayed.asked.length === 1 && stayed.visible && !stayed.destroyed && stayed.windows === 1 && stayed.pageAnswers,
     'Quit on a page with unsaved changes asked once, and Stay kept the app and its window', stayed);
+  expect(hiddenBefore && shownWhenAsked[0] === true, 'Quit from a hidden window showed the window before asking', stayed);
   w.close();
   await sleep(800);
   const afterStay = await windowState(w);
@@ -251,6 +261,7 @@ async function windowPhase(w: BrowserWindow): Promise<void> {
   // Leave lets the page go: a reload answered Leave goes through, and drops the probe's unsaved-changes handler.
   (dialog as unknown as { showMessageBoxSync: (w: unknown, o: { message: string }) => number }).showMessageBoxSync = (_w, o) => {
     asked.push(o.message);
+    shownWhenAsked.push(w.isVisible());
     return 0;
   };
   const marked = await page(w, `window.__probeMark = 1; 1`);
