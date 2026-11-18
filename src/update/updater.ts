@@ -72,6 +72,8 @@ const PACKAGE = 'ledung';
 const CHANNEL_KEY = 'update-channel';
 /** The EXERCISED line of issue #461, once per run. */
 let devCheckTraced = false;
+/** The EXERCISED line of issue #382, once per run. */
+let arrayAnswerTraced = false;
 
 /** The release the running Ledung came from, or null when it runs straight from a source folder. */
 export function readRunningRelease(appDir: string): ReleaseInfo | null {
@@ -182,14 +184,13 @@ export class Updater {
   private async distTags(): Promise<Record<string, string>> {
     const r = await this.run(this.opts.distTags ?? NPM_DIST_TAGS, this.opts.dataDir);
     if (r.timedOut || r.code !== 0) throw new Error(`npm view ${PACKAGE} dist-tags failed:\n${r.tail}`);
+    let tags: Record<string, string> | null = null;
     try {
-      const tags = JSON.parse(r.out) as unknown;
-      if (tags && typeof tags === 'object') {
-        return Object.fromEntries(Object.entries(tags).filter((e): e is [string, string] => typeof e[1] === 'string'));
-      }
+      tags = readDistTags(JSON.parse(r.out));
     } catch {
       // Falls through to the error below.
     }
+    if (tags) return tags;
     throw new Error(`npm view ${PACKAGE} dist-tags did not answer with its tags:\n${r.tail}`);
   }
 
@@ -426,6 +427,24 @@ export class Updater {
       child.on('close', (code) => finish({ code: code ?? -1, out, tail: tail(all) }));
     });
   }
+}
+
+/**
+ * The tags in npm's answer to `npm view ledung dist-tags --json`, or null when it is not one. npm 12 answers with an
+ * array holding the tags object, older npm with the object itself (#382); any other array is not an answer.
+ */
+export function readDistTags(answer: unknown): Record<string, string> | null {
+  let tags = answer;
+  if (Array.isArray(answer)) {
+    if (answer.length !== 1 || !answer[0] || typeof answer[0] !== 'object' || Array.isArray(answer[0])) return null;
+    tags = answer[0];
+    if (!arrayAnswerTraced) {
+      arrayAnswerTraced = true;
+      exercisedLine('EXERCISED #382 npm answered dist-tags as an array and its tags were read');
+    }
+  }
+  if (!tags || typeof tags !== 'object') return null;
+  return Object.fromEntries(Object.entries(tags).filter((e): e is [string, string] => typeof e[1] === 'string'));
 }
 
 /** The changelog bullets a diff adds, without the leading "- ". */
