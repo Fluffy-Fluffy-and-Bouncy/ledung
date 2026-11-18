@@ -6,7 +6,7 @@
 // check, sign-in cookie, Origin check and "no embedding" apply unchanged. Sign-in sets the cookie from this main
 // process (Mac spike 2026-11-17: GET /api/state 200 with no token in any URL); the token never goes into a URL or a
 // command line.
-import { app, BrowserWindow, dialog, Menu, session, shell, type MenuItemConstructorOptions, type Session, type WebContents } from 'electron';
+import { app, BrowserWindow, dialog, Menu, nativeImage, session, shell, type MenuItemConstructorOptions, type Session, type WebContents } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findRunning } from './attach.ts';
@@ -14,6 +14,11 @@ import { runStart } from './start.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const NOT_RUNNING_PAGE = path.join(here, 'not-running.html');
+/**
+ * Ledung's own icon (#384), the page's app icon from the clone's web/public: the app runs from a clone (README), so
+ * it is there. A PNG, since Electron's images load no SVG. Exported for the probe, which checks it loads.
+ */
+export const APP_ICON = path.join(here, '..', 'web', 'public', 'icon-512.png');
 /** The core's sign-in cookie (src/server/security.ts COOKIE_NAME). */
 const COOKIE_NAME = 'ledung_auth';
 /** One partition for the app's cookies, kept between starts, apart from Electron's default session. */
@@ -261,6 +266,11 @@ function createWindow(): void {
     height: 860,
     title: 'Ledung',
     backgroundColor: '#1b1d22',
+    // The window's and the Windows taskbar's icon; the Mac takes the Dock's, set at start (#384).
+    icon: APP_ICON,
+    // Windows and Linux draw the menu inside the window: hidden, Alt shows it, and its shortcuts work either way
+    // (Martin, 2026-11-19, Ledung question #529: "a — Alt shows it"). The Mac ignores it: its menu is the system's.
+    autoHideMenuBar: true,
     webPreferences: {
       session: session.fromPartition(PARTITION),
       contextIsolation: true,
@@ -333,6 +343,8 @@ if (!app.requestSingleInstanceLock()) {
   app.on('activate', showWindow);
   void app.whenReady().then(() => {
     Menu.setApplicationMenu(buildMenu());
+    // Run from a clone the app is Electron's own, with Electron's icon in the Dock until it is told otherwise (#384).
+    if (process.platform === 'darwin') app.dock?.setIcon(nativeImage.createFromPath(APP_ICON));
     createWindow();
   });
 }

@@ -44,6 +44,10 @@ One window opens with your running Ledung's page, signed in. Nothing opens in th
   and starts no second app) or, on the Mac, by clicking it in the Dock.
 - **Quitting.** ⌘Q on the Mac, File → Quit or Alt+F4 on Windows end the app. Ledung itself is another program and
   keeps running. With unsaved changes on the page (a workflow being edited) the app asks first, as a browser does.
+- **Ledung's icon** shows in the window, the Windows taskbar and the Mac Dock instead of Electron's (#384). It is the
+  page's own `web/public/icon-512.png`, read from the clone.
+- **The menu bar on Windows and Linux** (File, Edit, View, Window) is hidden; press Alt to show it. Its shortcuts work
+  either way. The Mac's menu is the system menu bar, as before (Martin, 2026-11-19, #384).
 - **⌘O on the Mac** does what Ctrl+O does in the page: Show tool calls. (In a browser the page keeps to Ctrl+O on
   every system, so that ⌘O stays the browser's; in the app ⌘O is the app's own.)
 - **A hidden window keeps its pace.** Its timers run at full speed, so notifications come on time. The page also counts
@@ -84,9 +88,10 @@ Stop the throwaway Ledung by the process listening on its port, never by name: t
 **The loopback check.** `probe/` loads the real `main.ts` and checks the window from inside, against the throwaway
 Ledung the two settings name, printing `PROBE {…}` lines; opening the default browser is intercepted, so nothing opens.
 From this folder, with the settings as above: `PROBE_PHASE=attach npx electron probe` (a Ledung runs: sign-in, address,
-settings, permissions, refused navigation, links), then `again` (a second start keeps the devices `attach` saw),
-`notrunning` and `stopped` (these start and stop the config's Ledung themselves: the "not running" page, Retry, and a
-Ledung that stops under the window), `start` (none runs; with `LEDUNG_DESKTOP_START` set as above and an `ELECTRON_*`
+settings, permissions, refused navigation, links, the icon and, on Linux, the hidden menu bar), then `again` (a
+second start keeps the devices `attach` saw), `notrunning` and `stopped` (these start and stop the config's Ledung
+themselves: the "not running" page, Retry, and a Ledung that stops under the window),
+`start` (none runs; with `LEDUNG_DESKTOP_START` set as above and an `ELECTRON_*`
 variable of your own, e.g. `ELECTRON_PROBE=1`: presses Start Ledung, the page signed in within 15 s, no `ELECTRON_*`
 or `npm_*` variable in the started Ledung or its launcher; it leaves that Ledung running, so check it still answers
 after the app quit, then stop it), `startfail` (none runs, `LEDUNG_DESKTOP_START` naming a script that isn't there:
