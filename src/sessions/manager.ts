@@ -1303,7 +1303,6 @@ export class SessionManager {
       lockdown: launch.others,
       airgap: launch.airgap,
       // A reattached session runs on the account it started with, not a chats' choice changed since (review of #287).
-      onAccountInfo: (who: { email?: string; organization?: string; subscriptionType?: string }) => this.noteIdentity((attaching ? info.account : project.account) ?? DEFAULT_ACCOUNT, who),
       // Not signed in: the start says how to sign in instead of failing on the first turn (issue #333). In a
       // container without an account it is the container's own login, which Ledung doesn't look at.
       signInRefusal: project.runner === 'local'
@@ -1971,28 +1970,16 @@ export class SessionManager {
     if (!account) throw new UserError(`There is no account named "${config.account}".`);
   }
 
-  private static IDENTITY_KEY = 'default-account-identity';
-
-  /** Who a session of this account found itself logged in as. */
-  private noteIdentity(account: string, who: { email?: string; organization?: string; subscriptionType?: string }): void {
-    if (!who.email && !who.organization) return;
-    if (account === DEFAULT_ACCOUNT) {
-      this.store.setMeta(SessionManager.IDENTITY_KEY, JSON.stringify({ email: who.email ?? null, organization: who.organization ?? null, plan: who.subscriptionType ?? null, seenAt: Date.now() }));
-    } else {
-      this.accounts.setIdentity(account, who);
-    }
-    this.publishAccounts();
-  }
-
   accountsEvent(): Extract<import('../shared/protocol.ts').ServerEvent, { type: 'accounts' }> {
-    const raw = this.store.getMeta(SessionManager.IDENTITY_KEY);
     const inFile = this.config.claudeAccounts;
     const accounts = this.accounts.list().map((a) => this.accountView(inFile[a.name] ? { ...a, inConfigFile: true, whatItIsFor: inFile[a.name]!.whatItIsFor ?? null } : a));
-    const identity = raw ? JSON.parse(raw) : null;
-    const defaultKind = shownSignIn(this.signIns.get(DEFAULT_ACCOUNT));
+    // Only what the sign-in check says, never who a session found itself logged in as: Claude Code gives every
+    // account the computer's own login's email and organisation (issue #378).
+    const own = this.signIns.get(DEFAULT_ACCOUNT);
+    const defaultKind = shownSignIn(own);
     return {
       type: 'accounts', accounts,
-      defaultIdentity: defaultKind ? { email: null, organization: null, plan: null, seenAt: null, ...identity, signInKind: defaultKind } : identity,
+      defaultIdentity: defaultKind ? { signInKind: defaultKind, plan: own?.plan ?? null } : null,
       choices: this.accountChoices(), signedOut: this.signedOut(),
       claudeProblem: this.claudeProblem, claudeLooked: this.claudeProblem ? this.claudeLooked : [], configFileProblems: this.accountFileProblems,
     };
@@ -2002,7 +1989,7 @@ export class SessionManager {
   private accountView(a: AccountInfoView): AccountInfoView {
     const data = envSetting('DATA_DIR');
     return {
-      ...a, signInKind: shownSignIn(this.signIns.get(a.name)), loginCommand: signInCommand(a.configDir),
+      ...a, signInKind: shownSignIn(this.signIns.get(a.name)), plan: this.signIns.get(a.name)?.plan ?? null, loginCommand: signInCommand(a.configDir),
       tokenCommand: tokenCommand(a.name, { packaged: PACKAGED, appDir: appDir(), dataDir: data ? path.resolve(data) : undefined, platform: process.platform }),
     };
   }
@@ -2117,7 +2104,7 @@ export class SessionManager {
     const found = await Promise.all(places.map((p) => this.checkPlace(p)));
     const out = places.filter((_, i) => found[i]!.state === 'out');
     const state: SignIn['state'] = out.length ? 'out' : found.some((f) => f.state === 'unknown') ? 'unknown' : 'in';
-    const combined = { state, method: found.find((f) => f.method)?.method ?? null, kind: found.find((f) => f.kind)?.kind ?? null, detail: found.find((f) => f.detail)?.detail ?? null, checkedAt: Date.now() };
+    const combined = { state, method: found.find((f) => f.method)?.method ?? null, kind: found.find((f) => f.kind)?.kind ?? null, plan: found.find((f) => f.plan)?.plan ?? null, detail: found.find((f) => f.detail)?.detail ?? null, checkedAt: Date.now() };
     this.signIns.set(name, { ...combined, help: out.map((p) => this.placeHelp(name, p)).join(' ') });
     return combined;
   }
