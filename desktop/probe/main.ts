@@ -184,6 +184,12 @@ function looks(w: BrowserWindow): void {
     expect(report.dockIcons.length === 1 && report.dockIcons[0]!.sameAsIcon, "the Dock was given Ledung's icon, once", report.dockIcons);
   } else {
     expect(report.menuBarAutoHide && !report.menuBarVisible, 'the menu bar is hidden until Alt', report);
+    // The positive branch: the same probe sees the bar when it is shown, as Alt shows it.
+    w.setMenuBarVisibility(true);
+    const shown = w.isMenuBarVisible();
+    w.setMenuBarVisibility(false);
+    out('menu-bar-shown', { shown, hiddenAgain: !w.isMenuBarVisible() });
+    expect(shown && !w.isMenuBarVisible(), 'the probe sees the menu bar when shown, and hidden again', { shown });
   }
   expect(report.closeWindow === 'CmdOrCtrl+W', 'Close Window keeps Ctrl+W / ⌘W', report.closeWindow);
   expect(['editmenu', 'viewmenu'].every((r) => roles.includes(r as never)), 'the Edit and View menus are still there (copy, paste, zoom)', roles);
