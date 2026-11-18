@@ -249,3 +249,14 @@ test('every way out of the helper scripts removes the icon: {stop}, end of input
     'if (!parentAlive()) quit();',
   ]) assert.ok(mac.includes(part), part);
 });
+
+test('the Windows helper reads its icon into memory and lets go of the file, so npm update can replace it (#380)', () => {
+  // Image.FromFile keeps the file open for the image's life: EBUSY on icon-256.png during npm update.
+  assert.ok(!WINDOWS_TRAY_SCRIPT.includes('FromFile('), 'no Image.FromFile');
+  const win = WINDOWS_TRAY_SCRIPT.replace(/\s+/g, ' ');
+  for (const part of [
+    '[System.IO.File]::ReadAllBytes($env:LEDUNG_TRAY_ICON)',
+    '$source = [System.Drawing.Image]::FromStream($sourceStream)',
+    '$source.Dispose() $sourceStream.Dispose()',
+  ]) assert.ok(win.includes(part), part);
+});
