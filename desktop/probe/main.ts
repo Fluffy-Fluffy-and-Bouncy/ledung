@@ -6,7 +6,8 @@
 // Opening the default browser is intercepted and recorded, so nothing opens on the screen.
 //
 //   PROBE_PHASE=attach      a Ledung runs: signed in, address, settings, permissions, refused navigation and
-//                           windows, links; saves the device list for "again"
+//                           windows, links, Ledung's icon and the hidden menu bar (#384); saves the device list
+//                           for "again"
 //   PROBE_PHASE=again       a second start: still signed in, the same devices as after "attach"
 //   PROBE_PHASE=notrunning  none runs: the "not running" page; the probe starts one, presses Retry, page loads
 //   PROBE_PHASE=stopped     the probe starts one, the app attaches, the probe stops it and reloads: the "not
@@ -27,7 +28,7 @@
 //
 // Run from desktop/: `LEDUNG_CONFIG=… LEDUNG_DATA_DIR=… PROBE_PHASE=attach npx electron probe`. macOS and Linux
 // only for now: it reads command lines with `ps` (code review of PR #366, Minor 3).
-import { app, BrowserWindow, dialog, Menu, shell, type MenuItem } from 'electron';
+import { app, BrowserWindow, dialog, Menu, nativeImage, shell, type MenuItem, type NativeImage } from 'electron';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -62,6 +63,18 @@ const errorDialogs: string[] = [];
 (dialog as { showErrorBox: (title: string, content: string) => void }).showErrorBox = (title: string, content: string) => {
   errorDialogs.push(`${title}: ${content}`);
 };
+/** What the app set as its Dock icon (Mac): recorded, then passed on (#384). */
+const dockIcons: NativeImage[] = [];
+if (app.dock) {
+  const dock = app.dock;
+  const setIcon = dock.setIcon.bind(dock);
+  dock.setIcon = (image: NativeImage | string) => {
+    dockIcons.push(typeof image === 'string' ? nativeImage.createFromPath(image) : image);
+    setIcon(image);
+  };
+}
+/** main.ts's icon path, read from the module once it is loaded. */
+let appIcon = '';
 const out = (event: string, data: unknown = {}) => console.log('PROBE ' + JSON.stringify({ phase, event, data }));
 /** A check the PR relies on: a failing one is printed and makes the run exit 1. */
 function expect(holds: boolean, what: string, seen?: unknown): void {
@@ -147,6 +160,35 @@ async function signedIn(w: BrowserWindow): Promise<string[]> {
   expect(t !== null && history.length > 0 && !history.some((u) => u.includes(t)), 'no address the window visited holds the token');
   expect(t !== null && !commandLines.includes(t), 'no command line holds the token');
   return ids;
+}
+
+/**
+ * Ledung's icon and the hidden menu bar (#384): the icon file loads as a 512 px image, the Mac's Dock was given it,
+ * Windows and Linux hide the menu bar until Alt, and the menu still carries the items whose shortcuts must work.
+ */
+function looks(w: BrowserWindow): void {
+  const icon = nativeImage.createFromPath(appIcon);
+  const mac = process.platform === 'darwin';
+  const menu = Menu.getApplicationMenu();
+  const roles = (menu?.items ?? []).map((i) => i.role ?? i.label);
+  const report = {
+    icon: path.relative(clone, appIcon), iconSize: icon.getSize(), iconEmpty: icon.isEmpty(),
+    dockIcons: dockIcons.map((d) => ({ size: d.getSize(), sameAsIcon: d.toPNG().equals(icon.toPNG()) })),
+    menuBarAutoHide: w.isMenuBarAutoHide(), menuBarVisible: w.isMenuBarVisible(), menu: roles,
+    closeWindow: menuItem('close-window')?.accelerator ?? null, toolCalls: menuItem('tool-calls')?.accelerator ?? null,
+  };
+  out('looks', report);
+  expect(appIcon.endsWith(path.join('web', 'public', 'icon-512.png')), "the icon is the page's own icon-512.png", report.icon);
+  expect(!icon.isEmpty() && icon.getSize().width === 512 && icon.getSize().height === 512, 'the icon loads as a 512 × 512 image', report);
+  if (mac) {
+    expect(report.dockIcons.length === 1 && report.dockIcons[0]!.sameAsIcon, "the Dock was given Ledung's icon, once", report.dockIcons);
+  } else {
+    expect(report.menuBarAutoHide && !report.menuBarVisible, 'the menu bar is hidden until Alt', report);
+  }
+  expect(report.closeWindow === 'CmdOrCtrl+W', 'Close Window keeps Ctrl+W / ⌘W', report.closeWindow);
+  expect(['editmenu', 'viewmenu'].every((r) => roles.includes(r as never)), 'the Edit and View menus are still there (copy, paste, zoom)', roles);
+  // Show Tool Calls is in the Mac's File menu only: Windows and Linux press the page's Ctrl+O directly (#359).
+  if (mac) expect(report.toolCalls === 'Cmd+O', 'Show Tool Calls keeps ⌘O', report.toolCalls);
 }
 
 /** Notifications and clipboard writes allowed for Ledung's page, anything else refused (code review, Minor 2). */
@@ -437,6 +479,7 @@ async function run(): Promise<void> {
       expect(external.length === 0, 'nothing opened in the browser at start', [...external]);
       if (phase === 'attach') {
         fs.writeFileSync(devicesFile, JSON.stringify(ids));
+        looks(w);
         await permissions(w);
         const opened = await page(w, `[window.open('https://github.com/example/pr/1') === null, window.open('/api/state') === null]`);
         await sleep(500);
@@ -549,5 +592,8 @@ if (refused) {
   void import('../main.ts');
 } else {
   // Not awaited: Electron holds its ready event until a top-level await in the entry module settles.
-  void import('../main.ts').then(() => app.whenReady()).then(run);
+  void import('../main.ts').then((m: { APP_ICON: string }) => {
+    appIcon = m.APP_ICON;
+    return app.whenReady();
+  }).then(run);
 }
