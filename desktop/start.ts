@@ -4,6 +4,7 @@
 // the npm one. No Electron in this file, so the root tests run it (test/desktop.test.ts).
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import type { Socket } from 'node:net';
 import path from 'node:path';
 
 /**
@@ -161,11 +162,12 @@ export function runStart(cmd: StartCommand = startCommand(), env: NodeJS.Process
       const said = lastLine(output);
       return { ok: false, line: `"${shown}" ${code === null ? `was stopped (${signal})` : `exited with code ${code}`}${said ? `: ${said}` : '.'}` };
     };
-    // Once the command has exited, the app lets go of its pipes: a process it left behind may hold them open for as
-    // long as it runs (#385). Not on the time limit: that command still runs and may yet write.
+    // Once the command has exited, the app stops waiting on its pipes: a process it left behind may hold them open for
+    // as long as it runs (#385). Unref, not close, as open-folder.ts does: closing them would break that process's
+    // next write. Not on the time limit: that command still runs.
     const letGo = () => {
-      child?.stdout?.destroy();
-      child?.stderr?.destroy();
+      (child.stdout as Socket | null)?.unref();
+      (child.stderr as Socket | null)?.unref();
     };
     child.on('exit', (code, signal) => {
       if (code === 0) {
