@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-18
+- Updating Ledung with `npm update` no longer fails with EBUSY on `icon-256.png` while the tray icon shows on Windows. (#380)
+
 ## 2026-11-17
 - Desktop app: the window behaves like an app. Closing it (its button, ⌘W or Ctrl+W) hides it and the app keeps running, so notifications keep coming; starting it again, or clicking it in the Dock, shows the window instead of opening a second app. ⌘Q on the Mac, File → Quit or Alt+F4 on Windows end the app and leave Ledung running, asking first when the page has unsaved changes. ⌘O on the Mac does what Ctrl+O does (Show tool calls). A hidden window keeps its timers at full speed. (#359)
 - Settings → Devices names the desktop app "Ledung app on macOS" or "Ledung app on Windows" when it first signs in, instead of "Chrome on …" next to your real Chrome. A device already listed keeps its name. (#363)

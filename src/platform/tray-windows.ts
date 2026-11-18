@@ -32,7 +32,10 @@ $out = [Console]::Out
 function Send([string]$word) { $out.WriteLine($word); $out.Flush() }
 
 # Ledung's own icon, scaled down, once plain and once with the amber "waiting for you" dot.
-$source = [System.Drawing.Image]::FromFile($env:LEDUNG_TRAY_ICON)
+# Read into memory, never Image.FromFile: that keeps the file open while the image lives, and npm update could not
+# replace icon-256.png while the icon showed (EBUSY, issue #380). $source is drawn once below and then disposed.
+$sourceStream = New-Object System.IO.MemoryStream(,[System.IO.File]::ReadAllBytes($env:LEDUNG_TRAY_ICON))
+$source = [System.Drawing.Image]::FromStream($sourceStream)
 # The page's PNG is square with white corners; the icon is its rounded square (icon.svg's rx 112 of 512), cut out.
 $scaled = New-Object System.Drawing.Bitmap 32, 32
 $sg = [System.Drawing.Graphics]::FromImage($scaled)
@@ -41,6 +44,8 @@ $edges = New-Object System.Drawing.Imaging.ImageAttributes
 $edges.SetWrapMode([System.Drawing.Drawing2D.WrapMode]::TileFlipXY)
 $sg.DrawImage($source, (New-Object System.Drawing.Rectangle 0, 0, 32, 32), 0, 0, $source.Width, $source.Height, [System.Drawing.GraphicsUnit]::Pixel, $edges)
 $sg.Dispose()
+$source.Dispose()
+$sourceStream.Dispose()
 $rounded = New-Object System.Drawing.Drawing2D.GraphicsPath
 $rounded.AddArc(0, 0, 14, 14, 180, 90)
 $rounded.AddArc(18, 0, 14, 14, 270, 90)
