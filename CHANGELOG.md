@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-19
+- Desktop app on Windows: **Start Ledung** now shows Ledung's page as soon as Ledung is up, instead of staying on "Starting Ledung in the background…". A start that fails still says what failed. (#385)
+
 ## 2026-11-18
 - Claude accounts no longer show an email or organisation anywhere (Settings → Accounts, the account lists in projects, chats and Publish usage): Claude Code reported the computer's own login for every account, so a private account could show the work email. Each account now shows only how it is signed in, and its plan when Claude Code names one for that account. On a phone the accounts table now fits the screen, one line per detail. Which account a project or session uses is unchanged. On the Shared usage tab each computer's accounts are now cards of their own; they were matched across computers by that same wrong email. (#378)
 - Settings → About → Check for updates finds the Dev and Public versions again on a computer with npm 12, instead of saying npm has no version yet. (#382)

@@ -98,11 +98,19 @@ export function findOnPath(command: string, env: NodeJS.ProcessEnv, platform: No
 /** Past this the start is given up on; `ledung` itself returns after at most 60 s (background.ts READY_MS). */
 const START_MS = 75_000;
 
+/** How long a failed exit waits for its output to close before it gives its line from what came (#385). */
+const DRAIN_MS = 1_000;
+
 /**
  * Runs the start command and waits for it to return. A command that can't be run, that exits with an error or that
  * doesn't return in time gives one line saying what failed; nothing here throws, so no Electron error dialog can come
  * of it (Mac spike surprise 3). The command is detached: quitting the app while it waits leaves the start going, and
  * one that doesn't return in time is left running, not killed, since it may still be bringing Ledung up.
+ *
+ * It finishes when the command exits, not when its output closes (#385): on Windows the background Ledung that
+ * `ledung --no-open` leaves running inherits the output pipes through ledung.cmd and cmd, so they stay open while
+ * Ledung runs and their close never comes. A failed exit waits a moment for the output that is still on its way,
+ * for the line it shows.
  */
 export function runStart(cmd: StartCommand = startCommand(), env: NodeJS.ProcessEnv = startEnv(), timeoutMs = START_MS): Promise<StartResult> {
   const shown = [path.basename(cmd.command), ...cmd.args.map((a) => (path.isAbsolute(a) ? path.basename(a) : a))].join(' ');
@@ -113,8 +121,10 @@ export function runStart(cmd: StartCommand = startCommand(), env: NodeJS.Process
       if (done) return;
       done = true;
       clearTimeout(timer);
+      clearTimeout(drain);
       resolve(result);
     };
+    let drain: ReturnType<typeof setTimeout> | undefined;
     const file = findOnPath(cmd.command, env);
     if (file === null) {
       resolve({ ok: false, line: `Could not start Ledung: the "${path.basename(cmd.command)}" command was not found. Install Ledung, or start it from a terminal.` });
@@ -147,13 +157,28 @@ export function runStart(cmd: StartCommand = startCommand(), env: NodeJS.Process
           : `Could not run "${shown}": ${e.message}`,
       });
     });
-    child.on('close', (code, signal) => {
-      if (code === 0) finish({ ok: true });
-      else {
-        const said = lastLine(output);
-        finish({ ok: false, line: `"${shown}" ${code === null ? `was stopped (${signal})` : `exited with code ${code}`}${said ? `: ${said}` : '.'}` });
+    const failed = (code: number | null, signal: NodeJS.Signals | null): StartResult => {
+      const said = lastLine(output);
+      return { ok: false, line: `"${shown}" ${code === null ? `was stopped (${signal})` : `exited with code ${code}`}${said ? `: ${said}` : '.'}` };
+    };
+    // Once the command has exited, the app lets go of its pipes: a process it left behind may hold them open for as
+    // long as it runs (#385). Not on the time limit: that command still runs and may yet write.
+    const letGo = () => {
+      child?.stdout?.destroy();
+      child?.stderr?.destroy();
+    };
+    child.on('exit', (code, signal) => {
+      if (code === 0) {
+        finish({ ok: true });
+        letGo();
       }
+      // The output closes right after the exit unless something the command left holds it; either way, not longer.
+      else drain = setTimeout(() => {
+        finish(failed(code, signal));
+        letGo();
+      }, DRAIN_MS);
     });
+    child.on('close', (code, signal) => finish(code === 0 ? { ok: true } : failed(code, signal)));
     child.unref();
   });
 }
