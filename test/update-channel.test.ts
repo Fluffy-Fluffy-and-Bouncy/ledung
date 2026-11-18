@@ -81,6 +81,43 @@ test('a failing or nonsense answer from npm is a check error, not a crash', asyn
   assert.match((await garbled.checkForUpdates()).checkError ?? '', /did not answer with its tags/);
 });
 
+// Issue #382: npm 12 answers `npm view ledung dist-tags --json` with `[ { "dev": …, "latest": … } ]`, older npm with
+// the object itself; both are npm's tags, and an answer that is neither stays a check error.
+const answer = (json: string): Command => ({ cmd: process.execPath, args: ['-e', `console.log(${JSON.stringify(json)})`] });
+
+test("npm's dist-tags as an object or as npm 12's one-element array both offer the channel's newer version", async () => {
+  for (const json of [JSON.stringify(NPM_TAGS), JSON.stringify([NPM_TAGS], null, 2)]) {
+    const { u } = npmUpdater({ distTags: answer(json) });
+    const pub = await u.checkForUpdates();
+    assert.equal(pub.checkError, null, json);
+    assert.deepEqual({ ...pub.npmCheck, checkedAt: '' }, { checkedAt: '', channel: 'public', offered: '1.0.0', upToDate: true }, json);
+    u.setChannel('dev');
+    const dev = await u.checkForUpdates();
+    assert.equal(dev.checkError, null, json);
+    assert.deepEqual({ ...dev.npmCheck, checkedAt: '' }, { checkedAt: '', channel: 'dev', offered: '1.2.0', upToDate: false }, json);
+  }
+});
+
+test('Update Ledung on Dev installs the dev version when npm answers with the array', async () => {
+  const { u, installs } = npmUpdater({ distTags: answer(JSON.stringify([NPM_TAGS])) });
+  u.setChannel('dev');
+  u.runUpdate();
+  const v = await settled(u);
+  assert.equal(v.refused, null);
+  assert.deepEqual(installs, ['ledung@1.2.0']);
+  await afterRestartDelay();
+});
+
+test("an answer that is neither the tags nor npm 12's array of them is the existing check error", async () => {
+  // The positive branch of the same probe: the array shape is read.
+  assert.equal((await npmUpdater({ distTags: answer(JSON.stringify([NPM_TAGS])) }).u.checkForUpdates()).checkError, null);
+  for (const json of ['[]', JSON.stringify([NPM_TAGS, NPM_TAGS]), '["1.2.0"]', '[[{"dev":"1.2.0"}]]', '[null]', 'null', '"1.2.0"', '3']) {
+    const v = await npmUpdater({ distTags: answer(json) }).u.checkForUpdates();
+    assert.match(v.checkError ?? '', /did not answer with its tags/, json);
+    assert.equal(v.npmCheck, null, json);
+  }
+});
+
 test('Update Ledung on Dev installs the exact dev version with npm, then restarts', async () => {
   const { u, installs, restarts } = npmUpdater();
   u.setChannel('dev');
