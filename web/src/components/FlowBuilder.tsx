@@ -740,7 +740,7 @@ function BlockFields({ draft, entry, focus, naming, profiles, narrow, commit, on
           const flowed = kind === 'flow' ? { flow: b.flow ?? choices[0]?.name, model: undefined, profile: undefined, brief: undefined, substeps: undefined, parallel: undefined } : { flow: undefined, session: undefined };
           // A wait (part 3d) waits on something outside: nobody here runs it or starts subagents.
           const waited = kind === 'wait' ? { model: undefined, profile: undefined, substeps: undefined, parallel: undefined } : {};
-          set({ kind, runs, ...(runs === 'continue' ? {} : { continues: undefined, context: undefined }), ...(kind === 'person' ? { ask: b.ask ?? 'question' } : { ask: undefined }), ...(kind === 'timer' ? { timer: b.timer ?? { clock: 'daily' } } : { timer: undefined, guard: undefined }), ...(kind === 'person' ? {} : { person: undefined }), ...flowed, ...waited });
+          set({ kind, runs, ...(runs === 'continue' ? {} : { continues: undefined, context: undefined }), ...(kind === 'person' ? { ask: b.ask ?? 'question' } : { ask: undefined }), ...(kind === 'timer' ? { timer: b.timer ?? { clock: 'daily' } } : { timer: undefined, guard: undefined }), ...(kind === 'person' ? {} : { person: undefined, tier: undefined }), ...flowed, ...waited });
         }}>
           {BLOCK_KINDS.map((k) => <option key={k} value={k}>{KIND_LABEL[k]}</option>)}
         </select>
@@ -757,6 +757,11 @@ function BlockFields({ draft, entry, focus, naming, profiles, narrow, commit, on
       {b.kind === 'person' && (
         <Field label="Whose call" hint="Who decides, e.g. the owner or a code owner. Ledung still asks you; it tells you whose decision you make.">
           <input {...typing} value={b.person ?? ''} placeholder="(yours)" maxLength={80} onChange={(e) => set({ person: optional(e.target.value) }, 'person')} />
+        </Field>
+      )}
+      {b.kind === 'person' && (
+        <Field label="Question tier" hint="Where its question is filed in Waiting for you, as one of the project's tiers. Left empty, or a tier the project doesn't have: a review goes under the first tier, a question under the second.">
+          <input {...typing} value={b.tier ?? ''} placeholder={b.ask === 'review' ? '(the first tier)' : '(the second tier)'} maxLength={80} onChange={(e) => set({ tier: optional(e.target.value) }, 'tier')} />
         </Field>
       )}
       {b.kind === 'wait' && <span className="muted flow-field-hint">The work waits here on something outside the flow (a merge queue, CI, someone else's approval) until the manager reports how it came out; the workflow page shows how long. The brief may say what it waits for.</span>}

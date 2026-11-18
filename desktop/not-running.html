@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Shown by main.ts when no Ledung answers (issues #358, #362). Nothing to fetch: everything is in this file. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>Ledung is not running</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #1b1d22; color: #e6e6e6;
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 32rem; padding: 2rem; text-align: center; }
+  h1 { font-size: 1.4rem; margin: 0 0 .5rem; }
+  p { color: #a8adb7; margin: .5rem 0; }
+  a.button { display: inline-block; margin-top: 1rem; padding: .5rem 1.4rem; border-radius: 6px; background: #3b6fd8;
+    color: #fff; text-decoration: none; font-weight: 600; }
+  a.button:hover { background: #4a7ee6; }
+  a.button.secondary { background: #2c3038; margin-left: .5rem; }
+  a.button.secondary:hover { background: #383d47; }
+  #reason.failed { color: #f08a7e; overflow-wrap: anywhere; }
+  .starting .buttons { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Ledung is not running</h1>
+  <p id="hint">Start it here, or start Ledung on this computer yourself and press Retry.</p>
+  <p id="reason"></p>
+  <div class="buttons">
+    <a class="button" id="start" href="#start">Start Ledung</a><a class="button secondary" id="retry" href="#retry">Retry</a>
+  </div>
+</main>
+<script>
+  // main.ts passes why in the address's query: which ports were tried, or what failed in a start; never the token.
+  const q = new URLSearchParams(location.search);
+  const state = q.get('state') || 'stopped';
+  const reason = document.getElementById('reason');
+  reason.textContent = q.get('reason') || '';
+  if (state === 'failed') reason.className = 'failed';
+  if (state === 'starting') {
+    document.body.className = 'starting';
+    document.querySelector('h1').textContent = document.title = 'Starting Ledung…';
+    document.getElementById('hint').textContent = '';
+  }
+</script>
+</body>
+</html>

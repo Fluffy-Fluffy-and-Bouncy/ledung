@@ -569,7 +569,8 @@ export interface StoredMessage {
   at: number;
   /** card: a card in the Ledung Helper's chat (src/shared/helper-cards.ts). */
   /** reply: the Ledung Helper's one message of a turn, with its card (src/sessions/helper-tools.ts, reply). */
-  kind: 'user' | 'sdk' | 'permission' | 'decision' | 'event' | 'question' | 'shell' | 'card' | 'reply';
+  /** waiting: a "Waiting for you" line in a manager's chat (issue #350, src/shared/waiting-line.ts). */
+  kind: 'user' | 'sdk' | 'permission' | 'decision' | 'event' | 'question' | 'shell' | 'card' | 'reply' | 'waiting';
   data: any;
 }
 
@@ -700,6 +701,11 @@ export interface QuestionInfo {
   earlier?: ConversationLine[] | null;
   /** What the asker attached with ask_user's sources (issue #369), in its order, fetched and kept when it asked. Null: none. */
   sources?: AttachedSource[] | null;
+  /**
+   * Sent without `original`, `earlier` and `sources` (older Waiting for you history, issue #306): the page asks for the
+   * whole question (GET /api/questions/:id) when it is opened.
+   */
+  light?: boolean;
 }
 
 /**
@@ -1164,6 +1170,12 @@ export interface ShortcutPlace {
 }
 
 /** The first-run question and Settings → Shortcuts (GET /api/shortcuts, issue #415). */
+/** Settings' switch for Ledung's tray icon (issue #347); `kind` null where this system has none (Linux, for now). */
+export interface TrayView {
+  kind: 'windows' | 'mac' | null;
+  on: boolean;
+}
+
 export interface ShortcutsView {
   kind: 'windows' | 'mac' | 'other';
   /** False where Ledung makes no shortcuts (Linux); `reason` says so. */

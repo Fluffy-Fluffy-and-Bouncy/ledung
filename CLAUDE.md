@@ -10,6 +10,7 @@ Personal preferences and machine details, if any, are in `CLAUDE.local.md` next 
 - **Every PR that changes what Ledung does adds its bullet to [CHANGELOG.md](CHANGELOG.md)**, under today's date, in the format the file's header gives. The pre-push hook refuses a push that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one; a commit trailer `Changelog: none` is for changes with nothing user-facing (tests, refactors), and a reviewer checks it is honest.
 - **Keep the repository generic.** Nothing about a particular work project (people, tickets, compliance rules, container names) goes in the repository; it belongs in `ledung.config.local.json`, which is not committed.
 - **Screenshots are taken in dark mode**, not light mode; add a light one only when the change is about light mode itself (Martin, 2026-10-20: "When we take screenshots, take them in dark mode, not lightmode.").
+- **Dark is the designed theme; light is basic** (Simon, 2026-11-17, #345): a new colour needs a designed dark value and a light value that is readable; light mode isn't tested or screenshotted unless a bug is reported.
 - **Ledung is independent of the projects it runs.** Don't use, inspect or design around the user's other projects when working on Ledung; develop and test with throwaway projects and containers, so Ledung works in any environment.
 
 ## Running Ledung without breaking the one you are in

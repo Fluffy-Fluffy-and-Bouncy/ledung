@@ -13,6 +13,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { Secrets } from '../src/secrets/secrets.ts';
 import type { Management } from '../src/sessions/management.ts';
+import { Session } from '../src/sessions/session.ts';
+import { LEDUNG_SERVER } from '../src/sessions/tools.ts';
+import { shownFile } from '../src/shared/questions.ts';
 import { COOKIE, keyFor, LinkedNodes, type Node } from './linked-nodes.ts';
 import { removeTemp } from './temp.ts';
 import { HANG_MS } from './limits.ts';
@@ -270,4 +273,49 @@ test('ledung#158: copies are pruned after the config\'s board.evidenceDays, read
   assert.throws(() => management(p.pc).screenshots('pc-beta', [{ file: old, look_for: 'x' }], null), /was pruned/);
   assert.equal(management(p.pc).reviewEvidence('pc-beta', [{ file: fresh, caption: 'c' }])[0]!.kind, 'text', 'one day old: kept');
   assert.equal(copies(p.pcFiles).length, 1);
+});
+
+// Issue #306 (test review of PR #307, finding 2): a linked computer's file given to ask_user is kept as the question's
+// own copy, as WebP, so the question still shows it once the linked copy is pruned (after evidenceDays).
+test("ledung#306: a linked computer's screenshot given to ask_user is kept as Ledung's own copy and shown after the linked copy is gone", { timeout: HANG_MS }, async () => {
+  const p = await pair('keep');
+  const shot = fs.readFileSync(new URL('../docs/steps/pinned-message-226/menu-wide-after-dark.png', import.meta.url));
+  fs.writeFileSync(path.join(p.alpha, 'shot.png'), shot);
+  await p.toPc('mac-alpha', 'pc-beta', 'A screenshot.', ['shot.png']);
+  const handle = /give ask_user's screenshots file "(linked:[0-9a-f]{16}\/shot\.png)"/.exec(p.pc.store.undeliveredInbox('pc-beta')[0]!.text)?.[1];
+  assert.ok(handle, 'the PC manager got a linked: handle');
+  const kept = temp('keep-copies');
+  p.pc.manager.containerCopiesDir = () => kept;
+
+  // The real chain on the PC: the manager's own ask_user tool → Session.ask → Management → the session manager.
+  const session = new Session({
+    info: p.pc.store.getSession('pc-beta')!, store: p.pc.store, publish: () => {}, userName: 'Martin', management: management(p.pc),
+    runner: { cwd: p.beta, currentBranch: async () => null } as never,
+    gate: { mayStart: () => true, started: () => {}, ended: () => {} },
+  });
+  const options = await session.claudeOptions({ onLine: () => {}, onStderr: () => {} });
+  const ask = (options.mcpServers![LEDUNG_SERVER] as unknown as {
+    instance: { _registeredTools: Record<string, { handler(a: unknown, extra: unknown): Promise<{ content: { text: string }[]; isError?: boolean }> }> };
+  }).instance._registeredTools.ask_user!;
+  const asked = await ask.handler({ question: 'Does it show?', tier: 'Process', screenshots: [{ file: handle, look_for: 'the menu' }] }, {});
+  assert.equal(asked.isError, undefined, asked.content[0]!.text);
+  const stored = p.pc.store.listQuestions().find((q) => q.sessionId === 'pc-beta')!.shots![0]!.path;
+  assert.match(stored, /^kept:[0-9a-f]{32}\/linked: shot\.png$/);
+  // It keeps its mark where it is shown (Martin, Ledung question #2148: "a — Keep the mark"), as the linked copy did.
+  assert.equal(shownFile(stored), 'linked: shot.png');
+  assert.equal(shownFile(handle), 'linked: shot.png');
+  const served = () => nodes.local(p.pc, { path: `/api/sessions/pc-beta/image?path=${encodeURIComponent(stored)}`, headers: { cookie: COOKIE } });
+  const before = await served();
+  assert.equal(before.status, 200);
+  assert.equal(before.headers['content-type'], 'image/webp');
+
+  // The linked copy goes (pruned after evidenceDays; here removed): the handle no longer shows, the kept copy does.
+  assert.equal(copies(p.pcFiles).length, 1);
+  for (const f of copies(p.pcFiles)) fs.rmSync(path.join(p.pcFiles, f));
+  const viaHandle = await nodes.local(p.pc, { path: `/api/sessions/pc-beta/image?path=${encodeURIComponent(handle)}`, headers: { cookie: COOKIE } });
+  assert.notEqual(viaHandle.status, 200, 'the linked copy itself is gone');
+  const after = await served();
+  assert.equal(after.status, 200);
+  assert.equal(after.headers['content-type'], 'image/webp');
+  assert.equal(after.body, before.body);
 });

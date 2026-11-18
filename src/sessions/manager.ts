@@ -7,6 +7,7 @@ import { removeSignIn } from '../accounts/signin-store.ts';
 import type { AccountChoices, AccountInfoView, AwayInfo, AwayKind, HeavyCommandInfo, JobKindInfo, SignInProblem } from '../shared/protocol.ts';
 import { Away } from './away.ts';
 import { Orders } from './orders.ts';
+import { WaitingLines } from './waiting-lines.ts';
 import { ChatImageError, type ChatImages } from './chat-images.ts';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -23,7 +24,7 @@ import { matchSensitive } from './sensitive.ts';
 import { AIRGAP_PROFILE, isLocked, levelProblem, lockdownOf, opensUp, othersSettings, overlapProblem, projectFolders, within } from '../projects/lockdown.ts';
 import { LATER_SUGGESTIONS, withLaterBatch, withSuggestions } from '../shared/sensitive-suggestions.ts';
 import { isNameColour, parseNameColour } from '../shared/name-colours.ts';
-import { ACCEPTED, ledungTier, questionText, reviewAnswerProblem, tiersOf, type QuestionDetails } from '../shared/questions.ts';
+import { ACCEPTED, HISTORY_DAYS, HISTORY_PER_PROJECT, ledungTier, LINKED_MARK, questionText, reviewAnswerProblem, tiersOf, type QuestionDetails } from '../shared/questions.ts';
 import {
   BrowseError, createProjectFolder, defaultProjectsFolder, defaultRoots, isInside, listContainer, listContainers, listLocal,
   type ContainerInfo, type FolderListing,
@@ -69,16 +70,18 @@ import {
 } from '../shared/protocol.ts';
 import { resolveWorkFolder, WorkFolderError } from './work-folder.ts';
 import { saveIntoWorktree, type Saved } from './save-file.ts';
+import { saveDrop, type Dropped } from './drops.ts';
 import { FileError, handoffProblem, hiddenProblem, readProjectFile, readProjectImage, type ProjectFile, type ProjectImage } from './files.ts';
 import { listTree, type TreeListing } from './tree.ts';
 import type { PaneFolderKey, PaneFolders } from '../shared/files-pane.ts';
 import { sessionChanges, type SessionChanges } from './changes.ts';
 import {
-  CONTAINER_FILE_PREFIX, CONTAINER_IMAGE_MAX_BYTES, containerGit, diffHidden, keepCopy, listContainerFolder, pruneCopies, readContainerBytes, readContainerImage, readContainerText, readCopy,
-  type ContainerAccess, type ContainerExec,
+  CONTAINER_IMAGE_MAX_BYTES, containerGit, diffHidden, isCopyRef, keepCopy, KEPT_FILE_PREFIX, listContainerFolder, moveCopies, pruneCopies, readContainerBytes, readContainerImage, readContainerText, readCopy,
+  type ContainerAccess, type ContainerExec, type CopyKind,
 } from './container-files.ts';
+import { toWebp } from './webp.ts';
 import { checkLineComments, formatLineComments, lineCommentsMessage, openReviewFor, reviewAnswerWithComments } from '../shared/line-comments.ts';
-import { Management, type LinkedMessage, type LinkedPort, type SettingsPort } from './management.ts';
+import { FLOW_SOURCE, Management, type LinkedMessage, type LinkedPort, type SettingsPort } from './management.ts';
 import { findTickets } from '../usage/links.ts';
 import { claudeEnvironment, Session, type TurnGate } from './session.ts';
 import {
@@ -116,7 +119,7 @@ import type { SecretInfo, SecretLifetime } from '../shared/secrets.ts';
 import { FlowRunError, FlowRuns, lastReplyOf } from './flow-runs.ts';
 import { dockerWorktreeHost, localWorktreeHost } from './run-worktrees.ts';
 import { RunStore } from './run-store.ts';
-import { STEP_QUESTIONS, type FlowRun, type StepQuestions, type StepQuestionsView } from '../shared/flow-run.ts';
+import type { FlowRun } from '../shared/flow-run.ts';
 import type { RunBlock } from '../shared/protocol.ts';
 import type { ProposeHandlers, RunHandlers } from './tools.ts';
 import { buildProposal, ProposalStore, proposalSummary, type ProposedChange } from './flow-propose.ts';
@@ -125,7 +128,7 @@ import type { FlowProposal } from '../shared/flow-proposal.ts';
 import { helperFolder, HELPER_BUILT_IN_TOOLS, HELPER_DEFAULT_MODEL, HELPER_MODELS, HELPER_PROFILE, setupKickoff, setupPromptLine } from './helper.ts';
 import type { HelperHandlers } from './helper-tools.ts';
 import { planSetting, settingRule, settingsList, type SettingPlan, type SettingsCtx } from './helper-settings.ts';
-import { cardLooksLikeApproval, CardSchema, type HelperCard } from '../shared/helper-cards.ts';
+import { applyCardProblem, cardLooksLikeApproval, CardSchema, type HelperCard } from '../shared/helper-cards.ts';
 import { isSetupStep, markProblem, setupView, stepLine, type HelperInfo, type SetupFacts, type SetupPhase, type SetupState, type SetupStepId, type SetupView } from '../shared/setup.ts';
 import { ASKED_KEY as SHORTCUTS_ASKED_KEY } from '../platform/shortcuts.ts';
 import { NOTICE_KEY as CHECKIN_NOTICE_KEY } from '../update/checkin.ts';
@@ -144,14 +147,6 @@ const ANSWERED_CARDS_KEY = 'helper-answered-cards';
 const USER_NAME = /^[\p{L}\p{M}][\p{L}\p{M} .'’-]{0,39}$/u;
 /** The meta key, with the project's name, that says "Record where this came from" was dismissed (workflow-origin.md, section 4). */
 const ORIGIN_DISMISSED = 'flow-origin-dismissed:';
-/** Where Settings → Questions at a workflow step is kept (#291): this Ledung's own data, not the config file. */
-const STEP_QUESTIONS_KEY = 'step-questions';
-/** Set when the first-run picker for it was skipped (#293), so it is not asked again; a saved choice does the same. */
-const STEP_QUESTIONS_SKIPPED_KEY = 'step-questions-skipped';
-/** The testFeatures name that turns the first-run picker on (#293, Martin 2026-11-12, Ledung question #881). */
-export const STEP_QUESTIONS_PICKER = 'step-questions-picker';
-/** The picker's EXERCISED line once per run, as the page reads the setting at every load. */
-let pickerTraced = false;
 
 /** Ledung's own plugin with the "workflow building" skill (part 3e, #1577), shipped beside src/ and web/. */
 export const WORKFLOW_PLUGIN = () => path.join(appDir(), 'plugins', 'ledung-workflow');
@@ -278,8 +273,11 @@ export class SessionManager {
     this.config = config;
     this.store = store;
     // New plan-limit figures may reach or pass a usage stop (issue #278).
+    // A question or permission prompt for the person gets its line in a manager's chat (issue #350).
+    const lines = new WaitingLines({ store, publish, userName: () => this.config.userName });
     this.publish = (event) => {
       publish(event);
+      lines.seen(event);
       if (event.type === 'limits') this.refreshStops();
       // The helper's turns, for the setup's one-turn-per-step rule (acceptance round 1, 6.4).
       if (event.type === 'session' && event.session.project === HELPER) this.onHelperStatus(event.session);
@@ -295,7 +293,8 @@ export class SessionManager {
     const self = this;
     this.away = new Away(store, publish, { get userName() { return self.config.userName; }, notify: (text) => this.tellManagers(text), onEnded: (since, end) => void this.orders.settleAway(since, end) });
     this.orders = new Orders({
-      store, get userName() { return self.config.userName; }, publish,
+      // Through this.publish, so its questions get their Waiting for you lines (issue #350).
+      store, get userName() { return self.config.userName; }, publish: this.publish,
       tierOf: (managerId) => this.management.questionTiers(managerId)[0],
       tell: (id, text) => {
         this.store.addInbox(id, 'ledung', text);
@@ -316,7 +315,7 @@ export class SessionManager {
       store,
       // Read when used, so a name given in the setup reaches it at once.
       get userName() { return self.config.userName; },
-      publish,
+      publish: this.publish,
       orders: this.orders,
       away: () => this.away.current(),
       wake: (id) => this.live.get(id)?.deliver(),
@@ -371,11 +370,12 @@ export class SessionManager {
       handoffProblem: (id, file) => this.handoffProblem(id, file),
       // The file viewer's own image rules, so a shot that is attached can also be shown (issue #60).
       // A manager's board attachment ("board:...") is from its project's board cache instead.
-      // A container project's file is a copy Ledung kept when the question was asked (keepContainerFiles, issue #122).
-      // A file a manager on a linked computer sent this one ("linked:...") is the copy kept in the data folder (issue #158).
+      // A project's file is a copy Ledung kept when the question was asked (keepContainerFiles; a container's since
+      // issue #122, every project's since #306). A file a manager on a linked computer sent this one ("linked:...") is
+      // the copy kept in the data folder (issue #158); asked about, it is kept as a question's copy too.
       shotPath: (id, file) => file.startsWith(BOARD_FILE_PREFIX) ? this.readBoardShot(id, file)
         : file.startsWith(LINKED_FILE_PREFIX) ? (this.readLinkedCopy(id, file, ['png', 'jpeg']), file)
-        : file.startsWith(CONTAINER_FILE_PREFIX) ? (this.readContainerCopy(id, file, ['png', 'jpeg']), file) : this.readImageHere(id, file).path,
+        : isCopyRef(file) ? (this.readContainerCopy(id, file, ['png', 'jpeg']), file) : this.readImageHere(id, file).path,
       keepContainerFiles: (id, files) => this.keepContainerFiles(id, files),
       evidenceFile: (id, file) => {
         const ev = this.readEvidenceFile(id, file, true);
@@ -399,14 +399,14 @@ export class SessionManager {
       following: (project) => this.projectStore.get(project)?.config.followFlow !== false,
       // A coordinator that ended is resumed, as a continued block's session is (final review of part 3, finding 3).
       tell: (id, text) => {
-        this.store.addInbox(id, 'ledung', text);
+        this.store.addInbox(id, FLOW_SOURCE, text);
         void this.resumeIfEnded(id).then(() => this.live.get(id)?.deliver(), (e: Error) => {
           // One that can't be resumed: its project's manager is told what it was told, so the run is not stranded.
           const s = this.store.getSession(id);
           const manager = s ? this.projectStore.get(s.project)?.managerId : null;
           console.warn(`Workflow: could not resume ${id} to tell it: ${e.message}`);
           if (!manager || manager === id) return;
-          this.store.addInbox(manager, 'ledung', `Ledung could not resume "${s!.title}" (${id}), which coordinates a run, to tell it this (${e.message}); you may coordinate its runs:\n\n${text}`);
+          this.store.addInbox(manager, FLOW_SOURCE, `Ledung could not resume "${s!.title}" (${id}), which coordinates a run, to tell it this (${e.message}); you may coordinate its runs:\n\n${text}`);
           void this.resumeIfEnded(manager).then(() => this.live.get(manager)?.deliver(), () => {});
         });
       },
@@ -433,7 +433,7 @@ export class SessionManager {
           await this.management.freshStep(id, fresh.by, fresh.context, step);
           return;
         }
-        this.store.addInbox(id, 'ledung', step);
+        this.store.addInbox(id, FLOW_SOURCE, step);
         await this.resumeIfEnded(id);
         this.live.get(id)?.deliver();
       },
@@ -474,7 +474,6 @@ export class SessionManager {
         if (this.store.withdrawQuestion(id, reason)) this.publish({ type: 'question', question: this.store.getQuestion(id)! });
       },
       tiers: (project) => tiersOf(this.projectStore.get(project)?.config.questionTiers),
-      stepQuestions: () => this.stepQuestions(),
       get userName() { return self.config.userName; },
     });
     this.gate = {
@@ -575,6 +574,31 @@ export class SessionManager {
     } catch (e) {
       throw e instanceof ChatImageError ? new UserError(e.message) : e;
     }
+  }
+
+  // --- Files dropped in the message box (issue #339) --------------------------------------------------
+
+  /**
+   * Why a dropped file can't go to this session, or nothing: asked before its bytes are read, so a container project
+   * is refused without 50 MB coming in first. A container project's folder is inside the container; Ledung knows only
+   * the container's name and the path in it, not where that folder is on this computer (src/sessions/drops.ts).
+   */
+  dropCheck(sessionId: string): void {
+    const { info, project } = this.paneSession(sessionId);
+    if (project.runner !== 'local') throw new UserError(`"${info.title}" works in a container project; Ledung can't put a dropped file into a container yet. Only images can be sent there. Nothing was saved.`);
+  }
+
+  /** Saves a dropped file in the folder the session works in, under .ledung/drops; its path is what the message names. */
+  saveDrop(sessionId: string, name: string, bytes: Buffer): { path: string } {
+    this.dropCheck(sessionId);
+    const { info, project } = this.paneSession(sessionId);
+    let saved: Dropped;
+    try {
+      saved = saveDrop(this.sessionFolder(info, project), name, bytes);
+    } catch (e) {
+      throw e instanceof FileError ? new UserError(`Not saved: ${e.message}`) : e;
+    }
+    return { path: saved.path };
   }
 
   // --- Locked secrets (issue #468) -------------------------------------------------------------------
@@ -731,12 +755,12 @@ export class SessionManager {
    * rules, or a board attachment, which only a manager can give, from its own project's board when asked
    * (ownBoard) and from any board in use here when the page shows it, as board images are.
    */
-  private readEvidenceFile(sessionId: string, file: string, ownBoard: boolean): { file: string; kind: 'png' | 'jpeg' | 'text'; bytes: Buffer } {
+  private readEvidenceFile(sessionId: string, file: string, ownBoard: boolean): { file: string; kind: CopyKind; bytes: Buffer } {
     if (file.startsWith(LINKED_FILE_PREFIX)) {
       const copy = this.readLinkedCopy(sessionId, file, ['png', 'jpeg', 'text']);
       return { file, kind: copy.kind, bytes: copy.bytes };
     }
-    if (file.startsWith(CONTAINER_FILE_PREFIX)) {
+    if (isCopyRef(file)) {
       const copy = this.readContainerCopy(sessionId, file, ['png', 'jpeg', 'text']);
       if (copy.kind === 'text' && copy.bytes.length > EVIDENCE_TEXT_MAX_BYTES) throw new UserError(`${copy.path} is too large.`);
       return { file, kind: copy.kind, bytes: copy.bytes };
@@ -995,6 +1019,11 @@ export class SessionManager {
    * Sessions working now: in a turn (running, or waiting on a permission prompt mid-turn, which goes on
    * as soon as it is answered), not paused. Managers, and sessions between turns, don't count.
    */
+  /** Sessions working now, as the Machine panel counts them (the tray icon's status line, #347). */
+  workingCount(): number {
+    return this.working();
+  }
+
   private working(): number {
     let n = 0;
     for (const s of this.live.values()) {
@@ -1042,41 +1071,6 @@ export class SessionManager {
     } catch (e) {
       throw new UserError((e as Error).message);
     }
-  }
-
-  /**
-   * Settings → Questions at a workflow step (#291, Martin 2026-11-12, Ledung questions #873 and #875): Ledung's card
-   * (the default, as before) or the manager's full write-up, kept in this Ledung's own data for all its projects.
-   */
-  stepQuestions(): StepQuestions {
-    const v = this.store.getMeta(STEP_QUESTIONS_KEY);
-    return v === 'write-up' ? 'write-up' : 'card';
-  }
-
-  setStepQuestions(value: unknown): StepQuestions {
-    if (!STEP_QUESTIONS.includes(value as StepQuestions)) throw new UserError(`Questions at a workflow step are ${STEP_QUESTIONS.map((s) => `"${s}"`).join(' or ')}.`);
-    this.store.setMeta(STEP_QUESTIONS_KEY, value as StepQuestions);
-    return this.stepQuestions();
-  }
-
-  /**
-   * The setting with the first-run picker's state (#293): asked, behind its test feature, while nothing was saved
-   * and it was not skipped; a Ledung that already has a choice never sees it.
-   */
-  stepQuestionsView(): StepQuestionsView {
-    const picker = this.config.testFeatures.includes(STEP_QUESTIONS_PICKER);
-    const ask = picker && this.store.getMeta(STEP_QUESTIONS_KEY) === null && this.store.getMeta(STEP_QUESTIONS_SKIPPED_KEY) === null;
-    if (ask && !pickerTraced) {
-      pickerTraced = true;
-      exercisedLine('EXERCISED #293 first-run picker for workflow-step questions asked');
-    }
-    return { choice: this.stepQuestions(), picker, ask };
-  }
-
-  /** Skip in the first-run picker (#293): the default stays, and the picker is not asked again. */
-  skipStepQuestions(): StepQuestionsView {
-    this.store.setMeta(STEP_QUESTIONS_SKIPPED_KEY, new Date().toISOString());
-    return this.stepQuestionsView();
   }
 
   setResourceSettings(body: Record<string, unknown>): void {
@@ -1502,8 +1496,27 @@ export class SessionManager {
     return this.config.userName;
   }
 
+  /** What the page gets with every load: the open questions and the 50 most recently closed, whole. */
   questions(): QuestionInfo[] {
     return this.store.listQuestions();
+  }
+
+  /**
+   * Waiting for you history (issue #306), read when it opens (GET /api/question-history): per project the last 100
+   * answered, or every one of the last 30 days if that is more, light; and the sessions they name, for their names and
+   * projects, which a page load carries only for recent ones (issue #229).
+   */
+  questionHistory(now = Date.now()): { questions: QuestionInfo[]; sessions: SessionInfo[] } {
+    const questions = this.store.questionHistory(HISTORY_PER_PROJECT, now - HISTORY_DAYS * 24 * 60 * 60 * 1000);
+    const named = new Set(questions.flatMap((q) => [q.sessionId, q.addressedTo, q.answeredBy ?? '']));
+    return { questions, sessions: this.sessions().filter((s) => named.has(s.id)) };
+  }
+
+  /** One whole question for the page (GET /api/questions/:id): a light one from history, opened (issue #306). */
+  question(id: number): QuestionInfo {
+    const q = Number.isInteger(id) ? this.store.getQuestion(id) : undefined;
+    if (!q) throw new UserError('No such question.');
+    return q;
   }
 
   /**
@@ -2403,6 +2416,14 @@ export class SessionManager {
         throw e;
       }
     }
+    // The copies kept for its questions follow it, so their pages still show them (issue #306).
+    if (p.config.name !== name) {
+      try {
+        moveCopies(this.containerCopiesDir(), name, p.config.name);
+      } catch (e) {
+        console.error(`File copies of ${name}'s questions were not moved to ${p.config.name}: ${(e as Error).message}`);
+      }
+    }
     // "Record where this came from" stays dismissed under the new name (review of part d).
     if (p.config.name !== name && this.store.getMeta(`${ORIGIN_DISMISSED}${name}`) !== null) {
       this.store.setMeta(`${ORIGIN_DISMISSED}${p.config.name}`, this.store.getMeta(`${ORIGIN_DISMISSED}${name}`)!);
@@ -3035,6 +3056,8 @@ export class SessionManager {
       if (!parsed.success) throw new Error(`Not shown: the card is not valid (${parsed.error.issues.map((i) => `${i.path.join('.') || 'card'}: ${i.message}`).join('; ')}). Fix that, or reply without a card.`);
       const fake = cardLooksLikeApproval(parsed.data);
       if (fake) throw new Error(`Not shown: the card's "${fake}" reads as an approval, and approvals are Ledung's own cards. Reply without those words, or call the tool that needs the approval; Ledung asks.`);
+      const value = applyCardProblem(parsed.data);
+      if (value) throw new Error(`Not shown: the card is not valid (${value}). Fix that, or reply without a card.`);
       const sv = this.setupView();
       if (sv.phase === 'helper' && sv.current) throw new Error(`Not shown: a setup step is open ("${sv.current}"), and Ledung shows that step's own card under your reply. Reply again with the text only.`);
       card = parsed.data;
@@ -3644,16 +3667,16 @@ ${firstMessage}`);
 
   /**
    * A PNG or JPEG from the session's project folder, read-only, for the file viewer; from its container for a
-   * container project. A copy Ledung kept for a question ("container:...") is read from the copies.
+   * container project. A copy Ledung kept for a question ("container:..." or "kept:...", issue #306) is read from the copies.
    */
   async readImage(sessionId: string, link: string, folder?: PaneFolderKey): Promise<ProjectImage> {
     if (link.startsWith(LINKED_FILE_PREFIX)) {
       const copy = this.readLinkedCopy(sessionId, link, ['png', 'jpeg']);
       return { path: copy.path, type: copy.kind === 'png' ? 'image/png' : 'image/jpeg', bytes: copy.bytes };
     }
-    if (link.startsWith(CONTAINER_FILE_PREFIX)) {
+    if (isCopyRef(link)) {
       const copy = this.readContainerCopy(sessionId, link, ['png', 'jpeg']);
-      return { path: copy.path, type: copy.kind === 'png' ? 'image/png' : 'image/jpeg', bytes: copy.bytes };
+      return { path: copy.path, type: copy.kind === 'webp' ? 'image/webp' : copy.kind === 'png' ? 'image/png' : 'image/jpeg', bytes: copy.bytes };
     }
     const { project, root } = this.paneRoot(sessionId, folder);
     if (project.runner === 'docker') return this.fromContainer(() => readContainerImage(this.containerAccess(project), root, link));
@@ -3849,7 +3872,7 @@ ${firstMessage}`);
   }
 
   /** A copy kept for one of the session's project's questions, by the name the question stores. */
-  private readContainerCopy(sessionId: string, ref: string, kinds: readonly ('png' | 'jpeg' | 'text')[]): { path: string; kind: 'png' | 'jpeg' | 'text'; bytes: Buffer } {
+  private readContainerCopy(sessionId: string, ref: string, kinds: readonly ('png' | 'jpeg' | 'text')[]): { path: string; kind: CopyKind; bytes: Buffer } {
     const info = this.store.getSession(sessionId);
     if (!info) throw new UserError('No such session.');
     try {
@@ -3860,26 +3883,27 @@ ${firstMessage}`);
   }
 
   /**
-   * ask_user's screenshots and a review's evidence from a container project: read from the container now, with the
-   * file viewer's rules and the attachment limits, and kept in Ledung, so the question's page shows them later with
-   * the container stopped too. Each comes back as the name the question stores; a local project's come back as given.
+   * ask_user's screenshots and a review's evidence, read now with the file viewer's rules and the attachment limits
+   * and kept in Ledung, so the question's page shows them later: a container's (issue #122) with the container
+   * stopped too, and since issue #306 every project's, once the worktree they came from is removed, and a file from a
+   * linked computer once its own copy there is pruned. Images are kept as WebP. Each comes back as the name the
+   * question stores. (Named for #122, which kept only a container's.)
    */
   private async keepContainerFiles(sessionId: string, files: { file: string; as: 'shot' | 'evidence' }[]): Promise<string[]> {
     const info = this.store.getSession(sessionId);
     if (!info) throw new UserError('No such session.');
     const project = this.configOf(info);
-    if (project.runner !== 'docker') return files.map((f) => f.file);
-    const access = this.containerAccess(project);
-    const root = info.workDir ?? project.pathInContainer;
+    const access = project.runner === 'docker' ? this.containerAccess(project) : null;
+    const root = project.runner === 'docker' ? info.workDir ?? project.pathInContainer : null;
     this.pruneContainerCopies(info.project);
     const kept: string[] = [];
     const count = { shot: 0, evidence: 0 };
     for (const f of files) {
       const n = ++count[f.as];
       try {
-        kept.push(await this.keepContainerFile(access, root, info.project, f));
+        kept.push(await this.keepContainerFile(sessionId, access && root !== null ? { access, root } : null, info.project, f));
       } catch (e) {
-        if (!(e instanceof FileError)) throw e;
+        if (!(e instanceof FileError) && !(e instanceof UserError)) throw e;
         // As ask's own checks say it (management.ts), so the session can fix it.
         throw new UserError(`${f.as === 'shot' ? 'Screenshot' : 'Evidence'} ${n} (${f.file}) can't be attached: ${e.message} Nothing was asked.`);
       }
@@ -3897,17 +3921,34 @@ ${firstMessage}`);
     if (now - (this.prunedCopies.get(project) ?? 0) < 60 * 60 * 1000) return;
     this.prunedCopies.set(project, now);
     try {
-      pruneCopies(this.containerCopiesDir(), project, this.store.containerCopyRefs(), now - 24 * 60 * 60 * 1000);
+      pruneCopies(this.containerCopiesDir(), project, this.store.keptCopyRefs(), now - 24 * 60 * 60 * 1000);
     } catch (e) {
-      console.error(`Container file copies of ${project}: ${(e as Error).message}`);
+      console.error(`File copies of ${project}'s questions: ${(e as Error).message}`);
     }
   }
 
-  private async keepContainerFile(access: ContainerAccess, root: string, project: string, f: { file: string; as: 'shot' | 'evidence' }): Promise<string> {
-    if (f.file.startsWith(BOARD_FILE_PREFIX) || f.file.startsWith(CONTAINER_FILE_PREFIX) || f.file.startsWith(LINKED_FILE_PREFIX)) return f.file;
+  /**
+   * One file kept for a question: a board attachment and a copy kept already as they are; a linked computer's copy
+   * and a local project's file read here and kept as "kept:"; a container's read in it and kept as "container:".
+   */
+  private async keepContainerFile(sessionId: string, box: { access: ContainerAccess; root: string } | null, project: string, f: { file: string; as: 'shot' | 'evidence' }): Promise<string> {
+    if (f.file.startsWith(BOARD_FILE_PREFIX) || isCopyRef(f.file)) return f.file;
+    const kinds: AttachmentKind[] = f.as === 'shot' ? ['png', 'jpeg'] : ['png', 'jpeg', 'text'];
+    if (f.file.startsWith(LINKED_FILE_PREFIX) || !box) {
+      const read: { path: string; kind: AttachmentKind; bytes: Buffer } = f.file.startsWith(LINKED_FILE_PREFIX) ? this.readLinkedCopy(sessionId, f.file, kinds)
+        : f.as === 'evidence' ? this.readFrom(sessionId, f.file, readEvidence)
+        : (({ path: p, type, bytes }) => ({ path: p, kind: type === 'image/png' ? 'png' as const : 'jpeg' as const, bytes }))(this.readImageHere(sessionId, f.file));
+      const kept = await this.keptBytes(read.bytes, read.kind, read.path);
+      // A linked computer's file keeps its mark on the question page, "linked: shot.png" (issue #158; Martin, 23:02,
+      // Ledung question #2148: "a — Keep the mark"): kept under that name, which shownFile shows as it is.
+      const name = f.file.startsWith(LINKED_FILE_PREFIX) ? `${LINKED_MARK}${read.path}` : read.path;
+      const ref = keepCopy(this.containerCopiesDir(), project, name, kept, KEPT_FILE_PREFIX);
+      return ref;
+    }
+    const { access, root } = box;
     if (f.as === 'shot') {
       const image = await readContainerImage(access, root, f.file, CONTAINER_IMAGE_MAX_BYTES);
-      return keepCopy(this.containerCopiesDir(), project, image.path, image.bytes);
+      return keepCopy(this.containerCopiesDir(), project, image.path, await this.keptBytes(image.bytes, image.type === 'image/png' ? 'png' : 'jpeg', image.path));
     }
     // Evidence: the kinds and limits of an attachment (src/board/attachments.ts), by the real file's name and first bytes;
     // a text file named as one is read only up to its own limit.
@@ -3916,7 +3957,21 @@ ${firstMessage}`);
     const kind = bytesKind(ev.bytes, ev.path);
     if (!kind) throw new FileError(/\.(png|jpe?g)$/i.test(ev.path) ? `${ev.path} is not really a ${/\.png$/i.test(ev.path) ? 'PNG' : 'JPEG'} image.` : `${ev.path} is not a text file.`);
     if (kind === 'text' && ev.bytes.length > EVIDENCE_TEXT_MAX_BYTES) throw new FileError(`${ev.path} is too large (${Math.round(ev.bytes.length / 1024)} KB; a text file is at most 512 KB).`);
-    return keepCopy(this.containerCopiesDir(), project, ev.path, ev.bytes);
+    return keepCopy(this.containerCopiesDir(), project, ev.path, await this.keptBytes(ev.bytes, kind, ev.path));
+  }
+
+  /**
+   * What is kept of a file (issue #306): a PNG or JPEG as WebP, text as it is. A conversion that fails keeps the image
+   * as it came, said in Ledung's log, so a question is never refused for it.
+   */
+  private async keptBytes(bytes: Buffer, kind: AttachmentKind, name: string): Promise<Buffer> {
+    if (kind === 'text') return bytes;
+    try {
+      return await toWebp(bytes, kind);
+    } catch (e) {
+      console.error(`Kept ${name} for a question as it came, not as WebP: ${(e as Error).message}`);
+      return bytes;
+    }
   }
 
   // --- The Files pane (issue #225, a test feature) --------------------------------------------------

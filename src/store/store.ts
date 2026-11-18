@@ -21,8 +21,9 @@ import type { IdleFacts } from '../sessions/idle.ts';
 import type { AwayRecord } from '../sessions/away.ts';
 import { isAskUser, quietTexts, type TurnEntry } from '../shared/quiet-reply.ts';
 import { elevates, raisesUac } from '../shared/elevation.ts';
-import type { QuestionDetails } from '../shared/questions.ts';
+import { COPY_REFS, lightQuestion, type QuestionDetails } from '../shared/questions.ts';
 import type { OrderInfo, OrderStatus } from '../shared/orders.ts';
+import type { WaitingLine } from '../shared/waiting-line.ts';
 import { trimForStorage } from './trim.ts';
 import { exercisedLine } from '../platform/exercised.ts';
 
@@ -377,6 +378,48 @@ export class Store {
   }
 
   /**
+   * A "Waiting for you" line (issue #350): added to `sessionId`'s chat unless the item already has one, in one write, so
+   * the same item never gets two (Done looks like 8). Null: it had one.
+   */
+  addWaitingLine(sessionId: string, line: WaitingLine, at = Date.now()): StoredMessage | null {
+    if (this.db.prepare('SELECT 1 FROM waiting_lines WHERE item = ? AND ref = ?').get(line.item, line.ref)) return null;
+    // A savepoint, not BEGIN: this runs from Ledung's publish, which may be inside another write's transaction.
+    this.db.exec('SAVEPOINT waiting_line');
+    try {
+      const m = this.addMessage(sessionId, 'waiting', line, at);
+      this.db.prepare('INSERT INTO waiting_lines (item, ref, message_id) VALUES (?, ?, ?)').run(line.item, line.ref, m.id);
+      this.db.exec('RELEASE waiting_line');
+      return m;
+    } catch (e) {
+      this.db.exec('ROLLBACK TO waiting_line');
+      this.db.exec('RELEASE waiting_line');
+      throw e;
+    }
+  }
+
+  /** An item's "Waiting for you" line, if it has one. */
+  waitingLineOf(item: WaitingLine['item'], ref: string): StoredMessage | null {
+    const r = this.db.prepare('SELECT m.* FROM waiting_lines w JOIN messages m ON m.id = w.message_id WHERE w.item = ? AND w.ref = ?').get(item, ref);
+    return r ? toMessage(r) : null;
+  }
+
+  /**
+   * A chat's "Waiting for you" lines from message `fromId` on, oldest first: a page that reconnects reads them again,
+   * since a line decided while it was away was changed in place and is older than what it catches up on (code review
+   * of #350, finding 1). At most the newest 500 (re-review: the newest are the likelier to be waiting).
+   */
+  waitingLinesIn(sessionId: string, fromId: number): StoredMessage[] {
+    return this.db.prepare('SELECT m.* FROM waiting_lines w JOIN messages m ON m.id = w.message_id WHERE m.session_id = ? AND m.id >= ? ORDER BY m.id DESC LIMIT 500')
+      .all(sessionId, fromId).map(toMessage).reverse();
+  }
+
+  /** A "Waiting for you" line says how its item ended: the same message, changed in place (Done looks like 3). */
+  updateWaitingLine(messageId: number, line: WaitingLine): StoredMessage {
+    const r = this.db.prepare(`UPDATE messages SET data = ? WHERE id = ? AND kind = 'waiting' RETURNING *`).get(this.json(line), messageId);
+    return toMessage(r!);
+  }
+
+  /**
    * The newest `limit` messages of a session, oldest first; with `beforeId`, the ones before it; with `afterId`,
    * the first `limit` after it, so a page that reconnects adds what it missed instead of reloading (issue #178).
    */
@@ -681,6 +724,12 @@ export class Store {
       .all(sessionId, since).map((r) => toQuestion({ ...(r as Row), earlier: null, sources: null }));
   }
 
+  /** Every question answered since `since`, newest first, without its stored context: waiting_for_you's answered window (issue #338). */
+  answeredAfter(since: number): QuestionInfo[] {
+    return this.db.prepare(`SELECT * FROM questions WHERE status = 'answered' AND answered_at > ? ORDER BY answered_at DESC, id DESC`)
+      .all(since).map((r) => toQuestion({ ...(r as Row), earlier: null, sources: null }));
+  }
+
   /**
    * A session's questions about an auto mode classifier refusal (issue #104), open ones first (oldest first), then
    * the rest newest first, without their stored context: read when a refusal comes in (issue #232). The match on
@@ -692,12 +741,31 @@ export class Store {
       .all(sessionId).map((r) => toQuestion({ ...(r as Row), earlier: null, sources: null }));
   }
 
-  /** The hashes of the container file copies any question names (issue #122): its screenshots or review evidence. */
-  containerCopyRefs(): Set<string> {
-    const rows = this.db.prepare(`SELECT details, shots FROM questions WHERE details LIKE '%container:%' OR shots LIKE '%container:%'`).all() as { details: string | null; shots: string | null }[];
+  /**
+   * The hashes of the file copies any question names: its screenshots or review evidence, a container's (issue #122)
+   * or, since issue #306, any project's.
+   */
+  keptCopyRefs(): Set<string> {
+    const rows = this.db.prepare(`SELECT details, shots FROM questions WHERE details LIKE '%container:%' OR shots LIKE '%container:%' OR details LIKE '%kept:%' OR shots LIKE '%kept:%'`)
+      .all() as { details: string | null; shots: string | null }[];
     const refs = new Set<string>();
-    for (const r of rows) for (const m of `${r.details ?? ''} ${r.shots ?? ''}`.matchAll(/container:([0-9a-f]{32})\//g)) refs.add(m[1]!);
+    for (const r of rows) for (const m of `${r.details ?? ''} ${r.shots ?? ''}`.matchAll(COPY_REFS)) refs.add(m[1]!);
     return refs;
+  }
+
+  /**
+   * Waiting for you history (issue #306): per project, the `perProject` most recently answered questions and as many
+   * withdrawn ones, and every closed question since `since` besides, newest first. A question's project is its asking
+   * session's, as the page groups them. Light (lightQuestion): the page reads them when Waiting for you opens, not with
+   * every page load, and asks for one whole when it is opened (code review of PR #307: a busy Ledung closes about 95
+   * questions a day, so 30 days is some 2,800 questions).
+   */
+  questionHistory(perProject: number, since: number): QuestionInfo[] {
+    const rows = this.db.prepare(`SELECT * FROM (
+        SELECT q.*, ROW_NUMBER() OVER (PARTITION BY s.project, q.status = 'answered' ORDER BY COALESCE(q.answered_at, q.asked_at) DESC, q.id DESC) AS place
+        FROM questions q LEFT JOIN sessions s ON s.id = q.session_id WHERE q.status != 'open')
+      WHERE place <= ? OR COALESCE(answered_at, asked_at) >= ? ORDER BY COALESCE(answered_at, asked_at) DESC, id DESC`).all(perProject, since) as Row[];
+    return rows.map((r) => lightQuestion(toQuestion({ ...r, earlier: null, sources: null })));
   }
 
   /**

@@ -38,7 +38,7 @@ local file with the per-machine values is.
 | `REPO` | `Fluffy-Fluffy-and-Bouncy/ledung` (public): code and PRs, there since 2026-10-29 (question #487). Open and merge PRs with `gh pr … -R Fluffy-Fluffy-and-Bouncy/ledung`. Where the issues are is `ISSUES_REPO` |
 | `ISSUES_REPO` | `Fluffy-Fluffy-and-Bouncy/ledung`, `Fluffy-Fluffy-and-Bouncy/Project-Ledung` — new issues are filed in the first, the public repo, since 2026-11-02 (Ledung questions #491–#493 and #508: "new issues go on the public repo"). **The open issues were moved to `ledung` on 2026-11-02**, 61 in two batches, each with a "Moved from Project-Ledung#N" line; the old issue is closed with a "Moved to" link, so anyone citing an old number follows that link. The private second repo keeps history, its Testing cards and #464, #465, #451, #455, #456, #459, #461, #463, which finish there; a PR names those as `Fluffy-Fluffy-and-Bouncy/Project-Ledung#N` (Martin, 2026-11-12 08:57, Ledung question #791: "b — Merge, and add the second issues repo to the process config") |
 | `DEFAULT_BRANCH` | `main` |
-| `WIN_CLONE` | per machine: the project's clone, the folder Ledung starts the project's sessions in; sessions work in worktrees only — Martin's Windows PC `%USERPROFILE%\claude-project\ledung` · Martin's Mac `~/claude-project/project-ledung` |
+| `WIN_CLONE` | per machine: the project's clone, the folder Ledung starts the project's sessions in; sessions work in worktrees only — Martin's Windows PC `%USERPROFILE%\claude-project\ledung` · Martin's Mac `~/claude-project/project-ledung` · magto-mini `/Volumes/dev/projects/ledung` |
 
 ## Board
 
@@ -118,7 +118,7 @@ steward, miner and metrics runs are off, and that is not a stop.
 | `LOGCHECK_TAGS_CMD` | none |
 | `DOC_RULES_CHECK` | the CI workflow on `Fluffy-Fluffy-and-Bouncy/ledung` (`npm run check` and the package build): Windows on every PR update and push to `main`, macOS weekly and by hand, nothing for docs-only or site-only changes; read it with `gh pr checks <n> -R Fluffy-Fluffy-and-Bouncy/ledung` |
 | `SHIP_CMD` | `npm run publish:public -- --confirm <version>` — publishes the next public release to npm's `latest`: the owners' word only (Martin or FFBuddha, both publishers on npm), version included; no session runs it otherwise (repo `CLAUDE.md`, "Commands"). Never `npm publish` or `npm dist-tag` by hand. The restart that loads an update into a running Ledung is the person's, never a session's |
-| `DEV_SHIP_CMD` | `npm run publish:dev` — publishes the next dev build to npm's `dev` tag, never `latest`, from a clean `main` that is `origin/main`; the manager may run it after merges (`Fluffy-Fluffy-and-Bouncy/Project-Ledung#461`), and `-- --dry-run` checks, builds and packs without publishing. Per machine: where a computer runs it from a publishing clone of its own, that clone's path is kept in the computer's local file, not here; the command is the same |
+| `DEV_SHIP_CMD` | `npm run publish:dev` — publishes the next dev build to npm's `dev` tag, never `latest`, from a clean `main` that is `origin/main`; the manager may run it after merges (`Fluffy-Fluffy-and-Bouncy/Project-Ledung#461`), and `-- --dry-run` checks, builds and packs without publishing. Per machine: dev ships run on magto-mini (`WORK_HOST_BOUND`), from its publishing clone, whose path is kept in that computer's local file, not here; the npm token comes from Ledung's secret `npm-token`, never saved on disk; the command is the same on any computer (Martin, 2026-11-16 16:12, Ledung question #228 "b" on magto-mini; 2026-11-17 19:26, Ledung question #383 "a" on magto-mini; Ledung question #52 "b — Move dev ships to the mini" on tubal-cain, the new PC (hostname DESKTOP-A17KPLL), as relayed; issue #368) |
 | `PROMOTE_CMD` | none — a public release is published from `main` by `SHIP_CMD`, not promoted from a dev build |
 | `BUILD_CMD` | `npm run build` |
 | `TEST_CMD` | `npm run check` (type check, core and page, and every test) |
@@ -145,7 +145,7 @@ steward, miner and metrics runs are off, and that is not a stop.
 | `METRICS_MODEL` | Sonnet |
 | `LOG_TRIAGE_MODEL` | Sonnet |
 | `ESCALATION_MODEL` | Opus |
-| `TEST_PORTS` | per machine: ports for throwaway Ledungs, one per session, handed out by the lead; never the real Ledung's port (`4317` unless that machine's config says otherwise) — Martin's Windows PC `4396`–`4399` · Martin's Mac `4396`–`4399` |
+| `TEST_PORTS` | per machine: ports for throwaway Ledungs, one per session, handed out by the lead; never the real Ledung's port (`4317` unless that machine's config says otherwise) — Martin's Windows PC `4396`–`4399` · Martin's Mac `4396`–`4399` · magto-mini `4396`–`4399` (Martin, 2026-11-13, Ledung question #2 on magto-mini: "a — 4396–4399", recorded on PR #321) |
 
 ## Modules
 
@@ -156,6 +156,9 @@ steward, miner and metrics runs are off, and that is not a stop.
 | `MODULE_SYMBOL_INDEX` | off |
 | `MODULE_FEATURE_MAP` | off |
 | `MODULE_SHOT_JUDGE` | off |
+| `MODULE_WORK_HOST` | on — one computer does the work, the managers on the others keep the talk with Martin and the jobs tied to their own computer (agent-workflow v155, `modules/work-host/`; Martin, 2026-11-13, Ledung question #2219 "a", recorded on `Magto/agent-workflow#295`) |
+| `WORK_HOST` | `magto-mini` — Project Ledung's work host (Martin, 2026-11-13, Ledung question #2219 "a") |
+| `WORK_HOST_BOUND` | `dev ship → magto-mini · play checks (exercised.log) → tubal-cain` — the dev ship runs from magto-mini's publishing clone, with the npm token from Ledung's secret `npm-token`, not on disk; the play-check log is the one Martin's real Ledung writes on tubal-cain, the new Windows PC (hostname DESKTOP-A17KPLL) that replaced the old PC of that name on 2026-11-17 (agent-workflow v155, and v161: computer names come from `site/SITE.md`; Martin, 2026-11-17 16:25, Ledung question #371 "b — tubal-cain" on magto-mini; Martin, 2026-11-16 16:12, Ledung question #228 "b" on magto-mini; 2026-11-17 19:26, Ledung question #383 "a — Ready, and rename the play-check half to the new PC" on magto-mini; Ledung question #52 "b — Move dev ships to the mini" on tubal-cain, the new PC (hostname DESKTOP-A17KPLL), as relayed; issue #368) |
 
 ## Humans and approvals
 

@@ -297,6 +297,20 @@ test('basics: a model runs, a looser mode or another account is asked, a locked 
   assert.equal((await hook(mgrId, 'set_project_basics', { project: 'shop', model: 'haiku' })).decision, 'deny');
 });
 
+test('an apply card for the theme offers Dark or Light only, and the helper is told so (#345 review)', async () => {
+  const { store, run, helper } = ledung();
+  const id = await helper();
+  const system = await run(id, 'reply', { text: 'Follow your computer?', card: { kind: 'apply', title: 'Appearance', setting: 'theme', value: 'system' } });
+  assert.equal(system.error, true);
+  assert.match(system.text, /Not shown: the card is not valid \(theme is "dark" or "light", not "system"\)/);
+  assert.equal(store.listMessages(id).filter((m) => m.kind === 'reply').length, 0, 'no button that would fail');
+  const listed = await run(id, 'ledung_settings', {});
+  assert.match(listed.text, /theme \("dark" or "light"\)/);
+  const refused = await run(id, 'change_ledung_setting', { setting: 'theme', value: 'system' });
+  assert.match(refused.text, /setting: "theme", value: "dark" or "light" \}/);
+  assert.equal((await run(id, 'reply', { text: 'Light it is.', card: { kind: 'apply', title: 'Appearance', setting: 'theme', value: 'light' } })).error, false);
+});
+
 test("the helper speaks once per turn through reply; a card that can't be shown is refused saying why (acceptance round 4)", async () => {
   const { store, run, helper } = ledung();
   const id = await helper();
