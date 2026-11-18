@@ -59,7 +59,6 @@ export function UsagePublishSettings({ accounts: known, run }: { accounts: Accou
   });
   // The computer's own login, every account Ledung knows, and any still switched on that has since been removed.
   const names = [...new Set(['default', ...known.map((a) => a.name), ...view.accounts])];
-  const emailOf = (name: string) => known.find((a) => a.name === name)?.email ?? null;
   const toggle = (name: string, on: boolean) => setAccounts((list) => (on ? [...new Set([...list, name])] : list.filter((a) => a !== name)));
 
   const off = !view.enabled && !view.pendingRemovals?.length;
@@ -87,8 +86,8 @@ export function UsagePublishSettings({ accounts: known, run }: { accounts: Accou
         {names.map((name) => (
           <label key={name} className="toggle">
             <input type="checkbox" checked={allAccounts || accounts.includes(name)} disabled={allAccounts} onChange={(e) => toggle(name, e.target.checked)} />
-            {' '}<span><span className="field-name">Publish {name}</span>{' '}
-              <span className="muted">({name === 'default' ? "this computer's own login" : emailOf(name) ?? 'not signed in yet'}{!known.some((a) => a.name === name) && name !== 'default' ? ', removed' : ''})</span></span>
+            {' '}<span><span className="field-name">Publish {name}</span>
+              {name === 'default' ? <span className="muted"> (this computer's own login)</span> : !known.some((a) => a.name === name) && <span className="muted"> (removed)</span>}</span>
           </label>
         ))}
       </div>
@@ -138,8 +137,8 @@ export function UsagePublishSettings({ accounts: known, run }: { accounts: Accou
 }
 
 /**
- * The usage key labels projects not published by name and keys the account fingerprints (Project-Ledung#480);
- * computers that share it label a project alike and show an account as one card. Linked
+ * The usage key labels projects not published by name; computers that share it label a project alike. It no longer
+ * keys account fingerprints (Project-Ledung#480): Ledung can't tell an account's own email (issue #378). Linked
  * computers share it by themselves when publishing is switched on; another computer can paste it here.
  */
 function UsageKey({ view, onView, run }: { view: UsagePublishView; onView: (v: UsagePublishView) => void; run: Run }) {
@@ -150,8 +149,8 @@ function UsageKey({ view, onView, run }: { view: UsagePublishView; onView: (v: U
     <div>
       <h4>Usage key</h4>
       <p className="muted">
-        Makes a project's <span className="mono">other#</span> label, and each account's card on the Shared tab, the same on all your computers,
-        without the project's name or the account's email. Computers with another key show the same account as a card of their own. It stays on
+        Makes a project's <span className="mono">other#</span> label the same on all your computers, without the project's name.
+        Each computer's accounts show as cards of their own on the Shared tab. It stays on
         this computer, next to the link keys. {view.hasKey ? 'This computer has one.' : 'This computer makes one, or takes a linked computer\'s, when publishing is switched on.'}
       </p>
       <div className="board-add">

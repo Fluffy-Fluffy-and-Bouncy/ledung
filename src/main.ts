@@ -31,7 +31,6 @@ import { UsageQueries } from './usage/queries.ts';
 import { publisherProjects, UsagePublisher } from './usage/publisher.ts';
 import { usageMark, usageSlices } from './usage/publish-source.ts';
 import { ProjectRemotes } from './usage/project-remotes.ts';
-import { DEFAULT_ACCOUNT } from './accounts/store.ts';
 import { Updater } from './update/updater.ts';
 import { CheckIn } from './update/checkin.ts';
 import { RemoteLink, savedRemote } from './remote/link.ts';
@@ -175,7 +174,6 @@ async function main(): Promise<void> {
     computer: () => server?.computerName() ?? 'Ledung',
     projects: () => publisherProjects(manager.projectStore.list(), manager.projectStore.removed()),
     remotes: (names) => remotes.remotes(names),
-    emailOf: (account) => account === DEFAULT_ACCOUNT ? manager.accountsEvent().defaultIdentity?.email ?? null : manager.accounts.get(account)?.email ?? null,
     linkedKey: () => server?.linkedUsageKey() ?? Promise.resolve(null),
   });
   const relayAdmin = new RelayAdmin({

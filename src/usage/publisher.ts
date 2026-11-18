@@ -61,7 +61,6 @@ export interface PublisherOptions {
   projects: () => PublisherProject[];
   /** Each project's remote address, when it has one; read before every build, so a label never flips to the name's. */
   remotes: (projects: string[]) => Promise<Map<string, string | null>>;
-  emailOf: (account: string) => string | null;
   /** Asks the linked computers for their usage key; null when none has one. */
   linkedKey: () => Promise<string | null>;
   repoFor?: (repo: string) => UsageRepo;
@@ -484,7 +483,7 @@ export class UsagePublisher {
         login, computer: this.opts.computer(), computerId: this.computerId(), repo: repoName, now,
         slices: sliced.get(repoName)!,
         limits: limits.filter((l) => on(l.account) && (used.get(repoName)!.has(l.account || DEFAULT_ACCOUNT) || (t.rest && !anywhere.has(l.account || DEFAULT_ACCOUNT)))),
-        emailOf: this.opts.emailOf, named: new Set(named), remoteOf: (p) => remotes.get(p) ?? null, key,
+        named: new Set(named), remoteOf: (p) => remotes.get(p) ?? null, key,
       });
       const changed = contentKey(file);
       try {
