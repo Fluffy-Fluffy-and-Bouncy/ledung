@@ -778,6 +778,12 @@ const MIGRATIONS: string[] = [
     UNIQUE (project, tool_name, command)
   );
   `,
+  // Accounts show no email or organisation any more (issue #378): Claude Code reported the computer's own login's for
+  // every account. Who sessions found themselves logged in as is forgotten, the default login's too; the columns stay.
+  `
+  UPDATE accounts SET email = NULL, organization = NULL, plan = NULL, seen_at = NULL;
+  DELETE FROM meta WHERE key = 'default-account-identity';
+  `,
 ];
 
 export function databaseFile(dir = userDataDir()): string {

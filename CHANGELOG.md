@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-18
+- Claude accounts no longer show an email or organisation anywhere (Settings → Accounts, the account lists in projects, chats and Publish usage): Claude Code reported the computer's own login for every account, so a private account could show the work email. Each account now shows only how it is signed in, and its plan when Claude Code names one for that account. On a phone the accounts table now fits the screen, one line per detail. Which account a project or session uses is unchanged. On the Shared usage tab each computer's accounts are now cards of their own; they were matched across computers by that same wrong email. (#378)
+
 ## 2026-11-12
 - Sidebar, CPU, Memory and GPU bars: drag the handle on a bar's limit line to set the limit. A label shows the value as you drag ("GPU 50%", "Memory 48 GB", in steps of 5% or 1 GB), it applies when you let go, and dragging to the right end removes the limit. With no limit the handle waits at the right end and shows when you point at the bar. The keyboard works too: arrow keys, Home and End, then Enter. The number editor now opens with a double-click (a tap on a phone) and has a slider next to the number field; on a phone it is the way to set a limit. (#295)
 - Machine panel: virtual displays (Parsec's, a virtual monitor driver) no longer show up as extra copies of your graphics card under "Other GPUs"; a GPU limit you set on the card while it was listed as "#1" still applies to it. (#304)

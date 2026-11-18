@@ -15,7 +15,7 @@ export const STALE_MS = DAY;
 /** One computer's file, with its account entries, as the tab reads them. */
 interface Source { file: PublishedFile; account: PublishedAccount; key: string }
 
-/** An account's card key: its fingerprint, or, before the email is known, the one computer's own entry. */
+/** An account's card key: its fingerprint (only from a Ledung before issue #378, which knew no account's own email), else the one computer's own entry. */
 function accountKey(file: PublishedFile, account: PublishedAccount): string {
   return account.fingerprint ?? `${file.login}/${file.computerId}/${account.label}`;
 }

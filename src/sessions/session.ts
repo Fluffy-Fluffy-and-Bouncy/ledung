@@ -279,8 +279,6 @@ export interface SessionOptions {
   gate: TurnGate;
   /** The project's Claude account: its name, and the login it puts in the environment (P3). */
   account?: { name: string; env: Record<string, string> } | null;
-  /** Who Claude Code found itself logged in as, once the session is up. */
-  onAccountInfo?: (info: { email?: string; organization?: string; subscriptionType?: string }) => void;
   /**
    * Whether Claude Code is signed in for its account (issue #333), checked on every start in the session's
    * folder with the settings it gets: refuse with how to sign in, warn and go on when it couldn't tell, or null.
@@ -416,7 +414,6 @@ export class Session {
   private finished: Promise<void> = Promise.resolve();
   private readonly gate: TurnGate;
   private readonly account: { name: string; env: Record<string, string> } | null;
-  private readonly onAccountInfo: SessionOptions['onAccountInfo'];
   private readonly signInRefusal: SessionOptions['signInRefusal'];
   private readonly profile: Profile | undefined;
   private readonly pluginsOff: string[];
@@ -528,7 +525,6 @@ export class Session {
     this.devShip = opts.devShip ?? null;
     this.gate = opts.gate;
     this.account = opts.account ?? null;
-    this.onAccountInfo = opts.onAccountInfo;
     this.signInRefusal = opts.signInRefusal;
     this.profile = opts.profile;
     this.pluginsOff = opts.pluginsOff ?? [];
@@ -736,11 +732,6 @@ export class Session {
     this.finished = this.readLoop(this.q);
     this.refreshBranch();
     this.startRemoteControl();
-    // Which account it really is, for the page (accountInfo waits for Claude Code to be up).
-    if (this.onAccountInfo) {
-      const q = this.q;
-      void q.accountInfo().then((info) => this.onAccountInfo?.(info), () => {});
-    }
   }
 
   /**

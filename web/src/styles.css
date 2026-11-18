@@ -743,6 +743,16 @@ table.matrix td, table.plain td { padding: 0.3rem 0.5rem; border-bottom: 1px sol
 /* Open folder and Remove side by side (issue #414). */
 td.account-actions { white-space: nowrap; }
 td.account-actions button + button { margin-left: 0.4rem; }
+/* Accounts on a phone (issue #378, point 5): a sign-in folder breaks anywhere, and each cell takes a line of its own. */
+.accounts-table .mono { overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+  .accounts-table thead { display: none; }
+  .accounts-table tr, .accounts-table td { display: block; }
+  .accounts-table td { border-bottom: none; }
+  .accounts-table tr { border-bottom: 1px solid var(--border); padding: 0.3rem 0; }
+  .accounts-table td[data-label]::before { content: attr(data-label) ': '; color: var(--muted); }
+  .accounts-table td:empty { display: none; }
+}
 th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
 td.strong { font-weight: 600; }
 .nowrap { white-space: nowrap; }
