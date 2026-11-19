@@ -47,7 +47,6 @@ import { promptNudges } from './workflow-nudges.ts';
 import { readInsideProject, readStartReadingFile, sessionStartText } from './start-reading.ts';
 import { RemoteControl } from './remote-control.ts';
 import { McpError, mcpServers, mcpToolDescriptions, reconnectMcp } from './mcp.ts';
-import { ownToolDescription } from './tool-descriptions.ts';
 import { mcpParts } from '../shared/tool-call.ts';
 import { boundarySettings, withBoundary } from './boundary.ts';
 import { airgapEnvironment, airgapSettings, airgapTempFolder, makeAirgapTempFolder, othersSettings, versionProblem, withAirgapSettings, withOthersSettings } from '../projects/lockdown.ts';
@@ -384,6 +383,8 @@ export class Session {
    * once per server, when the session first calls one of its tools, so a refusal seconds later can say it.
    */
   private readonly mcpDescriptions = new Map<string, string>();
+  /** What this session's own Ledung tools do, by short name, from the tool server it built (issue #399). */
+  private ownDescriptions = new Map<string, string>();
   private readonly mcpDescribed = new Set<string>();
   /**
    * Away mode's decisions on merges taken in the PreToolUse hook (issue #133), by tool use id: onPermission uses a held
@@ -679,7 +680,8 @@ export class Session {
 
   /** Ledung's tool server for this session: the helper's own, or the session's and manager's tools. */
   private toolServer(tools: ToolHandlers): McpSdkServerConfigWithInstance {
-    return this.helper ? helperToolServer(this.userName, this.helper.handlers) : ledungToolServer(tools);
+    const describe = (d: Map<string, string>) => { this.ownDescriptions = d; };
+    return this.helper ? helperToolServer(this.userName, this.helper.handlers, describe) : ledungToolServer(tools, describe);
   }
 
   /** Whether the session's Claude Code has an older Ledung tool list than this Ledung's; unknown (before #164) counts as older. */
@@ -1165,7 +1167,7 @@ export class Session {
   /** What a tool does, for a question about a call to it (issue #399): Ledung's own tools, else the session's list. */
   private describedTool(toolName: string): { description?: string } {
     const mcp = mcpParts(toolName);
-    const description = !mcp ? null : mcp.server === LEDUNG_SERVER ? ownToolDescription(mcp.tool) : this.mcpDescriptions.get(toolName) ?? null;
+    const description = !mcp ? null : mcp.server === LEDUNG_SERVER ? this.ownDescriptions.get(mcp.tool) ?? null : this.mcpDescriptions.get(toolName) ?? null;
     return description ? { description } : {};
   }
 

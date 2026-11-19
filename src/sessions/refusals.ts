@@ -254,7 +254,7 @@ export function callBlock(r: Pick<RefusalDetails, 'toolName' | 'input' | 'descri
   const label = toolLabel(r.toolName);
   const description = oneLineDescription(r.description);
   const key = keyInput(r.toolName, r.input);
-  const head = `**${label}**${label !== r.toolName ? ` (${inlineCode(r.toolName)})` : ''}${description ? `: ${description}` : ''}`;
+  const head = `**${label}**${label !== r.toolName ? ` (${inlineCode(r.toolName)})` : ''}${description ? `: ${inlineCode(description)}` : ''}`;
   const lines = inputLines(r.input, key ? [key.key] : []);
   return [
     head,

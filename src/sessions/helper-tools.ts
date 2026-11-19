@@ -10,7 +10,7 @@ import { CardSchema, type HelperCard } from '../shared/helper-cards.ts';
 import { SETUP_STEP_IDS, type SetupStepId } from '../shared/setup.ts';
 import { BASICS_PATCH, helperInstructions, type BasicsPatch } from './helper.ts';
 import { LEDUNG_SERVER, type NewProjectArgs, type ProjectArgs } from './tools.ts';
-import { rememberOwnTools } from './tool-descriptions.ts';
+import { toolDescriptions, type DescribeTools } from './tool-descriptions.ts';
 
 /** The helper's tools, bound to it. Each throws with a reason the helper is told. */
 export interface HelperHandlers {
@@ -62,7 +62,7 @@ function projectArgs(a: ProjectInput): Omit<ProjectArgs, 'folder'> {
   return { name: a.name, model: a.model, effort: a.effort, permissionMode: a.permission_mode, managerGrant: a.manager_grant, account: a.account, lockdown: a.lockdown };
 }
 
-export function helperToolServer(who: string, h: HelperHandlers): McpSdkServerConfigWithInstance {
+export function helperToolServer(who: string, h: HelperHandlers, describe?: DescribeTools): McpSdkServerConfigWithInstance {
   const project = z.string().min(1).describe('The project name, as list_projects shows it.');
   const tools = [
     tool('setup_status', `The setup's steps as Ledung keeps them: which are done or skipped, the current one, and the setup's project.`, {}, async () => safely(() => h.setupStatus())) as never,
@@ -115,6 +115,6 @@ export function helperToolServer(who: string, h: HelperHandlers): McpSdkServerCo
     }, async (a) => safely(() => h.proposeWorkflow(a.project, a.changes, a.why))) as never,
   ];
   // A refused call to one of these is described to the person by them (issue #399).
-  rememberOwnTools(tools as unknown as { name: string; description?: string }[]);
+  describe?.(toolDescriptions(tools as unknown as { name: string; description?: string }[]));
   return createSdkMcpServer({ name: LEDUNG_SERVER, version: '1.0.0', alwaysLoad: true, instructions: helperInstructions(who), tools });
 }

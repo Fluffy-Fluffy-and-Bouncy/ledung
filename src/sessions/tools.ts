@@ -14,7 +14,7 @@ import { commandProblem, type OrderSpec } from './orders.ts';
 import { CONFIRM, CONFIRM_KEY } from '../shared/orders.ts';
 import { SETTINGS_ACTIONS } from './word.ts';
 import { SETTINGS_PATCH, type SettingsPatch } from '../projects/settings-tools.ts';
-import { rememberOwnTools } from './tool-descriptions.ts';
+import { toolDescriptions, type DescribeTools } from './tool-descriptions.ts';
 
 export const LEDUNG_SERVER = 'ledung';
 // The run tools (workflow part 3) only record and report; any session of a project that follows its flow has them.
@@ -495,7 +495,7 @@ const OPTION_OBJECT = z.object({
   outcome: z.string().min(1).max(200).optional().describe("With run: the block's outcome word this option's answer leads to."),
 });
 
-export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstance {
+export function ledungToolServer(h: ToolHandlers, describe?: DescribeTools): McpSdkServerConfigWithInstance {
   const who = h.userName;
   // ask_user takes a run's person step (#291) only where the run tools are.
   const step = h.runs?.writeUp && h.runs.writeUpAsked ? { writeUp: h.runs.writeUp, asked: h.runs.writeUpAsked } : null;
@@ -954,6 +954,6 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
   }
 
   // A refused call to one of these is described to the person by them (issue #399).
-  rememberOwnTools(tools as unknown as { name: string; description?: string }[]);
+  describe?.(toolDescriptions(tools as unknown as { name: string; description?: string }[]));
   return createSdkMcpServer({ name: LEDUNG_SERVER, version: '1.0.0', alwaysLoad: true, instructions: instructions(h), tools });
 }

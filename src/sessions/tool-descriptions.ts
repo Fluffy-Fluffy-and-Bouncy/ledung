@@ -1,15 +1,15 @@
-// The descriptions of Ledung's own tools, by tool name, as its tool server last gave them to a session (issue #399):
-// a question about a refused call to one of them says what the tool does, not just its name. Kept as the servers are
-// built, so it needs no round trip to Claude Code. Other servers' tools are described from the session's own list
-// (Session.toolDescription, from Claude Code's MCP status).
-const own = new Map<string, string>();
+// The descriptions of Ledung's own tools, by short tool name (`release`), as a tool server is built (issue #399): a
+// question about a refused call to one of them says what the tool does, with no round trip to Claude Code. Some
+// descriptions name the session's manager or project (ask_user's "Ask <manager> a question."), so each session keeps
+// those of the server it built (review of PR #401), not one list for all of Ledung. Other servers' tools are described
+// from the session's own list (Session.mcpDescriptions, from Claude Code's MCP status).
 
-/** Notes the tools Ledung's tool server offers (the session's and the helper's), with their descriptions. */
-export function rememberOwnTools(tools: readonly { name: string; description?: string }[]): void {
-  for (const t of tools) if (t.description) own.set(t.name, t.description);
-}
+/** Called with the descriptions of a tool server's tools when it is built. */
+export type DescribeTools = (descriptions: Map<string, string>) => void;
 
-/** The description of one of Ledung's own tools, by its short name (`release`), or null. */
-export function ownToolDescription(name: string): string | null {
-  return own.get(name) ?? null;
+/** The tools' descriptions by name, those that have one. */
+export function toolDescriptions(tools: readonly { name: string; description?: string }[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const t of tools) if (t.description) map.set(t.name, t.description);
+  return map;
 }
