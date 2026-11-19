@@ -15,6 +15,10 @@
 // names the lockfile's versions instead of the clone's caret ranges, and an npm-shrinkwrap.json made
 // from the lockfile's production entries pins everything below them. Without it, a fresh install
 // got a newer Agent SDK than the tests, and with it a newer minimum Claude Code (#341).
+//
+// The desktop app (#407) goes in too: desktop/ bundled into dist/desktop/, with Electron as an optional dependency
+// pinned like the others. Electron's package downloads no binary at install; Ledung makes its own "Ledung" app from
+// the binary the first time the app opens (src/platform/desktop-app.ts). `--omit=optional` leaves Electron out.
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -25,11 +29,18 @@ import { appDir } from '../src/platform/paths.ts';
 /** dist/<name>.js for each entry; src/platform/paths.ts, src/cli.ts and src/platform/node-warnings.ts find the host, main and preload by these names; preload sits next to main. */
 export const ENTRIES = { main: 'src/main.ts', host: 'src/host/host.ts', cli: 'src/cli.ts', preload: 'src/preload.ts' } as const;
 
+/** The desktop app's files next to its bundled main.js in dist/desktop/ (#407): what desktop/main.ts loads from its own folder. */
+export const DESKTOP_FILES: Record<string, string> = {
+  'preload.cjs': 'desktop/preload.cjs',
+  'not-running.html': 'desktop/not-running.html',
+  'icon-512.png': 'web/public/icon-512.png',
+};
+
 /** Besides dist/ and web/dist/, from the clone into the package. */
 const EXTRA_FILES = ['README.md', 'CHANGELOG.md', 'ledung.config.example.json', 'LICENSE', 'COMMERCIAL.md'];
 
 /** The fields of the clone's package.json the package keeps; everything else is for development. */
-const MANIFEST_FIELDS = ['name', 'version', 'private', 'license', 'author', 'description', 'type', 'bin', 'files', 'repository', 'homepage', 'bugs', 'engines', 'dependencies'];
+const MANIFEST_FIELDS = ['name', 'version', 'private', 'license', 'author', 'description', 'type', 'bin', 'files', 'repository', 'homepage', 'bugs', 'engines', 'dependencies', 'optionalDependencies'];
 
 export function packageManifest(clone: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(MANIFEST_FIELDS.filter((k) => clone[k] !== undefined).map((k) => [k, clone[k]]));
@@ -37,12 +48,15 @@ export function packageManifest(clone: Record<string, unknown>): Record<string, 
 
 type Lock = { lockfileVersion?: number; packages?: Record<string, Record<string, unknown>> };
 
-/** The lockfile's version of each of the clone's dependencies; refuses a lockfile out of step with package.json. */
-export function pinnedDependencies(clone: Record<string, unknown>, lock: Lock): Record<string, string> {
-  const ranges = (clone.dependencies ?? {}) as Record<string, string>;
-  const locked = (lock.packages?.['']?.dependencies ?? {}) as Record<string, string>;
+/**
+ * The lockfile's version of each of the clone's dependencies (or optional dependencies: Electron, #407); refuses a
+ * lockfile out of step with package.json.
+ */
+export function pinnedDependencies(clone: Record<string, unknown>, lock: Lock, field: 'dependencies' | 'optionalDependencies' = 'dependencies'): Record<string, string> {
+  const ranges = (clone[field] ?? {}) as Record<string, string>;
+  const locked = (lock.packages?.['']?.[field] ?? {}) as Record<string, string>;
   if (JSON.stringify(Object.entries(ranges).sort()) !== JSON.stringify(Object.entries(locked).sort())) {
-    throw new Error('package-lock.json does not match package.json\'s dependencies: run npm install first');
+    throw new Error(`package-lock.json does not match package.json's ${field}: run npm install first`);
   }
   return Object.fromEntries(Object.keys(ranges).map((name) => {
     const version = lock.packages?.[`node_modules/${name}`]?.version;
@@ -81,7 +95,7 @@ export function leftOut(key: string, entry: Record<string, unknown>): boolean {
  */
 export function packageShrinkwrap(manifest: Record<string, unknown>, lock: Lock): Record<string, unknown> {
   if (lock.lockfileVersion !== 3 || !lock.packages) throw new Error('package-lock.json is not lockfileVersion 3');
-  const root = Object.fromEntries(['name', 'version', 'license', 'dependencies', 'bin', 'engines'].filter((k) => manifest[k] !== undefined).map((k) => [k, manifest[k]]));
+  const root = Object.fromEntries(['name', 'version', 'license', 'dependencies', 'optionalDependencies', 'bin', 'engines'].filter((k) => manifest[k] !== undefined).map((k) => [k, manifest[k]]));
   const packages: Record<string, unknown> = { '': root };
   for (const [key, entry] of Object.entries(lock.packages)) {
     if (key !== '' && !entry.dev && !leftOut(key, entry)) packages[key] = entry;
@@ -105,6 +119,25 @@ export async function bundleCore(source: string, outDir: string): Promise<void> 
 }
 
 /**
+ * Bundles the desktop app (#407) into outDir: desktop/main.ts and the modules it imports as one main.js, Electron left
+ * outside (the app's own Electron provides it), and the files it loads from its own folder. Node strips no types under
+ * node_modules, so the app ships as plain JavaScript like the core.
+ */
+export async function bundleDesktop(source: string, outDir: string): Promise<void> {
+  await build({
+    entryPoints: { main: path.join(source, 'desktop', 'main.ts') },
+    outdir: outDir,
+    bundle: true,
+    platform: 'node',
+    format: 'esm',
+    target: 'node24',
+    external: ['electron'],
+    logLevel: 'warning',
+  });
+  for (const [name, file] of Object.entries(DESKTOP_FILES)) fs.cpSync(path.join(source, file), path.join(outDir, name));
+}
+
+/**
  * Puts the whole package together in stage; the page must have been built into web/dist. `version` stamps the
  * package with a version of its own instead of the clone's: a dev build's X.Y is given by `npm run publish:dev` and
  * never committed (#461).
@@ -117,10 +150,12 @@ export async function stagePackage(source: string, stage: string, version?: stri
   const trimmed: Record<string, unknown> = { ...packageManifest(clone), ...(version ? { version } : {}) };
   // npm pack leaves the shrinkwrap out when files is set and doesn't name it (npm 11).
   const files = trimmed.files ? { files: [...(trimmed.files as string[]), 'npm-shrinkwrap.json'] } : {};
-  const manifest = { ...trimmed, ...files, dependencies: pinnedDependencies(clone, lock) };
+  const optional = clone.optionalDependencies ? { optionalDependencies: pinnedDependencies(clone, lock, 'optionalDependencies') } : {};
+  const manifest = { ...trimmed, ...files, dependencies: pinnedDependencies(clone, lock), ...optional };
   fs.writeFileSync(path.join(stage, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   fs.writeFileSync(path.join(stage, 'npm-shrinkwrap.json'), `${JSON.stringify(packageShrinkwrap(manifest, lock), null, 2)}\n`);
   await bundleCore(source, path.join(stage, 'dist'));
+  await bundleDesktop(source, path.join(stage, 'dist', 'desktop'));
   fs.cpSync(path.join(source, 'web', 'dist'), path.join(stage, 'web', 'dist'), { recursive: true });
   // Ledung's own plugin for its sessions, the "workflow building" skill (workflow part 3e).
   fs.cpSync(path.join(source, 'plugins'), path.join(stage, 'plugins'), { recursive: true });
@@ -140,7 +175,7 @@ export async function buildPackage(source: string, version?: string): Promise<st
   const stage = path.join(out, 'package');
   console.log('Building the page...');
   npm(['run', 'build', '--silent'], source);
-  console.log('Bundling the core, the session host and the ledung command...');
+  console.log('Bundling the core, the session host, the ledung command and the desktop app...');
   await stagePackage(source, stage, version);
   console.log('Packing...');
   npm(['pack', '--pack-destination', out], stage);

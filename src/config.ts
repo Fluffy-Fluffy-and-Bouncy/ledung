@@ -355,6 +355,13 @@ const Config = z.object({
    * Unset: on, except for a Ledung with its own data folder (LEDUNG_DATA_DIR), where `true` turns it on.
    */
   trayIcon: z.boolean().optional(),
+  /**
+   * Whether `ledung` opens the desktop app (issue #407): false keeps it on the browser for good, exactly as before the
+   * app shipped. npm installs Electron's package with every global install, --omit=optional or not (Martin,
+   * 2026-11-19, Ledung question #584: "b — Keep the optional dependency, add an off switch"). Read by the `ledung`
+   * command at each run (src/platform/desktop-app.ts desktopAppOff); `ledung app` still opens the app.
+   */
+  desktopApp: z.boolean().default(true),
   projects: z.array(Project).default([]),
   /** Claude accounts written in the file (issue #425): added when Ledung doesn't have them; the page adds and removes too. */
   claudeAccounts: ClaudeAccountsSetting,
@@ -553,6 +560,7 @@ export const SETTING_RELOAD = {
   lan: 'restart',
   lanSignIn: 'restart',
   trayIcon: 'live',
+  desktopApp: 'live',
   projects: 'live',
   claudeAccounts: 'live',
   sensitive: 'live',

@@ -78,5 +78,8 @@
     "acme-client": "^5.4.0",
     "ws": "^8.22.0",
     "zod": "^4.6.5"
+  },
+  "optionalDependencies": {
+    "electron": "45.4.1"
   }
 }

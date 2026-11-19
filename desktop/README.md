@@ -1,8 +1,10 @@
 # Ledung desktop app
 
-Ledung's page in a window of its own instead of a browser tab (epic #357). This first phase is for the owners' own
-computers: **unsigned, run from a clone, not shipped**. Nothing in this folder goes into the npm package, and nothing is
-published for it (Martin, 2026-11-17, Ledung questions #336 and #338; [docs/decisions.md](../docs/decisions.md)).
+Ledung's page in a window of its own instead of a browser tab (epic #357). **Unsigned, and shipped in the npm package**
+(#407; Martin, 2026-11-19, Ledung questions #572, #575, #577 and #584; [docs/decisions.md](../docs/decisions.md)):
+`npm run pack` bundles this folder into the package's `dist/desktop/`, with Electron as an optional dependency, and the
+`ledung` command makes a "Ledung" app from Electron's binary the first time it opens it (see **The made app** below).
+From a clone it still runs as below, for development.
 
 ## Run it
 
@@ -64,6 +66,44 @@ One window opens with your running Ledung's page, signed in. Nothing opens in th
 - **Permissions.** Ledung's page may show notifications and copy to the clipboard, the two things it uses. Everything
   else a page can ask for (camera, microphone, screen, location, reading the clipboard) is refused: Electron would
   otherwise grant it without asking, where a browser asks you.
+
+## The made app
+
+What `npm install -g ledung` and `ledung` give (`src/platform/desktop-app.ts`, #407):
+
+- **Made at first open.** Electron's npm package downloads nothing at install. The first `ledung` downloads Electron's
+  zip for this system with Electron's own downloader and checksums, unzips it and makes the app in
+  `<data folder>/desktop/`: `Ledung.app` on the Mac, `Ledung\Ledung.exe` on Windows, `ledung/ledung` on Linux, with this
+  folder's bundled code in its `resources/app` (`Contents/Resources/app` on the Mac). The download's cache is removed
+  after. The app is made in `desktop/.making` and takes the old one's place only when it is whole.
+- **One fixed place**, so a Dock or taskbar pin and the Mac's notification permission keep pointing at it. `stamp.json`
+  next to it says what it was made from: a new Electron makes it again; a new Ledung, or another Node, rewrites only its
+  code.
+- **Named "Ledung".** On the Mac its `Info.plist` names it "Ledung" with the id `org.ledung.app`, its icon is Ledung's
+  with the Mac's margin (#404), Electron's default app is removed and it is signed ad hoc again, as Electron's own is.
+  The helper apps keep Electron's names. On Windows the exe is `Ledung.exe` and the app sets the AppUserModelID
+  `org.ledung.app`; its file details still say Electron, so Task Manager may list it as Electron. On Linux the program
+  is `ledung` and the app's name is "Ledung".
+- **Its settings.** `ledung-app.json` next to its `main.js` names the Node and the `ledung` script that made it, and
+  `LEDUNG_CONFIG` and `LEDUNG_DATA_DIR` when that command had them. So **Start Ledung** runs them and needs no `ledung`
+  on `PATH` (an app opened from Finder or the Start menu has no terminal's `PATH`), and the app shows the same Ledung
+  however it is opened. When that Node is gone, Start falls back to `ledung` on `PATH`.
+- **Its profile** (cookies, caches) is `<data folder>/desktop/profile`: Electron would otherwise use a folder named after
+  the app, "Ledung", which is Ledung's own data folder on the Mac and Windows.
+- **Opening it.** `ledung` opens it with `open` on the Mac and starts the program on Windows and Linux, without
+  Electron's or npm's variables. A failure gives one line and the browser; `ledung --browser`, `"desktopApp": false` in
+  the config and `--no-open` keep to the browser or to nothing; `ledung app` insists.
+
+To try it from a worktree, pack and install into a throwaway prefix, with a throwaway Ledung's settings (everything,
+the downloaded Electron included, stays under `.test/`):
+
+```sh
+npm run pack
+npm install -g --prefix $PWD/.test/prefix ./dist/ledung-<version>.tgz
+LEDUNG_CONFIG=$PWD/.test/a/config.json LEDUNG_DATA_DIR=$PWD/.test/a/data ./.test/prefix/bin/ledung
+```
+
+Stop it after with the same settings and `./.test/prefix/bin/ledung stop`, and quit the app.
 
 ## Trying it against a throwaway Ledung
 
@@ -137,9 +177,12 @@ Linux only for now).
   `test/desktop.test.ts` runs it.
 - `start.ts`: Start Ledung: the command, its clean environment and the one line a failed start gives. No Electron in
   it either, so `test/desktop.test.ts` runs it, with scripts of its own in place of `ledung`.
+- `made.ts`: the made app's settings, `ledung-app.json` (#407). No Electron in it; `test/desktop-app.test.ts` runs it.
 - `not-running.html`: the page shown when no Ledung answers, with Start Ledung and Retry.
 - `npm run typecheck` checks this folder; the root `npm run check` does not cover `main.ts` (it would need Electron's
   types at the root).
 
-Electron is this folder's own dependency, so the root `npm ci` (CI, every worktree) downloads none. CI skips changes
-that touch only this folder; the app is tried by hand.
+Electron is this folder's own dependency and the root's optional one, at the same version (`test/package.test.ts`
+checks it). Its npm package has no install script, so neither `npm ci` (CI, every worktree) downloads an Electron
+binary; `npm start` here downloads it the first time. CI skips changes that touch only this folder; the app is tried by
+hand.
