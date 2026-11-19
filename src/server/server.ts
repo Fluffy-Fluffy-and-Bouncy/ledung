@@ -2608,7 +2608,8 @@ export class LedungServer {
           throw new HttpError(400, (e as Error).message);
         }
       }
-      // Settings → Relay on the relay admin's Ledung (issue #237): local only, and every change from the open page.
+      // Settings → Relay on the relay admin's Ledung (issue #237): local only but I added it (#420), and every change from
+      // the open page.
       // The admin key and the Cloudflare token never leave the data folder: the view carries a hash and a yes/no.
       case 'GET relay-admin':
         this.requireLocal(req);
@@ -2650,8 +2651,10 @@ export class LedungServer {
         this.requireLocal(req);
         await this.requirePage(req, url);
         return adminCall(() => this.relayAdmin().approve(decodeURIComponent(id)));
+      // I added it through the public name too (issue #420; Martin, 2026-11-19, Ledung question #615 "a"): with the open
+      // page and, there, this request signed by the passkey or a trusted computer's own screen (#313), as the pairing
+      // card's Remove device (#412). It only tells the relay a record is in place; Approve, which writes one, stays here.
       case 'POST relay-computers/:id/added':
-        this.requireLocal(req);
         await this.requirePage(req, url);
         return adminCall(() => this.relayAdmin().markAdded(decodeURIComponent(id)));
       case 'POST remote-leave':

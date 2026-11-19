@@ -5,13 +5,17 @@ import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import type net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { ADMIN_FILE, RelayAdmin } from '../src/remote/admin.ts';
+import tls from 'node:tls';
+import { ADMIN_FILE, RelayAdmin, type RelayAdminOptions } from '../src/remote/admin.ts';
 import { Cloudflare } from '../src/remote/cloudflare.ts';
 import { JOIN_TOKEN_BYTES, newJoinToken, parseJoinCode } from '../src/remote/join-code.ts';
 import type { NewComputerInfo } from '../src/shared/protocol.ts';
 import { removeTemp } from './temp.ts';
+import { selfSigned } from './self-signed.ts';
+import { freePort } from './free-port.ts';
 
 const CF = 'https://api.cloudflare.com/client/v4';
 const ACCOUNT = 'https://acme-v02.api.letsencrypt.org/acme/acct/123456';
@@ -116,12 +120,13 @@ function relayApi(state: { key: () => string | undefined; computers: { name: str
   };
 }
 
-function admin(handler: Handler) {
+/** `more`: more of the options, such as the in-use check's connect (issue #420). */
+function admin(handler: Handler, more: Partial<RelayAdminOptions> = {}) {
   const dir = tempDir();
   const { fetcher, calls } = mockFetch(handler);
   const sent: NewComputerInfo[][] = [];
   const timers: (() => void)[] = [];
-  const a = new RelayAdmin({ dir, fetch: fetcher, onComputers: (c) => sent.push(c), log: () => {}, setTimer: (fn) => timers.push(fn), clearTimer: () => {} });
+  const a = new RelayAdmin({ dir, fetch: fetcher, onComputers: (c) => sent.push(c), log: () => {}, setTimer: (fn) => timers.push(fn), clearTimer: () => {}, ...more });
   const saved = () => JSON.parse(fs.readFileSync(path.join(dir, ADMIN_FILE), 'utf8'));
   return { a, dir, calls, sent, timers, saved };
 }
@@ -227,4 +232,94 @@ test('without a token the admin adds the record by hand and marks it added: the 
   assert.deepEqual(sent.at(-1), []);
   assert.equal(calls.some((c) => c.url.startsWith(CF)), false);
   await assert.rejects(a.markAdded('byhand'), /No computer named byhand/);
+});
+
+// Issue #420 (Martin, 2026-11-19, Ledung question #615 "a"): a New computer card clears itself once the computer is in
+// use, which the admin's Ledung sees as the computer's public name answering with a certificate trusted for that name.
+// Here each public name is a TLS server on this computer, and "trusted" is its test certificate passed as the CA, as
+// test/linked-nodes.ts does for linked computers.
+const servers: tls.Server[] = [];
+after(() => {
+  for (const server of servers) server.close();
+});
+/** A TLS server holding a certificate for `name`: where it is reached, and its certificate as the CA that trusts it. */
+async function holding(name: string): Promise<{ port: number; ca: string }> {
+  const pair = selfSigned(name);
+  const server = tls.createServer({ key: pair.key, cert: pair.cert }, (socket) => socket.end());
+  servers.push(server);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return { port: (server.address() as net.AddressInfo).port, ca: pair.cert };
+}
+const joined = (name: string) => ({ name, owner: 'Friend', host: `${name}.l.example.org`, accountUrl: ACCOUNT, enrolledAt: 1, approved: false });
+async function until(check: () => boolean, what: string): Promise<void> {
+  for (let i = 0; i < 300 && !check(); i++) await new Promise((r) => setTimeout(r, 10));
+  assert.ok(check(), what);
+}
+
+test('a New computer card clears itself once its public name answers with a trusted certificate; offline, another name\'s or an untrusted one keeps it', async () => {
+  const inUse = await holding('inuse.l.example.org');
+  const untrusted = await holding('untrusted.l.example.org');
+  // Where each public name is reached, and the CA it is checked against; none: only the system's, which trusts no test.
+  const reach: Record<string, { port: number; ca?: string }> = {
+    'inuse.l.example.org': inUse,
+    'offline.l.example.org': { port: await freePort() },
+    // The in-use computer's own certificate, reached under another name: refused for the name.
+    'wrongname.l.example.org': inUse,
+    'untrusted.l.example.org': { port: untrusted.port },
+  };
+  const connect = (name: string) => tls.connect({ host: '127.0.0.1', port: reach[name]!.port, servername: name, ...(reach[name]!.ca ? { ca: reach[name]!.ca } : {}) });
+  let key: string | undefined;
+  const state = { key: () => key, computers: ['inuse', 'offline', 'wrongname', 'untrusted'].map(joined) };
+  const lines: string[] = [];
+  const { a, calls, sent, timers, saved } = admin(relayApi(state), { connect, log: (line) => lines.push(line) });
+  a.update({ relay: 'wss://relay.example.org' });
+  a.makeKey();
+  key = saved().adminKey;
+
+  const listed = await a.list();
+  assert.deepEqual(listed.computers.map((c) => c.name), ['offline', 'wrongname', 'untrusted'], 'only the computer in use cleared');
+  assert.deepEqual(sent.at(-1)!.map((c) => c.name), ['offline', 'wrongname', 'untrusted'], 'the pages are told');
+  // The relay was told for that one alone, as I added it does, so it never comes back as waiting.
+  assert.deepEqual(calls.filter((c) => c.method === 'POST').map((c) => new URL(c.url).pathname), ['/admin/computers/inuse/approved']);
+  assert.deepEqual(state.computers.map((c) => c.approved), [true, false, false, false]);
+  assert.ok(lines.includes('Relay admin: inuse.l.example.org is in use with its certificate; its New computer card cleared itself.'), lines.join('\n'));
+  assert.equal(calls.some((c) => c.url.startsWith(CF)), false, 'Cloudflare is never asked');
+
+  // The offline computer comes up with its certificate: the next look, a minute on, clears its card too.
+  reach['offline.l.example.org'] = await holding('offline.l.example.org');
+  assert.ok(timers.length > 0, 'it keeps looking while cards wait');
+  timers.shift()!();
+  await until(() => sent.at(-1)!.length === 2, 'the offline computer\'s card to clear once it is in use');
+  assert.deepEqual(sent.at(-1)!.map((c) => c.name), ['wrongname', 'untrusted']);
+  assert.equal(state.computers[1]!.approved, true);
+});
+
+test('a card for a computer long in use clears at the first look after a start; while the relay can\'t be told, it stays', async () => {
+  const held = await holding('settled.l.example.org');
+  const connect = (name: string) => tls.connect({ host: '127.0.0.1', port: held.port, servername: name, ca: held.ca });
+  let key: string | undefined;
+  let relayDown = true;
+  const state = { key: () => key, computers: [joined('settled')] };
+  const relay = relayApi(state);
+  const handler: Handler = (c) => relayDown && c.method === 'POST' ? { status: 500, body: { error: 'down' } } : relay(c);
+  const lines: string[] = [];
+  const { a, dir, saved } = admin(handler, { connect, log: (line) => lines.push(line) });
+  a.update({ relay: 'wss://relay.example.org' });
+  a.makeKey();
+  key = saved().adminKey;
+
+  // In use, but the relay refuses to be told: the card stays for the next look, and the log says why.
+  assert.deepEqual((await a.list()).computers.map((c) => c.name), ['settled']);
+  assert.equal(state.computers[0]!.approved, false);
+  assert.ok(lines.some((l) => l.startsWith('Relay admin: settled.l.example.org is in use, but the relay could not be told:')), lines.join('\n'));
+
+  // Ledung starts again (the update): a new admin on the same data folder, whose start looks once and clears it.
+  relayDown = false;
+  const told: NewComputerInfo[][] = [];
+  const again = new RelayAdmin({ dir, fetch: mockFetch(handler).fetcher, onComputers: (c) => told.push(c), log: () => {}, setTimer: () => 0, clearTimer: () => {}, connect });
+  again.start();
+  await until(() => state.computers[0]!.approved, 'the relay to be told at the first look');
+  // It was dropped before it became a card: the pages never get it, and Waiting for you never counts it.
+  assert.deepEqual(again.newComputers(), []);
+  assert.ok(told.every((cards) => cards.length === 0), JSON.stringify(told));
 });
