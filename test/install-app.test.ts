@@ -1,7 +1,7 @@
 // "Install as app" (issue #350): what the page offers in each browser, and the start notice's "Not now".
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { INSTALL_DISMISSED_KEY, installOffer, readDismissed, saveDismissed, showsNotice, type InstallEnv } from '../web/src/installApp.ts';
+import { DESKTOP_DISMISSED_KEY, dismissKey, INSTALL_DISMISSED_KEY, installOffer, readDismissed, saveDismissed, showsNotice, type InstallEnv } from '../web/src/installApp.ts';
 
 // Real user agents of the browsers the issue names.
 const UA = {
@@ -101,4 +101,43 @@ test('a storage that throws (private mode) is not dismissed and does not break',
   const s = { getItem: () => { throw new Error('no'); }, setItem: () => { throw new Error('no'); } };
   assert.equal(readDismissed(s), false);
   assert.doesNotThrow(() => saveDismissed(s));
+});
+
+// "Open in the Ledung app" (#409): on the computer Ledung runs on, with the app made there, the page points at it.
+
+test('a browser on the computer with the app made points at the app, in every browser and over plain http', () => {
+  for (const userAgent of [UA.chrome, UA.edge, UA.chromeMac, UA.safariMac, UA.firefoxMac]) {
+    for (const over of [{}, { offer: true }, { secure: false }, { refused: true }, { standalone: true }, { installed: true }]) {
+      const r = installOffer(env({ userAgent, desktopHere: true, ...over }));
+      assert.deepEqual(r, { kind: 'desktop' }, `${userAgent} ${JSON.stringify(over)}`);
+      assert.equal(showsNotice(r, false), true);
+    }
+  }
+});
+
+test('the app itself, a frame on another computer and a page not told so get no pointer; they keep what they had', () => {
+  // The app's own window: nothing, as before.
+  for (const userAgent of [UA.electronMac, UA.electronWin]) assert.deepEqual(installOffer(env({ userAgent, desktopHere: true })), { kind: 'none' });
+  // In a frame: this computer's own page is not where the person is.
+  assert.equal(installOffer(env({ framed: true, desktopHere: true })).kind, 'none');
+  // Not told (a phone, another computer, no app made): the install offer as before.
+  assert.deepEqual(installOffer(env({ offer: true, desktopHere: false })), { kind: 'button' });
+  assert.deepEqual(installOffer(env({ userAgent: UA.safariMac })), { kind: 'dock' });
+  // Premise: the same page told so points at the app.
+  assert.deepEqual(installOffer(env({ offer: true, desktopHere: true })), { kind: 'desktop' });
+});
+
+test('"Not now" on the app is remembered apart from the install notice\'s', () => {
+  const store = new Map<string, string>();
+  const s = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) };
+  assert.equal(dismissKey({ kind: 'desktop' }), DESKTOP_DISMISSED_KEY);
+  for (const kind of ['button', 'dock', 'none'] as const) assert.equal(dismissKey({ kind }), INSTALL_DISMISSED_KEY);
+  assert.notEqual(DESKTOP_DISMISSED_KEY, INSTALL_DISMISSED_KEY);
+  // The install notice dismissed earlier: the app's pointer still shows once.
+  saveDismissed(s);
+  assert.equal(readDismissed(s, DESKTOP_DISMISSED_KEY), false);
+  assert.equal(showsNotice({ kind: 'desktop' }, readDismissed(s, DESKTOP_DISMISSED_KEY)), true);
+  saveDismissed(s, DESKTOP_DISMISSED_KEY);
+  assert.equal(store.get(DESKTOP_DISMISSED_KEY), '1');
+  assert.equal(showsNotice({ kind: 'desktop' }, readDismissed(s, DESKTOP_DISMISSED_KEY)), false);
 });

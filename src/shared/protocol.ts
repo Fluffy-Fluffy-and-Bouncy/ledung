@@ -1532,6 +1532,12 @@ export type ServerEvent =
       linkPairings?: LinkPairingInfo[];
       /** The desktop app made on this computer (#408); left out: none, or not the npm package. */
       desktopApp?: DesktopAppInfo;
+      /**
+       * The desktop app is made on this computer, "desktopApp" is not false and this page is on this computer's own
+       * screen: a browser here offers "Open in the Ledung app" (#409). Left out otherwise, and for a page from another
+       * computer on the network or through the public name.
+       */
+      desktopAppHere?: true;
       /** The chats' settings (issue #211). */
       chats?: ChatsInfo;
       /** The Ledung Helper and the setup (docs/steps/ledung-helper.md). */

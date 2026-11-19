@@ -16,8 +16,8 @@ import { AFTER_APP_ARG, afterApp, APP_ID, MADE_CONFIG, madeConfigFor, readMadeCo
 import { findOnPath, restartCommand, runStart, startCommand } from '../desktop/start.ts';
 import {
   ADD_COMMAND, APP_SHORTCUT, appManifest, backgroundArgs, codeIntoKept, desktopAppOff, desktopAppState, desktopAvailability, electronPackage,
-  ensureApp, madePaths, noticeFile, openChoice, openDesktop, progressPrinter, readStamp, setExeDetails, waitForExit, whatToMake, writeAppCode,
-  writeAppShortcut, type MadePaths, type OpenSteps, type Stamp,
+  ensureApp, madeApp, madePaths, NO_APP, noticeFile, offersApp, openChoice, openDesktop, openMadeApp, trayOpen, progressPrinter, readStamp, setExeDetails, waitForExit, whatToMake, writeAppCode,
+  writeAppShortcut, type Availability, type MadePaths, type OpenSteps, type Stamp,
 } from '../src/platform/desktop-app.ts';
 import { icoFromPng } from '../src/platform/icons.ts';
 import { appDir } from '../src/platform/paths.ts';
@@ -294,11 +294,15 @@ test('download progress: one line rewritten in a terminal, a line each quarter i
 
 // What `ledung` opens (test review of PR #411, finding 1): the command line and the switch, as a table.
 
-test('`ledung` opens the app by default; --browser, --open-only, --foreground and "desktopApp": false the browser; --no-open nothing', () => {
+test('`ledung` opens the app by default, --open-only too; --browser, --foreground and "desktopApp": false the browser; --no-open nothing', () => {
   const rows: [string[], boolean, { tryApp: boolean; appCommand: boolean; noOpen: boolean; passthrough: string[] }][] = [
     [[], false, { tryApp: true, appCommand: false, noOpen: false, passthrough: [] }],
     [['--browser'], false, { tryApp: false, appCommand: false, noOpen: false, passthrough: [] }],
-    [['--open-only'], false, { tryApp: false, appCommand: false, noOpen: false, passthrough: [] }],
+    // The Mac's Ledung.app opens a running Ledung with --open-only: the app, as the other shortcuts (#409, which asks
+    // for this change; it was the browser under #407).
+    [['--open-only'], false, { tryApp: true, appCommand: false, noOpen: false, passthrough: [] }],
+    [['--open-only'], true, { tryApp: false, appCommand: false, noOpen: false, passthrough: [] }],
+    [['--open-only', '--browser'], false, { tryApp: false, appCommand: false, noOpen: false, passthrough: [] }],
     [['--foreground'], false, { tryApp: false, appCommand: false, noOpen: false, passthrough: [] }],
     [[], true, { tryApp: false, appCommand: false, noOpen: false, passthrough: [] }],
     [['--no-open'], false, { tryApp: false, appCommand: false, noOpen: true, passthrough: ['--no-open'] }],
@@ -309,6 +313,143 @@ test('`ledung` opens the app by default; --browser, --open-only, --foreground an
     [['--no-open', '--foreground'], false, { tryApp: false, appCommand: false, noOpen: true, passthrough: ['--no-open'] }],
   ];
   for (const [args, off, want] of rows) assert.deepEqual(openChoice(args, off), want, `${args.join(' ') || '(none)'}${off ? ', switch off' : ''}`);
+});
+
+// The tray's Open and "Open in the Ledung app" (#409): the running Ledung opens the app made here, never makes one.
+
+/** A made app in a fresh data folder: its program and stamp, as ensureApp leaves them. */
+function madeHere(name: string, platform: NodeJS.Platform = 'linux'): { data: string; paths: MadePaths } {
+  const data = path.join(base, name);
+  const paths = madePaths(data, platform);
+  fs.mkdirSync(path.dirname(paths.exe), { recursive: true });
+  fs.writeFileSync(paths.exe, 'electron');
+  fs.writeFileSync(paths.stamp, JSON.stringify(stamp({ platform })));
+  return { data, paths };
+}
+
+test('the running Ledung opens the made app, and says why not when it is off, not the package, not made or fails', async () => {
+  const { data, paths } = madeHere('open-made');
+  const opened: MadePaths[] = [];
+  const open = async (p: MadePaths) => { opened.push(p); return null; };
+  // Made, on, the package: opened, at the made app's own paths.
+  assert.equal(await openMadeApp({ dataDir: data, off: false, packaged: true, platform: 'linux', open }), null);
+  assert.deepEqual(opened, [paths]);
+  assert.deepEqual(madeApp(data, 'linux'), paths);
+  // "desktopApp": false, or a clone: the browser, the app not touched.
+  assert.equal(await openMadeApp({ dataDir: data, off: true, packaged: true, platform: 'linux', open }), NO_APP);
+  assert.equal(await openMadeApp({ dataDir: data, off: false, packaged: false, platform: 'linux', open }), NO_APP);
+  assert.equal(opened.length, 1);
+  // The app could not be opened: its line goes back to the caller, which opens the browser.
+  const why = 'Could not open the desktop app: open exited with code 1.';
+  assert.equal(await openMadeApp({ dataDir: data, off: false, packaged: true, platform: 'linux', open: async () => why }), why);
+});
+
+// The tray's Open (#409, code review of PR #432): with Electron's package here it opens the app, making it first when
+// it isn't made, as `ledung` does; the browser without the package or with "desktopApp": false.
+
+const AVAILABLE: Availability = { ok: true, electron: { dir: '', version: '45.4.1' }, source: '/pkg/dist/desktop' };
+const trayMake = (data: string) => async () => ({ ...make(), dataDir: data });
+
+test("the tray's Open makes the app when none is made, then opens it; no browser, no terminal hint", async () => {
+  const data = path.join(base, 'tray-make');
+  const made = madePaths(data, 'darwin');
+  const ensured: string[] = [];
+  const opened: MadePaths[] = [];
+  const s = steps({
+    ensure: async (o) => { ensured.push(o.dataDir); o.print?.('Making the desktop app, once: downloading Electron 45.4.1'); return { made: 'all', paths: made }; },
+    open: async (p) => { opened.push(p); return null; },
+  });
+  await trayOpen({ off: false, desktop: { ...AVAILABLE, electron: { dir: base, version: '45.4.1' } }, make: trayMake(data), steps: s });
+  assert.deepEqual(ensured, [data], 'made in the data folder it was given');
+  assert.deepEqual(opened, [made], 'the made app opened');
+  assert.equal(s.browsers, 0);
+  assert.ok(s.lines.includes(`Made the desktop app: ${made.bundle}`), s.lines.join('\n'));
+  assert.equal(s.lines.some((l) => /Ctrl\+C/.test(l)), false, 'no one is at a terminal for the tray');
+  // Premise: `ledung` itself, at a terminal, does print that hint after the same announcement.
+  const t = steps({ ensure: s.ensure, open: async () => null });
+  await openDesktop({ make: { ...make(), dataDir: data }, fallback: true, steps: t });
+  assert.equal(t.lines.some((l) => /Ctrl\+C/.test(l)), true, t.lines.join('\n'));
+});
+
+test("the tray's Open gives the browser with \"desktopApp\": false or no Electron package, and touches no app", async () => {
+  for (const [off, desktop] of [[true, AVAILABLE], [false, { ok: false, reason: 'Run from a clone' }]] as const) {
+    let ensured = 0;
+    const s = steps({ ensure: async () => { ensured++; return { made: 'nothing', paths: madePaths(base, 'darwin') }; } });
+    await trayOpen({ off, desktop, make: trayMake(path.join(base, 'tray-off')), steps: s });
+    assert.equal(s.browsers, 1, `off ${off}, ${desktop.ok}`);
+    assert.equal(ensured, 0);
+  }
+  // Premise: on, with the package, the same steps make and open the app instead.
+  let ensured = 0;
+  const s = steps({ ensure: async () => { ensured++; return { made: 'nothing', paths: madePaths(base, 'darwin') }; } });
+  await trayOpen({ off: false, desktop: { ...AVAILABLE, electron: { dir: base, version: '45.4.1' } }, make: trayMake(path.join(base, 'tray-on')), steps: s });
+  assert.equal(ensured, 1);
+  assert.equal(s.browsers, 0);
+});
+
+test("the tray's Open: a failed make or open says why in one line and opens the browser", async () => {
+  const desktop: Availability = { ...AVAILABLE, electron: { dir: base, version: '45.4.1' } };
+  const failedMake = steps({ ensure: async () => { throw new Error('getaddrinfo ENOTFOUND github.com'); } });
+  await trayOpen({ off: false, desktop, make: trayMake(path.join(base, 'tray-fail-make')), steps: failedMake });
+  assert.equal(failedMake.browsers, 1);
+  assert.ok(failedMake.lines.includes('The desktop app could not be made: getaddrinfo ENOTFOUND github.com. Opening Ledung in the browser instead.'), failedMake.lines.join('\n'));
+  const failedOpen = steps({ open: async () => 'Could not open the desktop app: open exited with code 1.' });
+  await trayOpen({ off: false, desktop, make: trayMake(path.join(base, 'tray-fail-open')), steps: failedOpen });
+  assert.equal(failedOpen.browsers, 1);
+  assert.ok(failedOpen.lines.includes('Could not open the desktop app: open exited with code 1. Opening Ledung in the browser instead.'), failedOpen.lines.join('\n'));
+  const noConfig = steps();
+  await trayOpen({ off: false, desktop, make: async () => { throw new Error('no Start menu'); }, steps: noConfig });
+  assert.equal(noConfig.browsers, 1);
+  assert.deepEqual(noConfig.lines, ['The desktop app could not be made: no Start menu. Opening Ledung in the browser instead.']);
+});
+
+test("a second click on the tray's Open while the app is being made waits for that make instead of starting another", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let ensured = 0;
+  let opened = 0;
+  const s = steps({
+    ensure: async () => { ensured++; await gate; return { made: 'all', paths: madePaths(base, 'darwin') }; },
+    open: async () => { opened++; return null; },
+  });
+  const o = { off: false, desktop: { ...AVAILABLE, electron: { dir: base, version: '45.4.1' } } as Availability, make: trayMake(path.join(base, 'tray-twice')), steps: s };
+  const first = trayOpen(o);
+  const second = trayOpen(o);
+  release();
+  await Promise.all([first, second]);
+  assert.equal(ensured, 1, 'one make');
+  assert.equal(opened, 1);
+  // Done: the next click makes (here: checks) again.
+  await trayOpen(o);
+  assert.equal(ensured, 2);
+});
+
+test('the page offers the app only for the npm package, with the switch on and an app made here', () => {
+  const { data } = madeHere('offers-made');
+  assert.equal(offersApp({ dataDir: data, off: false, packaged: true, platform: 'linux' }), true);
+  assert.equal(offersApp({ dataDir: data, off: true, packaged: true, platform: 'linux' }), false, '"desktopApp": false');
+  assert.equal(offersApp({ dataDir: data, off: false, packaged: false, platform: 'linux' }), false, 'a clone');
+  assert.equal(offersApp({ dataDir: path.join(base, 'offers-none'), off: false, packaged: true, platform: 'linux' }), false, 'none made');
+});
+
+test('no app is opened where none is made whole: no stamp, no program, nothing at all', async () => {
+  const opened: MadePaths[] = [];
+  const open = async (p: MadePaths) => { opened.push(p); return null; };
+  const none = path.join(base, 'open-none');
+  assert.equal(madeApp(none, 'linux'), null);
+  assert.equal(await openMadeApp({ dataDir: none, off: false, packaged: true, platform: 'linux', open }), NO_APP);
+  // A make that stopped half-way: the program without its stamp, or the stamp without its program.
+  const noStamp = madeHere('open-no-stamp');
+  fs.rmSync(noStamp.paths.stamp);
+  assert.equal(await openMadeApp({ dataDir: noStamp.data, off: false, packaged: true, platform: 'linux', open }), NO_APP);
+  const noExe = madeHere('open-no-exe');
+  fs.rmSync(noExe.paths.exe);
+  assert.equal(await openMadeApp({ dataDir: noExe.data, off: false, packaged: true, platform: 'linux', open }), NO_APP);
+  assert.equal(opened.length, 0);
+  // Premise: the same probe on a whole app opens it.
+  const whole = madeHere('open-whole');
+  assert.equal(await openMadeApp({ dataDir: whole.data, off: false, packaged: true, platform: 'linux', open }), null);
+  assert.deepEqual(opened, [whole.paths]);
 });
 
 test('the started Ledung opens no browser of its own only when the app opens; --no-open stays as given', () => {

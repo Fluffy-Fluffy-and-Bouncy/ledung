@@ -47,6 +47,8 @@ For development, `npm start` runs Ledung straight from this folder (use another 
 browser tab (epic #357). It ships in the npm package (#407): `npm run pack` bundles it into `dist/desktop/`, Electron is
 an optional dependency pinned to the same version as `desktop/package.json`'s, and the `ledung` command makes a
 "Ledung" app from Electron's binary in the data folder the first time it opens it (`src/platform/desktop-app.ts`).
+On the computer it runs on, the installed app is the way in (#409): `ledung`, the shortcuts and the tray's Open open it,
+and a browser's page there points at it; the browser stays a full way in.
 Electron's npm package has no install script, so the root `npm install` and `npm ci` download no Electron binary. From a
 clone it runs as before: `npm install` then `npm start` in `desktop/`, with Ledung already running. It reads
 `LEDUNG_CONFIG` and `LEDUNG_DATA_DIR` as the core does, so it can be pointed at a throwaway Ledung;
