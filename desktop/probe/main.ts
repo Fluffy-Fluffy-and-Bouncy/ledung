@@ -557,14 +557,24 @@ async function findPhase(w: BrowserWindow): Promise<void> {
  * screen with `screencapture` (a native menu is not in the window's own capture).
  */
 async function contextPhase(w: BrowserWindow): Promise<void> {
-  const wc = w.webContents;
-  const popped: Menu[] = [];
   const realPopup = Menu.prototype.popup;
-  let showReal = false;
+  const popped: Menu[] = [];
+  const shown = { real: false };
   Menu.prototype.popup = function popup(this: Menu, options?: Electron.PopupOptions) {
     popped.push(this);
-    if (showReal) realPopup.call(this, options);
+    if (shown.real) realPopup.call(this, options);
   };
+  // Put back however the phase ends, a check that throws too (self-check of #447, finding 1).
+  try {
+    await contextChecks(w, popped, shown);
+  } finally {
+    Menu.prototype.popup = realPopup;
+  }
+}
+
+/** contextPhase's checks: `popped` collects the menus the app built, `shown.real` shows them for the screenshot. */
+async function contextChecks(w: BrowserWindow, popped: Menu[], shown: { real: boolean }): Promise<void> {
+  const wc = w.webContents;
   w.show();
   w.focus();
   if (process.platform === 'darwin') app.focus({ steal: true });
@@ -692,7 +702,7 @@ async function contextPhase(w: BrowserWindow): Promise<void> {
   const shot = process.env.PROBE_SHOT;
   if (shot) {
     await page(w, `document.getElementById('__probeContext').style.background = 'transparent'; getSelection().removeAllRanges(); document.activeElement?.blur(); 1`);
-    showReal = true;
+    shown.real = true;
     await rightClick('__pImg', 60);
     await sleep(1200);
     let captured = false;
@@ -705,7 +715,6 @@ async function contextPhase(w: BrowserWindow): Promise<void> {
     popped.at(-1)?.closePopup();
     out('context-shot', { file: shot, captured });
   }
-  Menu.prototype.popup = realPopup;
   await page(w, `document.getElementById('__probeContext')?.remove(); 1`);
 }
 

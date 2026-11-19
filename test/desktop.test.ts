@@ -597,6 +597,8 @@ test('a picture gets Copy Image and Save Image As…; a picture that did not loa
   assert.deepEqual(contextItems(clickedOn({ mediaType: 'image', srcURL: 'chrome://theme/x', hasImageContents: true })), ['copyImage']);
   // A broken picture has nothing to copy: no menu, where the same spot with the picture loaded has one (above).
   assert.deepEqual(contextItems(clickedOn({ mediaType: 'image', srcURL: SHOT, hasImageContents: false })), []);
+  // An Electron that does not say whether it loaded: taken as loaded, so a picture is never left without Copy Image.
+  assert.deepEqual(contextItems({ ...clickedOn({ mediaType: 'image', srcURL: SHOT }), hasImageContents: undefined }), ['copyImage', 'saveImage']);
   // A video or a canvas is not a picture here.
   assert.deepEqual(contextItems(clickedOn({ mediaType: 'video', srcURL: SHOT, hasImageContents: true })), []);
   assert.deepEqual(contextItems(clickedOn({ mediaType: 'canvas', srcURL: SHOT, hasImageContents: true })), []);
