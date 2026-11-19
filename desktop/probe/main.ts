@@ -7,9 +7,11 @@
 //
 //   PROBE_PHASE=attach      a Ledung runs: signed in, address, settings, permissions, refused navigation and
 //                           windows, links, Ledung's icon, the menu bar that never shows and the keys that still
-//                           work off the Mac (#384, #389); saves the device list for "again"
+//                           work off the Mac (#384, #389), the page's one bridge to the app (#360); saves the device
+//                           list for "again"
 //   PROBE_PHASE=again       a second start: still signed in, the same devices as after "attach"
-//   PROBE_PHASE=notrunning  none runs: the "not running" page; the probe starts one, presses Retry, page loads
+//   PROBE_PHASE=notrunning  none runs: the "not running" page, whose call to show the window is refused (#360); the
+//                           probe starts one, presses Retry, page loads, and the same call from it shows the window
 //   PROBE_PHASE=stopped     the probe starts one, the app attaches, the probe stops it and reloads: the "not
 //                           running" page again; it starts it again, presses Retry, page loads
 //   PROBE_PHASE=window      a Ledung runs: closing hides, the Dock and a second start show the window again, ⌘O is
@@ -22,6 +24,10 @@
 //                           that Ledung running, so the shell can check it still answers after the app quit. Run it
 //                           with an ELECTRON_* variable of your own set (ELECTRON_PROBE=1) and through npx, which
 //                           adds npm_*: the probe checks the app has both, so their absence in Ledung means something
+//   PROBE_PHASE=notify      a Ledung runs, with a project the shell starts a session in that asks for permission while
+//                           the probe waits (#360): turns the page's notifications on, hides the window, waits for the
+//                           page's notification, clicks it, and the window shows on the session that asked.
+//                           PROBE_NOTIFY_SECONDS sets how long it waits for the notification (180)
 //   PROBE_PHASE=startfail   none runs, LEDUNG_DESKTOP_START names a script that isn't there: Start fails, the page
 //                           says so in one line and offers Start and Retry, no error dialog, and the menu's Quit ends
 //                           the app
@@ -73,6 +79,18 @@ if (app.dock) {
     dockIcons.push(typeof image === 'string' ? nativeImage.createFromPath(image) : image);
     setIcon(image);
   };
+}
+/**
+ * Alpha at three points of a 512 px Dock icon (#404): the top-left corner, the last margin pixel of the middle row,
+ * and two pixels into the body on that row. Apple's grid gives a 50 px margin at 512 px (desktop/dock-icon.ts); the
+ * 4th byte is alpha in Electron's BGRA and in RGBA alike.
+ */
+function dockEdge(image: NativeImage): { corner: number; outside: number; inside: number } {
+  const { width } = image.getSize();
+  const bitmap = image.toBitmap();
+  const alpha = (x: number, y: number) => bitmap[(y * width + x) * 4 + 3] ?? -1;
+  const mid = Math.floor(width / 2);
+  return { corner: alpha(0, 0), outside: alpha(49, mid), inside: alpha(52, mid) };
 }
 /** main.ts's icon path, read from the module once it is loaded. */
 let appIcon = '';
@@ -164,7 +182,7 @@ async function signedIn(w: BrowserWindow): Promise<string[]> {
 }
 
 /**
- * Ledung's icon and the hidden menu bar (#384, #389): the icon file loads as a 512 px image, the Mac's Dock was given
+ * Ledung's icon and the hidden menu bar (#384, #389, #404): the icon file loads as a 512 px image, the Mac's Dock was given
  * it, Windows and Linux hide the menu bar with no auto-hide, and the menu still carries the items whose shortcuts must
  * work.
  */
@@ -175,7 +193,7 @@ function looks(w: BrowserWindow): void {
   const roles = (menu?.items ?? []).map((i) => i.role ?? i.label);
   const report = {
     icon: path.relative(clone, appIcon), iconSize: icon.getSize(), iconEmpty: icon.isEmpty(),
-    dockIcons: dockIcons.map((d) => ({ size: d.getSize(), sameAsIcon: d.toPNG().equals(icon.toPNG()) })),
+    dockIcons: dockIcons.map((d) => ({ size: d.getSize(), sameAsIcon: d.toPNG().equals(icon.toPNG()), edge: dockEdge(d) })),
     menuBarAutoHide: w.isMenuBarAutoHide(), menuBarVisible: w.isMenuBarVisible(), menu: roles,
     closeWindow: menuItem('close-window')?.accelerator ?? null, toolCalls: menuItem('tool-calls')?.accelerator ?? null,
   };
@@ -183,7 +201,13 @@ function looks(w: BrowserWindow): void {
   expect(appIcon.endsWith(path.join('web', 'public', 'icon-512.png')), "the icon is the page's own icon-512.png", report.icon);
   expect(!icon.isEmpty() && icon.getSize().width === 512 && icon.getSize().height === 512, 'the icon loads as a 512 × 512 image', report);
   if (mac) {
-    expect(report.dockIcons.length === 1 && report.dockIcons[0]!.sameAsIcon, "the Dock was given Ledung's icon, once", report.dockIcons);
+    // Padded, not the file as it is (#404): a 512 px image, clear up to the margin on the middle row, the body's
+    // own pixels just inside it. The second half is the positive branch of the first.
+    const dock = report.dockIcons[0];
+    expect(report.dockIcons.length === 1 && dock !== undefined && dock.size.width === 512 && dock.size.height === 512 && !dock.sameAsIcon,
+      "the Dock was given Ledung's icon, once, as a 512 px image of its own", report.dockIcons);
+    expect(dock !== undefined && dock.edge.outside === 0 && dock.edge.corner === 0, 'the Dock icon is clear outside the margin', dock?.edge);
+    expect(dock !== undefined && dock.edge.inside === 255, "the Dock icon's body starts just inside the margin", dock?.edge);
   } else {
     // Never shown, and not auto-hidden: auto-hide is what lets Alt show it (#389).
     expect(!report.menuBarAutoHide && !report.menuBarVisible, 'the menu bar is hidden, with no auto-hide', report);
@@ -311,6 +335,83 @@ async function permissions(w: BrowserWindow): Promise<void> {
   expect(seen.notification === 'granted', 'notifications are allowed', seen.notification);
   expect(seen.clipboard === 'granted', 'clipboard writes are allowed', seen.clipboard);
   expect(seen.location === 'denied' && seen.camera === 'denied', 'location and camera are refused', [seen.location, seen.camera]);
+}
+
+/** The page asks the app to show its window, as a click on its notification does (#360); the window's state after. */
+async function askToShow(w: BrowserWindow): Promise<{ hiddenBefore: boolean; visible: boolean; focused: boolean }> {
+  w.hide();
+  await sleep(500);
+  const hiddenBefore = !w.isVisible();
+  await page(w, `window.ledungDesktop?.showWindow(); 1`);
+  await sleep(800);
+  return { hiddenBefore, visible: w.isVisible(), focused: w.isFocused() };
+}
+
+/**
+ * The preload gives the page one function and nothing of Node (#360), and that function shows the hidden window.
+ * Leaves the window shown.
+ */
+async function bridge(w: BrowserWindow): Promise<void> {
+  const exposed = await page(w, `({ keys: Object.keys(window.ledungDesktop ?? {}), type: typeof window.ledungDesktop?.showWindow,
+    require: typeof require, process: typeof process, ipcRenderer: typeof ipcRenderer, electron: typeof electron })`);
+  out('bridge', exposed);
+  expect(JSON.stringify(exposed.keys) === '["showWindow"]' && exposed.type === 'function', 'the page has the one function, showWindow', exposed);
+  expect(['require', 'process', 'ipcRenderer', 'electron'].every((k) => exposed[k] === 'undefined'), 'the page has no Node and no ipcRenderer', exposed);
+  const shown = await askToShow(w);
+  out('bridge-show', shown);
+  expect(shown.hiddenBefore && shown.visible, "Ledung's page showed the hidden window", shown);
+  // Focus needs a screen: on a Mac reached only by Screen Sharing it can stay false, so it is reported, not judged.
+  if (!shown.focused) out('bridge-focus', { focused: false, note: 'the window did not take focus on this computer' });
+  w.show();
+}
+
+/**
+ * The notification click (#360): the page's notifications on, the window hidden on another view, a session asking for
+ * permission (the shell starts it) makes the page raise one, and its click shows the window on that session. The
+ * probe records the page's notifications as they are made and clicks the one that came, as the system would.
+ */
+async function notifyPhase(w: BrowserWindow): Promise<void> {
+  // Turned on as the page's Settings switch does, with the permission the app grants.
+  await page(w, `localStorage.setItem('ledung.notify', '1'); 1`);
+  w.webContents.reload();
+  await sleep(1000);
+  await showing(`${origin}/`);
+  await sleep(2000);
+  await page(w, `(() => {
+    const Real = window.Notification;
+    window.__probeNotes = [];
+    window.Notification = class extends Real {
+      constructor(title, options) { super(title, options); window.__probeNotes.push(this); }
+    };
+    location.hash = '#/overview';
+    return 1;
+  })()`);
+  w.hide();
+  await sleep(500);
+  const hiddenBefore = !w.isVisible();
+  out('notify-waiting', { hiddenBefore, hash: await page(w, 'location.hash') });
+  const seconds = Number(process.env.PROBE_NOTIFY_SECONDS ?? 180);
+  let note: { title: string; tag: string } | null = null;
+  for (let i = 0; i < seconds * 2 && !note; i++) {
+    await sleep(500);
+    note = await page(w, `(() => { const n = window.__probeNotes.find((n) => n.tag.startsWith('p')); return n ? { title: n.title, tag: n.tag } : null; })()`);
+  }
+  out('notified', { note, visible: w.isVisible() });
+  expect(note !== null, `the page raised a permission notification with the window hidden, within ${seconds} s`);
+  if (!note) return;
+  const tag = note.tag;
+  expect(!w.isVisible(), 'the window was still hidden when it came', w.isVisible());
+  const permissions = ((await api(w, 'state')).body?.permissions ?? []) as { id: string; sessionId: string }[];
+  const asked = permissions.find((p) => `p${p.id}` === tag)?.sessionId ?? null;
+  // The click, as the system hands it to the page.
+  await page(w, `window.__probeNotes.find((n) => n.tag === ${JSON.stringify(tag)}).dispatchEvent(new Event('click')); 1`);
+  await sleep(1500);
+  const after = { visible: w.isVisible(), focused: w.isFocused(), hash: await page(w, 'location.hash'), asked };
+  out('notification-clicked', after);
+  expect(asked !== null, "the notification's permission is one Ledung lists", tag);
+  expect(hiddenBefore && after.visible, 'the click showed the hidden window', after);
+  expect(asked !== null && after.hash === `#/s/${asked}`, 'the window shows the session that asked', after);
+  if (!after.focused) out('notify-focus', { focused: false, note: 'the window did not take focus on this computer' });
 }
 
 async function notRunningPage(): Promise<BrowserWindow> {
@@ -588,6 +689,7 @@ async function run(): Promise<void> {
       if (phase === 'attach') {
         fs.writeFileSync(devicesFile, JSON.stringify(ids));
         looks(w);
+        await bridge(w);
         await menuZoomStep(w);
         if (process.platform !== 'darwin') await keys(w);
         await permissions(w);
@@ -624,9 +726,18 @@ async function run(): Promise<void> {
     } else if (phase === 'notrunning') {
       const w = await notRunningPage();
       expect((await page(w, `document.body.innerText`)).includes(`port ${port}`), 'the reason names the port tried');
+      // The "not running" page has the preload too, and its call is refused (#360) ...
+      const refusedShow = await askToShow(w);
+      out('not-running-show', refusedShow);
+      expect(refusedShow.hiddenBefore && !refusedShow.visible, 'the "not running" page could not show the hidden window', refusedShow);
+      w.show();
       core = startCore();
       await waitForCore();
       await retry(w);
+      // ... and the same call from Ledung's page, in the same window, shows it: the probe sees a shown window.
+      const ownShow = await askToShow(w);
+      out('own-page-show', ownShow);
+      expect(ownShow.hiddenBefore && ownShow.visible, "the same call from Ledung's page showed the window", ownShow);
     } else if (phase === 'stopped') {
       core = startCore();
       await waitForCore();
@@ -646,6 +757,10 @@ async function run(): Promise<void> {
       const w = await showing(`${origin}/`);
       await signedIn(w);
       await windowPhase(w);
+    } else if (phase === 'notify') {
+      const w = await showing(`${origin}/`);
+      await signedIn(w);
+      await notifyPhase(w);
     } else if (phase === 'start') {
       const w = await notRunningPage();
       const pressed = Date.now();
