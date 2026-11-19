@@ -54,6 +54,12 @@ One window opens with your running Ledung's page, signed in. Nothing opens in th
   Ledung's own later (Martin, 2026-11-19, #389). The keys still work: Ctrl+W, Alt+F4 (Windows), copy and paste, Ctrl+O (Show tool
   calls), reload, and zoom with Ctrl and "+" (any keyboard layout; Ctrl and "=" too), Ctrl+-, Ctrl+0 and Ctrl and the
   mouse wheel. The Mac's menu is the system menu bar, as before.
+- **Right-click menu** (#447): right-clicking gives a menu, as in a browser. On a picture (a screenshot in Waiting for
+  you, the chat, the file viewer): Copy Image, which puts the picture itself on the clipboard to paste into another
+  app, and Save Image As…, which asks where to save it. On a link: Copy Link Address (web links only). On selected
+  text: Copy. In a text box: Cut, Copy and Paste when they would do something, and Select All. An item that would do
+  nothing is left out rather than greyed, and a spot where nothing applies (a broken picture, plain page) gets no menu.
+  In a browser, the browser's own menu is unchanged.
 - **Find in the page** (#445): Ctrl+F (⌘F on the Mac), or Edit → Find…, opens a find bar at the window's top right,
   from anywhere in the page, the composer too. Typing highlights the matches in what the page shows and the bar says
   "n of m" (or "No matches"); Enter and Shift+Enter go to the next and previous match, around the ends; Esc or ✕

@@ -7,12 +7,13 @@
 // check, sign-in cookie, Origin check and "no embedding" apply unchanged. Sign-in sets the cookie from this main
 // process (Mac spike 2026-11-17: GET /api/state 200 with no token in any URL); the token never goes into a URL or a
 // command line.
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, session, shell, WebContentsView, type BaseWindow, type Input, type IpcMainEvent, type NativeImage, type Session, type WebContents } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, session, shell, WebContentsView, type BaseWindow, type ContextMenuParams, type Input, type IpcMainEvent, type NativeImage, type Session, type WebContents } from 'electron';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import { dataDir, findRunning } from './attach.ts';
+import { CONTEXT_LABELS, contextItems, type ContextItem } from './context-menu.ts';
 import { dockIconLayout, padBitmap } from './dock-icon.ts';
 import { FindSession, type FindRequest } from './find.ts';
 import { findKey, zoomed, zoomKey, type FindKey } from './keys.ts';
@@ -466,6 +467,8 @@ function findBarOf(w: BrowserWindow): FindBar {
   // Enter, Shift+Enter, Esc and Ctrl+F / ⌘F in the bar (desktop/keys.ts), and the window's own keys as in the page
   // (Alt+F4, Ctrl and "+"); everything else types in its text box.
   contents.on('before-input-event', (event, input) => windowKeys(w, event, input, true));
+  // Cut, Copy, Paste and Select All in its text box, as in the page's (#447).
+  contents.on('context-menu', (_event, params) => showContextMenu(w, contents, params));
   const bar: FindBar = { view, search: new FindSession(), open: false, loaded: contents.loadFile(FIND_BAR_PAGE) };
   bar.loaded.catch((e: Error) => console.error(`Ledung desktop: the find bar did not load: ${e.message}`));
   w.on('resize', () => placeFindBar(w, bar));
@@ -556,6 +559,37 @@ function windowKeys(w: BrowserWindow, event: { preventDefault(): void }, input: 
 function findBarWindow(event: IpcMainEvent): BrowserWindow | null {
   for (const [w, bar] of findBars) if (!w.isDestroyed() && bar.view.webContents === event.sender && bar.open) return w;
   return null;
+}
+
+/**
+ * The right-click menu (#447): the items desktop/context-menu.ts picks for what was clicked, acting on the page (or
+ * the find bar) that was clicked. Copy Image copies the picture under the pointer, as a browser's does; Save Image As…
+ * downloads its address through the window's signed-in session, and with no download handler of the app's own Electron
+ * asks where to save it. Nothing applies: no menu.
+ */
+function showContextMenu(w: BrowserWindow, contents: WebContents, params: ContextMenuParams): void {
+  const entries = contextItems(params);
+  if (entries.length === 0 || w.isDestroyed()) return;
+  const act: Record<ContextItem, () => void> = {
+    copyImage: () => contents.copyImageAt(params.x, params.y),
+    saveImage: () => contents.downloadURL(params.srcURL),
+    // Electron 45's clipboard is the W3C one, a promise.
+    copyLink: () => void clipboard.writeText(params.linkURL).catch((e: Error) => console.error(`Ledung desktop: ${e.message}`)),
+    cut: () => contents.cut(),
+    copy: () => contents.copy(),
+    paste: () => contents.paste(),
+    selectAll: () => contents.selectAll(),
+  };
+  const menu = Menu.buildFromTemplate(entries.map((e) => (e === 'separator'
+    ? { type: 'separator' as const }
+    : {
+        id: `context-${e}`,
+        label: CONTEXT_LABELS[e],
+        click: () => {
+          if (!contents.isDestroyed()) act[e]();
+        },
+      })));
+  menu.popup({ window: w, frame: params.frame ?? undefined });
 }
 
 /** A View menu item on the window's page (desktop/menu.ts): the zoom steps are the app's own keys' (#389). */
@@ -698,6 +732,8 @@ function createWindow(bounds?: { x: number; y: number; width: number; height: nu
     }
   });
   contents.on('before-input-event', (event, input) => windowKeys(w, event, input, false));
+  // A right-click gets a menu as in a browser (#447); Electron shows none of its own.
+  contents.on('context-menu', (_event, params) => showContextMenu(w, contents, params));
   // The bar's count: answers to its own search only (desktop/find.ts).
   contents.on('found-in-page', (_event, result) => {
     const bar = findBars.get(w);
