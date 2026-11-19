@@ -49,7 +49,8 @@ test('apple-touch-icon.png is opaque with dark corners, not white (#388)', () =>
 });
 
 test('the icon script draws see-through corners and an opaque rounded square (#388)', () => {
-  assertSeeThroughCorners(readPng(renderIcon(64)), 'renderIcon(64)');
-  const opaque = readPng(renderIcon(64, { opaque: true }));
+  // Four samples per pixel keep it quick; every pixel checked lies wholly inside or wholly outside the square.
+  assertSeeThroughCorners(readPng(renderIcon(64, { samples: 4 })), 'renderIcon(64)');
+  const opaque = readPng(renderIcon(64, { opaque: true, samples: 4 }));
   assert.deepEqual(opaque.pixel(0, 0), [...BG, 255]);
 });

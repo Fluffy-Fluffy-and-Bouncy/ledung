@@ -110,8 +110,10 @@ function colourAt(x: number, y: number, fullSquare: boolean): Rgb | undefined {
   return c;
 }
 
-export function renderIcon(size: number, opts: { opaque?: boolean } = {}): Buffer {
-  const samples = Math.max(4, Math.ceil(2048 / size));
+// Edges are smoothed by sampling each pixel on a grid, about 2048 samples across the icon (at least 4 per pixel);
+// a test may ask for fewer.
+export function renderIcon(size: number, opts: { opaque?: boolean; samples?: number } = {}): Buffer {
+  const samples = opts.samples ?? Math.max(4, Math.ceil(2048 / size));
   const rows: Buffer[] = [];
   for (let py = 0; py < size; py++) {
     const row = Buffer.alloc(1 + size * 4);
