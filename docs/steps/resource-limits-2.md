@@ -1,6 +1,6 @@
 # Resource limits, round 2: subagents, waking, light commands, idle bookings, WSL
 
-Nov 17, 2026 · **Proposal, not approved.** Issue #356 (Simon approved starting a design, question #2046 "a"). Builds on [resource-limits.md](resource-limits.md) (approved 2026-11-12, built and released). Nothing here is built.
+Nov 17, 2026 · **Approved (Simon, 2026-11-19, #2119)**, with all recommended choices; built in two PRs, R4 (light commands) first. Issue #356 (Simon approved starting a design, question #2046 "a"). Builds on [resource-limits.md](resource-limits.md) (approved 2026-11-12, built and released). Nothing here is built.
 
 ## Why
 

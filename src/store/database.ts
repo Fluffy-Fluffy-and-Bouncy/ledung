@@ -778,6 +778,18 @@ const MIGRATIONS: string[] = [
     UNIQUE (project, tool_name, command)
   );
   `,
+  // How long shell calls take, per project and command kind (resource limits round 2, R4): a kind whose calls usually
+  // finish within 10 s is never refused. Only the latest few per kind are kept (JobStore.addCall).
+  `
+  CREATE TABLE command_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    at INTEGER NOT NULL
+  );
+  CREATE INDEX command_calls_by_kind ON command_calls(project, kind, at);
+  `,
 ];
 
 export function databaseFile(dir = userDataDir()): string {

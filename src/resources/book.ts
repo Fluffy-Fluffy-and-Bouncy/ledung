@@ -134,7 +134,22 @@ interface Unreserved {
   told: boolean;
   peak: Amounts;
   since: number | null;
+  /** Kinds of the calls under way while it was above the allowance (R4). */
+  commands: string[];
 }
+
+/** A shell call under way (R4): its kinds, when it began, whether it runs in the background, when it ended. */
+interface Call {
+  kinds: string[];
+  at: number;
+  background: boolean;
+  ended: number | null;
+}
+
+/** A call never seen to end (refused by a later check, a lost result) is forgotten: Bash's own limit is 10 minutes. */
+const CALL_FORGOTTEN_MS = 11 * 60_000;
+/** A background call is never seen to end: it belongs to a job it began shortly before or during; kept this long. */
+const BACKGROUND_KEPT_MS = 6 * 3600_000;
 
 interface SessionWaiter {
   sessionId: string;
@@ -185,8 +200,8 @@ export class ResourceBook {
   private readonly unreserved = new Map<string, Unreserved>();
   private readonly waiters = new Map<string, SessionWaiter>();
   private readonly averages = new Averages();
-  /** Command kinds of long or background calls per session, for an unreserved stretch's record. */
-  private readonly recent = new Map<string, { at: number; kind: string }[]>();
+  /** Shell calls under way per session, by tool call id: a job learns only the kinds under way while it is busy (R4). */
+  private readonly calls = new Map<string, Map<string, Call>>();
   /** New sessions being watched for their footprint: when they started, their peak memory. */
   private readonly footprints = new Map<string, { at: number; peak: number }>();
   /** Priorities lowered before a restart of Ledung, put back at the first sample (finding 12). */
@@ -430,17 +445,54 @@ export class ResourceBook {
   }
 
   /**
-   * The command kinds of a call that ran long or in the background (session.ts): only those can be the heavy work,
-   * so `git status` between two builds never becomes "heavy" (security review, finding 7).
+   * A shell call starts (session.ts), with its kinds (light ones already left out). A job learns a kind only if its call
+   * was under way during one of the job's busy samples (R4): a `git status` between two builds, or a background loop
+   * started before the build, never gets the build's peak (security review, finding 7).
    */
-  noteCommands(sessionId: string, kinds: string[]): void {
+  callStarted(sessionId: string, callId: string, kinds: string[], background: boolean): void {
     if (!kinds.length) return;
-    const at = this.now();
-    const list = (this.recent.get(sessionId) ?? []).filter((c) => c.at > at - 15 * 60_000);
-    for (const kind of kinds) list.push({ at, kind });
-    this.recent.set(sessionId, list.slice(-100));
-    for (const r of this.reservations.values()) {
-      if (r.sessionId === sessionId && r.state === 'going') for (const k of kinds) if (!r.commands.includes(k) && r.commands.length < 40) r.commands.push(k);
+    const calls = this.calls.get(sessionId) ?? new Map<string, Call>();
+    calls.set(callId, { kinds, at: this.now(), background, ended: null });
+    if (calls.size > 100) calls.delete(calls.keys().next().value!);
+    this.calls.set(sessionId, calls);
+  }
+
+  /** A shell call ended: how long it took is kept per kind, for the 10-second rule (R4). */
+  callEnded(sessionId: string, callId: string): void {
+    const call = this.calls.get(sessionId)?.get(callId);
+    if (!call || call.background || call.ended !== null) return;
+    call.ended = this.now();
+    const s = this.ctx.session(sessionId);
+    if (!s?.local) return;
+    try {
+      for (const k of call.kinds) this.ctx.jobs.addCall(s.project, k, call.ended - call.at, call.ended);
+    } catch (e) {
+      console.error(`Recording a call's duration: ${(e as Error).message}`);
+    }
+  }
+
+  /**
+   * The kinds of a session's calls under way at this sample, for a job busy now: foreground calls not yet ended, and
+   * background calls begun since `from` (they are never seen to end).
+   */
+  private callsUnderWay(sessionId: string, from: number): string[] {
+    const out: string[] = [];
+    for (const c of this.calls.get(sessionId)?.values() ?? []) {
+      if (c.background ? c.at >= from : c.ended === null) out.push(...c.kinds);
+    }
+    return out;
+  }
+
+  /** Ended calls have had their samples; old ones are forgotten. */
+  private pruneCalls(at: number): void {
+    for (const [sessionId, calls] of this.calls) {
+      if (!this.ctx.session(sessionId)) {
+        this.calls.delete(sessionId);
+        continue;
+      }
+      for (const [id, c] of calls) {
+        if (c.ended !== null || at - c.at > (c.background ? BACKGROUND_KEPT_MS : CALL_FORGOTTEN_MS)) calls.delete(id);
+      }
     }
   }
 
@@ -457,16 +509,20 @@ export class ResourceBook {
     if (!heavy.length) return null;
     const h = heavy[0]!;
     // The command quoted is this session's own (the match is exact); the figures are numbers. No other session's
-    // words reach it (acceptance test, finding 15).
+    // words reach it (acceptance test, finding 15): where the figure comes from is counts and a date, never a job's name.
     const own = kinds.find((k) => k === h.command)!;
     const gpu = mainGpu(this.gpu);
     const typical = Object.entries(fromGeneric(h.peak, gpu)).filter(([, v]) => v > 0).map(([d, v]) => `~${formatDim(d, v)} ${this.label(d)}`).join(' and ');
+    const from = [h.reserved ? `${h.reserved} reserved job${h.reserved === 1 ? '' : 's'}` : '', h.unreserved ? `${h.unreserved} stretch${h.unreserved === 1 ? '' : 'es'} of unreserved heavy work` : '']
+      .filter(Boolean).join(' and ');
+    const took = h.usualMs !== null ? `; its calls usually take ${Math.round(h.usualMs / 1000)} s` : '';
+    const source = `Ledung learned this from ${from} it ran in, the last on ${new Date(h.lastAt).toISOString().slice(0, 10)}${took}. If that is wrong, the person using Ledung can mark "${own}" as never needing a reservation on the usage page.`;
     if (this.isHeld(sessionId)) {
-      return `Not now: a job of yours is over its share and your session is held, so Ledung refuses new heavy work. "${own}" usually uses ${typical}. Reduce or stop the running job first.`;
+      return `Not now: a job of yours is over its share and your session is held, so Ledung refuses new heavy work. "${own}" usually uses ${typical}. Reduce or stop the running job first. ${source}`;
     }
     const going = [...this.reservations.values()].some((r) => r.sessionId === sessionId && r.state === 'going');
     if (going) return null;
-    return `This usually uses ${typical} ("${own}", seen ${h.runs} times). Call reserve first, then run it once Ledung says go.`;
+    return `"${own}" usually uses ${typical}: call reserve first, then run it once Ledung says go. ${source}`;
   }
 
   /** Held: a job of this session is over its share. No new turns from others, no new reservation, no known heavy command. */
@@ -718,6 +774,8 @@ export class ResourceBook {
         changed = true;
         continue;
       }
+      // A busy sample: the kinds of the calls under way now are the job's (R4); background ones only if begun since the go.
+      if (list.length) for (const k of this.callsUnderWay(r.sessionId, r.goAt ?? r.since)) if (!r.commands.includes(k) && r.commands.length < 40) r.commands.push(k);
       const u = usage(list);
       for (const [dim, v] of Object.entries(u)) this.averages.add(`r:${r.id}|${dim}`, at, v);
       const avg = this.usingOf(r);
@@ -754,7 +812,7 @@ export class ResourceBook {
     for (const [sessionId, tree] of x.trees) {
       const s = this.ctx.session(sessionId);
       if (!s?.local || s.role === 'manager') continue;
-      const u0 = this.unreserved.get(sessionId) ?? { over: NOT_OVER, lowered: {}, loweredStays: false, told: false, peak: {}, since: null };
+      const u0 = this.unreserved.get(sessionId) ?? { over: NOT_OVER, lowered: {}, loweredStays: false, told: false, peak: {}, since: null, commands: [] };
       const jobs = jobPidsOf.get(sessionId) ?? new Set<number>();
       const host = x.hosts.get(sessionId);
       const counted = tree.filter((p) => p.pid !== host && !jobs.has(p.pid)).map((p) => p.pid);
@@ -766,6 +824,9 @@ export class ResourceBook {
       if (u0.over.since !== null) {
         u0.since ??= u0.over.since;
         for (const [dim, v] of Object.entries(avg)) u0.peak[dim] = Math.max(u0.peak[dim] ?? 0, v);
+        // A busy sample (R4). The average lags the work by its window: a background call begun that long before counts.
+        const from = u0.since - this.settings.averageSec * 1000 - 30_000;
+        for (const k of this.callsUnderWay(sessionId, from)) if (!u0.commands.includes(k) && u0.commands.length < 40) u0.commands.push(k);
       }
       if (u0.over.over) {
         const ok = actable(sessionId);
@@ -782,6 +843,7 @@ export class ResourceBook {
       } else if (!u0.over.over && u0.over.since === null) {
         u0.peak = {};
         u0.since = null;
+        u0.commands = [];
       }
       this.unreserved.set(sessionId, u0);
     }
@@ -812,6 +874,7 @@ export class ResourceBook {
       }
     }
     for (const id of [...this.waiters.keys()]) if (!this.ctx.session(id)) this.waiters.delete(id);
+    this.pruneCalls(at);
     this.dispatch();
     if (changed) this.persist();
   }
@@ -890,11 +953,11 @@ export class ResourceBook {
     if (s && Object.keys(u.peak).length) {
       const since = u.since ?? at;
       const gpu = mainGpu(this.gpu);
-      const commands = [...new Set((this.recent.get(sessionId) ?? []).filter((c) => c.at >= since - 5 * 60_000).map((c) => c.kind))];
-      this.ctx.jobs.add({ project: s.project, kind: '(unreserved)', commands, asked: {}, peak: toGeneric(u.peak, gpu), mean: toGeneric(u.peak, gpu), durationMs: at - since, over: true, undeclared: true, endedAt: at });
+      this.ctx.jobs.add({ project: s.project, kind: '(unreserved)', commands: u.commands, asked: {}, peak: toGeneric(u.peak, gpu), mean: toGeneric(u.peak, gpu), durationMs: at - since, over: true, undeclared: true, endedAt: at });
     }
     u.peak = {};
     u.since = null;
+    u.commands = [];
     u.over = NOT_OVER;
     // Whatever waited behind the hold goes now (finding 12).
     this.ctx.wake(sessionId);

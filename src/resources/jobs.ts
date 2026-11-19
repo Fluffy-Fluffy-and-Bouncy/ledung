@@ -3,6 +3,7 @@
 // Windows GPU's id changes with each reboot, and a job's figure is about the work, not the card.
 import type { DatabaseSync } from 'node:sqlite';
 import { ALLOWANCE, isMemory, p90, type Amounts } from './limits.ts';
+import { isLightKind } from './commands.ts';
 
 export interface JobRun {
   project: string;
@@ -37,6 +38,12 @@ export interface HeavyCommand {
   /** Typical peak (90th percentile), generic dims. */
   peak: Amounts;
   never: boolean;
+  /** Where the figure comes from (R4): runs of reserved jobs and of unreserved stretches, and when the last ended. */
+  reserved: number;
+  unreserved: number;
+  lastAt: number;
+  /** How long its calls usually take (median of the latest), when Ledung has seen it finish. */
+  usualMs: number | null;
 }
 
 /** How many runs before a learned figure replaces the session's guess (open choice 8). */
@@ -45,6 +52,10 @@ export const LEARN_AFTER = 3;
 const LEARN_FROM = 20;
 /** Runs of a command over the allowance before it needs a reservation. */
 export const HEAVY_AFTER = 2;
+/** A kind whose calls usually finish within this is never refused (resource limits round 2, R4: the 10-second rule). */
+export const SHORT_MS = 10_000;
+/** How many of a kind's latest calls its usual duration is taken from (the median), and kept. */
+const CALLS_KEPT = 10;
 
 /** A job's kind as it is kept: trimmed, one space, lower case, at most 60 characters. */
 export function normaliseKind(what: string): string {
@@ -153,15 +164,32 @@ export class JobStore {
     else this.db.prepare('DELETE FROM command_marks WHERE project = ? AND command = ?').run(project, command);
   }
 
+  /** A finished shell call (R4): how long it took, per kind; only the latest CALLS_KEPT per kind stay. */
+  addCall(project: string, kind: string, durationMs: number, at: number): void {
+    this.db.prepare('INSERT INTO command_calls (project, kind, duration_ms, at) VALUES (?, ?, ?, ?)').run(project, kind, Math.max(0, Math.round(durationMs)), at);
+    this.db.prepare('DELETE FROM command_calls WHERE project = ? AND kind = ? AND id NOT IN (SELECT id FROM command_calls WHERE project = ? AND kind = ? ORDER BY at DESC, id DESC LIMIT ?)')
+      .run(project, kind, project, kind, CALLS_KEPT);
+  }
+
+  /** How long a kind's calls usually take: the median of its latest calls; null if none has been seen to finish. */
+  usualMs(project: string, kind: string): number | null {
+    const ms = (this.db.prepare('SELECT duration_ms FROM command_calls WHERE project = ? AND kind = ? ORDER BY at DESC, id DESC LIMIT ?').all(project, kind, CALLS_KEPT) as Record<string, unknown>[])
+      .map((r) => Number(r.duration_ms)).sort((a, b) => a - b);
+    if (!ms.length) return null;
+    const mid = ms.length >> 1;
+    return ms.length % 2 ? ms[mid]! : (ms[mid - 1]! + ms[mid]!) / 2;
+  }
+
   /**
    * Commands known to be heavy: in at least HEAVY_AFTER recent runs (reserved or unreserved) that used more than the
-   * allowance. Those the person marked "never" are listed with `never`.
+   * allowance. Those the person marked "never" are listed with `never`. Light commands and those whose calls usually
+   * finish within 10 s are never heavy (R4), applied here when read, so old wrong marks clear themselves.
    */
   heavyCommands(project?: string): HeavyCommand[] {
     const rows = (project === undefined
-      ? this.db.prepare("SELECT project, commands, peak FROM job_runs WHERE kind NOT LIKE 'session:%' ORDER BY ended_at DESC LIMIT 2000").all()
-      : this.db.prepare("SELECT project, commands, peak FROM job_runs WHERE project = ? AND kind NOT LIKE 'session:%' ORDER BY ended_at DESC LIMIT 500").all(project)) as Record<string, unknown>[];
-    const by = new Map<string, { project: string; command: string; peaks: Amounts[] }>();
+      ? this.db.prepare("SELECT project, commands, peak, undeclared, ended_at FROM job_runs WHERE kind NOT LIKE 'session:%' ORDER BY ended_at DESC LIMIT 2000").all()
+      : this.db.prepare("SELECT project, commands, peak, undeclared, ended_at FROM job_runs WHERE project = ? AND kind NOT LIKE 'session:%' ORDER BY ended_at DESC LIMIT 500").all(project)) as Record<string, unknown>[];
+    const by = new Map<string, { project: string; command: string; peaks: Amounts[]; unreserved: number; lastAt: number }>();
     for (const r of rows) {
       const peak = parse(r.peak);
       if (!aboveAllowance(peak)) continue;
@@ -173,9 +201,12 @@ export class JobStore {
       }
       if (!Array.isArray(commands)) continue;
       for (const c of new Set(commands.filter((x): x is string => typeof x === 'string'))) {
+        if (isLightKind(c)) continue;
         const key = `${r.project}\u0000${c}`;
-        const e = by.get(key) ?? { project: String(r.project), command: c, peaks: [] };
+        const e = by.get(key) ?? { project: String(r.project), command: c, peaks: [], unreserved: 0, lastAt: 0 };
         e.peaks.push(peak);
+        if (Number(r.undeclared)) e.unreserved++;
+        e.lastAt = Math.max(e.lastAt, Number(r.ended_at));
         by.set(key, e);
       }
     }
@@ -183,10 +214,15 @@ export class JobStore {
     const out: HeavyCommand[] = [];
     for (const [key, e] of by) {
       if (e.peaks.length < HEAVY_AFTER) continue;
+      const usualMs = this.usualMs(e.project, e.command);
+      if (usualMs !== null && usualMs <= SHORT_MS) continue;
       const dims = new Set(e.peaks.flatMap((p) => Object.keys(p)));
       const peak: Amounts = {};
       for (const d of dims) peak[d] = p90(e.peaks.map((p) => p[d] ?? 0));
-      out.push({ project: e.project, command: e.command, runs: e.peaks.length, peak, never: marks.has(key) });
+      out.push({
+        project: e.project, command: e.command, runs: e.peaks.length, peak, never: marks.has(key),
+        reserved: e.peaks.length - e.unreserved, unreserved: e.unreserved, lastAt: e.lastAt, usualMs,
+      });
     }
     return out.sort((a, b) => b.runs - a.runs);
   }

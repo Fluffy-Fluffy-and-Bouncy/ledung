@@ -116,6 +116,7 @@ export class ProjectStore {
       // What its reserved jobs used and its commands' marks (resource limits): the learning follows the project.
       'UPDATE job_runs SET project = ? WHERE project = ?',
       'UPDATE command_marks SET project = ? WHERE project = ?',
+      'UPDATE command_calls SET project = ? WHERE project = ?',
       // Its Allow always rules (issue #225).
       'UPDATE allowed_calls SET project = ? WHERE project = ?',
     ];

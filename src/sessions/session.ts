@@ -149,14 +149,13 @@ export interface TurnGate {
   resourceHeld?(id: string): boolean;
   /** The command kinds a Bash call runs; the reason to refuse it (a known heavy command with no reservation), or null. */
   commandCheck?(id: string, kinds: string[]): string | null;
-  /** The command kinds of a shell call that ran long or in the background, for learning what is heavy. */
-  noteCommands?(id: string, kinds: string[]): void;
+  /** A shell call with these kinds starts and ends: for learning what is heavy and how long a kind takes (R4). */
+  callStarted?(id: string, callId: string, kinds: string[], background: boolean): void;
+  callEnded?(id: string, callId: string): void;
 }
 
 /** The tools that run shell commands, for the heavy-command check. */
 const SHELL_TOOLS = ['Bash', 'PowerShell', 'Monitor'];
-/** A shell call shorter than this can't be heavy work under the default settings (a minute over its share). */
-const LONG_CALL_MS = 10_000;
 
 export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
   default: 'Ask',
@@ -437,15 +436,9 @@ export class Session {
   private heldWaiters: (() => void)[] = [];
   /** When the current turn began, whoever started it; null between turns. */
   private turnStartedAt: number | null = null;
-  /** Shell calls under way with their command kinds (resource limits): noted for learning if they ran long. */
-  private readonly longCalls = new Map<string, { at: number; kinds: string[] }>();
-
-  /** A shell call ended: one that ran 10 s or more may have been the heavy work, and its kinds are noted. */
-  private longCallEnded(toolUseId: string | undefined): void {
-    const call = toolUseId ? this.longCalls.get(toolUseId) : undefined;
-    if (!call) return;
-    this.longCalls.delete(toolUseId!);
-    if (Date.now() - call.at >= LONG_CALL_MS) this.gate.noteCommands?.(this.id, call.kinds);
+  /** A shell call ended (resource limits round 2, R4): the book keeps how long it took. */
+  private shellCallEnded(toolUseId: string | undefined): void {
+    if (toolUseId) this.gate.callEnded?.(this.id, toolUseId);
   }
 
   /** A new session waiting for memory to start (resource limits): messages sent to it are held until it runs. */
@@ -1316,14 +1309,8 @@ export class Session {
             const kinds = heavyKinds(String(input.command ?? ''));
             const why = this.gate.commandCheck(this.id, kinds);
             if (why) return { hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'deny' as const, permissionDecisionReason: why } };
-            // Only a call that runs long or in the background can be the heavy work: it is noted when it has (finding 7).
-            if (kinds.length && toolUseId) {
-              if (input.run_in_background === true || toolName === 'Monitor') this.gate.noteCommands?.(this.id, kinds);
-              else {
-                this.longCalls.set(toolUseId, { at: Date.now(), kinds });
-                if (this.longCalls.size > 100) this.longCalls.delete(this.longCalls.keys().next().value!);
-              }
-            }
+            // A job learns a kind only from calls under way while it is busy (R4, finding 7): the book follows each call.
+            if (kinds.length && toolUseId) this.gate.callStarted?.(this.id, toolUseId, kinds, input.run_in_background === true || toolName === 'Monitor');
           }
           // Compacting or clearing is for the main session only, never a subagent (decided 2026-10-13).
           if (CONTEXT_TOOLS.includes(toolName) && (input as { agent_id?: string }).agent_id) {
@@ -1369,7 +1356,7 @@ export class Session {
         // failed was allowed all the same, and without its note would read as allowed by the session's mode.
         PostToolUse: [{ hooks: [async (input) => {
           this.orderRunEnded((input as { tool_use_id?: string }).tool_use_id, true, null);
-          this.longCallEnded((input as { tool_use_id?: string }).tool_use_id);
+          this.shellCallEnded((input as { tool_use_id?: string }).tool_use_id);
           // And, after a Ledung call, that its Ledung tools are old (issue #164).
           const note = joinNotes(this.allowedBy.take((input as { tool_use_id?: string }).tool_use_id), this.staleToolsNote((input as { tool_name?: string }).tool_name));
           return note === undefined ? {} : { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: note } };
@@ -1377,7 +1364,7 @@ export class Session {
         PostToolUseFailure: [{ hooks: [async (input) => {
           const failed = input as { tool_use_id?: string; tool_name?: string; error?: unknown };
           this.orderRunEnded(failed.tool_use_id, false, typeof failed.error === 'string' ? failed.error : null);
-          this.longCallEnded(failed.tool_use_id);
+          this.shellCallEnded(failed.tool_use_id);
           // A refused new parameter is the likeliest way old tools show (issue #164's evidence), so here too.
           const note = joinNotes(this.allowedBy.take(failed.tool_use_id), this.staleToolsNote(failed.tool_name));
           return note === undefined ? {} : { hookSpecificOutput: { hookEventName: 'PostToolUseFailure' as const, additionalContext: note } };

@@ -377,8 +377,9 @@ test('heavy work without a reservation is held and told to reserve next time; it
   r.book.setSettings({ overSec: 5, averageSec: 5 });
   for (let round = 0; round < 2; round++) {
     r.tick({ s1: tree() });
-    r.book.noteCommands('s1', ['python train.py']);
+    r.book.callStarted('s1', `train${round}`, ['python train.py'], false);
     for (let i = 0; i < 3; i++) r.tick({ s1: tree(proc(30 + round, 11)) }, { cpuOf: { [30 + round]: 6 } });
+    r.book.callEnded('s1', `train${round}`);
     assert.equal(r.book.isHeld('s1'), true);
     assert.match(r.told.at(-1)!.text, /without a reservation/);
     assert.match(r.told.at(-1)!.text, /call reserve before heavy work next time/);
@@ -387,7 +388,10 @@ test('heavy work without a reservation is held and told to reserve next time; it
     assert.equal(r.book.isHeld('s1'), false);
   }
   const why = r.book.commandRefusal('s1', ['python train.py']);
-  assert.match(why ?? '', /Call reserve first/);
+  assert.match(why ?? '', /call reserve first/);
+  // It says where the figure comes from, with no job's name (R4).
+  assert.match(why ?? '', /learned this from 2 stretches of unreserved heavy work it ran in, the last on \d{4}-\d\d-\d\d; its calls usually take 15 s/);
+  assert.match(why ?? '', /mark "python train\.py" as never needing a reservation/);
   assert.equal(r.book.commandRefusal('s1', ['git status']), null);
   // With a reservation going, it runs.
   r.book.reserve('s1', { what: 'Train', cpu: 40 });
@@ -396,6 +400,82 @@ test('heavy work without a reservation is held and told to reserve next time; it
   r.book.release('s1');
   r.jobs.markNever('p', 'python train.py', true);
   assert.equal(r.book.commandRefusal('s1', ['python train.py']), null);
+});
+
+// --- Light commands (docs/steps/resource-limits-2.md, R4) ------------------------------------------------------------
+
+test('light commands are never refused, even with old "heavy" marks and a pass waiting; a 3-second script neither once its calls are seen', () => {
+  const r = rig();
+  r.tick({ s1: tree(), s2: tree2() }, { cores: 3.2 });
+  // Marks learned the old way: every command of a heavy job got its peak.
+  const old = ['git status', 'gh issue', 'git worktree list', 'check.sh', 'npm run build'];
+  for (const at of [1, 2]) r.jobs.add({ project: 'p', kind: 'nightly build', commands: old, asked: {}, peak: { ram: 6 * GB }, mean: {}, durationMs: 1, over: false, undeclared: false, endedAt: at });
+  // A pass waits.
+  r.book.setLimit('cpu', 50);
+  assert.match(r.book.reserve('s1', { what: 'Big', cpu: 45 }), /^Wait:/);
+  for (const command of ['git status', 'gh issue view 12 --json title', 'git -C ../other status --short', 'git worktree list', 'cut -d: -f1 x | sort']) {
+    assert.deepEqual(heavyKinds(command), [], command);
+    assert.equal(r.book.commandRefusal('s1', heavyKinds(command)), null, command);
+  }
+  // Old marks on light kinds are ignored when read, so they don't show on the usage page either.
+  assert.deepEqual(r.jobs.heavyCommands('p').map((h) => h.command).sort(), ['check.sh', 'npm run build']);
+  // The script is refused until its calls are seen to be short; the refusal says where the figure comes from.
+  const why = r.book.commandRefusal('s1', heavyKinds('./check.sh --quick'));
+  assert.match(why ?? '', /"check\.sh" usually uses ~6\.0 GB memory: call reserve first/);
+  assert.match(why ?? '', /learned this from 2 reserved jobs it ran in, the last on 1970-01-01\. If that is wrong/);
+  assert.doesNotMatch(why ?? '', /nightly build/, "no job's name reaches a session");
+  for (let i = 0; i < 3; i++) {
+    r.book.callStarted('s2', `c${i}`, ['check.sh'], false);
+    r.clock.now += 3000;
+    r.book.callEnded('s2', `c${i}`);
+  }
+  assert.equal(r.jobs.usualMs('p', 'check.sh'), 3000);
+  assert.equal(r.book.commandRefusal('s1', ['check.sh']), null);
+  // While the pass waits, only heavy kinds are refused.
+  assert.match(r.book.commandRefusal('s1', ['npm run build']) ?? '', /call reserve first/);
+  // A kind that usually takes longer stays heavy; only the latest ten calls count.
+  for (let i = 0; i < 12; i++) r.jobs.addCall('p', 'npm run build', i < 2 ? 1000 : 60_000, 10 + i);
+  assert.equal(r.jobs.usualMs('p', 'npm run build'), 60_000);
+  assert.equal((r.jobs as unknown as { db: { prepare(q: string): { get(): { n: number } } } }).db.prepare("SELECT COUNT(*) AS n FROM command_calls WHERE kind = 'npm run build'").get().n, 10);
+});
+
+test('git and file-reading words are light; real work is not', () => {
+  assert.deepEqual(heavyKinds('git status && npm run build'), ['npm run build']);
+  assert.deepEqual(heavyKinds('git stash'), ['git stash']);
+  assert.deepEqual(heavyKinds('git stash list'), []);
+  assert.deepEqual(heavyKinds('git -C repo commit -m x'), ['git commit']);
+  assert.deepEqual(heavyKinds('gh pr checks 12 --watch'), []);
+  assert.deepEqual(heavyKinds('tr a b < f | jq .x | tee out'), []);
+});
+
+test('a job learns only the calls under way while it is busy: a build beside a background loop teaches only the build', () => {
+  const r = rig();
+  r.tick({ s1: tree() });
+  // A status loop in the background, begun before the reservation.
+  r.book.callStarted('s1', 'loop', ['node poll.mjs'], true);
+  r.tick({ s1: tree(proc(50, 11)) });
+  for (let round = 0; round < 2; round++) {
+    r.book.reserve('s1', { what: 'Build', ram_gb: 6 });
+    // A short call between samples, then the build.
+    r.book.callStarted('s1', `peek${round}`, ['node status.mjs'], false);
+    r.clock.now += 1000;
+    r.book.callEnded('s1', `peek${round}`);
+    r.tick({ s1: tree(proc(50, 11)) });
+    r.book.callStarted('s1', `build${round}`, ['npm run build'], false);
+    for (let i = 0; i < 3; i++) r.tick({ s1: tree(proc(50, 11), proc(60 + round, 11, 6 * GB)) });
+    r.book.callEnded('s1', `build${round}`);
+    r.tick({ s1: tree(proc(50, 11)) });
+    r.tick({ s1: tree(proc(50, 11)) });
+    assert.equal(r.book.info().jobs.length, 0, 'the job ended with its processes');
+  }
+  assert.deepEqual(r.jobs.heavyCommands('p').map((h) => h.command), ['npm run build']);
+  // A background build begun after the go is the job's, though it is never seen to end.
+  r.book.reserve('s1', { what: 'Build', ram_gb: 6 });
+  r.book.callStarted('s1', 'bg', ['python train.py'], true);
+  for (let i = 0; i < 3; i++) r.tick({ s1: tree(proc(50, 11), proc(70, 11, 6 * GB)) });
+  r.tick({ s1: tree(proc(50, 11)) });
+  const rows = (r.jobs as unknown as { db: { prepare(q: string): { all(): { commands: string }[] } } }).db.prepare('SELECT commands FROM job_runs ORDER BY id').all();
+  assert.deepEqual(rows.map((x) => JSON.parse(x.commands)), [['npm run build'], ['npm run build'], ['python train.py']]);
 });
 
 test('after three runs the learned figure replaces the guess, and the answer says so', () => {
@@ -611,7 +691,7 @@ test('heavy commands are found inside the usual wrappers', () => {
   assert.deepEqual(heavyKinds('(npm run build)'), ['npm run build']);
   assert.deepEqual(heavyKinds('env CUDA=1 python train.py'), ['python train.py']);
   assert.deepEqual(heavyKinds('cmd /c npm run build'), ['npm run build']);
-  assert.deepEqual(heavyKinds('git status'), ['git status']);
+  assert.deepEqual(heavyKinds('git status'), [], 'light (R4)');
 });
 
 test("Claude Code's own console host on Windows is never a job, so a reservation still ends with its job", () => {

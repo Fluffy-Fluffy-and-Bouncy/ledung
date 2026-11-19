@@ -6,7 +6,21 @@ const TRIVIAL = new Set([
   'cd', 'ls', 'dir', 'pwd', 'cat', 'head', 'tail', 'echo', 'printf', 'grep', 'rg', 'find', 'sed', 'awk', 'wc', 'sort', 'uniq',
   'which', 'where', 'true', 'false', 'test', 'mkdir', 'rm', 'cp', 'mv', 'touch', 'sleep', 'export', 'set', 'source', 'date',
   'get-content', 'get-childitem', 'select-string', 'write-host', 'write-output', 'get-date', 'set-location', 'test-path',
+  // More of the same: reading and shaping text (resource limits round 2, R4: `cut` was refused as "~3.1 GB").
+  'cut', 'tr', 'tee', 'jq', 'diff', 'cmp', 'comm', 'paste', 'column', 'nl', 'basename', 'dirname', 'realpath', 'readlink', 'stat',
+  'file', 'less', 'more', 'whoami', 'hostname', 'uname', 'type',
 ]);
+
+/**
+ * Light commands (docs/steps/resource-limits-2.md, "Light commands", R4; fixed in the code, open choice 6): never
+ * refused and never learned as heavy. Read-only git, and all of `gh`, which waits on the network, not the PC.
+ */
+const LIGHT_GIT = new Set(['status', 'log', 'diff', 'show', 'branch', 'rev-parse', 'ls-files', 'blame', 'remote', 'fetch', 'worktree list', 'stash list']);
+
+export function isLightKind(kind: string): boolean {
+  if (kind === 'gh' || kind.startsWith('gh ') || kind === 'git') return true;
+  return kind.startsWith('git ') && LIGHT_GIT.has(kind.slice(4));
+}
 
 /** Tools that take a subcommand: keep it ("git status", "docker build"); npm-like runners keep the script too. */
 const WITH_SUBCOMMAND = new Set(['git', 'docker', 'cargo', 'go', 'dotnet', 'gh', 'kubectl', 'pip', 'uv', 'poetry', 'make', 'npx', 'bunx', 'node', 'python', 'python3', 'deno', 'bun']);
@@ -23,8 +37,11 @@ export function commandKinds(command: string): string[] {
     const first = words[0]!.replace(/^.*[\\/]/, '').replace(/\.(exe|cmd|bat)$/i, '').toLowerCase();
     if (TRIVIAL.has(first) || first.startsWith('$') || first.startsWith('-')) continue;
     let kind = first;
-    const args = words.slice(1).filter((w) => !w.startsWith('-'));
-    if (RUNNERS.has(first)) kind = args[0] === 'run' && args[1] ? `${first} run ${args[1]}` : args[0] ? `${first} ${args[0]}` : first;
+    // git's own options before the subcommand take a value (`git -C dir status`): not the subcommand.
+    const rest = first === 'git' ? words.slice(1).filter((w, i, all) => !/^-[Cc]$/.test(all[i - 1] ?? '')) : words.slice(1);
+    const args = rest.filter((w) => !w.startsWith('-'));
+    if (first === 'git' && (args[0] === 'worktree' || args[0] === 'stash') && args[1]) kind = `git ${args[0]} ${args[1]}`;
+    else if (RUNNERS.has(first)) kind = args[0] === 'run' && args[1] ? `${first} run ${args[1]}` : args[0] ? `${first} ${args[0]}` : first;
     else if (WITH_SUBCOMMAND.has(first) && args[0]) kind = `${first} ${args[0] === '-m' ? args[1] ?? '' : args[0]}`.trim();
     out.push(kind.slice(0, 60));
   }
@@ -35,8 +52,9 @@ export function commandKinds(command: string): string[] {
  * The kinds of command a shell call really runs, for resource limits' heavy-command check: as commandKinds, also
  * looking inside the usual wrappers (`bash -c "…"`, `sh -c`, `powershell -Command`, `cmd /c`, `nohup`, `time`, `env`,
  * `nice`, `exec`, PowerShell's `&`, a subshell's parentheses), so `nohup python train.py &` is `python train.py`.
- * Still advisory (security review of the resource limits, finding 13): a script file can hide anything, and what really
- * runs is judged by the check of each job's measured share.
+ * Light kinds (isLightKind) are left out, so a call of only light commands has none. Still advisory (security review of
+ * the resource limits, finding 13): a script file can hide anything, and what really runs is judged by the check of
+ * each job's measured share.
  */
 export function heavyKinds(command: string): string[] {
   let c = command;
@@ -52,5 +70,5 @@ export function heavyKinds(command: string): string[] {
   // A wrapper word at the start of a part: dropped, with what belongs to it.
   const wrapper = /(^|[;&|\n]\s*)(?:&\s+|nohup\s+|time\s+|exec\s+|nice(?:\s+-n)?\s+-?\d+\s+|nice\s+|env(?:\s+-\w+)*(?:\s+[A-Za-z_][A-Za-z0-9_]*=\S*)*\s+)/g;
   for (let round = 0; round < 3; round++) c = c.replace(wrapper, '$1');
-  return [...new Set([...commandKinds(c), ...commandKinds(command)].filter((k) => /^[\w.]/.test(k) && !/^(bash|sh|zsh|cmd|powershell|pwsh|nohup|time|env|nice|exec)$/.test(k)))];
+  return [...new Set([...commandKinds(c), ...commandKinds(command)].filter((k) => /^[\w.]/.test(k) && !/^(bash|sh|zsh|cmd|powershell|pwsh|nohup|time|env|nice|exec)$/.test(k) && !isLightKind(k)))];
 }
