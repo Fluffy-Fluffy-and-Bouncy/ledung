@@ -89,7 +89,7 @@ test('the app is offered only from the npm package with Electron installed, on a
   assert.match(reason(desktopAvailability({ app: full, packaged: true, env: display, platform: 'freebsd' })), /not made for freebsd/);
   const without = fakePackage('without', null);
   assert.equal(electronPackage(without), null);
-  assert.equal(reason(desktopAvailability({ app: without, packaged: true, env: display, platform: 'linux' })), `The desktop app is not installed (Ledung was installed without optional dependencies). Add it with: ${ADD_COMMAND}`);
+  assert.equal(reason(desktopAvailability({ app: without, packaged: true, env: display, platform: 'linux' })), `The desktop app is not installed: Electron's package is missing (its optional install failed or was left out). To add it, ${ADD_COMMAND}.`);
   const noCode = fakePackage('no-code', '45.4.1');
   fs.rmSync(path.join(noCode, 'dist', 'desktop'), { recursive: true });
   assert.match(reason(desktopAvailability({ app: noCode, packaged: true, env: display, platform: 'linux' })), /no desktop app/);
@@ -167,6 +167,9 @@ test('Windows: a full path to node.exe is a program; a bare name still is not', 
   const env = { PATHEXT: '.COM;.EXE;.CMD' };
   assert.equal(findOnPath(exe, env, 'win32'), exe);
   assert.equal(findOnPath(bare, env, 'win32'), null);
+  // An environment with no PATHEXT at all (the made app's Start from nothing, self-check finding 1): Windows' default.
+  assert.equal(findOnPath(exe, {}, 'win32'), exe);
+  assert.equal(findOnPath(bare, {}, 'win32'), null);
 });
 
 /** A made app in `data` as an earlier make left it, without a real Electron: the bundle's program and a stamp. */
@@ -234,7 +237,7 @@ test('a failed download says so in one line and opens the browser instead; `ledu
   assert.equal(s.browsers, 1);
   assert.deepEqual(s.lines, [
     'Making the desktop app, once: downloading Electron 45.4.1',
-    'To use the browser instead, press Ctrl+C now, or run "ledung --browser" next time.',
+    'Ledung is already running: to use the browser instead, press Ctrl+C and run "ledung --browser".',
     'The desktop app could not be made: fetch failed. Opening Ledung in the browser instead.',
   ]);
   const app = failing();

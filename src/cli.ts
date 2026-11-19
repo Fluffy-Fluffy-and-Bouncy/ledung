@@ -48,7 +48,8 @@ const appCommand = passthrough[0] === 'app';
 if (appCommand) passthrough = passthrough.slice(1);
 const noOpen = passthrough.includes('--no-open');
 // "desktopApp": false in the config keeps plain `ledung` on the browser for good (Ledung question #584).
-const tryApp = appCommand || !(noOpen || desktopAppOff(configPath()) || ['--browser', '--open-only', '--foreground'].some((a) => process.argv.includes(a)));
+// --no-open wins even over `ledung app` (self-check finding 2): it opens nothing.
+const tryApp = !noOpen && (appCommand || !(desktopAppOff(configPath()) || ['--browser', '--open-only', '--foreground'].some((a) => process.argv.includes(a))));
 const desktop = tryApp ? desktopAvailability() : null;
 if (appCommand && desktop && !desktop.ok) {
   console.error(`ledung app: ${desktop.reason}`);

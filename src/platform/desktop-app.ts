@@ -67,8 +67,12 @@ export function electronPackage(app = appDir()): ElectronPackage | null {
   }
 }
 
-/** The command that adds the app to an install made without it. */
-export const ADD_COMMAND = 'npm install -g ledung --include=optional';
+/**
+ * What brings Electron's package back: installing Ledung again the way it was installed (self-check finding 3: a fixed
+ * `npm install -g ledung` would move a dev install to the public release). npm ignores --omit=optional for a global
+ * install (Ledung question #584), so a missing package is mostly a failed optional install or a local one without it.
+ */
+export const ADD_COMMAND = 'install Ledung again as you did (npm install -g ledung, or ledung@dev for dev builds)';
 
 export type Availability =
   | { ok: true; electron: ElectronPackage; source: string }
@@ -88,7 +92,7 @@ export function desktopAvailability(opts: { app?: string; packaged?: boolean; en
   const source = path.join(app, 'dist', 'desktop');
   if (!fs.existsSync(path.join(source, 'main.js'))) return { ok: false, reason: 'This Ledung package has no desktop app.' };
   const electron = electronPackage(app);
-  if (!electron) return { ok: false, reason: `The desktop app is not installed (Ledung was installed without optional dependencies). Add it with: ${ADD_COMMAND}` };
+  if (!electron) return { ok: false, reason: `The desktop app is not installed: Electron's package is missing (its optional install failed or was left out). To add it, ${ADD_COMMAND}.` };
   return { ok: true, electron, source };
 }
 
@@ -251,9 +255,17 @@ export async function ensureApp(o: MakeOptions): Promise<{ made: 'nothing' | 'co
       // make stops with the old app whole instead of half deleted.
       const old = `${paths.bundle}.old`;
       fs.rmSync(old, { recursive: true, force: true });
-      if (fs.existsSync(paths.bundle)) fs.renameSync(paths.bundle, old);
+      const hadOld = fs.existsSync(paths.bundle);
+      if (hadOld) fs.renameSync(paths.bundle, old);
+      try {
+        fs.renameSync(bundle, paths.bundle);
+      } catch (e) {
+        // The new app could not take its place: the old one goes back, with its stamp still saying what it is
+        // (self-check finding 5).
+        if (hadOld) fs.renameSync(old, paths.bundle);
+        throw e;
+      }
       fs.rmSync(paths.stamp, { force: true });
-      fs.renameSync(bundle, paths.bundle);
       try {
         fs.rmSync(old, { recursive: true, force: true });
       } catch {
@@ -333,7 +345,9 @@ export async function openDesktop(o: { make: Omit<MakeOptions, 'print'>; fallbac
       ...o.make,
       print: (text) => {
         o.steps.print(text);
-        if (o.fallback) o.steps.print('To use the browser instead, press Ctrl+C now, or run "ledung --browser" next time.');
+        // Ledung itself already runs: stopping this wait leaves it running, and "ledung --browser" opens its page
+        // (self-check finding 4). A stopped make leaves its folder, which the next make removes first.
+        if (o.fallback) o.steps.print('Ledung is already running: to use the browser instead, press Ctrl+C and run "ledung --browser".');
       },
     });
     if (made !== 'nothing') {

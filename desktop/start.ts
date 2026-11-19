@@ -83,7 +83,8 @@ export function lastLine(output: string): string {
  */
 export function findOnPath(command: string, env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): string | null {
   const get = (name: string) => Object.entries(env).find(([key]) => key.toUpperCase() === name)?.[1] ?? '';
-  const exts = platform === 'win32' ? ['', ...get('PATHEXT').split(';').filter(Boolean).map((e) => e.toLowerCase())] : [''];
+  // Windows' own default when PATHEXT is unset (an environment built from nothing), so node.exe is still a program (#407).
+  const exts = platform === 'win32' ? ['', ...(get('PATHEXT') || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean).map((e) => e.toLowerCase())] : [''];
   // A Windows Path entry may be quoted ("C:\Program Files\nodejs"), as cmd accepts (self-check round 2).
   const dirs = path.isAbsolute(command) ? [''] : get('PATH').split(platform === 'win32' ? ';' : ':')
     .map((dir) => (platform === 'win32' ? dir.replace(/^"(.*)"$/, '$1') : dir)).filter(Boolean);

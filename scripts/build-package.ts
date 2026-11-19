@@ -18,7 +18,8 @@
 //
 // The desktop app (#407) goes in too: desktop/ bundled into dist/desktop/, with Electron as an optional dependency
 // pinned like the others. Electron's package downloads no binary at install; Ledung makes its own "Ledung" app from
-// the binary the first time the app opens (src/platform/desktop-app.ts). `--omit=optional` leaves Electron out.
+// the binary the first time the app opens (src/platform/desktop-app.ts). npm ignores `--omit=optional` for a global
+// install; "desktopApp": false keeps `ledung` from ever making the app (Ledung question #584).
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
