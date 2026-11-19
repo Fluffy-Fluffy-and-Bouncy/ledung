@@ -8,7 +8,6 @@
 // Only narrows: a plugin or server the manager's profile already leaves out stays out. Before managers on this
 // computer have a week behind them nothing is dropped (Martin at agent-workflow PR #366: "Start with all tools, after
 // a manager has been used for a week, remove the tools it never used").
-import { exercisedLine } from '../platform/exercised.ts';
 import type { Profile } from './profiles.ts';
 import { LEDUNG_SERVER } from './tools.ts';
 
@@ -129,9 +128,6 @@ export interface SeedSource {
 
 const SEEDED = 'manager-tools-seeded';
 
-/** The EXERCISED line of issue #431, once per run. */
-let exercised = false;
-
 /** The record, filled from what sessions on this computer call, and seeded once from what Ledung already stored. */
 export class ManagerTools {
   private readonly store: ManagerToolsStore;
@@ -188,11 +184,6 @@ export class ManagerTools {
     this.seed(now);
     const managers = this.source.sessions().filter((s) => s.manager).map((s) => s.createdAt);
     const since = managers.length ? Math.min(...managers) : null;
-    const learned = learnedTools(this.store.toolUses(), this.store.serversSeen(), installed, since, now);
-    if (learned && !exercised) {
-      exercised = true;
-      exercisedLine(`EXERCISED #431 manager started with learned tools (${learned.pluginsOff.length} plugins, ${learned.serversOff.length} servers left out)`);
-    }
-    return learned;
+    return learnedTools(this.store.toolUses(), this.store.serversSeen(), installed, since, now);
   }
 }
