@@ -112,9 +112,6 @@ async function main(): Promise<void> {
   manager.away.begin();
   // A once-order whose run was under way when Ledung stopped: its result went to that Ledung (review of PR #107, finding 4).
   manager.orders.recover();
-  // The managers that were running when Ledung stopped come back by themselves (#391), in the background like a resume
-  // from the page: a slow one never holds up the start.
-  void manager.resumeManagersAtStart(managersAtStop).catch((e) => console.log(`Managers at start: ${(e as Error).message}`));
   // Whether Claude Code is signed in, so a first start says how to sign in before a session fails on it (issue #333).
   void manager.checkSignIns();
 
@@ -234,6 +231,9 @@ async function main(): Promise<void> {
     }
     throw e;
   }
+  // The managers that were running when Ledung stopped come back by themselves (#391), once this Ledung is surely the
+  // one that runs (not a second start on a port in use), and in the background like a Resume from the page.
+  void manager.resumeManagersAtStart(managersAtStop).catch((e) => console.log(`Managers at start: ${(e as Error).message}`));
 
   manager.startMeasuring();
   checkIn.start();
