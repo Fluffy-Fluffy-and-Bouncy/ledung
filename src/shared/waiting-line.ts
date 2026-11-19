@@ -5,6 +5,7 @@
 // restart, Done looks like 7) and the page draws it from the live item when it has one. Plain text only (Done 5).
 import type { PermissionInfo, QuestionInfo } from './protocol.ts';
 import { ACCEPTED, CHANGES_NEEDED, deskQuestion } from './questions.ts';
+import { callLine } from './tool-call.ts';
 
 export type WaitingLineState = 'waiting' | 'accepted' | 'changes' | 'answered' | 'withdrawn' | 'allowed' | 'denied';
 
@@ -66,12 +67,10 @@ export function questionLine(q: QuestionInfo, userName: string, titleOf: (id: st
   return { ...base, state: 'answered', answer: cut(option ? option.label : answer.split('\n')[0] ?? '', MAX_ANSWER), by, at: q.answeredAt };
 }
 
-/** A permission prompt's title: the request's own title, else its tool and what it is about. */
+/** A permission prompt's title: the request's own title, else its tool in plain words and what it is about (issue #399). */
 function permissionTitle(p: PermissionInfo): string {
   if (p.title) return cut(p.title, MAX_TITLE);
-  const i = p.input as Record<string, unknown>;
-  const about = [i.command, i.file_path, i.path, i.url, i.pattern].find((v) => typeof v === 'string') as string | undefined;
-  return cut(about ? `${p.toolName}: ${about}` : p.toolName, MAX_TITLE);
+  return cut(callLine(p.toolName, (p.input ?? {}) as Record<string, unknown>, MAX_TITLE), MAX_TITLE);
 }
 
 export function permissionLine(p: PermissionInfo, userName: string, titleOf: (id: string) => string | undefined): WaitingLine {

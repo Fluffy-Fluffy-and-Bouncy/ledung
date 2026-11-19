@@ -4,6 +4,7 @@ import { useState } from 'react';
 import type { PermissionInfo } from '../../../src/shared/protocol.ts';
 import { api } from '../api.ts';
 import { ToolPreview } from './ToolPreview.tsx';
+import { toolLabel } from '../../../src/shared/tool-call.ts';
 import { usePlainTyping } from '../usePlainTyping.ts';
 import { NOT_AT_PC, STOP_NOTE, UAC_NOTE } from '../../../src/shared/elevation.ts';
 
@@ -54,7 +55,8 @@ function ApprovalCard({ permission, managerTitle, plain }: { permission: Permiss
   return (
     <div className="card permission">
       <div className="card-head">
-        <strong>Permission: {permission.toolName}</strong>
+        <strong>Permission: {toolLabel(permission.toolName)}</strong>
+        {toolLabel(permission.toolName) !== permission.toolName && <span className="muted"> ({permission.toolName})</span>}
         {permission.title && <span className="muted"> · {permission.title}</span>}
         {permission.addressedTo !== 'user' && (
           <span className="muted"> · {permission.sensitive ? 'with' : 'for'} manager "{managerTitle ?? 'manager'}"{permission.sensitive ? '' : ' to decide'}</span>
