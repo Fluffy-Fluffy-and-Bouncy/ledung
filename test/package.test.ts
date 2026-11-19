@@ -8,10 +8,11 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { bundleCore, ENTRIES, packageManifest, packageShrinkwrap, pinnedDependencies, platformOnly, stagePackage } from '../scripts/build-package.ts';
+import { bundleCore, DESKTOP_FILES, ENTRIES, packageManifest, packageShrinkwrap, pinnedDependencies, platformOnly, stagePackage } from '../scripts/build-package.ts';
 import { configPath, createDefaultConfig, loadConfig } from '../src/config.ts';
 import { appDir, hostEntry, PACKAGED } from '../src/platform/paths.ts';
 import { NPM_REASON, Updater } from '../src/update/updater.ts';
+import { PACKAGED_PATHS } from '../scripts/publish.ts';
 import { removeTemp } from './temp.ts';
 import { freePort } from './free-port.ts';
 import { HANG_MS, WAIT_MS } from './limits.ts';
@@ -48,21 +49,31 @@ test('package.json has what a publish needs, and the command is the bundled cli'
   assert.equal(pkg.maintainers, undefined);
 });
 
-test('the desktop app stays out of the package and out of the root install (issue #358)', () => {
+test('the desktop app ships in the package, Electron as an exact optional dependency that installs no binary (issue #407)', () => {
   const pkg = clonePackage();
-  // desktop/ is run from a clone only (Martin, 2026-11-17, Ledung question #338): never shipped.
-  const desktopEntries = (files: string[]) => files.filter((entry) => /desktop/i.test(entry));
-  assert.deepEqual(desktopEntries(['dist/', 'desktop/', 'web/dist/']), ['desktop/'], 'the check finds a desktop entry');
-  assert.ok(Array.isArray(pkg.files) && pkg.files.length > 0);
-  assert.deepEqual(desktopEntries(pkg.files as string[]), []);
-  // Electron comes with desktop/'s own npm install; the root one (CI, every worktree) downloads none.
-  const electronIn = (manifest: Record<string, Record<string, string> | undefined>) =>
-    ['dependencies', 'devDependencies', 'optionalDependencies'].filter((field) => manifest[field]?.electron !== undefined);
-  assert.deepEqual(electronIn({ devDependencies: { electron: '^45.3.3' } }), ['devDependencies'], 'the check finds electron');
-  assert.deepEqual(electronIn(pkg), []);
-  const rootLock = JSON.parse(fs.readFileSync(path.join(appDir(), 'package-lock.json'), 'utf8')) as { packages: Record<string, unknown> };
-  assert.ok(Object.keys(rootLock.packages).includes('node_modules/typescript'), 'the root lockfile is read');
-  assert.deepEqual(Object.keys(rootLock.packages).filter((k) => /(^|\/)electron$/.test(k)), []);
+  // Martin, 2026-11-19, Ledung questions #575 ("a — Optional dependency") and #577; this replaces #358's "never shipped".
+  // resedit: Ledung.exe's file details on Windows, plain JavaScript (Martin, 2026-11-19, Ledung question #587).
+  assert.deepEqual(pkg.optionalDependencies, { electron: '45.4.1', resedit: '3.1.1' });
+  assert.equal(pkg.dependencies.electron, undefined, 'not a plain dependency');
+  assert.equal(pkg.devDependencies.electron, undefined);
+  // One Electron for the clone run (desktop/) and the package.
+  const desktopPkg = JSON.parse(fs.readFileSync(path.join(appDir(), 'desktop', 'package.json'), 'utf8'));
+  assert.equal(desktopPkg.devDependencies.electron, pkg.optionalDependencies.electron);
+  const desktopLock = JSON.parse(fs.readFileSync(path.join(appDir(), 'desktop', 'package-lock.json'), 'utf8'));
+  assert.equal(desktopLock.packages['node_modules/electron'].version, pkg.optionalDependencies.electron);
+  // The root lockfile has it as optional and production, and without an install script: npm ci (CI, every worktree)
+  // and every npm install of the package download no Electron binary (issue #407 finding 1). A lockfile entry with an
+  // install script carries hasInstallScript, as esbuild's does.
+  const rootLock = JSON.parse(fs.readFileSync(path.join(appDir(), 'package-lock.json'), 'utf8')) as { packages: Record<string, Record<string, unknown>> };
+  const electron = rootLock.packages['node_modules/electron']!;
+  assert.equal(electron.version, '45.4.1');
+  assert.equal(electron.optional, true);
+  assert.equal(electron.dev, undefined);
+  assert.equal(rootLock.packages['node_modules/esbuild']?.hasInstallScript, true, 'the check sees an install script where there is one');
+  assert.equal(electron.hasInstallScript, undefined);
+  // The package's files: desktop/ itself is bundled into dist/desktop/, which "dist/" already takes.
+  assert.ok((pkg.files as string[]).includes('dist/'));
+  assert.ok(PACKAGED_PATHS.includes('desktop'), 'an untracked file in desktop/ stops a publish, as in src/');
 });
 
 test("the package's own package.json has no scripts or devDependencies (npm warns about a prepare script on install)", () => {
@@ -88,6 +99,10 @@ test('the staged package pins every dependency to the lockfile, through its pack
     fs.cpSync(path.join(appDir(), file), path.join(source, file));
   }
   fs.symlinkSync(path.join(appDir(), 'src'), path.join(source, 'src'), process.platform === 'win32' ? 'junction' : 'dir');
+  // The desktop app's source and its icon (#407).
+  fs.symlinkSync(path.join(appDir(), 'desktop'), path.join(source, 'desktop'), process.platform === 'win32' ? 'junction' : 'dir');
+  fs.mkdirSync(path.join(source, 'web', 'public'), { recursive: true });
+  for (const icon of ['icon-512.png', 'icon-256.png']) fs.cpSync(path.join(appDir(), 'web', 'public', icon), path.join(source, 'web', 'public', icon));
   fs.cpSync(path.join(appDir(), 'plugins'), path.join(source, 'plugins'), { recursive: true });
   const stage = path.join(base, 'stage');
   await stagePackage(source, stage);
@@ -100,10 +115,20 @@ test('the staged package pins every dependency to the lockfile, through its pack
   for (const name of Object.keys(clonePackage().dependencies)) {
     assert.equal(manifest.dependencies[name], lockedVersion(name), `${name} is the lockfile's exact version`);
   }
+  // Electron, optional and pinned the same way (#407), in the shrinkwrap's root as well.
+  assert.deepEqual(manifest.optionalDependencies, { electron: lockedVersion('electron'), resedit: lockedVersion('resedit') });
+  // The desktop app, bundled to plain JavaScript with Electron left outside, and the files it loads beside it (#407).
+  const desktop = path.join(stage, 'dist', 'desktop');
+  assert.deepEqual(fs.readdirSync(desktop).sort(), ['main.js', ...Object.keys(DESKTOP_FILES)].sort());
+  const main = fs.readFileSync(path.join(desktop, 'main.js'), 'utf8');
+  assert.match(main, /from "electron"/, 'Electron is imported, not bundled');
+  assert.doesNotMatch(main, /\.ts["']/, 'no TypeScript import is left');
 
   const shrinkwrap = JSON.parse(fs.readFileSync(path.join(stage, 'npm-shrinkwrap.json'), 'utf8'));
   assert.equal(shrinkwrap.lockfileVersion, 3);
   assert.deepEqual(shrinkwrap.packages[''].dependencies, manifest.dependencies);
+  assert.deepEqual(shrinkwrap.packages[''].optionalDependencies, manifest.optionalDependencies);
+  assert.equal(shrinkwrap.packages['node_modules/electron'].version, lockedVersion('electron'));
   assert.equal(shrinkwrap.packages[`node_modules/${SDK}`].version, lockedVersion(SDK));
   // Everything a production install takes from the lockfile, at the lockfile's version, and nothing for development.
   // The Agent SDK's per-platform copies of Claude Code stay out: npm installs every one a shrinkwrap lists,

@@ -1208,6 +1208,11 @@ export interface ShortcutsView {
   /** The first-run question has been answered, Yes or No; it is not asked again. */
   asked: boolean;
   places: ShortcutPlace[];
+  /**
+   * Windows: the desktop app's own Start-menu entry, "Ledung app" (#587), which `ledung` writes when it makes the app.
+   * Listed apart from the places: Add never makes it, Remove takes it away (code review of PR #411, round 2).
+   */
+  appEntry?: { label: string; file: string; present: boolean } | null;
   /** Start Ledung when I sign in (issue #456): off until switched on. */
   signIn: SignInStartView;
   /** The log a background Ledung writes (#456); `active` when this Ledung's output goes there. */

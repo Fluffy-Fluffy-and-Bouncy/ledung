@@ -98,9 +98,10 @@ function npmView(name: string, cwd: string): string[] {
 /**
  * What goes into the package besides tracked files: an untracked file here is built or copied in (web/public into the
  * page, for one), so it counts as an uncommitted change (code review of PR #13, minor 2). Untracked files elsewhere,
- * such as backups beside the config, are left out of the package and don't stop a publish.
+ * such as backups beside the config, are left out of the package and don't stop a publish. desktop/ is bundled in
+ * since the app ships in the package (#407).
  */
-export const PACKAGED_PATHS = ['src', 'web', 'scripts', 'package.json', 'package-lock.json', 'README.md', 'CHANGELOG.md', 'LICENSE', 'COMMERCIAL.md', 'ledung.config.example.json'];
+export const PACKAGED_PATHS = ['src', 'web', 'scripts', 'desktop', 'package.json', 'package-lock.json', 'README.md', 'CHANGELOG.md', 'LICENSE', 'COMMERCIAL.md', 'ledung.config.example.json'];
 
 /** The clone's side of the state, read with git after fetching origin/main. */
 export function cloneState(source: string): Pick<PublishState, 'branch' | 'dirty' | 'head' | 'originHead'> {

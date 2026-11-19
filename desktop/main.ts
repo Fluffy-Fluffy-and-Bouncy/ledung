@@ -9,22 +9,43 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, session, shell, type MenuItemConstructorOptions, type NativeImage, type Session, type WebContents } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { findRunning } from './attach.ts';
+import fs from 'node:fs';
+import { dataDir, findRunning } from './attach.ts';
 import { dockIconLayout, padBitmap } from './dock-icon.ts';
 import { zoomed, zoomKey } from './keys.ts';
-import { runStart } from './start.ts';
+import { APP_ID, readMadeConfig, WRITE_SHORTCUT_ARG } from './made.ts';
+import { runStart, startCommand } from './start.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+/**
+ * The made app's settings (#407): present when the npm package's `ledung` made this app in the data folder, null for a
+ * clone run. Its LEDUNG_CONFIG and LEDUNG_DATA_DIR pick the Ledung the app shows, so an app opened from Finder or the
+ * Start menu, with none of the terminal's settings, finds the same one; Start Ledung runs the Node and `ledung` that
+ * made it.
+ */
+const made = readMadeConfig(here);
+/** Set when the core started this just-made app only to write its Start-menu shortcut (#587, made.ts). */
+const shortcutFile = process.argv.find((a) => a.startsWith(`${WRITE_SHORTCUT_ARG}=`))?.slice(WRITE_SHORTCUT_ARG.length + 1);
+if (made) {
+  for (const [name, value] of Object.entries(made.env)) process.env[name] = value;
+  // Electron would keep its profile (cookies, caches) in a folder named after the app, "Ledung": on the Mac and
+  // Windows that is Ledung's own data folder. Its own folder beside the made app instead; the shortcut writer gets a
+  // throwaway one, so a running app's profile is never shared.
+  app.setPath('userData', path.join(dataDir(), 'desktop', shortcutFile ? '.shortcut-profile' : 'profile'));
+  // Windows: the taskbar and notifications group the app under this id instead of Electron's.
+  if (process.platform === 'win32') app.setAppUserModelId(APP_ID);
+}
 const NOT_RUNNING_PAGE = path.join(here, 'not-running.html');
 /** The page's one bridge to the app (#360): showing the window when a notification is clicked. */
 const PRELOAD = path.join(here, 'preload.cjs');
 /** The message the preload sends for it (preload.cjs). */
 export const SHOW_WINDOW_MESSAGE = 'ledung-desktop:show-window';
 /**
- * Ledung's own icon (#384), the page's app icon from the clone's web/public: the app runs from a clone (README), so
- * it is there. A PNG, since Electron's images load no SVG. Exported for the probe, which checks it loads.
+ * Ledung's own icon (#384), the page's app icon: next to main.js in the npm package and the made app (#407), from the
+ * clone's web/public in a clone run. A PNG, since Electron's images load no SVG. Exported for the probe, which checks
+ * it loads.
  */
-export const APP_ICON = path.join(here, '..', 'web', 'public', 'icon-512.png');
+export const APP_ICON = fs.existsSync(path.join(here, 'icon-512.png')) ? path.join(here, 'icon-512.png') : path.join(here, '..', 'web', 'public', 'icon-512.png');
 /** The core's sign-in cookie (src/server/security.ts COOKIE_NAME). */
 const COOKIE_NAME = 'ledung_auth';
 
@@ -155,7 +176,8 @@ const ANSWER_MS = 60_000;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Start Ledung (#362): runs the installed `ledung --no-open` with a clean environment, then attaches as on Retry. A
+ * Start Ledung (#362): runs the installed `ledung --no-open` with a clean environment (in the made app, the Node and
+ * `ledung` that made it, #407), then attaches as on Retry. A
  * Ledung that was already started elsewhere meanwhile is simply found. What failed is one line on the page, with
  * Start Ledung and Retry again; nothing here shows a dialog or throws (Mac spike surprise 3).
  */
@@ -165,7 +187,7 @@ async function start(): Promise<void> {
   let failed: string | undefined;
   try {
     await showNotRunning('Starting Ledung in the background…', 'starting');
-    const result = await runStart();
+    const result = await runStart(startCommand(process.env, made));
     if (!result.ok) failed = result.line;
     else {
       const deadline = Date.now() + ANSWER_MS;
@@ -369,7 +391,20 @@ function createWindow(): void {
 
 // One app per computer: a second start shows the first one's window and ends (#359). Asked before anything else, so
 // the second never opens a window or signs in.
-if (!app.requestSingleInstanceLock()) {
+if (shortcutFile) {
+  // Only the shortcut, then quit: no window, no single-instance lock (a running app keeps its own). The target is this
+  // program, with the app's id, so Windows names its notifications "Ledung" (#587).
+  void app.whenReady().then(() => {
+    let ok = false;
+    try {
+      fs.mkdirSync(path.dirname(shortcutFile), { recursive: true });
+      ok = shell.writeShortcutLink(shortcutFile, 'create', { target: process.execPath, appUserModelId: APP_ID, icon: process.execPath, iconIndex: 0, description: 'Ledung' });
+    } catch (e) {
+      console.error(`Ledung desktop: ${(e as Error).message}`);
+    }
+    app.exit(ok ? 0 : 1);
+  });
+} else if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', showWindow);

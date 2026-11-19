@@ -22,7 +22,7 @@ Run from a clone, Ledung reads its settings from `ledung.config.local.json` in t
 | `npm run check` | Type check (core and page) and all tests. Run before every commit. |
 | `npm run build` | Builds the page into `web/dist`. |
 | `npm run release` | Check, build, copy to a new release folder and point the launcher at it. |
-| `npm run pack` | Builds the npm package into `dist/ledung-<version>.tgz` (plain JavaScript). |
+| `npm run pack` | Builds the npm package into `dist/ledung-<version>.tgz` (plain JavaScript, the desktop app included). |
 | `npm start` | Runs Ledung from this folder (development only; use a throwaway config and data folder). |
 
 ## Running Ledung from a clone
@@ -44,10 +44,13 @@ For development, `npm start` runs Ledung straight from this folder (use another 
 ### The desktop app
 
 `desktop/` holds an Electron app that shows the running Ledung's page in a window of its own, signed in, with no
-browser tab (epic #357). It is run from a clone and never shipped: `npm install` then `npm start` in `desktop/`, with
-Ledung already running. Electron is that folder's own dependency, so the root `npm install` brings none. It reads
+browser tab (epic #357). It ships in the npm package (#407): `npm run pack` bundles it into `dist/desktop/`, Electron is
+an optional dependency pinned to the same version as `desktop/package.json`'s, and the `ledung` command makes a
+"Ledung" app from Electron's binary in the data folder the first time it opens it (`src/platform/desktop-app.ts`).
+Electron's npm package has no install script, so the root `npm install` and `npm ci` download no Electron binary. From a
+clone it runs as before: `npm install` then `npm start` in `desktop/`, with Ledung already running. It reads
 `LEDUNG_CONFIG` and `LEDUNG_DATA_DIR` as the core does, so it can be pointed at a throwaway Ledung;
-[desktop/README.md](../desktop/README.md) says how.
+[desktop/README.md](../desktop/README.md) says how, and how to try the made app from a packed build.
 
 ## The npm package
 
