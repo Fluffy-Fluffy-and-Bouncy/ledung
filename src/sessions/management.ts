@@ -13,6 +13,7 @@ import { parseProject, type ProjectConfig, type WorkflowConfig } from '../config
 import type { NewProjectArgs, ProjectArgs } from './tools.ts';
 import { describeRule, ruleMatches, type GrantRule } from './grants.ts';
 import { oneLine } from '../shared/shots.ts';
+import { hasInput, inputLines, toolLabel } from '../shared/tool-call.ts';
 import { checkTier, reviewAnswerProblem, tiersOf, type QuestionDetails, type ReviewEvidence } from '../shared/questions.ts';
 import { CONTEXT_SENTENCE } from '../shared/delivery.ts';
 import { contextSize } from '../shared/context-size.ts';
@@ -249,7 +250,10 @@ export function plainTitle(title: string): string {
  */
 export function requestText(p: Pick<PermissionInfo, 'toolName' | 'input'> & { sensitive?: string | null }, limit = 4000): string {
   const bash = p.toolName === 'Bash';
-  let body = bash ? String(p.input.command ?? '') : JSON.stringify(p.input, null, 2);
+  // Not bare JSON, and no `{}` for a tool without input (issue #399): the tool in plain words, its input as lines.
+  const name = toolLabel(p.toolName) === p.toolName ? p.toolName : `${toolLabel(p.toolName)} (${p.toolName})`;
+  if (!bash && !hasInput(p.input)) return `Tool ${name}, without input.`;
+  let body = bash ? String(p.input.command ?? '') : inputLines(p.input);
   let cut = '';
   if (!bash && !p.sensitive && body.length > limit) {
     cut = `\n\n(${body.length - limit} more characters not shown; the whole request is in the session's chat.)`;
@@ -257,7 +261,7 @@ export function requestText(p: Pick<PermissionInfo, 'toolName' | 'input'> & { se
   }
   const longest = Math.max(0, ...(body.match(/`+/g) ?? []).map((r) => r.length));
   const fence = '`'.repeat(Math.max(3, longest + 1));
-  return `${bash ? 'Command' : `Tool ${p.toolName}`}:\n\n${fence}\n${body}\n${fence}${cut}`;
+  return `${bash ? 'Command' : `Tool ${name}`}:\n\n${fence}\n${body}\n${fence}${cut}`;
 }
 
 const short = (text: string, n: number) => (text.length > n ? `${text.slice(0, n)}…` : text);

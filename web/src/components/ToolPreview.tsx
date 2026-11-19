@@ -1,6 +1,7 @@
 // Shows what a tool call will do: the command, the diff, or the file it touches.
 import { diffLines } from 'diff';
 import { CopyButton } from './Markdown.tsx';
+import { hasInput, inputLines } from '../../../src/shared/tool-call.ts';
 
 type Input = Record<string, any>;
 
@@ -90,6 +91,7 @@ export function ToolPreview({ toolName, input }: { toolName: string; input: Inpu
         </>
       );
     default:
-      return <Code text={JSON.stringify(input, null, 2)} />;
+      // As `key: value` lines, and no `{}` for a tool without input (issue #399).
+      return hasInput(input) ? <Code text={inputLines(input)} /> : <p className="muted">No input.</p>;
   }
 }

@@ -512,6 +512,8 @@ a.file-link { text-decoration-style: dotted; }
 .markdown th, .markdown td { border: 1px solid var(--border); padding: 0.25rem 0.5rem; text-align: left; }
 .code-block { position: relative; margin: 0.4rem 0; }
 .code-block pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px; padding: 0.6rem 0.75rem; overflow-x: auto; margin: 0; }
+/* A long call in a question (a refused call's input, issue #399) folds into its own scroll, so the answers stay near. */
+.question-text .code-block pre, .issue .code-block pre { max-height: 20rem; overflow: auto; }
 .copy-button { position: absolute; top: 0.3rem; right: 0.3rem; font-size: 0.75em; padding: 0.1rem 0.5rem; opacity: 0.8; }
 
 /* Cards */
