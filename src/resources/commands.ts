@@ -57,6 +57,20 @@ export function commandKinds(command: string): string[] {
 }
 
 /**
+ * A shell call that leaves its work running and returns at once (`python train.py &`, `nohup`, `setsid`, `disown`,
+ * Windows' `start`, PowerShell's Start-Process / Start-Job): how long it took says nothing about its work, so its
+ * duration isn't kept for the 10-second rule (code review of PR #400, round 2). `&&`, redirections (`2>&1`, `&>`) and
+ * PowerShell's call operator at the start of a part (`& "x.exe"`) are not a detach.
+ */
+export function detaches(command: string): boolean {
+  if (/(^|[\s;&|(])(nohup|setsid|disown|start-process|start-job)(\s|$)/im.test(command)) return true;
+  // `start` only as the command itself (cmd's start), never as an argument (`npm start`).
+  if (/(^|[;&|(]|\/[ck])\s*start(\.exe)?\s/im.test(command)) return true;
+  const c = command.replace(/&&/g, ' ; ').replace(/\d*>&\d*|&>>?|>>?&/g, ' ');
+  return /[^\s;|(&]\s*&(?!&)/.test(c);
+}
+
+/**
  * The kinds of command a shell call really runs, for resource limits' heavy-command check: as commandKinds, also
  * looking inside the usual wrappers (`bash -c "…"`, `sh -c`, `powershell -Command`, `cmd /c`, `nohup`, `time`, `env`,
  * `nice`, `exec`, PowerShell's `&`, a subshell's parentheses), so `nohup python train.py &` is `python train.py`.

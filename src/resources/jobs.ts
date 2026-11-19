@@ -182,8 +182,9 @@ export class JobStore {
 
   /**
    * Commands known to be heavy: in at least HEAVY_AFTER recent runs (reserved or unreserved) that used more than the
-   * allowance. Those the person marked "never" are listed with `never`. Light commands and those whose calls usually
-   * finish within 10 s are never heavy (R4), applied here when read, so old wrong marks clear themselves.
+   * allowance. Those the person marked "never" are listed with `never`. Light commands are never heavy, and records
+   * from before R4 count only for a kind whose calls usually take over 10 s, applied here when read, so old wrong
+   * marks clear themselves.
    */
   heavyCommands(project?: string): HeavyCommand[] {
     const rows = (project === undefined
@@ -212,9 +213,11 @@ export class JobStore {
     const out: HeavyCommand[] = [];
     for (const [key, e] of by) {
       const usualMs = this.usualMs(e.project, e.command);
-      if (usualMs !== null && usualMs <= SHORT_MS) continue;
-      // Records from before R4 took every call made during a job: they count only once its calls are seen to be long.
-      const runs = usualMs === null ? e.runs.filter((r) => r.byCall) : e.runs;
+      // Records from before R4 took every call made during a job: they count only once its calls are seen to be long
+      // (the 10-second rule). Records since R4 are a call's own busy processes, and stay evidence however quick its
+      // other calls were: one `python train.py &` that returns at once must not make a heavy command light (code
+      // review of PR #400, round 2).
+      const runs = usualMs !== null && usualMs > SHORT_MS ? e.runs : e.runs.filter((r) => r.byCall);
       if (runs.length < HEAVY_AFTER) continue;
       const dims = new Set(runs.flatMap((r) => Object.keys(r.peak)));
       const peak: Amounts = {};

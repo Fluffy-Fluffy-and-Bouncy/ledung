@@ -11,7 +11,7 @@ import { GpuTracker, type GpuReading, groupLoad, groupMem, mainGpu, parseDrmFdin
 import { parseWindowsLines, windowsBatchReader, type ProcInfo, type ProcessList } from '../src/platform/processes.ts';
 import { ResourceBook, LAPSE_MS, RESOURCE_SOURCE, type BookSample, type BookSession } from '../src/resources/book.ts';
 import { JobStore, fromGeneric, toGeneric } from '../src/resources/jobs.ts';
-import { heavyKinds } from '../src/resources/commands.ts';
+import { detaches, heavyKinds } from '../src/resources/commands.ts';
 import { LOWERED, type PriorityControl } from '../src/platform/process-control.ts';
 import { dragMax, dragStep, dragText, dragValue, limitShare, limitText, limitUnits, overFor, parseLimitInput, stepDrag, valueShare } from '../web/src/usage/resourceLimits.ts';
 import { fileTimeMs, JOB_BUSY, JobActions, jobTargetsNow, type FreshProcess } from '../src/resources/job-actions.ts';
@@ -443,13 +443,41 @@ test('light commands are never refused, even with old "heavy" marks and a pass w
   assert.match(why ?? '', /learned this from 2 reserved jobs it ran in, the last on 1970-01-01; its calls usually take 60 s\. If that is wrong/);
   assert.doesNotMatch(why ?? '', /nightly build/, "no job's name reaches a session");
   assert.deepEqual(r.jobs.heavyCommands('p').map((h) => h.command), ['npm run build']);
-  // A short kind stays unrefused whatever it learned; only the latest ten calls count.
+  // Only the latest ten calls count.
   for (let i = 0; i < 12; i++) r.jobs.addCall('p', 'npm run build', i < 2 ? 1000 : 60_000, 10 + i);
   assert.equal(r.jobs.usualMs('p', 'npm run build'), 60_000);
   assert.equal((r.jobs as unknown as { db: { prepare(q: string): { get(): { n: number } } } }).db.prepare("SELECT COUNT(*) AS n FROM command_calls WHERE kind = 'npm run build'").get().n, 10);
   // Records learned the new way count without durations.
   for (const at of [3, 4]) r.jobs.add({ project: 'p', kind: 'train', commands: ['python train.py'], asked: {}, peak: { ram: 4 * GB }, mean: {}, durationMs: 1, over: false, undeclared: false, endedAt: at });
   assert.match(r.book.commandRefusal('s1', ['python train.py']) ?? '', /call reserve first/);
+});
+
+test('quick calls never cancel what a command was measured to use; a call that detaches keeps no duration', () => {
+  const r = rig();
+  r.tick({ s1: tree(), s2: tree2() });
+  // Learned the new way: a call's own processes were busy in two runs.
+  for (const at of [1, 2]) r.jobs.add({ project: 'p', kind: 'train', commands: ['python train.py'], asked: {}, peak: { ram: 4 * GB }, mean: {}, durationMs: 1, over: false, undeclared: true, endedAt: at });
+  assert.match(r.book.commandRefusal('s1', ['python train.py']) ?? '', /call reserve first/);
+  // One quick call (code review of PR #400, round 2): it is still refused.
+  r.book.callStarted('s2', 'q', ['python train.py'], false);
+  r.clock.now += 200;
+  r.book.callEnded('s2', 'q');
+  assert.equal(r.jobs.usualMs('p', 'python train.py'), 200);
+  assert.match(r.book.commandRefusal('s1', ['python train.py']) ?? '', /call reserve first/);
+  // Nor do ten of them.
+  for (let i = 0; i < 10; i++) r.jobs.addCall('p', 'python train.py', 200, 10 + i);
+  assert.deepEqual(r.jobs.heavyCommands('p').map((h) => h.command), ['python train.py']);
+  // A call that detaches is followed like a background one, so its quick return is never kept.
+  for (const command of ['python train.py &', 'nohup python train.py > log 2>&1 &', 'setsid python train.py', 'python train.py & disown', 'start /b python train.py', 'cmd /c start python train.py', 'Start-Process python train.py', 'python a.py & python b.py']) {
+    assert.equal(detaches(command), true, command);
+  }
+  for (const command of ['python train.py', 'npm start', 'make && make test', 'npm run build 2>&1 | tee log', 'npm test &> out', '& "C:/x/train.exe" --fast', 'cd a; & ./run.ps1']) {
+    assert.equal(detaches(command), false, command);
+  }
+  r.book.callStarted('s2', 'd', ['make'], detaches('make &'));
+  r.clock.now += 100;
+  r.book.callEnded('s2', 'd');
+  assert.equal(r.jobs.usualMs('p', 'make'), null);
 });
 
 test('git, file-reading words and shell syntax are light; real work is not', () => {

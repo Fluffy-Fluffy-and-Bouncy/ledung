@@ -36,7 +36,7 @@ import { helperToolServer, type HelperHandlers } from './helper-tools.ts';
 import { helperInstructions, helperSkillAllowed } from './helper.ts';
 import { CONTEXT_TOOLS, instructions, LEDUNG_SERVER, LEDUNG_TOOLS, ledungToolServer, MCP_LIMIT_ENV, mcpLimitFor, BASICS_TOOLS, LEDUNG_SETTING_TOOLS, SETTINGS_CHANGE_RULE, SETTINGS_CHANGE_TOOLS, SETTINGS_TOOLS, USAGE_PUBLISH_TOOLS, USER_APPROVED_TOOLS, type BoardHandlers, type ManagerHandlers, type ProposeHandlers, type RunHandlers, type ToolHandlers } from './tools.ts';
 import type { Boards } from '../board/boards.ts';
-import { commandKinds, heavyKinds } from '../resources/commands.ts';
+import { commandKinds, detaches, heavyKinds } from '../resources/commands.ts';
 import { RESOURCE_SOURCE, type ReserveArgs } from '../resources/book.ts';
 import { FRESH_FACTS, pauseReason, type IdleState } from './idle.ts';
 import { skillsFromFiles, skillsOff, withSkillsOff, type SkillChoices } from './skills.ts';
@@ -1310,7 +1310,8 @@ export class Session {
             const why = this.gate.commandCheck(this.id, kinds);
             if (why) return { hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'deny' as const, permissionDecisionReason: why } };
             // A job learns a kind only from calls under way while it is busy (R4, finding 7): the book follows each call.
-            if (kinds.length && toolUseId) this.gate.callStarted?.(this.id, toolUseId, kinds, input.run_in_background === true || toolName === 'Monitor');
+            // A call that detaches (`python train.py &`) is followed like a background one: its quick return is no duration.
+            if (kinds.length && toolUseId) this.gate.callStarted?.(this.id, toolUseId, kinds, input.run_in_background === true || toolName === 'Monitor' || detaches(String(input.command ?? '')));
           }
           // Compacting or clearing is for the main session only, never a subagent (decided 2026-10-13).
           if (CONTEXT_TOOLS.includes(toolName) && (input as { agent_id?: string }).agent_id) {
