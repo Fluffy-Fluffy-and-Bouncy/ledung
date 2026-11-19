@@ -12,7 +12,7 @@ import { exercisedLine } from '../platform/exercised.ts';
 import type { Profile } from './profiles.ts';
 import { LEDUNG_SERVER } from './tools.ts';
 
-/** Whether learning applies when the workflow says nothing (Ledung question #650 decides it; off until then). */
+/** Whether learning applies when the workflow says nothing: off (Martin, 2026-11-19, Ledung question #650: "a — Off unless the workflow turns it on"). */
 export const LEARN_MANAGER_TOOLS_DEFAULT = false;
 
 /** How far back a call counts, and how long managers must have run here before anything is dropped. */

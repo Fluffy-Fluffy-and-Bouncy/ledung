@@ -1282,7 +1282,13 @@ export class Session {
       ? pluginIdsIn(await this.runner.pluginSettingsTexts(this.loginFolder()))
       : [];
     // A manager's learned tools (issue #431): the plugins and servers no manager here called lately go too.
-    const learned = limit && this.profile ? limit(pluginIds) : null;
+    let learned: LearnedTools | null = null;
+    try {
+      learned = limit && this.profile ? limit(pluginIds) : null;
+    } catch (e) {
+      // The record couldn't be read: the manager starts with its profile's tools, as with the switch off.
+      console.error(`Learned tools for session ${this.id}: ${(e as Error).message}`);
+    }
     const profile = this.profile ? profileOptions(learned ? withLearned(this.profile, learned) : this.profile, pluginIds, this.fileSettings, [...this.pluginsOff, ...(learned?.pluginsOff ?? [])]) : {};
     // The user's own skills its project's picker turns off (#300), by the ones found where it runs, so a skill
     // added since is covered by its role's default; a reattached process already has its skills.
