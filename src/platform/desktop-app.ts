@@ -419,22 +419,42 @@ export async function codeIntoKept(o: MakeOptions): Promise<{ paths: MadePaths; 
 export const noticeFile = (dataDir: string): string => path.join(dataDir, 'desktop', 'notice.txt');
 
 /**
+ * The tray's own fallback line (#434), apart from noticeFile: it is shown once, to the first page on this computer that
+ * says hello after the fallback (the browser the tray opens next), and then removed. An app that is not installed never
+ * opens to remove it, so with noticeFile's lifetime it would come back on every page load for good (self-check
+ * finding 1).
+ */
+export const trayNoticeFile = (dataDir: string): string => path.join(dataDir, 'desktop', 'tray-notice.txt');
+
+const readLine = (file: string): string | null => {
+  try {
+    return fs.readFileSync(file, 'utf8').trim() || null;
+  } catch {
+    return null;
+  }
+};
+
+/**
  * The made app against the running Ledung, read from its stamp at each ask: a restart without an update (#408: "Restart
  * Ledung alone never remakes or restarts the app") finds them the same, and the restarted app's stamp is the new one.
  * Only Ledung's version counts, not Electron's: an app kept on its old Electron after a failed download (codeIntoKept)
  * has the new Ledung, and counting it out of date would restart it again and again while offline (self-check finding
  * 3). A new Electron comes with a new Ledung version, so the update's restart makes it; a failed one is tried again at
  * the next start. The made config (its Node, its command) does not count either: `ledung` rewrites it when it changes.
+ * `takeTrayNotice`: the tray's line (trayNoticeFile) is given once and removed; it comes before noticeFile's, being newer.
  */
-export function desktopAppState(o: { dataDir: string; ledungVersion: string; platform?: NodeJS.Platform }): DesktopAppInfo | null {
+export function desktopAppState(o: { dataDir: string; ledungVersion: string; platform?: NodeJS.Platform; takeTrayNotice?: boolean }): DesktopAppInfo | null {
   const paths = madePaths(o.dataDir, o.platform ?? process.platform);
   const stamp = readStamp(paths.stamp);
-  let notice: string | null = null;
-  try {
-    notice = fs.readFileSync(noticeFile(o.dataDir), 'utf8').trim() || null;
-  } catch {
-    // None.
+  const tray = o.takeTrayNotice ? readLine(trayNoticeFile(o.dataDir)) : null;
+  if (tray !== null) {
+    try {
+      fs.rmSync(trayNoticeFile(o.dataDir), { force: true });
+    } catch {
+      // Shown again at the next hello; nothing worse.
+    }
   }
+  const notice = tray ?? readLine(noticeFile(o.dataDir));
   const made = stamp !== null && fs.existsSync(paths.exe);
   if (!made && notice === null) return null;
   const stale = made && stamp.ledung !== o.ledungVersion;
@@ -540,36 +560,106 @@ export interface TrayOpenOptions {
   off: boolean;
   /** desktopAvailability() at each click: Electron's package can be added or lost while Ledung runs. */
   desktop: Availability;
+  /**
+   * The data folder: a fallback's reason is left in it for the page (trayNoticeFile, #434). Null where no page reads it
+   * (a clone or a release copy: main.ts gives the page no desktop state there), so a clone's reason is never shown later
+   * by the npm package, which shares the data folder (self-check round 2, finding 3).
+   */
+  dataDir: string | null;
+  /**
+   * The reasons already logged in this run of Ledung (main.ts keeps one set): each is logged once, not at every click
+   * (#434). Passed in, so each test starts with none said.
+   */
+  told: Set<string>;
   /** What a make is given, as `ledung` gives it (cli.ts): the same Node, `ledung` script and settings. */
   make: (desktop: Extract<Availability, { ok: true }>) => Promise<Omit<MakeOptions, 'print'>>;
   steps: OpenSteps;
 }
 
 let trayOpening: Promise<void> | null = null;
+let fallbackTraced = false;
+
+/** The tray's line when "desktopApp" is false: the person's own choice, so it goes to the log only, never the page. */
+export const TRAY_OFF_LINE = 'The tray opens Ledung in the browser: "desktopApp" is false in the config.';
+
+/**
+ * The tray's browser fallback says why (#434: "When it does fall back to the browser, it says why (once) where the
+ * person can see it"): once per run in the log, and on the page the browser opens next (trayNoticeFile, given to one
+ * page and removed). Before, an app that was not available opened the browser with no word anywhere, so the cause
+ * could not be told from Windows. The line is written before the browser is opened, so that page finds it.
+ */
+function trayFallback(o: TrayOpenOptions, why: string): void {
+  if (!o.told.has(why)) {
+    o.told.add(why);
+    o.steps.print(`${why} Opening Ledung in the browser instead.`);
+    if (!fallbackTraced) {
+      fallbackTraced = true;
+      exercisedLine('EXERCISED #434 the tray said why it opened the browser');
+    }
+  }
+  if (o.dataDir !== null) {
+    const file = trayNoticeFile(o.dataDir);
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, `${why} Ledung opened in the browser instead.\n`);
+    } catch {
+      // The log has the line; only the page misses it.
+    }
+  }
+  o.steps.browser();
+}
+
+/** Removes the tray's line once it no longer holds: the app opened, or the person switched the app off. */
+function dropTrayNotice(dataDir: string | null): void {
+  if (dataDir === null) return;
+  try {
+    fs.rmSync(trayNoticeFile(dataDir), { force: true });
+  } catch {
+    // Given to the next page instead; nothing worse.
+  }
+}
 
 /**
  * The tray's Open (#409): with Electron's package here, the app, made first when it isn't, exactly as `ledung` opens
  * it (openDesktop: a failed make or open says why in one line, in the log, and opens the browser). Without the package,
- * with "desktopApp": false, or from a clone: the page in the browser, as before. A click while the app is being made
- * waits for that make instead of starting a second one, which would remove the first one's folder under it.
+ * with "desktopApp": false, or from a clone: the page in the browser, saying why (#434). A click while the app is being
+ * made waits for that make instead of starting a second one, which would remove the first one's folder under it.
  */
 export function trayOpen(o: TrayOpenOptions): Promise<void> {
-  if (o.off || !o.desktop.ok) {
+  if (o.off) {
+    if (!o.told.has(TRAY_OFF_LINE)) {
+      o.told.add(TRAY_OFF_LINE);
+      o.steps.print(TRAY_OFF_LINE);
+    }
+    // A reason left from before the app was switched off no longer holds (self-check finding 2).
+    dropTrayNotice(o.dataDir);
     o.steps.browser();
+    return Promise.resolve();
+  }
+  if (!o.desktop.ok) {
+    trayFallback(o, o.desktop.reason.replace(/[.\s]*$/, '.'));
     return Promise.resolve();
   }
   if (trayOpening) return trayOpening;
   const desktop = o.desktop;
   trayOpening = (async () => {
+    // An app that opened clears the tray's reason left from an earlier click (#434).
+    const steps: OpenSteps = {
+      ...o.steps,
+      open: async (paths) => {
+        const failed = await o.steps.open(paths);
+        if (failed === null) dropTrayNotice(o.dataDir);
+        return failed;
+      },
+    };
     let make: Omit<MakeOptions, 'print'>;
     try {
       make = await o.make(desktop);
     } catch (e) {
-      o.steps.print(`The desktop app could not be made: ${firstLine(e)}. Opening Ledung in the browser instead.`);
-      o.steps.browser();
+      trayFallback(o, `The desktop app could not be made: ${firstLine(e).replace(/[.\s]*$/, '') || 'no reason given'}.`);
       return;
     }
-    await openDesktop({ make, fallback: true, steps: o.steps, noTerminal: true });
+    await openDesktop({ make, fallback: true, steps, noTerminal: true });
   })().finally(() => {
     trayOpening = null;
   });
