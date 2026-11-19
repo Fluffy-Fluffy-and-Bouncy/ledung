@@ -256,8 +256,11 @@ export class SessionManager {
   private idleTimer: NodeJS.Timeout | null = null;
   /** Sessions to restart with new lockdown settings once they are free (issue #109). */
   private readonly relaunching = new Set<string>();
-  /** Account switches under way (issue #395), so the minute check, a turn end and Switch now never start two. */
-  private readonly switching = new Set<string>();
+  /**
+   * Account switches under way (issue #395), so the minute check, a turn end and Switch now never start two; each
+   * settles when the session runs again, so a message sent meanwhile waits for it (code review of #395, finding 1).
+   */
+  private readonly switching = new Map<string, Promise<void>>();
   /** Away mode (issue #35): one state for the whole Ledung. */
   readonly away: Away;
   /** Orders on record (issue #105): the person's word, allowing one command in a manager and the session it sent it to. */
@@ -1438,8 +1441,10 @@ export class SessionManager {
   private noteWaitsFor(info: SessionInfo, state: IdleState): void {
     const sw = info.accountSwitch;
     if (!sw || sw.failed) return;
-    const turn = (state.info.status !== 'idle' && state.info.status !== 'starting') || state.info.paused || state.turnOpen || state.pendingPermissions || !info.claudeSessionId;
+    const turn = (state.info.status !== 'idle' && state.info.status !== 'starting') || state.turnOpen || state.pendingPermissions || !info.claudeSessionId;
     const waitsFor: NonNullable<AccountSwitch['waitsFor']> = turn ? 'turn'
+      : state.info.paused ? 'paused'
+      : state.shellRunning ? 'command'
       : state.backgroundTasks || state.facts?.backgroundTasks ? 'background'
       : state.facts?.crons ? (state.facts.repeating ? 'repeating' : 'wakeup') : 'turn';
     if ((sw.waitsFor ?? 'turn') !== waitsFor) this.setSwitch(info.id, waitsFor === 'turn' ? { to: sw.to } : { to: sw.to, waitsFor });
@@ -1450,6 +1455,18 @@ export class SessionManager {
    * how to sign in, so the chat says only that it isn't signed in, and the long help shows once. The account's check
    * is run first, so the banner is there; one that then doesn't show it keeps the help in the chat.
    */
+  /** Runs a switch (or lockdown restart) of `id`, kept in `switching` until it is over. */
+  private async whileSwitching(id: string, work: () => Promise<void>): Promise<void> {
+    let over!: () => void;
+    this.switching.set(id, new Promise<void>((r) => { over = r; }));
+    try {
+      await work();
+    } finally {
+      this.switching.delete(id);
+      over();
+    }
+  }
+
   private async switchRefusal(id: string, name: string, found: Promise<{ refuse: string } | { warn: string } | null>): Promise<{ refuse: string } | { warn: string } | null> {
     const r = await found;
     if (!r || !('refuse' in r) || !this.switching.has(id)) return r;
@@ -1528,13 +1545,8 @@ export class SessionManager {
     if (!session || info.status === 'ended') throw new UserError('The session has ended; it resumes on the new account.');
     if (!info.claudeSessionId) throw new UserError('The session has not started yet; try again once it has.');
     if (this.switching.has(id)) return;
-    this.switching.add(id);
     this.relaunching.delete(id);
-    try {
-      await this.switchAccount(id, session, sw.to, this.config.userName);
-    } finally {
-      this.switching.delete(id);
-    }
+    await this.whileSwitching(id, () => this.switchAccount(id, session, sw.to, this.config.userName));
     this.dispatch();
   }
 
@@ -1559,27 +1571,27 @@ export class SessionManager {
       const state = session.idleState();
       // "starting" with no turn open is a resumed session not spoken to since (resumedState), as quiet as an idle one;
       // one that has no Claude Code session id yet can't be resumed, so it waits for one.
+      // A running "!" command would be ended by the stop (code review of #395, finding 2); its end tries again.
       if (!state || (state.info.status !== 'idle' && state.info.status !== 'starting') || state.info.paused || state.turnOpen || state.pendingPermissions
-        || state.backgroundTasks || state.facts?.backgroundTasks || state.facts?.crons || !info.claudeSessionId) {
+        || state.shellRunning || state.backgroundTasks || state.facts?.backgroundTasks || state.facts?.crons || !info.claudeSessionId) {
         if (state) this.noteWaitsFor(info, state);
         continue;
       }
       this.relaunching.delete(id);
       const sw = info.accountSwitch && !info.accountSwitch.failed ? info.accountSwitch : null;
-      this.switching.add(id);
       try {
-        if (sw) {
-          await this.switchAccount(id, session, sw.to, null);
-        } else {
-          await session.stop('Ledung restarted this session to apply lockdown settings; its conversation is kept.', { restart: true });
-          this.live.delete(id);
-          await this.resume(id);
-        }
+        await this.whileSwitching(id, async () => {
+          if (sw) {
+            await this.switchAccount(id, session, sw.to, null);
+          } else {
+            await session.stop('Ledung restarted this session to apply lockdown settings; its conversation is kept.', { restart: true });
+            this.live.delete(id);
+            await this.resume(id);
+          }
+        });
         done.push(id);
       } catch (e) {
         console.error(`${sw ? 'Account switch' : 'Lockdown restart'} of ${id}: ${(e as Error).message}`);
-      } finally {
-        this.switching.delete(id);
       }
     }
     if (done.length) this.dispatch();
@@ -4337,8 +4349,12 @@ ${firstMessage}`);
     this.liveSession(id).send(text, here, names);
   }
 
-  /** Resumes the session if it has ended (or isn't live); a resume already under way is waited for. */
+  /**
+   * Resumes the session if it has ended (or isn't live); a resume already under way is waited for, and so is an
+   * account switch (code review of #395, finding 1): what is sent then reaches the session on its new account.
+   */
   async resumeIfEnded(id: string): Promise<void> {
+    await this.switching.get(id);
     const info = this.store.getSession(id);
     if (!info) throw new UserError('No such session.');
     if (!this.resuming.has(id) && this.live.has(id) && info.status !== 'ended') return;
@@ -4474,7 +4490,10 @@ ${firstMessage}`);
     } catch (e) {
       throw new UserError((e as Error).message);
     }
-    started.catch((e) => console.error(`"!" command in ${id}: ${(e as Error).message}`));
+    // A switch or lockdown restart held back by the command may go now (code review of #395, finding 2).
+    started.catch((e) => console.error(`"!" command in ${id}: ${(e as Error).message}`)).finally(() => {
+      if (this.relaunching.has(id) || this.switchDue(id)) void this.relaunchWaiting();
+    });
   }
 
   /** Stop on a running "!" command. */

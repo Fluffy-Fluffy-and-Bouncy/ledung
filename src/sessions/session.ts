@@ -2551,6 +2551,7 @@ export class Session {
       openQuestions: this.store.openQuestionCount(this.id),
       waitingDeliveries: this.store.heldMessages(this.id).length + this.store.undeliveredAnswers(this.id).length + this.store.undeliveredInbox(this.id).length,
       backgroundTasks: this.allBackgroundTasks, facts: this.store.idleFacts(this.id), lastActivity: this.lastActivity,
+      shellRunning: this.shellRun !== null,
     };
   }
 

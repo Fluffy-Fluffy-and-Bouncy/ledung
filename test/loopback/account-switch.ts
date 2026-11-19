@@ -251,6 +251,24 @@ async function main(): Promise<void> {
     await until(async () => on(worker, 'personal'), 'the worker on "personal" once its wake-up is gone');
     check(true, 'with its wake-up gone, it switched at its turn end');
 
+    // A running "!" command holds the switch, and its end lets it go (code review of #395, finding 2).
+    await ok('a "!" command', page.api('POST', `sessions/${worker}/shell`, { command: 'node -e "setTimeout(() => console.log(\'built\'), 8000)"' }));
+    await setAccount('work');
+    await until(async () => on(mgr, 'work'), 'the manager on "work" during the command');
+    await until(async () => (await session(worker)).accountSwitch?.waitsFor === 'command' || null, 'the worker waiting on its command');
+    check((await session(worker)).account === 'personal', 'the worker stays on "personal" while its command runs');
+    await desk.waitForTimeout(500);
+    const cmdNotice = await desk.locator('.account-switch').first().textContent();
+    check((cmdNotice ?? '').includes('Switches to work when its "!" command ends'), 'it says it waits for the command', cmdNotice ?? '');
+    await shot(desk, '395-pending-command-1280-dark');
+    await shot(phone, '395-pending-command-390-dark');
+    await until(async () => on(worker, 'work'), 'the worker on "work" once its command ended', 30000);
+    const listed = await ok('messages', page.api('GET', `sessions/${worker}/messages?limit=500`));
+    const block = ((Array.isArray(listed) ? listed : listed.messages) as any[]).filter((x) => x.kind === 'shell').at(-1)?.data;
+    check(block?.exitCode === 0 && !block?.cut && String(block?.stdout).includes('built'), 'the command ran to its end, not cut by the switch', JSON.stringify(block));
+    await setAccount('personal');
+    await until(async () => (await on(mgr, 'personal')) && on(worker, 'personal'), 'both back on "personal"');
+
     // A switch that fails: the manager stays on "personal", once. The account is added only now, so the sign-in
     // banner it brings is in the failed switch's screenshots alone.
     await addAccount('signed-out');

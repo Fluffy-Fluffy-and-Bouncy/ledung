@@ -20,6 +20,8 @@ export function switchState(s: Pick<SessionInfo, 'accountSwitch' | 'status' | 'a
   if (s.status === 'ended') return { kind: 'pending', text: `Resumes on ${to}` };
   // What it waits for, as Ledung last found it (acceptance of #395): a Ready session isn't in a turn.
   switch (sw.waitsFor) {
+    case 'paused': return { kind: 'pending', text: `Switches to ${to} once it is unpaused` };
+    case 'command': return { kind: 'pending', text: `Switches to ${to} when its "!" command ends` };
     case 'background': return { kind: 'pending', text: `Switches to ${to} when its background work ends` };
     case 'wakeup': return { kind: 'pending', text: `Switches to ${to} after its scheduled wake-up` };
     case 'repeating': return { kind: 'pending', text: `Won't switch to ${to} on its own while it has a repeating wake-up; use Switch now` };

@@ -231,7 +231,7 @@ export interface AccountSwitch {
    * What a waiting switch waits for, as last checked: the turn (a turn under way, a prompt open; left out: the same),
    * background work, a one-off wake-up, or a repeating wake-up, which never leaves a quiet moment: only Switch now.
    */
-  waitsFor?: 'turn' | 'background' | 'wakeup' | 'repeating';
+  waitsFor?: 'turn' | 'paused' | 'command' | 'background' | 'wakeup' | 'repeating';
 }
 
 /**

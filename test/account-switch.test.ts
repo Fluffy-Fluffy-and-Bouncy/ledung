@@ -57,7 +57,7 @@ after(() => {
 });
 
 /** What the quiet check reads, per session: a turn running, background work, a prompt open. */
-const busy = new Map<string, { turnOpen?: boolean; backgroundTasks?: number; pendingPermissions?: number; crons?: number; repeating?: number }>();
+const busy = new Map<string, { turnOpen?: boolean; backgroundTasks?: number; pendingPermissions?: number; crons?: number; repeating?: number; shellRunning?: boolean }>();
 
 function ledung(store = new Store(openDatabase(':memory:'))) {
   const manager = refuseRealSignInStores(new SessionManager(parseConfig({
@@ -88,7 +88,7 @@ function liveFake(m: ReturnType<typeof ledung>, id: string): void {
     idleState: () => {
       const info = m.store.getSession(id)!;
       const b = busy.get(id) ?? {};
-      return { info, turnOpen: !!b.turnOpen, pendingPermissions: b.pendingPermissions ?? 0, openQuestions: 0, waitingDeliveries: 0, backgroundTasks: b.backgroundTasks ?? 0, facts: { backgroundTasks: 0, crons: b.crons ?? 0, repeating: b.repeating ?? 0 }, lastActivity: 0 };
+      return { info, turnOpen: !!b.turnOpen, pendingPermissions: b.pendingPermissions ?? 0, openQuestions: 0, waitingDeliveries: 0, backgroundTasks: b.backgroundTasks ?? 0, facts: { backgroundTasks: 0, crons: b.crons ?? 0, repeating: b.repeating ?? 0 }, lastActivity: 0, shellRunning: !!b.shellRunning };
     },
     stop: (reason: string) => Session.prototype.stop.call({ id, store: m.store } as never, reason),
     detach: () => {},
@@ -103,7 +103,7 @@ function setProjectAccount(manager: SessionManager, account: string | null): voi
 
 /** Until no switch or resume is under way: a settings change starts the quiet check without waiting for it. */
 async function settled(m: ReturnType<typeof ledung>): Promise<void> {
-  const inner = m.manager as unknown as { switching: Set<string>; resuming: Map<string, unknown> };
+  const inner = m.manager as unknown as { switching: Map<string, unknown>; resuming: Map<string, unknown> };
   for (let i = 0; i < 200 && (inner.switching.size || inner.resuming.size); i++) await new Promise((r) => setTimeout(r, 5));
 }
 
@@ -244,18 +244,79 @@ test('New chat records an account picked there, and only then', async () => {
 
 test("a switch refused for sign-in says so briefly in the chat: the banner at the top has how, so it shows once", async () => {
   const m = ledung();
-  const inner = m.manager as unknown as { switching: Set<string>; switchRefusal(id: string, name: string, r: Promise<unknown>): Promise<unknown> };
+  const inner = m.manager as unknown as { switching: Map<string, Promise<void>>; switchRefusal(id: string, name: string, r: Promise<unknown>): Promise<unknown> };
   const long = { refuse: 'The account "broken" is not signed in. In PowerShell, run `$env:X="C:\\very\\long"; claude` and type `/login`; then press Check again.' };
   m.manager.checkSignInWith = async () => ({ state: 'out', method: null, detail: null, checkedAt: 0 });
   // Not switching: the start's refusal as it was.
   assert.deepEqual(await inner.switchRefusal('w9', 'broken', Promise.resolve(long)), long);
-  inner.switching.add('w9');
+  inner.switching.set('w9', Promise.resolve());
   assert.deepEqual(await inner.switchRefusal('w9', 'broken', Promise.resolve(long)), { refuse: 'The account "broken" is not signed in; the notice at the top of the page says how to sign in.' });
   assert.ok(m.manager.signedOut().some((s) => s.account === 'broken'), 'the banner shows it');
   // A start that may go on, or warns, is left alone.
   assert.equal(await inner.switchRefusal('w9', 'broken', Promise.resolve(null)), null);
   assert.deepEqual(await inner.switchRefusal('w9', 'broken', Promise.resolve({ warn: 'w' })), { warn: 'w' });
   inner.switching.delete('w9');
+});
+
+test('a message sent while the session is being switched waits for the switch and reaches it on the new account', async () => {
+  const m = ledung();
+  setProjectAccount(m.manager, 'a');
+  running(m, 'ws', 'shop', 'a');
+  // A stop that takes its time, as the host's does (up to 20 s): the session is "stopping" meanwhile.
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  const fake = m.live.get('ws') as { stop: (reason: string) => Promise<void> };
+  fake.stop = async (reason: string) => {
+    m.store.updateSession('ws', { status: 'stopping' });
+    await gate;
+    await Session.prototype.stop.call({ id: 'ws', store: m.store } as never, reason);
+  };
+  const sent: { id: string; account: string | null; text: string }[] = [];
+  const send = Session.prototype.send;
+  Session.prototype.send = function (this: Session, text: string) {
+    sent.push({ id: this.id, account: (this as unknown as Internals).account?.name ?? null, text });
+  };
+  try {
+    setProjectAccount(m.manager, 'b');
+    for (let i = 0; i < 100 && m.store.getSession('ws')!.status !== 'stopping'; i++) await new Promise((r) => setTimeout(r, 5));
+    assert.equal(m.store.getSession('ws')!.status, 'stopping', 'the switch is under way');
+    let settledSend = false;
+    const sending = m.manager.send('ws', 'my reply').finally(() => { settledSend = true; });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(settledSend, false, 'neither failed nor sent to the stopping session');
+    release();
+    await sending;
+    assert.deepEqual(sent, [{ id: 'ws', account: 'b', text: 'my reply' }]);
+    await settled(m);
+    assert.equal(m.store.getSession('ws')!.account, 'b');
+  } finally {
+    Session.prototype.send = send;
+  }
+});
+
+test('a running "!" command holds the switch, and its end lets it go; a paused session says it waits for that', async () => {
+  const m = ledung();
+  setProjectAccount(m.manager, 'a');
+  running(m, 'sh', 'shop', 'a');
+  running(m, 'ps', 'shop', 'a', { paused: true } as never);
+  let finish!: () => void;
+  const fake = m.live.get('sh') as Record<string, unknown>;
+  fake.runShell = () => {
+    busy.set('sh', { shellRunning: true });
+    return new Promise<void>((r) => { finish = () => { busy.delete('sh'); r(); }; });
+  };
+  await m.manager.runShell('sh', 'npm run build', false);
+  setProjectAccount(m.manager, 'b');
+  await settled(m);
+  assert.equal(stops.filter((s) => s.id === 'sh').length, 0, 'the command is not ended by a switch');
+  assert.deepEqual(m.store.getSession('sh')!.accountSwitch, { to: 'b', waitsFor: 'command' });
+  assert.deepEqual(m.store.getSession('ps')!.accountSwitch, { to: 'b', waitsFor: 'paused' });
+  assert.deepEqual(await m.manager.relaunchWaiting(), [], 'nor by the minute check');
+  finish();
+  for (let i = 0; i < 100 && m.store.getSession('sh')!.account !== 'b'; i++) await new Promise((r) => setTimeout(r, 5));
+  await settled(m);
+  assert.equal(m.store.getSession('sh')!.account, 'b', 'switched once the command ended');
+  assert.equal(m.store.getSession('ps')!.account, 'a', 'the paused one still waits');
 });
 
 test('a pending switch outlives Restart Ledung and happens afterwards', async () => {
@@ -287,6 +348,8 @@ test('the page words a switch as the issue says: waiting, resuming on it, or fai
   assert.equal(switchTooltip({ accountSwitch: { to: 'b', waitsFor: 'background' }, status: 'idle', account: 'a' }), 'Switches to b when its background work ends');
   assert.equal(switchTooltip({ accountSwitch: { to: 'b', waitsFor: 'wakeup' }, status: 'idle', account: 'a' }), 'Switches to b after its scheduled wake-up');
   assert.equal(switchTooltip({ accountSwitch: { to: 'b', waitsFor: 'repeating' }, status: 'idle', account: 'a' }), "Won't switch to b on its own while it has a repeating wake-up; use Switch now");
+  assert.equal(switchTooltip({ accountSwitch: { to: 'b', waitsFor: 'paused' }, status: 'idle', account: 'a' }), 'Switches to b once it is unpaused');
+  assert.equal(switchTooltip({ accountSwitch: { to: 'b', waitsFor: 'command' }, status: 'idle', account: 'a' }), 'Switches to b when its "!" command ends');
   // What to type in a reason shows as code, without its backticks.
   const { reasonParts } = await import('../web/src/accountSwitch.ts');
   assert.deepEqual(reasonParts('Run `claude` and type `/login`.'), [{ text: 'Run ', code: false }, { text: 'claude', code: true }, { text: ' and type ', code: false }, { text: '/login', code: true }, { text: '.', code: false }]);
