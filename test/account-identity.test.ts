@@ -74,8 +74,8 @@ test('the update forgets the email and organisation sessions noted, for added ac
   const latest = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
   db.prepare("INSERT INTO accounts (name, kind, config_dir, email, organization, plan, seen_at, created_at) VALUES ('private', 'folder', '/x', 'work@example.com', 'Work Org', 'max', 5, 1)").run();
   db.prepare("INSERT INTO meta (key, value) VALUES ('default-account-identity', '{\"email\":\"work@example.com\"}')").run();
-  // Back to before #378's migration, and #395's after it.
-  db.exec(`ALTER TABLE sessions DROP COLUMN account_switch; ALTER TABLE sessions DROP COLUMN account_chosen; PRAGMA user_version = ${latest - 2}`);
+  // Back to before #378's migration, and #395's and #402's after it.
+  db.exec(`ALTER TABLE flow_runs DROP COLUMN retired; ALTER TABLE sessions DROP COLUMN account_switch; ALTER TABLE sessions DROP COLUMN account_chosen; PRAGMA user_version = ${latest - 3}`);
   db.close();
   const again = openDatabase(file);
   assert.deepEqual({ ...again.prepare("SELECT name, config_dir, email, organization, plan, seen_at FROM accounts").get() },

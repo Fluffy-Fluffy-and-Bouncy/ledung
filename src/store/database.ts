@@ -811,6 +811,11 @@ const MIGRATIONS: string[] = [
   ALTER TABLE sessions ADD COLUMN account_switch TEXT;
   ALTER TABLE sessions ADD COLUMN account_chosen INTEGER NOT NULL DEFAULT 0;
   `,
+  // A run's sessions archived when a new session took their block (issue #402), as a JSON array of ids: the run's end
+  // leaves them as they are, so one the coordinator has resumed since is not archived again. Null: none.
+  `
+  ALTER TABLE flow_runs ADD COLUMN retired TEXT;
+  `,
 ];
 
 export function databaseFile(dir = userDataDir()): string {

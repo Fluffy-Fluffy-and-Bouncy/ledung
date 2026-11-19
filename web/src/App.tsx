@@ -708,6 +708,7 @@ export function App() {
                   project={openId.slice(3)}
                   liveRuns={ledung.runs[openId.slice(3)]}
                   connected={ledung.hellos}
+                  sessions={ledung.sessions}
                   // The flow it shows is in the address (#447): each one opened is a step Back and Forward go through.
                   shownFlow={workflowFromHash(hash)?.flow ?? null}
                   onShowFlow={(name) => { location.hash = workflowHash(openId.slice(3), name); }}
@@ -1593,7 +1594,7 @@ export function SessionView(props: {
         {flowPane && hasWorkflow && (
           <LoadFailed>
             <Suspense fallback={<aside className="file-panel workflow-pane"><p className="muted page-body">Loading the workflow…</p></aside>}>
-              <WorkflowPane session={session} liveRuns={ledung.runs[session.project]} connected={ledung.hellos} onClose={() => setFlowPane(false)} />
+              <WorkflowPane session={session} liveRuns={ledung.runs[session.project]} connected={ledung.hellos} sessions={ledung.sessions} onClose={() => setFlowPane(false)} />
             </Suspense>
           </LoadFailed>
         )}

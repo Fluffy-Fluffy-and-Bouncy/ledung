@@ -89,6 +89,11 @@ export interface FlowRun {
   worktree: RunWorktree | null;
   /** For a queued run (part 3f): in line for its flow's limit (not started yet) or its block's. Null: not queued. */
   queue: 'flow' | 'block' | null;
+  /**
+   * Its sessions Ledung archived when a new session took their block (#402). The run's end leaves them be: one the
+   * coordinator resumed since stays as it is.
+   */
+  retired: string[];
   startedAt: number;
   updatedAt: number;
 }
