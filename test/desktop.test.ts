@@ -1,6 +1,7 @@
 // The desktop app's attach check (issue #358, desktop/attach.ts): it finds the running Ledung the way the `ledung`
 // command does, and its mirror of the `/running` proof stays the core's. Its start (issue #362, desktop/start.ts): what
 // it runs, with which environment, and the one line a failed start gives. Its zoom keys (issue #389, desktop/keys.ts).
+// The Mac Dock icon's margin (issue #404, desktop/dock-icon.ts).
 // None of these files has Electron in it, so these run with the root tests; the window itself is checked by the probe
 // and by hand (desktop/README.md).
 import { after, before, test } from 'node:test';
@@ -16,6 +17,7 @@ import {
   candidatePorts, configFiles, configuredPort as appConfiguredPort, dataDir, DEFAULT_PORT as APP_DEFAULT_PORT, findRunning,
   runningProof as appProof, savedToken as appSavedToken,
 } from '../desktop/attach.ts';
+import { DOCK_ICON_BODY, dockIconLayout, padBitmap } from '../desktop/dock-icon.ts';
 import { zoomed, zoomKey, ZOOM_STEP, type KeyInput } from '../desktop/keys.ts';
 import { findOnPath, runStart, START_SCRIPT_ENV, startCommand, startEnv } from '../desktop/start.ts';
 import { DEFAULT_PORT } from '../src/config.ts';
@@ -328,4 +330,36 @@ test("each zoom step is half a level, the View menu's own step, in and out", () 
   assert.equal(zoomed(0, 'in'), 0.5);
   assert.equal(zoomed(0.5, 'out'), 0);
   assert.equal(zoomed(-1, 'out'), -1.5);
+});
+
+// Apple's icon grid: the body is 824 of 1024 px, 100 px clear on each side (#404). At the page's 512 px that halves.
+test("the Dock icon's body and margin follow Apple's grid: 824 of 1024 px, 412 of 512", () => {
+  assert.equal(DOCK_ICON_BODY, 824 / 1024);
+  assert.deepEqual(dockIconLayout(1024), { body: 824, margin: 100 });
+  assert.deepEqual(dockIconLayout(512), { body: 412, margin: 50 });
+});
+
+test('padding centres the body on a clear canvas, every pixel kept as given', () => {
+  // A 2 px body on a 4 px canvas: one clear pixel round it. Each body pixel has its own four bytes, so a pixel
+  // landing in the wrong place, or bytes reordered, shows.
+  const body = Uint8Array.from([1, 2, 3, 255, 5, 6, 7, 254, 9, 10, 11, 253, 13, 14, 15, 252]);
+  const out = padBitmap(body, 2, 4);
+  assert.equal(out.length, 4 * 4 * 4);
+  const px = (x: number, y: number) => [...out.subarray((y * 4 + x) * 4, (y * 4 + x) * 4 + 4)];
+  assert.deepEqual(px(1, 1), [1, 2, 3, 255]);
+  assert.deepEqual(px(2, 1), [5, 6, 7, 254]);
+  assert.deepEqual(px(1, 2), [9, 10, 11, 253]);
+  assert.deepEqual(px(2, 2), [13, 14, 15, 252]);
+  // Everything else is clear: alpha 0, and every byte 0.
+  for (let y = 0; y < 4; y++) {
+    for (let x = 0; x < 4; x++) {
+      if (x >= 1 && x <= 2 && y >= 1 && y <= 2) continue;
+      assert.deepEqual(px(x, y), [0, 0, 0, 0], `pixel ${x},${y} is in the margin`);
+    }
+  }
+});
+
+test('padding refuses a bitmap of the wrong size and a body larger than the canvas', () => {
+  assert.throws(() => padBitmap(new Uint8Array(15), 2, 4), /not 15/);
+  assert.throws(() => padBitmap(new Uint8Array(16), 2, 1), /does not fit/);
 });

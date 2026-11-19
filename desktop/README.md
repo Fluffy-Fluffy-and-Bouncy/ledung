@@ -45,7 +45,9 @@ One window opens with your running Ledung's page, signed in. Nothing opens in th
 - **Quitting.** ⌘Q on the Mac and Alt+F4 on Windows end the app. Ledung itself is another program and
   keeps running. With unsaved changes on the page (a workflow being edited) the app asks first, as a browser does.
 - **Ledung's icon** shows in the window, the Windows taskbar and the Mac Dock instead of Electron's (#384). It is the
-  page's own `web/public/icon-512.png`, read from the clone.
+  page's own `web/public/icon-512.png`, read from the clone. The Dock draws an icon as it is given, so the app shrinks
+  it to Apple's icon grid first (the body 824 of 1024 px, a clear margin round it), the size of the other apps' icons
+  (#404); the window and the taskbar take the file as it is.
 - **No menu bar on Windows and Linux.** The window never shows one, and Alt does nothing, so it stays free for a key of
   Ledung's own later (Martin, 2026-11-19, #389). The keys still work: Ctrl+W, Alt+F4 (Windows), copy and paste, Ctrl+O (Show tool
   calls), reload, and zoom with Ctrl and "+" (any keyboard layout; Ctrl and "=" too), Ctrl+-, Ctrl+0 and Ctrl and the
