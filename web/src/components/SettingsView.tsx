@@ -29,7 +29,7 @@ import { LinkedSettings } from './LinkedSettings.tsx';
 import { JoinRelay, RelayAdminSettings, relaySetUp } from './RelaySettings.tsx';
 import { ComputersSettings } from './ComputersSettings.tsx';
 import type { ComputerInfo } from '../../../src/shared/computers.ts';
-import { displayVersion } from '../../../src/shared/version.ts';
+import { changelogLinks, displayVersion } from '../../../src/shared/version.ts';
 import type { useNotifications } from '../useNotifications.ts';
 import { THEMES, applyTheme, readTheme, saveTheme, type Theme } from '../theme.ts';
 import { useAutocorrect } from '../usePlainTyping.ts';
@@ -546,6 +546,7 @@ function About({ source, update, run }: { source: SourceOffer | null; update: Up
           Running <code>{source.version}</code>. <a href={source.url} target="_blank" rel="noreferrer">Source</a>
         </p>
       )}
+      <Changelogs channel={update.view?.channel ?? 'public'} />
       {update.view && <ChannelChoice update={update} />}
       <CheckInSettings run={run} />
     </section>
@@ -554,6 +555,21 @@ function About({ source, update, run }: { source: SourceOffer | null; update: Up
 
 type Channel = NonNullable<UpdateView['channel']>;
 const CHANNEL_LABEL: Record<Channel, string> = { public: 'Public', dev: 'Dev' };
+
+/** What changed in each release, on projectledung.com (#417): the running Ledung's channel first. */
+function Changelogs({ channel }: { channel: Channel }) {
+  return (
+    <p className="muted">
+      What changed:{' '}
+      {changelogLinks(channel).map((l, i) => (
+        <Fragment key={l.channel}>
+          {i > 0 && ' · '}
+          <a href={l.url} target="_blank" rel="noreferrer">{l.channel === 'public' ? 'Changelog' : 'Dev changelog'}</a>
+        </Fragment>
+      ))}
+    </p>
+  );
+}
 
 /**
  * Update channel: Public / Dev (#461; Martin, 2026-11-02 00:38, Ledung question #1172). Public follows npm's
