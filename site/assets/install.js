@@ -23,14 +23,17 @@
     }
   }
 
+  // The button's own words are its name; the result is also said in a live region, for screen readers.
+  const status = document.querySelector('[data-copy-status]');
   for (const button of document.querySelectorAll('[data-copy-install]')) {
     let timer = 0;
     button.addEventListener('click', async () => {
       const ok = await copy(COMMAND);
       button.textContent = ok ? 'Copied' : 'Copy failed';
+      if (status) status.textContent = ok ? 'Copied npm install -g ledung' : 'Copy failed';
       button.classList.toggle('done', ok);
       clearTimeout(timer);
-      timer = setTimeout(() => { button.textContent = 'Copy'; button.classList.remove('done'); }, 1800);
+      timer = setTimeout(() => { button.textContent = 'Copy'; button.classList.remove('done'); if (status) status.textContent = ''; }, 1800);
     });
   }
 

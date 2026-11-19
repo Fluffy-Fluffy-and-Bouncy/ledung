@@ -280,14 +280,23 @@ export class Updater {
     const base = known ? running.commit! : 'HEAD';
     // First-parent commits on main: one per merged pull request, which is what a person calls a change.
     const behind = Number((await this.git(src, ['rev-list', '--count', '--first-parent', `${base}..origin/${BRANCH}`])).trim()) || 0;
-    const diff = await this.git(src, ['diff', `${base}`, `origin/${BRANCH}`, '--', 'CHANGELOG.md']);
+    // Since #417 a merged PR's bullets wait in docs/changes/ until a publish folds them into the changelogs, and the
+    // fold repeats them there (a public release repeats its dev builds' too): every place a bullet appears is read and
+    // each bullet is listed once.
+    const places = ['CHANGELOG.md', 'CHANGELOG-dev.md', 'docs/changes/', ':(exclude)docs/changes/README.md'];
+    const diff = await this.git(src, ['diff', `${base}`, `origin/${BRANCH}`, '--', ...places]);
+    // A bullet already somewhere at the running commit is a change it already has, moved by a publish since: not new
+    // (self-check of PR #423). git grep exits 1 when nothing matches.
+    const had = await this.run({ cmd: 'git', args: ['grep', '-h', '-e', '^- ', base, '--', ...places] }, src);
+    if (had.code > 1) throw new Error(`git grep failed:\n${had.tail}`);
+    const old = new Set(changelogAdded(had.out.split(/\r?\n/).map((l) => `+${l}`).join('\n')));
     return {
       checkedAt: new Date().toISOString(),
       latest,
       commitKnown: !!known,
       behind,
       upToDate: !!known && behind === 0,
-      changes: changelogAdded(diff).slice(0, MAX_CHANGES),
+      changes: [...new Set(changelogAdded(diff))].filter((c) => !old.has(c)).slice(0, MAX_CHANGES),
     };
   }
 
@@ -419,8 +428,12 @@ export class Updater {
           finish({ code: -1, out, tail: tail(all), timedOut: true });
         });
       }, command.limitMs ?? GIT_LIMIT_MS);
-      child.stdout.on('data', (d: Buffer) => { out += d; all += d; });
-      child.stderr.on('data', (d: Buffer) => { all += d; });
+      // Decoded as a stream, so a character split across two chunks ("—" in a changelog line) stays whole: the
+      // check compares whole changelog lines (self-check of PR #423, round 3).
+      child.stdout.setEncoding('utf8');
+      child.stderr.setEncoding('utf8');
+      child.stdout.on('data', (d: string) => { out += d; all += d; });
+      child.stderr.on('data', (d: string) => { all += d; });
       child.on('error', (e) => finish({ code: -1, out, tail: e.message }));
       child.on('close', (code) => finish({ code: code ?? -1, out, tail: tail(all) }));
     });

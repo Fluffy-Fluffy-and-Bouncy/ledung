@@ -2,7 +2,7 @@
 
 This is for working on Ledung itself, from a clone of the repository. To install and use Ledung, see the [README](../README.md). Before you send a change, read [CONTRIBUTING.md](../CONTRIBUTING.md): outside contributions need a signed contributor license agreement.
 
-The plan and its steps are in [brief.md](brief.md); decisions made since are in [decisions.md](decisions.md); the work of each step is in [steps/](steps/); what changed and when is in [CHANGELOG.md](../CHANGELOG.md), where every PR that changes what Ledung does adds a bullet (the pre-push hook refuses a push of program changes without one). [CLAUDE.md](../CLAUDE.md) has the rules for Claude Code sessions that work on the repository.
+The plan and its steps are in [brief.md](brief.md); decisions made since are in [decisions.md](decisions.md); the work of each step is in [steps/](steps/); what changed in each release is in [CHANGELOG.md](../CHANGELOG.md) (public releases) and [CHANGELOG-dev.md](../CHANGELOG-dev.md) (dev builds). A PR never edits those: every PR that changes what Ledung does writes its bullet in `docs/changes/<issue>.md` ([changes/README.md](changes/README.md)), the pre-push hook refuses a push of program changes without one, and the publish step folds the waiting bullets in under the version it publishes (issue #417). [CLAUDE.md](../CLAUDE.md) has the rules for Claude Code sessions that work on the repository.
 
 ## Setup
 

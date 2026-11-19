@@ -109,6 +109,64 @@ test('the check counts the new changes since the running commit and lists their 
   assert.deepEqual(v.check!.changes, ['Second, from origin. (#7)']);
 });
 
+// Since #417 a merged PR's bullets wait in docs/changes/ until a publish folds them into CHANGELOG-dev.md and, at a
+// public release, CHANGELOG.md: the check reads all three and lists each bullet once, and never the folder's guide.
+test('the check lists the bullets waiting in docs/changes/ and those a publish folded in, each once', async () => {
+  const commit = (message: string, files: Record<string, string | null>) => {
+    for (const [file, text] of Object.entries(files)) {
+      const full = path.join(other, file);
+      if (text === null) fs.rmSync(full);
+      else {
+        fs.mkdirSync(path.dirname(full), { recursive: true });
+        fs.writeFileSync(full, text);
+      }
+    }
+    git(other, 'add', '-A');
+    git(other, 'commit', '-qm', message);
+  };
+  commit('merged #8', { 'docs/changes/README.md': '# Guide\n- An example. (#1)\n', 'docs/changes/8.md': '- Eight. (#8)\n' });
+  commit('merged #9', { 'docs/changes/9.md': '- Nine. (#9)\n' });
+  // A dev publish moves #9 into the dev changelog; a public one repeats it in CHANGELOG.md.
+  commit('Changelog for v1.1', { 'docs/changes/9.md': null, 'CHANGELOG-dev.md': '# Dev\n\n## v1.1 — 2026-11-19 15:02 CET\n- Nine. (#9)\n' });
+  const pub = fs.readFileSync(path.join(other, 'CHANGELOG.md'), 'utf8').replace('## 2026-10-15', '## v2 — 2026-11-20 10:00 CET\n- Nine. (#9)\n\n## 2026-10-15');
+  commit('Changelog for v2', { 'CHANGELOG.md': pub });
+  git(other, 'push', '-q', 'origin', 'main');
+  const v = await updater().runCheck();
+  assert.equal(v.checkError, null);
+  assert.equal(v.check!.behind, 5);
+  assert.deepEqual([...v.check!.changes].sort(), ['Eight. (#8)', 'Nine. (#9)', 'Second, from origin. (#7)']);
+});
+
+// A publish moves bullets the running Ledung already has: they are not new (self-check of PR #423).
+test('a bullet the running commit already has is not listed again after a publish moves it into a changelog', async () => {
+  // The running Ledung is built from a main where #8 has merged and waits in docs/changes/.
+  git(source, 'pull', '-q', 'origin', 'main');
+  fs.mkdirSync(path.join(source, 'docs', 'changes'), { recursive: true });
+  fs.writeFileSync(path.join(source, 'docs', 'changes', '8.md'), '- Eight. (#8)\n');
+  git(source, 'add', '-A');
+  git(source, 'commit', '-qm', 'merged #8');
+  git(source, 'push', '-q', 'origin', 'main');
+  const running = git(source, 'rev-parse', 'HEAD');
+  fs.writeFileSync(path.join(appDir, 'release.json'), JSON.stringify({ source, commit: running }));
+  fs.writeFileSync(path.join(dataDir, 'current.json'), JSON.stringify({ dir: appDir, source, commit: running }));
+  // Then #9 merges, and a dev publish moves both into the dev changelog.
+  git(other, 'pull', '-q', 'origin', 'main');
+  fs.writeFileSync(path.join(other, 'docs', 'changes', '9.md'), '- Nine. (#9)\n');
+  git(other, 'add', '-A');
+  git(other, 'commit', '-qm', 'merged #9');
+  fs.rmSync(path.join(other, 'docs', 'changes', '8.md'));
+  fs.rmSync(path.join(other, 'docs', 'changes', '9.md'));
+  fs.writeFileSync(path.join(other, 'CHANGELOG-dev.md'), '# Dev\n\n## v1.1 — 2026-11-19 15:02 CET\n- Nine. (#9)\n- Eight. (#8)\n');
+  git(other, 'add', '-A');
+  git(other, 'commit', '-qm', 'Changelog for v1.1');
+  git(other, 'push', '-q', 'origin', 'main');
+  const v = await updater().runCheck();
+  assert.equal(v.checkError, null);
+  assert.equal(v.check!.behind, 2);
+  // #9 is new; #8 was already running, and neither is the bullet the running commit had in CHANGELOG.md (#7).
+  assert.deepEqual(v.check!.changes, ['Nine. (#9)']);
+});
+
 test('the check says up to date when the running commit is origin/main', async () => {
   git(source, 'pull', '-q', '--ff-only', 'origin', 'main');
   const head = git(source, 'rev-parse', 'HEAD');
@@ -209,6 +267,15 @@ test('refuses when a step fails, showing its last output lines', async () => {
   const v = await refused(updater({ release: fails }), 3, /npm run release failed \(exit code 3\)/);
   assert.match(v.steps[3]!.output ?? '', /1 test failed/);
   assert.deepEqual(v.steps.slice(0, 3).map((s) => s.state), ['done', 'done', 'done']);
+});
+
+// A step's output is decoded as a stream: a character whose bytes arrive in two chunks stays whole (self-check of
+// PR #423, round 3; the clone check compares whole changelog lines, and "—" is three bytes).
+test("a character split across two output chunks is read whole, not as two broken ones", async () => {
+  const split: Command = { cmd: process.execPath, args: ['-e', "const b = Buffer.from('v1.1 — ok'); process.stdout.write(b.subarray(0, 6)); setTimeout(() => { process.stdout.write(b.subarray(6)); process.exit(3); }, 200);"] };
+  const v = await refused(updater({ release: split }), 3, /npm run release failed \(exit code 3\)/);
+  assert.match(v.steps[3]!.output ?? '', /v1\.1 — ok/);
+  assert.doesNotMatch(v.steps[3]!.output ?? '', /�/);
 });
 
 test('refuses without the launcher, before touching the source folder', async () => {

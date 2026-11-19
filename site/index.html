@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Project Ledung — agentic engineering, with you at the helm</title>
-<link rel="icon" href="assets/icon.svg?v=2">
-<link rel="stylesheet" href="assets/ledung-ui.css?v=2">
-<script src="assets/theme.js?v=2"></script>
+<link rel="icon" href="assets/icon.svg?v=3">
+<link rel="stylesheet" href="assets/ledung-ui.css?v=3">
+<script src="assets/theme.js?v=3"></script>
 <style>
   :root {
     --harbour: #0e1c2b; --deep: #08131f; --mist: #9fb0c4; --text: #e6edf5; --lantern: #f2b84b; --sea: #7aa2f7;
@@ -90,6 +90,7 @@
   .copy-btn { position: absolute; top: 10px; right: 10px; font: 600 13px/1 var(--sans); color: var(--lantern); background: transparent; border: 1px solid var(--lantern); border-radius: 6px; padding: 7px 12px; cursor: pointer; user-select: none; }
   .copy-btn:hover { background: color-mix(in srgb, var(--lantern) 14%, transparent); }
   .copy-btn:focus-visible { outline: 2px solid var(--lantern); outline-offset: 2px; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
   .copy-btn.done { color: var(--on-lantern); background: var(--lantern-fill); border-color: var(--lantern-fill); }
   .term { background: var(--term-bg); border: 1px solid var(--line); border-radius: 14px; padding: 22px 24px; font: 15px/1.7 var(--mono); min-height: 330px; box-shadow: 0 30px 80px -30px var(--term-shadow); }
   .term-prompt { color: var(--lantern); }
@@ -139,7 +140,7 @@
 <body>
 <div class="wrap">
   <nav>
-    <a class="brand" href="#"><img src="assets/icon.svg?v=2" alt="">Project Ledung</a>
+    <a class="brand" href="#"><img src="assets/icon.svg?v=3" alt="">Project Ledung</a>
     <div class="links"><a href="#how">How it works</a><a href="#phone">From your phone</a><a href="#install">Install</a><a class="gh" href="https://github.com/Fluffy-Fluffy-and-Bouncy/ledung" aria-label="Ledung on GitHub"><svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg><span>GitHub</span></a><span data-mode-slot></span><a class="btn" href="#contact">Contact us</a></div>
   </nav>
   <header class="hero">
@@ -229,7 +230,8 @@
       <div class="cmdbox">
         <pre class="cmds">npm install -g ledung
 ledung</pre>
-        <button type="button" class="copy-btn" data-copy-install aria-label="Copy npm install -g ledung">Copy</button>
+        <button type="button" class="copy-btn" data-copy-install title="Copy npm install -g ledung">Copy</button>
+        <span class="sr-only" aria-live="polite" data-copy-status></span>
       </div>
       <p class="req">You need Node.js 24 or later, Git, and Claude Code installed and signed in. Ledung opens in your browser; install it as an app window from Edge or Chrome.</p>
       <p class="req">The code is on <a href="https://github.com/Fluffy-Fluffy-and-Bouncy/ledung">GitHub</a>, the package on <a href="https://www.npmjs.com/package/ledung">npm</a>.</p>
@@ -245,12 +247,12 @@ ledung</pre>
   <a class="btn solid" href="mailto:hello@projectledung.com?subject=Project%20Ledung">Contact us</a>
 </section>
 
-<div class="wrap"><footer><div class="about"><span>Project Ledung · projectledung.com · <a href="https://github.com/Fluffy-Fluffy-and-Bouncy/ledung">GitHub</a> · <a href="https://www.npmjs.com/package/ledung">npm</a></span><span>Open source under the <a href="https://github.com/Fluffy-Fluffy-and-Bouncy/ledung/blob/main/LICENSE">AGPL-3.0-only</a> licence. Ledung runs Anthropic's Claude Agent SDK and Claude Code, which come under <a href="https://code.claude.com/docs/en/legal-and-compliance">Anthropic's own terms</a> and are not covered by Ledung's licence.</span></div><pre data-ship="solo" data-width="24"></pre></footer></div>
+<div class="wrap"><footer><div class="about"><span>Project Ledung · projectledung.com · <a href="https://github.com/Fluffy-Fluffy-and-Bouncy/ledung">GitHub</a> · <a href="https://www.npmjs.com/package/ledung">npm</a> · <a href="changelog/">Changelog</a> · <a href="dev-changelog/">Dev changelog</a></span><span>Open source under the <a href="https://github.com/Fluffy-Fluffy-and-Bouncy/ledung/blob/main/LICENSE">AGPL-3.0-only</a> licence. Ledung runs Anthropic's Claude Agent SDK and Claude Code, which come under <a href="https://code.claude.com/docs/en/legal-and-compliance">Anthropic's own terms</a> and are not covered by Ledung's licence.</span></div><pre data-ship="solo" data-width="24"></pre></footer></div>
 
-<script src="assets/shipFrames.js?v=2"></script>
-<script src="assets/ship.js?v=2"></script>
-<script src="assets/ledung-ui.js?v=2"></script>
-<script src="assets/terminal.js?v=2"></script>
-<script src="assets/install.js?v=2"></script>
+<script src="assets/shipFrames.js?v=3"></script>
+<script src="assets/ship.js?v=3"></script>
+<script src="assets/ledung-ui.js?v=3"></script>
+<script src="assets/terminal.js?v=3"></script>
+<script src="assets/install.js?v=3"></script>
 </body>
 </html>
