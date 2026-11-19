@@ -9,7 +9,8 @@ import { LocalRunner } from '../src/runners/local-runner.ts';
 import { Management } from '../src/sessions/management.ts';
 import { defaultModelFor, SessionManager, UserError } from '../src/sessions/manager.ts';
 import { chooseProfile, parseSettingsFile, pluginIdsIn, profileByName, profileOptions, ProfileSetting, settingsFilePath, settingsFileProblem, validateProfiles, type Profile } from '../src/sessions/profiles.ts';
-import { Session, type SessionSkills } from '../src/sessions/session.ts';
+import { ManagerTools } from '../src/sessions/manager-tools.ts';
+import { Session, type SessionOptions, type SessionSkills } from '../src/sessions/session.ts';
 import { LEDUNG_SERVER, MCP_INSTRUCTIONS_LIMIT, MCP_LIMIT_ENV } from '../src/sessions/tools.ts';
 import type { PermissionMode } from '../src/shared/protocol.ts';
 import { openDatabase } from '../src/store/database.ts';
@@ -156,7 +157,8 @@ test('a resumed session gets the profile it was started with; one taken out of t
 /** A session in a project folder whose Claude settings name plugins a, b and c, logged in with its own config folder. */
 function sessionOn(
   profile: Profile | undefined, role: 'session' | 'manager' = 'session',
-  extra: { model?: string; defaultModel?: string; resume?: string; fileSettings?: Record<string, unknown>; permissionMode?: PermissionMode; pluginsOff?: string[]; skills?: SessionSkills } = {},
+  extra: { model?: string; defaultModel?: string; resume?: string; fileSettings?: Record<string, unknown>; permissionMode?: PermissionMode; pluginsOff?: string[]; skills?: SessionSkills; learnedTools?: SessionOptions['learnedTools'];
+    query?: SessionOptions['query']; store?: Store; attachTo?: string } = {},
 ) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-profiles-'));
   const configDir = path.join(root, 'config');
@@ -166,7 +168,7 @@ function sessionOn(
   fs.writeFileSync(path.join(configDir, 'settings.json'), JSON.stringify({ enabledPlugins: { 'a@m': true } }));
   fs.writeFileSync(path.join(configDir, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'b@m': [] } }));
   fs.writeFileSync(path.join(project, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins: { 'c@m': true } }));
-  const store = new Store(openDatabase(':memory:'));
+  const store = extra.store ?? new Store(openDatabase(':memory:'));
   const management = new Management({
     store, userName: 'Simon', publish: () => {}, wake: () => {}, resume: async () => {},
     startSession: async () => { throw new Error('not used'); },
@@ -178,7 +180,8 @@ function sessionOn(
   });
   const info = store.createSession({ id: 's', project: 'p', runner: 'local', title: 'Worker', parentId: null, permissionMode: extra.permissionMode ?? 'default', role });
   const session = new Session({
-    info, store, publish: () => {}, userName: 'Simon', management, profile, pluginsOff: extra.pluginsOff, skills: extra.skills,
+    info, store, publish: () => {}, userName: 'Simon', management, profile, pluginsOff: extra.pluginsOff, skills: extra.skills, learnedTools: extra.learnedTools,
+    query: extra.query, attachTo: extra.attachTo,
     model: extra.model, defaultModel: extra.defaultModel, resume: extra.resume,
     runner: new LocalRunner({ name: 'p', runner: 'local', path: project } as LocalProjectConfig),
     account: { name: 'own', env: { CLAUDE_CONFIG_DIR: configDir } },
@@ -187,7 +190,7 @@ function sessionOn(
   // What start() and resume read from the settings file, set directly.
   (session as unknown as { fileSettings?: Record<string, unknown> }).fileSettings = extra.fileSettings;
   const options = () => session.claudeOptions({ onLine: () => {}, onStderr: () => {} });
-  return { project, options, store, cleanup: () => removeTemp(root) };
+  return { project, options, store, start: () => session.start(), cleanup: () => removeTemp(root) };
 }
 
 // Every session's settings also deny Ledung's data folder (#104); these tests point it at a folder of their own.
@@ -247,6 +250,99 @@ test("the config's pluginsOff reach a session's settings on full and on slim ali
     } finally {
       s.cleanup();
     }
+  }
+});
+
+test("a manager's learned tools reach its options: unused plugins off, unused servers taken away; without them, the profile's as today (issue #431)", async () => {
+  // a, b and c are named in sessionOn's settings; the record says only a was used, and dns-box of the user's servers.
+  let asked: string[] | null = null;
+  const limit = (installed: string[]) => {
+    asked = installed;
+    return { pluginsOff: installed.filter((id) => id !== 'a@m'), serversOff: ['mail-box'] };
+  };
+  const full = profileByName('full', {});
+  const learned = sessionOn(full, 'manager', { learnedTools: { limit } });
+  const today = sessionOn(full, 'manager', { learnedTools: {} });
+  const strict = sessionOn(slim, 'manager', { learnedTools: { limit } });
+  try {
+    await withDataDir(async () => {
+      const o = await learned.options();
+      assert.deepEqual(asked, ['a@m', 'b@m', 'c@m'], 'asked with the plugins the session has, though full turns none off');
+      assert.deepEqual((o.settings as { enabledPlugins?: unknown }).enabledPlugins, { 'b@m': false, 'c@m': false });
+      assert.deepEqual(o.disallowedTools, ['mcp__mail-box']);
+      assert.equal(o.strictMcpConfig, undefined, "the user's other servers stay");
+      const t = await today.options();
+      assert.equal((t.settings as { enabledPlugins?: unknown }).enabledPlugins, undefined);
+      assert.equal(t.disallowedTools, undefined);
+      // slim takes every plugin and server already: the learned set takes nothing more, and adds nothing back.
+      const s = await strict.options();
+      assert.deepEqual((s.settings as { enabledPlugins?: unknown }).enabledPlugins, { 'a@m': false, 'b@m': false, 'c@m': false });
+      assert.deepEqual(s.disallowedTools, ['Workflow', 'ReportFindings', 'SendFeedback']);
+      assert.equal(s.strictMcpConfig, true);
+    });
+  } finally {
+    learned.cleanup();
+    today.cleanup();
+    strict.cleanup();
+  }
+});
+
+test("a running manager's init and tool calls reach the record as they stream in (issue #431)", async () => {
+  // The SDK's query is the only stand-in: it streams an init message and one assistant turn, then waits.
+  const lines: unknown[] = [
+    { type: 'system', subtype: 'init', session_id: 'c1', model: 'haiku', claude_code_version: 'x', cwd: '.', tools: [], permissionMode: 'default',
+      mcp_servers: [{ name: 'dns-box', status: 'connected', source: 'user' }, { name: LEDUNG_SERVER, status: 'connected', source: 'sdk' }] },
+    { type: 'assistant', parent_tool_use_id: null, session_id: 'c1',
+      message: { content: [{ type: 'tool_use', id: 't1', name: 'mcp__dns-box__lookup', input: {} }, { type: 'tool_use', id: 't2', name: 'Skill', input: { skill: 'notes:sum' } }] } },
+  ];
+  let fed = 0;
+  let streamed!: () => void;
+  const done = new Promise<void>((resolve) => { streamed = resolve; });
+  const stream = {
+    accountInfo: async () => ({}),
+    initializationResult: async () => ({}),
+    [Symbol.asyncIterator]: () => ({
+      next: () => (fed < lines.length ? Promise.resolve({ value: lines[fed++], done: false }) : (streamed(), new Promise<IteratorResult<unknown>>(() => {}))),
+    }),
+  };
+  const store = new Store(openDatabase(':memory:'));
+  const record = new ManagerTools(store, { sessions: () => [], lines: () => [] });
+  const s = sessionOn(profileByName('full', {}), 'manager', {
+    store, query: (() => stream) as never,
+    learnedTools: { noteInit: (servers) => record.noteInit(servers), noteCalls: (content) => record.noteCalls(content) },
+  });
+  try {
+    await withDataDir(async () => {
+      await s.start();
+      await done;
+      assert.deepEqual(store.serversSeen(), ['dns-box'], "the user's server it started with; Ledung's own is not one");
+      assert.deepEqual([...store.toolUses().keys()].sort(), ['plugin:notes', 'server:dns-box']);
+    });
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a manager reattached to a running Claude Code is not limited again: it keeps the tools it started with (issue #431)", async () => {
+  let asked = 0;
+  const limit = () => {
+    asked++;
+    return { pluginsOff: ['a@m'], serversOff: ['mail-box'] };
+  };
+  const s = sessionOn(profileByName('full', {}), 'manager', { learnedTools: { limit }, attachTo: 'pipe-1' });
+  const fresh = sessionOn(profileByName('full', {}), 'manager', { learnedTools: { limit } });
+  try {
+    await withDataDir(async () => {
+      const o = await s.options();
+      assert.equal(asked, 0, 'not asked on a reattach');
+      assert.equal(o.disallowedTools, undefined);
+      // The same session started fresh is asked, and limited.
+      assert.deepEqual((await fresh.options()).disallowedTools, ['mcp__mail-box']);
+      assert.equal(asked, 1);
+    });
+  } finally {
+    s.cleanup();
+    fresh.cleanup();
   }
 });
 

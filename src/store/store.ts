@@ -630,6 +630,59 @@ export class Store {
     this.db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value').run(key, value);
   }
 
+  /**
+   * The tools managers learn (issue #431): a small map of key → latest time, kept as JSON in meta (a few dozen keys
+   * at most), so it needs no table of its own. Each note keeps the latest time per key.
+   */
+  private timesIn(key: string): Map<string, number> {
+    try {
+      const j = JSON.parse(this.getMeta(key) ?? '{}');
+      return new Map(Object.entries(j && typeof j === 'object' ? j : {}).filter((e): e is [string, number] => typeof e[1] === 'number'));
+    } catch {
+      return new Map();
+    }
+  }
+
+  private noteTimes(key: string, keys: string[], at: number): void {
+    const times = this.timesIn(key);
+    let changed = false;
+    for (const k of keys) {
+      if ((times.get(k) ?? -Infinity) >= at) continue;
+      times.set(k, at);
+      changed = true;
+    }
+    if (changed) this.setMeta(key, JSON.stringify(Object.fromEntries(times)));
+  }
+
+  /** Manager tool uses, as "server:<key>" or "plugin:<name>" (issue #431). */
+  noteToolUses(keys: string[], at: number): void {
+    this.noteTimes('manager-tool-uses', keys, at);
+  }
+
+  toolUses(): Map<string, number> {
+    return this.timesIn('manager-tool-uses');
+  }
+
+  /** The user's own MCP servers sessions started with (issue #431). */
+  noteServersSeen(keys: string[], at: number): void {
+    this.noteTimes('mcp-servers-seen', keys, at);
+  }
+
+  serversSeen(): string[] {
+    return [...this.timesIn('mcp-servers-seen').keys()].sort();
+  }
+
+  /**
+   * A session's stored SDK lines from `since` on, for seeding the tools managers learn (issue #431): its assistant
+   * messages with a tool call, or its init messages. Through the session's index, so it reads that session's rows only.
+   */
+  sdkLines(sessionId: string, since: number, kind: 'calls' | 'init'): { at: number; data: string }[] {
+    const [start, has] = kind === 'calls' ? ['{"type":"assistant"%', '%"type":"tool_use"%'] : ['{"type":"system"%', '%"subtype":"init"%'];
+    return (this.db
+      .prepare(`SELECT at, data FROM messages WHERE session_id = ? AND kind = 'sdk' AND at >= ? AND data LIKE ? AND data LIKE ?`)
+      .all(sessionId, since, start, has) as { at: number; data: string }[]).map((r) => ({ at: Number(r.at), data: r.data }));
+  }
+
   /** Every stored message of a session, oldest first (for filling in usage from history). */
   allMessages(sessionId: string): StoredMessage[] {
     return this.db.prepare('SELECT * FROM messages WHERE session_id = ? ORDER BY id').all(sessionId).map(toMessage);
