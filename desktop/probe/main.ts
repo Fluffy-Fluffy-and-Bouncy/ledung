@@ -21,6 +21,11 @@
 //                           page's matches ("n of m"), Enter and Shift+Enter step, Esc closes and clears the
 //                           highlights, Edit → Find… opens it again; PROBE_SHOT=<file.png> also saves the window with
 //                           the bar open on PROBE_FIND_TEXT ("Ledung")
+//   PROBE_PHASE=context     a Ledung runs (#447): right-clicks a picture, a link, selected text, a text box, a broken
+//                           picture and a plain spot in the page, and clicks the menu's items: Copy Image, Save Image
+//                           As…, Copy Link Address, Copy, Paste and Select All do what they say, and the last two
+//                           spots get no menu; PROBE_SHOT=<file.png> also shows the real menu over the picture and
+//                           saves the screen (macOS)
 //   (PROBE_PHASE=child is the second start "window" launches itself)
 //   PROBE_PHASE=start      none runs: presses Start Ledung (#362), which runs LEDUNG_DESKTOP_START's script (the
 //                           worktree's src/cli.ts) as the app's start; the page loads signed in within 15 s, and
@@ -541,6 +546,167 @@ async function findPhase(w: BrowserWindow): Promise<void> {
     fs.writeFileSync(shot, (await windowShot(w, bar)).toPNG());
     out('find-shot', { file: shot, count: await count(bar) });
   }
+}
+
+/**
+ * The right-click menu (#447): the probe right-clicks a picture, a broken picture, a link, selected text, a text box and
+ * a plain spot it put in Ledung's page, reads the menu the app built, and clicks its items itself: the menu is recorded
+ * instead of shown, since a shown one waits for a person. Copy Image puts the picture on the clipboard, Save Image As…
+ * saves its bytes, Copy Link Address and Copy the text, Select All and Paste act in the box; the broken picture and
+ * the plain spot get no menu. With PROBE_SHOT set, ends by showing the real menu over the picture and saving the
+ * screen with `screencapture` (a native menu is not in the window's own capture).
+ */
+async function contextPhase(w: BrowserWindow): Promise<void> {
+  const wc = w.webContents;
+  const popped: Menu[] = [];
+  const realPopup = Menu.prototype.popup;
+  let showReal = false;
+  Menu.prototype.popup = function popup(this: Menu, options?: Electron.PopupOptions) {
+    popped.push(this);
+    if (showReal) realPopup.call(this, options);
+  };
+  w.show();
+  w.focus();
+  if (process.platform === 'darwin') app.focus({ steal: true });
+  await sleep(800);
+  await page(w, `(() => {
+    const box = document.createElement('div');
+    box.id = '__probeContext';
+    box.style.cssText = 'position:fixed;left:60px;top:140px;z-index:99999;display:flex;gap:24px;align-items:flex-start;padding:16px;background:#1b1d22';
+    box.innerHTML = '<img id="__pImg" src="/icon-512.png" width="240" height="240" alt="">'
+      + '<img id="__pBroken" src="/no-such-picture-447.png" width="60" height="60" alt="">'
+      + '<div style="display:flex;flex-direction:column;gap:12px;color:#ddd"><a id="__pLink" href="https://example.com/447" style="font-size:20px">a link</a>'
+      + '<p id="__pText" style="font-size:20px">zebraquokka words</p><textarea id="__pBox" style="font-size:20px">hello box</textarea>'
+      + '<div id="__pPlain" style="width:120px;height:60px"></div></div>';
+    document.body.append(box);
+    return 1;
+  })()`);
+  const natural = await page(w, `new Promise((r) => { const i = document.getElementById('__pImg'); const done = () => r([i.naturalWidth, i.naturalHeight]);
+    if (i.complete) done(); else { i.onload = done; i.onerror = done; } })`) as [number, number];
+  await sleep(300);
+  const zoom = wc.getZoomFactor();
+  /** The middle of an element (or a point `dx` in from its left), in the window's own units. */
+  const at = async (id: string, dx?: number) => {
+    const r = await page(w, `(() => { const r = document.getElementById(${JSON.stringify(id)}).getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; })()`) as number[];
+    return { x: Math.round(((dx === undefined ? r[0]! + r[2]! / 2 : r[0]! + dx)) * zoom), y: Math.round((r[1]! + r[3]! / 2) * zoom) };
+  };
+  /** Right-clicks the element; the menu the app built for it, as its labels ("-" a separator), or null for none. */
+  const rightClick = async (id: string, dx?: number): Promise<{ labels: string[] | null; menu: Menu | undefined }> => {
+    const p = await at(id, dx);
+    popped.length = 0;
+    wc.sendInputEvent({ type: 'mouseDown', x: p.x, y: p.y, button: 'right', clickCount: 1 });
+    wc.sendInputEvent({ type: 'mouseUp', x: p.x, y: p.y, button: 'right', clickCount: 1 });
+    await sleep(700);
+    const menu = popped.at(-1);
+    return { labels: menu ? menu.items.map((i) => (i.type === 'separator' ? '-' : i.label)) : null, menu };
+  };
+  const press = (menu: Menu | undefined, label: string) => menu?.items.find((i) => i.label === label)?.click();
+
+  // A picture: Copy Image and Save Image As….
+  const image = await rightClick('__pImg');
+  clipboard.clear();
+  press(image.menu, 'Copy Image');
+  // Electron 45's clipboard is the W3C one: the picture is an image/png entry.
+  const clipboardImage = async (): Promise<NativeImage> => {
+    for (const item of await clipboard.read()) {
+      if (!item.types.includes('image/png')) continue;
+      const blob = await item.getType('image/png') as Blob;
+      return nativeImage.createFromBuffer(Buffer.from(await blob.arrayBuffer()));
+    }
+    return nativeImage.createEmpty();
+  };
+  let copied = await clipboardImage();
+  for (let i = 0; i < 20 && copied.isEmpty(); i++) {
+    await sleep(200);
+    copied = await clipboardImage();
+  }
+  const saveTo = path.join(dataDir(), 'context-probe-saved.png');
+  fs.rmSync(saveTo, { force: true });
+  const saved = new Promise<string>((resolve) => {
+    // The probe's own handler gives the save a path, so Electron asks no one; without one it asks where to save.
+    wc.session.once('will-download', (_event, item) => {
+      item.setSavePath(saveTo);
+      item.once('done', (_e, state) => resolve(state));
+    });
+    setTimeout(() => resolve('timed out'), 10_000);
+  });
+  press(image.menu, 'Save Image As…');
+  const saveState = await saved;
+  const source = fs.readFileSync(path.join(clone, 'web', 'public', 'icon-512.png'));
+  const savedBytes = fs.existsSync(saveTo) ? fs.readFileSync(saveTo) : Buffer.alloc(0);
+  const imageReport = { labels: image.labels, natural, copied: copied.isEmpty() ? null : copied.getSize(), saveState, savedSame: savedBytes.equals(source), savedBytes: savedBytes.length };
+  out('context-image', imageReport);
+  expect(JSON.stringify(image.labels) === JSON.stringify(['Copy Image', 'Save Image As…']), 'a picture gets Copy Image and Save Image As…', image.labels);
+  expect(!copied.isEmpty() && copied.getSize().width === natural[0] && copied.getSize().height === natural[1], 'Copy Image put the picture, at its own size, on the clipboard', imageReport.copied);
+  expect(saveState === 'completed' && savedBytes.equals(source), 'Save Image As… saved the picture\'s own bytes', imageReport);
+
+  // A picture that did not load, and a plain spot: no menu. The positive branch is the picture above.
+  const broken = await rightClick('__pBroken');
+  const plain = await rightClick('__pPlain');
+  out('context-none', { broken: broken.labels, plain: plain.labels });
+  expect(broken.labels === null, 'a broken picture gets no menu', broken.labels);
+  expect(plain.labels === null, 'a plain spot gets no menu', plain.labels);
+
+  // A link: Copy Link Address.
+  const link = await rightClick('__pLink');
+  clipboard.clear();
+  press(link.menu, 'Copy Link Address');
+  await sleep(300);
+  const linkReport = { labels: link.labels, clipboard: await clipboard.readText(), browserOpened: [...external] };
+  out('context-link', linkReport);
+  expect(JSON.stringify(link.labels) === JSON.stringify(['Copy Link Address']), 'a link gets Copy Link Address', link.labels);
+  expect(linkReport.clipboard === 'https://example.com/447', 'Copy Link Address copied the address', linkReport.clipboard);
+
+  // Selected text: Copy.
+  await page(w, `(() => { const r = document.createRange(); r.selectNodeContents(document.getElementById('__pText')); const s = getSelection(); s.removeAllRanges(); s.addRange(r); return 1; })()`);
+  const text = await rightClick('__pText');
+  clipboard.clear();
+  press(text.menu, 'Copy');
+  await sleep(300);
+  const textReport = { labels: text.labels, clipboard: await clipboard.readText() };
+  out('context-text', textReport);
+  expect(JSON.stringify(text.labels) === JSON.stringify(['Copy']), 'selected text gets Copy', text.labels);
+  expect(textReport.clipboard.trim() === 'zebraquokka words', 'Copy copied the selected text', textReport.clipboard);
+
+  // A text box, nothing selected and text on the clipboard: Paste and Select All, and they act in the box.
+  await page(w, `getSelection().removeAllRanges(); (() => { const t = document.getElementById('__pBox'); t.focus(); t.setSelectionRange(t.value.length, t.value.length); return 1; })()`);
+  await clipboard.writeText(' pasted');
+  // Right of the text, so the click selects no word.
+  const empty = await rightClick('__pBox', 200);
+  press(empty.menu, 'Paste');
+  await sleep(300);
+  const afterPaste = await page(w, `document.getElementById('__pBox').value`);
+  const box = await rightClick('__pBox', 200);
+  press(box.menu, 'Select All');
+  await sleep(300);
+  const selected = await page(w, `(() => { const t = document.getElementById('__pBox'); return [t.selectionStart, t.selectionEnd, t.value.length]; })()`) as number[];
+  // Everything selected now: Cut and Copy too.
+  const full = await rightClick('__pBox', 20);
+  const boxReport = { nothingSelected: empty.labels, afterPaste, selectAll: selected, allSelected: full.labels };
+  out('context-box', boxReport);
+  expect(JSON.stringify(empty.labels) === JSON.stringify(['Paste', '-', 'Select All']), 'a text box with nothing selected gets Paste and Select All', empty.labels);
+  expect(afterPaste === 'hello box pasted', 'Paste pasted into the box', afterPaste);
+  expect(selected[0] === 0 && selected[1] === selected[2], 'Select All selected the box\'s text', selected);
+  expect(JSON.stringify(full.labels) === JSON.stringify(['Cut', 'Copy', 'Paste', '-', 'Select All']), 'with text selected the box gets Cut, Copy, Paste and Select All', full.labels);
+
+  const shot = process.env.PROBE_SHOT;
+  if (shot) {
+    await page(w, `document.getElementById('__probeContext').style.background = 'transparent'; getSelection().removeAllRanges(); document.activeElement?.blur(); 1`);
+    showReal = true;
+    await rightClick('__pImg', 60);
+    await sleep(1200);
+    let captured = false;
+    try {
+      execFileSync('screencapture', ['-x', shot]);
+      captured = fs.existsSync(shot);
+    } catch (e) {
+      out('context-shot-error', { message: (e as Error).message });
+    }
+    popped.at(-1)?.closePopup();
+    out('context-shot', { file: shot, captured });
+  }
+  Menu.prototype.popup = realPopup;
+  await page(w, `document.getElementById('__probeContext')?.remove(); 1`);
 }
 
 /** Notifications and clipboard writes allowed for Ledung's page, anything else refused (code review, Minor 2). */
@@ -1119,6 +1285,10 @@ async function run(): Promise<void> {
       const w = await showing(`${origin}/`);
       await signedIn(w);
       await findPhase(w);
+    } else if (phase === 'context') {
+      const w = await showing(`${origin}/`);
+      await signedIn(w);
+      await contextPhase(w);
     } else if (phase === 'notify') {
       const w = await showing(`${origin}/`);
       await signedIn(w);

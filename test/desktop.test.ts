@@ -2,7 +2,7 @@
 // command does, and its mirror of the `/running` proof stays the core's. Its start (issue #362, desktop/start.ts): what
 // it runs, with which environment, and the one line a failed start gives. Its zoom keys (issue #389, desktop/keys.ts).
 // The Mac Dock icon's margin (issue #404, desktop/dock-icon.ts). Its windows and its menu (issue #414,
-// desktop/windows.ts and desktop/menu.ts).
+// desktop/windows.ts and desktop/menu.ts). Its right-click menu (issue #447, desktop/context-menu.ts).
 // None of these files has Electron in it, so these run with the root tests; the window itself is checked by the probe
 // and by hand (desktop/README.md).
 import { after, before, test } from 'node:test';
@@ -18,6 +18,7 @@ import {
   candidatePorts, configFiles, configuredPort as appConfiguredPort, dataDir, DEFAULT_PORT as APP_DEFAULT_PORT, findRunning,
   runningProof as appProof, savedToken as appSavedToken,
 } from '../desktop/attach.ts';
+import { CONTEXT_LABELS, contextItems, type ContextTarget } from '../desktop/context-menu.ts';
 import { DOCK_ICON_BODY, dockIconLayout, padBitmap } from '../desktop/dock-icon.ts';
 import { FindSession, findLabel, MAX_FIND_TEXT } from '../desktop/find.ts';
 import { findKey, zoomed, zoomKey, ZOOM_STEP, type FindKeyInput, type KeyInput } from '../desktop/keys.ts';
@@ -570,4 +571,70 @@ test("View's items keep their names and keys and act on the window's page, never
     for (const item of items) item.click!(undefined, 'focused');
     assert.deepEqual(pressed, items.map((i) => ['focused', i.id]), `${platform}: each acts on the focused window's page`);
   }
+});
+
+// The right-click menu (#447, desktop/context-menu.ts). Expected items come from the issue's "Done looks like": Copy
+// Image and Save Image As… on a picture, Copy on selected text, Cut/Copy/Paste/Select All in a text box as its edit
+// flags allow, Copy Link Address on a link; nothing that does nothing, and no menu where none applies.
+
+/** A right-click on nothing: no picture, link, selection or text box, as Electron's params give a plain spot. */
+function clickedOn(over: Partial<ContextTarget> = {}): ContextTarget {
+  return {
+    mediaType: 'none', srcURL: '', hasImageContents: false, linkURL: '', selectionText: '', isEditable: false,
+    ...over,
+    editFlags: { canCut: false, canCopy: false, canPaste: false, canSelectAll: false, ...over.editFlags },
+  };
+}
+const SHOT = 'http://127.0.0.1:4317/api/sessions/s1/image?path=shot.png';
+const ALL_FLAGS = { canCut: true, canCopy: true, canPaste: true, canSelectAll: true };
+
+test('a picture gets Copy Image and Save Image As…; a picture that did not load gets nothing (#447)', () => {
+  assert.deepEqual(contextItems(clickedOn({ mediaType: 'image', srcURL: SHOT, hasImageContents: true })), ['copyImage', 'saveImage']);
+  // A picture the page made itself (data: or blob:) can be saved too.
+  assert.deepEqual(contextItems(clickedOn({ mediaType: 'image', srcURL: 'data:image/png;base64,AAAA', hasImageContents: true })), ['copyImage', 'saveImage']);
+  assert.deepEqual(contextItems(clickedOn({ mediaType: 'image', srcURL: 'blob:http://127.0.0.1:4317/1f2e', hasImageContents: true })), ['copyImage', 'saveImage']);
+  // An address no download can fetch: Copy Image only, not a Save that does nothing.
+  assert.deepEqual(contextItems(clickedOn({ mediaType: 'image', srcURL: 'chrome://theme/x', hasImageContents: true })), ['copyImage']);
+  // A broken picture has nothing to copy: no menu, where the same spot with the picture loaded has one (above).
+  assert.deepEqual(contextItems(clickedOn({ mediaType: 'image', srcURL: SHOT, hasImageContents: false })), []);
+  // A video or a canvas is not a picture here.
+  assert.deepEqual(contextItems(clickedOn({ mediaType: 'video', srcURL: SHOT, hasImageContents: true })), []);
+  assert.deepEqual(contextItems(clickedOn({ mediaType: 'canvas', srcURL: SHOT, hasImageContents: true })), []);
+});
+
+test('a link gets Copy Link Address, a web link only; a picture inside a link gets both, the link first (#447)', () => {
+  assert.deepEqual(contextItems(clickedOn({ linkURL: 'https://github.com/example/pr/1' })), ['copyLink']);
+  assert.deepEqual(contextItems(clickedOn({ linkURL: 'http://127.0.0.1:4317/#/session/s1' })), ['copyLink']);
+  // Not an address to copy: no item, and here no menu.
+  assert.deepEqual(contextItems(clickedOn({ linkURL: 'javascript:void(0)' })), []);
+  assert.deepEqual(contextItems(clickedOn({ linkURL: 'not a url' })), []);
+  assert.deepEqual(contextItems(clickedOn({ linkURL: SHOT, mediaType: 'image', srcURL: SHOT, hasImageContents: true })),
+    ['copyLink', 'separator', 'copyImage', 'saveImage']);
+});
+
+test('selected text gets Copy; a text box gets Cut, Copy, Paste and Select All as its edit flags allow (#447)', () => {
+  const page = { ...ALL_FLAGS, canCut: false, canPaste: false };
+  assert.deepEqual(contextItems(clickedOn({ selectionText: 'hello', editFlags: page })), ['copy']);
+  // Only white space selected, or a selection Chromium cannot copy: no Copy that does nothing.
+  assert.deepEqual(contextItems(clickedOn({ selectionText: '  \n', editFlags: page })), []);
+  assert.deepEqual(contextItems(clickedOn({ selectionText: 'hello' })), []);
+  // A text box with text selected and something on the clipboard: the browser's four, Select All apart.
+  assert.deepEqual(contextItems(clickedOn({ isEditable: true, selectionText: 'hel', editFlags: ALL_FLAGS })), ['cut', 'copy', 'paste', 'separator', 'selectAll']);
+  // Nothing selected: no Cut or Copy.
+  assert.deepEqual(contextItems(clickedOn({ isEditable: true, editFlags: { ...ALL_FLAGS, canCut: false, canCopy: false } })), ['paste', 'separator', 'selectAll']);
+  assert.deepEqual(contextItems(clickedOn({ isEditable: true, editFlags: { ...ALL_FLAGS, canCut: false, canCopy: false, canPaste: false } })), ['selectAll']);
+  // An empty box and an empty clipboard: nothing applies, so no menu.
+  assert.deepEqual(contextItems(clickedOn({ isEditable: true })), []);
+  // A link with selected text: both, the link first.
+  assert.deepEqual(contextItems(clickedOn({ linkURL: 'https://example.com/', selectionText: 'example', editFlags: page })), ['copyLink', 'separator', 'copy']);
+});
+
+test('a plain spot gets no menu; every item has its label, and no separator starts or ends the menu (#447)', () => {
+  assert.deepEqual(contextItems(clickedOn()), []);
+  assert.deepEqual(Object.keys(CONTEXT_LABELS).sort(), ['copy', 'copyImage', 'copyLink', 'cut', 'paste', 'saveImage', 'selectAll']);
+  assert.equal(CONTEXT_LABELS.copyImage, 'Copy Image');
+  assert.equal(CONTEXT_LABELS.saveImage, 'Save Image As…');
+  assert.equal(CONTEXT_LABELS.copyLink, 'Copy Link Address');
+  const everything = contextItems(clickedOn({ linkURL: 'https://example.com/', mediaType: 'image', srcURL: SHOT, hasImageContents: true, isEditable: true, selectionText: 'x', editFlags: ALL_FLAGS }));
+  assert.deepEqual(everything, ['copyLink', 'separator', 'copyImage', 'saveImage', 'separator', 'cut', 'copy', 'paste', 'separator', 'selectAll']);
 });
