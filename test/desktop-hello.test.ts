@@ -16,6 +16,8 @@ import { Store } from '../src/store/store.ts';
 import { removeTemp } from './temp.ts';
 import { refuseRealSignInStores } from './signin-stores.ts';
 import { freePort } from './free-port.ts';
+import { LinkedNodes } from './linked-nodes.ts';
+import { HANG_MS } from './limits.ts';
 
 const TOKEN = 'f'.repeat(64);
 const COOKIE = `ledung_auth=${TOKEN}`;
@@ -75,5 +77,27 @@ test("hello tells the page the made app is out of date after an update, from the
   } finally {
     await plain.close();
     db.close();
+  }
+});
+
+test('a page through the public name is not told about the desktop app; the same Ledung tells its own page (self-check round 2)', { timeout: HANG_MS }, async () => {
+  const nodes = new LinkedNodes();
+  try {
+    const info = { stale: true, notice: 'The desktop app could not be made: /Users/someone/Library. Ledung opened in the browser instead.' };
+    const pc = await nodes.ledung('pc.desktop-hello.test', undefined, undefined, undefined, {}, { desktopApp: () => info });
+    const pcPage = await nodes.page(pc);
+    assert.deepEqual((await pcPage('GET', 'state')).json.desktopApp, info, 'its own page is told');
+    // A phone paired through the public name, as Settings → Phones pairs one.
+    const code = new URL((await pcPage('POST', 'devices-pair', { kind: 'phone' })).json.url).pathname.slice('/p/'.length);
+    const paired = await nodes.viaTunnel(pc.name, '/pair', { body: new URLSearchParams({ code, name: 'Phone' }).toString(), headers: { origin: `https://${pc.name}`, 'content-type': 'application/x-www-form-urlencoded' } });
+    const cookie = /^(__Host-ledung_device=[0-9a-f]{64})/.exec(String(paired.headers['set-cookie']))![1]!;
+    const pageKey = await nodes.publicPage(pc, cookie);
+    const remote = await nodes.viaTunnel(pc.name, '/api/state', { method: 'GET', headers: { origin: `https://${pc.name}`, cookie, 'x-ledung-page': pageKey } });
+    assert.equal(remote.status, 200, remote.body);
+    const state = JSON.parse(remote.body) as Record<string, unknown>;
+    assert.equal(state.throughPublicName, true, 'it came through the public name');
+    assert.equal('desktopApp' in state, false);
+  } finally {
+    await nodes.close();
   }
 });

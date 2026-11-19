@@ -348,7 +348,7 @@ const anyShown = (): boolean => openWindows().some((w) => w.isVisible() && !w.is
 
 /**
  * Whether the app had no visible window when its restart began: then the new one starts hidden too. Taken before the
- * quit, since by will-quit every window has closed (self-check finding 1). A minimised window is still visible here, so
+ * quit, since by will-quit every window has closed (self-check finding 1). A minimised window counts as there, so
  * it comes back shown rather than vanishing from the Windows taskbar (self-check finding 2).
  */
 let hiddenAtRestart = false;
@@ -364,7 +364,8 @@ function restartForUpdate(): void {
     console.error('Ledung desktop: the ledung command that made this app is gone; start it again with ledung to update it.');
     return;
   }
-  hiddenAtRestart = !openWindows().some((w) => w.isVisible());
+  // Minimised counts as there: the Mac reports a minimised window as not visible (self-check round 2, finding 1).
+  hiddenAtRestart = !openWindows().some((w) => w.isVisible() || w.isMinimized());
   restartOnQuit = true;
   quit();
 }
