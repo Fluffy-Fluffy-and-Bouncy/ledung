@@ -8,10 +8,14 @@
 // command only ever names the `dev` tag, and neither command moves a tag by itself (no `npm dist-tag`).
 //
 // The version is counted from what npm has published and the clone's own (a dev build after v1 or v1.1 is v1.2, a
-// public release after either is v2) and stamped into the package only: nothing is committed, so publishing needs
-// no push to main. Both refuse anything but a clean main that is origin/main, so what is published is what merged.
+// public release after either is v2) and stamped into the package only. Both refuse anything but a clean main that is
+// origin/main, so what is published is what merged.
+// The changelogs per release (#417): before the build, the waiting docs/changes/*.md bullets are folded in under the new
+// version (scripts/changelog.ts), so the package carries them; once npm has the version, that fold is committed and
+// pushed to main. That push is the only one a publish makes (Martin, 2026-11-19 14:20, Ledung question #613: "the
+// publish step may push its changelog commit to main"). A build or publish that fails puts the files back as they were.
 // --dry-run (also `npm run publish:dev --dry-run`, which npm passes on as npm_config_dry_run) checks, builds and
-// packs, and prints the publish it would run instead of running it.
+// packs, prints the changelog section and the publish it would run instead of running it, and puts the files back.
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -19,6 +23,7 @@ import { pathToFileURL } from 'node:url';
 import { appDir } from '../src/platform/paths.ts';
 import { CHANNEL_TAG, CHANNELS, displayVersion, isDevVersion, isPublicVersion, nextVersion, type Channel } from '../src/shared/version.ts';
 import { buildPackage, npm } from './build-package.ts';
+import { applyWrites, fold, releaseStamp } from './changelog.ts';
 
 const BRANCH = 'main';
 
@@ -122,6 +127,8 @@ export interface PublishSteps {
   check(source: string): void;
   build(source: string, version: string): Promise<string>;
   publish(args: string[], source: string): void;
+  /** The release's date and time for its changelog heading. */
+  stamp(): string;
   log(line: string): void;
   error(line: string): void;
 }
@@ -131,6 +138,7 @@ const REAL_STEPS: PublishSteps = {
   check: (source) => npm(['run', 'check', '--silent'], source),
   build: buildPackage,
   publish: (args, source) => npm(args, source),
+  stamp: () => releaseStamp(new Date()),
   log: (line) => console.log(line),
   error: (line) => console.error(line),
 };
@@ -156,14 +164,51 @@ export async function runPublish(opts: PublishOptions, source: string, steps: Pu
     steps.log('Checking...');
     steps.check(source);
   }
-  const tgz = await steps.build(source, version);
-  const args = publishArgs(opts.channel, tgz);
-  if (opts.dryRun) {
-    steps.log(`Dry run: would run npm ${args.join(' ')}`);
-    return 0;
+  const folded = fold(source, version, steps.stamp(), published);
+  const before = applyWrites(source, folded.writes);
+  try {
+    const tgz = await steps.build(source, version);
+    const args = publishArgs(opts.channel, tgz);
+    if (opts.dryRun) {
+      steps.log(`Dry run: the changelog would get\n${folded.section}`);
+      steps.log(`Dry run: would run npm ${args.join(' ')}`);
+      applyWrites(source, before);
+      return 0;
+    }
+    steps.publish(args, source);
+  } catch (e) {
+    applyWrites(source, before);
+    throw e;
   }
-  steps.publish(args, source);
   steps.log(`Published ${displayVersion(version)} to ${tag}.`);
+  return pushChangelog(source, version, opts.channel, [...folded.writes.keys()], steps);
+}
+
+/**
+ * Commits the folded changelog and pushes it to main. Another PR may have merged while the publish ran: then the commit
+ * goes on top of it once (a rebase that only adds the changelog files), and is pushed again. When that fails too, the
+ * commit stays in the clone, the next publish refuses it as "main is not origin/main", and this says what to do.
+ */
+export function pushChangelog(source: string, version: string, channel: Channel, files: string[], steps: Pick<PublishSteps, 'log' | 'error'>): number {
+  const run = (args: string[]) => spawnSync('git', args, { cwd: source, encoding: 'utf8' });
+  const added = run(['add', '-A', '--', ...files.map((f) => f.split(path.sep).join('/'))]);
+  const committed = added.status === 0 ? run(['commit', '-q', '-m', `Changelog for ${displayVersion(version)}, published to npm's ${CHANNEL_TAG[channel]} tag`]) : added;
+  if (committed.status !== 0) {
+    steps.error(`Published ${displayVersion(version)}, but the changelog could not be committed:\n${committed.stderr || committed.stdout}`);
+    return 1;
+  }
+  let pushed = run(['push', '-q', 'origin', `HEAD:${BRANCH}`]);
+  if (pushed.status !== 0) {
+    const rebased = run(['pull', '-q', '--rebase', 'origin', BRANCH]);
+    if (rebased.status !== 0) run(['rebase', '--abort']);
+    else pushed = run(['push', '-q', 'origin', `HEAD:${BRANCH}`]);
+  }
+  if (pushed.status !== 0) {
+    steps.error(`Published ${displayVersion(version)}, but its changelog commit is not on origin/${BRANCH} yet: ${(pushed.stderr || pushed.stdout).trim()}`);
+    steps.error(`The commit is in ${source}. Bring it on top of origin/${BRANCH} there (git pull --rebase origin ${BRANCH}) and push it; until then the next publish is refused.`);
+    return 1;
+  }
+  steps.log(`Changelog for ${displayVersion(version)} pushed to ${BRANCH}.`);
   return 0;
 }
 

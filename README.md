@@ -168,4 +168,4 @@ The AGPL asks that people who use Ledung over a network can get its source: **Se
 
 ## Developing Ledung
 
-To work on Ledung from a clone (setup, the git hook, running a release, the npm package, the layout and the cross-platform rules), see [docs/development.md](docs/development.md). What changed and when is in [CHANGELOG.md](CHANGELOG.md). Contributions need a contributor license agreement: see [CONTRIBUTING.md](CONTRIBUTING.md).
+To work on Ledung from a clone (setup, the git hook, running a release, the npm package, the layout and the cross-platform rules), see [docs/development.md](docs/development.md). What changed in each release is in [CHANGELOG.md](CHANGELOG.md) (public releases) and [CHANGELOG-dev.md](CHANGELOG-dev.md) (dev builds), also at https://projectledung.com/changelog and https://projectledung.com/dev-changelog. Contributions need a contributor license agreement: see [CONTRIBUTING.md](CONTRIBUTING.md).

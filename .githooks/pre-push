@@ -4,7 +4,9 @@
 # `git push --no-verify` skips it; that is the owner's call in an emergency, not a session's.
 # It also refuses a push that changes src/, web/ (not web/dist/) or scripts/ without adding a bullet to
 # CHANGELOG.md (issue #86); a commit with a `Changelog: none` trailer says there is nothing
-# user-facing in it (tests, refactors, internals).
+# user-facing in it (tests, refactors, internals). Since the changelogs are per release (issue #417),
+# the bullet goes in a file of the PR's own, docs/changes/<issue>.md, and the publish step folds it
+# into CHANGELOG-dev.md and CHANGELOG.md; a bullet added to either changelog no longer counts.
 
 remote="$1"
 needed=no
@@ -20,12 +22,12 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   # A push to a URL instead of a named remote matches nothing here, so the check runs.
   if [ -n "$(git rev-list -n 1 "$local_sha" --not --remotes="$remote" 2>/dev/null)" ]; then
     needed=yes
-    # Against the remote's main: the changelog must gain a bullet, or a commit must say none.
+    # Against the remote's main: a change file must gain a bullet, or a commit must say none.
     # With no such ref (a first push, a URL) there is nothing to compare with.
     main_ref="refs/remotes/$remote/main"
     if git rev-parse -q --verify "$main_ref" >/dev/null 2>&1; then
       if [ -n "$(git diff --name-only "$main_ref...$local_sha" -- src/ web/ ':(exclude)web/dist' scripts/ 2>/dev/null)" ] \
-        && ! git diff "$main_ref...$local_sha" -- CHANGELOG.md 2>/dev/null | grep -q '^+- ' \
+        && ! git diff "$main_ref...$local_sha" -- docs/changes/ ':(exclude)docs/changes/README.md' 2>/dev/null | grep -q '^+- ' \
         && ! git log --format=%B "$main_ref..$local_sha" 2>/dev/null | grep -qi '^Changelog: none[[:space:]]*$'; then
         unlogged=yes
       fi
@@ -36,7 +38,11 @@ done
 [ "$needed" = yes ] || exit 0
 
 if [ "$unlogged" = yes ]; then
-  echo "pre-push: this push changes src/, web/ (not web/dist/) or scripts/ but adds no '- ' bullet to CHANGELOG.md; add one under today's date, or put 'Changelog: none' as a trailer in a commit message if nothing is user-facing." >&2
+  echo "pre-push: this push changes src/, web/ (not web/dist/) or scripts/ but adds no '- ' bullet in docs/changes/." >&2
+  echo "  Write what changes for the person using Ledung in docs/changes/<issue>.md (no issue: docs/changes/<short-name>.md)," >&2
+  echo "  one terse line per change ending in (#<issue>) or (no issue), e.g. '- Settings shows the version. (#417)'; see docs/changes/README.md." >&2
+  echo "  Don't edit CHANGELOG.md or CHANGELOG-dev.md: the publish step folds docs/changes/ into them." >&2
+  echo "  Nothing user-facing (tests, refactors, internals)? Put 'Changelog: none' as a trailer in a commit message." >&2
   exit 1
 fi
 
