@@ -34,9 +34,12 @@ const isSafariMac = (ua: string, touch: number) =>
   /Macintosh/.test(ua) && /Safari\//.test(ua) && !/Chrome|Chromium|CriOS|Edg|OPR|Firefox|FxiOS/.test(ua) && touch <= 1;
 const isIos = (ua: string, touch: number) => /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && touch > 1);
 const isChromium = (ua: string) => /Chrome|Chromium|Edg\//.test(ua);
+// Ledung's desktop app (Electron, issue #374): its User-Agent says Chrome too, but it is the app already, has no
+// address bar and never gets an install offer, so it is treated as installed.
+const isElectron = (ua: string) => /\bElectron\//.test(ua);
 
 export function installOffer(env: InstallEnv): Install {
-  if (env.standalone || env.installed) return { kind: 'none' };
+  if (env.standalone || env.installed || isElectron(env.userAgent)) return { kind: 'none' };
   if (env.framed) return { kind: 'none', reason: "Install this computer's own page, opened in a tab of its own." };
   if (env.offer) return { kind: 'button' };
   // Not "installed already or not allowed": the person just said no (review of #351).

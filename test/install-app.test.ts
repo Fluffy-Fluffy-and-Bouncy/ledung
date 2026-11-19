@@ -10,6 +10,9 @@ const UA = {
   chromeMac: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
   safariMac: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15',
   firefoxMac: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:131.0) Gecko/20100101 Firefox/131.0',
+  // Electron's default form (app name and version, Chrome/, Electron/): the desktop app sets none of its own (#374).
+  electronMac: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) ledung-desktop/0.0.0 Chrome/140.0.7339.249 Electron/45.3.3 Safari/537.36',
+  electronWin: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) ledung-desktop/0.0.0 Chrome/140.0.7339.249 Electron/45.3.3 Safari/537.36',
   iphone: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
 };
 
@@ -25,6 +28,22 @@ test('Edge and Chrome with an install offer show the button', () => {
 test('installed, or running as an app, shows nothing and no reason', () => {
   for (const over of [{ standalone: true }, { installed: true }, { standalone: true, userAgent: UA.safariMac }]) {
     assert.deepEqual(installOffer(env({ offer: true, ...over })), { kind: 'none' });
+  }
+});
+
+test('the desktop app (Electron) shows nothing and no reason, where the same page in Chrome says why', () => {
+  for (const userAgent of [UA.electronMac, UA.electronWin]) {
+    for (const over of [{}, { secure: false }, { framed: true }, { refused: true }, { offer: true }]) {
+      const r = installOffer(env({ userAgent, ...over }));
+      assert.deepEqual(r, { kind: 'none' });
+      assert.equal(showsNotice(r, false), false);
+    }
+  }
+  // The positive branch: Chrome with the same page and no offer gives the address-bar reason the app must not show.
+  for (const userAgent of [UA.chrome, UA.chromeMac]) {
+    const chrome = installOffer(env({ userAgent }));
+    assert.equal(chrome.kind, 'none');
+    assert.match((chrome as { reason: string }).reason, /address bar/);
   }
 });
 
