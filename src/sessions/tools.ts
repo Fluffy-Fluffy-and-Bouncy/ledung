@@ -14,6 +14,7 @@ import { commandProblem, type OrderSpec } from './orders.ts';
 import { CONFIRM, CONFIRM_KEY } from '../shared/orders.ts';
 import { SETTINGS_ACTIONS } from './word.ts';
 import { SETTINGS_PATCH, type SettingsPatch } from '../projects/settings-tools.ts';
+import { rememberOwnTools } from './tool-descriptions.ts';
 
 export const LEDUNG_SERVER = 'ledung';
 // The run tools (workflow part 3) only record and report; any session of a project that follows its flow has them.
@@ -952,5 +953,7 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
     );
   }
 
+  // A refused call to one of these is described to the person by them (issue #399).
+  rememberOwnTools(tools as unknown as { name: string; description?: string }[]);
   return createSdkMcpServer({ name: LEDUNG_SERVER, version: '1.0.0', alwaysLoad: true, instructions: instructions(h), tools });
 }

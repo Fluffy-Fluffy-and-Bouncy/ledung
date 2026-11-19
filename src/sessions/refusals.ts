@@ -12,6 +12,7 @@
 import type { QuestionInfo } from '../shared/protocol.ts';
 import type { QuestionDetails, RefusalDetails } from '../shared/questions.ts';
 import type { Store } from '../store/store.ts';
+import { inputLines, isShell, keyInput, oneLineDescription, toolLabel } from '../shared/tool-call.ts';
 
 /** What Claude Code puts in the tool result when the classifier refuses a call (its own text, Claude Code 2.1.x). */
 export const CLASSIFIER_REFUSAL = 'Permission for this action was denied by the Claude Code auto mode classifier.';
@@ -153,7 +154,8 @@ export function byHandText(r: Pick<RefusalDetails, 'toolName' | 'input'>): strin
   if ((toolName === 'Bash' || toolName === 'PowerShell') && typeof input.command === 'string') {
     return `Run this yourself, in ${toolName}, in the session's folder:\n\n${fenced(input.command, toolName === 'Bash' ? 'bash' : 'powershell')}`;
   }
-  return `Make this ${toolName} call yourself:\n\n${fenced(JSON.stringify(input, null, 2), 'json')}`;
+  const lines = inputLines(input);
+  return `Make this call to ${toolLabel(toolName)} (\`${toolName}\`) yourself, ${lines ? `with this input:\n\n${fenced(lines)}` : 'without input.'}`;
 }
 
 /** The refused call a question is about, when Ledung raised it; null for any other question. */
@@ -226,11 +228,39 @@ export function onceGrant(
   }) ?? null;
 }
 
-/** The call as the person reads it: a shell command as it is, any other tool as its input. */
+/** The call as the session reads it back: a shell command as it is, any other tool by its full name and its input. */
 export function callText(r: Pick<RefusalDetails, 'toolName' | 'input'>): string {
   const command = r.input.command;
-  if ((r.toolName === 'Bash' || r.toolName === 'PowerShell') && typeof command === 'string') return command;
-  return JSON.stringify(r.input, null, 2);
+  if (isShell(r.toolName) && typeof command === 'string') return command;
+  // The name too (issue #399): an input of {} alone doesn't say which call to retry.
+  return `${r.toolName} ${JSON.stringify(r.input, null, 2)}`;
+}
+
+/** Inline code that the text can't close early. */
+function inlineCode(text: string): string {
+  const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((s) => s.length));
+  const ticks = '`'.repeat(longest + 1);
+  return longest ? `${ticks} ${text} ${ticks}` : `${ticks}${text}${ticks}`;
+}
+
+/**
+ * The call as the person reads it (issue #399): a shell command as it is; any other tool by name ("Ledung · release")
+ * with its full name, what it does when its description is known, the file or URL it touches, and the rest of its
+ * input as `key: value` lines. A call without input says so, never `{}`.
+ */
+export function callBlock(r: Pick<RefusalDetails, 'toolName' | 'input' | 'description'>): string {
+  const command = r.input.command;
+  if (isShell(r.toolName) && typeof command === 'string') return fenced(command, r.toolName === 'Bash' ? 'bash' : 'powershell');
+  const label = toolLabel(r.toolName);
+  const description = oneLineDescription(r.description);
+  const key = keyInput(r.toolName, r.input);
+  const head = `**${label}**${label !== r.toolName ? ` (${inlineCode(r.toolName)})` : ''}${description ? `: ${description}` : ''}`;
+  const lines = inputLines(r.input, key ? [key.key] : []);
+  return [
+    head,
+    ...(key ? [`**${key.label}:** ${inlineCode(key.value)}`] : []),
+    lines ? `${key ? 'The rest of its input' : 'Its input'}:\n\n${fenced(lines)}` : key ? '' : 'It has no input.',
+  ].filter(Boolean).join('\n\n');
 }
 
 /** A fenced block that the text can't close early. */
@@ -249,9 +279,11 @@ function fenced(text: string, lang = ''): string {
 export function refusalQuestion(
   r: RefusalDetails, session: { title: string; project: string }, tier: string | undefined,
 ): { question: string; options: string[]; details: QuestionDetails } {
-  const shell = r.toolName === 'Bash' || r.toolName === 'PowerShell';
-  const what = shell ? `${r.toolName} command` : `${r.toolName} call`;
-  const call = fenced(callText(r), shell ? (r.toolName === 'Bash' ? 'bash' : 'powershell') : 'json');
+  const shell = isShell(r.toolName);
+  const what = shell ? `${r.toolName} command` : 'call';
+  const call = callBlock(r);
+  // The title names the tool (issue #399): Waiting for you and a manager's chat line show only the title.
+  const named = shell ? `a ${r.toolName} command` : `a call to ${toolLabel(r.toolName)}`;
   const reason = `**The classifier's reason:** ${r.reason}`;
   if (r.byHand) {
     const title = `Only you can make this change for "${session.title}"`;
@@ -269,9 +301,9 @@ export function refusalQuestion(
     return { question: `**${title}**\n\n${issue}`, options: [DONE_BY_HAND, DENY], details };
   }
   const held = r.held === 'away' || r.held === 'prompt';
-  const title = r.held === 'away' ? `Away mode held a call in "${session.title}"`
-    : r.held === 'prompt' ? `A call in "${session.title}" needs your allow`
-    : `Auto mode refused a call in "${session.title}"`;
+  const title = r.held === 'away' ? `Away mode held ${named} in "${session.title}"`
+    : r.held === 'prompt' ? `${named[0]!.toUpperCase()}${named.slice(1)} in "${session.title}" needs your allow`
+    : `Auto mode refused ${named} in "${session.title}"`;
   const always = r.always === 'sensitive' ? ALLOW_ALWAYS_SENSITIVE : r.always === 'plain' ? ALLOW_ALWAYS : null;
   const issue = [
     r.held === 'away'

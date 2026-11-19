@@ -46,7 +46,9 @@ import { workflowLines } from './flow-files.ts';
 import { promptNudges } from './workflow-nudges.ts';
 import { readInsideProject, readStartReadingFile, sessionStartText } from './start-reading.ts';
 import { RemoteControl } from './remote-control.ts';
-import { McpError, mcpServers, reconnectMcp } from './mcp.ts';
+import { McpError, mcpServers, mcpToolDescriptions, reconnectMcp } from './mcp.ts';
+import { ownToolDescription } from './tool-descriptions.ts';
+import { mcpParts } from '../shared/tool-call.ts';
 import { boundarySettings, withBoundary } from './boundary.ts';
 import { airgapEnvironment, airgapSettings, airgapTempFolder, makeAirgapTempFolder, othersSettings, versionProblem, withAirgapSettings, withOthersSettings } from '../projects/lockdown.ts';
 import { userDataDir } from '../platform/paths.ts';
@@ -377,6 +379,12 @@ export class Session {
   private readonly allowedBy = new AllowedNotes();
   /** The latest tool calls by id, so a refusal in a tool result can be shown with its exact input (issue #104). */
   private readonly toolCalls = new Map<string, { toolName: string; input: Record<string, unknown> }>();
+  /**
+   * What the session's other MCP servers' tools do, by full tool name, from Claude Code's list (issue #399): asked for
+   * once per server, when the session first calls one of its tools, so a refusal seconds later can say it.
+   */
+  private readonly mcpDescriptions = new Map<string, string>();
+  private readonly mcpDescribed = new Set<string>();
   /**
    * Away mode's decisions on merges taken in the PreToolUse hook (issue #133), by tool use id: onPermission uses a held
    * one rather than asking GitHub and recording it again, and a refusal that comes anyway reads the floors from it.
@@ -1086,6 +1094,7 @@ export class Session {
     const refusal = {
       ...call, reason, toolUseId, ...(byAgent ? { byAgent } : {}), ...(byHand ? { byHand } : {}), ...(retryOf !== undefined ? { retryOf } : {}),
       ...(always ? { always } : {}), ...(always === 'sensitive' && sensitiveRule ? { sensitiveRule } : {}),
+      ...this.describedTool(call.toolName),
     };
     const asked = refusalQuestion(refusal, { title: info.title, project: info.project }, this.management.questionTiers(this.id)[0]);
     const q = this.store.createQuestion({ sessionId: this.id, question: asked.question, options: asked.options, addressedTo: 'user', details: asked.details });
@@ -1153,12 +1162,30 @@ export class Session {
     this.record('event', { text: `Away merge ${why}.` });
   }
 
+  /** What a tool does, for a question about a call to it (issue #399): Ledung's own tools, else the session's list. */
+  private describedTool(toolName: string): { description?: string } {
+    const mcp = mcpParts(toolName);
+    const description = !mcp ? null : mcp.server === LEDUNG_SERVER ? ownToolDescription(mcp.tool) : this.mcpDescriptions.get(toolName) ?? null;
+    return description ? { description } : {};
+  }
+
+  /** Asks Claude Code once what another MCP server's tools do, when the session first calls one of them (issue #399). */
+  private learnToolDescriptions(toolName: string): void {
+    const mcp = mcpParts(toolName);
+    if (!mcp || mcp.server === LEDUNG_SERVER || this.mcpDescribed.has(mcp.server) || !this.q || this.stopping) return;
+    this.mcpDescribed.add(mcp.server);
+    void mcpToolDescriptions(this.q).then((found) => {
+      for (const [name, description] of found) this.mcpDescriptions.set(name, description);
+    });
+  }
+
   /** The tool calls in an assistant message, kept for raiseRefusal; refusals in a user message's tool results. */
   private watchRefusals(m: SDKMessage): void {
     const content = (m.type === 'assistant' || m.type === 'user') && Array.isArray(m.message.content) ? m.message.content as unknown[] : [];
     for (const b of content as { type?: string; id?: string; name?: string; input?: unknown; tool_use_id?: string; content?: unknown; is_error?: boolean }[]) {
       if (m.type === 'assistant' && b.type === 'tool_use' && b.id && b.name) {
         this.toolCalls.set(b.id, { toolName: b.name, input: b.input && typeof b.input === 'object' ? b.input as Record<string, unknown> : {} });
+        this.learnToolDescriptions(b.name);
         // The latest few hundred are plenty: a refusal comes right after its call.
         if (this.toolCalls.size > 300) this.toolCalls.delete(this.toolCalls.keys().next().value!);
       }
@@ -1905,6 +1932,7 @@ export class Session {
     const refusal: RefusalDetails = {
       toolName, input, reason, toolUseId: opts.toolUseID ?? '', held,
       ...(byAgent ? { byAgent } : {}), ...(always ? { always } : {}), ...(always === 'sensitive' ? { sensitiveRule: sensitive.rule } : {}),
+      ...this.describedTool(toolName),
     };
     const asked = refusalQuestion(refusal, { title: info.title, project: info.project }, this.management.questionTiers(this.id)[0]);
     const q = this.store.createQuestion({ sessionId: this.id, question: asked.question, options: asked.options, addressedTo: 'user', details: asked.details });

@@ -231,6 +231,11 @@ export interface RefusalDetails {
    * through only while it still loosens exactly that.
    */
   held?: 'away' | 'prompt';
+  /**
+   * What the tool does, its own description's first sentence, when Ledung knew it (issue #399): a call to an MCP tool
+   * is otherwise only a name and its input. Shown to the person; never part of what makes it the same call.
+   */
+  description?: string;
 }
 
 /** The run and block a person block's question belongs to (workflow part 3b), with their titles as asked. */

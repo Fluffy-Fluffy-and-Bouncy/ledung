@@ -12,7 +12,9 @@ import { Store } from '../src/store/store.ts';
 import { buildDelivery, Management } from '../src/sessions/management.ts';
 import { Session } from '../src/sessions/session.ts';
 import { Push, type PushPayload } from '../src/server/push.ts';
-import { classifierReason, guardedWrite, recordAllowAlways, sameCall } from '../src/sessions/refusals.ts';
+import { classifierReason, guardedWrite, recordAllowAlways, refusalAnswerText, sameCall } from '../src/sessions/refusals.ts';
+import { permissionLine, questionLine } from '../src/shared/waiting-line.ts';
+import { callLine, inputLines, oneLineDescription, toolLabel } from '../src/shared/tool-call.ts';
 import { ProjectStore } from '../src/projects/store.ts';
 import { waitingLists } from '../web/src/waitingLists.ts';
 import type { QuestionInfo, ServerEvent } from '../src/shared/protocol.ts';
@@ -434,4 +436,83 @@ test("a project's Allow always rules move with a rename and don't come back with
   projects.remove('b');
   projects.add({ name: 'b', runner: 'local', path: temp, sensitive: none });
   assert.deepEqual(store.allowedCalls('b'), [], 'a new project b starts with none');
+});
+
+// Issue #399: a refused call is named in plain words, never shown as a bare `{}`.
+test('a refused call to a Ledung tool without input names the tool and says what it does, never {}', async () => {
+  const { refuseCall, refusals, hooks, store } = setup();
+  await hooks(); // builds the session's tool server, as a start does: its tools' descriptions are known from then on
+  // Called without its input, so it has none to show (Simon's case was `release`, which takes none; a test session
+  // has no reservations, so no `release`).
+  refuseCall('tu-r', 'mcp__ledung__withdraw_question', {}, '[Resource Release]');
+  const [q] = refusals();
+  assert.ok(q);
+  assert.equal(q.details!.title, 'Auto mode refused a call to Ledung · withdraw_question in "Worker"', 'the title names the tool');
+  assert.match(q.question, /\*\*Ledung · withdraw_question\*\* \(`mcp__ledung__withdraw_question`\): Withdraw a question you asked with ask_user that is no longer needed\./);
+  assert.match(q.question, /It has no input\./);
+  assert.doesNotMatch(q.question, /\{\}/, 'no bare {}');
+  assert.match(q.question, /"Worker" \(project p\)/, 'the session and its project');
+  assert.match(q.question, /\*\*The classifier's reason:\*\* \[Resource Release\]/);
+  assert.equal(q.details!.refusal!.description, 'Withdraw a question you asked with ask_user that is no longer needed.');
+  // Waiting for you in the manager's chat (#350) shows the title, so it names the tool too.
+  assert.equal(questionLine(q, 'Simon', () => undefined).title, 'Auto mode refused a call to Ledung · withdraw_question in "Worker"');
+  // The session is told which call to retry, by name.
+  const told = refusalAnswerText({ ...q, status: 'answered', answer: 'Allow once', answeredBy: 'user' }, 'Simon');
+  assert.match(told, /mcp__ledung__withdraw_question \{\}/);
+  void store;
+});
+
+test("a refused call to another MCP server's tool gives its input as lines, and its description from the session's list", async () => {
+  const { refuseCall, refusals, session } = setup();
+  // Claude Code's MCP status, as the session's query gives it: asked once, when the session first calls the server.
+  let asked = 0;
+  (session as unknown as { q: unknown }).q = {
+    mcpServerStatus: async () => {
+      asked++;
+      return [{ name: 'github', status: 'connected', tools: [{ name: 'create_issue', description: 'Create a new issue in a GitHub repository. Needs push access.' }] }];
+    },
+  };
+  refuseCall('tu-g0', 'mcp__github__create_issue', { owner: 'o', repo: 'r', title: 'First' }, 'x');
+  await new Promise((r) => setImmediate(r));
+  refuseCall('tu-g1', 'mcp__github__create_issue', { owner: 'o', repo: 'r', title: 'Bug', body: 'Line one\nLine two', labels: ['bug'] }, '[External System Writes]');
+  assert.equal(asked, 1, 'asked once per server');
+  const q = refusals().find((x) => x.details!.refusal!.toolUseId === 'tu-g1')!;
+  assert.equal(q.details!.title, 'Auto mode refused a call to github · create_issue in "Worker"');
+  assert.match(q.question, /\*\*github · create_issue\*\* \(`mcp__github__create_issue`\): Create a new issue in a GitHub repository\./);
+  assert.doesNotMatch(q.question, /Needs push access/, 'one line of the description');
+  assert.match(q.question, /Its input:\n\n```\nowner: o\nrepo: r\ntitle: Bug\nbody: Line one\n  Line two\nlabels: \["bug"\]\n```/);
+  assert.doesNotMatch(q.question, /"owner":/, 'not as JSON');
+});
+
+test('a refused Bash command shows the command as before; a refused file tool names the file', () => {
+  const { refuse, refuseCall, refusals } = setup();
+  refuse('tu-b', 'git push --force origin main');
+  const bash = refusals().find((x) => x.details!.refusal!.toolUseId === 'tu-b')!;
+  assert.equal(bash.details!.title, 'Auto mode refused a Bash command in "Worker"');
+  assert.match(bash.question, /```bash\ngit push --force origin main\n```/);
+  assert.doesNotMatch(bash.question, /description: Do it/, "a shell command's own label stays out");
+  refuseCall('tu-e', 'Edit', { file_path: 'src/app.ts', old_string: 'a', new_string: 'b' }, '[Self-Modification]');
+  const edit = refusals().find((x) => x.details!.refusal!.toolUseId === 'tu-e')!;
+  assert.equal(edit.details!.title, 'Auto mode refused a call to Edit in "Worker"');
+  assert.match(edit.question, /\*\*Edit\*\*\n\n\*\*File:\*\* `src\/app\.ts`\n\nThe rest of its input:\n\n```\nold_string: a\nnew_string: b\n```/);
+  refuseCall('tu-w', 'WebFetch', { url: 'https://example.com/x' }, 'y');
+  const fetched = refusals().find((x) => x.details!.refusal!.toolUseId === 'tu-w')!;
+  assert.match(fetched.question, /\*\*WebFetch\*\*\n\n\*\*URL:\*\* `https:\/\/example\.com\/x`\n\n\*\*The classifier/, 'the URL alone, no empty block');
+});
+
+test('a call in plain words: tool names, key input, input lines, one-line descriptions', () => {
+  assert.equal(toolLabel('mcp__ledung__release'), 'Ledung · release');
+  assert.equal(toolLabel('mcp__claude_ai_Gmail__send'), 'claude_ai_Gmail · send');
+  assert.equal(toolLabel('Bash'), 'Bash');
+  assert.equal(callLine('Bash', { command: 'npm test' }), 'Bash: npm test');
+  assert.equal(callLine('mcp__ledung__release', {}), 'Ledung · release');
+  assert.equal(callLine('Read', { file_path: '/a/b.ts' }), 'Read: /a/b.ts');
+  assert.equal(inputLines({}), '');
+  assert.equal(inputLines({ n: 3, ok: true, none: null, deep: { a: 1 } }), 'n: 3\nok: true\nnone: null\ndeep: {"a":1}');
+  assert.equal(inputLines({ long: { text: 'x'.repeat(120) } }), `long: {\n    "text": "${'x'.repeat(120)}"\n  }`);
+  assert.equal(oneLineDescription('Do a thing, e.g. this one. Then more.'), 'Do a thing, e.g. this one.');
+  assert.equal(oneLineDescription(''), null);
+  // A permission prompt's Waiting for you line names the tool too.
+  const p = { id: 'r1', sessionId: 's', toolName: 'mcp__ledung__release', input: {}, title: null, status: 'pending', addressedTo: 'user', decidedBy: null, decidedAt: null } as never;
+  assert.equal(permissionLine(p, 'Simon', () => undefined).title, 'Ledung · release');
 });

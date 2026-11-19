@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-19
+- A question about a refused or held call now names the tool: "Ledung · release" with what the tool does, the file or URL for a file or web tool, and the command for a shell. The input shows as `key: value` lines, or "It has no input.", never `{}`. The same in the chat card, Waiting for you, the manager's chat line and permission prompts. (#399)
 - The projects' managers that were running when Ledung stopped (Stop Ledung, the tray's Exit, a reboot) are running again when Ledung starts, without a Resume. A manager you or another manager stopped stays stopped, and other sessions are unchanged. (#391)
 - Desktop app on Windows and Linux: no menu bar at all any more, and Alt does nothing, so it stays free for a later shortcut. Ctrl+W, Alt+F4 on Windows, copy and paste, Ctrl+O and zoom work as before. Zoom in now also works on a Swedish or other non-US keyboard with Ctrl and "+", and with Ctrl and the mouse wheel. The Mac is unchanged. (#389)
 - Ledung's icon no longer has white corners: the desktop app's window and taskbar icon, the Windows tray icon and the icon of the installed page are see-through outside the rounded square. The iPhone home-screen icon fills its corners with the icon's dark background instead of white. A desktop shortcut made before keeps its old icon until it is made again. (#388)

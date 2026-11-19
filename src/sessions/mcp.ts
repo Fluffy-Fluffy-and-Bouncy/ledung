@@ -63,6 +63,29 @@ export async function mcpServers(q: McpQuery, own: readonly string[], timeoutMs 
 }
 
 /**
+ * The descriptions of the session's MCP tools, by full tool name (`mcp__<server>__<tool>`), as Claude Code lists them
+ * (issue #399: a question about a refused call says what the tool does). Empty when Claude Code can't say; never throws.
+ */
+export async function mcpToolDescriptions(q: McpQuery, timeoutMs = STATUS_TIMEOUT_MS): Promise<Map<string, string>> {
+  const found = new Map<string, string>();
+  try {
+    if (typeof q.mcpServerStatus !== 'function') return found;
+    const list = await within(q.mcpServerStatus(), timeoutMs, 'the MCP status');
+    for (const s of Array.isArray(list) ? list : []) {
+      for (const t of Array.isArray(s.tools) ? s.tools as { name?: unknown; description?: unknown }[] : []) {
+        if (!t || typeof t.name !== 'string' || typeof t.description !== 'string' || !t.description.trim()) continue;
+        // A tool's full name has the server's name with anything but letters, digits, _ and - made _ (Claude Code's own
+        // rule); a list that already gives full names is taken as it is.
+        found.set(t.name.startsWith('mcp__') ? t.name : `mcp__${String(s.name).replace(/[^a-zA-Z0-9_-]/g, '_')}__${t.name}`, t.description);
+      }
+    }
+  } catch {
+    // Only words for a question: the question goes without them.
+  }
+  return found;
+}
+
+/**
  * Reconnects one server the session already has, then gives the status as it is after. Only a name
  * Claude Code just listed: nothing here can add a server, which a level B session must never gain.
  */

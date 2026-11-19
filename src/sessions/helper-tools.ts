@@ -10,6 +10,7 @@ import { CardSchema, type HelperCard } from '../shared/helper-cards.ts';
 import { SETUP_STEP_IDS, type SetupStepId } from '../shared/setup.ts';
 import { BASICS_PATCH, helperInstructions, type BasicsPatch } from './helper.ts';
 import { LEDUNG_SERVER, type NewProjectArgs, type ProjectArgs } from './tools.ts';
+import { rememberOwnTools } from './tool-descriptions.ts';
 
 /** The helper's tools, bound to it. Each throws with a reason the helper is told. */
 export interface HelperHandlers {
@@ -113,5 +114,7 @@ export function helperToolServer(who: string, h: HelperHandlers): McpSdkServerCo
       why: z.string().min(1).max(4000).describe(`Why, in plain words, for ${who}'s review.`),
     }, async (a) => safely(() => h.proposeWorkflow(a.project, a.changes, a.why))) as never,
   ];
+  // A refused call to one of these is described to the person by them (issue #399).
+  rememberOwnTools(tools as unknown as { name: string; description?: string }[]);
   return createSdkMcpServer({ name: LEDUNG_SERVER, version: '1.0.0', alwaysLoad: true, instructions: helperInstructions(who), tools });
 }
