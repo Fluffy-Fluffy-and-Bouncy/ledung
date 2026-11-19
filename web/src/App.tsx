@@ -94,7 +94,7 @@ import { fetchesArchived } from '../../src/shared/hello-sessions.ts';
 import { computerFrame, computerStyle, frameAnswer, inFrame, shownComputerOf } from './computerFrame.ts';
 import { ComputerFrames, ComputerTabs } from './components/ComputerTabs.tsx';
 import { useComputerLink } from './useComputerLink.ts';
-import { useInstallApp } from './useInstallApp.ts';
+import { setDesktopHere, useInstallApp } from './useInstallApp.ts';
 import { InstallNotice } from './components/InstallApp.tsx';
 import { ShortcutNotice } from './components/Shortcuts.tsx';
 import { CheckInNotice } from './components/CheckIn.tsx';
@@ -408,6 +408,8 @@ export function App() {
   const permissions = useMemo(() => Object.values(ledung.permissions), [ledung.permissions]);
   const waiting = waitingCount(questions, permissions) + ledung.newComputers.length + ledung.linkPairings.length;
   const installApp = useInstallApp();
+  // "Open in the Ledung app" instead of installing the page, on this computer with the app made (#409).
+  useEffect(() => setDesktopHere(ledung.desktopAppHere), [ledung.desktopAppHere]);
   const notify = useNotifications({ loaded: ledung.loaded, questions, permissions, sessions: ledung.sessions, usageStops: ledung.usageStops, onOpenSession: open });
 
   // The count in the tab title, visible from another tab or the phone's tab switcher.

@@ -98,6 +98,14 @@ What `npm install -g ledung` and `ledung` give (`src/platform/desktop-app.ts`, #
 - **Opening it.** `ledung` opens it with `open` on the Mac and starts the program on Windows and Linux, without
   Electron's or npm's variables. A failure gives one line and the browser; `ledung --browser`, `"desktopApp": false` in
   the config and `--no-open` keep to the browser or to nothing; `ledung app` insists.
+- **The way in on this computer** (#409; Martin, Ledung question #594). The shortcuts run `ledung` (the Mac's
+  `Ledung.app` with `--open-only` when Ledung runs), so they open the app too. The tray's **Open Ledung** opens the app as
+  `ledung` does, through the running core: made first when it isn't, its lines in `ledung.log`, one make at a time
+  however often it is clicked. Without Electron's package, with `"desktopApp": false` or from a clone it opens the page
+  in the browser as before, and a failed make or open says why in the log and opens the browser. A browser's page on this computer is
+  told in `hello` that the app is made here (never a page from the network or through the public name) and offers
+  **Open in the Ledung app**, which asks the core to open it (`POST /api/open-desktop-app`, this computer's open page
+  only). It is a hint with its own **Not now**: the page keeps working in the browser.
 - **Updating it** (#408). Settings → About's **Update Ledung** stays the one button: `npm install -g` replaces the package
   (never the made app, which is in the data folder) and restarts the core. The core compares the Ledung version in the
   app's `stamp.json` with its own at each page connection and tells the page in `hello` (not through the public name).
