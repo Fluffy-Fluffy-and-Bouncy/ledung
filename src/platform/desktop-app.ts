@@ -72,7 +72,7 @@ export function electronPackage(app = appDir()): ElectronPackage | null {
  * `npm install -g ledung` would move a dev install to the public release). npm ignores --omit=optional for a global
  * install (Ledung question #584), so a missing package is mostly a failed optional install or a local one without it.
  */
-export const ADD_COMMAND = 'install Ledung again as you did (npm install -g ledung, or ledung@dev for dev builds)';
+export const ADD_COMMAND = 'install Ledung again as you did: npm install -g ledung, or npm install -g ledung@dev for dev builds';
 
 export type Availability =
   | { ok: true; electron: ElectronPackage; source: string }
@@ -262,7 +262,11 @@ export async function ensureApp(o: MakeOptions): Promise<{ made: 'nothing' | 'co
       } catch (e) {
         // The new app could not take its place: the old one goes back, with its stamp still saying what it is
         // (self-check finding 5).
-        if (hadOld) fs.renameSync(old, paths.bundle);
+        try {
+          if (hadOld) fs.renameSync(old, paths.bundle);
+        } catch {
+          // The swap's own error is the one worth showing; the old app stays in .old.
+        }
         throw e;
       }
       fs.rmSync(paths.stamp, { force: true });
