@@ -1373,7 +1373,8 @@ export class LedungServer {
   /**
    * A pairing card clears itself (issue #412): its code expired unused, its device was removed, or its link was. A card
    * kept before #412 has no link id or expiry: its link is matched by name and its code's 10 minutes counted from `at`.
-   * With no links at all (off the relay for now), nothing is said about links, so the cards wait.
+   * With linking off (no relay, or one without end-to-end TLS), nothing is said about links, so the cards wait; once the
+   * last link is removed, its cards go.
    */
   private pairingLive(p: LinkPairingInfo): boolean {
     const now = this.opts.now?.() ?? Date.now();
@@ -1635,8 +1636,9 @@ export class LedungServer {
     this.passkeys?.lock(id);
     this.push?.unsubscribe(id);
     for (const [ws, { device, browser }] of this.pageKeys) if (device === id || browser === id) ws.close(1008, 'This device was removed from Ledung.');
-    // Its pairing card, if a linked computer paired it, goes with it (issue #412).
-    if (revoked) this.pruneLinkPairings();
+    // Its pairing card, if a linked computer paired it, goes with it (issue #412); also when Devices revoked it already
+    // (a reused cookie, onReuse), so the pages are told then too (self-check of PR #413, finding 1).
+    this.pruneLinkPairings();
     return revoked;
   }
 
@@ -1770,7 +1772,8 @@ export class LedungServer {
         this.setLinkPairings(this.linkPairings().filter((p) => p.id !== decodeURIComponent(id)));
         return;
       // The card's Remove device, through the public name too (Martin, 2026-11-19, question #589 "a"): only the device
-      // the card names, with the open page and, through the public name, this request signed. Removing any other
+      // the card names, with the open page and, through the public name, this request signed: by the passkey, or by a
+      // trusted computer's own screen (#313), as every signed change. Removing any other
       // device, and the device list, stay on this computer (devices/:id/revoke).
       case 'POST link-pairings/:id/remove-device': {
         await this.requirePage(req, url);

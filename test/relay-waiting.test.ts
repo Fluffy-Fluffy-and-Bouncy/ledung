@@ -163,11 +163,13 @@ test('the page shows the cards through the relay: a new computer says where to a
   assert.ok(branch > start, 'the card branches on throughPublicName');
   const [remote, local] = card.slice(branch).split('</> : <>');
   assert.match(remote!, /Approve it on the computer this Ledung runs on/);
-  assert.doesNotMatch(remote!, /approveComputer|computerAdded/);
-  // On the computer itself both stay.
-  assert.match(local!, /onClick=\{approve\}/);
-  assert.match(local!, /api\.computerAdded\(computer\.name\)/);
+  const offers = /onClick=\{approve\}|api\.computerAdded\(computer\.name\)/;
+  assert.doesNotMatch(remote!, offers);
+  // On the computer itself both stay: the same pattern finds both there.
+  assert.equal(local!.match(new RegExp(offers, 'g'))?.length, 2);
   const pairing = read('web/src/components/LinkPairingCard.tsx');
   assert.match(pairing, /api\.removeLinkPairingDevice\(pairing\.id\)/);
   assert.doesNotMatch(pairing, /api\.revokeDevice/, 'not the device list\'s Remove, which stays on the computer');
+  // That pattern finds the device list's own Remove.
+  assert.match(read('web/src/components/DevicesSettings.tsx'), /api\.revokeDevice/);
 });
