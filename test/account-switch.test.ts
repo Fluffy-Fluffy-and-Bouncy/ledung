@@ -14,6 +14,7 @@ import { Session } from '../src/sessions/session.ts';
 import { openDatabase } from '../src/store/database.ts';
 import { Store } from '../src/store/store.ts';
 import { CHATS, type SessionInfo } from '../src/shared/protocol.ts';
+import { composerClosed } from '../web/src/accountSwitch.ts';
 import { removeTemp } from './temp.ts';
 import { refuseRealSignInStores } from './signin-stores.ts';
 
@@ -280,6 +281,9 @@ test('a message sent while the session is being switched waits for the switch an
     setProjectAccount(m.manager, 'b');
     for (let i = 0; i < 100 && m.store.getSession('ws')!.status !== 'stopping'; i++) await new Promise((r) => setTimeout(r, 5));
     assert.equal(m.store.getSession('ws')!.status, 'stopping', 'the switch is under way');
+    // Marked so, so the page keeps Send working through this "Stopping" (acceptance round 3 of #395).
+    assert.deepEqual(m.store.getSession('ws')!.accountSwitch, { to: 'b', underWay: true });
+    assert.equal(composerClosed(m.store.getSession('ws')!), false);
     let settledSend = false;
     const sending = m.manager.send('ws', 'my reply').finally(() => { settledSend = true; });
     await new Promise((r) => setTimeout(r, 20));
@@ -289,6 +293,7 @@ test('a message sent while the session is being switched waits for the switch an
     assert.deepEqual(sent, [{ id: 'ws', account: 'b', text: 'my reply' }]);
     await settled(m);
     assert.equal(m.store.getSession('ws')!.account, 'b');
+    assert.equal(m.store.getSession('ws')!.accountSwitch ?? null, null, 'done, no longer under way');
   } finally {
     Session.prototype.send = send;
   }
@@ -317,6 +322,33 @@ test('a running "!" command holds the switch, and its end lets it go; a paused s
   await settled(m);
   assert.equal(m.store.getSession('sh')!.account, 'b', 'switched once the command ended');
   assert.equal(m.store.getSession('ps')!.account, 'a', 'the paused one still waits');
+});
+
+test("Send works while a session stops for an account switch, not for a plain Stop", () => {
+  const s = (status: SessionInfo['status'], accountSwitch: SessionInfo['accountSwitch'], claudeSessionId: string | null = 'c1') => ({ status, accountSwitch, claudeSessionId });
+  // A plain Stop, also of one that waits to switch: as before, the box takes nothing.
+  assert.equal(composerClosed(s('stopping', null)), true);
+  assert.equal(composerClosed(s('stopping', { to: 'b' })), true);
+  assert.equal(composerClosed(s('stopping', { to: 'b', waitsFor: 'background' })), true);
+  // The switch's own stop: the message waits for it and goes on the new account (acceptance round 3 of #395).
+  assert.equal(composerClosed(s('stopping', { to: 'b', underWay: true })), false);
+  // Otherwise unchanged: running and resumable ended ones take messages, an ended one that can't resume doesn't.
+  assert.equal(composerClosed(s('idle', { to: 'b' })), false);
+  assert.equal(composerClosed(s('ended', null)), false);
+  assert.equal(composerClosed(s('ended', null, null)), true);
+});
+
+test('a switch left under way (Ledung stopped mid-switch) waits again and says what for', async () => {
+  const m = ledung();
+  setProjectAccount(m.manager, 'a');
+  running(m, 'uw', 'shop', 'a');
+  // In a turn: the plain wait, which a stale mark would otherwise hide (Send kept working through a plain Stop).
+  busy.set('uw', { turnOpen: true });
+  m.store.updateSession('uw', { accountSwitch: { to: 'b', underWay: true } });
+  setProjectAccount(m.manager, 'b');
+  assert.deepEqual(await m.manager.relaunchWaiting(), []);
+  assert.deepEqual(m.store.getSession('uw')!.accountSwitch, { to: 'b' });
+  busy.delete('uw');
 });
 
 test('a pending switch outlives Restart Ledung and happens afterwards', async () => {
@@ -350,6 +382,7 @@ test('the page words a switch as the issue says: waiting, resuming on it, or fai
   assert.equal(switchTooltip({ accountSwitch: { to: 'b', waitsFor: 'repeating' }, status: 'idle', account: 'a' }), "Won't switch to b on its own while it has a repeating wake-up; use Switch now");
   assert.equal(switchTooltip({ accountSwitch: { to: 'b', waitsFor: 'paused' }, status: 'idle', account: 'a' }), 'Switches to b once it is unpaused');
   assert.equal(switchTooltip({ accountSwitch: { to: 'b', waitsFor: 'command' }, status: 'idle', account: 'a' }), 'Switches to b when its "!" command ends');
+  assert.equal(switchTooltip({ accountSwitch: { to: 'b', underWay: true }, status: 'stopping', account: 'a' }), 'Switching to b now');
   // What to type in a reason shows as code, without its backticks.
   const { reasonParts } = await import('../web/src/accountSwitch.ts');
   assert.deepEqual(reasonParts('Run `claude` and type `/login`.'), [{ text: 'Run ', code: false }, { text: 'claude', code: true }, { text: ' and type ', code: false }, { text: '/login', code: true }, { text: '.', code: false }]);

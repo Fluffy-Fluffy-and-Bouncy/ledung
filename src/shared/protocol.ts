@@ -232,6 +232,11 @@ export interface AccountSwitch {
    * background work, a one-off wake-up, or a repeating wake-up, which never leaves a quiet moment: only Switch now.
    */
   waitsFor?: 'turn' | 'paused' | 'command' | 'background' | 'wakeup' | 'repeating';
+  /**
+   * The switch is happening now: the session stops to resume on `to`. A message sent meanwhile waits for it and is
+   * delivered on the new account, so the page keeps Send working (acceptance round 3 of #395).
+   */
+  underWay?: boolean;
 }
 
 /**

@@ -269,6 +269,36 @@ async function main(): Promise<void> {
     await setAccount('personal');
     await until(async () => (await on(mgr, 'personal')) && on(worker, 'personal'), 'both back on "personal"');
 
+    // Send works through a switch's "Stopping" moment, right as a turn ends (acceptance round 3 of #395): the message
+    // waits for the switch and is answered on the new account.
+    await ok('a short turn', page.api('POST', `sessions/${worker}/messages`, { text: 'SLOW:4 Tidy the styles.' }));
+    await until(async () => (await status(worker)) === 'running' || null, 'the worker in its short turn');
+    await setAccount('work');
+    await until(async () => on(mgr, 'work'), 'the manager on "work" before the worker\'s turn ends');
+    await desk.waitForFunction(() => (document.querySelector('.account-switch')?.textContent ?? '').includes('Switching to work now'), null, { timeout: 30000, polling: 20 });
+    const box = desk.getByPlaceholder(/^Message /);
+    const sendButton = desk.locator('.send-row button.primary');
+    await box.fill('Which account now?');
+    const enabled = await sendButton.isEnabled();
+    const during = await desk.locator('.account-switch').first().textContent();
+    if (shots) await desk.screenshot({ path: path.join(shots, '395-send-while-switching-1280-dark.png') });
+    await sendButton.click();
+    check(enabled && (during ?? '').includes('Switching to work now'), 'Send works while it says "Switching to work now"', `${enabled} ${during}`);
+    check(!(during ?? '').includes('Switch now'), 'no Switch now while it is already switching', during ?? '');
+    await until(async () => on(worker, 'work'), 'the worker on "work" after the reply');
+    await until(async () => (await status(worker)) === 'idle' || null, 'the reply answered');
+    const after = ((await ok('messages', page.api('GET', `sessions/${worker}/messages?limit=500`))) as any);
+    const msgs = (Array.isArray(after) ? after : after.messages) as any[];
+    const mine = msgs.findIndex((x) => x.kind === 'user' && JSON.stringify(x.data).includes('Which account now?'));
+    const answer = msgs.slice(mine + 1).find((x) => x.kind === 'sdk' && JSON.stringify(x.data).includes('Running on the account'));
+    const kinds = msgs.filter((x) => JSON.stringify(x.data).includes('Which account now?')).map((x) => x.kind);
+    check(mine >= 0 && kinds.filter((k) => k === 'user').length === 1, 'the message went through once', JSON.stringify(kinds));
+    check(JSON.stringify(answer?.data ?? '').includes('Running on the account \\"work\\"'), 'and was answered on "work"', JSON.stringify(answer?.data ?? null));
+    const toast: string[] = await desk.locator('.toast, .error').allTextContents().catch((): string[] => []);
+    check(!toast.some((t: string) =>/stopping|ended/i.test(t)), 'no error on the page', JSON.stringify(toast));
+    await setAccount('personal');
+    await until(async () => (await on(mgr, 'personal')) && on(worker, 'personal'), 'both back on "personal" after the reply');
+
     // A switch that fails: the manager stays on "personal", once. The account is added only now, so the sign-in
     // banner it brings is in the failed switch's screenshots alone.
     await addAccount('signed-out');

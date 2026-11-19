@@ -18,6 +18,7 @@ export function switchState(s: Pick<SessionInfo, 'accountSwitch' | 'status' | 'a
   if (sw.failed) return { kind: 'failed', text: `Couldn't switch to ${to}; still on ${accountName(s.account)}.`, reason: sw.failed };
   // An ended one takes the new account when it is resumed.
   if (s.status === 'ended') return { kind: 'pending', text: `Resumes on ${to}` };
+  if (sw.underWay) return { kind: 'pending', text: `Switching to ${to} now` };
   // What it waits for, as Ledung last found it (acceptance of #395): a Ready session isn't in a turn.
   switch (sw.waitsFor) {
     case 'paused': return { kind: 'pending', text: `Switches to ${to} once it is unpaused` };
@@ -27,6 +28,14 @@ export function switchState(s: Pick<SessionInfo, 'accountSwitch' | 'status' | 'a
     case 'repeating': return { kind: 'pending', text: `Won't switch to ${to} on its own while it has a repeating wake-up; use Switch now` };
     default: return { kind: 'pending', text: `Switches to ${to} when this turn ends` };
   }
+}
+
+/**
+ * The message box takes nothing: an ended session that can't be resumed, or one stopping, unless it stops for an
+ * account switch: what is sent then waits for it and goes to it on the new account (acceptance round 3 of #395).
+ */
+export function composerClosed(session: Pick<SessionInfo, 'status' | 'claudeSessionId' | 'accountSwitch'>): boolean {
+  return (session.status === 'ended' && !session.claudeSessionId) || (session.status === 'stopping' && !session.accountSwitch?.underWay);
 }
 
 /** The sidebar row's tooltip line for it; empty when there is none. */

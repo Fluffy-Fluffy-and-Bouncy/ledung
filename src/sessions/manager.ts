@@ -1447,14 +1447,10 @@ export class SessionManager {
       : state.shellRunning ? 'command'
       : state.backgroundTasks || state.facts?.backgroundTasks ? 'background'
       : state.facts?.crons ? (state.facts.repeating ? 'repeating' : 'wakeup') : 'turn';
-    if ((sw.waitsFor ?? 'turn') !== waitsFor) this.setSwitch(info.id, waitsFor === 'turn' ? { to: sw.to } : { to: sw.to, waitsFor });
+    // One left marked under way (Ledung stopped mid-switch) waits again, and says so.
+    if (sw.underWay || (sw.waitsFor ?? 'turn') !== waitsFor) this.setSwitch(info.id, waitsFor === 'turn' ? { to: sw.to } : { to: sw.to, waitsFor });
   }
 
-  /**
-   * A sign-in refusal while a session switches accounts (acceptance of #395): the banner at the top of the page says
-   * how to sign in, so the chat says only that it isn't signed in, and the long help shows once. The account's check
-   * is run first, so the banner is there; one that then doesn't show it keeps the help in the chat.
-   */
   /** Runs a switch (or lockdown restart) of `id`, kept in `switching` until it is over. */
   private async whileSwitching(id: string, work: () => Promise<void>): Promise<void> {
     let over!: () => void;
@@ -1467,6 +1463,11 @@ export class SessionManager {
     }
   }
 
+  /**
+   * A sign-in refusal while a session switches accounts (acceptance of #395): the banner at the top of the page says
+   * how to sign in, so the chat says only that it isn't signed in, and the long help shows once. The account's check
+   * is run first, so the banner is there; one that then doesn't show it keeps the help in the chat.
+   */
   private async switchRefusal(id: string, name: string, found: Promise<{ refuse: string } | { warn: string } | null>): Promise<{ refuse: string } | { warn: string } | null> {
     const r = await found;
     if (!r || !('refuse' in r) || !this.switching.has(id)) return r;
@@ -1495,6 +1496,8 @@ export class SessionManager {
       : `Ledung restarted this session to switch to ${accountLabel(to)}; its conversation is kept.`;
     // A prompt open now (only Switch now stops one) is withdrawn by the stop; the chat says which, so it isn't missed.
     const prompts = this.store.pendingPermissions().filter((p) => p.sessionId === id);
+    // Marked before the stop, so the page never sees this "Stopping" as a plain Stop and keeps Send working.
+    this.setSwitch(id, { to, underWay: true });
     await session.stop(reason, { restart: true });
     this.live.delete(id);
     for (const p of prompts) {

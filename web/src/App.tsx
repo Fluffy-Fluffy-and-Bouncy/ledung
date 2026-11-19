@@ -13,7 +13,7 @@ import { WorkingIndicator } from './components/WorkingIndicator.tsx';
 import { SailingShip, shipMode } from './components/SailingShip.tsx';
 import { indexSessions, REMOVED_PROJECTS, sidebarTree, type Row, type SessionIndex } from './sessionTree.ts';
 import { useNow } from './clock.ts';
-import { accountName, reasonParts, switchState, switchTooltip } from './accountSwitch.ts';
+import { accountName, composerClosed, reasonParts, switchState, switchTooltip } from './accountSwitch.ts';
 import { FileViewer } from './components/FileViewer.tsx';
 import { FilesPane } from './components/FilesPane.tsx';
 import type { PaneFolderKey } from '../../src/shared/files-pane.ts';
@@ -1371,7 +1371,7 @@ export function SessionView(props: {
   };
   // Macros (issue #410): the global ones and this project's, as chips in the info bar and by their keybinds. None while
   // the message box takes nothing.
-  const takesText = !(session.status === 'stopping' || (session.status === 'ended' && !session.claudeSessionId));
+  const takesText = !composerClosed(session);
   const macros = useMemo(() => (takesText ? macrosFor(ledung.macros ?? [], session.project) : []), [ledung.macros, session.project, takesText]);
   const fireMacro = useStableCallback((m: Macro, other: boolean) => {
     const filled = fillMacro(m.text, session);
@@ -1791,11 +1791,6 @@ function SecretsInMenu({ session, run }: { session: SessionInfo; run: (action: (
 /** What the macros' ＋ menu can ask of the composer (issue #186). */
 type ComposerActions = { secret: () => void; images: () => void };
 
-/** The message box takes nothing: an ended session that can't be resumed, or one stopping. */
-function composerClosed(session: Pick<SessionInfo, 'status' | 'claudeSessionId'>): boolean {
-  return (session.status === 'ended' && !session.claudeSessionId) || session.status === 'stopping';
-}
-
 function Composer({ session, tint, run, quoteInto, actionsInto, bangShell }: {
   session: SessionInfo;
   /** The shell a "!" command runs in on this computer (issue #212). */
@@ -2152,7 +2147,8 @@ function AccountSwitchNotice({ session, run }: { session: SessionInfo; run: (f: 
       </div>
     );
   }
-  const live = session.status !== 'ended' && !!session.claudeSessionId;
+  // Switch now only while it waits: one under way is already switching.
+  const live = session.status !== 'ended' && !!session.claudeSessionId && !session.accountSwitch?.underWay;
   return (
     <div className="account-switch" role="status">
       {asking ? (
