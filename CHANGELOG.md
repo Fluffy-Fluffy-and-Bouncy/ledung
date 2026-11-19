@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-19
+- Ledung's icon no longer has white corners: the desktop app's window and taskbar icon, the Windows tray icon and the icon of the installed page are see-through outside the rounded square. The iPhone home-screen icon fills its corners with the icon's dark background instead of white. A desktop shortcut made before keeps its old icon until it is made again. (#388)
 - Desktop app: the window, the Windows taskbar and the Mac Dock show Ledung's own icon instead of Electron's. On Windows and Linux the File, Edit, View, Window menu bar is hidden; press Alt to show it. Its shortcuts work as before (Ctrl+W, copy and paste, zoom). The Mac is unchanged. (#384)
 - Settings → About → Check for updates finds the Dev and Public versions again on a computer with npm 12, instead of saying npm has no version yet. (#382)
 
