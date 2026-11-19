@@ -42,12 +42,12 @@ One window opens with your running Ledung's page, signed in. Nothing opens in th
 - **Closing hides it.** The window's close button and ⌘W (Ctrl+W on Windows) hide the window; the app keeps running,
   so notifications keep coming. Show it again by starting the app again (`npm start` shows the window that's there
   and starts no second app) or, on the Mac, by clicking it in the Dock.
-- **Quitting.** ⌘Q on the Mac, Alt+F4 on Windows and Linux end the app. Ledung itself is another program and
+- **Quitting.** ⌘Q on the Mac and Alt+F4 on Windows end the app. Ledung itself is another program and
   keeps running. With unsaved changes on the page (a workflow being edited) the app asks first, as a browser does.
 - **Ledung's icon** shows in the window, the Windows taskbar and the Mac Dock instead of Electron's (#384). It is the
   page's own `web/public/icon-512.png`, read from the clone.
 - **No menu bar on Windows and Linux.** The window never shows one, and Alt does nothing, so it stays free for a key of
-  Ledung's own later (Martin, 2026-11-19, #389). The keys still work: Ctrl+W, Alt+F4, copy and paste, Ctrl+O (Show tool
+  Ledung's own later (Martin, 2026-11-19, #389). The keys still work: Ctrl+W, Alt+F4 (Windows), copy and paste, Ctrl+O (Show tool
   calls), reload, and zoom with Ctrl and "+" (any keyboard layout; Ctrl and "=" too), Ctrl+-, Ctrl+0 and Ctrl and the
   mouse wheel. The Mac's menu is the system menu bar, as before.
 - **⌘O on the Mac** does what Ctrl+O does in the page: Show tool calls. (In a browser the page keeps to Ctrl+O on

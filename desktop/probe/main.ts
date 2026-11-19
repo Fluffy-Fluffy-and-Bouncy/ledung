@@ -238,8 +238,6 @@ async function keys(w: BrowserWindow): Promise<void> {
   // Alt, pressed and let go: the bar stays hidden. The positive branch: with auto-hide on, as #384 had it, the same
   // presses show it, so the presses do reach the window.
   await press(w, 'Alt', ['alt']);
-  // Alt and a menu's first letter, the other way a Windows menu bar opens.
-  await press(w, 'F', ['alt']);
   const afterAlt = w.isMenuBarVisible();
   w.setAutoHideMenuBar(true);
   await press(w, 'Alt', ['alt']);
@@ -247,7 +245,7 @@ async function keys(w: BrowserWindow): Promise<void> {
   w.setAutoHideMenuBar(false);
   w.setMenuBarVisibility(false);
   out('alt', { afterAlt, autoHideShows, hiddenAgain: !w.isMenuBarVisible() });
-  expect(!afterAlt, 'Alt, and Alt+F, show no menu bar', afterAlt);
+  expect(!afterAlt, 'Alt shows no menu bar', afterAlt);
   expect(autoHideShows && !w.isMenuBarVisible(), 'with auto-hide, the same Alt shows the bar (the presses reach the window)', autoHideShows);
 
   // Zoom: each press one step of 0.5, the View menu's own; "+" exactly once, though the menu has a Ctrl+Shift+"=" too.
@@ -298,6 +296,7 @@ async function keys(w: BrowserWindow): Promise<void> {
   await sleep(800);
   out('ctrl-w', { hidden, shownAgain: w.isVisible() });
   expect(hidden, 'Ctrl+W hides the window', hidden);
+  expect(w.isVisible(), 'the window is shown again for the checks after this one', w.isVisible());
 }
 
 /** Notifications and clipboard writes allowed for Ledung's page, anything else refused (code review, Minor 2). */

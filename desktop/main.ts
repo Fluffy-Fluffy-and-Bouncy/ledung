@@ -232,7 +232,7 @@ function sendToolCallsKey(): void {
 
 /**
  * The app's menu owns the keys a browser keeps (#359): ⌘W/Ctrl+W hides the window instead of closing it, ⌘O on the
- * Mac is the page's Ctrl+O, ⌘Q (Mac) and Alt+F4 (Windows, Linux) end the app. Edit, View and Window keep their
+ * Mac is the page's Ctrl+O, ⌘Q (Mac) and Alt+F4 (Windows) end the app. Edit, View and Window keep their
  * standard items, so copy and paste, reload and zoom work as in the default menu. The ids let the probe press items.
  * On Windows and Linux the menu is never shown (#389); it stays only for these keys (createWindow).
  */
