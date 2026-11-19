@@ -34,6 +34,8 @@ const COOKIE_NAME = 'ledung_auth';
  */
 export function dockIcon(): NativeImage {
   const icon = nativeImage.createFromPath(APP_ICON);
+  // A clone without the file gives an empty image: passed on as before (#384), not padded into an error at start.
+  if (icon.isEmpty()) return icon;
   const canvas = icon.getSize().width;
   const { body } = dockIconLayout(canvas);
   const small = icon.resize({ width: body, height: body, quality: 'best' });
