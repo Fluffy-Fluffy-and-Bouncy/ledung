@@ -31,6 +31,7 @@ function toRun(r: Row): FlowRun {
     question: r.question == null ? null : Number(r.question),
     worktree: r.worktree ? JSON.parse(r.worktree) : null,
     queue: r.queue ?? null,
+    retired: r.retired ? JSON.parse(r.retired) : [],
     startedAt: Number(r.started_at),
     updatedAt: Number(r.updated_at),
   };
@@ -93,8 +94,8 @@ export class RunStore {
     return this.db.prepare('SELECT * FROM flow_runs WHERE parent_run = ? ORDER BY id').all(runNumber(id)).map(toRun);
   }
 
-  update(id: string, fields: Partial<{ at: string | null; atSince: number; counts: FlowRun['counts']; sessions: FlowRun['sessions']; history: RunStep[]; state: RunState; ending: string | null; question: number | null; coordinator: string; worktree: FlowRun['worktree']; queue: FlowRun['queue']; fork: FlowRun['fork'] }>, now: number): FlowRun {
-    const columns: Record<string, string> = { at: 'at', atSince: 'at_since', counts: 'counts', sessions: 'sessions', history: 'history', state: 'state', ending: 'ending', question: 'question', coordinator: 'coordinator', worktree: 'worktree', queue: 'queue', fork: 'fork' };
+  update(id: string, fields: Partial<{ at: string | null; atSince: number; counts: FlowRun['counts']; sessions: FlowRun['sessions']; history: RunStep[]; state: RunState; ending: string | null; question: number | null; coordinator: string; worktree: FlowRun['worktree']; queue: FlowRun['queue']; fork: FlowRun['fork']; retired: string[] }>, now: number): FlowRun {
+    const columns: Record<string, string> = { at: 'at', atSince: 'at_since', counts: 'counts', sessions: 'sessions', history: 'history', state: 'state', ending: 'ending', question: 'question', coordinator: 'coordinator', worktree: 'worktree', queue: 'queue', fork: 'fork', retired: 'retired' };
     const entries = Object.entries(fields).filter(([k, v]) => k in columns && v !== undefined);
     const values = entries.map(([, v]) => (v !== null && typeof v === 'object' ? JSON.stringify(v) : v) as string | number | null);
     this.db.prepare(`UPDATE flow_runs SET ${[...entries.map(([k]) => `${columns[k]} = ?`), 'updated_at = ?'].join(', ')} WHERE id = ?`).run(...values, now, runNumber(id));

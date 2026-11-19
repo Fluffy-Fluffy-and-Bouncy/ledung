@@ -34,7 +34,7 @@ import { ProjectRemotes } from './usage/project-remotes.ts';
 import { Updater } from './update/updater.ts';
 import { CheckIn } from './update/checkin.ts';
 import { RemoteLink, savedRemote } from './remote/link.ts';
-import { RelayAdmin } from './remote/admin.ts';
+import { connectPublic, RelayAdmin } from './remote/admin.ts';
 import { connectVia } from './remote/linked.ts';
 import { computerList } from './shared/computers.ts';
 import { remoteSecretText } from './remote/secret.ts';
@@ -185,6 +185,8 @@ async function main(): Promise<void> {
       const remote = link?.settings();
       return remote ? { relay: remote.relay, name: remote.name } : null;
     },
+    // Its in-use check reaches public names as linked computers do (issue #420): through linkVia in a loopback.
+    connect: config.remote?.linkVia ? connectVia(config.remote.linkVia) : connectPublic,
   });
   const updater = new Updater({
     appDir: appDir(), dataDir: userDataDir(), configPath: configPath(), onRestart, npmVersion: PACKAGED ? appVersion() : undefined,

@@ -1,10 +1,12 @@
-// The desktop app's preload (#360): the one thing Ledung's page may ask of the app, showing its window. A click on
+// The desktop app's preload: the two things Ledung's page may ask of the app. Showing its window (#360): a click on
 // one of the page's notifications calls it, since `window.focus()` does nothing for a hidden window (Mac spike, "What a
-// real shell needs next"). Plain CommonJS, not TypeScript: a sandboxed preload is run by the page's process, which
-// strips no types and loads no modules. The page gets this one function and nothing else: no Node, no ipcRenderer.
-// The main process checks that the call came from Ledung's own page before it shows anything (main.ts).
+// real shell needs next"). Opening another window (#414): the page's New window button. Plain CommonJS, not
+// TypeScript: a sandboxed preload is run by the page's process, which strips no types and loads no modules. The page
+// gets these two functions and nothing else: no Node, no ipcRenderer. The main process checks that the call came from
+// Ledung's own page before it does anything (main.ts).
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('ledungDesktop', {
   showWindow: () => ipcRenderer.send('ledung-desktop:show-window'),
+  newWindow: () => ipcRenderer.send('ledung-desktop:new-window'),
 });

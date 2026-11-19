@@ -450,6 +450,7 @@ export class SessionManager {
         this.live.get(id)?.deliver();
       },
       archiveSession: (id, by) => void this.archive(id, by),
+      waitsOnPerson: (id) => this.store.openQuestionCount(id) > 0 || this.store.pendingPermissions().some((p) => p.sessionId === id),
       worktreeHost: (name) => {
         const config = this.projectStore.get(name)?.config;
         if (!config) return null;

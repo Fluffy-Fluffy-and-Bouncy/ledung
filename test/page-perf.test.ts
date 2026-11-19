@@ -257,6 +257,7 @@ const LIST_SCANS = new Map([
   ['web/src/components/FilesPane.tsx', 1], // the session's manager, once per pane
   ['web/src/components/FlowBuilder.tsx', 1], // a workflow's blocks, not the session list
   ['web/src/components/WaitingView.tsx', 1], // whether any chat exists, once per render
+  ['web/src/flowRuns.ts', 1], // the chosen run's sessions (#402), once per render, for that run only
 ]);
 
 function listScans(dir: string, found = new Map<string, number>()): Map<string, number> {

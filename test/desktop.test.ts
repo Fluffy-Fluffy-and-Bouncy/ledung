@@ -1,7 +1,8 @@
 // The desktop app's attach check (issue #358, desktop/attach.ts): it finds the running Ledung the way the `ledung`
 // command does, and its mirror of the `/running` proof stays the core's. Its start (issue #362, desktop/start.ts): what
 // it runs, with which environment, and the one line a failed start gives. Its zoom keys (issue #389, desktop/keys.ts).
-// The Mac Dock icon's margin (issue #404, desktop/dock-icon.ts).
+// The Mac Dock icon's margin (issue #404, desktop/dock-icon.ts). Its windows and its menu (issue #414,
+// desktop/windows.ts and desktop/menu.ts).
 // None of these files has Electron in it, so these run with the root tests; the window itself is checked by the probe
 // and by hand (desktop/README.md).
 import { after, before, test } from 'node:test';
@@ -19,7 +20,9 @@ import {
 } from '../desktop/attach.ts';
 import { DOCK_ICON_BODY, dockIconLayout, padBitmap } from '../desktop/dock-icon.ts';
 import { zoomed, zoomKey, ZOOM_STEP, type KeyInput } from '../desktop/keys.ts';
+import { menuTemplate, NEW_WINDOW_ACCELERATOR, type MenuEntry } from '../desktop/menu.ts';
 import { findOnPath, runStart, START_SCRIPT_ENV, startCommand, startEnv } from '../desktop/start.ts';
+import { WindowList } from '../desktop/windows.ts';
 import { DEFAULT_PORT } from '../src/config.ts';
 import { configuredPort, runningProof, savedToken as coreSavedToken } from '../src/platform/running.ts';
 import { listenOk } from './free-port.ts';
@@ -362,4 +365,82 @@ test('padding centres the body on a clear canvas, every pixel kept as given', ()
 test('padding refuses a bitmap of the wrong size and a body larger than the canvas', () => {
   assert.throws(() => padBitmap(new Uint8Array(15), 2, 4), /not 15/);
   assert.throws(() => padBitmap(new Uint8Array(16), 2, 1), /does not fit/);
+});
+
+test('the window list: each window opened is the latest; focus makes one the latest; closing one leaves the others (#414)', () => {
+  const list = new WindowList<string>();
+  assert.equal(list.latest(), null, 'none open');
+  list.add('a');
+  list.add('b');
+  list.add('c');
+  assert.deepEqual(list.all(), ['a', 'b', 'c']);
+  assert.equal(list.latest(), 'c', 'the window opened last');
+  list.focused('a');
+  assert.equal(list.latest(), 'a', 'a window focused comes last');
+  assert.deepEqual(list.all(), ['b', 'c', 'a']);
+  list.remove('a');
+  assert.deepEqual(list.all(), ['b', 'c'], 'the others stay, in their order');
+  assert.equal(list.latest(), 'c', 'the latest is the one used before the closed one');
+  list.focused('a');
+  assert.deepEqual(list.all(), ['b', 'c'], 'focus on a closed window adds nothing');
+  list.add('c');
+  assert.equal(list.size, 2, 'a window is in the list once');
+});
+
+test('closing hides only the last window; with more open, any closes for real (#414, #359)', () => {
+  const list = new WindowList<string>();
+  list.add('a');
+  assert.equal(list.closeHides('a'), true, 'the one window hides, as before');
+  list.add('b');
+  assert.equal(list.closeHides('a'), false, 'one of two closes');
+  assert.equal(list.closeHides('b'), false, 'either of two closes');
+  assert.equal(list.closeHides('x'), true, 'a window not in the list never closes by this rule');
+  list.remove('a');
+  assert.equal(list.closeHides('b'), true, 'the one left hides again');
+  list.remove('b');
+  assert.equal(list.closeHides('b'), true, 'none left: hides');
+});
+
+/** Every item of a menu template's menus, with the top menu each sits in. */
+function menuItems<W>(template: MenuEntry<W>[]): Array<MenuEntry<W> & { menu: string | undefined }> {
+  return template.flatMap((top) => (top.submenu ?? []).map((item) => ({ ...item, menu: top.label })));
+}
+
+test('File → New Window is on ⌘N on the Mac and Ctrl+N on Windows and Linux, and opens a window (#414)', () => {
+  // Electron's CmdOrCtrl is ⌘ on the Mac and Ctrl elsewhere.
+  assert.equal(NEW_WINDOW_ACCELERATOR, 'CmdOrCtrl+N');
+  for (const platform of ['darwin', 'win32', 'linux'] as const) {
+    let opened = 0;
+    const template = menuTemplate<string>(platform, { newWindow: () => opened++, closeWindow: () => {}, toolCalls: () => {}, quit: () => {} });
+    const items = menuItems(template).filter((i) => i.id === 'new-window');
+    assert.equal(items.length, 1, `${platform}: one New Window item`);
+    const item = items[0]!;
+    assert.equal(item.menu, 'File', `${platform}: in the File menu`);
+    assert.equal(item.label, 'New Window', platform);
+    assert.equal(item.accelerator, 'CmdOrCtrl+N', platform);
+    assert.equal(template.find((t) => t.label === 'File')!.submenu![0]!.id, 'new-window', `${platform}: first in File, as in other apps`);
+    item.click!(undefined, undefined);
+    assert.equal(opened, 1, `${platform}: the item opens a window`);
+  }
+});
+
+test("the menu's other keys stay: Close Window, Quit per system, ⌘O on the Mac only; Close and ⌘O act on the focused window", () => {
+  for (const platform of ['darwin', 'win32', 'linux'] as const) {
+    const closed: Array<string | undefined> = [];
+    const toolCalls: Array<string | undefined> = [];
+    let quits = 0;
+    const template = menuTemplate<string>(platform, { newWindow: () => {}, closeWindow: (w) => closed.push(w), toolCalls: (w) => toolCalls.push(w), quit: () => quits++ });
+    const byId = new Map(menuItems(template).filter((i) => i.id).map((i) => [i.id!, i]));
+    assert.equal(byId.get('close-window')?.accelerator, 'CmdOrCtrl+W', platform);
+    assert.equal(byId.get('quit')?.accelerator, platform === 'darwin' ? 'Cmd+Q' : 'Alt+F4', platform);
+    assert.equal(byId.get('quit')?.menu, platform === 'darwin' ? 'Ledung' : 'File', platform);
+    assert.equal(byId.has('tool-calls'), platform === 'darwin', `${platform}: ⌘O only on the Mac`);
+    byId.get('close-window')!.click!(undefined, 'focused');
+    byId.get('tool-calls')?.click!(undefined, 'focused');
+    byId.get('quit')!.click!(undefined, undefined);
+    assert.deepEqual(closed, ['focused'], `${platform}: Close Window closes the focused window`);
+    assert.deepEqual(toolCalls, platform === 'darwin' ? ['focused'] : [], platform);
+    assert.equal(quits, 1, platform);
+    assert.deepEqual(template.filter((t) => t.role).map((t) => t.role), ['editMenu', 'viewMenu'], `${platform}: Edit and View keep their standard items`);
+  }
 });
