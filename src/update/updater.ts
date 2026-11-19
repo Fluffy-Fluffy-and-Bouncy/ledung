@@ -280,14 +280,17 @@ export class Updater {
     const base = known ? running.commit! : 'HEAD';
     // First-parent commits on main: one per merged pull request, which is what a person calls a change.
     const behind = Number((await this.git(src, ['rev-list', '--count', '--first-parent', `${base}..origin/${BRANCH}`])).trim()) || 0;
-    const diff = await this.git(src, ['diff', `${base}`, `origin/${BRANCH}`, '--', 'CHANGELOG.md']);
+    // Since #417 a merged PR's bullets wait in docs/changes/ until a publish folds them into the changelogs, and the
+    // fold repeats them there (a public release repeats its dev builds' too): every place a bullet appears is read and
+    // each bullet is listed once.
+    const diff = await this.git(src, ['diff', `${base}`, `origin/${BRANCH}`, '--', 'CHANGELOG.md', 'CHANGELOG-dev.md', 'docs/changes/', ':(exclude)docs/changes/README.md']);
     return {
       checkedAt: new Date().toISOString(),
       latest,
       commitKnown: !!known,
       behind,
       upToDate: !!known && behind === 0,
-      changes: changelogAdded(diff).slice(0, MAX_CHANGES),
+      changes: [...new Set(changelogAdded(diff))].slice(0, MAX_CHANGES),
     };
   }
 

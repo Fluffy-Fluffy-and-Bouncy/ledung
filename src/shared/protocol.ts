@@ -1290,7 +1290,7 @@ export interface UpdateView {
     /** New changes on main: first-parent commits, one per merged pull request. */
     behind: number;
     upToDate: boolean;
-    /** The CHANGELOG bullets added since, in the file's order (newest first). */
+    /** The changelog bullets added since (the changelogs and docs/changes/), each once, in the diff's order. */
     changes: string[];
   } | null;
   checkError: string | null;

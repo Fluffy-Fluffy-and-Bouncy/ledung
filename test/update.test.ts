@@ -109,6 +109,34 @@ test('the check counts the new changes since the running commit and lists their 
   assert.deepEqual(v.check!.changes, ['Second, from origin. (#7)']);
 });
 
+// Since #417 a merged PR's bullets wait in docs/changes/ until a publish folds them into CHANGELOG-dev.md and, at a
+// public release, CHANGELOG.md: the check reads all three and lists each bullet once, and never the folder's guide.
+test('the check lists the bullets waiting in docs/changes/ and those a publish folded in, each once', async () => {
+  const commit = (message: string, files: Record<string, string | null>) => {
+    for (const [file, text] of Object.entries(files)) {
+      const full = path.join(other, file);
+      if (text === null) fs.rmSync(full);
+      else {
+        fs.mkdirSync(path.dirname(full), { recursive: true });
+        fs.writeFileSync(full, text);
+      }
+    }
+    git(other, 'add', '-A');
+    git(other, 'commit', '-qm', message);
+  };
+  commit('merged #8', { 'docs/changes/README.md': '# Guide\n- An example. (#1)\n', 'docs/changes/8.md': '- Eight. (#8)\n' });
+  commit('merged #9', { 'docs/changes/9.md': '- Nine. (#9)\n' });
+  // A dev publish moves #9 into the dev changelog; a public one repeats it in CHANGELOG.md.
+  commit('Changelog for v1.1', { 'docs/changes/9.md': null, 'CHANGELOG-dev.md': '# Dev\n\n## v1.1 — 2026-11-19 15:02 CET\n- Nine. (#9)\n' });
+  const pub = fs.readFileSync(path.join(other, 'CHANGELOG.md'), 'utf8').replace('## 2026-10-15', '## v2 — 2026-11-20 10:00 CET\n- Nine. (#9)\n\n## 2026-10-15');
+  commit('Changelog for v2', { 'CHANGELOG.md': pub });
+  git(other, 'push', '-q', 'origin', 'main');
+  const v = await updater().runCheck();
+  assert.equal(v.checkError, null);
+  assert.equal(v.check!.behind, 5);
+  assert.deepEqual([...v.check!.changes].sort(), ['Eight. (#8)', 'Nine. (#9)', 'Second, from origin. (#7)']);
+});
+
 test('the check says up to date when the running commit is origin/main', async () => {
   git(source, 'pull', '-q', '--ff-only', 'origin', 'main');
   const head = git(source, 'rev-parse', 'HEAD');

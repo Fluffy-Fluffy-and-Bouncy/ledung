@@ -8,4 +8,6 @@ Thank you for wanting to help. Ledung is dual-licensed: under the GNU AGPL versi
 
 ## How the project works
 
-[docs/development.md](docs/development.md) says how to set up a clone, run and test Ledung from it, and the cross-platform rules every change follows. Read [CLAUDE.md](CLAUDE.md) for how the repository is worked on: decisions go in [docs/decisions.md](docs/decisions.md), every change to what Ledung does adds a line to [CHANGELOG.md](CHANGELOG.md), and `npm run check` must pass before a push.
+[docs/development.md](docs/development.md) says how to set up a clone, run and test Ledung from it, and the cross-platform rules every change follows. Read [CLAUDE.md](CLAUDE.md) for how the repository is worked on: decisions go in [docs/decisions.md](docs/decisions.md), and `npm run check` must pass before a push.
+
+**Changelog: write `docs/changes/<issue>.md`, don't edit a changelog.** Every change to what Ledung does adds its line in a file of its own, `docs/changes/<issue>.md` (with no issue, a short name of your own), as [docs/changes/README.md](docs/changes/README.md) says. Never edit [CHANGELOG.md](CHANGELOG.md) (public releases) or [CHANGELOG-dev.md](CHANGELOG-dev.md) (dev builds): the publish step folds the waiting files into them under the version it publishes. The pre-push hook refuses a push of program changes without such a line, unless a commit has the trailer `Changelog: none`.

@@ -1,0 +1,59 @@
+/* The changelog pages (issue #417), in the look of index.html. The colours are index.html's own: dark in :root, light in
+   html[data-mode="light"]; change them there and here together. */
+:root {
+  --harbour: #0e1c2b; --deep: #08131f; --mist: #9fb0c4; --text: #e6edf5; --lantern: #f2b84b; --sea: #7aa2f7;
+  --soft: #c6d2e0; --line: #22344a; --faint: #6f8197; --term-bg: rgba(4, 10, 18, .75); --footer-ship: #4d6aa6;
+  --sans: "Avenir Next", "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
+  --cond: "Avenir Next Condensed", "Avenir Next", "Segoe UI Semibold", "Arial Narrow", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+html[data-mode="light"] {
+  --harbour: #e9eff5; --deep: #d9e3ed; --mist: #4c6075; --text: #0f2236; --lantern: #94580a; --sea: #2f5fb3;
+  --soft: #2f4458; --line: #bfccd9; --faint: #5d6f82; --term-bg: rgba(250, 252, 254, .82); --footer-ship: #6d87b8;
+}
+* { box-sizing: border-box; }
+html { background: var(--deep); }
+body { margin: 0; color: var(--text); font: 17px/1.6 var(--sans); background: linear-gradient(180deg, var(--harbour) 0%, var(--deep) 70%); min-height: 100vh; }
+a { color: inherit; }
+a:focus-visible { outline: 2px solid var(--lantern); outline-offset: 3px; }
+.wrap { max-width: 880px; margin: 0 auto; padding: 0 32px; }
+nav { display: flex; justify-content: space-between; align-items: center; padding: 22px 0; gap: 16px; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 600; letter-spacing: .01em; text-decoration: none; white-space: nowrap; }
+.brand img { width: 30px; height: 30px; }
+nav .links { display: flex; gap: 20px; align-items: center; font-size: 15px; }
+nav .links a { text-decoration: none; color: var(--mist); }
+nav .links a[aria-current="page"] { color: var(--lantern); }
+nav .mode-toggle { color: var(--mist); }
+
+header { padding: 40px 0 10px; }
+.kicker { font: 600 14px/1 var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--lantern); margin: 0 0 14px; }
+h1 { font: 600 clamp(40px, 5.4vw, 64px)/1 var(--cond); margin: 0 0 18px; }
+.intro { color: var(--soft); max-width: 40em; margin: 0 0 8px; }
+.intro a, .cl a { color: var(--sea); }
+
+.cl { padding: 10px 0 60px; }
+.cl h2.cl-release { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; font: 600 30px/1.1 var(--cond); margin: 48px 0 12px; padding-top: 22px; border-top: 1px solid var(--line); }
+.cl h2.cl-release a { color: var(--text); text-decoration: none; }
+.cl h2.cl-release a:hover { color: var(--lantern); }
+.cl .cl-when { font: 15px/1 var(--mono); color: var(--mist); }
+.cl h2.cl-earlier { font: 600 26px/1.1 var(--cond); margin: 64px 0 8px; padding-top: 22px; border-top: 1px solid var(--line); color: var(--mist); }
+.cl h3.cl-date { font: 600 16px/1 var(--mono); color: var(--lantern); margin: 30px 0 8px; }
+.cl ul { list-style: none; padding: 0; margin: 0; }
+.cl li { position: relative; padding-left: 24px; margin: 0 0 12px; color: var(--soft); }
+.cl li::before { content: ""; position: absolute; left: 4px; top: .62em; width: 8px; height: 8px; border-radius: 50%; background: var(--lantern); }
+.cl p { color: var(--soft); }
+.cl code, .intro code { font: .88em var(--mono); color: var(--text); background: var(--term-bg); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
+.cl strong { color: var(--text); font-weight: 600; }
+.cl-note, .cl-loading { color: var(--mist); }
+.cl-problem { color: var(--text); border: 1px solid var(--lantern); border-radius: 10px; padding: 14px 18px; background: var(--term-bg); }
+
+footer { border-top: 1px solid var(--line); padding: 26px 0 40px; color: var(--faint); font-size: 14px; display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+footer a { color: var(--mist); }
+footer pre { margin: 0; font: 9px/1.05 var(--mono); color: var(--footer-ship); }
+
+@media (max-width: 700px) {
+  .wrap { padding: 0 20px; }
+  nav .links { gap: 12px; }
+  nav .links .gh span { display: none; }
+  .cl h2.cl-release { font-size: 26px; }
+}
