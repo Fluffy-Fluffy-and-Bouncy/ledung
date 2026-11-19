@@ -24,7 +24,6 @@ import tls from 'node:tls';
 import { PUBLIC_NAME } from '../config.ts';
 import { caaRecord, caaValue } from '../server/acme.ts';
 import type { NewComputerInfo, RelayAdminView, RelayInviteInfo, RelayOwnersView } from '../shared/protocol.ts';
-import { exercisedLine } from '../platform/exercised.ts';
 import { Cloudflare } from './cloudflare.ts';
 import { joinCode } from './join-code.ts';
 import { secureRelay } from './tunnel.ts';
@@ -34,8 +33,6 @@ export const ADMIN_FILE = 'relay-admin.json';
 export const POLL_MS = 60_000;
 /** How long the in-use check waits for a computer's TLS handshake: Settings → Relay's list waits for it too. */
 export const IN_USE_MS = 5_000;
-/** The EXERCISED line of issue #420, once per run of Ledung. */
-let exercised420 = false;
 /** An ACME account URL as a CA gives it: https, and nothing that could break out of the CAA value. */
 const SAFE_ACCOUNT_URL = (url: string) => /^https:\/\/[A-Za-z0-9._~:/?#[\]@!$&'()*+,=%-]{1,500}$/.test(url);
 
@@ -268,10 +265,6 @@ export class RelayAdmin {
       return false;
     }
     this.log(`Relay admin: ${computer.host} is in use with its certificate; its New computer card cleared itself.`);
-    if (!exercised420) {
-      exercised420 = true;
-      exercisedLine('EXERCISED #420 a new computer\'s card cleared itself once it was in use');
-    }
     return true;
   }
 
