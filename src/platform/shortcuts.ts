@@ -9,14 +9,17 @@
 //
 // Only fixed names in fixed folders are written or removed: Ledung.lnk in the Desktop and Start menu folders, "Ledung at
 // sign-in.lnk" in Startup, Ledung.app in Applications, org.ledung.signin.plist in LaunchAgents, org.ledung.signin.desktop
-// in autostart, and the icon and the start script in the data folder. A Ledung with its own data folder (LEDUNG_DATA_DIR: tests and throwaway
-// copies) puts them in that folder instead, never on the real Desktop or in the real Startup folder.
+// in autostart, and the icon and the start script in the data folder. Remove also takes the desktop app's own Start-menu
+// shortcut, "Ledung app\Ledung.lnk", which the `ledung` command writes when it makes the app (#587). A Ledung with
+// its own data folder (LEDUNG_DATA_DIR: tests and throwaway copies) puts them in that folder instead, never on the real
+// Desktop or in the real Startup folder.
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { ShortcutAction, ShortcutPlace, ShortcutPlaceId, ShortcutsView, SignInStartView } from '../shared/protocol.ts';
 import { LOG_FILE } from './background.ts';
+import { APP_SHORTCUT } from './desktop-app.ts';
 import { icnsFromPngs, icoFromPng } from './icons.ts';
 import { appDir, envSetting, PACKAGED, userDataDir } from './paths.ts';
 
@@ -162,6 +165,30 @@ function macFolders(): Partial<Record<Folder, string>> {
 /** The desktop's autostart folder (XDG), which GNOME, KDE, Xfce and the others read at login. */
 function linuxFolders(): Partial<Record<Folder, string>> {
   return { startup: path.join(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), '.config'), 'autostart') };
+}
+
+/**
+ * The Start menu's Programs folder for the desktop app's own shortcut (#587, desktop-app.ts APP_SHORTCUT): Windows' own,
+ * or the data folder's as for the other shortcuts when LEDUNG_DATA_DIR is set, so a test never writes in the real Start
+ * menu. Undefined when Windows can't say.
+ */
+export async function startMenuFolder(): Promise<string | undefined> {
+  try {
+    return (envSetting('DATA_DIR') ? ownDataFolders('win32') : await windowsFolders())['start-menu'];
+  } catch {
+    return undefined;
+  }
+}
+
+/** Takes away the desktop app's Start-menu shortcut and its folder, when empty; only those fixed names (#587). */
+export function removeAppShortcut(startMenu: string): void {
+  const file = path.join(startMenu, APP_SHORTCUT);
+  fs.rmSync(file, { force: true });
+  try {
+    fs.rmdirSync(path.dirname(file));
+  } catch {
+    // Not there, or something else is in it: left as it is.
+  }
 }
 
 /** A Ledung with a data folder of its own keeps its shortcuts in it, so a test never writes on the real Desktop. */
@@ -339,7 +366,12 @@ export class Shortcuts {
       this.opts.meta.set(ASKED_KEY, 'added');
     } else {
       for (const p of places.filter((p) => p.present)) this.remove(p.file);
-      if (this.kind() === 'windows') fs.rmSync(this.icoFile(), { force: true });
+      if (this.kind() === 'windows') {
+        fs.rmSync(this.icoFile(), { force: true });
+        // The desktop app's own shortcut goes with them (Martin, 2026-11-19, Ledung question #587).
+        const startMenu = (await this.folders())['start-menu'];
+        if (startMenu) removeAppShortcut(startMenu);
+      }
       // The start at sign-in uses them too.
       if (!(await this.signInView()).on) this.removeShared();
     }

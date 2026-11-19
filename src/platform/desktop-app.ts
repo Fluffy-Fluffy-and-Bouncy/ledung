@@ -15,10 +15,10 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { dockIconLayout } from '../../desktop/dock-icon.ts';
-import { APP_ID, MADE_CONFIG, type MadeConfig } from '../../desktop/made.ts';
+import { APP_ID, MADE_CONFIG, WRITE_SHORTCUT_ARG, type MadeConfig } from '../../desktop/made.ts';
 import { startEnv } from '../../desktop/start.ts';
 import { exercisedLine } from './exercised.ts';
-import { icnsFromPngs } from './icons.ts';
+import { icnsFromPngs, icoFromPng } from './icons.ts';
 import { appDir, PACKAGED } from './paths.ts';
 
 /** Where the made app and its stamp live, inside the data folder. */
@@ -70,7 +70,7 @@ export function electronPackage(app = appDir()): ElectronPackage | null {
 /**
  * What brings Electron's package back: installing Ledung again the way it was installed (self-check finding 3: a fixed
  * `npm install -g ledung` would move a dev install to the public release). npm ignores --omit=optional for a global
- * install (Ledung question #584), so a missing package is mostly a failed optional install or a local one without it.
+ * install (Ledung question #585), so a missing package is mostly a failed optional install or a local one without it.
  */
 export const ADD_COMMAND = 'install Ledung again as you did: npm install -g ledung, or npm install -g ledung@dev for dev builds';
 
@@ -97,7 +97,7 @@ export function desktopAvailability(opts: { app?: string; packaged?: boolean; en
 }
 
 /**
- * Whether the config switches the app off for `ledung` ("desktopApp": false, Martin 2026-11-19, Ledung question #584),
+ * Whether the config switches the app off for `ledung` ("desktopApp": false, Martin 2026-11-19, Ledung question #585),
  * read straight from the file as the port is (running.ts configuredPort): a config that can't be read leaves it on.
  */
 export function desktopAppOff(configFile: string): boolean {
@@ -106,6 +106,40 @@ export function desktopAppOff(configFile: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** What `ledung` was asked to open: the command line's part of it, before anyone looks for the app. */
+export interface OpenChoice {
+  /** `ledung app`: the app or a reason, never the browser. */
+  appCommand: boolean;
+  /** --no-open: nothing opens, not even for `ledung app`. */
+  noOpen: boolean;
+  /** Whether to look for the app at all; when it is there, it opens instead of the browser. */
+  tryApp: boolean;
+  /** The arguments the started Ledung gets: the command's own (--browser, --open-only, --foreground, `app`) taken out. */
+  passthrough: string[];
+}
+
+/**
+ * What `ledung` opens (#407, Martin 2026-11-19, Ledung questions #577 and #585), from its arguments and the config's
+ * "desktopApp" switch. The app by default; the browser for --browser, "desktopApp": false, --open-only (the shortcuts,
+ * unchanged) and --foreground (development, where the core opens it itself). `ledung app` insists on the app whatever
+ * the switch says. --no-open opens nothing, `ledung app` included: the app's own Start Ledung and the sign-in start run
+ * it (self-check finding 2).
+ */
+export function openChoice(args: string[], desktopOff: boolean): OpenChoice {
+  const own = ['--open-only', '--foreground', '--browser'];
+  let passthrough = args.filter((a) => !own.includes(a));
+  const appCommand = passthrough[0] === 'app';
+  if (appCommand) passthrough = passthrough.slice(1);
+  const noOpen = passthrough.includes('--no-open');
+  const tryApp = !noOpen && (appCommand || !(desktopOff || own.some((a) => args.includes(a))));
+  return { appCommand, noOpen, tryApp, passthrough };
+}
+
+/** The started Ledung's arguments: with the app to open, it opens no browser of its own (--no-open). */
+export function backgroundArgs(choice: OpenChoice, appReady: boolean): string[] {
+  return [...choice.passthrough, ...(appReady && !choice.noOpen ? ['--no-open'] : [])];
 }
 
 /** What the made app was made from: a new Electron makes it again, anything else only rewrites its code. */
@@ -197,7 +231,65 @@ async function shapeApp(unzipped: string, source: string, work: string, platform
   const exe = platform === 'win32' ? ['electron.exe', 'Ledung.exe'] : ['electron', 'ledung'];
   fs.renameSync(path.join(unzipped, exe[0]!), path.join(unzipped, exe[1]!));
   fs.rmSync(path.join(unzipped, 'resources', 'default_app.asar'), { force: true });
+  if (platform === 'win32') await setExeDetails(path.join(unzipped, exe[1]!), icoFromPng(fs.readFileSync(path.join(source, 'icon-256.png'))));
   return unzipped;
+}
+
+/** The names Windows shows for the program: Task Manager's is FileDescription (Martin, 2026-11-19, Ledung question #587). */
+export const EXE_STRINGS = { FileDescription: 'Ledung', ProductName: 'Ledung', InternalName: 'Ledung', OriginalFilename: 'Ledung.exe' } as const;
+
+/**
+ * Rewrites Ledung.exe's file details and icon (#587 "b — Both now"), so Task Manager and the file's properties say
+ * Ledung instead of Electron. resedit, an optional dependency like Electron, is plain JavaScript with no program of its
+ * own; rcedit was dropped for npm's takedown notice on every version. Electron's own signature goes with the edit: the
+ * app is unsigned anyway (#572), and it is made on this computer, so it carries no download mark for SmartScreen.
+ */
+export async function setExeDetails(file: string, ico: Buffer): Promise<void> {
+  const { NtExecutable, NtExecutableResource, Resource, Data } = await import('resedit');
+  const exe = NtExecutable.from(fs.readFileSync(file), { ignoreCert: true });
+  const res = NtExecutableResource.from(exe);
+  const info = Resource.VersionInfo.fromEntries(res.entries)[0] ?? Resource.VersionInfo.createEmpty();
+  const languages = info.getAllLanguagesForStringValues();
+  for (const language of languages.length ? languages : [{ lang: 1033, codepage: 1200 }]) info.setStringValues(language, EXE_STRINGS);
+  info.outputToResourceEntries(res.entries);
+  const group = Resource.IconGroupEntry.fromEntries(res.entries)[0];
+  Resource.IconGroupEntry.replaceIconsForResource(res.entries, group?.id ?? 1, group?.lang ?? 1033, Data.IconFile.from(ico).icons.map((i) => i.data));
+  res.outputResource(exe);
+  fs.writeFileSync(file, Buffer.from(exe.generate()));
+}
+
+/**
+ * The made app's Start-menu shortcut inside the Start menu's Programs folder (#587): in a folder of its own, so it is
+ * named "Ledung" without taking the launcher shortcut's Ledung.lnk. Windows names the app's notifications after it.
+ * Settings → Shortcuts → Remove deletes it (shortcuts.ts).
+ */
+export const APP_SHORTCUT = path.join('Ledung app', 'Ledung.lnk');
+
+/**
+ * Starts the just-made Windows app once to write its Start-menu shortcut (desktop/made.ts WRITE_SHORTCUT_ARG) and waits
+ * for it; null when written, else what went wrong. Its throwaway profile is removed after.
+ */
+export function writeAppShortcut(paths: MadePaths, file: string, timeoutMs = 30_000): Promise<string | null> {
+  return new Promise((resolve) => {
+    const done = (failed: string | null) => {
+      clearTimeout(timer);
+      fs.rmSync(path.join(paths.root, '.shortcut-profile'), { recursive: true, force: true });
+      resolve(failed);
+    };
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(paths.exe, [`${WRITE_SHORTCUT_ARG}=${file}`], { stdio: 'ignore', windowsHide: true, env: startEnv(process.env, 'win32') });
+    } catch (e) {
+      resolve((e as Error).message);
+      return;
+    }
+    const timer = setTimeout(() => {
+      child.kill();
+      done(`it did not finish within ${timeoutMs / 1000} s`);
+    }, timeoutMs);
+    child.on('error', (e) => done(e.message));
+    child.on('exit', (code) => done(code === 0 ? null : `it exited with code ${code}`));
+  });
 }
 
 /** Writes the app's code: the package's dist/desktop files, its package.json and the made config. */
@@ -221,6 +313,8 @@ export interface MakeOptions {
   progress?: (percent: number) => void;
   /** One line before the download, saying what comes. */
   print?: (line: string) => void;
+  /** Windows: the Start menu's Programs folder, where a full make writes the app's shortcut (#587). */
+  startMenu?: string;
 }
 
 /**
@@ -281,6 +375,12 @@ export async function ensureApp(o: MakeOptions): Promise<{ made: 'nothing' | 'co
       if (platform === 'darwin') await run('/usr/bin/codesign', ['--force', '--deep', '-s', '-', paths.bundle]);
     }
     fs.writeFileSync(paths.stamp, `${JSON.stringify(want, null, 2)}\n`);
+    // Windows: the Start-menu shortcut, written when the app is made (#587); a code rewrite leaves it as it is, so one
+    // Settings removed stays removed until Electron changes. Not writing it does not stop the app opening.
+    if (made === 'all' && platform === 'win32' && o.startMenu) {
+      const failed = await writeAppShortcut(paths, path.join(o.startMenu, APP_SHORTCUT));
+      if (failed) o.print?.(`The desktop app's Start-menu shortcut was not written: ${failed}.`);
+    }
     return { made, paths };
   } finally {
     fs.rmSync(paths.work, { recursive: true, force: true });
@@ -344,6 +444,7 @@ export function progressPrinter(write: (text: string) => void, tty: boolean): (p
  */
 export async function openDesktop(o: { make: Omit<MakeOptions, 'print'>; fallback: boolean; steps: OpenSteps }): Promise<number> {
   let line: string;
+  let hinted = false;
   try {
     const { made, paths } = await o.steps.ensure({
       ...o.make,
@@ -351,7 +452,9 @@ export async function openDesktop(o: { make: Omit<MakeOptions, 'print'>; fallbac
         o.steps.print(text);
         // Ledung itself already runs: stopping this wait leaves it running, and "ledung --browser" opens its page
         // (self-check finding 4). A stopped make leaves its folder, which the next make removes first.
-        if (o.fallback) o.steps.print('Ledung is already running: to use the browser instead, press Ctrl+C and run "ledung --browser".');
+        // Once, after the line announcing the download; later lines (a shortcut not written) come without it.
+        if (o.fallback && !hinted) o.steps.print('Ledung is already running: to use the browser instead, press Ctrl+C and run "ledung --browser".');
+        hinted = true;
       },
     });
     if (made !== 'nothing') {

@@ -19,7 +19,7 @@
 // The desktop app (#407) goes in too: desktop/ bundled into dist/desktop/, with Electron as an optional dependency
 // pinned like the others. Electron's package downloads no binary at install; Ledung makes its own "Ledung" app from
 // the binary the first time the app opens (src/platform/desktop-app.ts). npm ignores `--omit=optional` for a global
-// install; "desktopApp": false keeps `ledung` from ever making the app (Ledung question #584).
+// install; "desktopApp": false keeps `ledung` from ever making the app (Ledung question #585).
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -35,6 +35,8 @@ export const DESKTOP_FILES: Record<string, string> = {
   'preload.cjs': 'desktop/preload.cjs',
   'not-running.html': 'desktop/not-running.html',
   'icon-512.png': 'web/public/icon-512.png',
+  // Windows: Ledung.exe's own icon, an .ico of at most 256 px (#587).
+  'icon-256.png': 'web/public/icon-256.png',
 };
 
 /** Besides dist/ and web/dist/, from the clone into the package. */
@@ -55,7 +57,11 @@ type Lock = { lockfileVersion?: number; packages?: Record<string, Record<string,
  */
 export function pinnedDependencies(clone: Record<string, unknown>, lock: Lock, field: 'dependencies' | 'optionalDependencies' = 'dependencies'): Record<string, string> {
   const ranges = (clone[field] ?? {}) as Record<string, string>;
-  const locked = (lock.packages?.['']?.[field] ?? {}) as Record<string, string>;
+  // npm may also list an optional dependency under the lockfile's dependencies (it did for resedit, #587, not for
+  // Electron): it is compared as optional only.
+  const optional = (lock.packages?.['']?.optionalDependencies ?? {}) as Record<string, string>;
+  const listed = (lock.packages?.['']?.[field] ?? {}) as Record<string, string>;
+  const locked = field === 'dependencies' ? Object.fromEntries(Object.entries(listed).filter(([name]) => !(name in optional))) : listed;
   if (JSON.stringify(Object.entries(ranges).sort()) !== JSON.stringify(Object.entries(locked).sort())) {
     throw new Error(`package-lock.json does not match package.json's ${field}: run npm install first`);
   }

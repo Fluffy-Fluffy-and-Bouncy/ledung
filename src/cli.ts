@@ -25,8 +25,9 @@ import { configuredPort, NOT_RUNNING_CODE, openIfRunning, savedToken } from './p
 import { startInBackground, stopRunning } from './platform/background.ts';
 import { accountCommand } from './accounts/token-command.ts';
 import { madeConfigFor } from '../desktop/made.ts';
-import { desktopAppOff, desktopAvailability, ensureApp, openApp, openDesktop, progressPrinter } from './platform/desktop-app.ts';
+import { backgroundArgs, desktopAppOff, desktopAvailability, ensureApp, openChoice, openApp, openDesktop, progressPrinter } from './platform/desktop-app.ts';
 import { openBrowser } from './platform/open-browser.ts';
+import { startMenuFolder } from './platform/shortcuts.ts';
 
 /** Must match main.ts. */
 const RESTART_CODE = 75;
@@ -44,13 +45,11 @@ if (passthrough[0] === 'account') process.exit(await accountCommand(passthrough.
 // it is not installed or can't be made; --browser keeps to the browser. `ledung app` insists on the
 // app. Not for --no-open (the app's own Start Ledung, the sign-in start), --open-only (the shortcuts, unchanged) or
 // --foreground (development, where the core opens the browser itself).
-const appCommand = passthrough[0] === 'app';
-if (appCommand) passthrough = passthrough.slice(1);
-const noOpen = passthrough.includes('--no-open');
-// "desktopApp": false in the config keeps plain `ledung` on the browser for good (Ledung question #584).
-// --no-open wins even over `ledung app` (self-check finding 2): it opens nothing.
-const tryApp = !noOpen && (appCommand || !(desktopAppOff(configPath()) || ['--browser', '--open-only', '--foreground'].some((a) => process.argv.includes(a))));
-const desktop = tryApp ? desktopAvailability() : null;
+// The choice is openChoice's (src/platform/desktop-app.ts), tested there (test review of PR #411, finding 1).
+const choice = openChoice(process.argv.slice(2), desktopAppOff(configPath()));
+const { appCommand, noOpen } = choice;
+passthrough = choice.passthrough;
+const desktop = choice.tryApp ? desktopAvailability() : null;
 if (appCommand && desktop && !desktop.ok) {
   console.error(`ledung app: ${desktop.reason}`);
   process.exit(1);
@@ -68,6 +67,7 @@ async function openTheApp(): Promise<number> {
       ledungVersion: appVersion(),
       config: madeConfigFor(process.execPath, cli, process.env),
       progress: progressPrinter((text) => process.stdout.write(text), process.stdout.isTTY === true),
+      startMenu: process.platform === 'win32' ? await startMenuFolder() : undefined,
     },
     fallback: !appCommand,
     steps: {
@@ -90,7 +90,7 @@ if (process.argv.includes('--open-only')) process.exit(NOT_RUNNING_CODE);
 // The background start runs this same command with --foreground, detached and with its output in the log (#456). With
 // the app, the started Ledung opens no browser: the app opens once it answers.
 if (!process.argv.includes('--foreground')) {
-  const args = [fileURLToPath(import.meta.url), '--foreground', ...passthrough, ...(desktop?.ok && !noOpen ? ['--no-open'] : [])];
+  const args = [fileURLToPath(import.meta.url), '--foreground', ...backgroundArgs(choice, desktop?.ok === true)];
   const code = await startInBackground({ args, configFile: configPath() });
   process.exit(code === 0 && desktop?.ok ? await openTheApp() : code);
 }

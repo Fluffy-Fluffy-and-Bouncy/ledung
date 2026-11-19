@@ -52,7 +52,8 @@ test('package.json has what a publish needs, and the command is the bundled cli'
 test('the desktop app ships in the package, Electron as an exact optional dependency that installs no binary (issue #407)', () => {
   const pkg = clonePackage();
   // Martin, 2026-11-19, Ledung questions #575 ("a — Optional dependency") and #577; this replaces #358's "never shipped".
-  assert.deepEqual(pkg.optionalDependencies, { electron: '45.4.1' });
+  // resedit: Ledung.exe's file details on Windows, plain JavaScript (Martin, 2026-11-19, Ledung question #587).
+  assert.deepEqual(pkg.optionalDependencies, { electron: '45.4.1', resedit: '3.1.1' });
   assert.equal(pkg.dependencies.electron, undefined, 'not a plain dependency');
   assert.equal(pkg.devDependencies.electron, undefined);
   // One Electron for the clone run (desktop/) and the package.
@@ -101,7 +102,7 @@ test('the staged package pins every dependency to the lockfile, through its pack
   // The desktop app's source and its icon (#407).
   fs.symlinkSync(path.join(appDir(), 'desktop'), path.join(source, 'desktop'), process.platform === 'win32' ? 'junction' : 'dir');
   fs.mkdirSync(path.join(source, 'web', 'public'), { recursive: true });
-  fs.cpSync(path.join(appDir(), 'web', 'public', 'icon-512.png'), path.join(source, 'web', 'public', 'icon-512.png'));
+  for (const icon of ['icon-512.png', 'icon-256.png']) fs.cpSync(path.join(appDir(), 'web', 'public', icon), path.join(source, 'web', 'public', icon));
   fs.cpSync(path.join(appDir(), 'plugins'), path.join(source, 'plugins'), { recursive: true });
   const stage = path.join(base, 'stage');
   await stagePackage(source, stage);
@@ -115,7 +116,7 @@ test('the staged package pins every dependency to the lockfile, through its pack
     assert.equal(manifest.dependencies[name], lockedVersion(name), `${name} is the lockfile's exact version`);
   }
   // Electron, optional and pinned the same way (#407), in the shrinkwrap's root as well.
-  assert.deepEqual(manifest.optionalDependencies, { electron: lockedVersion('electron') });
+  assert.deepEqual(manifest.optionalDependencies, { electron: lockedVersion('electron'), resedit: lockedVersion('resedit') });
   // The desktop app, bundled to plain JavaScript with Electron left outside, and the files it loads beside it (#407).
   const desktop = path.join(stage, 'dist', 'desktop');
   assert.deepEqual(fs.readdirSync(desktop).sort(), ['main.js', ...Object.keys(DESKTOP_FILES)].sort());
@@ -165,6 +166,17 @@ test('staging refuses a lockfile out of step with package.json, instead of pinni
   assert.deepEqual(pinnedDependencies(clone, lock), { zod: '4.6.7' });
   assert.throws(() => pinnedDependencies({ dependencies: { zod: '^5.0.0' } }, lock), /does not match/);
   assert.throws(() => pinnedDependencies(clone, { lockfileVersion: 3, packages: { '': { dependencies: { zod: '^4.6.5' } } } }), /no version of zod/);
+});
+
+test("an optional dependency npm also lists under the lockfile's dependencies counts as optional only (#587)", () => {
+  const clone = { dependencies: { zod: '^4.6.5' }, optionalDependencies: { resedit: '3.1.1' } };
+  const root = { dependencies: { zod: '^4.6.5', resedit: '3.1.1' }, optionalDependencies: { resedit: '3.1.1' } };
+  const lock = { lockfileVersion: 3, packages: { '': root, 'node_modules/zod': { version: '4.6.7' }, 'node_modules/resedit': { version: '3.1.1', optional: true } } };
+  assert.deepEqual(pinnedDependencies(clone, lock), { zod: '4.6.7' });
+  assert.deepEqual(pinnedDependencies(clone, lock, 'optionalDependencies'), { resedit: '3.1.1' });
+  // A real difference still stops it: a plain dependency the clone no longer has.
+  const stale = { ...lock, packages: { ...lock.packages, '': { ...root, dependencies: { ...root.dependencies, ws: '^8.0.0' } } } };
+  assert.throws(() => pinnedDependencies(clone, stale), /does not match package.json's dependencies/);
 });
 
 test('from the source, Ledung is not packaged and hosts run the TypeScript host', () => {

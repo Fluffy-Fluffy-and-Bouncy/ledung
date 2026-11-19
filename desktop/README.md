@@ -1,7 +1,7 @@
 # Ledung desktop app
 
 Ledung's page in a window of its own instead of a browser tab (epic #357). **Unsigned, and shipped in the npm package**
-(#407; Martin, 2026-11-19, Ledung questions #572, #575, #577 and #584; [docs/decisions.md](../docs/decisions.md)):
+(#407; Martin, 2026-11-19, Ledung questions #572, #575, #577 and #585; [docs/decisions.md](../docs/decisions.md)):
 `npm run pack` bundles this folder into the package's `dist/desktop/`, with Electron as an optional dependency, and the
 `ledung` command makes a "Ledung" app from Electron's binary the first time it opens it (see **The made app** below).
 From a clone it still runs as below, for development.
@@ -81,8 +81,11 @@ What `npm install -g ledung` and `ledung` give (`src/platform/desktop-app.ts`, #
   code.
 - **Named "Ledung".** On the Mac its `Info.plist` names it "Ledung" with the id `org.ledung.app`, its icon is Ledung's
   with the Mac's margin (#404), Electron's default app is removed and it is signed ad hoc again, as Electron's own is.
-  The helper apps keep Electron's names. On Windows the exe is `Ledung.exe` and the app sets the AppUserModelID
-  `org.ledung.app`; its file details still say Electron, so Task Manager may list it as Electron. On Linux the program
+  The helper apps keep Electron's names. On Windows the exe is `Ledung.exe`, its file details and icon rewritten
+  with `resedit` (plain JavaScript, an optional dependency like Electron) so Task Manager says "Ledung"; the app sets the
+  AppUserModelID `org.ledung.app`, and making the app runs it once with `--ledung-write-shortcut=<file>` to write its
+  Start-menu shortcut, `Ledung app\Ledung.lnk`, carrying that id, so its notifications say "Ledung". Settings →
+  Shortcuts → Remove takes that shortcut away; a later make writes it again only for a new Electron. On Linux the program
   is `ledung` and the app's name is "Ledung".
 - **Its settings.** `ledung-app.json` next to its `main.js` names the Node and the `ledung` script that made it, and
   `LEDUNG_CONFIG` and `LEDUNG_DATA_DIR` when that command had them. So **Start Ledung** runs them and needs no `ledung`

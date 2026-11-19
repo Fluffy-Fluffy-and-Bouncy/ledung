@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import { dataDir, findRunning } from './attach.ts';
 import { dockIconLayout, padBitmap } from './dock-icon.ts';
 import { zoomed, zoomKey } from './keys.ts';
-import { APP_ID, readMadeConfig } from './made.ts';
+import { APP_ID, readMadeConfig, WRITE_SHORTCUT_ARG } from './made.ts';
 import { runStart, startCommand } from './start.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -24,11 +24,14 @@ const here = path.dirname(fileURLToPath(import.meta.url));
  * made it.
  */
 const made = readMadeConfig(here);
+/** Set when the core started this just-made app only to write its Start-menu shortcut (#587, made.ts). */
+const shortcutFile = process.argv.find((a) => a.startsWith(`${WRITE_SHORTCUT_ARG}=`))?.slice(WRITE_SHORTCUT_ARG.length + 1);
 if (made) {
   for (const [name, value] of Object.entries(made.env)) process.env[name] = value;
   // Electron would keep its profile (cookies, caches) in a folder named after the app, "Ledung": on the Mac and
-  // Windows that is Ledung's own data folder. Its own folder beside the made app instead.
-  app.setPath('userData', path.join(dataDir(), 'desktop', 'profile'));
+  // Windows that is Ledung's own data folder. Its own folder beside the made app instead; the shortcut writer gets a
+  // throwaway one, so a running app's profile is never shared.
+  app.setPath('userData', path.join(dataDir(), 'desktop', shortcutFile ? '.shortcut-profile' : 'profile'));
   // Windows: the taskbar and notifications group the app under this id instead of Electron's.
   if (process.platform === 'win32') app.setAppUserModelId(APP_ID);
 }
@@ -388,7 +391,20 @@ function createWindow(): void {
 
 // One app per computer: a second start shows the first one's window and ends (#359). Asked before anything else, so
 // the second never opens a window or signs in.
-if (!app.requestSingleInstanceLock()) {
+if (shortcutFile) {
+  // Only the shortcut, then quit: no window, no single-instance lock (a running app keeps its own). The target is this
+  // program, with the app's id, so Windows names its notifications "Ledung" (#587).
+  void app.whenReady().then(() => {
+    let ok = false;
+    try {
+      fs.mkdirSync(path.dirname(shortcutFile), { recursive: true });
+      ok = shell.writeShortcutLink(shortcutFile, 'create', { target: process.execPath, appUserModelId: APP_ID, icon: process.execPath, iconIndex: 0, description: 'Ledung' });
+    } catch (e) {
+      console.error(`Ledung desktop: ${(e as Error).message}`);
+    }
+    app.exit(ok ? 0 : 1);
+  });
+} else if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', showWindow);

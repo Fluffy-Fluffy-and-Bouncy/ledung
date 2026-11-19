@@ -358,7 +358,7 @@ const Config = z.object({
   /**
    * Whether `ledung` opens the desktop app (issue #407): false keeps it on the browser for good, exactly as before the
    * app shipped. npm installs Electron's package with every global install, --omit=optional or not (Martin,
-   * 2026-11-19, Ledung question #584: "b — Keep the optional dependency, add an off switch"). Read by the `ledung`
+   * 2026-11-19, Ledung question #585: "b — Keep the optional dependency, add an off switch"). Read by the `ledung`
    * command at each run (src/platform/desktop-app.ts desktopAppOff); `ledung app` still opens the app.
    */
   desktopApp: z.boolean().default(true),

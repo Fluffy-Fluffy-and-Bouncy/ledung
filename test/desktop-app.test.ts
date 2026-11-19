@@ -1,6 +1,6 @@
 // The desktop app from the npm package (issue #407, src/platform/desktop-app.ts and desktop/made.ts): where the made app
 // lives, when it is made again, the code and settings it is given, when `ledung` may open it ("desktopApp": false,
-// Ledung question #584), and what a failed make does (one line, then the browser). Downloading Electron and the Mac's
+// Ledung question #585), and what a failed make does (one line, then the browser). Downloading Electron and the Mac's
 // plutil and codesign steps are checked by hand against a packed build (the PR's test plan): they need the network and
 // a 121 MB download, and the 'all' make is never reached here.
 import { after, before, test } from 'node:test';
@@ -8,12 +8,16 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { APP_ID, MADE_CONFIG, madeConfigFor, readMadeConfig, type MadeConfig } from '../desktop/made.ts';
+import { APP_ID, MADE_CONFIG, madeConfigFor, readMadeConfig, WRITE_SHORTCUT_ARG, type MadeConfig } from '../desktop/made.ts';
 import { findOnPath, runStart, startCommand } from '../desktop/start.ts';
 import {
-  ADD_COMMAND, appManifest, desktopAppOff, desktopAvailability, electronPackage, ensureApp, madePaths, openDesktop, progressPrinter,
-  readStamp, whatToMake, writeAppCode, type MadePaths, type OpenSteps, type Stamp,
+  ADD_COMMAND, APP_SHORTCUT, appManifest, backgroundArgs, desktopAppOff, desktopAvailability, electronPackage, ensureApp, madePaths,
+  openChoice, openDesktop, progressPrinter, readStamp, setExeDetails, whatToMake, writeAppCode, writeAppShortcut, type MadePaths,
+  type OpenSteps, type Stamp,
 } from '../src/platform/desktop-app.ts';
+import { icoFromPng } from '../src/platform/icons.ts';
+import { appDir } from '../src/platform/paths.ts';
+import { removeAppShortcut, Shortcuts } from '../src/platform/shortcuts.ts';
 import { parseConfig, SETTING_RELOAD } from '../src/config.ts';
 import { removeTemp } from './temp.ts';
 
@@ -95,7 +99,7 @@ test('the app is offered only from the npm package with Electron installed, on a
   assert.match(reason(desktopAvailability({ app: noCode, packaged: true, env: display, platform: 'linux' })), /no desktop app/);
 });
 
-test('"desktopApp": false in the config keeps `ledung` on the browser; anything else leaves the app on (Ledung question #584)', () => {
+test('"desktopApp": false in the config keeps `ledung` on the browser; anything else leaves the app on (Ledung question #585)', () => {
   const file = path.join(base, 'switch.json');
   const off = (body: string | null) => {
     if (body === null) fs.rmSync(file, { force: true });
@@ -266,4 +270,137 @@ test('download progress: one line rewritten in a terminal, a line each quarter i
   const l = progressPrinter((x) => { log += x; }, false);
   for (let i = 0; i <= 100; i++) l(i / 100);
   assert.equal(log, '  0%\n  25%\n  50%\n  75%\n  100%\n');
+});
+
+// What `ledung` opens (test review of PR #411, finding 1): the command line and the switch, as a table.
+
+test('`ledung` opens the app by default; --browser, --open-only, --foreground and "desktopApp": false the browser; --no-open nothing', () => {
+  const rows: [string[], boolean, { tryApp: boolean; appCommand: boolean; noOpen: boolean; passthrough: string[] }][] = [
+    [[], false, { tryApp: true, appCommand: false, noOpen: false, passthrough: [] }],
+    [['--browser'], false, { tryApp: false, appCommand: false, noOpen: false, passthrough: [] }],
+    [['--open-only'], false, { tryApp: false, appCommand: false, noOpen: false, passthrough: [] }],
+    [['--foreground'], false, { tryApp: false, appCommand: false, noOpen: false, passthrough: [] }],
+    [[], true, { tryApp: false, appCommand: false, noOpen: false, passthrough: [] }],
+    [['--no-open'], false, { tryApp: false, appCommand: false, noOpen: true, passthrough: ['--no-open'] }],
+    [['app'], false, { tryApp: true, appCommand: true, noOpen: false, passthrough: [] }],
+    [['app'], true, { tryApp: true, appCommand: true, noOpen: false, passthrough: [] }],
+    [['app', '--browser'], false, { tryApp: true, appCommand: true, noOpen: false, passthrough: [] }],
+    [['app', '--no-open'], false, { tryApp: false, appCommand: true, noOpen: true, passthrough: ['--no-open'] }],
+    [['--no-open', '--foreground'], false, { tryApp: false, appCommand: false, noOpen: true, passthrough: ['--no-open'] }],
+  ];
+  for (const [args, off, want] of rows) assert.deepEqual(openChoice(args, off), want, `${args.join(' ') || '(none)'}${off ? ', switch off' : ''}`);
+});
+
+test('the started Ledung opens no browser of its own only when the app opens; --no-open stays as given', () => {
+  assert.deepEqual(backgroundArgs(openChoice([], false), true), ['--no-open'], 'the app opens: the core opens no browser');
+  assert.deepEqual(backgroundArgs(openChoice([], false), false), [], 'no app here: the core opens the browser, as before');
+  assert.deepEqual(backgroundArgs(openChoice(['--browser'], false), false), []);
+  assert.deepEqual(backgroundArgs(openChoice(['--no-open'], false), false), ['--no-open'], 'once, not twice');
+  assert.deepEqual(backgroundArgs(openChoice(['app', '--no-open'], false), false), ['--no-open']);
+});
+
+// The real make's failure path (test review of PR #411, finding 2): the fake Electron has no downloader, so the
+// download fails at once, offline, after the real announcement.
+
+test('a make whose download fails says what it was making, leaves no making folder and keeps an earlier app as it was', async () => {
+  const pkg = fakePackage('fails', '45.4.1');
+  const electron = electronPackage(pkg)!;
+  const opts = (data: string, lines: string[]) => ({ dataDir: data, electron, source: path.join(pkg, 'dist', 'desktop'), ledungVersion: '1.2', config, platform: 'linux' as const, arch: 'x64', print: (l: string) => lines.push(l) });
+
+  const fresh = path.join(base, 'fails-fresh');
+  const freshLines: string[] = [];
+  await assert.rejects(ensureApp(opts(fresh, freshLines)), /@electron\/get/);
+  assert.equal(freshLines.length, 1);
+  assert.match(freshLines[0]!, /^Making the desktop app, once: downloading Electron 45\.4\.1 for linux-x64 into /);
+  const paths = madePaths(fresh, 'linux');
+  assert.equal(fs.existsSync(paths.work), false, 'no making folder left');
+  assert.equal(fs.existsSync(paths.bundle), false, 'nothing half-made in its place');
+  assert.equal(fs.existsSync(paths.stamp), false);
+
+  const data = path.join(base, 'fails-earlier');
+  const earlier = { electron: '45.3.3', platform: 'linux', arch: 'x64', ledung: '1.1', config } satisfies Stamp;
+  const old = madeEarlier(data, 'linux', earlier);
+  const lines: string[] = [];
+  await assert.rejects(ensureApp(opts(data, lines)));
+  assert.match(lines[0] ?? '', /^Making the desktop app, once: downloading Electron 45\.4\.1/);
+  assert.equal(fs.readFileSync(old.exe, 'utf8'), 'electron', 'the earlier app is untouched');
+  assert.equal(fs.readFileSync(path.join(old.code, 'main.js'), 'utf8'), 'old code');
+  assert.deepEqual(readStamp(old.stamp), earlier, 'and its stamp still says what it is');
+  assert.equal(fs.existsSync(old.work), false);
+});
+
+// Windows (Martin, 2026-11-19, Ledung question #587: "b — Both now").
+
+test("Ledung.exe's file details say Ledung, in every language they had, and its icon is Ledung's", async () => {
+  const { NtExecutable, NtExecutableResource, Resource } = await import('resedit');
+  // A small Windows program with Electron's kind of details, made here: no Electron download in a test.
+  const exe = NtExecutable.createEmpty();
+  const res = NtExecutableResource.from(exe);
+  const info = Resource.VersionInfo.create({ lang: 1033, fixedInfo: {}, strings: [{ lang: 1033, codepage: 1200, values: { FileDescription: 'Electron', ProductName: 'Electron', CompanyName: 'GitHub, Inc.', OriginalFilename: 'electron.exe' } }] });
+  info.outputToResourceEntries(res.entries);
+  res.outputResource(exe);
+  const file = path.join(base, 'Ledung.exe');
+  fs.writeFileSync(file, Buffer.from(exe.generate()));
+
+  await setExeDetails(file, icoFromPng(fs.readFileSync(path.join(appDir(), 'web', 'public', 'icon-256.png'))));
+
+  const after = NtExecutableResource.from(NtExecutable.from(fs.readFileSync(file)));
+  const [read] = Resource.VersionInfo.fromEntries(after.entries);
+  const values = read!.getStringValues({ lang: 1033, codepage: 1200 });
+  assert.equal(values.FileDescription, 'Ledung', "Task Manager's name");
+  assert.equal(values.ProductName, 'Ledung');
+  assert.equal(values.OriginalFilename, 'Ledung.exe');
+  assert.equal(values.CompanyName, 'GitHub, Inc.', 'what is not Ledung\'s to say is kept');
+  const groups = Resource.IconGroupEntry.fromEntries(after.entries);
+  assert.equal(groups.length, 1, 'one icon');
+  assert.equal(groups[0]!.icons[0]!.width, 0, '256 px, written as 0 in an icon group');
+});
+
+test("the app's Start-menu shortcut is written by the just-made app, run once with its own argument; a failure is one reason", async () => {
+  const dir = path.join(base, 'shortcut-run');
+  fs.mkdirSync(dir, { recursive: true });
+  // A stand-in for Ledung.exe: a script that records its arguments, then exits as told.
+  const fake = (name: string, code: number) => {
+    const file = path.join(dir, name);
+    fs.writeFileSync(file, `#!/bin/sh\necho "$@" > "${file}.args"\nexit ${code}\n`, { mode: 0o755 });
+    return file;
+  };
+  const paths = { ...madePaths(path.join(base, 'shortcut-data'), 'win32'), exe: fake('ok', 0) };
+  fs.mkdirSync(path.join(paths.root, '.shortcut-profile'), { recursive: true });
+  const lnk = path.join(dir, 'Start menu', APP_SHORTCUT);
+  if (process.platform !== 'win32') {
+    assert.equal(await writeAppShortcut(paths, lnk), null);
+    assert.equal(fs.readFileSync(`${paths.exe}.args`, 'utf8').trim(), `${WRITE_SHORTCUT_ARG}=${lnk}`);
+    assert.equal(fs.existsSync(path.join(paths.root, '.shortcut-profile')), false, 'its throwaway profile is removed');
+    assert.equal(await writeAppShortcut({ ...paths, exe: fake('fails', 3) }, lnk), 'it exited with code 3');
+  }
+  assert.match((await writeAppShortcut({ ...paths, exe: path.join(dir, 'missing.exe') }, lnk)) ?? '', /ENOENT/);
+  // Its own folder in Programs, named Ledung: not the launcher's Ledung.lnk beside it.
+  assert.equal(path.basename(APP_SHORTCUT), 'Ledung.lnk');
+  assert.notEqual(path.dirname(APP_SHORTCUT), '.');
+});
+
+test("Settings' Remove takes the app's Start-menu shortcut too, and its folder only when nothing else is in it", async () => {
+  const startMenu = path.join(base, 'remove-app', 'Programs');
+  const lnk = path.join(startMenu, APP_SHORTCUT);
+  fs.mkdirSync(path.dirname(lnk), { recursive: true });
+  fs.writeFileSync(lnk, 'lnk');
+  const launcher = path.join(startMenu, 'Ledung.lnk');
+  fs.writeFileSync(launcher, 'lnk');
+  const s = new Shortcuts({
+    launch: { node: process.execPath, script: 'x' }, iconDir: path.join(base, 'remove-app', 'data'),
+    icons: { png256: path.join(appDir(), 'web', 'public', 'icon-256.png'), png512: path.join(appDir(), 'web', 'public', 'icon-512.png') },
+    meta: { get: () => null, set: () => {} }, platform: 'win32', folders: async () => ({ 'start-menu': startMenu, startup: path.join(base, 'remove-app', 'Startup') }),
+  });
+  await s.act('remove');
+  assert.equal(fs.existsSync(lnk), false);
+  assert.equal(fs.existsSync(path.dirname(lnk)), false, 'its empty folder too');
+  assert.equal(fs.existsSync(launcher), false, 'the launcher shortcut, as before');
+  // A folder with something else in it stays.
+  fs.mkdirSync(path.dirname(lnk), { recursive: true });
+  fs.writeFileSync(lnk, 'lnk');
+  fs.writeFileSync(path.join(path.dirname(lnk), 'mine.txt'), 'x');
+  removeAppShortcut(startMenu);
+  assert.equal(fs.existsSync(lnk), false);
+  assert.equal(fs.existsSync(path.join(path.dirname(lnk), 'mine.txt')), true);
 });

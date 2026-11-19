@@ -13,6 +13,13 @@ export const MADE_CONFIG = 'ledung-app.json';
 /** The made app's id: the Mac's bundle id and the Windows AppUserModelID (not org.ledung.launcher, the shortcut's). */
 export const APP_ID = 'org.ledung.app';
 
+/**
+ * Windows (#587): the core starts the app it has just made once with `--ledung-write-shortcut=<file>`; the app writes
+ * its Start-menu shortcut there, carrying APP_ID so notifications say "Ledung", and quits. Electron's own shortcut
+ * writer is the one that can set the id.
+ */
+export const WRITE_SHORTCUT_ARG = '--ledung-write-shortcut';
+
 /** The LEDUNG_* settings the made app takes over from the command that made it: they pick which Ledung it shows. */
 export const PASSED_SETTINGS = ['LEDUNG_CONFIG', 'LEDUNG_DATA_DIR'] as const;
 
