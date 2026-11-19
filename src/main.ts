@@ -101,6 +101,8 @@ async function main(): Promise<void> {
 
   // Reconnect to sessions whose hosts survived the restart, then mark the rest as ended.
   const attached = await manager.attachRunningHosts();
+  // Before the rest are marked ended: which managers were running when Ledung stopped, to resume below (#391).
+  const managersAtStop = manager.managersRunningAtStop(attached);
   const leftover = store.markUnfinishedSessionsEnded('Ledung stopped before this session ended. Resume to continue.', attached);
   // Those that were waiting for memory to start never ran: they say so, and their managers get the task back.
   manager.settleWaitersAfterRestart();
@@ -229,6 +231,9 @@ async function main(): Promise<void> {
     }
     throw e;
   }
+  // The managers that were running when Ledung stopped come back by themselves (#391), once this Ledung is surely the
+  // one that runs (not a second start on a port in use), and in the background like a Resume from the page.
+  void manager.resumeManagersAtStart(managersAtStop).catch((e) => console.log(`Managers at start: ${(e as Error).message}`));
 
   manager.startMeasuring();
   checkIn.start();

@@ -120,7 +120,7 @@ import { FlowRunError, FlowRuns, lastReplyOf } from './flow-runs.ts';
 import { dockerWorktreeHost, localWorktreeHost } from './run-worktrees.ts';
 import { RunStore } from './run-store.ts';
 import type { FlowRun } from '../shared/flow-run.ts';
-import type { RunBlock } from '../shared/protocol.ts';
+import type { RunBlock, SessionStatus } from '../shared/protocol.ts';
 import type { ProposeHandlers, RunHandlers } from './tools.ts';
 import { buildProposal, ProposalStore, proposalSummary, type ProposedChange } from './flow-propose.ts';
 import type { FlowProposal } from '../shared/flow-proposal.ts';
@@ -159,6 +159,10 @@ export function workflowGuide(dir = WORKFLOW_PLUGIN()): string {
 const LIMIT_KEY = 'max-working-sessions';
 /** New sessions waiting for memory to start, with their first message (resource limits, acceptance test finding 12). */
 const WAITERS_KEY = 'resource-waiters';
+/** The managers that were running when Ledung was stopped, written by shutdown() and read once at the next start (#391). */
+const MANAGERS_AT_STOP_KEY = 'managers-at-stop';
+/** What a session the database still calls running was doing; 'stopping' is not among them: it was being stopped. */
+const RUNNING_STATUSES: ReadonlySet<SessionStatus> = new Set(['starting', 'idle', 'queued', 'running', 'waiting']);
 /** Usage stops once set in Settings (issue #278), and the ones lifted by hand, by window; kept in meta, so no migration. */
 const USAGE_STOPS_KEY = 'usage-stops';
 const USAGE_LIFTED_KEY = 'usage-stops-lifted';
@@ -203,6 +207,7 @@ export function resumedState(info: SessionInfo): {
 let exercised425 = false;
 let exercised96 = false;
 let exercised160 = false;
+let exercised391 = false;
 
 /** How long the sidebar's read of which projects have a flow waits for one project (a container's docker exec). */
 const WORKFLOWS_READ_MS = 5000;
@@ -246,6 +251,8 @@ export class SessionManager {
   private waitTimer: NodeJS.Timeout | null = null;
   /** Resumes under way, so two messages arriving together start one resume, not two. */
   private readonly resuming = new Map<string, Promise<SessionInfo>>();
+  /** The managers found at start that resumeManagersAtStart brings back (#391); until then they are ended. */
+  private managersComingBack = new Set<string>();
   private idleTimer: NodeJS.Timeout | null = null;
   /** Sessions to restart with new lockdown settings once they are free (issue #109). */
   private readonly relaunching = new Set<string>();
@@ -899,7 +906,8 @@ export class SessionManager {
   /** A note from Ledung to every manager that has not ended, delivered now (issue #328). */
   private tellManagers(text: string): void {
     for (const s of this.store.listSessions()) {
-      if (s.role !== 'manager' || s.status === 'ended') continue;
+      // The managers about to be resumed at start (#391) are still ended here; their resume delivers the note.
+      if (s.role !== 'manager' || (s.status === 'ended' && !this.managersComingBack.has(s.id))) continue;
       this.store.addInbox(s.id, 'ledung', text);
       this.live.get(s.id)?.deliver();
     }
@@ -4400,6 +4408,70 @@ ${firstMessage}`);
     return attached;
   }
 
+  /**
+   * The projects' managers that were running when Ledung last stopped (#391; Martin, Ledung question #541: "a — Those
+   * that were running, start now"): those shutdown() wrote down, and, after a stop that never reached it (a crash, a
+   * reboot, a killed process), those the database still calls running that no host was reattached for. A manager
+   * stopped on purpose had ended by then, so it is in neither. Call it before markUnfinishedSessionsEnded. All of them
+   * are written back, crashed ones too, and the record is cleared only by resumeManagersAtStart, once the page listens:
+   * a start that fails in between (a port in use) leaves them for the next one (self-check finding 1).
+   */
+  managersRunningAtStop(attached: string[]): string[] {
+    let written: string[] = [];
+    try {
+      const raw: unknown = JSON.parse(this.store.getMeta(MANAGERS_AT_STOP_KEY) ?? '[]');
+      if (Array.isArray(raw)) written = raw.filter((id): id is string => typeof id === 'string');
+    } catch {
+      // A record this version can't read: only the database's own count.
+    }
+    const ids: string[] = [];
+    for (const project of this.projectStore.list()) {
+      const info = project.managerId ? this.store.getSession(project.managerId) : undefined;
+      if (!info || info.role !== 'manager' || attached.includes(info.id)) continue;
+      if (written.includes(info.id) || RUNNING_STATUSES.has(info.status)) ids.push(info.id);
+    }
+    this.store.setMeta(MANAGERS_AT_STOP_KEY, JSON.stringify(ids));
+    this.managersComingBack = new Set(ids);
+    return ids;
+  }
+
+  /**
+   * Resumes the managers managersRunningAtStop found, one after another (#391), as the page's Resume does; one that
+   * never got far enough to resume, or is running already, is left alone. A failure is said in its chat and the next
+   * one still comes back.
+   */
+  async resumeManagersAtStart(ids: string[]): Promise<void> {
+    this.store.setMeta(MANAGERS_AT_STOP_KEY, '[]');
+    try {
+      await this.resumeEach(ids);
+    } finally {
+      this.managersComingBack.clear();
+    }
+  }
+
+  private async resumeEach(ids: string[]): Promise<void> {
+    for (const id of ids) {
+      const info = this.store.getSession(id);
+      if (!info?.claudeSessionId || (this.live.has(id) && info.status !== 'ended')) continue;
+      let problem: string | null = null;
+      try {
+        const after = await this.resume(id);
+        if (after.status === 'ended') problem = after.endReason ?? 'it ended at once';
+      } catch (e) {
+        problem = (e as Error).message;
+      }
+      const text = problem
+        ? `It was running when Ledung stopped, but could not be resumed when Ledung started: ${problem}`
+        : 'Resumed when Ledung started: it was running when Ledung stopped.';
+      if (problem) console.log(`Manager "${info.title}": ${text}`);
+      this.publish({ type: 'message', message: this.store.addMessage(id, 'event', { text }) });
+      if (!problem && !exercised391) {
+        exercised391 = true;
+        exercisedLine('EXERCISED #391 a manager that was running when Ledung stopped resumed at start');
+      }
+    }
+  }
+
   /** Lets go of every live session without stopping them; used when Ledung restarts. */
   detachAll(): void {
     this.monitor.stop();
@@ -4412,6 +4484,10 @@ ${firstMessage}`);
 
   /** Stops every live session; used when Ledung is closed. Sessions can be resumed afterwards. */
   async shutdown(reason = 'Ledung was shut down. Resume to continue.'): Promise<void> {
+    // Written before any of them stops, so the next start resumes these and only these (#391). A manager stopped on
+    // purpose is no longer live, and one being stopped right now is 'stopping': neither is written.
+    const managers = [...this.live.values()].map((s) => s.info).filter((i) => i.role === 'manager' && RUNNING_STATUSES.has(i.status)).map((i) => i.id);
+    this.store.setMeta(MANAGERS_AT_STOP_KEY, JSON.stringify(managers));
     this.monitor.stop();
     this.away.stop();
     if (this.waitTimer) clearInterval(this.waitTimer);
