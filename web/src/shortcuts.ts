@@ -32,6 +32,15 @@ export function settingsText(view: ShortcutsView): string {
   return `A Ledung icon ${where}.`;
 }
 
+/**
+ * Settings offers Remove while any Ledung shortcut is there: a launcher icon, or the desktop app's own Start-menu entry,
+ * which `ledung` writes when it makes the app (#587; code review of PR #411, round 2: an npm-only install had the entry
+ * and no Remove).
+ */
+export function offersRemove(view: ShortcutsView): boolean {
+  return view.places.some((p) => p.present) || view.appEntry?.present === true;
+}
+
 /** The page's address, as much of it as stopRefusal reads; spelled out so the tests need no DOM. */
 type Place = { protocol: string; hostname: string; port: string };
 
