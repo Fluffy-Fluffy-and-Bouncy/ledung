@@ -4,7 +4,7 @@ import type { DockerProjectConfig, LedungConfig, LocalProjectConfig, ProjectConf
 import { ProjectStore, type StoredProject } from '../projects/store.ts';
 import { AccountError, AccountStore, DEFAULT_ACCOUNT, SIGN_IN_ENV, type AccountPlace } from '../accounts/store.ts';
 import { removeSignIn } from '../accounts/signin-store.ts';
-import type { AccountChoices, AccountInfoView, AwayInfo, AwayKind, HeavyCommandInfo, JobKindInfo, SignInProblem } from '../shared/protocol.ts';
+import type { AccountChoices, AccountInfoView, AccountSwitch, AwayInfo, AwayKind, HeavyCommandInfo, JobKindInfo, SignInProblem } from '../shared/protocol.ts';
 import { Away } from './away.ts';
 import { Orders } from './orders.ts';
 import { ChatImageError, type ChatImages } from './chat-images.ts';
@@ -254,6 +254,8 @@ export class SessionManager {
   private idleTimer: NodeJS.Timeout | null = null;
   /** Sessions to restart with new lockdown settings once they are free (issue #109). */
   private readonly relaunching = new Set<string>();
+  /** Account switches under way (issue #395), so the minute check, a turn end and Switch now never start two. */
+  private readonly switching = new Set<string>();
   /** Away mode (issue #35): one state for the whole Ledung. */
   readonly away: Away;
   /** Orders on record (issue #105): the person's word, allowing one command in a manager and the session it sent it to. */
@@ -491,7 +493,7 @@ export class SessionManager {
         this.book.turnEnded(id);
         this.dispatch();
         // A session waiting to take new lockdown settings may now be free (issue #109).
-        if (this.relaunching.has(id)) setImmediate(() => void this.relaunchWaiting());
+        if (this.relaunching.has(id) || this.switchDue(id)) setImmediate(() => void this.relaunchWaiting());
       },
     };
     Object.assign(this.gate, {
@@ -1399,8 +1401,105 @@ export class SessionManager {
       // A session from before lockdown existed has no record: it was launched with none.
       const launched = this.store.launchKey(s.id) ?? NO_LOCKDOWN_KEY;
       if (launched !== this.launchSettings(project, info.role).key) this.relaunching.add(s.id);
+      // Its project's account changed: it switches at its next quiet moment (issue #395). Chats are told by
+      // setAccountChoices, as a chat runs on the account it started with, which its settings don't say.
+      if (info.project !== CHATS && info.project !== HELPER) this.noteSwitch(info, project.account ?? null);
     }
     void this.relaunchWaiting();
+  }
+
+  // --- Account switches (issue #395) -------------------------------------------------------------
+
+  /**
+   * A running session should run on `to` (null: the computer's own login): it waits to switch, unless it is on it
+   * already. One that waits for, or failed, a switch to the same account is left as it is: a failed one is not
+   * tried again on its own (point 6), only when the account changes again or on Try again.
+   */
+  private noteSwitch(info: SessionInfo, to: string | null): void {
+    const now = info.accountSwitch ?? null;
+    if ((info.account ?? null) === to) {
+      if (now) this.setSwitch(info.id, null);
+      return;
+    }
+    if (now && now.to === to) return;
+    this.setSwitch(info.id, { to });
+  }
+
+  private setSwitch(id: string, value: AccountSwitch | null): void {
+    this.store.updateSession(id, { accountSwitch: value });
+    this.publish({ type: 'session', session: this.live.get(id)?.info ?? this.store.getSession(id)! });
+  }
+
+  /** Whether this session waits to switch accounts (a failed switch doesn't wait). */
+  private switchDue(id: string): boolean {
+    const sw = this.store.getSession(id)?.accountSwitch;
+    return !!sw && !sw.failed;
+  }
+
+  /**
+   * Stops the session and resumes it on `to`, keeping its conversation, folder, model, profile, permission mode and
+   * secrets as any resume does (issue #395). A resume that fails there resumes it on the account it had, says so in
+   * its chat and keeps the failure on the session, so it isn't tried again on its own. "Now on …" is startResumed's.
+   */
+  private async switchAccount(id: string, session: Session, to: string | null, by: string | null): Promise<void> {
+    const from = this.store.getSession(id)?.account ?? null;
+    const reason = by
+      ? `Stopped by ${by} to switch to ${accountLabel(to)} now; its conversation is kept.`
+      : `Ledung restarted this session to switch to ${accountLabel(to)}; its conversation is kept.`;
+    await session.stop(reason, { restart: true });
+    this.live.delete(id);
+    let failed: string | null;
+    // A start that ended has said why in the chat already ("Could not start: …"); a resume that threw has not.
+    let said = false;
+    try {
+      const after = await this.resume(id, { account: to });
+      failed = after.status === 'ended' ? after.endReason ?? 'it could not start.' : null;
+      said = true;
+    } catch (e) {
+      failed = (e as Error).message;
+    }
+    if (failed === null) return;
+    console.error(`Account switch of ${id} to ${to ?? 'default'}: ${failed}`);
+    this.setSwitch(id, { to, failed });
+    const text = `Couldn't switch to ${accountLabel(to)}, so it stays on ${accountLabel(from)}${said ? '; why is above.' : `: ${failed}`}`;
+    this.publish({ type: 'message', message: this.store.addMessage(id, 'event', { text }) });
+    try {
+      await this.resume(id, { account: from });
+    } catch (e) {
+      // Then it has ended as any resume that fails does, with the reason in its chat.
+      console.error(`Resuming ${id} on ${from ?? 'default'} after a failed switch: ${(e as Error).message}`);
+    }
+  }
+
+  /**
+   * The session header's buttons for a switch (issue #395): "now" switches a waiting session at once, stopping
+   * what it is doing (the page asked first); "retry" lets a failed one switch again at its next quiet moment.
+   */
+  async accountSwitchAction(id: string, action: unknown): Promise<void> {
+    const info = this.store.getSession(id);
+    if (!info) throw new UserError('No such session.');
+    const sw = info.accountSwitch;
+    if (!sw) throw new UserError('This session is not waiting to switch accounts.');
+    if (action === 'retry') {
+      if (!sw.failed) return;
+      this.setSwitch(id, { to: sw.to });
+      void this.relaunchWaiting();
+      return;
+    }
+    if (action !== 'now') throw new UserError('Send action "now" or "retry".');
+    if (sw.failed) throw new UserError('The last switch failed; use Try again.');
+    const session = this.live.get(id);
+    if (!session || info.status === 'ended') throw new UserError('The session has ended; it resumes on the new account.');
+    if (!info.claudeSessionId) throw new UserError('The session has not started yet; try again once it has.');
+    if (this.switching.has(id)) return;
+    this.switching.add(id);
+    this.relaunching.delete(id);
+    try {
+      await this.switchAccount(id, session, sw.to, this.config.userName);
+    } finally {
+      this.switching.delete(id);
+    }
+    this.dispatch();
   }
 
   /**
@@ -1410,9 +1509,11 @@ export class SessionManager {
    */
   async relaunchWaiting(): Promise<string[]> {
     const done: string[] = [];
-    for (const id of [...this.relaunching]) {
+    // With the sessions waiting to switch accounts (issue #395): the same quiet moment, and one restart does both.
+    const switches = [...this.live.keys()].filter((id) => this.switchDue(id));
+    for (const id of new Set([...this.relaunching, ...switches])) {
       // Another call may have taken it meanwhile (they overlap across awaits; review m1): never twice.
-      if (!this.relaunching.has(id)) continue;
+      if (this.switching.has(id) || (!this.relaunching.has(id) && !this.switchDue(id))) continue;
       const session = this.live.get(id);
       const info = this.store.getSession(id);
       if (!session || !info || info.status === 'ended') {
@@ -1420,17 +1521,26 @@ export class SessionManager {
         continue;
       }
       const state = session.idleState();
-      if (!state || state.info.status !== 'idle' || state.info.paused || state.turnOpen || state.pendingPermissions || state.backgroundTasks
-        || state.facts?.backgroundTasks || state.facts?.crons) continue;
+      // "starting" with no turn open is a resumed session not spoken to since (resumedState), as quiet as an idle one;
+      // one that has no Claude Code session id yet can't be resumed, so it waits for one.
+      if (!state || (state.info.status !== 'idle' && state.info.status !== 'starting') || state.info.paused || state.turnOpen || state.pendingPermissions
+        || state.backgroundTasks || state.facts?.backgroundTasks || state.facts?.crons || !info.claudeSessionId) continue;
       this.relaunching.delete(id);
-      if (!info.claudeSessionId) continue;
+      const sw = info.accountSwitch && !info.accountSwitch.failed ? info.accountSwitch : null;
+      this.switching.add(id);
       try {
-        await session.stop('Ledung restarted this session to apply lockdown settings; its conversation is kept.', { restart: true });
-        this.live.delete(id);
-        await this.resume(id);
+        if (sw) {
+          await this.switchAccount(id, session, sw.to, null);
+        } else {
+          await session.stop('Ledung restarted this session to apply lockdown settings; its conversation is kept.', { restart: true });
+          this.live.delete(id);
+          await this.resume(id);
+        }
         done.push(id);
       } catch (e) {
-        console.error(`Lockdown restart of ${id}: ${(e as Error).message}`);
+        console.error(`${sw ? 'Account switch' : 'Lockdown restart'} of ${id}: ${(e as Error).message}`);
+      } finally {
+        this.switching.delete(id);
       }
     }
     if (done.length) this.dispatch();
@@ -2197,9 +2307,22 @@ export class SessionManager {
       if (name && name !== DEFAULT_ACCOUNT && !this.accounts.get(name)) throw new UserError(`There is no account named "${name}".`);
       chosen.push([which, name === DEFAULT_ACCOUNT ? '' : name ?? '']);
     }
+    const before = this.accountChoices().chats;
     for (const [which, name] of chosen) this.store.setMeta(ACCOUNT_CHOICE_KEYS[which], name);
     this.publishAccounts();
-    return this.accountChoices();
+    const after = this.accountChoices();
+    // The running chats on the chats' account (or on their way to it) switch to the new one at their next quiet
+    // moment (issue #395); a chat started on another account keeps it.
+    if (after.chats !== before) {
+      for (const s of this.live.values()) {
+        const info = this.store.getSession(s.id);
+        if (!info || info.project !== CHATS || info.status === 'ended') continue;
+        const heading = info.accountSwitch ? info.accountSwitch.to : info.account ?? null;
+        if (heading === before) this.noteSwitch(info, after.chats);
+      }
+      void this.relaunchWaiting();
+    }
+    return after;
   }
 
   private publishAccounts(): void {
@@ -3578,20 +3701,24 @@ ${firstMessage}`);
    * Starts an ended session again from its Claude Code session id. History stays on the same Ledung
    * session. One resume at a time per session: a second call gets the one under way.
    */
-  resume(id: string): Promise<SessionInfo> {
+  resume(id: string, opts: { account?: string | null } = {}): Promise<SessionInfo> {
     const under = this.resuming.get(id);
     if (under) return under;
-    const resuming = this.startResumed(id).finally(() => this.resuming.delete(id));
+    const resuming = this.startResumed(id, opts).finally(() => this.resuming.delete(id));
     this.resuming.set(id, resuming);
     return resuming;
   }
 
-  private async startResumed(id: string): Promise<SessionInfo> {
+  private async startResumed(id: string, opts: { account?: string | null } = {}): Promise<SessionInfo> {
     const info = this.store.getSession(id);
     if (!info) throw new UserError('No such session.');
     if (this.live.has(id) && info.status !== 'ended') throw new UserError('The session is still running.');
     if (!info.claudeSessionId) throw new UserError('This session never got far enough to be resumed.');
-    const project = this.configOf(info);
+    // An account switch's own (issue #395); a chat keeps the account it started with, unless it waits to switch:
+    // then it takes the new one now. A project's sessions get the project's account in any case.
+    const pending = info.accountSwitch && !info.accountSwitch.failed ? info.accountSwitch.to : undefined;
+    const account = opts.account !== undefined ? opts.account : info.project === CHATS ? pending : undefined;
+    const project = account === undefined ? this.configOf(info) : onAccount(this.configOf(info), account);
     // In the folder it started in: Claude Code finds a conversation by its working folder.
     this.checkWorkDir(project, info);
     // A stopped session's host stays on its pipe for a moment after Claude Code exits; a new host must
@@ -3609,6 +3736,12 @@ ${firstMessage}`);
     this.live.set(id, session);
     this.publish({ type: 'session', session: session.info });
     await session.start();
+    // On the account it waited to switch to (issue #395): the switch is done, and its chat says so.
+    const now = this.store.getSession(id)!;
+    if (now.accountSwitch && now.status !== 'ended' && (now.account ?? null) === now.accountSwitch.to) {
+      this.setSwitch(id, null);
+      this.publish({ type: 'message', message: this.store.addMessage(id, 'event', { text: `Now on ${accountLabel(now.account)}.` }) });
+    }
     // Hand over what waited for it (answers, messages). Claude Code no longer sends the empty result
     // on resume that used to trigger this (spike finding 7; idle stop live test).
     session.deliver();
@@ -4493,6 +4626,17 @@ function mcpLines(profile: Profile): string[] {
 const withWarning = (message: string, profiles: EffectiveProfiles) => (profiles.warning ? `${message} ${profiles.warning}` : message);
 
 /** Where a project's sessions run, for its account's login folder. */
+/** An account as a session's chat names it (issue #395); null: the computer's own login. */
+function accountLabel(account: string | null): string {
+  return account ? `the account "${account}"` : "the computer's own login";
+}
+
+/** These settings on another account (issue #395); null: the computer's own login. */
+function onAccount(project: ProjectConfig, account: string | null): ProjectConfig {
+  const { account: _, ...rest } = project;
+  return (account ? { ...rest, account } : rest) as ProjectConfig;
+}
+
 function placeOf(project: ProjectConfig): AccountPlace {
   return project.runner === 'docker' ? 'docker' : 'local';
 }

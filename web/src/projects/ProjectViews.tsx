@@ -73,7 +73,7 @@ function NameField(f: FieldProps) {
 
 function AccountField(f: FieldProps & { accounts: AccountInfoView[]; container?: boolean }) {
   return (
-    <Field name="Claude account" hint="(for its manager and all its sessions)" line={inheritLine(f, 'account', "this computer's own login")}>
+    <Field name="Claude account" hint="(for its manager and all its sessions; running ones switch to a new one when their turn ends)" line={inheritLine(f, 'account', "this computer's own login")}>
       {(id) => (
         <select id={id} value={f.value.account} onChange={setter(f, 'account')}>
           <option value="">default: this computer's own login</option>

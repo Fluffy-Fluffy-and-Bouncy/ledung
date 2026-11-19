@@ -378,6 +378,7 @@ export const api = {
   setPaused: (sessionId: string, paused: boolean) => call('POST', `/api/sessions/${sessionId}/pause`, { paused }),
   cancelClear: (sessionId: string) => call('POST', `/api/sessions/${sessionId}/cancel-clear`, {}),
   startNow: (sessionId: string) => call('POST', `/api/sessions/${sessionId}/start-now`, {}),
+  accountSwitch: (sessionId: string, action: 'now' | 'retry') => call('POST', `/api/sessions/${sessionId}/account-switch`, { action }),
   turns: (sessionId: string) => call<TurnResource[]>('GET', `/api/sessions/${sessionId}/turns`),
   board: () => call<BoardStatus>('GET', '/api/board'),
   boardThreads: () => call<BoardThreadsView>('GET', '/api/board-threads'),

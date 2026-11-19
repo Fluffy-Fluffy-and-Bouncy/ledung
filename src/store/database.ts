@@ -778,6 +778,11 @@ const MIGRATIONS: string[] = [
     UNIQUE (project, tool_name, command)
   );
   `,
+  // An account switch waiting for a quiet moment, or one that failed (issue #395): JSON { to, failed? }; null: none.
+  // On the session, so a pending switch outlives Restart Ledung and the page gets it with the session.
+  `
+  ALTER TABLE sessions ADD COLUMN account_switch TEXT;
+  `,
 ];
 
 export function databaseFile(dir = userDataDir()): string {

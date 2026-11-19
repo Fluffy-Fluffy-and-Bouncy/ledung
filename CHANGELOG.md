@@ -9,6 +9,9 @@ under today's date, creating the heading at the top if it is missing; the pre-pu
 that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
 is nothing user-facing in it).
 
+## 2026-11-19
+- Changing a project's account, or Settings' account for chats, now switches its running sessions (the manager included) by itself: each finishes what it is doing, then carries on on the new account with the same conversation, folder, model and settings, and its chat says "Now on …". Until then the session's header and its sidebar hover say "Switches to … when this turn ends", with **Switch now** to do it at once (it asks first, as that stops what the session is doing). A switch that can't be done, for example because the new account isn't signed in, leaves the session on its old account and says why, with **Try again**. A switch still waiting when Ledung restarts happens afterwards. (#395)
+
 ## 2026-11-12
 - Sidebar, CPU, Memory and GPU bars: drag the handle on a bar's limit line to set the limit. A label shows the value as you drag ("GPU 50%", "Memory 48 GB", in steps of 5% or 1 GB), it applies when you let go, and dragging to the right end removes the limit. With no limit the handle waits at the right end and shows when you point at the bar. The keyboard works too: arrow keys, Home and End, then Enter. The number editor now opens with a double-click (a tap on a phone) and has a slider next to the number field; on a phone it is the way to set a limit. (#295)
 - Machine panel: virtual displays (Parsec's, a virtual monitor driver) no longer show up as extra copies of your graphics card under "Other GPUs"; a GPU limit you set on the card while it was listed as "#1" still applies to it. (#304)

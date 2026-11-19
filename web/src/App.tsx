@@ -13,6 +13,7 @@ import { WorkingIndicator } from './components/WorkingIndicator.tsx';
 import { SailingShip, shipMode } from './components/SailingShip.tsx';
 import { indexSessions, REMOVED_PROJECTS, sidebarTree, type Row, type SessionIndex } from './sessionTree.ts';
 import { useNow } from './clock.ts';
+import { accountName, switchState, switchTooltip } from './accountSwitch.ts';
 import { FileViewer } from './components/FileViewer.tsx';
 import { FilesPane } from './components/FilesPane.tsx';
 import type { PaneFolderKey } from '../../src/shared/files-pane.ts';
@@ -1048,7 +1049,7 @@ const Sidebar = memo(function Sidebar(props: {
         ) : (
         <button
           className={`session-item${s.id === props.openId ? ' open' : ''}${depth ? ' child' : ''}${drag?.id === s.id ? ' dragging' : ''}${rowStatus(dotShown, s).ended ? ' ended-row' : ''}`}
-          title={rowTooltip(compact, rowStatus(dotShown, s).tooltip, time, usage)}
+          title={rowTooltip(compact, rowStatus(dotShown, s).tooltip, time, usage, switchTooltip(s))}
           onClick={() => props.onOpen(s.id)}
           onDoubleClick={() => setRenaming(s.id)}
           data-drag={group ?? undefined}
@@ -1448,6 +1449,12 @@ export function SessionView(props: {
               compacting={session.compacting!}
               by={session.compacting!.requester === session.id ? 'the session itself' : `manager "${index.byId.get(session.compacting!.requester)?.title ?? 'a manager'}"`}
             />
+          </div>
+        )}
+        {session.accountSwitch && (
+          // A line of its own under the header, like the compacting notice: the reason of a failed one can be long.
+          <div className="session-notice">
+            <AccountSwitchNotice key={session.id} session={session} run={run} />
           </div>
         )}
       </header>
@@ -2022,6 +2029,44 @@ function Composer({ session, tint, run, quoteInto, actionsInto, bangShell }: {
 }
 
 /** A clear (clear_session) counting down: the seconds left and Cancel, which keeps the conversation. */
+/**
+ * A session's account switch (issue #395): "Switches to … when this turn ends" with Switch now, which asks first as
+ * it stops what the session is doing; or a failed one with its reason and Try again.
+ */
+function AccountSwitchNotice({ session, run }: { session: SessionInfo; run: (f: () => Promise<unknown>) => void }) {
+  const [asking, setAsking] = useState(false);
+  const state = switchState(session);
+  if (!state) return null;
+  const to = accountName(session.accountSwitch!.to);
+  if (state.kind === 'failed') {
+    return (
+      <div className="account-switch failed" role="status">
+        <span><strong>{state.text}</strong> <span className="account-switch-reason">{state.reason}</span></span>
+        <button className="small" title={`Switch to ${to} at its next quiet moment`} onClick={() => run(() => api.accountSwitch(session.id, 'retry'))}>Try again</button>
+      </div>
+    );
+  }
+  const live = session.status !== 'ended' && !!session.claudeSessionId;
+  return (
+    <div className="account-switch" role="status">
+      {asking ? (
+        <>
+          <span>This stops what it's doing now and resumes it on {to}; its conversation and open questions are kept.</span>
+          <span className="account-switch-buttons">
+            <button className="primary small" onClick={() => { setAsking(false); run(() => api.accountSwitch(session.id, 'now')); }}>Switch now</button>
+            <button className="small" onClick={() => setAsking(false)}>Cancel</button>
+          </span>
+        </>
+      ) : (
+        <>
+          <span>{state.text}.</span>
+          {live && <button className="small" title="Switch at once, stopping what it is doing" onClick={() => setAsking(true)}>Switch now</button>}
+        </>
+      )}
+    </div>
+  );
+}
+
 function ClearCountdown({ due, onCancel }: { due: number; onCancel: () => void }) {
   // The page's shared clock (issue #233).
   const now = useNow(500);
