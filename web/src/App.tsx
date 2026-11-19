@@ -78,6 +78,7 @@ import { frameLevel, LOCK_HINT } from './lockdownFrame.ts';
 import { useLedung, type Connection } from './useLedung.ts';
 import { STATUS_LABEL, statusLook } from './sessionStatus.ts';
 import { useNotifications } from './useNotifications.ts';
+import { isMacLike, newWindowTitle, openNewWindow, type NewWindowHost } from './newWindow.ts';
 import { formatBytes, formatCores, MachinePanel, PRIORITY_LABEL } from './usage/MachinePanel.tsx';
 import { usePlainTyping } from './usePlainTyping.ts';
 import { coarsePointer } from './coarsePointer.ts';
@@ -1236,6 +1237,20 @@ ${moreHint}`} onClick={() => props.onOpen('chat')}><Named colour={props.chats?.c
           aria-pressed={isSettingsView(props.openId)}
           onClick={() => (isSettingsView(props.openId) ? props.onCloseSettings() : props.onOpen('settings'))}
         >⚙</button>
+        {/* Another window of the page, beside the ⚙ (issue #414; icon 1, "Stacked windows", Martin, Ledung question
+            #590): the desktop app opens an app window, a browser a new window or tab. */}
+        <button
+          className="icon new-window"
+          title={newWindowTitle(isMacLike(navigator))}
+          aria-label="New window"
+          onClick={() => openNewWindow(window as unknown as NewWindowHost)}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M7 8V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-3" />
+            <rect x="3" y="8" width="13" height="13" rx="2" />
+            <path d="M3 12h13" />
+          </svg>
+        </button>
         {/* Usage and the board are chips here, not buttons at the top (issue #400, Ledung question #393), on one row. The
             connection is the board chip's border, or the Usage chip's when there is no board (Ledung question #397). */}
         <span className="footer-chips">

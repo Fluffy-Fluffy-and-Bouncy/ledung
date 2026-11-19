@@ -1,4 +1,5 @@
-// Ledung in a desktop window (issue #358, epic #357): one window showing this computer's running Ledung, signed in.
+// Ledung in a desktop window (issue #358, epic #357): windows showing this computer's running Ledung, signed in; one
+// at start, more by File → New Window (#414).
 // With none running, the window says so and offers Start Ledung, which runs the installed `ledung` command (D5, #362,
 // desktop/start.ts), and Retry.
 //
@@ -6,7 +7,7 @@
 // check, sign-in cookie, Origin check and "no embedding" apply unchanged. Sign-in sets the cookie from this main
 // process (Mac spike 2026-11-17: GET /api/state 200 with no token in any URL); the token never goes into a URL or a
 // command line.
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, session, shell, type MenuItemConstructorOptions, type NativeImage, type Session, type WebContents } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, session, shell, type BaseWindow, type IpcMainEvent, type NativeImage, type Session, type WebContents } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
@@ -14,7 +15,9 @@ import { dataDir, findRunning } from './attach.ts';
 import { dockIconLayout, padBitmap } from './dock-icon.ts';
 import { zoomed, zoomKey } from './keys.ts';
 import { APP_ID, readMadeConfig, WRITE_SHORTCUT_ARG } from './made.ts';
+import { menuTemplate } from './menu.ts';
 import { runStart, startCommand } from './start.ts';
+import { WindowList } from './windows.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 /**
@@ -36,10 +39,11 @@ if (made) {
   if (process.platform === 'win32') app.setAppUserModelId(APP_ID);
 }
 const NOT_RUNNING_PAGE = path.join(here, 'not-running.html');
-/** The page's one bridge to the app (#360): showing the window when a notification is clicked. */
+/** The page's bridge to the app: showing its window when a notification is clicked (#360), opening another (#414). */
 const PRELOAD = path.join(here, 'preload.cjs');
-/** The message the preload sends for it (preload.cjs). */
+/** The messages the preload sends for them (preload.cjs). */
 export const SHOW_WINDOW_MESSAGE = 'ledung-desktop:show-window';
+export const NEW_WINDOW_MESSAGE = 'ledung-desktop:new-window';
 /**
  * Ledung's own icon (#384), the page's app icon: next to main.js in the npm package and the made app (#407), from the
  * clone's web/public in a clone run. A PNG, since Electron's images load no SVG. Exported for the probe, which checks
@@ -65,12 +69,22 @@ export function dockIcon(): NativeImage {
 /** One partition for the app's cookies, kept between starts, apart from Electron's default session. */
 const PARTITION = 'persist:ledung';
 
-let win: BrowserWindow | null = null;
+/** The app's windows, the most recently used last (#414). All show the same Ledung, or all the "not running" page. */
+const windows = new WindowList<BrowserWindow>();
+/** The windows still open: one being destroyed is in the list until its `closed`. */
+const openWindows = (): BrowserWindow[] => windows.all().filter((w) => !w.isDestroyed());
+/** The app's window that is `w`, if `w` is one: the menu hands its items the focused window as a BaseWindow. */
+const ownWindow = (w: BaseWindow | undefined): BrowserWindow | null => openWindows().find((x) => x === w) ?? null;
+/**
+ * The window a menu item acts on: the focused one Electron hands it, or with none (the Mac's menu while every window
+ * is hidden, an item clicked from code) the most recently used, as when the app had one window.
+ */
+const menuWindow = (w: BaseWindow | undefined): BrowserWindow | null => (w === undefined ? windows.latest() : ownWindow(w));
 /** Set once the app is really quitting (⌘Q, Alt+F4, logging off): from then on closing closes. */
 let quitting = false;
 /** Windows is logging off or shutting down: nothing may hold that up, not even unsaved changes. */
 let sessionEnding = false;
-/** The origin the window may show: the attached Ledung's, or none while the "not running" page is up. */
+/** The origin the windows may show: the attached Ledung's, or none while the "not running" page is up. */
 let ownOrigin: string | null = null;
 let attaching = false;
 /** A start (#362) is under way: the page says so, and neither Start nor Retry does anything until it ends. */
@@ -95,8 +109,9 @@ function sameOrigin(url: string): boolean {
 }
 
 /**
- * The window shows Ledung's page and nothing else: a navigation away from its origin is refused, and so is every new
- * window. A web link elsewhere (a pull request in a chat) opens in the default browser instead.
+ * A window shows Ledung's page and nothing else: a navigation away from its origin is refused, and so is every new
+ * window the page opens. A web link elsewhere (a pull request in a chat) opens in the default browser instead. The
+ * page's New window button asks through the preload instead (#414), so a same-origin link still opens nothing.
  */
 function lockNavigation(wc: WebContents): void {
   wc.on('will-navigate', (event, url) => {
@@ -125,10 +140,20 @@ function lockNavigation(wc: WebContents): void {
   });
 }
 
-/** The page with Start Ledung and Retry, saying why; `state` "starting" shows a start under way and no buttons. */
-async function showNotRunning(reason: string, state: 'stopped' | 'starting' | 'failed' = 'stopped'): Promise<void> {
+type NotRunningState = 'stopped' | 'starting' | 'failed';
+
+/** The "not running" page in one window. */
+async function loadNotRunning(w: BrowserWindow, reason: string, state: NotRunningState): Promise<void> {
+  if (!w.isDestroyed()) await w.loadFile(NOT_RUNNING_PAGE, { query: { reason, state } });
+}
+
+/**
+ * The page with Start Ledung and Retry, saying why, in every window: they share the one Ledung, so when it is gone it
+ * is gone for all (#414). `state` "starting" shows a start under way and no buttons.
+ */
+async function showNotRunning(reason: string, state: NotRunningState = 'stopped'): Promise<void> {
   ownOrigin = null;
-  if (win && !win.isDestroyed()) await win.loadFile(NOT_RUNNING_PAGE, { query: { reason, state } });
+  await Promise.all(openWindows().map((w) => loadNotRunning(w, reason, state)));
 }
 
 /**
@@ -150,19 +175,21 @@ async function signIn(ses: Session, origin: string, token: string): Promise<void
  * answering: the page shows that line instead of the plain reason.
  */
 async function attach(failed?: string): Promise<void> {
-  if (attaching || starting || !win) return;
+  if (attaching || starting || windows.size === 0) return;
   attaching = true;
   try {
     const found = await findRunning();
-    if (!win || win.isDestroyed()) return;
+    if (openWindows().length === 0) return;
     if (!found.running) {
       await showNotRunning(failed ?? found.reason, failed ? 'failed' : 'stopped');
       return;
     }
     const origin = `http://127.0.0.1:${found.port}`;
-    await signIn(win.webContents.session, origin, found.token);
+    // One partition for every window, so signing it in signs them all in (#414).
+    await signIn(session.fromPartition(PARTITION), origin, found.token);
     ownOrigin = origin;
-    await win.loadURL(`${origin}/`);
+    // Every window: a window opened while this ran is in the list by now, and shows the page too.
+    await Promise.all(openWindows().map((w) => w.loadURL(`${origin}/`)));
   } catch (e) {
     // A failed page load is shown by did-fail-load; this only says it in the terminal.
     console.error(`Ledung desktop: ${(e as Error).message}`);
@@ -182,7 +209,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * Start Ledung and Retry again; nothing here shows a dialog or throws (Mac spike surprise 3).
  */
 async function start(): Promise<void> {
-  if (starting || attaching || !win) return;
+  if (starting || attaching || windows.size === 0) return;
   starting = true;
   let failed: string | undefined;
   try {
@@ -225,34 +252,46 @@ function limitPermissions(ses: Session): void {
   ses.setPermissionCheckHandler((_wc, permission, requestingOrigin) => allowed(permission, requestingOrigin));
 }
 
-/** Brings the hidden (or minimised) window back to the front: a second start, a click in the Dock. */
-function showWindow(): void {
+/**
+ * Brings a hidden (or minimised) window back to the front: `w`, or else the most recently used one (#414), for a
+ * second start, a click in the Dock. With none open, a new one.
+ */
+function showWindow(w: BrowserWindow | null = windows.latest()): void {
   if (!app.isReady()) return;
-  if (!win || win.isDestroyed()) {
+  if (!w || w.isDestroyed()) {
     createWindow();
     return;
   }
-  if (win.isMinimized()) win.restore();
-  win.show();
-  win.focus();
+  if (w.isMinimized()) w.restore();
+  w.show();
+  w.focus();
   // Started again from a terminal, the app is not the active one on the Mac, and focus alone leaves it behind.
   if (process.platform === 'darwin') app.focus({ steal: true });
 }
 
-/** Closing the window, by its button or ⌘W/Ctrl+W, only hides it: the app stays, so notifications keep coming (#359). */
-function hideWindow(): void {
-  if (!win || win.isDestroyed()) return;
+/** Hides a window: what closing the last one does. */
+function hideWindow(w: BrowserWindow): void {
+  if (w.isDestroyed()) return;
   // Hidden while in full screen, a Mac window leaves an empty black Space behind: leave full screen first (self-check
   // finding 2).
-  if (win.isFullScreen()) {
-    const w = win;
+  if (w.isFullScreen()) {
     w.once('leave-full-screen', () => {
       if (!w.isDestroyed()) w.hide();
     });
     w.setFullScreen(false);
     return;
   }
-  win.hide();
+  w.hide();
+}
+
+/**
+ * Closing a window, by its button or ⌘W/Ctrl+W: the last one only hides, so the app stays and notifications keep
+ * coming (#359); any other closes for real, and the rest stay (#414).
+ */
+function closeWindow(w: BrowserWindow): void {
+  if (w.isDestroyed()) return;
+  if (windows.closeHides(w)) hideWindow(w);
+  else w.close();
 }
 
 /** Ends the app: the window may close for real now. The Ledung it attached to is another program, and stays. */
@@ -265,48 +304,46 @@ function quit(): void {
  * Ctrl+O, as the page hears it: the page binds Show tool calls to Ctrl+O on every system so that ⌘O stays the
  * browser's (web/src/sessionMenu.ts). In the app ⌘O is the app's own, so it hands the page the page's key.
  */
-function sendToolCallsKey(): void {
-  if (!win || win.isDestroyed() || ownOrigin === null) return;
-  win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'O', modifiers: ['control'] });
-  win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'O', modifiers: ['control'] });
+function sendToolCallsKey(w: BrowserWindow): void {
+  if (w.isDestroyed() || ownOrigin === null) return;
+  w.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'O', modifiers: ['control'] });
+  w.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'O', modifiers: ['control'] });
 }
+
+/** The app's menu (desktop/menu.ts); its items act on the focused window, which Electron hands them. */
+function buildMenu(): Menu {
+  return Menu.buildFromTemplate(menuTemplate<BaseWindow>(process.platform, {
+    newWindow: () => newWindow(),
+    closeWindow: (w) => {
+      const own = menuWindow(w);
+      if (own) closeWindow(own);
+    },
+    toolCalls: (w) => {
+      const own = menuWindow(w);
+      if (own) sendToolCallsKey(own);
+    },
+    quit,
+  }));
+}
+
+/** How far a new window sits from the one it opened from, right and down, so both can be seen (#414). */
+const NEW_WINDOW_OFFSET = 28;
 
 /**
- * The app's menu owns the keys a browser keeps (#359): ⌘W/Ctrl+W hides the window instead of closing it, ⌘O on the
- * Mac is the page's Ctrl+O, ⌘Q (Mac) and Alt+F4 (Windows) end the app. Edit, View and Window keep their
- * standard items, so copy and paste, reload and zoom work as in the default menu. The ids let the probe press items.
- * On Windows and Linux the menu is never shown (#389); it stays only for these keys (createWindow).
+ * Another window (#414): File → New Window, ⌘N/Ctrl+N, or the page's New window button. It shows the same Ledung,
+ * signed in by the shared partition, at its start page, with a route and scroll of its own.
  */
-function buildMenu(): Menu {
-  const mac = process.platform === 'darwin';
-  const closeWindow: MenuItemConstructorOptions = { id: 'close-window', label: 'Close Window', accelerator: 'CmdOrCtrl+W', click: hideWindow };
-  const quitItem: MenuItemConstructorOptions = { id: 'quit', label: mac ? 'Quit Ledung' : 'Quit', accelerator: mac ? 'Cmd+Q' : 'Alt+F4', click: quit };
-  const toolCalls: MenuItemConstructorOptions = { id: 'tool-calls', label: 'Show Tool Calls', accelerator: 'Cmd+O', click: sendToolCallsKey };
-  const separator: MenuItemConstructorOptions = { type: 'separator' };
-  const template: MenuItemConstructorOptions[] = [
-    ...(mac
-      ? [{
-          label: 'Ledung',
-          submenu: [
-            { role: 'about' }, separator, { role: 'services' }, separator,
-            { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, separator, quitItem,
-          ],
-        } satisfies MenuItemConstructorOptions]
-      : []),
-    { label: 'File', submenu: mac ? [toolCalls, closeWindow] : [closeWindow, separator, quitItem] },
-    { role: 'editMenu' },
-    { role: 'viewMenu' },
-    // Spelled out: the standard Window menu on Windows has a Close of its own on Ctrl+W.
-    { label: 'Window', submenu: mac ? [{ role: 'minimize' }, { role: 'zoom' }, separator, { role: 'front' }] : [{ role: 'minimize' }] },
-  ];
-  return Menu.buildFromTemplate(template);
+function newWindow(): BrowserWindow {
+  const from = windows.latest();
+  const at = from && !from.isDestroyed() && from.isVisible() && !from.isFullScreen() ? from.getBounds() : null;
+  return createWindow(at ? { x: at.x + NEW_WINDOW_OFFSET, y: at.y + NEW_WINDOW_OFFSET, width: at.width, height: at.height } : undefined);
 }
 
-function createWindow(): void {
+/** Opens a window and shows the attached Ledung in it, or finds one; `bounds` places it (newWindow), else the default. */
+function createWindow(bounds?: { x: number; y: number; width: number; height: number }): BrowserWindow {
   limitPermissions(session.fromPartition(PARTITION));
-  win = new BrowserWindow({
-    width: 1280,
-    height: 860,
+  const w = new BrowserWindow({
+    ...(bounds ?? { width: 1280, height: 860 }),
     title: 'Ledung',
     backgroundColor: '#1b1d22',
     // The window's and the Windows taskbar's icon; the Mac takes the Dock's, set at start (#384).
@@ -316,10 +353,12 @@ function createWindow(): void {
     // what made Alt show it. The Mac ignores both: its menu is the system's.
     autoHideMenuBar: false,
     webPreferences: {
+      // The same partition in every window: one sign-in, one set of cookies (#414).
       session: session.fromPartition(PARTITION),
       contextIsolation: true,
       sandbox: true,
-      // One function for the page, `ledungDesktop.showWindow()`, which a click on its notification calls (#360).
+      // Two functions for the page: `ledungDesktop.showWindow()`, which a click on its notification calls (#360), and
+      // `ledungDesktop.newWindow()`, the New window button's (#414).
       preload: PRELOAD,
       nodeIntegration: false,
       // A hidden window keeps its timers at full speed, so notifications come on time (Windows spike: one 13–14 ms
@@ -327,25 +366,34 @@ function createWindow(): void {
       backgroundThrottling: false,
     },
   });
-  // Hidden, not removed: the hidden menu's accelerators still work (Ctrl+W, Alt+F4, copy and paste, zoom), and with
-  // auto-hide off nothing shows it again (#389).
-  if (process.platform !== 'darwin') win.setMenuBarVisibility(false);
-  const contents = win.webContents;
+  windows.add(w);
+  // Hidden, not removed: the hidden menu's accelerators still work (Ctrl+N, Ctrl+W, Alt+F4, copy and paste, zoom), and
+  // with auto-hide off nothing shows it again (#389).
+  if (process.platform !== 'darwin') w.setMenuBarVisibility(false);
+  const contents = w.webContents;
   lockNavigation(contents);
-  win.on('close', (event) => {
+  w.on('focus', () => windows.focused(w));
+  w.on('close', (event) => {
     if (quitting) return;
-    event.preventDefault();
-    hideWindow();
+    if (windows.closeHides(w)) {
+      event.preventDefault();
+      hideWindow(w);
+      return;
+    }
+    // Closing for real: out of the list now, not at `closed`, so a second window closed straight after this one is
+    // the last and hides, and the app never ends by its windows closing (#414).
+    windows.remove(w);
   });
   // Windows: logging off or shutting down closes the window; let it, or the app would hold the logoff up.
-  win.on('session-end', () => {
+  w.on('session-end', () => {
     quitting = true;
     sessionEnding = true;
   });
-  // A page with unsaved changes (the flow builder's) asks before it is left, by quitting or reloading. A browser asks
-  // the person then; Electron would silently stay instead, and a cancelled quit would leave `quitting` set, so the next
-  // close would end the app instead of hiding it (self-check finding 1). Ask as a browser does; Stay keeps everything.
-  win.webContents.on('will-prevent-unload', (event) => {
+  // A page with unsaved changes (the flow builder's) asks before it is left, by quitting, reloading or closing a
+  // window that closes for real (#414). A browser asks the person then; Electron would silently stay instead, and a
+  // cancelled quit would leave `quitting` set, so the next close would end the app instead of hiding it (self-check
+  // finding 1). Ask as a browser does; Stay keeps everything.
+  contents.on('will-prevent-unload', (event) => {
     // Logging off: leave without asking, or the question would hold the logoff up (code review of PR #372, Minor 2).
     if (sessionEnding) {
       event.preventDefault();
@@ -353,8 +401,8 @@ function createWindow(): void {
     }
     // The question belongs to the window: asked of a hidden one (⌘W, then Quit from the Dock) it may never be seen,
     // and the app would wait on it for good (code review of PR #372, Minor 2). Show the window first.
-    showWindow();
-    const choice = dialog.showMessageBoxSync(win!, {
+    showWindow(w);
+    const choice = dialog.showMessageBoxSync(w, {
       type: 'question',
       buttons: ['Leave', 'Stay'],
       defaultId: 1,
@@ -363,11 +411,15 @@ function createWindow(): void {
       detail: 'Changes you made may not be saved.',
     });
     if (choice === 0) event.preventDefault();
-    else quitting = false;
+    else {
+      quitting = false;
+      // A window that was closing stays: back in the list (#414).
+      if (!windows.has(w)) windows.add(w);
+    }
   });
   // Alt+F4 on Windows quits, where the window's close button hides; the system turns both into the same close, so the
   // key is noted on its way in, in case the system handles it before the menu's accelerator does.
-  win.webContents.on('before-input-event', (event, input) => {
+  contents.on('before-input-event', (event, input) => {
     if (process.platform === 'win32' && input.type === 'keyDown' && input.alt && !input.control && !input.meta && input.key === 'F4') quitting = true;
     // Ctrl and "+" zooms in on every layout (#389, desktop/keys.ts); the menu's own Zoom In matches the US key only.
     // Taken here, so the menu does not zoom a second time on a US keyboard.
@@ -378,15 +430,28 @@ function createWindow(): void {
   });
   // Ctrl and the mouse wheel: Electron only reports it, and zooms nothing unless the app does (#389). Off the Mac,
   // which is unchanged.
-  win.webContents.on('zoom-changed', (_event, direction) => {
+  contents.on('zoom-changed', (_event, direction) => {
     if (process.platform !== 'darwin') contents.zoomLevel = zoomed(contents.zoomLevel, direction);
   });
-  // A window opened again (the Dock) while a start runs shows that it runs; the start shows the outcome in it.
-  if (starting) void showNotRunning('Starting Ledung in the background…', 'starting');
-  win.on('closed', () => {
-    win = null;
-  });
-  void attach();
+  w.on('closed', () => windows.remove(w));
+  // A window opened while a start runs (the Dock, New Window) shows that it runs; the start shows the outcome in it.
+  if (starting) void loadNotRunning(w, 'Starting Ledung in the background…', 'starting');
+  // Attached already (New Window, #414): this window shows the page; the partition is signed in.
+  else if (ownOrigin !== null) w.loadURL(`${ownOrigin}/`).catch((e: Error) => console.error(`Ledung desktop: ${e.message}`));
+  // Not attached, or an attach under way: it loads every window in the list, this one too.
+  else void attach();
+  return w;
+}
+
+/**
+ * The window a message from the preload came from, when Ledung's own page asked in its top frame: not the "not
+ * running" page, and not a frame of anything else (#360). Null for any other sender.
+ */
+function askingWindow(event: IpcMainEvent): BrowserWindow | null {
+  const frame = event.senderFrame;
+  const w = BrowserWindow.fromWebContents(event.sender);
+  if (!w || w.isDestroyed() || !windows.has(w) || event.sender !== w.webContents || !frame || frame.parent !== null || !sameOrigin(frame.url)) return null;
+  return w;
 }
 
 // One app per computer: a second start shows the first one's window and ends (#359). Asked before anything else, so
@@ -407,21 +472,25 @@ if (shortcutFile) {
 } else if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', showWindow);
-  // A click on one of the page's notifications (#360). Only Ledung's own page, in this window's top frame, may ask:
-  // not the "not running" page, and not a frame of anything else.
+  // A second start brings the most recently used window forward (#414).
+  app.on('second-instance', () => showWindow());
+  // A click on one of the page's notifications (#360) shows the window whose page showed it: the page then opens the
+  // session it was about there.
   ipcMain.on(SHOW_WINDOW_MESSAGE, (event) => {
-    const frame = event.senderFrame;
-    if (!win || win.isDestroyed() || event.sender !== win.webContents || !frame || frame.parent !== null || !sameOrigin(frame.url)) return;
-    showWindow();
+    const w = askingWindow(event);
+    if (w) showWindow(w);
+  });
+  // The page's New window button (#414).
+  ipcMain.on(NEW_WINDOW_MESSAGE, (event) => {
+    if (askingWindow(event)) newWindow();
   });
   app.on('before-quit', () => {
     quitting = true;
   });
-  // Reached only while quitting, since closing otherwise hides.
+  // Reached only while quitting, since closing the last window hides it (#414: the list counts one closing as gone).
   app.on('window-all-closed', () => app.quit());
-  // A click on the app in the Dock (Mac), the window hidden or not.
-  app.on('activate', showWindow);
+  // A click on the app in the Dock (Mac), the windows hidden or not: the most recently used comes forward (#414).
+  app.on('activate', () => showWindow());
   void app.whenReady().then(() => {
     Menu.setApplicationMenu(buildMenu());
     // Run from a clone the app is Electron's own, with Electron's icon in the Dock until it is told otherwise (#384),
