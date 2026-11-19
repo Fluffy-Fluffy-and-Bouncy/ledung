@@ -73,8 +73,8 @@ test('the Mac\'s own page pairs its frame of the PC through the link: a read-onl
   const change = await pub('POST', 'computers', JSON.stringify({ id: pc.name, name: 'Hacked' }));
   assert.equal(change.status, 403);
   assert.match(JSON.parse(change.body).error, /no passkey, so it can only look/);
-  // The PC's notices are this computer's: not through the public name.
-  assert.deepEqual(JSON.parse((await pub('GET', 'state')).body).linkPairings, []);
+  // Through the public name too, as Waiting for you counts it there (issue #412).
+  assert.equal(JSON.parse((await pub('GET', 'state')).body).linkPairings[0]?.device?.id, device.id);
 
   // OK on the PC takes the card away; the device stays.
   assert.equal((await pcPage('POST', `link-pairings/${notice.id}/dismiss`, {})).status, 200);
@@ -150,7 +150,10 @@ test('at most one pairing code per linked computer every 10 minutes', { timeout:
   assert.equal((await pcPage('GET', 'state')).json.linkPairings.length, 1, 'the refused one made no code');
   nodes.clock += 60 * 1000;
   assert.equal((await macPage('POST', 'link-device-pair', { id: pc.name })).status, 200);
-  assert.equal((await pcPage('GET', 'state')).json.linkPairings.length, 2);
+  // The first code expired unused as the second was made, so its card cleared itself (issue #412): only the new one.
+  const cards = (await pcPage('GET', 'state')).json.linkPairings;
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].at, nodes.clock);
 });
 
 test('a pairing code from this computer\'s own Settings is not marked as through the link', { timeout: HANG_MS }, async () => {
@@ -164,7 +167,7 @@ test('a pairing code from this computer\'s own Settings is not marked as through
   assert.deepEqual((await pcPage('GET', 'state')).json.linkPairings, []);
 });
 
-test('a pairing card is dismissed only on the PC itself: through its public name, even unlocked and signed, it stays', { timeout: HANG_MS }, async () => {
+test('a pairing card\'s OK works through the PC\'s public name once the device is unlocked, and on the PC itself (issue #412)', { timeout: HANG_MS }, async () => {
   const { pc, macPage, pcPage } = await pair();
   assert.equal((await macPage('POST', 'link-device-pair', { id: pc.name })).status, 200);
   const [notice] = (await pcPage('GET', 'state')).json.linkPairings;
@@ -177,17 +180,18 @@ test('a pairing card is dismissed only on the PC itself: through its public name
     nodes.viaTunnel(pc.name, `/api/${route}`, { body: JSON.stringify(body), headers: { origin: `https://${pc.name}`, cookie, 'x-ledung-page': pageKey, ...headers } });
   const key = new FakePasskey(pc.name);
   assert.equal((await pub('passkey', { response: key.register(JSON.parse((await pub('passkey-options', {})).body)) })).status, 200);
+  // Locked, it can only look: the card stays.
+  const locked = await pub(`link-pairings/${notice.id}/dismiss`, {});
+  assert.equal(locked.status, 403, locked.body);
+  assert.match(JSON.parse(locked.body).error, /locked/);
+  assert.equal((await pcPage('GET', 'state')).json.linkPairings.length, 1, 'the card is still there');
+  // Unlocked, OK takes it away, through the public name.
   const unlock = JSON.parse((await pub('passkey-challenge', { method: 'POST', path: '/api/device-unlock', body: '{}' })).body);
   assert.equal((await pub('device-unlock', {}, { 'x-ledung-passkey': key.header(unlock) })).status, 200);
-  const route = `/api/link-pairings/${notice.id}/dismiss`;
-  const signed = JSON.parse((await pub('passkey-challenge', { method: 'POST', path: route, body: '{}' })).body);
-  const res = await pub(route.slice('/api/'.length), {}, { 'x-ledung-passkey': key.header(signed) });
-  assert.equal(res.status, 403, res.body);
-  assert.match(JSON.parse(res.body).error, /Devices are managed in Settings on the computer Ledung runs on/);
-  assert.equal((await pcPage('GET', 'state')).json.linkPairings.length, 1, 'the card is still there');
-  // On the PC's own page it goes.
-  assert.equal((await pcPage('POST', `link-pairings/${notice.id}/dismiss`, {})).status, 200);
+  const res = await pub(`link-pairings/${notice.id}/dismiss`, {});
+  assert.equal(res.status, 200, res.body);
   assert.deepEqual((await pcPage('GET', 'state')).json.linkPairings, []);
+  // On the PC's own page OK works as before: the first test above.
 });
 
 test('unlinking closes an open pairing code the other computer asked for, on either side (review 275, Important 1)', { timeout: HANG_MS }, async () => {

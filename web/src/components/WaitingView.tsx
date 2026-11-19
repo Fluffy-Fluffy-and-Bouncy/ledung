@@ -59,6 +59,8 @@ export function WaitingView(props: {
   newComputers: NewComputerInfo[];
   /** Pairings linked computers asked for (issue #273). */
   linkPairings: LinkPairingInfo[];
+  /** The page came through the relay (issue #412): a new computer's card says where to approve it instead. */
+  throughPublicName?: boolean;
   /** Orders on record (issue #105): shown first, each with Cancel. */
   orders: OrderInfo[];
   /** Reads Waiting for you history (issue #306), when the view opens. */
@@ -396,7 +398,7 @@ function Queue(p: {
             <OrderCard key={o.id} order={o} userName={props.userName} sessionTitle={titleOf} onOpenSession={props.onOpenSession} run={props.run} />
           ))}</div>}
           {refused.length > 0 && <div className="group">{groupHead('Calls refused or held for you', 'var(--danger)', refused.length)}{refused.map((i) => row(i, ++place))}</div>}
-          {props.newComputers.length > 0 && <>{groupHead('New computers', 'var(--warn-border)', props.newComputers.length)}{props.newComputers.map((c) => <NewComputerCard key={c.name} computer={c} run={props.run} />)}</>}
+          {props.newComputers.length > 0 && <>{groupHead('New computers', 'var(--warn-border)', props.newComputers.length)}{props.newComputers.map((c) => <NewComputerCard key={c.name} computer={c} run={props.run} throughPublicName={props.throughPublicName} />)}</>}
           {props.linkPairings.length > 0 && <>{groupHead('Paired through the link', 'var(--warn-border)', props.linkPairings.length)}{props.linkPairings.map((l) => <LinkPairingCard key={l.id} pairing={l} run={props.run} />)}</>}
           {p.permsForYou.length > 0 && <>{groupHead('Permission prompts', 'var(--warn-border)', p.permsForYou.length)}{p.permsForYou.map(permission)}</>}
           {[...p.tiers, null].map((t) => {

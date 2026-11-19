@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-19
+- Waiting for you through the relay (a phone, or another computer's tab) now shows every card it counts, the "Paired through the link" and "New computer" cards included, so the count and the list agree. A pairing card's OK and Remove device work there too (Remove device asks for the passkey); a new computer's card says to approve it on the computer itself. A pairing card now goes by itself when its code expires unused, its device is removed or its link is. (#412)
 - Desktop app: Settings no longer offers to install Ledung or says "the browser isn't offering to install this page… the install icon in the address bar says which"; the app is already an app, so the install part shows nothing, as in an installed page. Chrome, Edge and Safari are unchanged. (#374)
 - Desktop app on the Mac: Ledung's icon in the Dock is now the same size as the other apps' icons, with the same clear margin round it, instead of filling the whole tile. The window, the Windows taskbar and the installed page's icons are unchanged. (#404)
 - Desktop app: clicking one of Ledung's notifications (a permission prompt, a question) brings the window back when it was closed or hidden, and shows the session that asked, as it does in a browser tab. In a browser nothing changes. (#360)

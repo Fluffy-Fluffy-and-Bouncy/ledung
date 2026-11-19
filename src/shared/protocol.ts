@@ -1363,8 +1363,12 @@ export interface LinkPairingInfo {
   id: string;
   /** The linked computer's name here. */
   computer: string;
+  /** The link's id (issue #412: the card goes with the link); left out on a card kept before. */
+  link?: string;
   /** When it asked for the code. */
   at: number;
+  /** When the code stops working, and the card goes if nobody paired (issue #412); left out on a card kept before. */
+  expiresAt?: number;
   /** The device that paired with the code; null while nobody has (the code lives 10 minutes). */
   device: { id: string; name: string } | null;
 }
