@@ -63,10 +63,11 @@ export function compactRows(step: CompactStep): CompactRows {
 }
 
 /**
- * A row's tooltip: its status when the dot is off (#151), then from step 2 on the time and the usage
- * line, which carries the branch, so a compact row loses nothing. Undefined when there is nothing.
+ * A row's tooltip: an account switch it waits for, or one that failed (issue #395), at every step; its status when
+ * the dot is off (#151), then from step 2 on the time and the usage line, which carries the branch, so a compact row
+ * loses nothing. Undefined when there is nothing.
  */
-export function rowTooltip(step: CompactStep, status: string | undefined, time: string, usage: string): string | undefined {
-  const lines = [status ?? '', ...(step > 1 ? [time, usage] : [])].filter(Boolean);
+export function rowTooltip(step: CompactStep, status: string | undefined, time: string, usage: string, accountSwitch = ''): string | undefined {
+  const lines = [accountSwitch, status ?? '', ...(step > 1 ? [time, usage] : [])].filter(Boolean);
   return lines.length ? lines.join('\n') : undefined;
 }
