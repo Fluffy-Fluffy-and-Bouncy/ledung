@@ -258,9 +258,11 @@ export class Updater {
     const step = (i: number, state: UpdateStepView['state'], output?: string, label?: string) => {
       this.steps = this.steps.map((s, j) => (j === i ? { ...s, state, output, label: label ?? s.label } : s));
     };
+    // Every way it stops goes to the log too (#435): the page's steps live only until the next restart.
     const refuse = (i: number, reason: string, output?: string) => {
       step(i, 'failed', output);
       this.refused = `${reason} The running Ledung was not changed.`;
+      this.log(`Update: ${this.refused}${output ? `\n${output}` : ''}`);
     };
 
     step(0, 'running');
@@ -280,15 +282,8 @@ export class Updater {
     step(1, 'running', undefined, `npm install -g ${spec}`);
     const command = this.opts.npmInstall?.(spec) ?? npmGlobalInstall(spec);
     const result = await this.run(command, this.opts.dataDir);
-    // Every outcome goes to the log too (#435): the page's steps live only until the next restart.
-    if (result.timedOut) {
-      this.log(`Update: npm install -g ${spec} timed out:\n${result.tail}`);
-      return refuse(1, `npm install -g ${spec} did not finish within ${Math.round((command.limitMs ?? GIT_LIMIT_MS) / 60_000)} minutes and was stopped.`, result.tail);
-    }
-    if (result.code !== 0) {
-      this.log(`Update: npm install -g ${spec} failed (exit code ${result.code}):\n${result.tail}`);
-      return refuse(1, `npm install -g ${spec} failed (exit code ${result.code}).`, result.tail);
-    }
+    if (result.timedOut) return refuse(1, `npm install -g ${spec} did not finish within ${Math.round((command.limitMs ?? GIT_LIMIT_MS) / 60_000)} minutes and was stopped.`, result.tail);
+    if (result.code !== 0) return refuse(1, `npm install -g ${spec} failed (exit code ${result.code}).`, result.tail);
     // npm's exit code alone is not proof (#435): it may have installed into another global folder than the one this
     // Ledung runs from, and the restart would then bring back the old version. The package.json here must say it.
     const found = str(readJson(path.join(this.opts.appDir, 'package.json'))?.version) ?? null;
@@ -297,10 +292,9 @@ export class Updater {
       exercisedLine(`EXERCISED #435 npm update checked the installed version (${found ?? 'none'} for ${offered})`);
     }
     if (found !== offered) {
-      const root = await this.run(this.opts.npmRoot ?? NPM_ROOT, this.opts.dataDir).catch(() => null);
-      const where = root && root.code === 0 && root.out.trim() ? `npm installs global packages into ${root.out.trim()}. ` : '';
-      const output = [result.tail, root ? `npm root -g: ${root.out.trim() || root.tail}` : ''].filter(Boolean).join('\n');
-      this.log(`Update: npm install -g ${spec} ended without an error, but ${this.opts.appDir} holds ${found ?? 'no package.json'}:\n${output}`);
+      const root = await this.run(this.opts.npmRoot ?? NPM_ROOT, this.opts.dataDir);
+      const where = root.code === 0 && root.out.trim() ? `npm installs global packages into ${root.out.trim()}. ` : '';
+      const output = [result.tail, `npm root -g: ${root.out.trim() || root.tail}`].filter(Boolean).join('\n');
       return refuse(1, `npm install -g ${spec} ended without an error, but the Ledung in ${this.opts.appDir} is still ${found ? displayVersion(found) : 'unreadable'}, so a restart would not run ${displayVersion(offered)}. ${where}`.trimEnd(), output);
     }
     this.log(`Update: npm install -g ${spec} installed ${offered} into ${this.opts.appDir}; restarting.`);

@@ -79,7 +79,7 @@ test('npm ending without an error while the folder Ledung runs from keeps the ol
   assert.deepEqual(v.steps.map((s) => s.state), ['done', 'failed', 'waiting']);
   assert.match(v.steps[1]!.output ?? '', /added 1 package in 2s/);
   assert.match(v.steps[1]!.output ?? '', /npm root -g: .*other-prefix/);
-  assert.match(logged.join('\n'), /ended without an error, but .* holds 1\.0\.0/);
+  assert.match(logged.join('\n'), /^Update: npm install -g ledung@1\.2\.0 ended without an error, but .* is still v1, .*\nadded 1 package in 2s/m);
   await afterRestartDelay();
   assert.equal(restarts(), 0);
   assert.equal(v.restarting, false);
@@ -122,7 +122,7 @@ test('a Ledung that restarted after an update and still runs the old version say
   assert.deepEqual(fresh.logged, []);
 });
 
-test("a failed npm install's error goes to the log as well as the page", async () => {
+test("a failed npm install's error goes to the log as well as the page, as does a refusal before npm installs anything", async () => {
   const app = appFolder('locked');
   const { u, logged, restarts } = updater(app, {
     npmInstall: () => ({ cmd: process.execPath, args: ['-e', 'console.error("npm error code EBUSY\\nnpm error syscall rename"); process.exit(1)'] }),
@@ -131,9 +131,15 @@ test("a failed npm install's error goes to the log as well as the page", async (
   const v = await settled(u);
   assert.match(v.refused ?? '', /npm install -g ledung@1\.2\.0 failed \(exit code \d+\)\. The running Ledung was not changed\./);
   assert.match(v.steps[1]!.output ?? '', /EBUSY/);
-  assert.match(logged.join('\n'), /npm install -g ledung@1\.2\.0 failed \(exit code \d+\):\nnpm error code EBUSY/);
+  assert.match(logged.join('\n'), /^Update: npm install -g ledung@1\.2\.0 failed \(exit code 1\)\. The running Ledung was not changed\.\nnpm error code EBUSY/m);
   await afterRestartDelay();
   assert.equal(restarts(), 0);
+
+  // Refused at the first step: already on the newest version of the channel.
+  const newest = updater(appFolder('newest'), { npmVersion: '1.2.0' });
+  newest.u.runUpdate();
+  assert.match((await settled(newest.u)).refused ?? '', /already the newest/);
+  assert.match(newest.logged.join('\n'), /^Update: v1\.2 is already the newest on this channel\. The running Ledung was not changed\.$/m);
 });
 
 test('the running version is the one read first, whatever the disk says later', () => {
