@@ -158,7 +158,8 @@ async function main(): Promise<void> {
   const openFromTray = () => trayOpen({
     off: desktopOff(),
     desktop: desktopAvailability(),
-    dataDir: userDataDir(),
+    // Only the npm package's page reads the tray's line (desktopApp below); a clone leaves none in the shared folder.
+    dataDir: PACKAGED ? userDataDir() : null,
     told: trayTold,
     // As `ledung` makes it (cli.ts), so the stamp agrees and neither makes it again for the other.
     make: async (desktop) => ({

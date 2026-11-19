@@ -451,6 +451,16 @@ test("the tray's Open says why it gives the browser: once in the log, and once o
   assert.deepEqual(o.lines, ['The tray opens Ledung in the browser: "desktopApp" is false in the config.']);
   assert.equal(fs.existsSync(trayNotice(off)), false);
   assert.equal(hello(off), null);
+  // A clone (no data folder given for the page): logged, the browser, but nothing left in the folder for the npm
+  // package's page to show later. The same click with the folder given leaves it (the premise above).
+  const clone = path.join(base, 'tray-why-clone');
+  const fromClone = steps();
+  const cloneReason = desktopAvailability({ app: without, packaged: false, env: {}, platform: 'win32' });
+  await trayOpen({ dataDir: null, told: new Set(), off: false, desktop: cloneReason, make: trayMake(clone), steps: fromClone });
+  assert.equal(fromClone.browsers, 1);
+  assert.equal(fromClone.lines.length, 1);
+  assert.match(fromClone.lines[0]!, /clone/);
+  assert.equal(fs.existsSync(path.join(clone, 'desktop')), false);
   // The app opened: no line, no browser, and the reason from before is gone.
   await trayOpen({ dataDir: data, told, off: false, desktop, make: trayMake(data), steps: steps() });
   assert.equal(fs.existsSync(trayNotice(data)), true, 'premise: a reason left from before');

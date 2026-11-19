@@ -567,8 +567,12 @@ export interface TrayOpenOptions {
   off: boolean;
   /** desktopAvailability() at each click: Electron's package can be added or lost while Ledung runs. */
   desktop: Availability;
-  /** The data folder: a fallback's reason is left in it for the page (trayNoticeFile, #434). */
-  dataDir: string;
+  /**
+   * The data folder: a fallback's reason is left in it for the page (trayNoticeFile, #434). Null where no page reads it
+   * (a clone or a release copy: main.ts gives the page no desktop state there), so a clone's reason is never shown later
+   * by the npm package, which shares the data folder (self-check round 2, finding 3).
+   */
+  dataDir: string | null;
   /**
    * The reasons already logged in this run of Ledung (main.ts keeps one set): each is logged once, not at every click
    * (#434). Passed in, so each test starts with none said.
@@ -601,18 +605,21 @@ function trayFallback(o: TrayOpenOptions, why: string): void {
       exercisedLine('EXERCISED #434 the tray said why it opened the browser');
     }
   }
-  const file = trayNoticeFile(o.dataDir);
-  try {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, `${why} Ledung opened in the browser instead.\n`);
-  } catch {
-    // The log has the line; only the page misses it.
+  if (o.dataDir !== null) {
+    const file = trayNoticeFile(o.dataDir);
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, `${why} Ledung opened in the browser instead.\n`);
+    } catch {
+      // The log has the line; only the page misses it.
+    }
   }
   o.steps.browser();
 }
 
 /** Removes the tray's line once it no longer holds: the app opened, or the person switched the app off. */
-function dropTrayNotice(dataDir: string): void {
+function dropTrayNotice(dataDir: string | null): void {
+  if (dataDir === null) return;
   try {
     fs.rmSync(trayNoticeFile(dataDir), { force: true });
   } catch {
