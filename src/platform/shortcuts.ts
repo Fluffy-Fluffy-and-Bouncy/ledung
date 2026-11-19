@@ -1,7 +1,8 @@
 // Shortcuts that start Ledung (issue #415): a Ledung icon on the Desktop and in the Start menu on Windows, Ledung.app
 // in Applications on macOS. Made only when the person asks, in the page's first-run question or in Settings, never
 // by a release or a start (Martin, 2026-10-29 13:58, Ledung question #939: "I hate files appearing on their own").
-// Each opens a running Ledung's page, or starts Ledung (src/platform/running.ts) in the background, with no window
+// Each opens a running Ledung (the desktop app when it is installed, #409, else its page), or starts Ledung
+// (src/platform/running.ts) in the background and then opens it the same way, with no window
 // (issue #456, Martin 2026-11-01 21:41, Ledung question #1149); Stop Ledung in Settings stops it. On Windows the icon
 // runs a small script through Windows Script Host, the one way to start Node with no console window at all.
 // The same settings offer Start Ledung when I sign in (#456, off until switched on): a shortcut in the Startup folder
@@ -507,7 +508,8 @@ export class Shortcuts {
   }
 
   /**
-   * Ledung.app: a script that opens a running Ledung's page (--open-only), or else starts Ledung in the background
+   * Ledung.app: a script that opens a running Ledung (--open-only: the desktop app when it is installed, #409, else its
+   * page), or else starts Ledung in the background
    * (#456): the `ledung` command goes there by itself; the release launcher is started with nohup, its output in the
    * log. Made by Ledung on this computer, so it carries no quarantine and Gatekeeper lets it open.
    */
@@ -527,7 +529,7 @@ export class Shortcuts {
     const run = [...this.nodeOptions(), script].map(shQuote).join(' ');
     fs.writeFileSync(path.join(contents, 'MacOS', 'Ledung'), [
       '#!/bin/sh',
-      "# Opens a running Ledung's page, or starts Ledung in the background. Made by Ledung's Settings (issues #415, #456).",
+      "# Opens a running Ledung, or starts Ledung in the background. Made by Ledung's Settings (issues #415, #456).",
       ...findNode(node),
       `[ -x "$NODE" ] || { osascript -e 'display alert "Ledung cannot find Node.js" message "Install Node.js 24, or add the shortcut again in Settings in Ledung."'; exit 1; }`,
       `"$NODE" ${run} --open-only && exit 0`,

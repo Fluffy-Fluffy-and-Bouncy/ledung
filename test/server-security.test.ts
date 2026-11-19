@@ -76,6 +76,8 @@ let paneStore: Store;
 const openedFolders: string[] = [];
 /** When set, Open folder fails with these words (issue #83). */
 let openFolderFails: string | null = null;
+/** Times the server was asked to open the desktop app (#409). */
+let desktopOpens = 0;
 let relayDir: string;
 // Settings → Shortcuts (issue #415): made in a folder inside .test/, never on the real Desktop or Applications.
 let shortcutDir: string;
@@ -184,7 +186,9 @@ before(async () => {
     tray: new Tray({ kind: 'windows', address: '127.0.0.1', iconFile: 'icon.png', canRestart: false, counts: () => ({ working: 0, waiting: 0 }), onOpen: () => {}, onRestart: () => {}, onExit: () => {}, log: () => {}, spawn: fakeHelper }),
     meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) }, configured: () => undefined, ownDataDir: true,
   });
-  server = new LedungServer({ port: PORT, token: TOKEN, store, manager, webRoot, updater, publicName: PUBLIC, relayAdmin, shortcuts, tray: traySwitch, now: () => Date.now() + clockShift, openFolder: async (f) => {
+  server = new LedungServer({ port: PORT, token: TOKEN, store, manager, webRoot, updater, publicName: PUBLIC, relayAdmin, shortcuts, tray: traySwitch, now: () => Date.now() + clockShift,
+    // "Open in the Ledung app" (#409): a made app, counted instead of opened.
+    canOpenDesktopApp: () => true, openDesktopApp: async () => { desktopOpens++; return null; }, openFolder: async (f) => {
     openedFolders.push(f);
     if (openFolderFails) throw new Error(openFolderFails);
   } });
@@ -2616,6 +2620,29 @@ test('shortcuts are made only on this computer: a paired device, unlocked and si
     assert.equal(res.status, 403, res.body);
     assert.match(errorOf(res), here);
     assert.equal(fs.existsSync(path.join(shortcutDir, 'Applications', 'Ledung.app')), false);
+  } finally {
+    d.page.close();
+  }
+});
+
+test('the desktop app is opened only from this computer: a paired device, unlocked and signing, is refused (#409)', async () => {
+  const d = await deviceWithPasskey('Desktop phone');
+  try {
+    assert.equal((await pubChange('/api/device-unlock', '{}', d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign('/api/device-unlock', '{}') })).status, 200);
+    const before = desktopOpens;
+    const res = await pubChange('/api/open-desktop-app', '{}', d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign('/api/open-desktop-app', '{}') });
+    assert.equal(res.status, 403, res.body);
+    assert.match(errorOf(res), /The desktop app is opened in Settings on the computer Ledung runs on/);
+    assert.equal(desktopOpens, before, 'not opened');
+    // This computer's own open page (positive branch): opened.
+    const page = await livePage();
+    try {
+      const local = await change('/api/open-desktop-app', {}, { 'x-ledung-page': page.key });
+      assert.equal(local.status, 200, local.body);
+      assert.equal(desktopOpens, before + 1);
+    } finally {
+      page.close();
+    }
   } finally {
     d.page.close();
   }

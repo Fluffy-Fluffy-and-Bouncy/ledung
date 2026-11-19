@@ -123,10 +123,10 @@ export interface OpenChoice {
 
 /**
  * What `ledung` opens (#407, Martin 2026-11-19, Ledung questions #577 and #585), from its arguments and the config's
- * "desktopApp" switch. The app by default; the browser for --browser, "desktopApp": false, --open-only (the shortcuts,
- * unchanged) and --foreground (development, where the core opens it itself). `ledung app` insists on the app whatever
- * the switch says. --no-open opens nothing, `ledung app` included: the app's own Start Ledung and the sign-in start run
- * it (self-check finding 2).
+ * "desktopApp" switch. The app by default, --open-only included: the Mac's Ledung.app opens a running Ledung with it,
+ * and the shortcuts open the app (#409). The browser for --browser, "desktopApp": false and --foreground (development,
+ * where the core opens it itself). `ledung app` insists on the app whatever the switch says. --no-open opens nothing,
+ * `ledung app` included: the app's own Start Ledung and the sign-in start run it (self-check finding 2).
  */
 export function openChoice(args: string[], desktopOff: boolean): OpenChoice {
   const own = ['--open-only', '--foreground', '--browser'];
@@ -134,7 +134,8 @@ export function openChoice(args: string[], desktopOff: boolean): OpenChoice {
   const appCommand = passthrough[0] === 'app';
   if (appCommand) passthrough = passthrough.slice(1);
   const noOpen = passthrough.includes('--no-open');
-  const tryApp = !noOpen && (appCommand || !(desktopOff || own.some((a) => args.includes(a))));
+  const browserOnly = ['--foreground', '--browser'];
+  const tryApp = !noOpen && (appCommand || !(desktopOff || browserOnly.some((a) => args.includes(a))));
   return { appCommand, noOpen, tryApp, passthrough };
 }
 
@@ -438,6 +439,39 @@ export function desktopAppState(o: { dataDir: string; ledungVersion: string; pla
   if (!made && notice === null) return null;
   const stale = made && stamp.ledung !== o.ledungVersion;
   return { stale, notice };
+}
+
+/** The app made on this computer, when there is one to open: its stamp and its program are both there (#409). */
+export function madeApp(dataDir: string, platform: NodeJS.Platform = process.platform): MadePaths | null {
+  const paths = madePaths(dataDir, platform);
+  return readStamp(paths.stamp) !== null && fs.existsSync(paths.exe) ? paths : null;
+}
+
+/** Said when there is no app to open, so the caller opens the browser: no line to show for it, it is the usual case. */
+export const NO_APP = 'No desktop app is made on this computer.';
+
+let openedTraced = false;
+
+/**
+ * Opens the app made on this computer from the running Ledung (#409): the tray's Open and the page's "Open in the Ledung
+ * app". Null when it opened; else why not, and the caller opens the browser. Only an app that is made already: the
+ * running Ledung has no terminal to show a 120 MB download in, so making it stays with `ledung` and the shortcuts. Not
+ * with "desktopApp": false, and not from a clone, which has no made app of its own (main.ts, as for desktopAppState).
+ * An app on an older Ledung opens too: its page restarts it into the update (#408).
+ */
+export async function openMadeApp(o: { dataDir: string; off: boolean; packaged?: boolean; platform?: NodeJS.Platform; open?: (paths: MadePaths) => Promise<string | null> }): Promise<string | null> {
+  if (o.off || !(o.packaged ?? PACKAGED)) return NO_APP;
+  const platform = o.platform ?? process.platform;
+  const paths = madeApp(o.dataDir, platform);
+  if (!paths) return NO_APP;
+  // The running Ledung's own settings stay with it: the app's Start Ledung would otherwise pass them on (#456, #408).
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !['LEDUNG_LAUNCHER', 'LEDUNG_LOG_FILE'].includes(name.toUpperCase())));
+  const failed = await (o.open ?? ((p) => openApp(p, platform, env)))(paths);
+  if (failed === null && !openedTraced) {
+    openedTraced = true;
+    exercisedLine('EXERCISED #409 the running Ledung opened the made desktop app');
+  }
+  return failed;
 }
 
 /**

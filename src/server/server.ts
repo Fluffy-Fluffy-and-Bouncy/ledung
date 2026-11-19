@@ -176,6 +176,10 @@ export interface ServerOptions {
   updater?: Updater;
   /** The made desktop app against this Ledung (#408), read at each hello; left out: not the npm package. */
   desktopApp?: () => DesktopAppInfo | null;
+  /** Whether there is a made desktop app to open (#409), read at each hello; left out: not the npm package. */
+  canOpenDesktopApp?: () => boolean;
+  /** Opens the made desktop app (#409): null when it opened, else why not; left out: not the npm package. */
+  openDesktopApp?: () => Promise<string | null>;
   /** The first-run question and Settings → Shortcuts: a Ledung icon that starts Ledung (issue #415). */
   shortcuts?: Shortcuts;
   /** The anonymous daily check-in: its notice and Settings switch (#220). */
@@ -469,7 +473,8 @@ export class LedungServer {
       const device = this.guard.deviceOf(req)?.id ?? null;
       const browser = this.guard.browserOf(req)?.id ?? null;
       const viaPublic = this.guard.isPublic(req);
-      this.wss.handleUpgrade(req, socket, head, (ws) => this.onClient(ws, device, browser, viaPublic));
+      const here = !viaPublic && fromThisComputer(req);
+      this.wss.handleUpgrade(req, socket, head, (ws) => this.onClient(ws, device, browser, viaPublic, here));
     });
     return server;
   }
@@ -713,7 +718,7 @@ export class LedungServer {
     this.broadcast({ type: 'remote', remote: this.remote });
   }
 
-  private onClient(ws: WebSocket, device: string | null, browser: string | null, viaPublic: boolean): void {
+  private onClient(ws: WebSocket, device: string | null, browser: string | null, viaPublic: boolean, here: boolean): void {
     this.clients.add(ws);
     const key = crypto.randomBytes(32).toString('hex');
     this.pageKeys.set(ws, { key, device, browser });
@@ -734,7 +739,7 @@ export class LedungServer {
       ws.send(JSON.stringify({ type: 'watching', sessionId: watch.sessionId } satisfies ServerEvent));
     });
     // The key only ever goes out here, never in GET state.
-    ws.send(JSON.stringify({ ...this.hello(viaPublic), pageKey: key }));
+    ws.send(JSON.stringify({ ...this.hello(viaPublic, here), pageKey: key }));
   }
 
   private sourceCache: SourceOffer | null = null;
@@ -751,8 +756,11 @@ export class LedungServer {
     return this.sourceCache;
   }
 
-  /** viaPublic: the page came through the public name, so it draws the remote frame (issue #232). */
-  private hello(viaPublic: boolean): ServerEvent {
+  /**
+   * viaPublic: the page came through the public name, so it draws the remote frame (issue #232). here: the page is on
+   * this computer's own screen, not another computer's on the network, so it may offer the desktop app (#409).
+   */
+  private hello(viaPublic: boolean, here: boolean): ServerEvent {
     const { manager, store } = this.opts;
     const permissions = store.pendingPermissions();
     const questions = manager.questions();
@@ -801,6 +809,8 @@ export class LedungServer {
       // through the public name: the app is on this computer, and the browser-fallback line can name its folders
       // (self-check finding 7).
       desktopApp: viaPublic ? undefined : this.opts.desktopApp?.() ?? undefined,
+      // "Open in the Ledung app" only on this computer's own screen (#409): never through the public name or the network.
+      desktopAppHere: here && this.opts.canOpenDesktopApp?.() === true ? true : undefined,
     };
   }
 
@@ -1664,7 +1674,7 @@ export class LedungServer {
 
     switch (route) {
       case 'GET state':
-        return this.hello(this.guard.isPublic(req));
+        return this.hello(this.guard.isPublic(req), !this.guard.isPublic(req) && fromThisComputer(req));
       // Waiting for you history (issue #306): read when it opens, not with every page load.
       case 'GET question-history':
         return manager.questionHistory();
@@ -2555,6 +2565,17 @@ export class LedungServer {
       case 'GET tray':
         this.requireScreen(req);
         return this.tray().view();
+      // "Open in the Ledung app" in a browser on this computer (#409): the app opens on this computer's screen, so only
+      // a page on that screen asks for it, never one from the network or through the public name.
+      case 'POST open-desktop-app': {
+        this.requireLocal(req, 'The desktop app is opened');
+        if (!fromThisComputer(req)) throw new HttpError(403, 'The desktop app is opened on the computer Ledung runs on.');
+        await this.requirePage(req, url);
+        if (!this.opts.openDesktopApp) throw new HttpError(404, 'The desktop app is not available.');
+        const failed = await this.opts.openDesktopApp();
+        if (failed !== null) throw new HttpError(409, failed);
+        return { ok: true };
+      }
       case 'POST tray': {
         this.requireScreen(req);
         await this.requirePage(req, url);
