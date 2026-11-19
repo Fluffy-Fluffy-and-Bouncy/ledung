@@ -2568,8 +2568,8 @@ export class LedungServer {
       // "Open in the Ledung app" in a browser on this computer (#409): the app opens on this computer's screen, so only
       // a page on that screen asks for it, never one from the network or through the public name.
       case 'POST open-desktop-app': {
-        this.requireLocal(req, 'The desktop app is opened');
-        if (!fromThisComputer(req)) throw new HttpError(403, 'The desktop app is opened on the computer Ledung runs on.');
+        // Both checks: through the relay a request arrives from loopback too, so "this computer" alone lets a phone in.
+        if (this.guard.isPublic(req) || !fromThisComputer(req)) throw new HttpError(403, 'The desktop app is opened on the computer Ledung runs on.');
         await this.requirePage(req, url);
         if (!this.opts.openDesktopApp) throw new HttpError(404, 'The desktop app is not available.');
         const failed = await this.opts.openDesktopApp();

@@ -15,7 +15,7 @@ import vm from 'node:vm';
 import { AFTER_APP_ARG, afterApp, APP_ID, MADE_CONFIG, madeConfigFor, readMadeConfig, START_HIDDEN_FILE, WRITE_SHORTCUT_ARG, type MadeConfig } from '../desktop/made.ts';
 import { findOnPath, restartCommand, runStart, startCommand } from '../desktop/start.ts';
 import {
-  ADD_COMMAND, APP_SHORTCUT, appManifest, backgroundArgs, codeIntoKept, desktopAppOff, desktopAppState, desktopAvailability, electronPackage,
+  ADD_COMMAND, APP_SHORTCUT, appManifest, appOrBrowser, backgroundArgs, codeIntoKept, desktopAppOff, desktopAppState, desktopAvailability, electronPackage,
   ensureApp, madeApp, madePaths, NO_APP, noticeFile, openChoice, openDesktop, openMadeApp, progressPrinter, readStamp, setExeDetails, waitForExit, whatToMake, writeAppCode,
   writeAppShortcut, type MadePaths, type OpenSteps, type Stamp,
 } from '../src/platform/desktop-app.ts';
@@ -342,6 +342,20 @@ test('the running Ledung opens the made app, and says why not when it is off, no
   // The app could not be opened: its line goes back to the caller, which opens the browser.
   const why = 'Could not open the desktop app: open exited with code 1.';
   assert.equal(await openMadeApp({ dataDir: data, off: false, packaged: true, platform: 'linux', open: async () => why }), why);
+});
+
+test("the tray's Open: the app when it opens, else the browser, saying why only when an app failed to open", async () => {
+  const run = async (answer: string | null) => {
+    const browsers: number[] = [];
+    const lines: string[] = [];
+    await appOrBrowser({ app: async () => answer, browser: () => browsers.push(1), log: (l) => lines.push(l) });
+    return { browser: browsers.length, lines };
+  };
+  assert.deepEqual(await run(null), { browser: 0, lines: [] }, 'the app opened: no browser');
+  assert.deepEqual(await run(NO_APP), { browser: 1, lines: [] }, 'none made: the browser, quietly');
+  assert.deepEqual(await run('Could not open the desktop app: open exited with code 1.'), {
+    browser: 1, lines: ['Could not open the desktop app: open exited with code 1. Opening Ledung in the browser instead.'],
+  });
 });
 
 test('no app is opened where none is made whole: no stamp, no program, nothing at all', async () => {

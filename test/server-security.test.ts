@@ -2632,7 +2632,7 @@ test('the desktop app is opened only from this computer: a paired device, unlock
     const before = desktopOpens;
     const res = await pubChange('/api/open-desktop-app', '{}', d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign('/api/open-desktop-app', '{}') });
     assert.equal(res.status, 403, res.body);
-    assert.match(errorOf(res), /The desktop app is opened in Settings on the computer Ledung runs on/);
+    assert.match(errorOf(res), /The desktop app is opened on the computer Ledung runs on/);
     assert.equal(desktopOpens, before, 'not opened');
     // This computer's own open page (positive branch): opened.
     const page = await livePage();

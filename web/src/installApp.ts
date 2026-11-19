@@ -28,7 +28,7 @@ export type InstallEnv = {
   /** An iPad asking for the desktop site says Macintosh too; only it has a touch screen. */
   maxTouchPoints: number;
   /**
-   * Ledung's desktop app is made on this computer and this page is on its own screen (hello's desktopApp.openHere,
+   * Ledung's desktop app is made on this computer and this page is on its own screen (hello's desktopAppHere,
    * #409): the page points at the app instead of installing itself.
    */
   desktopHere?: boolean;

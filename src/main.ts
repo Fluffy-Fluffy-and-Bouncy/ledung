@@ -16,7 +16,7 @@ import { exercisedLine } from './platform/exercised.ts';
 import { lanNames } from './platform/network.ts';
 import { iconFiles, launchTarget, Shortcuts } from './platform/shortcuts.ts';
 import { appDir, appVersion, chatImagesDir, envSetting, PACKAGED, remoteDir, userDataDir } from './platform/paths.ts';
-import { desktopAppState, madeApp, NO_APP, openMadeApp } from './platform/desktop-app.ts';
+import { appOrBrowser, desktopAppState, madeApp, openMadeApp } from './platform/desktop-app.ts';
 import { ChatImages } from './sessions/chat-images.ts';
 import { loadOrCreateToken } from './server/security.ts';
 import { LedungServer } from './server/server.ts';
@@ -156,11 +156,7 @@ async function main(): Promise<void> {
     kind, address: `127.0.0.1:${config.port}`, iconFile: trayIconFile(kind, appDir()), canRestart,
     counts: () => ({ working: manager.workingCount(), waiting: waitingCount(manager.questions(), store.pendingPermissions()) }),
     // The app when it is made, else the page in the browser as before (#409); a failed open says why and opens the page.
-    onOpen: () => void openDesktopApp().then((failed) => {
-      if (failed === null) return;
-      if (failed !== NO_APP) console.log(`${failed.replace(/[.\s]*$/, '.')} Opening Ledung in the browser instead.`);
-      openBrowser(loginUrl);
-    }),
+    onOpen: () => void appOrBrowser({ app: openDesktopApp, browser: () => openBrowser(loginUrl), log: (line) => console.log(line) }),
     onRestart: () => void shutdown(true),
     // Exit is Stop Ledung (choice C); the tray asks first when sessions are working.
     onExit: () => void shutdown(false),

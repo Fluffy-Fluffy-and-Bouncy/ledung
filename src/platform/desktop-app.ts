@@ -533,6 +533,17 @@ export interface OpenSteps {
   print: (line: string) => void;
 }
 
+/**
+ * The tray's Open (#409): the made app, else the page in the browser as before. A failed open says why in one line
+ * (the log) before the browser; no app made is the usual case and says nothing.
+ */
+export async function appOrBrowser(o: { app: () => Promise<string | null>; browser: () => void; log: (line: string) => void }): Promise<void> {
+  const failed = await o.app();
+  if (failed === null) return;
+  if (failed !== NO_APP) o.log(`${failed.replace(/[.\s]*$/, '.')} Opening Ledung in the browser instead.`);
+  o.browser();
+}
+
 /** Download progress for a terminal: one line rewritten in place, or a line each quarter when the output is a file. */
 export function progressPrinter(write: (text: string) => void, tty: boolean): (percent: number) => void {
   let shown = -1;

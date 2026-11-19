@@ -32,11 +32,11 @@ after(() => {
   removeTemp(dir);
 });
 
-/** A page on this computer: its hello, and the live connection kept open so its page key counts. */
-function openPage(port: number): Promise<{ hello: Record<string, unknown>; close: () => void }> {
-  const origin = `http://127.0.0.1:${port}`;
+/** A page at `address` (this computer by default): its hello, and the live connection kept open so its key counts. */
+function openPage(port: number, address = '127.0.0.1'): Promise<{ hello: Record<string, unknown>; close: () => void }> {
+  const origin = `http://${address}:${port}`;
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { cookie: COOKIE, origin } });
+    const ws = new WebSocket(`ws://${address}:${port}/ws`, { headers: { cookie: COOKIE, origin } });
     ws.once('message', (data) => resolve({ hello: JSON.parse(String(data)) as Record<string, unknown>, close: () => ws.close() }));
     ws.on('error', reject);
   });
@@ -154,10 +154,17 @@ test('a page from another computer on the network is told nothing and may not op
     const state = JSON.parse(lan.body) as Record<string, unknown>;
     assert.equal(state.type, 'hello', 'its hello came');
     assert.equal('desktopAppHere' in state, false, 'the network: not told');
-    const res = await requestAt(ip, l.port, { method: 'POST', path: '/api/open-desktop-app', headers: { cookie: COOKIE, origin: `http://${ip}:${l.port}`, 'content-type': 'application/json' }, body: '{}' });
-    assert.equal(res.status, 403, res.body);
-    assert.match(errorOf(res), /opened on the computer Ledung runs on/);
-    assert.equal(l.opens(), 0);
+    // A live page of its own on the network, so its page key is good and only "this computer" can refuse it.
+    const lanPage = await openPage(l.port, ip);
+    try {
+      assert.equal('desktopAppHere' in lanPage.hello, false, 'its live hello: not told either');
+      const res = await requestAt(ip, l.port, { method: 'POST', path: '/api/open-desktop-app', headers: { cookie: COOKIE, origin: `http://${ip}:${l.port}`, 'content-type': 'application/json', 'x-ledung-page': String(lanPage.hello.pageKey) }, body: '{}' });
+      assert.equal(res.status, 403, res.body);
+      assert.match(errorOf(res), /opened on the computer Ledung runs on/);
+      assert.equal(l.opens(), 0);
+    } finally {
+      lanPage.close();
+    }
   } finally {
     await l.server.close();
   }
