@@ -60,6 +60,10 @@ export interface UpdaterOptions {
   /** npm view ledung dist-tags --json and npm install -g ledung@<version>; tests replace them so npm is not asked. */
   distTags?: Command;
   npmInstall?: (spec: string) => Command;
+  /** npm root -g, asked only when an install did not reach the folder Ledung runs from (#435); tests replace it. */
+  npmRoot?: Command;
+  /** Where the update's steps are logged: ledung.log in the background (#435); console.log by default. */
+  log?: (line: string) => void;
 }
 
 /** What the page says about updating an npm-installed Ledung on the Public channel (#105). */
@@ -70,6 +74,13 @@ export const NPM_DEV_REASON = 'Ledung was installed from npm, so updates come fr
 /** The package an npm install updates. */
 const PACKAGE = 'ledung';
 const CHANNEL_KEY = 'update-channel';
+/**
+ * The version an npm update restarted into, kept over the restart (#435): the restarted Ledung compares it with the
+ * version it runs, so an update that did not take says so on the page instead of leaving the old version unnoticed.
+ */
+const EXPECTED_KEY = 'update-expected';
+/** The EXERCISED line of issue #435, once per run. */
+let installCheckTraced = false;
 /** The EXERCISED line of issue #461, once per run. */
 let devCheckTraced = false;
 
@@ -90,6 +101,7 @@ const NPM_RELEASE: Command = { cmd: npm, args: ['run', 'release'], shell: proces
 // ledung@<a version npm reported>, checked to be one before it is used.
 const NPM_DIST_TAGS: Command = { cmd: npm, args: ['view', PACKAGE, 'dist-tags', '--json'], shell: process.platform === 'win32' };
 const npmGlobalInstall = (spec: string): Command => ({ cmd: npm, args: ['install', '-g', spec, '--no-audit', '--no-fund'], shell: process.platform === 'win32', limitMs: INSTALL_LIMIT_MS });
+const NPM_ROOT: Command = { cmd: npm, args: ['root', '-g'], shell: process.platform === 'win32' };
 
 export class Updater {
   private readonly opts: UpdaterOptions;
@@ -104,6 +116,32 @@ export class Updater {
 
   constructor(opts: UpdaterOptions) {
     this.opts = opts;
+    this.checkRestartedInto();
+  }
+
+  private log(line: string): void {
+    (this.opts.log ?? console.log)(line);
+  }
+
+  /**
+   * After an npm update's restart (#435): the version the update installed should be the one running now. When it is
+   * not, the page says so where the update was started, and the log keeps it. Read once, then forgotten.
+   */
+  private checkRestartedInto(): void {
+    const running = this.opts.npmVersion;
+    const kept = this.opts.meta?.get(EXPECTED_KEY);
+    if (!running || !kept || !this.opts.meta) return;
+    this.opts.meta.set(EXPECTED_KEY, '');
+    let expected: string | null = null;
+    try {
+      const v = (JSON.parse(kept) as { version?: unknown }).version;
+      expected = typeof v === 'string' ? v : null;
+    } catch {
+      // A value that is not ours: nothing to compare.
+    }
+    if (!expected || expected === running) return;
+    this.refused = `The update to ${displayVersion(expected)} did not take: Ledung restarted and still runs ${displayVersion(running)}, from ${this.opts.appDir}. Update again, or run npm install -g ${PACKAGE}@${expected} and press Restart Ledung.`;
+    this.log(`Update: ${this.refused}`);
   }
 
   /** The release to update from; never one for an npm install, whatever current.json says. */
@@ -242,12 +280,35 @@ export class Updater {
     step(1, 'running', undefined, `npm install -g ${spec}`);
     const command = this.opts.npmInstall?.(spec) ?? npmGlobalInstall(spec);
     const result = await this.run(command, this.opts.dataDir);
-    if (result.timedOut) return refuse(1, `npm install -g ${spec} did not finish within ${Math.round((command.limitMs ?? GIT_LIMIT_MS) / 60_000)} minutes and was stopped.`, result.tail);
-    if (result.code !== 0) return refuse(1, `npm install -g ${spec} failed (exit code ${result.code}).`, result.tail);
+    // Every outcome goes to the log too (#435): the page's steps live only until the next restart.
+    if (result.timedOut) {
+      this.log(`Update: npm install -g ${spec} timed out:\n${result.tail}`);
+      return refuse(1, `npm install -g ${spec} did not finish within ${Math.round((command.limitMs ?? GIT_LIMIT_MS) / 60_000)} minutes and was stopped.`, result.tail);
+    }
+    if (result.code !== 0) {
+      this.log(`Update: npm install -g ${spec} failed (exit code ${result.code}):\n${result.tail}`);
+      return refuse(1, `npm install -g ${spec} failed (exit code ${result.code}).`, result.tail);
+    }
+    // npm's exit code alone is not proof (#435): it may have installed into another global folder than the one this
+    // Ledung runs from, and the restart would then bring back the old version. The package.json here must say it.
+    const found = str(readJson(path.join(this.opts.appDir, 'package.json'))?.version) ?? null;
+    if (!installCheckTraced) {
+      installCheckTraced = true;
+      exercisedLine(`EXERCISED #435 npm update checked the installed version (${found ?? 'none'} for ${offered})`);
+    }
+    if (found !== offered) {
+      const root = await this.run(this.opts.npmRoot ?? NPM_ROOT, this.opts.dataDir).catch(() => null);
+      const where = root && root.code === 0 && root.out.trim() ? `npm installs global packages into ${root.out.trim()}. ` : '';
+      const output = [result.tail, root ? `npm root -g: ${root.out.trim() || root.tail}` : ''].filter(Boolean).join('\n');
+      this.log(`Update: npm install -g ${spec} ended without an error, but ${this.opts.appDir} holds ${found ?? 'no package.json'}:\n${output}`);
+      return refuse(1, `npm install -g ${spec} ended without an error, but the Ledung in ${this.opts.appDir} is still ${found ? displayVersion(found) : 'unreadable'}, so a restart would not run ${displayVersion(offered)}. ${where}`.trimEnd(), output);
+    }
+    this.log(`Update: npm install -g ${spec} installed ${offered} into ${this.opts.appDir}; restarting.`);
     step(1, 'done', result.tail);
 
     step(2, 'running');
     this.restarting = true;
+    this.opts.meta?.set(EXPECTED_KEY, JSON.stringify({ version: offered, from: installed, at: new Date().toISOString() }));
     // As for a git update: answer the page's next poll first, then restart into the installed files.
     setTimeout(() => this.opts.onRestart?.(), 1500);
   }

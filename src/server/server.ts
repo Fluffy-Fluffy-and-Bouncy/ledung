@@ -9,7 +9,7 @@ import path from 'node:path';
 import { type Duplex, duplexPair } from 'node:stream';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { appDir, appVersion, PACKAGED } from '../platform/paths.ts';
+import { appDir, PACKAGED, runningVersion } from '../platform/paths.ts';
 import { readRepository, sourceOffer } from './source.ts';
 import type { SessionManager } from '../sessions/manager.ts';
 import { UserError } from '../sessions/manager.ts';
@@ -748,7 +748,7 @@ export class LedungServer {
     this.sourceCache ??= sourceOffer({
       repository: readRepository(appDir()),
       packaged: PACKAGED,
-      version: appVersion(),
+      version: runningVersion(),
       release: PACKAGED ? null : readRunningRelease(appDir()),
       build: path.basename(appDir()),
     });
@@ -775,7 +775,7 @@ export class LedungServer {
     return {
       type: 'hello',
       // A release is named by its folder; the npm package's folder never changes, so by its version (#105).
-      build: PACKAGED ? `ledung@${appVersion()}` : path.basename(appDir()),
+      build: PACKAGED ? `ledung@${runningVersion()}` : path.basename(appDir()),
       canRestart: !!this.opts.onRestart,
       source: this.source(),
       userName: manager.userName,
