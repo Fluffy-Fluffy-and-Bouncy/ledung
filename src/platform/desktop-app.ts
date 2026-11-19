@@ -629,7 +629,6 @@ export async function openDesktop(o: { make: Omit<MakeOptions, 'print'>; fallbac
     }
     const failed = await o.steps.open(paths);
     if (failed === null) {
-      if (o.restarted) exercisedLine(`EXERCISED #408 desktop app restarted to finish an update (${made})`);
       fs.rmSync(notice, { force: true });
       return 0;
     }
