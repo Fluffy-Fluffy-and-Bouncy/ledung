@@ -65,7 +65,8 @@ export class LinkedNodes {
   }
 
   /** `config`: more of the config than its port (projects, sensitive patterns), for tests that need them (#158). */
-  async ledung(name: string, computerSettings?: ComputerSetting[], waitingPollMs?: number, push?: ServerOptions['push'], config: Record<string, unknown> = {}): Promise<Node> {
+  /** `options`: more of the server's options, for tests that need them (a relay admin, issue #412). */
+  async ledung(name: string, computerSettings?: ComputerSetting[], waitingPollMs?: number, push?: ServerOptions['push'], config: Record<string, unknown> = {}, options: Partial<ServerOptions> = {}): Promise<Node> {
     const port = await freePort();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-linked-'));
     const pair = selfSigned(name);
@@ -82,7 +83,7 @@ export class LinkedNodes {
         port, token: TOKEN, store, manager, webRoot, publicName: name, tunnelTls: { dir, required: true }, now: this.now, linkConnect: this.connect,
         // As main.ts gives them: the config's tabs, and its list for the frames.
         computers: computerList(computerSettings ?? [], name, 'host'), ...(computerSettings ? { computerSettings } : {}),
-        ...(waitingPollMs ? { waitingPollMs } : {}), ...(push ? { push } : {}),
+        ...(waitingPollMs ? { waitingPollMs } : {}), ...(push ? { push } : {}), ...options,
       });
       await server.listen();
       return server;

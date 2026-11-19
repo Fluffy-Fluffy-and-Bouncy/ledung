@@ -457,6 +457,8 @@ export const api = {
   /** Pair through the link (issue #273): a linked computer's pairing code for its frame here; this computer's page only. */
   linkDevicePair: (id: string) => call<{ url: string; expiresAt: number }>('POST', '/api/link-device-pair', { id }),
   dismissLinkPairing: (id: string) => call('POST', `/api/link-pairings/${encodeURIComponent(id)}/dismiss`, {}),
+  /** The card's Remove device (issue #412): the device it names goes, and the card with it; through the public name too. */
+  removeLinkPairingDevice: (id: string) => call('POST', `/api/link-pairings/${encodeURIComponent(id)}/remove-device`, {}),
   // Paired devices (issue #160): managed on this computer; a device sees only itself.
   // `here`: the browser asking (Project-Ledung#482), so Settings can mark it.
   devices: () => call<{ publicName: string | null; devices: DeviceInfo[]; here: string | null }>('GET', '/api/devices'),

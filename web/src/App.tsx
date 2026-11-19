@@ -676,6 +676,7 @@ export function App() {
               newComputers={ledung.newComputers}
               orders={ledung.orders}
               linkPairings={ledung.linkPairings}
+              throughPublicName={ledung.throughPublicName}
               run={run}
               focus={waitingFocus}
               onClearFocus={() => setWaitingFocus(null)}
