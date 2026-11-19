@@ -6,8 +6,8 @@
 // Opening the default browser is intercepted and recorded, so nothing opens on the screen.
 //
 //   PROBE_PHASE=attach      a Ledung runs: signed in, address, settings, permissions, refused navigation and
-//                           windows, links, Ledung's icon and the hidden menu bar (#384); saves the device list
-//                           for "again"
+//                           windows, links, Ledung's icon, the menu bar that never shows and the keys that still
+//                           work off the Mac (#384, #389); saves the device list for "again"
 //   PROBE_PHASE=again       a second start: still signed in, the same devices as after "attach"
 //   PROBE_PHASE=notrunning  none runs: the "not running" page; the probe starts one, presses Retry, page loads
 //   PROBE_PHASE=stopped     the probe starts one, the app attaches, the probe stops it and reloads: the "not
@@ -28,13 +28,14 @@
 //
 // Run from desktop/: `LEDUNG_CONFIG=… LEDUNG_DATA_DIR=… PROBE_PHASE=attach npx electron probe`. macOS and Linux
 // only for now: it reads command lines with `ps` (code review of PR #366, Minor 3).
-import { app, BrowserWindow, dialog, Menu, nativeImage, shell, type MenuItem, type NativeImage } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, Menu, nativeImage, shell, type MenuItem, type NativeImage } from 'electron';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isToolCallsKey } from '../../web/src/sessionMenu.ts';
 import { answersSignIn, candidatePorts, configFiles, dataDir, DEFAULT_PORT } from '../attach.ts';
+import { ZOOM_STEP } from '../keys.ts';
 import { START_SCRIPT_ENV } from '../start.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -163,8 +164,9 @@ async function signedIn(w: BrowserWindow): Promise<string[]> {
 }
 
 /**
- * Ledung's icon and the hidden menu bar (#384): the icon file loads as a 512 px image, the Mac's Dock was given it,
- * Windows and Linux hide the menu bar until Alt, and the menu still carries the items whose shortcuts must work.
+ * Ledung's icon and the hidden menu bar (#384, #389): the icon file loads as a 512 px image, the Mac's Dock was given
+ * it, Windows and Linux hide the menu bar with no auto-hide, and the menu still carries the items whose shortcuts must
+ * work.
  */
 function looks(w: BrowserWindow): void {
   const icon = nativeImage.createFromPath(appIcon);
@@ -183,8 +185,9 @@ function looks(w: BrowserWindow): void {
   if (mac) {
     expect(report.dockIcons.length === 1 && report.dockIcons[0]!.sameAsIcon, "the Dock was given Ledung's icon, once", report.dockIcons);
   } else {
-    expect(report.menuBarAutoHide && !report.menuBarVisible, 'the menu bar is hidden until Alt', report);
-    // The positive branch: the same probe sees the bar when it is shown, as Alt shows it.
+    // Never shown, and not auto-hidden: auto-hide is what lets Alt show it (#389).
+    expect(!report.menuBarAutoHide && !report.menuBarVisible, 'the menu bar is hidden, with no auto-hide', report);
+    // The positive branch: the same probe sees the bar when it is shown.
     w.setMenuBarVisibility(true);
     const shown = w.isMenuBarVisible();
     w.setMenuBarVisibility(false);
@@ -195,6 +198,106 @@ function looks(w: BrowserWindow): void {
   expect(['editmenu', 'viewmenu'].every((r) => roles.includes(r as never)), 'the Edit and View menus are still there (copy, paste, zoom)', roles);
   // Show Tool Calls is in the Mac's File menu only: Windows and Linux press the page's Ctrl+O directly (#359).
   if (mac) expect(report.toolCalls === 'Cmd+O', 'Show Tool Calls keeps ⌘O', report.toolCalls);
+}
+
+/** The View menu's Zoom In moves the zoom level by ZOOM_STEP, the step the app's own zoom keys take (#389). */
+async function menuZoomStep(w: BrowserWindow): Promise<void> {
+  const find = (items: MenuItem[]): MenuItem | undefined => {
+    for (const item of items) {
+      if (item.role?.toLowerCase() === 'zoomin') return item;
+      const inner = item.submenu ? find(item.submenu.items) : undefined;
+      if (inner) return inner;
+    }
+    return undefined;
+  };
+  const zoomIn = find(Menu.getApplicationMenu()?.items ?? []);
+  w.focus();
+  w.webContents.zoomLevel = 0;
+  zoomIn?.click(undefined, w, w.webContents);
+  await sleep(300);
+  const level = w.webContents.zoomLevel;
+  w.webContents.zoomLevel = 0;
+  out('menu-zoom-in', { found: zoomIn !== undefined, level, step: ZOOM_STEP });
+  expect(zoomIn !== undefined && level === ZOOM_STEP, "the View menu's Zoom In takes the app's zoom step", level);
+}
+
+/** Presses a key in the window as the keyboard does: down, then up. */
+async function press(w: BrowserWindow, keyCode: string, modifiers: Array<'control' | 'alt' | 'shift'> = []): Promise<void> {
+  w.webContents.sendInputEvent({ type: 'keyDown', keyCode, modifiers });
+  w.webContents.sendInputEvent({ type: 'keyUp', keyCode, modifiers });
+  await sleep(400);
+}
+
+/**
+ * Windows and Linux (#389): Alt shows no menu bar, and the hidden menu's keys and the app's own still work: Ctrl and
+ * "+" or "=" zoom in one step, Ctrl+- out, Ctrl+0 back, Ctrl and the wheel zoom, Ctrl+O reaches the page as Show tool
+ * calls, copy works, and Ctrl+W hides the window. Leaves the window shown at 100 %.
+ */
+async function keys(w: BrowserWindow): Promise<void> {
+  const wc = w.webContents;
+  // Alt, pressed and let go: the bar stays hidden. The positive branch: with auto-hide on, as #384 had it, the same
+  // presses show it, so the presses do reach the window.
+  await press(w, 'Alt', ['alt']);
+  // Alt and a menu's first letter, the other way a Windows menu bar opens.
+  await press(w, 'F', ['alt']);
+  const afterAlt = w.isMenuBarVisible();
+  w.setAutoHideMenuBar(true);
+  await press(w, 'Alt', ['alt']);
+  const autoHideShows = w.isMenuBarVisible();
+  w.setAutoHideMenuBar(false);
+  w.setMenuBarVisibility(false);
+  out('alt', { afterAlt, autoHideShows, hiddenAgain: !w.isMenuBarVisible() });
+  expect(!afterAlt, 'Alt, and Alt+F, show no menu bar', afterAlt);
+  expect(autoHideShows && !w.isMenuBarVisible(), 'with auto-hide, the same Alt shows the bar (the presses reach the window)', autoHideShows);
+
+  // Zoom: each press one step of 0.5, the View menu's own; "+" exactly once, though the menu has a Ctrl+Shift+"=" too.
+  wc.zoomLevel = 0;
+  const levels: Record<string, number> = {};
+  for (const [name, keyCode, modifiers] of [
+    ['ctrl+plus', 'Plus', ['control']], ['ctrl+equals', '=', ['control']], ['ctrl+minus', '-', ['control']], ['ctrl+0', '0', ['control']],
+  ] as const) {
+    await press(w, keyCode, [...modifiers]);
+    levels[name] = wc.zoomLevel;
+  }
+  // Ctrl and one wheel notch up, then down.
+  const wheel = (deltaY: number) => wc.sendInputEvent({ type: 'mouseWheel', x: 200, y: 200, deltaX: 0, deltaY, wheelTicksX: 0, wheelTicksY: Math.sign(deltaY), canScroll: true, modifiers: ['control'] });
+  wheel(120);
+  await sleep(400);
+  levels['ctrl+wheel-up'] = wc.zoomLevel;
+  wheel(-120);
+  await sleep(400);
+  levels['ctrl+wheel-down'] = wc.zoomLevel;
+  out('zoom', levels);
+  expect(levels['ctrl+plus'] === 0.5 && levels['ctrl+equals'] === 1, 'Ctrl and "+" or "=" zoom in one step each', levels);
+  expect(levels['ctrl+minus'] === 0.5 && levels['ctrl+0'] === 0, 'Ctrl+- zooms out and Ctrl+0 resets', levels);
+  expect(levels['ctrl+wheel-up'] === 0.5 && levels['ctrl+wheel-down'] === 0, 'Ctrl and the wheel zoom in and out', levels);
+  wc.zoomLevel = 0;
+
+  // Ctrl+O: the page's own Show tool calls key, which no menu item takes off the Mac (#359).
+  await page(w, `window.__probeKeys = []; window.addEventListener('keydown', (e) => window.__probeKeys.push({ key: e.key, code: e.code,
+    ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey, shiftKey: e.shiftKey, isComposing: e.isComposing }), true); 1`);
+  await press(w, 'O', ['control']);
+  const heard = await page(w, 'window.__probeKeys');
+  out('ctrl-o', heard);
+  expect(heard.length === 1 && isToolCallsKey(heard[0]), 'Ctrl+O reaches the page as its Show tool calls key', heard);
+
+  // Copy: select a text of the probe's own and Ctrl+C; the clipboard then holds it.
+  const text = `ledung-probe-${Date.now()}`;
+  await page(w, `(() => { const t = document.createElement('textarea'); t.id = '__probeText'; t.value = ${JSON.stringify(text)}; document.body.append(t); t.focus(); return 1; })()`);
+  await press(w, 'A', ['control']);
+  await press(w, 'C', ['control']);
+  const copied = await clipboard.readText();
+  await page(w, `document.getElementById('__probeText')?.remove(); 1`);
+  out('copy', { copied: copied === text });
+  expect(copied === text, 'Ctrl+A and Ctrl+C copy the selected text', copied);
+
+  // Ctrl+W, pressed: hides the window; the Dock's way back (activate) shows it again.
+  await press(w, 'W', ['control']);
+  const hidden = !w.isVisible() && !w.isDestroyed();
+  app.emit('activate', {}, false);
+  await sleep(800);
+  out('ctrl-w', { hidden, shownAgain: w.isVisible() });
+  expect(hidden, 'Ctrl+W hides the window', hidden);
 }
 
 /** Notifications and clipboard writes allowed for Ledung's page, anything else refused (code review, Minor 2). */
@@ -380,7 +483,7 @@ async function windowPhase(w: BrowserWindow): Promise<void> {
   expect(timers.hiddenThroughout && avg !== null && avg < bar, `a hidden window keeps a 100 ms interval under ${bar} ms a tick`, timers);
   w.show();
 
-  // Quit (⌘Q / File → Quit): the window closes for real, the app ends, the Ledung it attached to still answers.
+  // Quit (⌘Q / Alt+F4): the window closes for real, the app ends, the Ledung it attached to still answers.
   const quit = menuItem('quit');
   out('quit-item', { label: quit?.label ?? null, accelerator: quit?.accelerator ?? null });
   expect(quit?.accelerator === (process.platform === 'darwin' ? 'Cmd+Q' : 'Alt+F4'), 'Quit is on ⌘Q (Mac) / Alt+F4', quit?.accelerator);
@@ -438,7 +541,7 @@ async function pressStart(w: BrowserWindow): Promise<void> {
   out('start-pressed');
 }
 
-/** Presses the application menu's Quit, as ⌘Q or File → Quit does, and waits for the app to begin quitting (no dialog in the way). */
+/** Presses the application menu's Quit, as ⌘Q or Alt+F4 does, and waits for the app to begin quitting (no dialog in the way). */
 async function menuQuit(): Promise<boolean> {
   const find = (items: MenuItem[]): MenuItem | undefined => {
     for (const item of items) {
@@ -486,6 +589,8 @@ async function run(): Promise<void> {
       if (phase === 'attach') {
         fs.writeFileSync(devicesFile, JSON.stringify(ids));
         looks(w);
+        await menuZoomStep(w);
+        if (process.platform !== 'darwin') await keys(w);
         await permissions(w);
         const opened = await page(w, `[window.open('https://github.com/example/pr/1') === null, window.open('/api/state') === null]`);
         await sleep(500);
