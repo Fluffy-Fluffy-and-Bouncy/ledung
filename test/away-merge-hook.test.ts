@@ -225,7 +225,7 @@ test('a merge whose floors fail is held, and returns at once as a question to Ma
   assert.equal(q!.addressedTo, 'user');
   assert.equal(q!.details!.refusal!.held, 'away');
   assert.match(msg(out), new RegExp(`^Held for Martin as Ledung question #${q!.id}; this call did not run\\. Away mode held for Martin: failing checks: ci`));
-  assert.match(q!.question, /Away mode held a call in "Manager: p"/);
+  assert.match(q!.question, /Away mode held a Bash command in "Manager: p"/);
   assert.match(q!.question, /\*\*Away mode's reason:\*\* held for Martin: failing checks: ci/);
   assert.equal(t.viewed.length, 1, 'GitHub asked once, not again at the permission path');
   assert.deepEqual(t.away.log('mgr').records.map((r) => r.allowed), [false], 'recorded once');

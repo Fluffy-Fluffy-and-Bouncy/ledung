@@ -75,6 +75,8 @@ function toSession(r: Row): SessionInfo {
     statusSince: r.status_since == null ? null : Number(r.status_since),
     uac: raisesUac(r.runner, process.platform),
     runBlock: r.run_block ? JSON.parse(r.run_block) : null,
+    accountSwitch: r.account_switch ? JSON.parse(r.account_switch) : null,
+    accountChosen: !!r.account_chosen,
   };
 }
 
@@ -212,7 +214,7 @@ export class Store {
     id: string,
     fields: Partial<Pick<SessionInfo,
       'status' | 'title' | 'permissionMode' | 'claudeSessionId' | 'model' | 'claudeVersion' | 'claudeProgram' | 'cwd' | 'endedAt' | 'endReason' | 'branch' | 'contextTokens' | 'contextWindow' | 'pr'
-      | 'priority' | 'priorityNote' | 'paused' | 'queuedAt' | 'account' | 'archivedAt' | 'clearDue' | 'clearedAt' | 'compacting' | 'runBlock' | 'requestedModel' | 'requestedEffort' | 'effort'>>,
+      | 'priority' | 'priorityNote' | 'paused' | 'queuedAt' | 'account' | 'archivedAt' | 'clearDue' | 'clearedAt' | 'compacting' | 'runBlock' | 'requestedModel' | 'requestedEffort' | 'effort' | 'accountSwitch' | 'accountChosen'>>,
   ): void {
     const columns: Record<string, string> = {
       pr: 'pr',
@@ -223,6 +225,8 @@ export class Store {
       clearedAt: 'cleared_at',
       compacting: 'compacting',
       runBlock: 'run_block',
+      accountSwitch: 'account_switch',
+      accountChosen: 'account_chosen',
       priorityNote: 'priority_note',
       paused: 'paused',
       queuedAt: 'queued_at',
@@ -248,7 +252,7 @@ export class Store {
     // A status that changes restarts its clock (issue #265); the same status set again keeps it.
     const since = fields.status !== undefined ? ', status_since = CASE WHEN status IS ? THEN status_since ELSE ? END' : '';
     const sql = `UPDATE sessions SET ${entries.map(([k]) => `${columns[k]} = ?`).join(', ')}${since} WHERE id = ?`;
-    const values = entries.map(([k, v]) => ((k === 'pr' || k === 'compacting' || k === 'claudeProgram' || k === 'runBlock') && v ? JSON.stringify(v) : typeof v === 'boolean' ? Number(v) : v ?? null) as string | number | null);
+    const values = entries.map(([k, v]) => ((k === 'pr' || k === 'compacting' || k === 'claudeProgram' || k === 'runBlock' || k === 'accountSwitch') && v ? JSON.stringify(v) : typeof v === 'boolean' ? Number(v) : v ?? null) as string | number | null);
     if (since) values.push(fields.status!, Date.now());
     this.db.prepare(sql).run(...values, id);
   }

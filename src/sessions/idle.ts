@@ -8,6 +8,8 @@ export interface IdleFacts {
   backgroundTasks: number;
   /** Scheduled wake-ups (/loop, ScheduleWakeup, CronCreate); null: this Claude Code doesn't say. */
   crons: number | null;
+  /** How many of them repeat (issue #395: such a session never has a quiet moment to switch accounts); left out: not known. */
+  repeating?: number;
 }
 
 /** A fresh Claude Code process has nothing running in the background and nothing scheduled. */
@@ -25,6 +27,8 @@ export interface IdleState {
   backgroundTasks: number;
   facts: IdleFacts | null;
   lastActivity: number;
+  /** The person's `!` command is running (code review of #395): a stop would end it, so it is never a quiet moment. */
+  shellRunning?: boolean;
 }
 
 /**
@@ -39,6 +43,7 @@ export function idleStopBlocker(s: IdleState, now: number, idleMs: number): stri
   if (s.pendingPermissions) return 'a permission prompt is waiting';
   if (s.openQuestions) return 'it has an open question';
   if (s.waitingDeliveries) return 'a message is waiting for it';
+  if (s.shellRunning) return 'a "!" command is running';
   if (s.backgroundTasks) return 'background work';
   if (!s.facts) return 'not known whether anything runs in the background';
   if (s.facts.backgroundTasks) return 'background work';

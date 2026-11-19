@@ -486,6 +486,8 @@ a.file-link { text-decoration-style: dotted; }
 .pinned-text.cut { mask-image: linear-gradient(to bottom, #000 50%, transparent); }
 @media (max-width: 760px) { .pinned-text { max-height: 2.8em; } }
 .event, .note, .divider { font-size: 0.85em; color: var(--muted); text-align: center; }
+/* A long unbroken path in an event line (a sign-in's folder, issue #395's failed switch) wraps, not widening a phone's chat. */
+.event { overflow-wrap: anywhere; }
 .note.technical { text-align: left; }
 /* A "Waiting for you" line in a manager's chat (issue #350): one compact line, marked while it waits, quiet once decided. */
 .waiting-line { font-size: 0.85em; color: var(--muted); max-width: 920px; padding: 0.3rem 0.6rem; border-left: 3px solid var(--border); overflow-wrap: anywhere; }
@@ -512,6 +514,8 @@ a.file-link { text-decoration-style: dotted; }
 .markdown th, .markdown td { border: 1px solid var(--border); padding: 0.25rem 0.5rem; text-align: left; }
 .code-block { position: relative; margin: 0.4rem 0; }
 .code-block pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px; padding: 0.6rem 0.75rem; overflow-x: auto; margin: 0; }
+/* A long call in a question (a refused call's input, issue #399) folds into its own scroll, so the answers stay near. */
+.question-text .code-block pre, .issue .code-block pre { max-height: 20rem; overflow: auto; }
 .copy-button { position: absolute; top: 0.3rem; right: 0.3rem; font-size: 0.75em; padding: 0.1rem 0.5rem; opacity: 0.8; }
 
 /* Cards */
@@ -924,6 +928,14 @@ table.calls td { white-space: nowrap; }
 /* A compact under way: says so with its time; the note wraps under it on a narrow screen. */
 .compacting { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; font-weight: 600; min-width: 0; }
 .compacting-note { font-weight: normal; font-size: 0.9em; opacity: 0.85; overflow-wrap: anywhere; }
+/* An account switch waiting or failed (issue #395): a strip under the header; the buttons wrap under the text on a phone. */
+.account-switch { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 0.3rem 0.6rem; background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: 6px; }
+.account-switch > span:first-child { flex: 1 1 14rem; min-width: 0; }
+.account-switch-buttons { display: inline-flex; gap: 6px; }
+.account-switch-reason { font-size: 0.92em; opacity: 0.85; overflow-wrap: anywhere; white-space: pre-line; }
+/* What to type, a long path in one piece, wraps rather than widening the page on a phone (acceptance of #395). */
+.banner.signin > span { min-width: 0; overflow-wrap: anywhere; }
+.banner.signin code, .account-switch-reason code { overflow-wrap: anywhere; }
 
 /* A clear counting down (clear_session): stands out, since Cancel is the user's one chance to keep the conversation. */
 .clear-countdown {

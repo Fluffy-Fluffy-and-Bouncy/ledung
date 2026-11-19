@@ -34,6 +34,8 @@ test('managers, paused, queued, working and waiting sessions are never stopped',
 test('nothing waiting for or from the session: prompts, open questions, held messages, answers', () => {
   assert.notEqual(idleStopBlocker(idle({ pendingPermissions: 1 }), NOW, HOUR), null);
   assert.equal(idleStopBlocker(idle({ openQuestions: 1 }), NOW, HOUR), 'it has an open question');
+  // An idle stop would end the person's "!" command (code review of #395).
+  assert.equal(idleStopBlocker(idle({ shellRunning: true }), NOW, HOUR), 'a "!" command is running');
   assert.equal(idleStopBlocker(idle({ waitingDeliveries: 2 }), NOW, HOUR), 'a message is waiting for it');
 });
 

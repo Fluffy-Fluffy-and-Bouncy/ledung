@@ -213,6 +213,30 @@ export interface SessionInfo {
   uac?: boolean;
   /** The run and block of the project's flow it was started or continued for (workflow part 3); null or left out: none. */
   runBlock?: RunBlock | null;
+  /**
+   * Its project's or chats' account changed while it ran (issue #395): it switches to `to` at its next quiet moment
+   * (turn ended, nothing in the background, no prompt open), or at once on Switch now. `failed`: the last switch to
+   * `to` didn't work and it stayed on its account; it isn't tried again on its own. Null or left out: none.
+   */
+  accountSwitch?: AccountSwitch | null;
+  /** A chat whose account was picked in New chat (issue #395): it keeps it when Settings' account for chats changes. */
+  accountChosen?: boolean;
+}
+
+/** A session's account switch (issue #395); `to` null: the computer's own login. */
+export interface AccountSwitch {
+  to: string | null;
+  failed?: string;
+  /**
+   * What a waiting switch waits for, as last checked: the turn (a turn under way, a prompt open; left out: the same),
+   * background work, a one-off wake-up, or a repeating wake-up, which never leaves a quiet moment: only Switch now.
+   */
+  waitsFor?: 'turn' | 'paused' | 'command' | 'background' | 'wakeup' | 'repeating';
+  /**
+   * The switch is happening now: the session stops to resume on `to`. A message sent meanwhile waits for it and is
+   * delivered on the new account, so the page keeps Send working (acceptance round 3 of #395).
+   */
+  underWay?: boolean;
 }
 
 /**

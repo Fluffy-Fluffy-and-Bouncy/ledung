@@ -2196,6 +2196,12 @@ export class LedungServer {
       case 'POST sessions/:id/start-now':
         manager.startNow(id);
         return;
+      // Switch now, or Try again after a failed one (issue #395).
+      case 'POST sessions/:id/account-switch': {
+        const body = await readJson(req);
+        await manager.accountSwitchAction(id, body.action);
+        return;
+      }
       case 'GET sessions/:id/turns':
         return store.turnResources({ sessionId: id }).map((t) => capTurnCores(t, os.cpus().length));
       case 'GET typical-costs': {

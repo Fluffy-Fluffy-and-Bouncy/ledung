@@ -88,6 +88,8 @@ test('step 1 leaves the tooltip as it was; steps 2–4 add the time and the usag
     assert.equal(rowTooltip(step, undefined, 'Today 14:02', usage), `Today 14:02\n${usage}`);
     assert.equal(rowTooltip(step, 'Working', 'Today 14:02', usage), `Working\nToday 14:02\n${usage}`);
     assert.equal(rowTooltip(step, undefined, 'Today 14:02', ''), 'Today 14:02');
+    // An account switch waiting (issue #395) comes first.
+    assert.equal(rowTooltip(step, 'Working', 'Today 14:02', '', 'Switches to b when this turn ends'), 'Switches to b when this turn ends\nWorking\nToday 14:02');
   }
 });
 
@@ -101,7 +103,8 @@ test('the sidebar draws its rows, tooltip and ship from the step', () => {
   assert.match(sidebar, /<nav className="session-list" data-compact=\{compact > 1 \? compact : undefined\}/);
   assert.match(sidebar, /\{shows\.time && <span className="session-sub">\{time\}<\/span>\}/);
   assert.match(sidebar, /\{shows\.usage && usage && <span className="session-sub usage-line">\{usage\}<\/span>\}/);
-  assert.match(sidebar, /title=\{rowTooltip\(compact, rowStatus\(dotShown, s\)\.tooltip, time, usage\)\}/);
+  // With an account switch's line first (issue #395), at every step.
+  assert.match(sidebar, /title=\{rowTooltip\(compact, rowStatus\(dotShown, s\)\.tooltip, time, usage, switchTooltip\(s\)\)\}/);
   // The ship is drawn at every step: no step condition in front of it, only its size capped.
   assert.match(sidebar, /return mode && <span className=\{`session-ship [^`]*`\}><SailingShip [^>]*maxSize=\{shows\.shipMax\}/);
   // The headings' + and ⚙ moved into their right-click menu (Simon, 2026-11-08): no step draws them.
