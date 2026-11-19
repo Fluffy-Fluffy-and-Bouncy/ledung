@@ -240,6 +240,61 @@ test('the command is looked up on PATH as a shell would: a runnable file, by PAT
   assert.equal(findOnPath('ledung-desktop-test-no-such-command', startEnv(), process.platform), null);
 });
 
+/**
+ * A start script that leaves a process behind holding the start's output pipes, as the background Ledung does on
+ * Windows through ledung.cmd and cmd (#385), then does what `body` says. The process left behind writes its pid to
+ * `<file>.pid` and lives 30 s unless the test stops it.
+ */
+function leavesHolder(name: string, body: string): { file: string; pidFile: string } {
+  const pidFile = path.join(base, 'start', `${name}.pid`);
+  const holder = `setTimeout(() => {}, 30000);`;
+  const file = startScript(name, `import { spawn } from 'node:child_process';\nconst held = spawn(process.execPath, ['-e', ${JSON.stringify(holder)}], { detached: true, stdio: ['ignore', 'inherit', 'inherit'] });\nheld.unref();\nfs.writeFileSync(${JSON.stringify(pidFile)}, String(held.pid));\n${body}`);
+  return { file, pidFile };
+}
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function stopHolder(pidFile: string): void {
+  try {
+    process.kill(Number(fs.readFileSync(pidFile, 'utf8')), 'SIGKILL');
+  } catch {
+    // Already gone.
+  }
+}
+
+test('a start that returns 0 while a process it left still holds its output is ok at once, not at the time limit (#385)', async () => {
+  const { file, pidFile } = leavesHolder('holds-ok', "console.log('Ledung is running.'); process.exit(0);");
+  try {
+    const began = Date.now();
+    const result = await runStart(startCommand({ [START_SCRIPT_ENV]: file }), startEnv(), 10_000);
+    const took = Date.now() - began;
+    const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+    assert.ok(alive(pid), 'the process left behind, which holds the output pipes, still runs: their close has not come');
+    assert.deepEqual(result, { ok: true });
+    assert.ok(took < 5_000, `finished on the exit, not at the 10 s limit (took ${took} ms)`);
+  } finally {
+    stopHolder(pidFile);
+  }
+});
+
+test('a start that fails while a process it left still holds its output still gives its error line (#385)', async () => {
+  const { file, pidFile } = leavesHolder('holds-fails', "console.error('Error: listen EADDRINUSE 127.0.0.1:4397'); process.exit(2);");
+  try {
+    const result = await runStart(startCommand({ [START_SCRIPT_ENV]: file }), startEnv(), 10_000);
+    assert.ok(alive(Number(fs.readFileSync(pidFile, 'utf8'))), 'the process left behind still runs');
+    assert.deepEqual(result, { ok: false, line: '"node holds-fails.mjs --no-open" exited with code 2: Error: listen EADDRINUSE 127.0.0.1:4397' });
+  } finally {
+    stopHolder(pidFile);
+  }
+});
+
 test('a start that does not return in time is given up on, with one line', async () => {
   const file = startScript('hangs', 'setTimeout(() => {}, 1000);');
   const result = await runStart(startCommand({ [START_SCRIPT_ENV]: file }), startEnv(), 300);
