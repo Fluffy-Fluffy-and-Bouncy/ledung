@@ -408,7 +408,7 @@ test('light commands are never refused, even with old "heavy" marks and a pass w
   const r = rig();
   r.tick({ s1: tree(), s2: tree2() }, { cores: 3.2 });
   // Marks learned the old way: every command of a heavy job got its peak.
-  const old = ['git status', 'gh issue', 'git worktree list', 'check.sh', 'npm run build'];
+  const old = ['git status', 'gh issue', 'git worktree list', 'cut', 'check.sh', 'npm run build'];
   for (const at of [1, 2]) r.jobs.add({ project: 'p', kind: 'nightly build', commands: old, asked: {}, peak: { ram: 6 * GB }, mean: {}, durationMs: 1, over: false, undeclared: false, endedAt: at });
   // A pass waits.
   r.book.setLimit('cpu', 50);

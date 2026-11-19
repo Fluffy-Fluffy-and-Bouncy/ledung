@@ -18,7 +18,8 @@ const TRIVIAL = new Set([
 const LIGHT_GIT = new Set(['status', 'log', 'diff', 'show', 'branch', 'rev-parse', 'ls-files', 'blame', 'remote', 'fetch', 'worktree list', 'stash list']);
 
 export function isLightKind(kind: string): boolean {
-  if (kind === 'gh' || kind.startsWith('gh ') || kind === 'git') return true;
+  // A file-reading word is never a kind now, but old records may have one (`cut` before it joined TRIVIAL).
+  if (kind === 'gh' || kind.startsWith('gh ') || kind === 'git' || TRIVIAL.has(kind)) return true;
   return kind.startsWith('git ') && LIGHT_GIT.has(kind.slice(4));
 }
 
