@@ -9,6 +9,9 @@ together, are in [CHANGELOG.md](CHANGELOG.md). Online: https://projectledung.com
 ([docs/changes/README.md](docs/changes/README.md)); `npm run publish:dev` and `npm run publish:public` fold them in
 here under the version they publish, and push the result to main.
 
+## v3.14 — 2026-11-19 22:05 CET
+- Managers can start with only the plugins and MCP servers managers on this computer actually used in the last week, when the workflow's profiles file turns it on with `"learnManagerTools": true`; the rest are left out, which saves tokens on every turn. context-mode is never kept. Ledung learns this from managers' calls, starting from the past week it has stored, and drops nothing before managers have run here for a week. Off when the workflow doesn't say. (#431)
+
 ## v3.13 — 2026-11-19 21:49 CET
 - Desktop app as the way in on your computer: the tray icon's **Open Ledung** now opens the app, making it the first time as `ledung` does, and the Mac's Ledung icon in Applications opens it when Ledung is already running, as `ledung` and the Windows icons already did. A browser on the same computer now shows **Open in the Ledung app** at the top of the page and in Settings → Look & feel → App instead of offering to install the page. It is only a hint: the page keeps working in the browser, and **Not now** hides it there for good. Phones and other computers are unchanged, and with `"desktopApp": false` everything opens the browser as before. (#409)
 
