@@ -18,7 +18,7 @@ The pre-push hook (`.githooks/pre-push`) refuses a push that changes `src/`, `we
 without a new `- ` line in a file here, or the trailer.
 
 **What happens to the files.** `npm run publish:dev` takes every file here (but this one), puts their lines in
-`CHANGELOG-dev.md` under a heading with the new dev version, its date and time (`## v3.13 — 2026-11-20 09:02 CET`),
+`CHANGELOG-dev.md` under a heading with the new dev version, its date and time (`## v3.14 — 2026-11-20 09:02 CET`),
 deletes the files, commits and pushes that to main. `npm run publish:public` writes the new public release in
 `CHANGELOG.md` with everything since the last one: the lines of every dev build since, and those still waiting here.
 Within a release, files named after a higher issue number come first. The pages
