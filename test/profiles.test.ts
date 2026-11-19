@@ -9,7 +9,7 @@ import { LocalRunner } from '../src/runners/local-runner.ts';
 import { Management } from '../src/sessions/management.ts';
 import { defaultModelFor, SessionManager, UserError } from '../src/sessions/manager.ts';
 import { chooseProfile, parseSettingsFile, pluginIdsIn, profileByName, profileOptions, ProfileSetting, settingsFilePath, settingsFileProblem, validateProfiles, type Profile } from '../src/sessions/profiles.ts';
-import { Session, type SessionSkills } from '../src/sessions/session.ts';
+import { Session, type SessionOptions, type SessionSkills } from '../src/sessions/session.ts';
 import { LEDUNG_SERVER, MCP_INSTRUCTIONS_LIMIT, MCP_LIMIT_ENV } from '../src/sessions/tools.ts';
 import type { PermissionMode } from '../src/shared/protocol.ts';
 import { openDatabase } from '../src/store/database.ts';
@@ -156,7 +156,7 @@ test('a resumed session gets the profile it was started with; one taken out of t
 /** A session in a project folder whose Claude settings name plugins a, b and c, logged in with its own config folder. */
 function sessionOn(
   profile: Profile | undefined, role: 'session' | 'manager' = 'session',
-  extra: { model?: string; defaultModel?: string; resume?: string; fileSettings?: Record<string, unknown>; permissionMode?: PermissionMode; pluginsOff?: string[]; skills?: SessionSkills } = {},
+  extra: { model?: string; defaultModel?: string; resume?: string; fileSettings?: Record<string, unknown>; permissionMode?: PermissionMode; pluginsOff?: string[]; skills?: SessionSkills; learnedTools?: SessionOptions['learnedTools'] } = {},
 ) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-profiles-'));
   const configDir = path.join(root, 'config');
@@ -178,7 +178,7 @@ function sessionOn(
   });
   const info = store.createSession({ id: 's', project: 'p', runner: 'local', title: 'Worker', parentId: null, permissionMode: extra.permissionMode ?? 'default', role });
   const session = new Session({
-    info, store, publish: () => {}, userName: 'Simon', management, profile, pluginsOff: extra.pluginsOff, skills: extra.skills,
+    info, store, publish: () => {}, userName: 'Simon', management, profile, pluginsOff: extra.pluginsOff, skills: extra.skills, learnedTools: extra.learnedTools,
     model: extra.model, defaultModel: extra.defaultModel, resume: extra.resume,
     runner: new LocalRunner({ name: 'p', runner: 'local', path: project } as LocalProjectConfig),
     account: { name: 'own', env: { CLAUDE_CONFIG_DIR: configDir } },
@@ -247,6 +247,40 @@ test("the config's pluginsOff reach a session's settings on full and on slim ali
     } finally {
       s.cleanup();
     }
+  }
+});
+
+test("a manager's learned tools reach its options: unused plugins off, unused servers taken away; without them, the profile's as today (issue #431)", async () => {
+  // a, b and c are named in sessionOn's settings; the record says only a was used, and dns-box of the user's servers.
+  let asked: string[] | null = null;
+  const limit = (installed: string[]) => {
+    asked = installed;
+    return { pluginsOff: installed.filter((id) => id !== 'a@m'), serversOff: ['mail-box'] };
+  };
+  const full = profileByName('full', {});
+  const learned = sessionOn(full, 'manager', { learnedTools: { limit } });
+  const today = sessionOn(full, 'manager', { learnedTools: {} });
+  const strict = sessionOn(slim, 'manager', { learnedTools: { limit } });
+  try {
+    await withDataDir(async () => {
+      const o = await learned.options();
+      assert.deepEqual(asked, ['a@m', 'b@m', 'c@m'], 'asked with the plugins the session has, though full turns none off');
+      assert.deepEqual((o.settings as { enabledPlugins?: unknown }).enabledPlugins, { 'b@m': false, 'c@m': false });
+      assert.deepEqual(o.disallowedTools, ['mcp__mail-box']);
+      assert.equal(o.strictMcpConfig, undefined, "the user's other servers stay");
+      const t = await today.options();
+      assert.equal((t.settings as { enabledPlugins?: unknown }).enabledPlugins, undefined);
+      assert.equal(t.disallowedTools, undefined);
+      // slim takes every plugin and server already: the learned set takes nothing more, and adds nothing back.
+      const s = await strict.options();
+      assert.deepEqual((s.settings as { enabledPlugins?: unknown }).enabledPlugins, { 'a@m': false, 'b@m': false, 'c@m': false });
+      assert.deepEqual(s.disallowedTools, ['Workflow', 'ReportFindings', 'SendFeedback']);
+      assert.equal(s.strictMcpConfig, true);
+    });
+  } finally {
+    learned.cleanup();
+    today.cleanup();
+    strict.cleanup();
   }
 });
 

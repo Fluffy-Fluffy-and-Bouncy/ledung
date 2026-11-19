@@ -83,7 +83,8 @@ import { toWebp } from './webp.ts';
 import { checkLineComments, formatLineComments, lineCommentsMessage, openReviewFor, reviewAnswerWithComments } from '../shared/line-comments.ts';
 import { FLOW_SOURCE, Management, type LinkedMessage, type LinkedPort, type SettingsPort } from './management.ts';
 import { findTickets } from '../usage/links.ts';
-import { claudeEnvironment, Session, type TurnGate } from './session.ts';
+import { claudeEnvironment, Session, type SessionOptions, type TurnGate } from './session.ts';
+import { ManagerTools } from './manager-tools.ts';
 import {
   checkContainerSignIn, checkSignIn, containerSignInHelp, dockerExecArgs, runCommand, sdkClaudeBinary, shellFolder, shownSignIn, signInCommand, signInHelp, tokenCommand,
   type ContainerPlace, type LoginPlace, type SignIn, type SignInContext,
@@ -221,6 +222,8 @@ export class SessionManager {
   /** The config file's reloads, for Settings (issue #353); null: not watched. */
   private configState: ConfigStatus | null = null;
   private readonly store: Store;
+  /** The tools managers on this computer call (issue #431). */
+  private readonly managerTools: ManagerTools;
   private readonly publish: (event: ServerEvent) => void;
   private readonly management: Management;
   /** Runs through the projects' flows (workflow part 3). */
@@ -284,6 +287,12 @@ export class SessionManager {
     if (given) config.userName = given;
     this.config = config;
     this.store = store;
+    // Only this computer's sessions: a container's Claude Code has a setup of its own (issue #431).
+    this.managerTools = new ManagerTools(store, {
+      sessions: () => store.listSessions().filter((s) => s.runner === 'local' && s.project !== HELPER)
+        .map((s) => ({ id: s.id, manager: s.role === 'manager' && s.project !== CHATS && s.project !== HELPER, createdAt: s.createdAt, endedAt: s.endedAt })),
+      lines: (id, since, kind) => store.sdkLines(id, since, kind),
+    });
     // New plan-limit figures may reach or pass a usage stop (issue #278).
     // A question or permission prompt for the person gets its line in a manager's chat (issue #350).
     const lines = new WaitingLines({ store, publish, userName: () => this.config.userName });
@@ -1312,6 +1321,7 @@ export class SessionManager {
     }
     return {
       account, profile, pluginsOff: profiles.pluginsOff,
+      learnedTools: this.learnedToolsFor(project, info, profiles.learnManagerTools && !helper && !launch.airgap),
       // The user's own skills it gets (#300); chats are the user's own and keep them all.
       skills: info.project === CHATS || helper ? null : { role: info.role, defaults: this.skillDefaults(), project: project.skills },
       lockdown: launch.others,
@@ -1755,6 +1765,20 @@ export class SessionManager {
   // --- Projects (projects and accounts, P1) ------------------------------------------------------
 
   // --- Accounts (projects and accounts, P3) ------------------------------------------------------
+
+  /**
+   * The tools managers learn (issue #431), for a session on this computer: its user's servers go in the record, a
+   * manager's calls too, and a manager whose workflow turns learning on (`limit`) starts with only the learned ones.
+   */
+  private learnedToolsFor(project: ProjectConfig, info: SessionInfo, limit: boolean): SessionOptions['learnedTools'] {
+    if (project.runner !== 'local' || info.project === HELPER) return undefined;
+    const manager = info.role === 'manager' && info.project !== CHATS;
+    return {
+      noteInit: (servers) => this.managerTools.noteInit(servers),
+      noteCalls: manager ? (content) => this.managerTools.noteCalls(content) : undefined,
+      limit: manager && limit ? (installed) => this.managerTools.forManager(installed) : undefined,
+    };
+  }
 
   /**
    * The profiles a project's sessions can use (#298): its workflow's file, read now, under this computer's config.
