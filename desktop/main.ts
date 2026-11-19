@@ -141,6 +141,13 @@ function lockNavigation(wc: WebContents): void {
 }
 
 type NotRunningState = 'stopped' | 'starting' | 'failed';
+/** What the "not running" page last said, for a window opened after it was shown (#414). */
+let notRunningAs: { reason: string; state: NotRunningState } = { reason: '', state: 'stopped' };
+/**
+ * Windows opened while an attach was finding the Ledung (#414): it may already have taken its list of windows, so it
+ * shows them what it found when it ends (self-check finding 5).
+ */
+const waitingForAttach = new Set<BrowserWindow>();
 
 /** The "not running" page in one window. */
 async function loadNotRunning(w: BrowserWindow, reason: string, state: NotRunningState): Promise<void> {
@@ -153,6 +160,7 @@ async function loadNotRunning(w: BrowserWindow, reason: string, state: NotRunnin
  */
 async function showNotRunning(reason: string, state: NotRunningState = 'stopped'): Promise<void> {
   ownOrigin = null;
+  notRunningAs = { reason, state };
   await Promise.all(openWindows().map((w) => loadNotRunning(w, reason, state)));
 }
 
@@ -195,7 +203,17 @@ async function attach(failed?: string): Promise<void> {
     console.error(`Ledung desktop: ${(e as Error).message}`);
   } finally {
     attaching = false;
+    // A window opened meanwhile shows what this found, whether or not the loads above took it in (#414).
+    for (const w of waitingForAttach) showCurrent(w);
+    waitingForAttach.clear();
   }
+}
+
+/** A window opened after the others: the attached Ledung's page, or the "not running" page as it last read. */
+function showCurrent(w: BrowserWindow): void {
+  if (w.isDestroyed()) return;
+  if (ownOrigin !== null) w.loadURL(`${ownOrigin}/`).catch((e: Error) => console.error(`Ledung desktop: ${e.message}`));
+  else void loadNotRunning(w, notRunningAs.reason, notRunningAs.state);
 }
 
 /** How long a started Ledung may take to answer after `ledung` returned (it returns early when still starting). */
@@ -436,9 +454,11 @@ function createWindow(bounds?: { x: number; y: number; width: number; height: nu
   w.on('closed', () => windows.remove(w));
   // A window opened while a start runs (the Dock, New Window) shows that it runs; the start shows the outcome in it.
   if (starting) void loadNotRunning(w, 'Starting Ledung in the background…', 'starting');
+  // An attach under way: it shows this window what it found when it ends.
+  else if (attaching) waitingForAttach.add(w);
   // Attached already (New Window, #414): this window shows the page; the partition is signed in.
-  else if (ownOrigin !== null) w.loadURL(`${ownOrigin}/`).catch((e: Error) => console.error(`Ledung desktop: ${e.message}`));
-  // Not attached, or an attach under way: it loads every window in the list, this one too.
+  else if (ownOrigin !== null) showCurrent(w);
+  // Not attached: find the Ledung, which loads every window in the list, this one too.
   else void attach();
   return w;
 }
