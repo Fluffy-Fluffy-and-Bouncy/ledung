@@ -6,7 +6,7 @@
 // check, sign-in cookie, Origin check and "no embedding" apply unchanged. Sign-in sets the cookie from this main
 // process (Mac spike 2026-11-17: GET /api/state 200 with no token in any URL); the token never goes into a URL or a
 // command line.
-import { app, BrowserWindow, dialog, Menu, nativeImage, session, shell, type MenuItemConstructorOptions, type Session, type WebContents } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, session, shell, type MenuItemConstructorOptions, type Session, type WebContents } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findRunning } from './attach.ts';
@@ -15,6 +15,10 @@ import { runStart } from './start.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const NOT_RUNNING_PAGE = path.join(here, 'not-running.html');
+/** The page's one bridge to the app (#360): showing the window when a notification is clicked. */
+const PRELOAD = path.join(here, 'preload.cjs');
+/** The message the preload sends for it (preload.cjs). */
+export const SHOW_WINDOW_MESSAGE = 'ledung-desktop:show-window';
 /**
  * Ledung's own icon (#384), the page's app icon from the clone's web/public: the app runs from a clone (README), so
  * it is there. A PNG, since Electron's images load no SVG. Exported for the probe, which checks it loads.
@@ -278,6 +282,8 @@ function createWindow(): void {
       session: session.fromPartition(PARTITION),
       contextIsolation: true,
       sandbox: true,
+      // One function for the page, `ledungDesktop.showWindow()`, which a click on its notification calls (#360).
+      preload: PRELOAD,
       nodeIntegration: false,
       // A hidden window keeps its timers at full speed, so notifications come on time (Windows spike: one 13–14 ms
       // after a prompt, 400 s hidden). The page also stays "visible" then, so its polls keep running (#359).
@@ -352,6 +358,13 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', showWindow);
+  // A click on one of the page's notifications (#360). Only Ledung's own page, in this window's top frame, may ask:
+  // not the "not running" page, and not a frame of anything else.
+  ipcMain.on(SHOW_WINDOW_MESSAGE, (event) => {
+    const frame = event.senderFrame;
+    if (!win || win.isDestroyed() || event.sender !== win.webContents || !frame || frame.parent !== null || !sameOrigin(frame.url)) return;
+    showWindow();
+  });
   app.on('before-quit', () => {
     quitting = true;
   });

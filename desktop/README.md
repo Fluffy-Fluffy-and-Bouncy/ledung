@@ -52,6 +52,11 @@ One window opens with your running Ledung's page, signed in. Nothing opens in th
   mouse wheel. The Mac's menu is the system menu bar, as before.
 - **⌘O on the Mac** does what Ctrl+O does in the page: Show tool calls. (In a browser the page keeps to Ctrl+O on
   every system, so that ⌘O stays the browser's; in the app ⌘O is the app's own.)
+- **Clicking a notification shows the window.** When a session asks for permission or a question comes, Ledung's
+  page raises a system notification while the window is hidden or not in front (turn them on in the page's Settings,
+  as in a browser). Clicking it brings the window back and shows the session that asked (#360). On the Mac the
+  notifications show only after you have allowed them once for the app (it is listed as "Electron" while it runs from
+  a clone) in System Settings → Notifications.
 - **A hidden window keeps its pace.** Its timers run at full speed, so notifications come on time. The page also counts
   as shown then, so it keeps polling (the usage panels refresh while hidden).
 - **Permissions.** Ledung's page may show notifications and copy to the clipboard, the two things it uses. Everything
@@ -90,10 +95,16 @@ Stop the throwaway Ledung by the process listening on its port, never by name: t
 **The loopback check.** `probe/` loads the real `main.ts` and checks the window from inside, against the throwaway
 Ledung the two settings name, printing `PROBE {…}` lines; opening the default browser is intercepted, so nothing opens.
 From this folder, with the settings as above: `PROBE_PHASE=attach npx electron probe` (a Ledung runs: sign-in, address,
-settings, permissions, refused navigation, links, the icon, the View menu's zoom step and, on Linux, that no menu bar
+settings, permissions, refused navigation, links, the icon, the page's one bridge to the app and that it shows the
+hidden window, the View menu's zoom step and, on Linux, that no menu bar
 shows, not on Alt either, and that the zoom keys, Ctrl and the wheel, Ctrl+O, copy and Ctrl+W work), then `again` (a
 second start keeps the devices `attach` saw), `notrunning` and `stopped` (these start and stop the config's Ledung
-themselves: the "not running" page, Retry, and a Ledung that stops under the window),
+themselves: the "not running" page, which may not show a hidden window, Retry, and a Ledung that stops under the
+window), `notify` (a Ledung runs whose config has a project: the probe turns the page's notifications on, hides the
+window on Overview and waits up to `PROBE_NOTIFY_SECONDS`, 180 by default, while you start a session there that asks
+for permission, e.g. a Haiku session told to run `mkdir x` with Bash in a project with `"permissionMode": "default"`;
+it then clicks the page's notification and checks the window shows that session; it records the notifications in the
+page, so the system need not display them),
 `start` (none runs; with `LEDUNG_DESKTOP_START` set as above and an `ELECTRON_*`
 variable of your own, e.g. `ELECTRON_PROBE=1`: presses Start Ledung, the page signed in within 15 s, no `ELECTRON_*`
 or `npm_*` variable in the started Ledung or its launcher; it leaves that Ledung running, so check it still answers
@@ -113,6 +124,11 @@ Linux only for now).
 - `main.ts`: the window. Sandboxed, context isolation on, no Node in the page; navigation away from Ledung's address
   and every new window are refused. TypeScript, run as is: Electron 45's Node strips types like the core's Node 24
   (checked 2026-11-17 on macOS, Electron 45.3.3 with Node 24.22.3).
+- `preload.cjs`: the page's one bridge to the app (#360), `ledungDesktop.showWindow()`, which a click on one of the
+  page's notifications calls, since `window.focus()` cannot show a hidden window. It gives the page that function and
+  nothing else (no Node, no `ipcRenderer`), and the app shows the window only when Ledung's own page asks, never the
+  "not running" page. Plain JavaScript: a sandboxed preload runs in the page's process, which strips no types. In a
+  browser the page finds no `ledungDesktop`, and the click does what it always did.
 - `attach.ts`: finding the running Ledung. No Electron in it, so the root `npm run check` tests it
   (`test/desktop.test.ts`), including that its proof matches the core's.
 - `keys.ts`: the zoom keys off the Mac (#389): Ctrl and "+" or "=", in one zoom step. No Electron in it, so
