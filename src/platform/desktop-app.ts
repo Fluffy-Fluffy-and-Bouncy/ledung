@@ -534,14 +534,66 @@ export interface OpenSteps {
 }
 
 /**
- * The tray's Open (#409): the made app, else the page in the browser as before. A failed open says why in one line
- * (the log) before the browser; no app made is the usual case and says nothing.
+ * Whether a browser's page on this computer may offer "Open in the Ledung app" (#409): the npm package, "desktopApp"
+ * not false, and an app made here. The server adds "this page is on this computer's own screen".
  */
-export async function appOrBrowser(o: { app: () => Promise<string | null>; browser: () => void; log: (line: string) => void }): Promise<void> {
-  const failed = await o.app();
-  if (failed === null) return;
-  if (failed !== NO_APP) o.log(`${failed.replace(/[.\s]*$/, '.')} Opening Ledung in the browser instead.`);
-  o.browser();
+export function offersApp(o: { dataDir: string; off: boolean; packaged?: boolean; platform?: NodeJS.Platform }): boolean {
+  return !o.off && (o.packaged ?? PACKAGED) && madeApp(o.dataDir, o.platform) !== null;
+}
+
+/** What the tray's Open needs, besides the defaults; tests replace them. */
+export interface TrayOpenOptions {
+  /** "desktopApp": false in the config, read at each click. */
+  off: boolean;
+  /** desktopAvailability() at each click: Electron's package can be added or lost while Ledung runs. */
+  desktop: Availability;
+  /** What a make is given, as `ledung` gives it (cli.ts): the same Node, `ledung` script and settings. */
+  make: (desktop: Extract<Availability, { ok: true }>) => Promise<Omit<MakeOptions, 'print'>>;
+  steps: OpenSteps;
+}
+
+let trayOpening: Promise<void> | null = null;
+let trayTraced = false;
+
+/**
+ * The tray's Open (#409): with Electron's package here, the app, made first when it isn't, exactly as `ledung` opens
+ * it (openDesktop: a failed make or open says why in one line, in the log, and opens the browser). Without the package,
+ * with "desktopApp": false, or from a clone: the page in the browser, as before. A click while the app is being made
+ * waits for that make instead of starting a second one, which would remove the first one's folder under it.
+ */
+export function trayOpen(o: TrayOpenOptions): Promise<void> {
+  if (o.off || !o.desktop.ok) {
+    o.steps.browser();
+    return Promise.resolve();
+  }
+  if (trayOpening) return trayOpening;
+  const desktop = o.desktop;
+  const open = o.steps.open;
+  trayOpening = (async () => {
+    const steps: OpenSteps = {
+      ...o.steps,
+      open: async (paths) => {
+        const failed = await open(paths);
+        if (failed === null && !trayTraced) {
+          trayTraced = true;
+          exercisedLine('EXERCISED #409 the tray opened the desktop app, made first when needed');
+        }
+        return failed;
+      },
+    };
+    let make: Omit<MakeOptions, 'print'>;
+    try {
+      make = await o.make(desktop);
+    } catch (e) {
+      o.steps.print(`The desktop app could not be made: ${firstLine(e)}. Opening Ledung in the browser instead.`);
+      o.steps.browser();
+      return;
+    }
+    await openDesktop({ make, fallback: true, steps, noTerminal: true });
+  })().finally(() => {
+    trayOpening = null;
+  });
+  return trayOpening;
 }
 
 /** Download progress for a terminal: one line rewritten in place, or a line each quarter when the output is a file. */
@@ -567,7 +619,7 @@ export function progressPrinter(write: (text: string) => void, tty: boolean): (p
  * browser fallback's line is also left for the page (noticeFile), since after an update no terminal shows it; an app
  * that opens removes it. `restarted`: the app asked for this, to finish an update (#408). Returns the exit code.
  */
-export async function openDesktop(o: { make: Omit<MakeOptions, 'print'>; fallback: boolean; steps: OpenSteps; restarted?: boolean }): Promise<number> {
+export async function openDesktop(o: { make: Omit<MakeOptions, 'print'>; fallback: boolean; steps: OpenSteps; restarted?: boolean; noTerminal?: boolean }): Promise<number> {
   let line: string;
   let hinted = false;
   const print = (text: string) => {
@@ -575,8 +627,8 @@ export async function openDesktop(o: { make: Omit<MakeOptions, 'print'>; fallbac
     // Ledung itself already runs: stopping this wait leaves it running, and "ledung --browser" opens its page
     // (self-check finding 4). A stopped make leaves its folder, which the next make removes first.
     // Once, after the line announcing the download; later lines (a shortcut not written) come without it. Not for a
-    // restart the app asked for: no one is at a terminal for it.
-    if (o.fallback && !hinted && !o.restarted) o.steps.print('Ledung is already running: to use the browser instead, press Ctrl+C and run "ledung --browser".');
+    // restart the app asked for, nor the tray's Open (#409): no one is at a terminal for them.
+    if (o.fallback && !hinted && !o.restarted && !o.noTerminal) o.steps.print('Ledung is already running: to use the browser instead, press Ctrl+C and run "ledung --browser".');
     hinted = true;
   };
   const notice = noticeFile(o.make.dataDir);

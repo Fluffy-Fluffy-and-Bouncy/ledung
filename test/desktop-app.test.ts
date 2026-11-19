@@ -15,9 +15,9 @@ import vm from 'node:vm';
 import { AFTER_APP_ARG, afterApp, APP_ID, MADE_CONFIG, madeConfigFor, readMadeConfig, START_HIDDEN_FILE, WRITE_SHORTCUT_ARG, type MadeConfig } from '../desktop/made.ts';
 import { findOnPath, restartCommand, runStart, startCommand } from '../desktop/start.ts';
 import {
-  ADD_COMMAND, APP_SHORTCUT, appManifest, appOrBrowser, backgroundArgs, codeIntoKept, desktopAppOff, desktopAppState, desktopAvailability, electronPackage,
-  ensureApp, madeApp, madePaths, NO_APP, noticeFile, openChoice, openDesktop, openMadeApp, progressPrinter, readStamp, setExeDetails, waitForExit, whatToMake, writeAppCode,
-  writeAppShortcut, type MadePaths, type OpenSteps, type Stamp,
+  ADD_COMMAND, APP_SHORTCUT, appManifest, backgroundArgs, codeIntoKept, desktopAppOff, desktopAppState, desktopAvailability, electronPackage,
+  ensureApp, madeApp, madePaths, NO_APP, noticeFile, offersApp, openChoice, openDesktop, openMadeApp, trayOpen, progressPrinter, readStamp, setExeDetails, waitForExit, whatToMake, writeAppCode,
+  writeAppShortcut, type Availability, type MadePaths, type OpenSteps, type Stamp,
 } from '../src/platform/desktop-app.ts';
 import { icoFromPng } from '../src/platform/icons.ts';
 import { appDir } from '../src/platform/paths.ts';
@@ -344,18 +344,92 @@ test('the running Ledung opens the made app, and says why not when it is off, no
   assert.equal(await openMadeApp({ dataDir: data, off: false, packaged: true, platform: 'linux', open: async () => why }), why);
 });
 
-test("the tray's Open: the app when it opens, else the browser, saying why only when an app failed to open", async () => {
-  const run = async (answer: string | null) => {
-    const browsers: number[] = [];
-    const lines: string[] = [];
-    await appOrBrowser({ app: async () => answer, browser: () => browsers.push(1), log: (l) => lines.push(l) });
-    return { browser: browsers.length, lines };
-  };
-  assert.deepEqual(await run(null), { browser: 0, lines: [] }, 'the app opened: no browser');
-  assert.deepEqual(await run(NO_APP), { browser: 1, lines: [] }, 'none made: the browser, quietly');
-  assert.deepEqual(await run('Could not open the desktop app: open exited with code 1.'), {
-    browser: 1, lines: ['Could not open the desktop app: open exited with code 1. Opening Ledung in the browser instead.'],
+// The tray's Open (#409, code review of PR #432): with Electron's package here it opens the app, making it first when
+// it isn't made, as `ledung` does; the browser without the package or with "desktopApp": false.
+
+const AVAILABLE: Availability = { ok: true, electron: { dir: '', version: '45.4.1' }, source: '/pkg/dist/desktop' };
+const trayMake = (data: string) => async () => ({ ...make(), dataDir: data });
+
+test("the tray's Open makes the app when none is made, then opens it; no browser, no terminal hint", async () => {
+  const data = path.join(base, 'tray-make');
+  const made = madePaths(data, 'darwin');
+  const ensured: string[] = [];
+  const opened: MadePaths[] = [];
+  const s = steps({
+    ensure: async (o) => { ensured.push(o.dataDir); o.print?.('Making the desktop app, once: downloading Electron 45.4.1'); return { made: 'all', paths: made }; },
+    open: async (p) => { opened.push(p); return null; },
   });
+  await trayOpen({ off: false, desktop: { ...AVAILABLE, electron: { dir: base, version: '45.4.1' } }, make: trayMake(data), steps: s });
+  assert.deepEqual(ensured, [data], 'made in the data folder it was given');
+  assert.deepEqual(opened, [made], 'the made app opened');
+  assert.equal(s.browsers, 0);
+  assert.ok(s.lines.includes(`Made the desktop app: ${made.bundle}`), s.lines.join('\n'));
+  assert.equal(s.lines.some((l) => /Ctrl\+C/.test(l)), false, 'no one is at a terminal for the tray');
+  // Premise: `ledung` itself, at a terminal, does print that hint after the same announcement.
+  const t = steps({ ensure: s.ensure, open: async () => null });
+  await openDesktop({ make: { ...make(), dataDir: data }, fallback: true, steps: t });
+  assert.equal(t.lines.some((l) => /Ctrl\+C/.test(l)), true, t.lines.join('\n'));
+});
+
+test("the tray's Open gives the browser with \"desktopApp\": false or no Electron package, and touches no app", async () => {
+  for (const [off, desktop] of [[true, AVAILABLE], [false, { ok: false, reason: 'Run from a clone' }]] as const) {
+    let ensured = 0;
+    const s = steps({ ensure: async () => { ensured++; return { made: 'nothing', paths: madePaths(base, 'darwin') }; } });
+    await trayOpen({ off, desktop, make: trayMake(path.join(base, 'tray-off')), steps: s });
+    assert.equal(s.browsers, 1, `off ${off}, ${desktop.ok}`);
+    assert.equal(ensured, 0);
+  }
+  // Premise: on, with the package, the same steps make and open the app instead.
+  let ensured = 0;
+  const s = steps({ ensure: async () => { ensured++; return { made: 'nothing', paths: madePaths(base, 'darwin') }; } });
+  await trayOpen({ off: false, desktop: { ...AVAILABLE, electron: { dir: base, version: '45.4.1' } }, make: trayMake(path.join(base, 'tray-on')), steps: s });
+  assert.equal(ensured, 1);
+  assert.equal(s.browsers, 0);
+});
+
+test("the tray's Open: a failed make or open says why in one line and opens the browser", async () => {
+  const desktop: Availability = { ...AVAILABLE, electron: { dir: base, version: '45.4.1' } };
+  const failedMake = steps({ ensure: async () => { throw new Error('getaddrinfo ENOTFOUND github.com'); } });
+  await trayOpen({ off: false, desktop, make: trayMake(path.join(base, 'tray-fail-make')), steps: failedMake });
+  assert.equal(failedMake.browsers, 1);
+  assert.ok(failedMake.lines.includes('The desktop app could not be made: getaddrinfo ENOTFOUND github.com. Opening Ledung in the browser instead.'), failedMake.lines.join('\n'));
+  const failedOpen = steps({ open: async () => 'Could not open the desktop app: open exited with code 1.' });
+  await trayOpen({ off: false, desktop, make: trayMake(path.join(base, 'tray-fail-open')), steps: failedOpen });
+  assert.equal(failedOpen.browsers, 1);
+  assert.ok(failedOpen.lines.includes('Could not open the desktop app: open exited with code 1. Opening Ledung in the browser instead.'), failedOpen.lines.join('\n'));
+  const noConfig = steps();
+  await trayOpen({ off: false, desktop, make: async () => { throw new Error('no Start menu'); }, steps: noConfig });
+  assert.equal(noConfig.browsers, 1);
+  assert.deepEqual(noConfig.lines, ['The desktop app could not be made: no Start menu. Opening Ledung in the browser instead.']);
+});
+
+test("a second click on the tray's Open while the app is being made waits for that make instead of starting another", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let ensured = 0;
+  let opened = 0;
+  const s = steps({
+    ensure: async () => { ensured++; await gate; return { made: 'all', paths: madePaths(base, 'darwin') }; },
+    open: async () => { opened++; return null; },
+  });
+  const o = { off: false, desktop: { ...AVAILABLE, electron: { dir: base, version: '45.4.1' } } as Availability, make: trayMake(path.join(base, 'tray-twice')), steps: s };
+  const first = trayOpen(o);
+  const second = trayOpen(o);
+  release();
+  await Promise.all([first, second]);
+  assert.equal(ensured, 1, 'one make');
+  assert.equal(opened, 1);
+  // Done: the next click makes (here: checks) again.
+  await trayOpen(o);
+  assert.equal(ensured, 2);
+});
+
+test('the page offers the app only for the npm package, with the switch on and an app made here', () => {
+  const { data } = madeHere('offers-made');
+  assert.equal(offersApp({ dataDir: data, off: false, packaged: true, platform: 'linux' }), true);
+  assert.equal(offersApp({ dataDir: data, off: true, packaged: true, platform: 'linux' }), false, '"desktopApp": false');
+  assert.equal(offersApp({ dataDir: data, off: false, packaged: false, platform: 'linux' }), false, 'a clone');
+  assert.equal(offersApp({ dataDir: path.join(base, 'offers-none'), off: false, packaged: true, platform: 'linux' }), false, 'none made');
 });
 
 test('no app is opened where none is made whole: no stamp, no program, nothing at all', async () => {
