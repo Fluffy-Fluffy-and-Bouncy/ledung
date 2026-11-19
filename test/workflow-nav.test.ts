@@ -7,7 +7,7 @@ import { workflowButton } from '../web/src/flowRuns.ts';
 
 const run = (id: number, over: Partial<FlowRun>): FlowRun => ({
   id: `run-${id}`, project: 'shop', title: `Issue ${id}`, ref: `#${id}`, flow: 'main', at: 'build', atSince: id, counts: {}, sessions: {}, parent: null,
-  history: [], state: 'running', ending: null, coordinator: 'manager-1', question: null, worktree: null, queue: null, startedAt: id, updatedAt: id, ...over,
+  history: [], state: 'running', ending: null, coordinator: 'manager-1', question: null, worktree: null, queue: null, retired: [], startedAt: id, updatedAt: id, ...over,
 });
 
 test('the Workflow button: running, for you, and nothing more when nothing goes on', () => {
