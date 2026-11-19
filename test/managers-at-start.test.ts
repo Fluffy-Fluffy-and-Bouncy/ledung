@@ -77,9 +77,36 @@ test('#391: a clean stop writes down the live managers, and the next start finds
   for (const id of ['m-clean', 'm-crashed', 'm-stopping', 'w-1']) assert.equal(before.store.getSession(id)!.status, 'ended', `${id} stopped`);
   // The next start, on the same database: every one of them is 'ended' now, so only the written record tells them apart.
   const next = ledung(before.store);
-  assert.deepEqual(next.manager.managersRunningAtStop([]).sort(), ['m-clean', 'm-crashed']);
-  // Read once: a later start that follows no stop of its own resumes nobody.
+  const found = next.manager.managersRunningAtStop([]);
+  assert.deepEqual([...found].sort(), ['m-clean', 'm-crashed']);
+  // Once the resume step has run, the record is spent: a later start that follows no stop of its own resumes nobody.
+  await next.manager.resumeManagersAtStart(found);
   assert.deepEqual(ledung(before.store).manager.managersRunningAtStop([]), []);
+});
+
+test('#391: a start that fails before its resume step (a port in use) leaves every manager found for the next start', () => {
+  const first = ledung();
+  // One written down at a clean stop, one the database still calls running after a crash.
+  session(first, 'm-clean', 'clean', 'ended', { reason: 'Ledung was shut down. Resume to continue.' });
+  session(first, 'm-crashed', 'crashed', 'running');
+  first.store.setMeta('managers-at-stop', JSON.stringify(['m-clean']));
+  assert.deepEqual(first.manager.managersRunningAtStop([]).sort(), ['m-clean', 'm-crashed']);
+  // That start marks the rest ended, as main.ts does, and then fails: no resume step.
+  first.store.markUnfinishedSessionsEnded('Ledung stopped before this session ended. Resume to continue.');
+  assert.equal(first.store.getSession('m-crashed')!.status, 'ended');
+  assert.deepEqual(ledung(first.store).manager.managersRunningAtStop([]).sort(), ['m-clean', 'm-crashed'], 'both still found');
+});
+
+test("#391: an away period that ran out while Ledung was off reaches the managers coming back, not one stopped on purpose", () => {
+  const t = ledung();
+  session(t, 'm-clean', 'clean', 'ended', { reason: 'Ledung was shut down. Resume to continue.' });
+  session(t, 'm-stopped', 'stopped', 'ended', { reason: 'Stopped by Simon.' });
+  t.store.setMeta('managers-at-stop', JSON.stringify(['m-clean']));
+  assert.deepEqual(t.manager.managersRunningAtStop([]), ['m-clean']);
+  // The note away mode sends to the managers when a period ends (Away's notify), before the resume step runs.
+  (t.manager as unknown as { tellManagers(text: string): void }).tellManagers('Away ended.');
+  assert.deepEqual(t.store.undeliveredInbox('m-clean').map((i) => i.text), ['Away ended.'], 'waits for its resume');
+  assert.deepEqual(t.store.undeliveredInbox('m-stopped'), []);
 });
 
 test('#391: after a stop that never reached shutdown, the managers the database still calls running are found; nothing else is', () => {

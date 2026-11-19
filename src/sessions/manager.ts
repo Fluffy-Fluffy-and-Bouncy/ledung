@@ -251,6 +251,8 @@ export class SessionManager {
   private waitTimer: NodeJS.Timeout | null = null;
   /** Resumes under way, so two messages arriving together start one resume, not two. */
   private readonly resuming = new Map<string, Promise<SessionInfo>>();
+  /** The managers found at start that resumeManagersAtStart brings back (#391); until then they are ended. */
+  private managersComingBack = new Set<string>();
   private idleTimer: NodeJS.Timeout | null = null;
   /** Sessions to restart with new lockdown settings once they are free (issue #109). */
   private readonly relaunching = new Set<string>();
@@ -904,7 +906,8 @@ export class SessionManager {
   /** A note from Ledung to every manager that has not ended, delivered now (issue #328). */
   private tellManagers(text: string): void {
     for (const s of this.store.listSessions()) {
-      if (s.role !== 'manager' || s.status === 'ended') continue;
+      // The managers about to be resumed at start (#391) are still ended here; their resume delivers the note.
+      if (s.role !== 'manager' || (s.status === 'ended' && !this.managersComingBack.has(s.id))) continue;
       this.store.addInbox(s.id, 'ledung', text);
       this.live.get(s.id)?.deliver();
     }
@@ -4409,7 +4412,9 @@ ${firstMessage}`);
    * The projects' managers that were running when Ledung last stopped (#391; Martin, Ledung question #541: "a — Those
    * that were running, start now"): those shutdown() wrote down, and, after a stop that never reached it (a crash, a
    * reboot, a killed process), those the database still calls running that no host was reattached for. A manager
-   * stopped on purpose had ended by then, so it is in neither. Read once: call it before markUnfinishedSessionsEnded.
+   * stopped on purpose had ended by then, so it is in neither. Call it before markUnfinishedSessionsEnded. All of them
+   * are written back, crashed ones too, and the record is cleared only by resumeManagersAtStart, once the page listens:
+   * a start that fails in between (a port in use) leaves them for the next one (self-check finding 1).
    */
   managersRunningAtStop(attached: string[]): string[] {
     let written: string[] = [];
@@ -4419,13 +4424,14 @@ ${firstMessage}`);
     } catch {
       // A record this version can't read: only the database's own count.
     }
-    if (written.length) this.store.setMeta(MANAGERS_AT_STOP_KEY, '[]');
     const ids: string[] = [];
     for (const project of this.projectStore.list()) {
       const info = project.managerId ? this.store.getSession(project.managerId) : undefined;
       if (!info || info.role !== 'manager' || attached.includes(info.id)) continue;
       if (written.includes(info.id) || RUNNING_STATUSES.has(info.status)) ids.push(info.id);
     }
+    this.store.setMeta(MANAGERS_AT_STOP_KEY, JSON.stringify(ids));
+    this.managersComingBack = new Set(ids);
     return ids;
   }
 
@@ -4435,6 +4441,15 @@ ${firstMessage}`);
    * one still comes back.
    */
   async resumeManagersAtStart(ids: string[]): Promise<void> {
+    this.store.setMeta(MANAGERS_AT_STOP_KEY, '[]');
+    try {
+      await this.resumeEach(ids);
+    } finally {
+      this.managersComingBack.clear();
+    }
+  }
+
+  private async resumeEach(ids: string[]): Promise<void> {
     for (const id of ids) {
       const info = this.store.getSession(id);
       if (!info?.claudeSessionId || (this.live.has(id) && info.status !== 'ended')) continue;
