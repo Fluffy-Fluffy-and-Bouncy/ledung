@@ -17,6 +17,7 @@ import { FlowBuilder } from './FlowBuilder.tsx';
 import { Markdown } from './Markdown.tsx';
 import { usePaneWidth } from './PaneResizer.tsx';
 import type { FlowRun } from '../../../src/shared/flow-run.ts';
+import type { SessionInfo } from '../../../src/shared/protocol.ts';
 import { RunsPanel } from './FlowRuns.tsx';
 import { blockRuns, followLine, openRun, pinCounts, runPath, type RunMarks } from '../flowRuns.ts';
 
@@ -252,12 +253,14 @@ function notEditable(view: FlowView): string | null {
   return null;
 }
 
-export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowFlow, onRenamedFlow, liveRuns, connected = 0 }: {
+export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowFlow, onRenamedFlow, liveRuns, connected = 0, sessions }: {
   project: string; profiles: string[]; onSettings: () => void;
   /** The project's runs as the live connection last sent them (part 3c); none yet: those read on opening. */
   liveRuns?: FlowRun[];
   /** The live connection's hellos: a reconnect reads the runs again (review of 3c). */
   connected?: number;
+  /** Every session the page knows, archived ones too: a chosen run links its sessions (#402). */
+  sessions?: readonly SessionInfo[];
   /**
    * The flow shown, from the address (#447): null for the default one. Showing another is a history entry
    * (`onShowFlow`), so Back steps through the flows viewed; a flow renamed in the builder replaces its entry.
@@ -326,7 +329,7 @@ export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowF
   const startRun = (id: string) => api.startRun(project, id).then(() => null, (e: Error) => e.message);
   const stopRun = (id: string) => api.stopRun(project, id).then(() => null, (e: Error) => e.message);
   const follow = followLine(flow);
-  const runsPanel = <RunsPanel runs={runs} chosen={chosenRun} onChoose={chooseRun} flowTitle={flowNameTitle} error={runsError} follow={follow} onStart={startRun} onStop={stopRun} blockTitle={(f, id) => flows.find((x) => x.name === f)?.flow?.blocks.find((b) => b.id === id)?.title ?? id} />;
+  const runsPanel = <RunsPanel runs={runs} chosen={chosenRun} onChoose={chooseRun} flowTitle={flowNameTitle} error={runsError} follow={follow} onStart={startRun} onStop={stopRun} sessions={sessions} blockTitle={(f, id) => flows.find((x) => x.name === f)?.flow?.blocks.find((b) => b.id === id)?.title ?? id} />;
   const managerShown = manager && !!view?.flow?.manager;
   const showDiagram = !narrow || diagramOnPhone;
   const source = view?.source;
@@ -451,7 +454,7 @@ export function WorkflowView({ project, profiles, onSettings, shownFlow, onShowF
             {narrow && runs.length > 0 && (
               <details className="flow-runs-fold" open={runs.some(openRun)}>
                 <summary>Runs ({runs.filter(openRun).length} under way)</summary>
-                <RunsPanel runs={runs} chosen={chosenRun} onChoose={chooseRun} flowTitle={flowNameTitle} error={runsError} heading={false} follow={follow} onStart={startRun} onStop={stopRun} blockTitle={(f, id) => flows.find((x) => x.name === f)?.flow?.blocks.find((b) => b.id === id)?.title ?? id} />
+                <RunsPanel runs={runs} chosen={chosenRun} onChoose={chooseRun} flowTitle={flowNameTitle} error={runsError} heading={false} follow={follow} onStart={startRun} onStop={stopRun} sessions={sessions} blockTitle={(f, id) => flows.find((x) => x.name === f)?.flow?.blocks.find((b) => b.id === id)?.title ?? id} />
               </details>
             )}
             {narrow && (

@@ -3,7 +3,9 @@
 // history; choosing one marks its path through the diagram.
 import { useEffect, useState } from 'react';
 import type { FlowRun } from '../../../src/shared/flow-run.ts';
-import { openRun as open, placeInLine } from '../flowRuns.ts';
+import { openRun as open, placeInLine, runSessions } from '../flowRuns.ts';
+import type { SessionInfo } from '../../../src/shared/protocol.ts';
+import { conversationHash } from '../conversation.ts';
 import type { QuestionRun } from '../../../src/shared/questions.ts';
 import { workflowHash } from '../flowNav.ts';
 import { formatTime } from './MessageList.tsx';
@@ -28,7 +30,7 @@ function stateLine(r: FlowRun, blockTitle: (flow: string, id: string) => string,
 }
 
 /** The Runs list (part 3c): open ones first, then the latest ended; a run chosen shows its history and marks its path. */
-export function RunsPanel({ runs, chosen, onChoose, flowTitle, blockTitle, error, heading = true, follow, onStart, onStop }: {
+export function RunsPanel({ runs, chosen, onChoose, flowTitle, blockTitle, error, heading = true, follow, onStart, onStop, sessions }: {
   runs: readonly FlowRun[]; chosen: string | null; onChoose: (id: string | null) => void;
   flowTitle: (name: string) => string; blockTitle: (flow: string, id: string) => string;
   /** The runs could not be read: said, rather than shown as none. */
@@ -41,6 +43,8 @@ export function RunsPanel({ runs, chosen, onChoose, flowTitle, blockTitle, error
   onStart?: (id: string) => Promise<string | null>;
   /** Stop for a run under way (final review of part 3): the error, if it couldn't. */
   onStop?: (id: string) => Promise<string | null>;
+  /** Every session the page knows, archived ones too: the chosen run's are linked under its history (#402). */
+  sessions?: readonly SessionInfo[];
 }) {
   const [starting, setStarting] = useState<string | null>(null);
   const [startError, setStartError] = useState<{ id: string; text: string } | null>(null);
@@ -122,10 +126,28 @@ export function RunsPanel({ runs, chosen, onChoose, flowTitle, blockTitle, error
                 </ol>
                 : <p className="muted">No steps yet: it is at its first block.</p>
             )}
+            {r.id === chosen && sessions && <RunSessionLinks list={runSessions(sessions, r)} blockTitle={(id) => blockTitle(r.flow, id)} />}
           </li>
         ))}
       </ol>
     </div>
+  );
+}
+
+/** The chosen run's sessions, each a link to its chat; an archived one (an earlier round's, #402) is said so. */
+function RunSessionLinks({ list, blockTitle }: { list: readonly SessionInfo[]; blockTitle: (id: string) => string }) {
+  if (!list.length) return null;
+  return (
+    <p className="muted flow-run-note flow-run-sessions">
+      Sessions:{' '}
+      {list.map((s, i) => (
+        <span key={s.id}>
+          {i ? ' · ' : ''}
+          <a href={conversationHash(s.id)} title={s.runBlock ? `${blockTitle(s.runBlock.block)}: open its chat` : 'Open its chat'}>{s.title}</a>
+          {s.archivedAt ? ' (archived)' : ''}
+        </span>
+      ))}
+    </p>
   );
 }
 

@@ -2,6 +2,7 @@
 // the chosen run's path; the components are in components/FlowRuns.tsx.
 import { endingKey, type Flow } from '../../src/shared/flow.ts';
 import { OPEN_STATES, runPositions, type FlowRun } from '../../src/shared/flow-run.ts';
+import type { SessionInfo } from '../../src/shared/protocol.ts';
 
 /** What the diagram shows of the runs, by block id. */
 export interface RunMarks {
@@ -9,6 +10,15 @@ export interface RunMarks {
   /** Per outcome of a block, its counted pin's progress: "2 of 3" on the pin, the whole ("Failed 2 of 3") in the list. */
   counts: Map<string, ({ short: string; full: string } | null)[]>;
   path: Map<string, 'passed' | 'here'>;
+}
+
+/**
+ * Every session that worked on a run, the earliest first: its blocks' current ones and earlier rounds', archived ones
+ * too (#402: a replaced session is archived at once, and its report stays a click away from the run).
+ */
+export function runSessions<S extends Pick<SessionInfo, 'id' | 'project' | 'runBlock' | 'createdAt'>>(sessions: readonly S[], run: FlowRun): S[] {
+  const current = new Set(Object.values(run.sessions));
+  return sessions.filter((s) => s.project === run.project && (s.runBlock?.run === run.id || current.has(s.id))).sort((a, b) => a.createdAt - b.createdAt);
 }
 
 /** A run still under way: running, or waiting for a person, a wait or a child run. */

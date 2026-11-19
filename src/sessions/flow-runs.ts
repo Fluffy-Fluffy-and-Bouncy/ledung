@@ -72,6 +72,8 @@ export interface FlowRunsPorts {
   stopSession(id: string, reason: string): Promise<void>;
   /** Archives an ended session (part 3f, a run's tidying). */
   archiveSession(id: string, by: string): void;
+  /** Whether a session waits on the person: an open question of its own or a prompt (#402: never archived then). */
+  waitsOnPerson(id: string): boolean;
   /** How Ledung reaches the project's git (part 3f); null: it can't (a removed project). */
   worktreeHost(project: string): WorktreeHost | null;
   /** The project's setup command for a new worktree (its settings); none: nothing is run. */
@@ -312,12 +314,19 @@ export class FlowRuns {
       if (!run || run.project !== caller.project) throw new FlowRunError(`There is no run "${id}" in your project.`);
       const counts = Object.entries(run.counts).flatMap(([b, words]) => Object.entries(words).map(([w, n]) => `${titleOf(run, b)}: "${w}" ×${n}`));
       const sessions = Object.entries(run.sessions).map(([b, s]) => `${b === CALLER ? 'handed by its caller' : titleOf(run, b)}: ${s}`);
+      // An earlier round's sessions too, archived ones said so, so their reports stay reachable (#402).
+      const current = Object.values(run.sessions);
+      const earlier = this.p.sessionsOf(run.project, run.id).filter((s) => !current.includes(s)).map((id) => {
+        const s = this.p.getSession(id);
+        return `${titleOf(run, s?.runBlock?.block ?? null) || '?'}: ${id}${s?.archivedAt ? ' (archived)' : ''}`;
+      });
       return [
         `${runLabel(run)} in the flow "${flows?.titles.get(run.flow) ?? run.flow}", coordinated by ${this.who(run.coordinator)}: ${this.stateLine(run, (b) => titleOf(run, b))}.`,
         run.parent ? `Started by "${run.parent.block}" of ${run.parent.run}, which waits for it.` : '',
         run.worktree ? `Worktree: ${run.worktree.path} (branch ${run.worktree.branch}, from ${run.worktree.base}${run.worktree.own ? '' : `, its parent's`}).` : '',
         counts.length ? `Counts: ${counts.join('; ')}.` : '',
         sessions.length ? `Sessions: ${sessions.join('; ')}.` : '',
+        earlier.length ? `Earlier rounds' sessions: ${earlier.join('; ')}; read_session reads one, send_message resumes it.` : '',
         run.history.length ? `History:\n${run.history.map((h) => `- ${new Date(h.at).toISOString().slice(0, 16).replace('T', ' ')} ${titleOf(run, h.block)}${h.branch ? ` ("${h.branch}" branch)` : ''}: "${h.word}"${h.n > 1 ? ` (${ordinal(h.n)} time)` : ''} by ${h.by} → ${h.to === null ? 'end' : titleOf(run, h.to)}`).join('\n')}` : 'No steps yet.',
       ].filter(Boolean).join('\n');
     }
@@ -545,7 +554,9 @@ export class FlowRuns {
     const others = new Set(this.p.runs.list(run.project, { open: true, limit: 10000 }).filter((r) => r.id !== run.id).flatMap((r) => Object.values(r.sessions)));
     // Its blocks' sessions as they are now, and the ones a block had on an earlier visit (the try-out of 3f: a first
     // review's session was left out).
-    const ids = [...new Set([...Object.entries(run.sessions).filter(([k]) => k !== CALLER).map(([, id]) => id), ...this.p.sessionsOf(run.project, run.id)])].filter((id) => !others.has(id));
+    const current = Object.entries(run.sessions).filter(([k]) => k !== CALLER).map(([, id]) => id);
+    // One archived when a new session took its block was tidied then (#402); resumed since, it is the coordinator's.
+    const ids = [...new Set([...current, ...this.p.sessionsOf(run.project, run.id)])].filter((id) => !others.has(id) && (current.includes(id) || !run.retired.includes(id)));
     const done: string[] = [];
     const working: string[] = [];
     for (const id of ids) {
@@ -899,13 +910,41 @@ export class FlowRuns {
     const earlier = run.sessions[block.id];
     // Nor one an open run of its Run flow blocks goes on in (the caller's session, review of 3d).
     const inChildren = (id: string) => this.p.runs.children(run.id).some((c) => OPEN_STATES.includes(c.state) && Object.values(c.sessions).includes(id));
+    let replaced = '';
     if (earlier && earlier !== s.id && !Object.entries(run.sessions).some(([b, id]) => b !== block.id && id === earlier) && !inChildren(earlier)) {
-      await this.p.stopSession(earlier, `A new session took "${block.title}" of ${run.id}.`).catch(() => {});
+      replaced = await this.retire(run, flow, block, earlier);
     }
     this.p.runs.update(run.id, { sessions: { ...run.sessions, [block.id]: s.id } }, this.now());
     this.p.changed(run.project);
     const settings = [s.requestedModel ? `model ${s.requestedModel}` : '', s.profile ? `profile ${s.profile}` : ''].filter(Boolean).join(', ');
-    return `Ledung started session "${s.title}" (${s.id})${settings ? ` with ${settings}` : ''}${block.runs === 'continue' ? `, as no session of "${from.title}" was there to continue` : ''}`;
+    return `Ledung started session "${s.title}" (${s.id})${settings ? ` with ${settings}` : ''}${block.runs === 'continue' ? `, as no session of "${from.title}" was there to continue` : ''}${replaced}`;
+  }
+
+  /**
+   * The session an earlier round of a block had, replaced by a new one: stopped, and archived at once as the flow's
+   * tidying would at the run's end (#402), so a run of many rounds doesn't leave a pile of ended sessions in the
+   * sidebar. Never one that was mid-turn or waits on the person (an open question or a prompt): that one is only
+   * stopped, as before, and the run's end tidies it. What happened, for the coordinator's note; empty: nothing to say.
+   */
+  private async retire(run: FlowRun, flow: Flow, block: FlowBlock, id: string): Promise<string> {
+    const before = this.p.getSession(id);
+    const t = flow.tidy ?? DEFAULT_TIDY;
+    const archiving = (typeof t === 'string' ? t : t.sessions) === 'archive';
+    const busy = !before || !['idle', 'ended'].includes(before.status) || this.p.waitsOnPerson(id);
+    const archive = archiving && !busy && !before.archivedAt;
+    const took = `A new session took "${block.title}" of ${run.id}`;
+    // The "ended" note the coordinator gets says it is archived (#402, Done looks like 2).
+    await this.p.stopSession(id, archive ? `${took}; it is archived (nothing is deleted; a message to it resumes it).` : `${took}.`).catch(() => {});
+    if (!archive || this.p.getSession(id)?.status !== 'ended') return '';
+    try {
+      this.p.archiveSession(id, `Ledung (${took})`);
+    } catch {
+      return '';
+    }
+    // Kept on the run, so its end leaves this one be once the coordinator has resumed it (Done looks like 3).
+    const latest = this.p.runs.get(run.id) ?? run;
+    this.p.runs.update(run.id, { retired: [...new Set([...latest.retired, id])] }, this.now());
+    return `; the session it replaces, "${before.title}" (${id}), is archived`;
   }
 
   /** The outcome words of a block, once each, in the flow's spelling. */

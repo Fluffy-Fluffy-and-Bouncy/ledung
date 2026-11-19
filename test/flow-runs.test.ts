@@ -114,6 +114,7 @@ async function engine(opts: { following?: boolean; flows?: Awaited<ReturnType<ty
       archived.push(id);
       store.updateSession(id, { archivedAt: Date.now() });
     },
+    waitsOnPerson: (id) => store.openQuestionCount(id) > 0,
     worktreeHost: () => opts.host ?? null,
     worktreeSetup: () => opts.setup,
     sessionsOf: (_p, run) => store.listSessions().filter((x) => x.runBlock?.run === run).map((x) => x.id),
@@ -1039,11 +1040,13 @@ test('part 3f: tidy at the end: archived by default, stopped or kept as the flow
   await a.runs.step('manager-1', { run: 'run-1', outcome: 'Done' });
   assert.match(await a.runs.step('manager-1', { run: 'run-1', outcome: 'Merged' }), /has ended: "Merged"\. Its sessions: 2 archived\./);
   assert.deepEqual(a.archived.sort(), ['block-1', 'block-2']);
-  // A block visited twice had a session each time: both are tidied, not only its latest.
+  // A block visited twice had a session each time: the first was archived when the second took over (#402), the
+  // rest at the end.
   const twice = await engine({ flows: flowsOf3({ ...F3, limit: undefined }) });
   await twice.runs.start('manager-1', { title: 'Two' });
   for (const outcome of ['Done', 'Changes', 'Fixed']) await twice.runs.step('manager-1', { run: 'run-1', outcome });
-  assert.match(await twice.runs.step('manager-1', { run: 'run-1', outcome: 'Merged' }), /Its sessions: 3 archived\./);
+  assert.deepEqual(twice.archived, ['block-2']);
+  assert.match(await twice.runs.step('manager-1', { run: 'run-1', outcome: 'Merged' }), /Its sessions: 2 archived\./);
   assert.deepEqual(twice.archived.sort(), ['block-1', 'block-2', 'block-3']);
   const stop = await engine({ flows: flowsOf3({ ...F3, limit: undefined, tidy: 'stop' }) });
   await stop.runs.start('manager-1', { title: 'One' });
@@ -1410,4 +1413,60 @@ test('#193 self-check: a join whose way on is not drawn yet keeps the branch ste
   await both.runs.start('manager-1', { title: 'Fix the cart' });
   assert.match(await both.runs.step('manager-1', { run: 'run-1', outcome: 'PR opened' }), /a fork: Ledung started every branch at once/);
   assert.match(await e.runs.step('manager-1', { run: 'run-1', outcome: 'Code' }), /goes to "Both approved"/);
+});
+
+test('#402: a new session taking a block archives the one it replaces at once, said to the coordinator; the run lists it', async () => {
+  const e = await engine({ flows: flowsOf3({ ...F3, limit: undefined }) });
+  await e.runs.start('manager-1', { title: 'Rounds' });
+  await e.runs.step('manager-1', { run: 'run-1', outcome: 'Done' });
+  await e.runs.step('manager-1', { run: 'run-1', outcome: 'Changes' });
+  const said = await e.runs.step('manager-1', { run: 'run-1', outcome: 'Fixed' });
+  // The first reviewer: stopped with a reason that says it is archived (the coordinator's "ended" note), then archived.
+  assert.deepEqual(e.stopped, ['block-2']);
+  assert.match(e.store.getSession('block-2')!.endReason!, /^A new session took "Review" of run-1; it is archived \(nothing is deleted; a message to it resumes it\)\.$/);
+  assert.deepEqual(e.archived, ['block-2']);
+  assert.match(said, /Ledung started session "Review: Rounds" \(block-3\) with profile full; the session it replaces, "Review: Rounds" \(block-2\), is archived/);
+  // Nothing deleted: the session is there, and flow_status names it among the earlier rounds'.
+  assert.ok(e.store.getSession('block-2'));
+  assert.match(await e.runs.status('manager-1', 'run-1'), /Earlier rounds' sessions: Review: block-2 \(archived\); read_session reads one, send_message resumes it\./);
+  assert.deepEqual(e.ports.runs.get('run-1')!.retired, ['block-2']);
+});
+
+test('#402: a replaced session that is mid-turn or waits on the person is stopped as before but never archived; the end tidies it', async () => {
+  for (const kind of ['running', 'question'] as const) {
+    const e = await engine({ flows: flowsOf3({ ...F3, limit: undefined }) });
+    await e.runs.start('manager-1', { title: 'Busy' });
+    await e.runs.step('manager-1', { run: 'run-1', outcome: 'Done' });
+    if (kind === 'running') e.store.updateSession('block-2', { status: 'running' });
+    else e.store.createQuestion({ sessionId: 'block-2', question: 'Which?', options: null, addressedTo: 'user', details: null });
+    await e.runs.step('manager-1', { run: 'run-1', outcome: 'Changes' });
+    const said = await e.runs.step('manager-1', { run: 'run-1', outcome: 'Fixed' });
+    assert.deepEqual(e.stopped, ['block-2'], kind);
+    assert.equal(e.store.getSession('block-2')!.endReason, 'A new session took "Review" of run-1.', kind);
+    assert.deepEqual(e.archived, [], kind);
+    assert.doesNotMatch(said, /is archived/, kind);
+    assert.deepEqual(e.ports.runs.get('run-1')!.retired, [], kind);
+  }
+});
+
+test('#402: one the coordinator resumed since is not archived again at the end; the current ones are, as before', async () => {
+  const e = await engine({ flows: flowsOf3({ ...F3, limit: undefined }) });
+  await e.runs.start('manager-1', { title: 'Resumed' });
+  for (const outcome of ['Done', 'Changes', 'Fixed']) await e.runs.step('manager-1', { run: 'run-1', outcome });
+  // A message to it resumes and unarchives it (resumeIfEnded in manager.ts); here it is idle again.
+  e.store.updateSession('block-2', { archivedAt: null, status: 'idle' });
+  assert.match(await e.runs.step('manager-1', { run: 'run-1', outcome: 'Merged' }), /Its sessions: 2 archived\./);
+  assert.deepEqual([e.archived[0], e.archived.slice(1).sort()], ['block-2', ['block-1', 'block-3']]);
+  assert.equal(e.store.getSession('block-2')!.archivedAt, null);
+  assert.equal(e.store.getSession('block-2')!.status, 'idle');
+});
+
+test('#402: a flow that keeps or only stops its sessions has none archived when a new session takes a block', async () => {
+  for (const tidy of ['keep', 'stop'] as const) {
+    const e = await engine({ flows: flowsOf3({ ...F3, limit: undefined, tidy }) });
+    await e.runs.start('manager-1', { title: 'Kept' });
+    for (const outcome of ['Done', 'Changes', 'Fixed']) await e.runs.step('manager-1', { run: 'run-1', outcome });
+    assert.deepEqual(e.stopped, ['block-2'], tidy);
+    assert.deepEqual(e.archived, [], tidy);
+  }
 });
