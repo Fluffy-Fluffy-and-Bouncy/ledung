@@ -547,6 +547,8 @@ export interface TrayOpenOptions {
   off: boolean;
   /** desktopAvailability() at each click: Electron's package can be added or lost while Ledung runs. */
   desktop: Availability;
+  /** The data folder: a fallback's reason is left in it for the page (noticeFile, #434). */
+  dataDir: string;
   /** What a make is given, as `ledung` gives it (cli.ts): the same Node, `ledung` script and settings. */
   make: (desktop: Extract<Availability, { ok: true }>) => Promise<Omit<MakeOptions, 'print'>>;
   steps: OpenSteps;
@@ -554,16 +556,49 @@ export interface TrayOpenOptions {
 
 let trayOpening: Promise<void> | null = null;
 let trayTraced = false;
+/** The reasons the tray has logged already: each is said once per run of Ledung, not at every click (#434). */
+const trayTold = new Set<string>();
+
+/** The tray's line when "desktopApp" is false: the person's own choice, so it goes to the log only, never the page. */
+export const TRAY_OFF_LINE = 'The tray opens Ledung in the browser: "desktopApp" is false in the config.';
+
+/**
+ * The tray's browser fallback says why (#434: "When it does fall back to the browser, it says why (once) where the
+ * person can see it"): once in the log, and on the page, which the browser opens next (noticeFile). Before, an app that
+ * was not available opened the browser with no word anywhere, so the cause could not be told from Windows.
+ */
+function trayFallback(o: TrayOpenOptions, why: string): void {
+  if (!trayTold.has(why)) {
+    trayTold.add(why);
+    o.steps.print(`${why} Opening Ledung in the browser instead.`);
+    exercisedLine('EXERCISED #434 the tray said why it opened the browser');
+  }
+  try {
+    fs.mkdirSync(path.dirname(noticeFile(o.dataDir)), { recursive: true });
+    fs.writeFileSync(noticeFile(o.dataDir), `${why} Ledung opened in the browser instead.\n`);
+  } catch {
+    // The log has the line; only the page misses it.
+  }
+  o.steps.browser();
+}
 
 /**
  * The tray's Open (#409): with Electron's package here, the app, made first when it isn't, exactly as `ledung` opens
  * it (openDesktop: a failed make or open says why in one line, in the log, and opens the browser). Without the package,
- * with "desktopApp": false, or from a clone: the page in the browser, as before. A click while the app is being made
- * waits for that make instead of starting a second one, which would remove the first one's folder under it.
+ * with "desktopApp": false, or from a clone: the page in the browser, saying why (#434). A click while the app is being
+ * made waits for that make instead of starting a second one, which would remove the first one's folder under it.
  */
 export function trayOpen(o: TrayOpenOptions): Promise<void> {
-  if (o.off || !o.desktop.ok) {
+  if (o.off) {
+    if (!trayTold.has(TRAY_OFF_LINE)) {
+      trayTold.add(TRAY_OFF_LINE);
+      o.steps.print(TRAY_OFF_LINE);
+    }
     o.steps.browser();
+    return Promise.resolve();
+  }
+  if (!o.desktop.ok) {
+    trayFallback(o, o.desktop.reason.replace(/[.\s]*$/, '.'));
     return Promise.resolve();
   }
   if (trayOpening) return trayOpening;
@@ -585,8 +620,7 @@ export function trayOpen(o: TrayOpenOptions): Promise<void> {
     try {
       make = await o.make(desktop);
     } catch (e) {
-      o.steps.print(`The desktop app could not be made: ${firstLine(e)}. Opening Ledung in the browser instead.`);
-      o.steps.browser();
+      trayFallback(o, `The desktop app could not be made: ${firstLine(e).replace(/[.\s]*$/, '')}.`);
       return;
     }
     await openDesktop({ make, fallback: true, steps, noTerminal: true });

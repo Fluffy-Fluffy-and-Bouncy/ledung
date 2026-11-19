@@ -156,6 +156,7 @@ async function main(): Promise<void> {
   const openFromTray = () => trayOpen({
     off: desktopOff(),
     desktop: desktopAvailability(),
+    dataDir: userDataDir(),
     // As `ledung` makes it (cli.ts), so the stamp agrees and neither makes it again for the other.
     make: async (desktop) => ({
       dataDir: userDataDir(), electron: desktop.electron, source: desktop.source, ledungVersion: appVersion(),
