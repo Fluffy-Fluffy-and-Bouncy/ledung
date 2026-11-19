@@ -11,6 +11,7 @@ is nothing user-facing in it).
 
 ## 2026-11-19
 - The projects' managers that were running when Ledung stopped (Stop Ledung, the tray's Exit, a reboot) are running again when Ledung starts, without a Resume. A manager you or another manager stopped stays stopped, and other sessions are unchanged. (#391)
+- Desktop app on Windows and Linux: no menu bar at all any more, and Alt does nothing, so it stays free for a later shortcut. Ctrl+W, Alt+F4 on Windows, copy and paste, Ctrl+O and zoom work as before. Zoom in now also works on a Swedish or other non-US keyboard with Ctrl and "+", and with Ctrl and the mouse wheel. The Mac is unchanged. (#389)
 - Ledung's icon no longer has white corners: the desktop app's window and taskbar icon, the Windows tray icon and the icon of the installed page are see-through outside the rounded square. The iPhone home-screen icon fills its corners with the icon's dark background instead of white. A desktop shortcut made before keeps its old icon until it is made again. (#388)
 - Desktop app on Windows: **Start Ledung** now shows Ledung's page as soon as Ledung is up, instead of staying on "Starting Ledung in the background…". A start that fails still says what failed. (#385)
 - Desktop app: the window, the Windows taskbar and the Mac Dock show Ledung's own icon instead of Electron's. On Windows and Linux the File, Edit, View, Window menu bar is hidden; press Alt to show it. Its shortcuts work as before (Ctrl+W, copy and paste, zoom). The Mac is unchanged. (#384)

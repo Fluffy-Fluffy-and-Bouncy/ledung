@@ -10,6 +10,7 @@ import { app, BrowserWindow, dialog, Menu, nativeImage, session, shell, type Men
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findRunning } from './attach.ts';
+import { zoomed, zoomKey } from './keys.ts';
 import { runStart } from './start.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -25,7 +26,7 @@ const COOKIE_NAME = 'ledung_auth';
 const PARTITION = 'persist:ledung';
 
 let win: BrowserWindow | null = null;
-/** Set once the app is really quitting (⌘Q, File → Quit, Alt+F4, logging off): from then on closing closes. */
+/** Set once the app is really quitting (⌘Q, Alt+F4, logging off): from then on closing closes. */
 let quitting = false;
 /** Windows is logging off or shutting down: nothing may hold that up, not even unsaved changes. */
 let sessionEnding = false;
@@ -231,8 +232,9 @@ function sendToolCallsKey(): void {
 
 /**
  * The app's menu owns the keys a browser keeps (#359): ⌘W/Ctrl+W hides the window instead of closing it, ⌘O on the
- * Mac is the page's Ctrl+O, ⌘Q (Mac) and File → Quit (Windows, Linux) end the app. Edit, View and Window keep their
+ * Mac is the page's Ctrl+O, ⌘Q (Mac) and Alt+F4 (Windows) end the app. Edit, View and Window keep their
  * standard items, so copy and paste, reload and zoom work as in the default menu. The ids let the probe press items.
+ * On Windows and Linux the menu is never shown (#389); it stays only for these keys (createWindow).
  */
 function buildMenu(): Menu {
   const mac = process.platform === 'darwin';
@@ -268,9 +270,10 @@ function createWindow(): void {
     backgroundColor: '#1b1d22',
     // The window's and the Windows taskbar's icon; the Mac takes the Dock's, set at start (#384).
     icon: APP_ICON,
-    // Windows and Linux draw the menu inside the window: hidden, Alt shows it, and its shortcuts work either way
-    // (Martin, 2026-11-19, Ledung question #529: "a — Alt shows it"). The Mac ignores it: its menu is the system's.
-    autoHideMenuBar: true,
+    // Windows and Linux draw the menu inside the window. It is never shown there, and Alt does not show it, so Alt
+    // stays free for a key of Ledung's own later (Martin, 2026-11-19 01:09 on #384, issue #389). No auto-hide: that is
+    // what made Alt show it. The Mac ignores both: its menu is the system's.
+    autoHideMenuBar: false,
     webPreferences: {
       session: session.fromPartition(PARTITION),
       contextIsolation: true,
@@ -281,7 +284,11 @@ function createWindow(): void {
       backgroundThrottling: false,
     },
   });
-  lockNavigation(win.webContents);
+  // Hidden, not removed: the hidden menu's accelerators still work (Ctrl+W, Alt+F4, copy and paste, zoom), and with
+  // auto-hide off nothing shows it again (#389).
+  if (process.platform !== 'darwin') win.setMenuBarVisibility(false);
+  const contents = win.webContents;
+  lockNavigation(contents);
   win.on('close', (event) => {
     if (quitting) return;
     event.preventDefault();
@@ -317,8 +324,19 @@ function createWindow(): void {
   });
   // Alt+F4 on Windows quits, where the window's close button hides; the system turns both into the same close, so the
   // key is noted on its way in, in case the system handles it before the menu's accelerator does.
-  win.webContents.on('before-input-event', (_event, input) => {
+  win.webContents.on('before-input-event', (event, input) => {
     if (process.platform === 'win32' && input.type === 'keyDown' && input.alt && !input.control && !input.meta && input.key === 'F4') quitting = true;
+    // Ctrl and "+" zooms in on every layout (#389, desktop/keys.ts); the menu's own Zoom In matches the US key only.
+    // Taken here, so the menu does not zoom a second time on a US keyboard.
+    if (zoomKey(input) === 'in') {
+      event.preventDefault();
+      contents.zoomLevel = zoomed(contents.zoomLevel, 'in');
+    }
+  });
+  // Ctrl and the mouse wheel: Electron only reports it, and zooms nothing unless the app does (#389). Off the Mac,
+  // which is unchanged.
+  win.webContents.on('zoom-changed', (_event, direction) => {
+    if (process.platform !== 'darwin') contents.zoomLevel = zoomed(contents.zoomLevel, direction);
   });
   // A window opened again (the Dock) while a start runs shows that it runs; the start shows the outcome in it.
   if (starting) void showNotRunning('Starting Ledung in the background…', 'starting');
