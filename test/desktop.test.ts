@@ -19,8 +19,9 @@ import {
   runningProof as appProof, savedToken as appSavedToken,
 } from '../desktop/attach.ts';
 import { DOCK_ICON_BODY, dockIconLayout, padBitmap } from '../desktop/dock-icon.ts';
-import { zoomed, zoomKey, ZOOM_STEP, type KeyInput } from '../desktop/keys.ts';
-import { menuTemplate, NEW_WINDOW_ACCELERATOR, type MenuEntry } from '../desktop/menu.ts';
+import { FindSession, findLabel, MAX_FIND_TEXT } from '../desktop/find.ts';
+import { findKey, zoomed, zoomKey, ZOOM_STEP, type FindKeyInput, type KeyInput } from '../desktop/keys.ts';
+import { FIND_ACCELERATOR, menuTemplate, NEW_WINDOW_ACCELERATOR, type MenuEntry } from '../desktop/menu.ts';
 import { findOnPath, runStart, START_SCRIPT_ENV, startCommand, startEnv } from '../desktop/start.ts';
 import { WindowList } from '../desktop/windows.ts';
 import { DEFAULT_PORT } from '../src/config.ts';
@@ -411,7 +412,7 @@ test('File → New Window is on ⌘N on the Mac and Ctrl+N on Windows and Linux,
   assert.equal(NEW_WINDOW_ACCELERATOR, 'CmdOrCtrl+N');
   for (const platform of ['darwin', 'win32', 'linux'] as const) {
     let opened = 0;
-    const template = menuTemplate<string>(platform, { newWindow: () => opened++, closeWindow: () => {}, toolCalls: () => {}, quit: () => {} });
+    const template = menuTemplate<string>(platform, { newWindow: () => opened++, closeWindow: () => {}, toolCalls: () => {}, find: () => {}, page: () => {}, quit: () => {} });
     const items = menuItems(template).filter((i) => i.id === 'new-window');
     assert.equal(items.length, 1, `${platform}: one New Window item`);
     const item = items[0]!;
@@ -429,7 +430,7 @@ test("the menu's other keys stay: Close Window, Quit per system, ⌘O on the Mac
     const closed: Array<string | undefined> = [];
     const toolCalls: Array<string | undefined> = [];
     let quits = 0;
-    const template = menuTemplate<string>(platform, { newWindow: () => {}, closeWindow: (w) => closed.push(w), toolCalls: (w) => toolCalls.push(w), quit: () => quits++ });
+    const template = menuTemplate<string>(platform, { newWindow: () => {}, closeWindow: (w) => closed.push(w), toolCalls: (w) => toolCalls.push(w), find: () => {}, page: () => {}, quit: () => quits++ });
     const byId = new Map(menuItems(template).filter((i) => i.id).map((i) => [i.id!, i]));
     assert.equal(byId.get('close-window')?.accelerator, 'CmdOrCtrl+W', platform);
     assert.equal(byId.get('quit')?.accelerator, platform === 'darwin' ? 'Cmd+Q' : 'Alt+F4', platform);
@@ -442,5 +443,131 @@ test("the menu's other keys stay: Close Window, Quit per system, ⌘O on the Mac
     assert.deepEqual(toolCalls, platform === 'darwin' ? ['focused'] : [], platform);
     assert.equal(quits, 1, platform);
     assert.deepEqual(template.filter((t) => t.role).map((t) => t.role), ['editMenu', 'viewMenu'], `${platform}: Edit and View keep their standard items`);
+  }
+});
+
+// The find bar (#445). Martin, 2026-11-19 22:52: "I want to be able to search the conversation/window with ctrl-f".
+// Its Done: Ctrl+F / ⌘F opens it, also in the composer; Enter and Shift+Enter step, Esc closes; "n of m"; Edit → Find….
+
+const findInput = (k: string, mods: Partial<Omit<FindKeyInput, 'key'>> = {}): FindKeyInput =>
+  ({ type: 'keyDown', key: k, control: false, alt: false, meta: false, shift: false, ...mods });
+
+test('Ctrl+F opens the find bar on Windows and Linux and ⌘F on the Mac, from the page (its text boxes too) and from the bar', () => {
+  for (const platform of ['win32', 'linux'] as const) {
+    for (const inBar of [false, true]) {
+      assert.equal(findKey(findInput('f', { control: true, code: 'KeyF' }), inBar, platform), 'open', `${platform}, in the bar: ${inBar}`);
+      assert.equal(findKey(findInput('F', { control: true, code: 'KeyF' }), inBar, platform), 'open', `${platform}: with Caps Lock on`);
+    }
+    assert.equal(findKey(findInput('f', { meta: true }), false, platform), null, `${platform}: the Windows key and F is not the app's`);
+  }
+  assert.equal(findKey(findInput('f', { meta: true, code: 'KeyF' }), false, 'darwin'), 'open', '⌘F on the Mac');
+  assert.equal(findKey(findInput('f', { meta: true, code: 'KeyF' }), true, 'darwin'), 'open', '⌘F in the bar selects its text again');
+  // Ctrl+F in a Mac text box moves the cursor one character on (the system's Emacs keys): it stays the text box's.
+  assert.equal(findKey(findInput('f', { control: true }), false, 'darwin'), null, 'Ctrl+F on the Mac stays the text box\'s');
+});
+
+test('the F of Ctrl+F is the key that types "f", or the physical F key on a layout with no Latin letter there', () => {
+  assert.equal(findKey(findInput('а', { control: true, code: 'KeyF' }), false, 'win32'), 'open', 'Russian: the F key types "а"');
+  assert.equal(findKey(findInput('φ', { control: true, code: 'KeyF' }), false, 'win32'), 'open', 'Greek: the F key types "φ"');
+  assert.equal(findKey(findInput('u', { control: true, code: 'KeyF' }), false, 'win32'), null, 'Dvorak: the physical F key types "u"');
+  assert.equal(findKey(findInput('f', { control: true, code: 'KeyY' }), false, 'win32'), 'open', 'Dvorak: "f" is on the physical Y key');
+});
+
+test('not the find key: Ctrl+Shift+F, Ctrl+Alt+F (AltGr), a key let go, a plain F, other letters', () => {
+  assert.equal(findKey(findInput('F', { control: true, shift: true, code: 'KeyF' }), false, 'win32'), null, 'Ctrl+Shift+F');
+  assert.equal(findKey(findInput('f', { control: true, alt: true, code: 'KeyF' }), false, 'win32'), null, 'Ctrl+Alt is AltGr, which types');
+  assert.equal(findKey(findInput('f', { control: true, type: 'keyUp', code: 'KeyF' }), false, 'win32'), null, 'once per press: the key going down');
+  assert.equal(findKey(findInput('f', { code: 'KeyF' }), false, 'win32'), null, 'a plain f types');
+  assert.equal(findKey(findInput('f', { code: 'KeyF' }), true, 'win32'), null, 'a plain f types in the bar too');
+  for (const other of ['g', 'o', 'n', 'w', '+']) assert.equal(findKey(findInput(other, { control: true }), false, 'win32'), null, other);
+});
+
+test("in the bar Enter steps to the next match, Shift+Enter to the previous, Esc closes; in the page they stay the page's", () => {
+  for (const platform of ['win32', 'linux', 'darwin'] as const) {
+    assert.equal(findKey(findInput('Enter'), true, platform), 'next', platform);
+    assert.equal(findKey(findInput('Enter', { shift: true }), true, platform), 'previous', platform);
+    assert.equal(findKey(findInput('Escape'), true, platform), 'close', platform);
+    // The same presses with the page in focus: the composer's Enter sends, the page's Esc closes its own dialogs.
+    assert.equal(findKey(findInput('Enter'), false, platform), null, `${platform}: Enter in the page`);
+    assert.equal(findKey(findInput('Enter', { shift: true }), false, platform), null, `${platform}: Shift+Enter in the page`);
+    assert.equal(findKey(findInput('Escape'), false, platform), null, `${platform}: Esc in the page`);
+  }
+  assert.equal(findKey(findInput('Enter', { isComposing: true }), true, 'win32'), null, "an input method's Enter is its own");
+  assert.equal(findKey(findInput('Escape', { isComposing: true }), true, 'win32'), null, "an input method's Esc is its own");
+  assert.equal(findKey(findInput('Enter', { control: true }), true, 'win32'), null, 'Ctrl+Enter is not a step');
+  assert.equal(findKey(findInput('Enter', { type: 'keyUp' }), true, 'win32'), null, 'once per press');
+  for (const other of ['a', 'Backspace', 'ArrowDown', 'Tab']) assert.equal(findKey(findInput(other), true, 'win32'), null, `${other} types in the bar`);
+});
+
+test('the search: typing starts a new one, Enter and Shift+Enter step through it, an empty box clears the highlights', () => {
+  const search = new FindSession();
+  assert.equal(search.step(true), null, 'nothing to step through before anything is typed');
+  assert.equal(search.reopen(), null, 'an empty bar opens with no search');
+  assert.deepEqual(search.query('ledung'), { text: 'ledung', forward: true, findNext: true }, "Electron's findNext true starts a new search");
+  assert.deepEqual(search.step(true), { text: 'ledung', forward: true, findNext: false }, 'Enter: the next match of the same search');
+  assert.deepEqual(search.step(false), { text: 'ledung', forward: false, findNext: false }, 'Shift+Enter: the previous one');
+  assert.equal(search.query(''), 'stop', 'the box emptied: stop, which clears the highlights');
+  assert.equal(search.step(true), null, 'nothing to step through with an empty box');
+  search.query('x'.repeat(MAX_FIND_TEXT + 50));
+  assert.equal(search.text.length, MAX_FIND_TEXT, 'a pasted wall of text is cut');
+});
+
+test('the bar shows "n of m" for its own search\'s answers, "No matches" once none are found, and keeps its text when closed', () => {
+  assert.equal(findLabel({ activeMatchOrdinal: 2, matches: 5, finalUpdate: true }), '2 of 5');
+  assert.equal(findLabel({ activeMatchOrdinal: 0, matches: 0, finalUpdate: true }), 'No matches');
+  assert.equal(findLabel({ activeMatchOrdinal: 0, matches: 0, finalUpdate: false }), null, 'not done yet: no "No matches" while typing');
+  assert.equal(findLabel({ activeMatchOrdinal: 0, matches: 5, finalUpdate: false }), null, 'a count with no active match yet');
+
+  const search = new FindSession();
+  search.query('session');
+  search.sent(7);
+  assert.equal(search.answer({ requestId: 7, activeMatchOrdinal: 1, matches: 3, finalUpdate: true }), '1 of 3', 'its own answer');
+  assert.equal(search.answer({ requestId: 6, activeMatchOrdinal: 4, matches: 9, finalUpdate: true }), null, "an older search's late answer");
+  search.step(true);
+  search.sent(8);
+  assert.equal(search.answer({ requestId: 8, activeMatchOrdinal: 2, matches: 3, finalUpdate: true }), '2 of 3', 'a step answers with the next match');
+  search.closed();
+  assert.equal(search.answer({ requestId: 8, activeMatchOrdinal: 3, matches: 3, finalUpdate: true }), null, 'closed: answers are dropped');
+  assert.equal(search.text, 'session', 'the text stays for the next open');
+  assert.deepEqual(search.reopen(), { text: 'session', forward: true, findNext: true }, 'opened again: the kept text searched anew');
+});
+
+test('Edit → Find… is on ⌘F on the Mac and Ctrl+F elsewhere, opens the focused window\'s bar, and Edit keeps its standard items', () => {
+  assert.equal(FIND_ACCELERATOR, 'CmdOrCtrl+F');
+  for (const platform of ['darwin', 'win32', 'linux'] as const) {
+    const found: Array<string | undefined> = [];
+    const template = menuTemplate<string>(platform, { newWindow: () => {}, closeWindow: () => {}, toolCalls: () => {}, find: (w) => found.push(w), page: () => {}, quit: () => {} });
+    const edit = template.find((t) => t.role === 'editMenu');
+    const items = edit?.submenu ?? [];
+    const find = items.find((i) => i.id === 'find');
+    assert.ok(find, `${platform}: Find… is in the Edit menu`);
+    assert.equal(find.label, 'Find…', platform);
+    assert.equal(find.accelerator, 'CmdOrCtrl+F', platform);
+    assert.equal(items.at(-1), find, `${platform}: last in Edit`);
+    assert.equal(menuItems(template).filter((i) => i.id === 'find').length, 1, `${platform}: in no other menu`);
+    find.click!(undefined, 'focused');
+    assert.deepEqual(found, ['focused'], `${platform}: opens the focused window's bar`);
+    const roles = items.map((i) => i.role).filter(Boolean);
+    for (const role of ['undo', 'redo', 'cut', 'copy', 'paste', 'delete', 'selectAll']) assert.ok(roles.includes(role as never), `${platform}: Edit keeps ${role}`);
+    assert.equal(roles.includes('pasteAndMatchStyle'), platform === 'darwin', `${platform}: Paste and Match Style on the Mac only, as Electron's own Edit menu`);
+  }
+});
+
+test("View's items keep their names and keys and act on the window's page, never on the find bar in focus (#445)", () => {
+  for (const platform of ['darwin', 'win32', 'linux'] as const) {
+    const pressed: Array<[string | undefined, string]> = [];
+    const template = menuTemplate<string>(platform, { newWindow: () => {}, closeWindow: () => {}, toolCalls: () => {}, find: () => {}, page: (w, command) => pressed.push([w, command]), quit: () => {} });
+    const view = template.find((t) => t.role === 'viewMenu');
+    const items = (view?.submenu ?? []).filter((i) => i.id);
+    // Electron's own View menu: the same items and keys (its viewMenu role).
+    assert.deepEqual(items.map((i) => [i.id, i.label, i.accelerator]), [
+      ['reload', 'Reload', 'CmdOrCtrl+R'], ['forceReload', 'Force Reload', 'Shift+CmdOrCtrl+R'],
+      ['devTools', 'Toggle Developer Tools', platform === 'darwin' ? 'Alt+Cmd+I' : 'Ctrl+Shift+I'],
+      ['resetZoom', 'Actual Size', 'CmdOrCtrl+0'], ['zoomIn', 'Zoom In', 'CmdOrCtrl+Plus'], ['zoomOut', 'Zoom Out', 'CmdOrCtrl+-'],
+    ], platform);
+    assert.ok(items.every((i) => i.role === undefined), `${platform}: none is a standard role, which would act on the focused contents`);
+    assert.equal(view?.submenu?.at(-1)?.role, 'togglefullscreen', `${platform}: Full Screen stays the window's`);
+    for (const item of items) item.click!(undefined, 'focused');
+    assert.deepEqual(pressed, items.map((i) => ['focused', i.id]), `${platform}: each acts on the focused window's page`);
   }
 });

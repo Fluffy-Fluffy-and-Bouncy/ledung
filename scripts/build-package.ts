@@ -34,6 +34,9 @@ export const ENTRIES = { main: 'src/main.ts', host: 'src/host/host.ts', cli: 'sr
 export const DESKTOP_FILES: Record<string, string> = {
   'preload.cjs': 'desktop/preload.cjs',
   'not-running.html': 'desktop/not-running.html',
+  // The find bar's page and its preload (#445).
+  'find-bar.html': 'desktop/find-bar.html',
+  'find-bar.cjs': 'desktop/find-bar.cjs',
   'icon-512.png': 'web/public/icon-512.png',
   // Windows: Ledung.exe's own icon, an .ico of at most 256 px (#587).
   'icon-256.png': 'web/public/icon-256.png',
