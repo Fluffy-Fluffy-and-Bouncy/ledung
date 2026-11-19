@@ -79,8 +79,6 @@ const CHANNEL_KEY = 'update-channel';
  * version it runs, so an update that did not take says so on the page instead of leaving the old version unnoticed.
  */
 const EXPECTED_KEY = 'update-expected';
-/** The EXERCISED line of issue #435, once per run. */
-let installCheckTraced = false;
 /** The EXERCISED line of issue #461, once per run. */
 let devCheckTraced = false;
 
@@ -287,10 +285,6 @@ export class Updater {
     // npm's exit code alone is not proof (#435): it may have installed into another global folder than the one this
     // Ledung runs from, and the restart would then bring back the old version. The package.json here must say it.
     const found = str(readJson(path.join(this.opts.appDir, 'package.json'))?.version) ?? null;
-    if (!installCheckTraced) {
-      installCheckTraced = true;
-      exercisedLine(`EXERCISED #435 npm update checked the installed version (${found ?? 'none'} for ${offered})`);
-    }
     if (found !== offered) {
       const root = await this.run(this.opts.npmRoot ?? NPM_ROOT, this.opts.dataDir);
       const where = root.code === 0 && root.out.trim() ? `npm installs global packages into ${root.out.trim()}. ` : '';
