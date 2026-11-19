@@ -11,10 +11,11 @@ is nothing user-facing in it).
 
 ## 2026-11-19
 - Desktop app on Windows: **Start Ledung** now shows Ledung's page as soon as Ledung is up, instead of staying on "Starting Ledung in the background…". A start that fails still says what failed. (#385)
+- Desktop app: the window, the Windows taskbar and the Mac Dock show Ledung's own icon instead of Electron's. On Windows and Linux the File, Edit, View, Window menu bar is hidden; press Alt to show it. Its shortcuts work as before (Ctrl+W, copy and paste, zoom). The Mac is unchanged. (#384)
+- Settings → About → Check for updates finds the Dev and Public versions again on a computer with npm 12, instead of saying npm has no version yet. (#382)
 
 ## 2026-11-18
 - Claude accounts no longer show an email or organisation anywhere (Settings → Accounts, the account lists in projects, chats and Publish usage): Claude Code reported the computer's own login for every account, so a private account could show the work email. Each account now shows only how it is signed in, and its plan when Claude Code names one for that account. On a phone the accounts table now fits the screen, one line per detail. Which account a project or session uses is unchanged. On the Shared usage tab each computer's accounts are now cards of their own; they were matched across computers by that same wrong email. (#378)
-- Settings → About → Check for updates finds the Dev and Public versions again on a computer with npm 12, instead of saying npm has no version yet. (#382)
 - Updating Ledung with `npm update` no longer fails with EBUSY on `icon-256.png` while the tray icon shows on Windows. (#380)
 
 ## 2026-11-17
