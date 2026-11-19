@@ -1,7 +1,8 @@
 // The desktop app's attach check (issue #358, desktop/attach.ts): it finds the running Ledung the way the `ledung`
 // command does, and its mirror of the `/running` proof stays the core's. Its start (issue #362, desktop/start.ts): what
-// it runs, with which environment, and the one line a failed start gives. Neither file has Electron in it, so these
-// run with the root tests; the window itself is checked by the probe and by hand (desktop/README.md).
+// it runs, with which environment, and the one line a failed start gives. Its zoom keys (issue #389, desktop/keys.ts).
+// None of these files has Electron in it, so these run with the root tests; the window itself is checked by the probe
+// and by hand (desktop/README.md).
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -15,6 +16,7 @@ import {
   candidatePorts, configFiles, configuredPort as appConfiguredPort, dataDir, DEFAULT_PORT as APP_DEFAULT_PORT, findRunning,
   runningProof as appProof, savedToken as appSavedToken,
 } from '../desktop/attach.ts';
+import { zoomed, zoomKey, ZOOM_STEP, type KeyInput } from '../desktop/keys.ts';
 import { findOnPath, runStart, START_SCRIPT_ENV, startCommand, startEnv } from '../desktop/start.ts';
 import { DEFAULT_PORT } from '../src/config.ts';
 import { configuredPort, runningProof, savedToken as coreSavedToken } from '../src/platform/running.ts';
@@ -297,4 +299,33 @@ test('a start that does not return in time is given up on, with one line', async
   const file = startScript('hangs', 'setTimeout(() => {}, 1000);');
   const result = await runStart(startCommand({ [START_SCRIPT_ENV]: file }), startEnv(), 300);
   assert.deepEqual(result, { ok: false, line: '"node hangs.mjs --no-open" did not finish within 0.3 s.' });
+});
+
+// Zoom keys (issue #389). Martin, 2026-11-19 01:10 on #384, on Windows with a Swedish keyboard: "ctrl + doesnt work. nor
+// does ctrl + mousewheel". There "+" is a key of its own, which the DOM reports as key "+" with no Shift; on a US
+// keyboard "+" is Shift and "=", key "+" with Shift or "=" without (the UI Events KeyboardEvent key values).
+
+const key = (k: string, mods: Partial<Omit<KeyInput, 'key'>> = {}): KeyInput => ({ type: 'keyDown', key: k, control: true, alt: false, meta: false, ...mods });
+
+test('Ctrl and "+" zooms in on Windows and Linux, whatever the layout; so does Ctrl and "=", as in a browser', () => {
+  for (const platform of ['win32', 'linux'] as const) {
+    assert.equal(zoomKey(key('+'), platform), 'in', `${platform}: the Swedish "+" key, or the number pad's`);
+    assert.equal(zoomKey(key('='), platform), 'in', `${platform}: the US "=" key without Shift`);
+  }
+});
+
+test('anything else is not a zoom key: no Ctrl, Ctrl+Alt (AltGr), the Windows key, a key let go, other keys, and the Mac', () => {
+  assert.equal(zoomKey(key('+', { control: false }), 'win32'), null, 'a plain "+" types');
+  assert.equal(zoomKey(key('+', { alt: true }), 'win32'), null, 'Ctrl+Alt is AltGr on Windows, which types');
+  assert.equal(zoomKey(key('+', { meta: true }), 'win32'), null);
+  assert.equal(zoomKey(key('+', { type: 'keyUp' }), 'win32'), null, 'once per press: the key going down');
+  for (const other of ['-', '0', 'w', 'o', 'Add', 'Plus']) assert.equal(zoomKey(key(other), 'win32'), null, other);
+  assert.equal(zoomKey(key('+'), 'darwin'), null, 'the Mac keeps its menu\'s keys (#389: "The Mac is unchanged")');
+});
+
+test("each zoom step is half a level, the View menu's own step, in and out", () => {
+  assert.equal(ZOOM_STEP, 0.5);
+  assert.equal(zoomed(0, 'in'), 0.5);
+  assert.equal(zoomed(0.5, 'out'), 0);
+  assert.equal(zoomed(-1, 'out'), -1.5);
 });

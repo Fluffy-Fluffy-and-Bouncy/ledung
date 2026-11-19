@@ -42,12 +42,14 @@ One window opens with your running Ledung's page, signed in. Nothing opens in th
 - **Closing hides it.** The window's close button and ⌘W (Ctrl+W on Windows) hide the window; the app keeps running,
   so notifications keep coming. Show it again by starting the app again (`npm start` shows the window that's there
   and starts no second app) or, on the Mac, by clicking it in the Dock.
-- **Quitting.** ⌘Q on the Mac, File → Quit or Alt+F4 on Windows end the app. Ledung itself is another program and
+- **Quitting.** ⌘Q on the Mac and Alt+F4 on Windows end the app. Ledung itself is another program and
   keeps running. With unsaved changes on the page (a workflow being edited) the app asks first, as a browser does.
 - **Ledung's icon** shows in the window, the Windows taskbar and the Mac Dock instead of Electron's (#384). It is the
   page's own `web/public/icon-512.png`, read from the clone.
-- **The menu bar on Windows and Linux** (File, Edit, View, Window) is hidden; press Alt to show it. Its shortcuts work
-  either way. The Mac's menu is the system menu bar, as before (Martin, 2026-11-19, #384).
+- **No menu bar on Windows and Linux.** The window never shows one, and Alt does nothing, so it stays free for a key of
+  Ledung's own later (Martin, 2026-11-19, #389). The keys still work: Ctrl+W, Alt+F4 (Windows), copy and paste, Ctrl+O (Show tool
+  calls), reload, and zoom with Ctrl and "+" (any keyboard layout; Ctrl and "=" too), Ctrl+-, Ctrl+0 and Ctrl and the
+  mouse wheel. The Mac's menu is the system menu bar, as before.
 - **⌘O on the Mac** does what Ctrl+O does in the page: Show tool calls. (In a browser the page keeps to Ctrl+O on
   every system, so that ⌘O stays the browser's; in the app ⌘O is the app's own.)
 - **A hidden window keeps its pace.** Its timers run at full speed, so notifications come on time. The page also counts
@@ -88,7 +90,8 @@ Stop the throwaway Ledung by the process listening on its port, never by name: t
 **The loopback check.** `probe/` loads the real `main.ts` and checks the window from inside, against the throwaway
 Ledung the two settings name, printing `PROBE {…}` lines; opening the default browser is intercepted, so nothing opens.
 From this folder, with the settings as above: `PROBE_PHASE=attach npx electron probe` (a Ledung runs: sign-in, address,
-settings, permissions, refused navigation, links, the icon and, on Linux, the hidden menu bar), then `again` (a
+settings, permissions, refused navigation, links, the icon, the View menu's zoom step and, on Linux, that no menu bar
+shows, not on Alt either, and that the zoom keys, Ctrl and the wheel, Ctrl+O, copy and Ctrl+W work), then `again` (a
 second start keeps the devices `attach` saw), `notrunning` and `stopped` (these start and stop the config's Ledung
 themselves: the "not running" page, Retry, and a Ledung that stops under the window),
 `start` (none runs; with `LEDUNG_DESKTOP_START` set as above and an `ELECTRON_*`
@@ -112,6 +115,8 @@ Linux only for now).
   (checked 2026-11-17 on macOS, Electron 45.3.3 with Node 24.22.3).
 - `attach.ts`: finding the running Ledung. No Electron in it, so the root `npm run check` tests it
   (`test/desktop.test.ts`), including that its proof matches the core's.
+- `keys.ts`: the zoom keys off the Mac (#389): Ctrl and "+" or "=", in one zoom step. No Electron in it, so
+  `test/desktop.test.ts` runs it.
 - `start.ts`: Start Ledung: the command, its clean environment and the one line a failed start gives. No Electron in
   it either, so `test/desktop.test.ts` runs it, with scripts of its own in place of `ledung`.
 - `not-running.html`: the page shown when no Ledung answers, with Start Ledung and Retry.
