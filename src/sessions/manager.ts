@@ -208,7 +208,6 @@ export function resumedState(info: SessionInfo): {
 let exercised425 = false;
 let exercised96 = false;
 let exercised160 = false;
-let exercised391 = false;
 
 /** How long the sidebar's read of which projects have a flow waits for one project (a container's docker exec). */
 const WORKFLOWS_READ_MS = 5000;
@@ -4688,10 +4687,6 @@ ${firstMessage}`);
         : 'Resumed when Ledung started: it was running when Ledung stopped.';
       if (problem) console.log(`Manager "${info.title}": ${text}`);
       this.publish({ type: 'message', message: this.store.addMessage(id, 'event', { text }) });
-      if (!problem && !exercised391) {
-        exercised391 = true;
-        exercisedLine('EXERCISED #391 a manager that was running when Ledung stopped resumed at start');
-      }
     }
   }
 
