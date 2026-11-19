@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import type { Socket } from 'node:net';
 import path from 'node:path';
+import type { MadeConfig } from './made.ts';
 
 /**
  * A test points the start at a worktree with this: the path of a Node script, normally `<worktree>/src/cli.ts`, run as
@@ -20,9 +21,15 @@ export interface StartCommand {
   args: string[];
 }
 
-export function startCommand(env: NodeJS.ProcessEnv = process.env): StartCommand {
+/**
+ * The made app (#407) runs the Node and the `ledung` script that made it, so it needs no `ledung` on PATH: an app opened
+ * from Finder or the Start menu doesn't have the terminal's. When that Node is gone (upgraded, moved), the command on
+ * PATH as before.
+ */
+export function startCommand(env: NodeJS.ProcessEnv = process.env, made: MadeConfig | null = null): StartCommand {
   const script = env[START_SCRIPT_ENV];
   if (script) return { command: 'node', args: [path.resolve(script), '--no-open'] };
+  if (made && fs.existsSync(made.node) && fs.existsSync(made.cli)) return { command: made.node, args: [made.cli, '--no-open'] };
   return { command: 'ledung', args: ['--no-open'] };
 }
 
@@ -76,7 +83,8 @@ export function lastLine(output: string): string {
  */
 export function findOnPath(command: string, env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): string | null {
   const get = (name: string) => Object.entries(env).find(([key]) => key.toUpperCase() === name)?.[1] ?? '';
-  const exts = platform === 'win32' ? ['', ...get('PATHEXT').split(';').filter(Boolean).map((e) => e.toLowerCase())] : [''];
+  // Windows' own default when PATHEXT is unset (an environment built from nothing), so node.exe is still a program (#407).
+  const exts = platform === 'win32' ? ['', ...(get('PATHEXT') || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean).map((e) => e.toLowerCase())] : [''];
   // A Windows Path entry may be quoted ("C:\Program Files\nodejs"), as cmd accepts (self-check round 2).
   const dirs = path.isAbsolute(command) ? [''] : get('PATH').split(platform === 'win32' ? ';' : ':')
     .map((dir) => (platform === 'win32' ? dir.replace(/^"(.*)"$/, '$1') : dir)).filter(Boolean);
@@ -86,7 +94,9 @@ export function findOnPath(command: string, env: NodeJS.ProcessEnv, platform: No
       try {
         if (!fs.statSync(file).isFile()) continue;
         if (platform !== 'win32') fs.accessSync(file, fs.constants.X_OK);
-        else if (ext === '') continue; // Windows runs a file by its extension: a bare name is not a program.
+        // Windows runs a file by its extension: a bare name is not a program, a full one (node.exe, the made app's
+        // Start, #407) is.
+        else if (ext === '' && !(path.extname(file) !== '' && exts.includes(path.extname(file).toLowerCase()))) continue;
         return file;
       } catch {
         // Not here, or not runnable.

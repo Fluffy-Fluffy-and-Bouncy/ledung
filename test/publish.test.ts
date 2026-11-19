@@ -115,6 +115,10 @@ test("the package is stamped with the build's version, not the clone's, and the 
   }
   fs.symlinkSync(path.join(appDir(), 'src'), path.join(source, 'src'), process.platform === 'win32' ? 'junction' : 'dir');
   fs.cpSync(path.join(appDir(), 'plugins'), path.join(source, 'plugins'), { recursive: true });
+  // The desktop app's source and icon, which the package bundles since #407.
+  fs.symlinkSync(path.join(appDir(), 'desktop'), path.join(source, 'desktop'), process.platform === 'win32' ? 'junction' : 'dir');
+  fs.mkdirSync(path.join(source, 'web', 'public'), { recursive: true });
+  for (const icon of ['icon-512.png', 'icon-256.png']) fs.cpSync(path.join(appDir(), 'web', 'public', icon), path.join(source, 'web', 'public', icon));
   const before = fs.readFileSync(path.join(source, 'package.json'), 'utf8');
   const stage = path.join(base, 'stage');
   await stagePackage(source, stage, '1.4.0');
