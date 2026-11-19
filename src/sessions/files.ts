@@ -95,7 +95,7 @@ export function readProjectFile(root: string, link: string): ProjectFile {
 
 export interface ProjectImage {
   path: string;
-  type: 'image/png' | 'image/jpeg';
+  type: 'image/png' | 'image/jpeg' | 'image/webp';
   bytes: Buffer;
 }
 

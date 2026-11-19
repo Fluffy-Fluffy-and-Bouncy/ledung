@@ -2,7 +2,9 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, type ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
@@ -24,6 +26,7 @@ import { FakePasskey } from './fake-passkey.ts';
 import { RelayAdmin } from '../src/remote/admin.ts';
 import { RemoteLink } from '../src/remote/link.ts';
 import { iconFiles, Shortcuts } from '../src/platform/shortcuts.ts';
+import { Tray, TraySwitch } from '../src/platform/tray.ts';
 import { appDir } from '../src/platform/paths.ts';
 import { removeTemp } from './temp.ts';
 import { refuseRealSignInStores } from './signin-stores.ts';
@@ -57,6 +60,10 @@ let chatImagesDir: string;
 let sessions: SessionManager;
 const questionAbout: Record<string, number> = {};
 let refusalQuestion = 0;
+/** Ledung's question about a manager's call away mode held (issue #262). */
+let heldQuestion = 0;
+/** Ledung's question about a manager's settings change, asked instead of its prompt (issue #308). */
+let promptQuestion = 0;
 let allowedRule = 0;
 let alwaysQuestion = 0;
 let keepQuestion = 0;
@@ -73,6 +80,7 @@ let relayDir: string;
 // Settings → Shortcuts (issue #415): made in a folder inside .test/, never on the real Desktop or Applications.
 let shortcutDir: string;
 let shortcuts: Shortcuts;
+let traySwitch: TraySwitch;
 // A repo directory that records what the page asks it to create (the picker's one GitHub write).
 const created: string[] = [];
 const directory: RepoDirectory = {
@@ -114,6 +122,14 @@ before(async () => {
   const rq = store.createQuestion({ sessionId: 's1', question: 'refused', options: ['Allow once', 'Deny'], addressedTo: 'user', details: { refusal: { toolName: 'Bash', input: { command: 'x' }, reason: 'r', toolUseId: 't' } } });
   store.withdrawQuestion(rq.id, 'test');
   refusalQuestion = rq.id;
+  // A manager's call away mode held, asked the same way (issue #262), no longer open.
+  const hq = store.createQuestion({ sessionId: 's1', question: 'held', options: ['Allow once', 'Allow always, though sensitive', 'Deny'], addressedTo: 'user', details: { refusal: { toolName: 'Bash', input: { command: 'gh pr merge 5 -R o/r --merge' }, reason: 'held for Simon: failing checks: ci', toolUseId: 't3', held: 'away', always: 'sensitive', sensitiveRule: 'gh pr merge' } } });
+  store.withdrawQuestion(hq.id, 'test');
+  heldQuestion = hq.id;
+  // A manager's settings change asked the same way instead of its prompt (issue #308), no longer open.
+  const pq = store.createQuestion({ sessionId: 's1', question: 'asked', options: ['Allow once', 'Deny'], addressedTo: 'user', details: { refusal: { toolName: 'mcp__ledung__set_project_settings', input: { project: 'p', managerGrant: 'anything' }, reason: 'a change to "p" that loosens what reaches you: manager grant none → "anything"', toolUseId: 't4', held: 'prompt' } } });
+  store.withdrawQuestion(pq.id, 'test');
+  promptQuestion = pq.id;
   // An Allow always rule of project p (issue #225), for the removal route.
   allowedRule = store.addAllowedCall({ project: 'p', toolName: 'Bash', command: 'npm run publish:dev', sensitive: false, allowedBy: 'Simon', questionId: rq.id }).id;
   // An open refused-call question that offers Allow always, for the answer route (issue #225).
@@ -162,7 +178,13 @@ before(async () => {
     launch: { node: process.execPath, script: path.join(shortcutDir, 'launcher.mjs') }, iconDir: shortcutDir, icons: iconFiles(appDir()), platform: 'darwin',
     meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) }, folders: async () => ({ applications: path.join(shortcutDir, 'Applications') }),
   });
-  server = new LedungServer({ port: PORT, token: TOKEN, store, manager, webRoot, updater, publicName: PUBLIC, relayAdmin, shortcuts, now: () => Date.now() + clockShift, openFolder: async (f) => {
+  // The tray icon's switch (issue #347), with a helper that starts nothing.
+  const fakeHelper = () => Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: () => true, unref: () => {} }) as unknown as ChildProcess;
+  traySwitch = new TraySwitch({
+    tray: new Tray({ kind: 'windows', address: '127.0.0.1', iconFile: 'icon.png', canRestart: false, counts: () => ({ working: 0, waiting: 0 }), onOpen: () => {}, onRestart: () => {}, onExit: () => {}, log: () => {}, spawn: fakeHelper }),
+    meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) }, configured: () => undefined, ownDataDir: true,
+  });
+  server = new LedungServer({ port: PORT, token: TOKEN, store, manager, webRoot, updater, publicName: PUBLIC, relayAdmin, shortcuts, tray: traySwitch, now: () => Date.now() + clockShift, openFolder: async (f) => {
     openedFolders.push(f);
     if (openFolderFails) throw new Error(openFolderFails);
   } });
@@ -452,6 +474,51 @@ test('images for a message (issue #128): uploaded with the sign-in and Ledung\'s
   assert.equal((await send(Array(11).fill(id))).status, 400);
   // A manager's images need the open page, like its messages (#104 review, finding F1).
   assert.equal((await request({ method: 'POST', path: '/api/sessions/m1/images', headers: good, body: png })).status, 403);
+});
+
+test('a dropped file for a message (issue #339): saved in the session\'s folder with the sign-in, this host and Ledung\'s own origin, within 50 MB', async () => {
+  const pdf = Buffer.from('%PDF-1.7\n%%EOF\n', 'latin1');
+  const drop = (headers: Record<string, string>, body: Buffer = pdf, name = 'report.pdf', session = 's1') =>
+    request({ method: 'POST', path: `/api/sessions/${session}/drops?name=${encodeURIComponent(name)}`, headers: { 'content-length': String(body.length), ...headers }, body });
+  const good = { cookie: COOKIE, origin: ORIGIN, 'content-type': 'application/octet-stream' };
+  const drops = path.join(projectRoot, '.ledung', 'drops');
+  const kept = () => (fs.existsSync(drops) ? fs.readdirSync(drops).filter((f) => f !== '.gitignore') : []);
+  const two = (v: number) => String(v).padStart(2, '0');
+  const now = new Date();
+  const day = `${now.getFullYear()}-${two(now.getMonth() + 1)}-${two(now.getDate())}`;
+  try {
+    assert.equal((await drop({ origin: ORIGIN, 'content-type': 'application/octet-stream' })).status, 401, 'no sign-in');
+    assert.equal((await drop({ cookie: COOKIE, 'content-type': 'application/octet-stream' })).status, 403, 'no Origin');
+    assert.equal((await drop({ ...good, origin: 'http://evil.example' })).status, 403, 'another origin');
+    assert.equal((await drop({ ...good, host: 'evil.example:80' })).status, 403, 'another host');
+    assert.equal((await drop({ ...good, 'content-type': 'text/html' })).status, 415, 'only as plain bytes');
+    // Too large: refused by its declared length before it is read, with the limit named, and by what arrives.
+    const big = Buffer.alloc(50 * 1024 * 1024 + 1);
+    const declared = await drop(good, big);
+    assert.equal(declared.status, 413);
+    assert.match(JSON.parse(declared.body).error, /at most 50 MB/);
+    const chunked = await request({ method: 'POST', path: '/api/sessions/s1/drops?name=big.bin', headers: good, body: big }).catch((e: Error) => ({ status: 0, error: e.message }));
+    assert.ok(chunked.status === 413 || chunked.status === 0, `refused while it arrives: ${JSON.stringify(chunked).slice(0, 200)}`);
+    assert.deepEqual(kept(), [], 'nothing kept of what was refused');
+    assert.equal((await drop(good, pdf, 'report.pdf', 'nope')).status, 400, 'no such session');
+    // A manager's drops need the open page, like its messages and images (#104 review, finding F1).
+    assert.equal((await drop(good, pdf, 'report.pdf', 'm1')).status, 403);
+    assert.deepEqual(kept(), [], 'nothing kept of what was refused');
+
+    const ok = await drop(good);
+    assert.equal(ok.status, 200, ok.body);
+    assert.deepEqual(JSON.parse(ok.body), { path: `.ledung/drops/${day}-report.pdf` });
+    assert.deepEqual(fs.readFileSync(path.join(drops, `${day}-report.pdf`)), pdf);
+    // Path parts in the name land inside the drops folder, under a plain name; nothing beside the project.
+    const beside = fs.readdirSync(path.dirname(projectRoot));
+    const climbed = await drop(good, pdf, '../../x.pdf');
+    assert.equal(climbed.status, 200, climbed.body);
+    assert.deepEqual(JSON.parse(climbed.body), { path: `.ledung/drops/${day}-_.._x.pdf` });
+    assert.deepEqual(fs.readdirSync(path.dirname(projectRoot)), beside);
+    assert.deepEqual(kept().sort(), [`${day}-_.._x.pdf`, `${day}-report.pdf`]);
+  } finally {
+    fs.rmSync(path.join(projectRoot, '.ledung'), { recursive: true, force: true });
+  }
 });
 
 test("a session with its own folder reads files only from that folder, behind the same sign-in", async () => {
@@ -819,7 +886,7 @@ test('API reads that do work need Ledung\'s own page; plain reads are unchanged 
   // Every work route above is outside the plain reads, and the kinds named in the issue stay so.
   for (const route of ['GET board-owners', 'GET board-projects/:id/people', 'GET board-projects/:id/repos', 'GET usage-publish-repos', 'GET usage-shared',
     'GET containers', 'GET browse-container', 'GET skills', 'GET workflows', 'GET claude-code', 'GET sessions/:id/mcp', 'GET sessions/:id/changes',
-    'GET sessions/:id/tree', 'GET sessions/:id/file', 'GET sessions/:id/image', 'GET relay-computers', 'GET relay-owners', 'GET shortcuts', 'GET projects/:id/flow']) {
+    'GET sessions/:id/tree', 'GET sessions/:id/file', 'GET sessions/:id/image', 'GET relay-computers', 'GET relay-owners', 'GET shortcuts', 'GET tray', 'GET projects/:id/flow']) {
     assert.equal(PLAIN_READS.has(route), false, `${route} does work`);
   }
 });
@@ -1008,6 +1075,26 @@ test("answering Ledung's question about a refused call, whose Allow once lets th
   assert.match(errorOf(passed), /no longer open/);
 });
 
+test("answering Ledung's question about a call away mode held, whose Allow once lets the retry through, needs the live page too (issue #262)", async () => {
+  const answer = { answer: 'Allow once' };
+  assert.equal((await change(`/api/questions/${heldQuestion}/answer`, answer)).status, 403);
+  const page = await livePage();
+  const passed = await change(`/api/questions/${heldQuestion}/answer`, answer, { 'x-ledung-page': page.key });
+  page.close();
+  assert.equal(passed.status, 400);
+  assert.match(errorOf(passed), /no longer open/);
+});
+
+test("answering Ledung's question about a manager's settings change asked instead of its prompt, whose Allow once lets the retry through, needs the live page too (issue #308)", async () => {
+  const answer = { answer: 'Allow once' };
+  assert.equal((await change(`/api/questions/${promptQuestion}/answer`, answer)).status, 403);
+  const page = await livePage();
+  const passed = await change(`/api/questions/${promptQuestion}/answer`, answer, { 'x-ledung-page': page.key });
+  page.close();
+  assert.equal(passed.status, 400);
+  assert.match(errorOf(passed), /no longer open/);
+});
+
 test("the person's Allow always through the answer route records the exact command for the project, and only from the live page (issue #225)", async () => {
   const commands = async () => (JSON.parse((await request({ path: '/api/projects', headers: { cookie: COOKIE } })).body) as { name: string; allowedCalls?: { command: string; questionId: number }[] }[])
     .find((x) => x.name === 'p')!.allowedCalls!.filter((c) => c.questionId === alwaysQuestion).map((c) => c.command);
@@ -1076,58 +1163,14 @@ test('setting or lifting a usage stop needs the live page, so a session cannot f
   assert.match(errorOf(lift), /not holding/);
 });
 
-test('Questions at a workflow step (#291): Ledung\'s card by default, changed only from the live page, to one of its two values', async () => {
-  const read = async () => JSON.parse((await request({ path: '/api/step-questions', headers: { cookie: COOKIE } })).body).choice;
-  assert.equal(await read(), 'card');
-  // A session holding the cookie can't pick the write-up for itself.
-  assert.equal((await change('/api/step-questions', { choice: 'write-up' })).status, 403);
-  assert.equal(await read(), 'card');
+test('#351: the "Questions at a workflow step" setting and its picker are gone: their routes answer 404, even from the live page', async () => {
+  assert.equal((await request({ path: '/api/step-questions', headers: { cookie: COOKIE } })).status, 404);
   const page = await livePage();
   try {
-    const bad = await change('/api/step-questions', { choice: 'mine' }, { 'x-ledung-page': page.key });
-    assert.equal(bad.status, 400);
-    assert.match(errorOf(bad), /"card" or "write-up"/);
-    const set = await change('/api/step-questions', { choice: 'write-up' }, { 'x-ledung-page': page.key });
-    assert.equal(set.status, 200, set.body);
-    assert.equal(await read(), 'write-up');
-    assert.equal((await change('/api/step-questions', { choice: 'card' }, { 'x-ledung-page': page.key })).status, 200);
-    assert.equal(await read(), 'card');
+    assert.equal((await change('/api/step-questions', { choice: 'card' }, { 'x-ledung-page': page.key })).status, 404);
+    assert.equal((await change('/api/step-questions-skip', {}, { 'x-ledung-page': page.key })).status, 404);
   } finally {
     page.close();
-  }
-});
-
-test('the first-run picker (#293): asked only behind its test feature and only until a choice is saved or it is skipped; Skip needs the live page', async () => {
-  const view = async () => JSON.parse((await request({ path: '/api/step-questions', headers: { cookie: COOKIE } })).body);
-  const started = sessions.currentConfig;
-  // A fresh Ledung: nothing saved, nothing skipped (the test above saved a choice).
-  paneStore.deleteMeta('step-questions');
-  paneStore.deleteMeta('step-questions-skipped');
-  const page = await livePage();
-  try {
-    // The feature off (the default): never asked, though nothing is saved.
-    assert.deepEqual(await view(), { choice: 'card', picker: false, ask: false });
-    sessions.applyConfig({ ...started, testFeatures: ['step-questions-picker'] }, ['testFeatures']);
-    assert.deepEqual(await view(), { choice: 'card', picker: true, ask: true });
-    // A session holding the cookie can't skip it for the person.
-    assert.equal((await change('/api/step-questions-skip', {})).status, 403);
-    assert.equal((await view()).ask, true);
-    const skipped = await change('/api/step-questions-skip', {}, { 'x-ledung-page': page.key });
-    assert.equal(skipped.status, 200, skipped.body);
-    assert.deepEqual(JSON.parse(skipped.body), { choice: 'card', picker: true, ask: false }, 'Skip keeps the default');
-    assert.deepEqual(await view(), { choice: 'card', picker: true, ask: false });
-    // Fresh again: a choice made in the picker is saved into the setting and ends the question too.
-    paneStore.deleteMeta('step-questions-skipped');
-    assert.equal((await view()).ask, true);
-    const chose = await change('/api/step-questions', { choice: 'write-up' }, { 'x-ledung-page': page.key });
-    assert.equal(chose.status, 200, chose.body);
-    assert.deepEqual(JSON.parse(chose.body), { choice: 'write-up', picker: true, ask: false });
-    // A Ledung that already has a choice, Ledung's card included, doesn't see it.
-    assert.equal((await change('/api/step-questions', { choice: 'card' }, { 'x-ledung-page': page.key })).status, 200);
-    assert.deepEqual(await view(), { choice: 'card', picker: true, ask: false });
-  } finally {
-    page.close();
-    sessions.applyConfig(started, ['testFeatures']);
   }
 });
 
@@ -1870,6 +1913,34 @@ test('computers are linked and unlinked only on this computer: a paired device, 
   }
 });
 
+test('a trusted computer\'s vouch (issue #313): link-vouch only on this computer, and a vouch header counts for no phone', async () => {
+  const d = await deviceWithPasskey('Vouching phone');
+  try {
+    assert.equal((await pubChange('/api/device-unlock', '{}', d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign('/api/device-unlock', '{}') })).status, 200);
+    // Unlocked, with the page key and this very request signed: link-vouch is still this computer's own screen's alone.
+    const body = JSON.stringify({ id: 'mac.l.example.com', challenge: 'A'.repeat(43) });
+    const vouch = await pubChange('/api/link-vouch', body, d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign('/api/link-vouch', body) });
+    assert.equal(vouch.status, 403, vouch.body);
+    assert.match(errorOf(vouch), /Only this computer's own screen vouches/);
+    // Locally without the open page's key (the token alone), refused before anything else.
+    const noPage = await change('/api/link-vouch', JSON.parse(body));
+    assert.equal(noPage.status, 403, noPage.body);
+    // A phone's vouch header, in place of its passkey, allows nothing: no phone is a trusted computer's frame.
+    const away = JSON.stringify({ until: '23:59' });
+    const viaVouch = await pubChange('/api/away', away, d.cookie, { ...d.withKey, 'x-ledung-vouch': 'A'.repeat(43) });
+    assert.equal(viaVouch.status, 403, viaVouch.body);
+    assert.match(errorOf(viaVouch), /does not trust that computer's screen/);
+    // Premise: the same request with its passkey goes through.
+    assert.equal((await pubChange('/api/away', away, d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign('/api/away', away) })).status, 200);
+    // And a phone's challenge is a passkey's, never one to vouch for.
+    const offered = JSON.parse((await pubChange('/api/passkey-challenge', { method: 'POST', path: '/api/away', body: away }, d.cookie)).body);
+    assert.equal(offered.vouch, undefined);
+    assert.equal(typeof offered.challenge, 'string');
+  } finally {
+    d.page.close();
+  }
+});
+
 test("an account's folder opens only on this computer, from its open page (issue #414)", async () => {
   // An account straight in the database: adding it through the manager would check its sign-in with Claude Code.
   const folder = path.join(projectRoot, 'account-work');
@@ -2172,6 +2243,24 @@ test('through the public name an image for a message needs the device unlocked, 
     assert.equal((await upload()).status, 200);
   } finally {
     d.page.close();
+  }
+});
+
+test('through the public name a dropped file needs the device unlocked, like an image (issue #339)', async () => {
+  const d = await deviceWithPasskey();
+  const pdf = Buffer.from('%PDF-1.7\n%%EOF\n', 'latin1');
+  const drop = () => pub({ method: 'POST', path: '/api/sessions/s1/drops?name=r.pdf', headers: { cookie: d.cookie, origin: PUBLIC_ORIGIN, 'content-type': 'application/octet-stream', ...d.withKey }, body: pdf });
+  const drops = path.join(projectRoot, '.ledung', 'drops');
+  try {
+    assert.match(errorOf(await drop()), /locked/);
+    assert.equal(fs.existsSync(drops) ? fs.readdirSync(drops).filter((f) => f !== '.gitignore').length : 0, 0, 'nothing saved while locked');
+    assert.equal((await pubChange('/api/device-unlock', '{}', d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign('/api/device-unlock', '{}') })).status, 200);
+    const ok = await drop();
+    assert.equal(ok.status, 200, ok.body);
+    assert.match(JSON.parse(ok.body).path, /^\.ledung\/drops\/\d{4}-\d{2}-\d{2}-r\.pdf$/);
+  } finally {
+    d.page.close();
+    fs.rmSync(path.join(projectRoot, '.ledung'), { recursive: true, force: true });
   }
 });
 
@@ -2531,6 +2620,49 @@ test('shortcuts are made only on this computer: a paired device, unlocked and si
   }
 });
 
+test("the tray icon's switch needs the sign-in, and switching it the open page on this computer (issue #347)", async () => {
+  assert.equal((await request({ path: '/api/tray' })).status, 401);
+  const view = await request({ path: '/api/tray', headers: { cookie: COOKIE } });
+  assert.equal(view.status, 200, view.body);
+  assert.deepEqual(JSON.parse(view.body), { kind: 'windows', on: false });
+  const body = { on: true };
+  assert.equal((await request({ method: 'POST', path: '/api/tray', headers: { cookie: COOKIE, 'content-type': 'application/json' }, body: JSON.stringify(body) })).status, 403, 'no origin');
+  const refused = await change('/api/tray', body);
+  assert.equal(refused.status, 403);
+  assert.match(errorOf(refused), /open page/);
+  const page = await livePage();
+  try {
+    const wrong = await change('/api/tray', { on: 'yes' }, { 'x-ledung-page': page.key });
+    assert.equal(wrong.status, 400);
+    const on = await change('/api/tray', body, { 'x-ledung-page': page.key });
+    assert.equal(on.status, 200, on.body);
+    assert.deepEqual(JSON.parse(on.body), { kind: 'windows', on: true });
+    const off = await change('/api/tray', { on: false }, { 'x-ledung-page': page.key });
+    assert.deepEqual(JSON.parse(off.body), { kind: 'windows', on: false });
+  } finally {
+    page.close();
+  }
+  assert.equal(traySwitch.wanted(), false);
+});
+
+test("the tray icon is switched only on this computer: a paired device, unlocked and signing, is refused (issue #347)", async () => {
+  const d = await deviceWithPasskey('Tray phone');
+  try {
+    assert.equal((await pubChange('/api/device-unlock', '{}', d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign('/api/device-unlock', '{}') })).status, 200);
+    const here = /Ledung's icon is switched in Settings on the computer Ledung runs on/;
+    const view = await pub({ path: '/api/tray', headers: { cookie: d.cookie } });
+    assert.equal(view.status, 403, view.body);
+    assert.match(errorOf(view), here);
+    const body = JSON.stringify({ on: true });
+    const res = await pubChange('/api/tray', body, d.cookie, { ...d.withKey, 'x-ledung-passkey': await d.sign('/api/tray', body) });
+    assert.equal(res.status, 403, res.body);
+    assert.match(errorOf(res), here);
+    assert.equal(traySwitch.wanted(), false);
+  } finally {
+    d.page.close();
+  }
+});
+
 // Stop Ledung (issue #456): Settings' button and `ledung stop`. Only from this computer, which can start it again; the
 // sign-in cookie and Ledung's own Origin as for every change.
 test('Stop Ledung is refused through the public name, even to a paired device, unlocked and signing (issue #456)', async () => {
@@ -2649,6 +2781,37 @@ test('shortcuts are made only on this computer: a signed-in page on the local ne
     assert.match(errorOf(res), here);
     assert.equal((await requestAt(ip, lanPort, { path: `/running?nonce=${'0'.repeat(32)}` })).status, 404, 'the open-or-start check answers only this computer');
     assert.equal(fs.existsSync(path.join(shortcutDir, 'Applications', 'Ledung.app')), false);
+  } finally {
+    await lan.close();
+  }
+});
+
+// Issue #330, Done 3: the phone on the home network gets the same compressed answer.
+test('API answers go compressed on the local network address too (issue #330)', async (t) => {
+  const ip = networkAddress();
+  if (!ip) return t.skip('this computer has no network address to come from');
+  const zlib = await import('node:zlib');
+  const lanPort = await freePort();
+  const lan = new LedungServer({ port: lanPort, token: TOKEN, store: paneStore, manager: sessions, webRoot, lanBind: ip, lanNames: [ip] });
+  await lan.listen();
+  try {
+    paneStore.createSession({ id: 'pack330lan', project: 'p', runner: 'local', title: 'long chat', parentId: null, permissionMode: 'default', role: 'session' });
+    for (let i = 0; i < 100; i++) {
+      paneStore.addMessage('pack330lan', 'sdk', { type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'text', text: `Reply ${i}, over the network.` }] } });
+    }
+    const got = await new Promise<{ status: number; headers: http.IncomingHttpHeaders; bytes: Buffer }>((resolve, reject) => {
+      const req = http.request({ host: ip, port: lanPort, path: '/api/sessions/pack330lan/messages', headers: { host: `${ip}:${lanPort}`, cookie: COOKIE, 'accept-encoding': 'br' } }, (res) => {
+        const parts: Buffer[] = [];
+        res.on('data', (c: Buffer) => parts.push(c));
+        res.on('end', () => resolve({ status: res.statusCode!, headers: res.headers, bytes: Buffer.concat(parts) }));
+      });
+      req.on('error', reject);
+      req.end();
+    });
+    assert.equal(got.status, 200, got.bytes.toString());
+    assert.equal(got.headers['content-encoding'], 'br');
+    const answer = JSON.parse(zlib.brotliDecompressSync(got.bytes).toString());
+    assert.equal(answer.length, 100);
   } finally {
     await lan.close();
   }
@@ -3414,6 +3577,49 @@ test('page text files go compressed by Accept-Encoding, plain without it; pictur
   const changed = Buffer.from('export const answer = "changed";\n'.repeat(400));
   fs.writeFileSync(path.join(assets, 'main-Zz99Yy88.js'), changed);
   assert.deepEqual(zlib.brotliDecompressSync((await rawGet('/assets/main-Zz99Yy88.js', { 'accept-encoding': 'br' })).bytes), changed);
+});
+
+test('API answers above a small size go compressed by Accept-Encoding, the same JSON either way (issue #330)', async () => {
+  const zlib = await import('node:zlib');
+  paneStore.createSession({ id: 'pack330', project: 'p', runner: 'local', title: 'long chat', parentId: null, permissionMode: 'default', role: 'session' });
+  for (let i = 0; i < 200; i++) {
+    paneStore.addMessage('pack330', 'sdk', { type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'text', text: `Reply ${i}: the same kind of words again and again.` }] } });
+  }
+  const url = '/api/sessions/pack330/messages?limit=500';
+  const plain = await rawGet(url, { cookie: COOKIE });
+  assert.equal(plain.status, 200);
+  assert.equal(plain.headers['content-encoding'], undefined, 'no Accept-Encoding: as before');
+  assert.equal(plain.headers.vary, 'Accept-Encoding');
+  assert.equal(plain.headers['content-type'], 'application/json');
+  const json = plain.bytes.toString();
+  assert.ok(json.length > 20_000, `a big answer: ${json.length}`);
+
+  const br = await rawGet(url, { cookie: COOKIE, 'accept-encoding': 'gzip, deflate, br, zstd' });
+  assert.equal(br.headers['content-encoding'], 'br');
+  assert.equal(br.headers.vary, 'Accept-Encoding');
+  assert.equal(Number(br.headers['content-length']), br.bytes.length);
+  assert.ok(br.bytes.length < json.length / 4, `compressed: ${br.bytes.length} of ${json.length}`);
+  assert.equal(zlib.brotliDecompressSync(br.bytes).toString(), json, 'the same answer');
+  // Every security header as on the plain answer.
+  for (const name of Object.keys(securityHeaders(PORT)).map((n) => n.toLowerCase())) assert.equal(br.headers[name], plain.headers[name], name);
+
+  const gz = await rawGet(url, { cookie: COOKIE, 'accept-encoding': 'br;q=0, gzip' });
+  assert.equal(gz.headers['content-encoding'], 'gzip');
+  assert.equal(zlib.gunzipSync(gz.bytes).toString(), json);
+  assert.equal((await rawGet(url, { cookie: COOKIE, 'accept-encoding': 'identity' })).headers['content-encoding'], undefined);
+
+  // A small answer goes as it is, and so does a refusal: the checks come first and are the same.
+  const small = await rawGet('/api/sessions/pack330/messages?limit=1', { cookie: COOKIE, 'accept-encoding': 'br' });
+  assert.equal(small.headers['content-encoding'], undefined);
+  assert.ok(small.bytes.length < 1024, `small: ${small.bytes.length}`);
+  assert.equal((await rawGet(url, { 'accept-encoding': 'br' })).status, 401, 'no cookie');
+  assert.equal((await rawGet(url, { cookie: COOKIE, host: 'evil.example:80', 'accept-encoding': 'br' })).status, 403, 'another Host');
+
+  // Pictures go as they are.
+  const png = await rawGet('/api/sessions/s1/image?path=a.png', { cookie: COOKIE, 'accept-encoding': 'gzip, br' });
+  assert.equal(png.status, 200);
+  assert.equal(png.headers['content-encoding'], undefined);
+  assert.deepEqual(png.bytes, fs.readFileSync(path.join(projectRoot, 'a.png')));
 });
 
 test('hello carries recent and named archived sessions, counts the older ones, and the full list needs the sign-in (issue #229)', async () => {

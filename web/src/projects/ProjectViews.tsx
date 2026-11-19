@@ -79,7 +79,7 @@ function AccountField(f: FieldProps & { accounts: AccountInfoView[]; container?:
           <option value="">default: this computer's own login</option>
           {f.accounts.map((a) => (
             <option key={a.name} value={a.name} disabled={f.container && a.kind === 'folder'}>
-              {a.name}{a.email ? ` (${a.email})` : ''}{f.container && a.kind === 'folder' ? ' — login folders work only on this computer' : ''}
+              {a.name}{f.container && a.kind === 'folder' ? ' — login folders work only on this computer' : ''}
             </option>
           ))}
         </select>

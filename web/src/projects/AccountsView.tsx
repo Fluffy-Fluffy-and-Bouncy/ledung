@@ -1,22 +1,22 @@
-// Claude accounts (projects and accounts, P3): the accounts Ledung knows, who each is logged in as,
+// Claude accounts (projects and accounts, P3): the accounts Ledung knows, how each is signed in (never an email:
+// Claude Code reports the computer's own login's for every account, issue #378),
 // which projects use it, the accounts for chats and new projects (issue #283), and adding one. Each is a
 // sign-in folder the user signs in to with Claude Code's own /login, and only the sign-in: conversations, skills
 // and settings are shared by every session whatever its account. Ledung takes no tokens (issue #342): a long-lived
 // token goes in through a command the user runs in their own terminal, and the page only shows that command (#85).
 import { Fragment, useState } from 'react';
-import type { AccountChoices, AccountInfoView, ProjectInfo, ShownSignIn } from '../../../src/shared/protocol.ts';
+import type { AccountChoices, AccountInfoView, DefaultAccountView, ProjectInfo } from '../../../src/shared/protocol.ts';
 import { api } from '../api.ts';
 import { CopyButton } from '../components/Markdown.tsx';
-import { formatTime } from '../components/MessageList.tsx';
 import { usePlainTyping } from '../usePlainTyping.ts';
 import { signedInWith } from './signedInWith.ts';
 
 type Run = (action: () => Promise<unknown>) => Promise<void>;
-export type DefaultIdentity = { email: string | null; organization: string | null; plan: string | null; seenAt: number | null; signInKind?: ShownSignIn | null } | null;
+export type DefaultIdentity = DefaultAccountView | null;
 
-function who(a: { email: string | null; organization: string | null; plan: string | null; seenAt: number | null } | null): string {
-  if (!a || (!a.email && !a.organization)) return 'not seen yet: shown after its first session starts';
-  return [a.email, a.organization, a.plan].filter(Boolean).join(' · ') + (a.seenAt ? ` (seen ${formatTime(a.seenAt)})` : '');
+/** What its own sign-in check says: how it is signed in, and its plan when Claude Code names one. */
+function SignedIn({ a }: { a: { signInKind?: AccountInfoView['signInKind']; plan?: string | null } | null }) {
+  return <>{signedInWith(a?.signInKind)}{a?.signInKind && a.plan ? <div className="muted">plan: {a.plan}</div> : null}</>;
 }
 
 function CommandLine({ text }: { text: string }) {
@@ -42,7 +42,7 @@ export function AccountsSettings(props: { accounts: AccountInfoView[]; choices: 
   const choice = (which: keyof AccountChoices) => (
     <select value={props.choices[which] ?? ''} onChange={(e) => void props.run(() => api.setAccountChoices({ [which]: e.target.value || null }))}>
       <option value="">default: this computer's own login</option>
-      {props.accounts.map((a) => <option key={a.name} value={a.name}>{a.name}{a.email ? ` (${a.email})` : ''}</option>)}
+      {props.accounts.map((a) => <option key={a.name} value={a.name}>{a.name}</option>)}
     </select>
   );
 
@@ -52,13 +52,13 @@ export function AccountsSettings(props: { accounts: AccountInfoView[]; choices: 
       <p className="muted">Each project uses one account, for its manager and all its sessions; chats use the one chosen below. Ledung never moves work between accounts. Accounts can also be listed under <span className="mono">claudeAccounts</span> in the config file (see ledung.config.example.json).</p>
       {props.configFileProblems.map((p) => <div key={p} className="banner">{p}</div>)}
       <div>
-        <table className="plain">
-          <thead><tr><th>Account</th><th>Logged in as</th><th>Used by</th><th /></tr></thead>
+        <table className="plain accounts-table">
+          <thead><tr><th>Account</th><th>Signed in</th><th>Used by</th><th /></tr></thead>
           <tbody>
             <tr>
               <td><strong>default</strong><div className="muted">this computer's own Claude Code login</div></td>
-              <td>{who(props.defaultIdentity)}<div className="muted">{signedInWith(props.defaultIdentity?.signInKind)}</div></td>
-              <td>{usedBy(null)}</td>
+              <td data-label="Sign-in"><SignedIn a={props.defaultIdentity} /></td>
+              <td data-label="Used by">{usedBy(null)}</td>
               <td />
             </tr>
             {props.accounts.map((a) => (
@@ -71,8 +71,8 @@ export function AccountsSettings(props: { accounts: AccountInfoView[]; choices: 
                   <div className="muted">sign-in folder <span className="mono">{a.configDir}</span></div>
                   <div className="muted">in containers <span className="mono">{a.containerDir ?? `~/.ledung-accounts/${a.name}`}</span></div>
                 </td>
-                <td>{who(a)}<div className="muted">{signedInWith(a.signInKind)}</div></td>
-                <td>{usedBy(a.name)}</td>
+                <td data-label="Sign-in"><SignedIn a={a} /></td>
+                <td data-label="Used by">{usedBy(a.name)}</td>
                 <td className="account-actions">
                   {/* Opens Finder or Explorer on the computer Ledung runs on, so not from a phone (issue #414). */}
                   <button className="small" disabled={props.remote} title={props.remote ? 'Only on the computer Ledung runs on' : `Show ${a.configDir}`}

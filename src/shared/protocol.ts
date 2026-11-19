@@ -468,7 +468,16 @@ export interface AccountChoices {
   newProjects: string | null;
 }
 
-/** A Claude account as the page sees it: a login folder; Ledung keeps no token (issue #342). */
+/**
+ * The computer's own login as the page sees it: only what its sign-in check says. No email or organisation: Claude
+ * Code reports the computer's login for every account, so Ledung shows none (issue #378).
+ */
+export interface DefaultAccountView {
+  signInKind: ShownSignIn | null;
+  plan: string | null;
+}
+
+/** A Claude account as the page sees it: a login folder; Ledung keeps no token (issue #342) and shows no email (#378). */
 export interface AccountInfoView {
   name: string;
   kind: 'folder';
@@ -476,11 +485,6 @@ export interface AccountInfoView {
   configDir: string;
   /** Its login folder in containers, null for the default (~/.ledung-accounts/<name>). */
   containerDir: string | null;
-  /** Who a session last found itself logged in as. */
-  email: string | null;
-  organization: string | null;
-  plan: string | null;
-  seenAt: number | null;
   createdAt: number;
   /** Listed under "claudeAccounts" in the config file (issue #425): removed in the page, it comes back at the next start. */
   inConfigFile?: boolean;
@@ -488,6 +492,8 @@ export interface AccountInfoView {
   whatItIsFor?: string | null;
   /** How it is signed in, from the last check (issue #85); null or left out: not known yet, or not signed in. */
   signInKind?: ShownSignIn | null;
+  /** Its plan as its own sign-in says (Claude Code's `auth status`), from the last check; null: not said or not signed in. */
+  plan?: string | null;
   /** The command that starts Claude Code on its sign-in folder here, for /login. */
   loginCommand?: string;
   /** The command that puts a long-lived token into its sign-in here, run in the user's own terminal (issue #85). */
@@ -541,6 +547,8 @@ export interface SignInInfo {
   method: string | null;
   /** What that means for the person (issue #85); null or left out: can't be told. */
   kind?: SignInKind | null;
+  /** The plan its own sign-in names (subscriptionType); null or left out: none said. */
+  plan?: string | null;
   /** Why the check could not run, for unknown. */
   detail: string | null;
   checkedAt: number;
@@ -573,7 +581,8 @@ export interface StoredMessage {
   at: number;
   /** card: a card in the Ledung Helper's chat (src/shared/helper-cards.ts). */
   /** reply: the Ledung Helper's one message of a turn, with its card (src/sessions/helper-tools.ts, reply). */
-  kind: 'user' | 'sdk' | 'permission' | 'decision' | 'event' | 'question' | 'shell' | 'card' | 'reply';
+  /** waiting: a "Waiting for you" line in a manager's chat (issue #350, src/shared/waiting-line.ts). */
+  kind: 'user' | 'sdk' | 'permission' | 'decision' | 'event' | 'question' | 'shell' | 'card' | 'reply' | 'waiting';
   data: any;
 }
 
@@ -704,6 +713,11 @@ export interface QuestionInfo {
   earlier?: ConversationLine[] | null;
   /** What the asker attached with ask_user's sources (issue #369), in its order, fetched and kept when it asked. Null: none. */
   sources?: AttachedSource[] | null;
+  /**
+   * Sent without `original`, `earlier` and `sources` (older Waiting for you history, issue #306): the page asks for the
+   * whole question (GET /api/questions/:id) when it is opened.
+   */
+  light?: boolean;
 }
 
 /**
@@ -1168,6 +1182,12 @@ export interface ShortcutPlace {
 }
 
 /** The first-run question and Settings → Shortcuts (GET /api/shortcuts, issue #415). */
+/** Settings' switch for Ledung's tray icon (issue #347); `kind` null where this system has none (Linux, for now). */
+export interface TrayView {
+  kind: 'windows' | 'mac' | null;
+  on: boolean;
+}
+
 export interface ShortcutsView {
   kind: 'windows' | 'mac' | 'other';
   /** False where Ledung makes no shortcuts (Linux); `reason` says so. */
@@ -1525,7 +1545,7 @@ export type ServerEvent =
   | { type: 'linkPairings'; pairings: LinkPairingInfo[] }
   | { type: 'projects'; projects: ProjectInfo[] }
   | {
-      type: 'accounts'; accounts: AccountInfoView[]; defaultIdentity: Omit<AccountInfoView, 'name' | 'kind' | 'configDir' | 'createdAt'> | null; choices: AccountChoices;
+      type: 'accounts'; accounts: AccountInfoView[]; defaultIdentity: DefaultAccountView | null; choices: AccountChoices;
       /** The accounts in use that Claude Code is not signed in for (issue #333); empty or left out: none. */
       signedOut?: SignInProblem[];
       /** Claude Code missing or too old on this computer (issue #341), with how to fix it; null or left out: none. */

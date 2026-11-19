@@ -3,16 +3,36 @@
 // of the conversation, where it opens and where new messages arrive, and draws earlier ones a batch at a time as
 // the reader scrolls up to them; back at the end, the earlier ones are let go again.
 
-/** How many of the latest items are drawn: several screens, so a short scroll up never waits. */
-export const TAIL = 300;
-/** How many more each step up draws. */
-export const STEP = 200;
+/**
+ * How many of the latest shown messages are drawn when a conversation opens (issue #329): counted in what is on
+ * screen, not in items, since hidden tool calls are items too. 300 items drew up to 300 long replies, 1.9-3.9 s at
+ * 4x CPU; 40 is still several screens on a phone.
+ */
+export const TAIL = 40;
+/** How many more shown messages each step up draws. */
+export const STEP = 40;
 /** How near the top (px) the reader gets before the next batch up is drawn. */
 export const NEAR_TOP = 600;
+/** At most this many items in one batch, however few of them show (a long run of hidden tool calls). */
+export const MAX_ITEMS = 1000;
+
+/** Whether item i draws anything; without one, every item does. */
+export type Shows = (i: number) => boolean;
+
+/** Back from `from` until `n` shown items are passed, or MAX_ITEMS items, or the first item. */
+function back(from: number, n: number, shows: Shows): number {
+  let i = Math.max(0, from), seen = 0;
+  const stop = Math.max(0, from - MAX_ITEMS);
+  while (i > stop && seen < n) {
+    i -= 1;
+    if (shows(i)) seen += 1;
+  }
+  return i;
+}
 
 /** The first item drawn when the conversation is shown from its end. */
-export function tailStart(count: number): number {
-  return Math.max(0, count - TAIL);
+export function tailStart(count: number, shows: Shows = () => true): number {
+  return back(count, TAIL, shows);
 }
 
 /**
@@ -25,6 +45,6 @@ export function windowStart(start: number, count: number, must: number): number 
 }
 
 /** One batch further up from `start`. */
-export function stepUp(start: number): number {
-  return Math.max(0, start - STEP);
+export function stepUp(start: number, shows: Shows = () => true): number {
+  return back(start, STEP, shows);
 }

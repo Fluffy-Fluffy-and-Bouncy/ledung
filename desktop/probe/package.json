@@ -1,0 +1,6 @@
+{
+  "name": "ledung-desktop-probe",
+  "private": true,
+  "type": "module",
+  "main": "main.ts"
+}

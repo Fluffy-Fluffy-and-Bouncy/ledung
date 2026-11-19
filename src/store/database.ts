@@ -778,6 +778,32 @@ const MIGRATIONS: string[] = [
     UNIQUE (project, tool_name, command)
   );
   `,
+  // The link a device paired through the link came by (issue #313): its id in this computer's links, so a computer
+  // that trusts that link's own screen knows the device is its frame. Null: paired here, or before this column.
+  `
+  ALTER TABLE devices ADD COLUMN paired_via_link TEXT;
+  `,
+  // The fork a run is in (issue #193), as JSON RunFork (src/shared/flow-run.ts): a position per branch, each moving on
+  // its own until the join. Null: the run holds one position, at.
+  `
+  ALTER TABLE flow_runs ADD COLUMN fork TEXT;
+  `,
+  // A "Waiting for you" line in a manager's chat (issue #350): the one message per question or permission request, so
+  // a line is never added twice (Done looks like 8) and is found to update in place when it is decided.
+  `
+  CREATE TABLE waiting_lines (
+    item TEXT NOT NULL,
+    ref TEXT NOT NULL,
+    message_id INTEGER NOT NULL REFERENCES messages(id),
+    PRIMARY KEY (item, ref)
+  );
+  `,
+  // Accounts show no email or organisation any more (issue #378): Claude Code reported the computer's own login's for
+  // every account. Who sessions found themselves logged in as is forgotten, the default login's too; the columns stay.
+  `
+  UPDATE accounts SET email = NULL, organization = NULL, plan = NULL, seen_at = NULL;
+  DELETE FROM meta WHERE key = 'default-account-identity';
+  `,
   // An account switch waiting for a quiet moment, or one that failed (issue #395): JSON { to, failed? }; null: none.
   // On the session, so a pending switch outlives Restart Ledung and the page gets it with the session.
   `

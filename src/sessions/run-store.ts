@@ -1,4 +1,4 @@
-// Runs in Ledung's database (migrations 42 and 44, workflow parts 3 and 3f): per project, nothing written into the project's files.
+// Runs in Ledung's database (migrations 42 and 44, workflow parts 3 and 3f; a fork's branches, #193): per project, nothing written into the project's files.
 import type { DatabaseSync } from 'node:sqlite';
 import type { FlowRun, RunState, RunStep } from '../shared/flow-run.ts';
 
@@ -19,6 +19,7 @@ function toRun(r: Row): FlowRun {
     ref: r.ref ?? null,
     flow: r.flow,
     at: r.at ?? null,
+    fork: r.fork ? JSON.parse(r.fork) : null,
     atSince: Number(r.at_since),
     counts: JSON.parse(r.counts),
     sessions: JSON.parse(r.sessions),
@@ -92,8 +93,8 @@ export class RunStore {
     return this.db.prepare('SELECT * FROM flow_runs WHERE parent_run = ? ORDER BY id').all(runNumber(id)).map(toRun);
   }
 
-  update(id: string, fields: Partial<{ at: string | null; atSince: number; counts: FlowRun['counts']; sessions: FlowRun['sessions']; history: RunStep[]; state: RunState; ending: string | null; question: number | null; coordinator: string; worktree: FlowRun['worktree']; queue: FlowRun['queue'] }>, now: number): FlowRun {
-    const columns: Record<string, string> = { at: 'at', atSince: 'at_since', counts: 'counts', sessions: 'sessions', history: 'history', state: 'state', ending: 'ending', question: 'question', coordinator: 'coordinator', worktree: 'worktree', queue: 'queue' };
+  update(id: string, fields: Partial<{ at: string | null; atSince: number; counts: FlowRun['counts']; sessions: FlowRun['sessions']; history: RunStep[]; state: RunState; ending: string | null; question: number | null; coordinator: string; worktree: FlowRun['worktree']; queue: FlowRun['queue']; fork: FlowRun['fork'] }>, now: number): FlowRun {
+    const columns: Record<string, string> = { at: 'at', atSince: 'at_since', counts: 'counts', sessions: 'sessions', history: 'history', state: 'state', ending: 'ending', question: 'question', coordinator: 'coordinator', worktree: 'worktree', queue: 'queue', fork: 'fork' };
     const entries = Object.entries(fields).filter(([k, v]) => k in columns && v !== undefined);
     const values = entries.map(([, v]) => (v !== null && typeof v === 'object' ? JSON.stringify(v) : v) as string | number | null);
     this.db.prepare(`UPDATE flow_runs SET ${[...entries.map(([k]) => `${columns[k]} = ?`), 'updated_at = ?'].join(', ')} WHERE id = ?`).run(...values, now, runNumber(id));

@@ -47,6 +47,23 @@ export interface KnownSessions {
 }
 
 /** The fetched archived sessions added (those it has already stay, its own are newer); nothing is left only counted. */
+/**
+ * The sessions Waiting for you history names (issue #306), added to those the page has. An archived one hello only
+ * counted moves from its project's count into the list, so the Archived (N) links don't count it twice.
+ */
+export function withNamed(known: KnownSessions, named: SessionInfo[]): KnownSessions {
+  const have = new Set(known.sessions.map((s) => s.id));
+  const added = named.filter((s) => !have.has(s.id));
+  if (!added.length) return known;
+  const olderArchived = { ...known.olderArchived };
+  for (const s of added) {
+    if (!s.archivedAt || !olderArchived[s.project]) continue;
+    if (olderArchived[s.project] === 1) delete olderArchived[s.project];
+    else olderArchived[s.project]! -= 1;
+  }
+  return { sessions: [...known.sessions, ...added], olderArchived };
+}
+
 export function withArchived(known: KnownSessions, archived: SessionInfo[]): KnownSessions {
   const have = new Set(known.sessions.map((s) => s.id));
   return { sessions: [...known.sessions, ...archived.filter((s) => !have.has(s.id))], olderArchived: {} };

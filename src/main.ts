@@ -10,6 +10,8 @@ import path from 'node:path';
 import { boardConfig, configPath, createDefaultConfig, loadConfig } from './config.ts';
 import { ConfigWatcher } from './config-watch.ts';
 import { openBrowser } from './platform/open-browser.ts';
+import { Tray, trayIconFile, trayKind, TraySwitch } from './platform/tray.ts';
+import { waitingCount } from './shared/waiting.ts';
 import { exercisedLine } from './platform/exercised.ts';
 import { lanNames } from './platform/network.ts';
 import { iconFiles, launchTarget, Shortcuts } from './platform/shortcuts.ts';
@@ -29,7 +31,6 @@ import { UsageQueries } from './usage/queries.ts';
 import { publisherProjects, UsagePublisher } from './usage/publisher.ts';
 import { usageMark, usageSlices } from './usage/publish-source.ts';
 import { ProjectRemotes } from './usage/project-remotes.ts';
-import { DEFAULT_ACCOUNT } from './accounts/store.ts';
 import { Updater } from './update/updater.ts';
 import { CheckIn } from './update/checkin.ts';
 import { RemoteLink, savedRemote } from './remote/link.ts';
@@ -40,11 +41,19 @@ import { remoteSecretText } from './remote/secret.ts';
 import { Secrets } from './secrets/secrets.ts';
 import { osGuard, Vault } from './secrets/vault.ts';
 import { localSecretsDir } from './secrets/runtime.ts';
+import { runtimeRefusal } from './platform/runtime.ts';
 
 /** Exit code that asks the launcher to start Ledung again (see scripts/release.ts, and src/cli.ts for the npm package). */
 const RESTART_CODE = 75;
 
 async function main(): Promise<void> {
+  // Never on Electron's binary: its hosts would need ELECTRON_RUN_AS_NODE, which sessions must not inherit (#361).
+  // First of all, so it stops before the database or any host is touched.
+  const refusal = runtimeRefusal(process.versions);
+  if (refusal) {
+    console.error(refusal);
+    process.exit(1);
+  }
   // Before the config is read: a computer new to the relay may not have a remote block yet.
   if (process.argv[2] === 'remote-secret') {
     console.log(remoteSecretText());
@@ -71,7 +80,12 @@ async function main(): Promise<void> {
   let server: LedungServer | null = null;
   let link: RemoteLink | null = null;
   let watcher: ConfigWatcher | null = null;
-  const manager = new SessionManager(config, store, (event) => server?.broadcast(event));
+  let tray: Tray | null = null;
+  const manager = new SessionManager(config, store, (event) => {
+    server?.broadcast(event);
+    // Its status line and waiting count follow sessions, questions and prompts (#347); sent only when they change.
+    tray?.changed();
+  });
   // The message boards between managers: each project names its repo (docs/steps/message-board.md, "Per project").
   const pollMs = boardConfig(config).pollSeconds * 1000;
   // Board attachments are kept in the data folder's board cache, never in a project folder.
@@ -87,6 +101,8 @@ async function main(): Promise<void> {
 
   // Reconnect to sessions whose hosts survived the restart, then mark the rest as ended.
   const attached = await manager.attachRunningHosts();
+  // Before the rest are marked ended: which managers were running when Ledung stopped, to resume below (#391).
+  const managersAtStop = manager.managersRunningAtStop(attached);
   const leftover = store.markUnfinishedSessionsEnded('Ledung stopped before this session ended. Resume to continue.', attached);
   // Those that were waiting for memory to start never ran: they say so, and their managers get the task back.
   manager.settleWaitersAfterRestart();
@@ -103,6 +119,8 @@ async function main(): Promise<void> {
   const shutdown = async (restart: boolean) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    // The icon goes first: it would only offer what is now stopping (#347).
+    tray?.stop();
     manager.boards?.stop();
     usagePublisher.stop();
     checkIn.stop();
@@ -126,6 +144,23 @@ async function main(): Promise<void> {
   const canRestart = envSetting('LAUNCHER') === '1';
   const lan = lanNames(config.lan);
   const onRestart = canRestart ? () => void shutdown(true) : undefined;
+  const loginUrl = `http://127.0.0.1:${config.port}/login?token=${loadOrCreateToken()}`;
+  // The tray icon (issue #347): owned by this server, so it goes however Ledung stops (choice B). The helper never
+  // gets the token: its Open asks the server, which opens the sign-in link as at start (choice D).
+  const kind = trayKind();
+  tray = kind && new Tray({
+    kind, address: `127.0.0.1:${config.port}`, iconFile: trayIconFile(kind, appDir()), canRestart,
+    counts: () => ({ working: manager.workingCount(), waiting: waitingCount(manager.questions(), store.pendingPermissions()) }),
+    onOpen: () => openBrowser(loginUrl),
+    onRestart: () => void shutdown(true),
+    // Exit is Stop Ledung (choice C); the tray asks first when sessions are working.
+    onExit: () => void shutdown(false),
+    log: (line) => console.log(line),
+  });
+  const traySwitch = new TraySwitch({
+    tray, meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) },
+    configured: () => manager.currentConfig.trayIcon, ownDataDir: !!envSetting('DATA_DIR'),
+  });
   // Settings → Relay, for whoever runs a relay (issue #237); its settings and keys stay in the data folder.
   // Publishing usage to a shared repo (issue #363): off until switched on in Settings.
   const remotes = new ProjectRemotes((name) => {
@@ -141,7 +176,6 @@ async function main(): Promise<void> {
     computer: () => server?.computerName() ?? 'Ledung',
     projects: () => publisherProjects(manager.projectStore.list(), manager.projectStore.removed()),
     remotes: (names) => remotes.remotes(names),
-    emailOf: (account) => account === DEFAULT_ACCOUNT ? manager.accountsEvent().defaultIdentity?.email ?? null : manager.accounts.get(account)?.email ?? null,
     linkedKey: () => server?.linkedUsageKey() ?? Promise.resolve(null),
   });
   const relayAdmin = new RelayAdmin({
@@ -171,6 +205,7 @@ async function main(): Promise<void> {
     shortcuts: new Shortcuts({ launch: launchTarget(), iconDir: userDataDir(), icons: iconFiles(), meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) } }),
     updater,
     checkIn,
+    tray: traySwitch,
     lanNames: lan,
     lanBind: config.lan === true ? '0.0.0.0' : config.lan || undefined,
     lanOpen: !config.lanSignIn,
@@ -196,6 +231,9 @@ async function main(): Promise<void> {
     }
     throw e;
   }
+  // The managers that were running when Ledung stopped come back by themselves (#391), once this Ledung is surely the
+  // one that runs (not a second start on a port in use), and in the background like a Resume from the page.
+  void manager.resumeManagersAtStart(managersAtStop).catch((e) => console.log(`Managers at start: ${(e as Error).message}`));
 
   manager.startMeasuring();
   checkIn.start();
@@ -207,6 +245,7 @@ async function main(): Promise<void> {
     file: configPath(), started: config, log: (line) => console.log(line),
     apply: (next, changed) => {
       manager.applyConfig(next, changed);
+      if (changed.includes('trayIcon')) traySwitch.apply();
       if (changed.includes('keepToolResultsDays')) void trimmer.run().catch((e) => console.log(`Shrinking old tool results failed: ${(e as Error).message}`));
     },
     onStatus: (status) => manager.setConfigStatus(status),
@@ -229,7 +268,7 @@ async function main(): Promise<void> {
   link.start();
   relayAdmin.start();
 
-  const loginUrl = `http://127.0.0.1:${config.port}/login?token=${loadOrCreateToken()}`;
+  traySwitch.apply();
   console.log(`Ledung is running at http://127.0.0.1:${config.port}`);
   console.log(`Config: ${configPath()}`);
   console.log(`Data:   ${userDataDir()}`);

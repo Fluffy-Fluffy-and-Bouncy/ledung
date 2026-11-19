@@ -1,7 +1,8 @@
 // Shortcuts that start Ledung (issue #415): the first-run question above the page, asked once, and Settings →
 // Shortcuts for adding or removing them later. Start Ledung when I sign in (issue #456), offered once in the question
 // and switched in Settings, and where the background log is. Stop Ledung (#456).
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import type { TrayView } from '../../../src/shared/protocol.ts';
 import { inFrame } from '../computerFrame.ts';
 import { SHORTCUT_ABOUT, asksFirstRun, questionText, settingsText, stopRefusal } from '../shortcuts.ts';
 import { useShortcuts } from '../useShortcuts.ts';
@@ -116,6 +117,33 @@ export function StopSettings() {
             <button className="small" onClick={() => setState('confirming')}>Stop Ledung</button>
           </span>
         )}
+    </section>
+  );
+}
+
+/**
+ * Ledung's icon in the notification area or the menu bar (issue #347): one switch, applied at once. Only on this
+ * computer's own page, whose screen the icon is on; Ledung refuses the others, and the section is left out there.
+ */
+export function TraySettings({ run }: { run: Run }) {
+  const [view, setView] = useState<TrayView | null>(null);
+  useEffect(() => { api.tray().then(setView, () => setView(null)); }, []);
+  if (!view?.kind) return null;
+  const mac = view.kind === 'mac';
+  return (
+    <section>
+      <h3>{mac ? 'Icon in the menu bar' : 'Icon in the notification area'}</h3>
+      <label className="toggle">
+        <input type="checkbox" checked={view.on} onChange={(e) => {
+          const on = e.target.checked;
+          void run(async () => setView(await api.setTray(on)));
+        }} /> {mac ? "Show Ledung's icon in the menu bar" : "Show Ledung's icon in the notification area"}
+      </label>
+      <p className="muted">
+        {mac
+          ? "It shows that Ledung runs; click it for Open Ledung, Restart and Exit, and a number next to it counts what waits for you. On a MacBook with a camera notch, a full menu bar hides icons that don't fit behind it."
+          : "It shows that Ledung runs: click it to open this page, right-click it for Restart and Exit, and an amber dot says something waits for you. Windows 11 first hides new icons under the ^ arrow: drag it onto the taskbar, or switch it on in Windows Settings → Personalization → Taskbar → Other system tray icons, where it is listed as Windows PowerShell."}
+      </p>
     </section>
   );
 }

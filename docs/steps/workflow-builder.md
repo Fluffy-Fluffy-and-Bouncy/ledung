@@ -47,6 +47,7 @@ Optional: **overlays**, switchable additions that change several blocks at once 
 | `outcomes` | where the work goes next, by its result: a word, the block it leads to, optionally on which time of the word (#1184); each is a pin on the block (#446) | Approved → Merge; Changes requested → Fix; Changes requested, 3rd time → Person |
 | `ask` | for a person block: a question or a review page (`ask_user`, review) | review |
 | `person` | for a person block (part 3d): whose call it is | the owner |
+| `tier` | for a person block (#351): the question tier its question is filed under, one of the project's; none: a review's the first tier, a question's the second | Process |
 | `parallel` | its sub-steps run at once, their results merged into one report (part 3d) | true |
 | `session` | for a Run flow block (part 3d): `caller` hands the session of the latest work step to the flow it runs | caller |
 
