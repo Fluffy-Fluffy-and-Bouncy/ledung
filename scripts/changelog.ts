@@ -7,7 +7,7 @@
 // files when the publish does not go through.
 import fs from 'node:fs';
 import path from 'node:path';
-import { displayVersion, isDevVersion, isPublicVersion, parseVersion } from '../src/shared/version.ts';
+import { compareVersions, displayVersion, isDevVersion, isPublicVersion, parseVersion } from '../src/shared/version.ts';
 
 export const PUBLIC_FILE = 'CHANGELOG.md';
 export const DEV_FILE = 'CHANGELOG-dev.md';
@@ -116,8 +116,10 @@ export const NEW_DEV_FILE = `${DEV_HEADER}${DEV_FOOTER}`;
  * - A public release (X) gets a section in CHANGELOG.md with everything since the last public release: the bullets of
  *   every dev build of X-1 in CHANGELOG-dev.md, then the ones still waiting. The dev changelog gets the release too,
  *   with the waiting bullets, so it lists every version the Dev channel can update to.
+ *   `published` is every version npm has: a dev build of X-1 there that the dev changelog doesn't list came before it
+ *   (v3.1 to v3.9 did, self-check of PR #423), and the section says its changes are under "Earlier, by date".
  */
-export function fold(root: string, version: string, stamp: string): { writes: FileWrites; section: string } {
+export function fold(root: string, version: string, stamp: string, published: string[] = []): { writes: FileWrites; section: string } {
   const changes = readChanges(root);
   const waiting = changes.flatMap((c) => c.bullets);
   const read = (f: string) => (fs.existsSync(path.join(root, f)) ? fs.readFileSync(path.join(root, f), 'utf8') : null);
@@ -134,9 +136,14 @@ export function fold(root: string, version: string, stamp: string): { writes: Fi
     const since = devBuilds.length
       ? `Everything since v${major - 1}: ${devBuilds.map((r) => displayVersion(r.version)).reverse().join(', ')}${waiting.length ? ' and the changes below' : ''}.`
       : undefined;
-    text = section(version, stamp, [...devBuilds.flatMap((r) => r.bullets), ...waiting]);
+    const listed = new Set(devBuilds.map((r) => r.version));
+    const unlisted = published.filter((v) => isDevVersion(v) && parseVersion(v)![0] === major - 1 && !listed.has(v)).sort(compareVersions);
+    const earlier = unlisted.length
+      ? `${unlisted.length === 1 ? displayVersion(unlisted[0]!) : `${displayVersion(unlisted[0]!)} to ${displayVersion(unlisted.at(-1)!)}`} came before the changelog per release: their changes are listed by date, under "Earlier, by date" below.`
+      : undefined;
+    text = section(version, stamp, [...devBuilds.flatMap((r) => r.bullets), ...waiting], earlier);
     writes.set(PUBLIC_FILE, insertSection(read(PUBLIC_FILE) ?? '# Ledung changelog\n', text));
-    writes.set(DEV_FILE, insertSection(devFile, section(version, stamp, waiting, since ? `The public release. ${since}` : 'The public release.')));
+    writes.set(DEV_FILE, insertSection(devFile, section(version, stamp, waiting, ['The public release.', since, earlier?.replace(' below.', ' in CHANGELOG.md.')].filter(Boolean).join(' '))));
   } else {
     throw new Error(`${version} is neither a dev build (X.Y) nor a public release (X).`);
   }

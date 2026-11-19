@@ -164,7 +164,7 @@ export async function runPublish(opts: PublishOptions, source: string, steps: Pu
     steps.log('Checking...');
     steps.check(source);
   }
-  const folded = fold(source, version, steps.stamp());
+  const folded = fold(source, version, steps.stamp(), published);
   const before = applyWrites(source, folded.writes);
   try {
     const tgz = await steps.build(source, version);

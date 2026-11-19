@@ -129,8 +129,32 @@ test("the repository's own CHANGELOG.md takes a public release above \"Earlier, 
   const after = read(root, 'CHANGELOG.md');
   assert.ok(after.endsWith(history));
   assert.ok(after.indexOf('## v4 — 2026-12-01 10:00 CET\n- One. (#1)\n') < after.indexOf('## Earlier, by date'));
-  // And the repository's CHANGELOG-dev.md is the file a first fold would make.
-  assert.equal(fs.readFileSync(path.join(appDir(), 'CHANGELOG-dev.md'), 'utf8'), NEW_DEV_FILE);
+  // The repository's CHANGELOG-dev.md has the header and the "Earlier" pointer a first fold would make, with any
+  // releases between them: only those, so this still holds after every publish (self-check of PR #423, finding 1).
+  const dev = fs.readFileSync(path.join(appDir(), 'CHANGELOG-dev.md'), 'utf8');
+  const cut = NEW_DEV_FILE.indexOf('\n## Earlier');
+  assert.ok(dev.startsWith(NEW_DEV_FILE.slice(0, cut)));
+  assert.ok(dev.endsWith(NEW_DEV_FILE.slice(cut)));
+  // A folded copy of it still passes the same check: the publish's own push runs this test on the folded tree.
+  const folded = tree({ 'CHANGELOG-dev.md': dev, 'docs/changes/1.md': '- One. (#1)\n' });
+  applyWrites(folded, fold(folded, '3.10.0', '2026-11-19 15:02 CET').writes);
+  const after10 = read(folded, 'CHANGELOG-dev.md');
+  assert.ok(after10.includes('## v3.10 — 2026-11-19 15:02 CET\n- One. (#1)\n'));
+  assert.ok(after10.startsWith(NEW_DEV_FILE.slice(0, cut)) && after10.endsWith(NEW_DEV_FILE.slice(cut)));
+});
+
+test('the first public release names the dev builds published before the changelog per release and points to the dated history', () => {
+  const root = tree({ 'CHANGELOG.md': '# Ledung changelog\n\n## Earlier, by date\n', 'CHANGELOG-dev.md': NEW_DEV_FILE, 'docs/changes/5.md': '- Five. (#5)\n' });
+  // npm had v3, v3.1 … v3.9 before this changelog; v3.10 is the first dev build in it.
+  const npm = ['3.0.0', ...Array.from({ length: 9 }, (_, i) => `3.${i + 1}.0`)];
+  applyWrites(root, fold(root, '3.10.0', '2026-11-19 15:02 CET', npm).writes);
+  const pub = fold(root, '4.0.0', '2026-11-21 12:00 CET', [...npm, '3.10.0']);
+  assert.equal(pub.section, '## v4 — 2026-11-21 12:00 CET\nv3.1 to v3.9 came before the changelog per release: their changes are listed by date, under "Earlier, by date" below.\n- Five. (#5)\n');
+  applyWrites(root, pub.writes);
+  assert.match(read(root, 'CHANGELOG-dev.md'), /## v4 — 2026-11-21 12:00 CET\nThe public release\. Everything since v3: v3\.10\. v3\.1 to v3\.9 came before the changelog per release: their changes are listed by date, under "Earlier, by date" in CHANGELOG\.md\.\n/);
+  // When the dev changelog lists every dev build npm has, there is nothing to point to.
+  const later = fold(root, '5.0.0', 'x', ['4.0.0']);
+  assert.ok(!later.section.includes('came before'), later.section);
 });
 
 test('applyWrites hands back what was there, so a failed publish can put it back, a new file included', () => {
