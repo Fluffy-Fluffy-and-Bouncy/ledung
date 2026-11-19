@@ -9,6 +9,10 @@ together, are in [CHANGELOG.md](CHANGELOG.md). Online: https://projectledung.com
 ([docs/changes/README.md](docs/changes/README.md)); `npm run publish:dev` and `npm run publish:public` fold them in
 here under the version they publish, and push the result to main.
 
+## v3.17 — 2026-11-20 00:11 CET
+- Desktop app: right-clicking gives a menu, as in a browser: Copy Image and Save Image As… on a picture (screenshots too), Copy Link Address on a link, Copy on selected text, and Cut, Copy, Paste and Select All in a text box (#447)
+- Desktop app: Ctrl+F (⌘F on the Mac) opens a find bar, as in a browser: it highlights the matches on the page and shows "n of m"; Enter and Shift+Enter go to the next and previous match, Esc closes it. Also Edit → Find… (#445)
+
 ## v3.16 — 2026-11-19 23:07 CET
 - Update Ledung from npm no longer restarts into the old version without saying so: when npm finishes but Ledung's folder still holds the old version, the update stops and shows npm's output and where npm installs to (#435)
 - After an update's restart, Settings → Update & restart says when Ledung still runs the old version (#435)
