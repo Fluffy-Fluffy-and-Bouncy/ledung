@@ -126,7 +126,7 @@ steward, miner and metrics runs are off, and that is not a stop.
 | `LOOPBACK_CMD` | a throwaway Ledung: `LEDUNG_CONFIG=<tmp>/config.json LEDUNG_DATA_DIR=<tmp>/data node src/main.ts --no-open` on the session's port from `TEST_PORTS` (repo `CLAUDE.md`) |
 | `LOOPBACK_MANUAL_STEPS` | anything only Martin's real Ledung, his phone or his browser can show |
 | `TEST_TIERS` | `code`, `loopback` (a throwaway Ledung with Haiku sessions), `manual` (Martin) |
-| `SOURCE_PATHS` | `src/`, `web/src/`, `scripts/` |
+| `SOURCE_PATHS` | `src/`, `web/src/`, `scripts/`, `desktop/`, `relay/`, `plugins/`, `checkin-worker/`, `.github/`, `.githooks/`, `package.json` — every backticked item here is a path the process tools read, so the reasons stay unticked. Widened from src/, web/src/ and scripts/, which routed PRs that changed only desktop code as docs-only (Martin, 2026-11-19 14:09, Ledung question #596 on magto-mini: "a — Fix both, the robust way"; Ready on Martin's 2026-11-19 14:32, Ledung question #616 on magto-mini: "a — Ready"; issue #418) |
 | `TEST_PATHS` | `test/` |
 
 ## Sessions

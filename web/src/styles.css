@@ -1208,6 +1208,9 @@ a.button-link { align-self: center; padding: 0.3rem 0.7rem; border-radius: 6px; 
 /* The bottom row's text is small; the cog keeps the page's icon-button size (review of PR #72). */
 .settings-cog { font-size: 1.25rem; line-height: 1; }
 .settings-cog.on { color: var(--text); outline: 2px solid var(--accent); }
+/* New window beside the cog (issue #414), its icon about the cog's size; close to it, as one pair. */
+.connection .new-window { margin-left: -0.35rem; }
+.connection .new-window svg { width: 18px; height: 18px; }
 
 /* Name colours per project (issue #83): palette values, light or dark by theme. */
 .named { color: light-dark(var(--name-light), var(--name-dark)); }

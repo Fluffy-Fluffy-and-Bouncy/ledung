@@ -2436,8 +2436,9 @@ test("line comments with no review open reach the worker's manager, as the user'
   assert.match(sent[0]!, /\n {3}Why one\?$/);
 });
 
-// Issue #237: Join with a code, Leave this relay and Settings → Relay. Every route is this computer's alone, every
-// change needs the open page, and the admin key and the Cloudflare token never reach the page.
+// Issue #237: Join with a code, Leave this relay and Settings → Relay. Every route is this computer's alone but I added
+// it, which through the public name needs that request signed (#420, test/relay-waiting.test.ts); every change needs
+// the open page, and the admin key and the Cloudflare token never reach the page.
 const RELAY_CHANGES: [string, unknown][] = [
   ['/api/remote-join', { code: 'relay.example.test/ABCD-ABCD-ABCD-ABCD-ABCD-ABCD-ABCD' }],
   ['/api/remote-leave', {}],

@@ -142,7 +142,7 @@ Stop the throwaway Ledung by the process listening on its port, never by name: t
 **The loopback check.** `probe/` loads the real `main.ts` and checks the window from inside, against the throwaway
 Ledung the two settings name, printing `PROBE {…}` lines; opening the default browser is intercepted, so nothing opens.
 From this folder, with the settings as above: `PROBE_PHASE=attach npx electron probe` (a Ledung runs: sign-in, address,
-settings, permissions, refused navigation, links, the icon, the page's one bridge to the app and that it shows the
+settings, permissions, refused navigation, links, the icon, the page's bridge to the app and that it shows the
 hidden window, the View menu's zoom step and, on Linux, that no menu bar
 shows, not on Alt either, and that the zoom keys, Ctrl and the wheel, Ctrl+O, copy and Ctrl+W work), then `again` (a
 second start keeps the devices `attach` saw), `notrunning` and `stopped` (these start and stop the config's Ledung
@@ -160,7 +160,11 @@ the one line saying what failed, Start Ledung and Retry again, no error dialog, 
 refuse to run without `LEDUNG_DESKTOP_START`) and `window` (a Ledung runs: closing hides, the Dock and a second start
 show the window again, ⌘O reaches the page as its Ctrl+O, Quit on a page with unsaved changes asks and Stay keeps the
 app, closing from full screen, a 100 ms timer in the hidden window, then Quit ends the app and the Ledung still
-answers; `PROBE_HIDDEN_SECONDS` sets the hidden time, 60 by default). A fresh data folder shows Ledung's Welcome,
+answers; `PROBE_HIDDEN_SECONDS` sets the hidden time, 60 by default) and `windows` (a Ledung runs, #414: File → New
+Window on ⌘N/Ctrl+N and the footer's New window button each open another signed-in window at the start page while the
+first keeps its route, no new device, the "not running" page cannot ask for one, closing one of several closes it, the
+last only hides, the Dock and a second start show the most recently used, Quit closes them all and the Ledung still
+answers). A fresh data folder shows Ledung's Welcome,
 which has no sidebar, so finish or leave the welcome in the page before the first run. Each check it makes prints
 `"event":"fail"` when it doesn't hold; the exit code is 0 only when all held, 1 otherwise, 2 when it refused to run.
 It refuses without both settings, on the default port, and on Windows (it reads command lines with `ps`; macOS and
@@ -168,14 +172,19 @@ Linux only for now).
 
 ## How it is built
 
-- `main.ts`: the window. Sandboxed, context isolation on, no Node in the page; navigation away from Ledung's address
-  and every new window are refused. TypeScript, run as is: Electron 45's Node strips types like the core's Node 24
-  (checked 2026-11-17 on macOS, Electron 45.3.3 with Node 24.22.3).
-- `preload.cjs`: the page's one bridge to the app (#360), `ledungDesktop.showWindow()`, which a click on one of the
-  page's notifications calls, since `window.focus()` cannot show a hidden window. It gives the page that function and
-  nothing else (no Node, no `ipcRenderer`), and the app shows the window only when Ledung's own page asks, never the
-  "not running" page. Plain JavaScript: a sandboxed preload runs in the page's process, which strips no types. In a
-  browser the page finds no `ledungDesktop`, and the click does what it always did.
+- `main.ts`: the windows. Sandboxed, context isolation on, no Node in the page; navigation away from Ledung's address
+  and every window the page opens itself are refused. More windows come from File → New Window (⌘N/Ctrl+N) or the
+  page's New window button (#414); they share one sign-in, and all show the Ledung or all the "not running" page.
+  TypeScript, run as is: Electron 45's Node strips types like the core's Node 24 (checked 2026-11-17 on macOS,
+  Electron 45.3.3 with Node 24.22.3).
+- `preload.cjs`: the page's bridge to the app: `ledungDesktop.showWindow()` (#360), which a click on one of the page's
+  notifications calls, since `window.focus()` cannot show a hidden window, and `ledungDesktop.newWindow()` (#414), the
+  footer's New window button. It gives the page those two functions and nothing else (no Node, no `ipcRenderer`), and
+  the app acts only when Ledung's own page asks, never the "not running" page. Plain JavaScript: a sandboxed preload
+  runs in the page's process, which strips no types. In a browser the page finds no `ledungDesktop`: the click does
+  what it always did, and the New window button opens a new browser tab or window.
+- `windows.ts`: the list of the app's windows, the most recently used last, and which close only hides (the last one).
+  `menu.ts`: the app's menu and its keys per system. No Electron in either, so `test/desktop.test.ts` runs them.
 - `attach.ts`: finding the running Ledung. No Electron in it, so the root `npm run check` tests it
   (`test/desktop.test.ts`), including that its proof matches the core's.
 - `keys.ts`: the zoom keys off the Mac (#389): Ctrl and "+" or "=", in one zoom step. No Electron in it, so

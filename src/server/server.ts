@@ -16,7 +16,7 @@ import { UserError } from '../sessions/manager.ts';
 import type { Store } from '../store/store.ts';
 import { AWAY_DEFAULT, AWAY_KINDS, EFFORT_LEVELS, HELPER, type AwayKind, type PermissionDecision, type PermissionMode, type RemoteStatus, type ServerEvent, parseWatch } from '../shared/protocol.ts';
 import { browserCookieHeader, deviceCookieHeader, Guard, readCookies, securityHeaders } from './security.ts';
-import { browserName, DEVICE_COOKIE, type Device, type DeviceKind, deviceName, Devices, deviceView, LEGACY_BROWSER_NAME } from './devices.ts';
+import { browserName, DEVICE_COOKIE, type Device, type DeviceKind, deviceName, Devices, deviceView, LEGACY_BROWSER_NAME, PAIR_CODE_MS } from './devices.ts';
 import { actionOf, DEVICE_LOCKED, PASSKEY_HEADER, PASSKEY_NEEDED, PASSKEY_ONLY, PasskeyError, Passkeys, VOUCH_HEADER } from './passkeys.ts';
 import { linkedPushItem, Push, PushError, type LinkedPushItem } from './push.ts';
 import type { UsageQueries } from '../usage/queries.ts';
@@ -79,6 +79,7 @@ const WAITING_POLL_MS = 30_000;
 const WAITING_PUSH_MS = 1000;
 /** Logged once, the first time a late answer after close is let go (#463). */
 let exercised463 = false;
+let exercised412 = false;
 
 /** Why linking refuses through the public name (#245 step 1: on the computer itself only). */
 const LINKED_HERE = 'Computers are linked and unlinked';
@@ -441,6 +442,8 @@ export class LedungServer {
     this.frames = computerFrames(this.knownComputers(), this.publicName ?? undefined);
     this.passkeys?.setFramers(this.frames.ancestors);
     this.devices.closeCodeUnlessLinked(new Set((this.linked?.list() ?? []).map((l) => l.id)));
+    // A removed link takes its pairing cards with it (issue #412), on either side's unlinking.
+    this.pruneLinkPairings();
     this.setHeaders();
     this.broadcast({ type: 'computers', computers: this.computers() });
     // A new link's count at once, rather than at the next poll.
@@ -491,6 +494,8 @@ export class LedungServer {
     this.linked?.helloAll();
     this.waitingPoll = setInterval(() => this.exchangeWaiting(), this.opts.waitingPollMs ?? WAITING_POLL_MS);
     this.waitingPoll.unref();
+    // A pairing card kept from before the start still goes when its code expires (issue #412).
+    this.schedulePairingExpiry(this.storedLinkPairings());
     this.exchangeWaiting();
   }
 
@@ -653,6 +658,7 @@ export class LedungServer {
     this.closed = true;
     if (this.waitingPoll) clearInterval(this.waitingPoll);
     if (this.waitingPush) clearTimeout(this.waitingPush);
+    if (this.pairingExpiry) clearTimeout(this.pairingExpiry);
     for (const ws of this.clients) ws.close(1001, 'Ledung is shutting down.');
     return Promise.all(this.servers.map((s) => new Promise<void>((resolve) => s.close(() => resolve())))).then(() => {});
   }
@@ -679,11 +685,19 @@ export class LedungServer {
     return watched === undefined || watched === sessionId;
   }
 
-  /** The relay admin's Approve cards changed (issue #237): to the pages open on this computer only, as in hello. */
+  /**
+   * The relay admin's Approve cards changed (issue #237): to every open page, as in hello, so the count and the list agree
+   * through the public name too (issue #412). Approve itself stays on this computer's own screen.
+   */
   sendNewComputers(computers: NewComputerInfo[]): void {
     this.waitingChanged();
-    const data = JSON.stringify({ type: 'newComputers', computers } satisfies ServerEvent);
-    for (const [ws, { device }] of this.pageKeys) if (device === null && ws.readyState === ws.OPEN) ws.send(data);
+    this.sendToPages({ type: 'newComputers', computers });
+  }
+
+  /** To every open page, without the push notice broadcast gives: these cards are no news to a phone (issue #412). */
+  private sendToPages(event: ServerEvent): void {
+    const data = JSON.stringify(event);
+    for (const ws of this.clients) if (ws.readyState === ws.OPEN) ws.send(data);
   }
 
   /** The tunnel's state changed: kept for the next hello and sent to open pages (issue #160). */
@@ -777,10 +791,10 @@ export class LedungServer {
       helper: manager.helperInfo(),
       computers: this.computers(),
       throughPublicName: viaPublic,
-      // The Approve cards are this computer's to act on: not sent through the public name (issue #237).
-      newComputers: viaPublic ? [] : this.opts.relayAdmin?.newComputers() ?? [],
-      // Like the devices they name, managed on this computer only.
-      linkPairings: viaPublic ? [] : this.linkPairings(),
+      // Every card Waiting for you counts, through the public name too, so the count and the list agree (issue #412,
+      // Martin, question #588). Approve stays on this computer's own screen (#237); the page says so.
+      newComputers: this.opts.relayAdmin?.newComputers() ?? [],
+      linkPairings: this.linkPairings(),
     };
   }
 
@@ -1260,7 +1274,7 @@ export class LedungServer {
     this.opts.store.setMeta(LINK_PAIR_TIMES_KEY, JSON.stringify({ ...times, [computer.id]: now }));
     const { code, expiresAt } = this.devices.newPairCode('computer', { link: computer.id, name: computer.name });
     console.log(`Linked computers: ${computer.name} asked for a pairing code for a browser through the link.`);
-    this.setLinkPairings([{ id: crypto.randomUUID(), computer: computer.name, at: now, device: null }, ...this.linkPairings()].slice(0, LINK_PAIRINGS_KEPT));
+    this.setLinkPairings([{ id: crypto.randomUUID(), computer: computer.name, link: computer.id, at: now, expiresAt, device: null }, ...this.linkPairings()].slice(0, LINK_PAIRINGS_KEPT));
     return { code, expiresAt };
   }
 
@@ -1338,11 +1352,16 @@ export class LedungServer {
     const pairings = this.linkPairings();
     const open = pairings.find((p) => p.device === null && p.computer === device.pairedVia);
     if (open) open.device = { id: device.id, name: device.name };
-    else pairings.unshift({ id: crypto.randomUUID(), computer: device.pairedVia!, at: device.createdAt, device: { id: device.id, name: device.name } });
+    else pairings.unshift({ id: crypto.randomUUID(), computer: device.pairedVia!, ...(device.pairedViaLink !== null ? { link: device.pairedViaLink } : {}), at: device.createdAt, device: { id: device.id, name: device.name } });
     this.setLinkPairings(pairings.slice(0, LINK_PAIRINGS_KEPT));
   }
 
+  /** The pairing cards still worth showing: read so, a card that cleared itself is never counted or shown (issue #412). */
   private linkPairings(): LinkPairingInfo[] {
+    return this.storedLinkPairings().filter((p) => this.pairingLive(p));
+  }
+
+  private storedLinkPairings(): LinkPairingInfo[] {
     try {
       const parsed = JSON.parse(this.opts.store.getMeta(LINK_PAIRINGS_KEY) ?? '[]') as unknown;
       return Array.isArray(parsed) ? parsed as LinkPairingInfo[] : [];
@@ -1351,12 +1370,54 @@ export class LedungServer {
     }
   }
 
-  /** Kept, and sent to the pages open on this computer only, as the devices they name are managed only here. */
+  /**
+   * A pairing card clears itself (issue #412): its code expired unused, its device was removed, or its link was. A card
+   * kept before #412 has no link id or expiry: its link is matched by name and its code's 10 minutes counted from `at`.
+   * With linking off (no relay, or one without end-to-end TLS), nothing is said about links, so the cards wait; once the
+   * last link is removed, its cards go.
+   */
+  private pairingLive(p: LinkPairingInfo): boolean {
+    const now = this.opts.now?.() ?? Date.now();
+    if (p.device === null ? now >= (p.expiresAt ?? p.at + PAIR_CODE_MS) : !this.devices.get(p.device.id)) return false;
+    const links = this.linked?.list();
+    if (!links) return true;
+    return p.link !== undefined ? links.some((l) => l.id === p.link) : links.some((l) => l.name === p.computer);
+  }
+
+  /** Drops the cards that cleared themselves, and tells the pages and the linked computers, when there were any. */
+  private pruneLinkPairings(): void {
+    if (this.closed) return;
+    const stored = this.storedLinkPairings();
+    const live = stored.filter((p) => this.pairingLive(p));
+    if (live.length === stored.length) return;
+    if (!exercised412) {
+      exercised412 = true;
+      exercisedLine('EXERCISED #412 a pairing card cleared itself');
+    }
+    this.setLinkPairings(live);
+  }
+
+  /** The next unused code's expiry, when its card goes on its own (issue #412); one timer for the soonest. */
+  private pairingExpiry: NodeJS.Timeout | null = null;
+  private schedulePairingExpiry(pairings: LinkPairingInfo[]): void {
+    if (this.pairingExpiry) clearTimeout(this.pairingExpiry);
+    this.pairingExpiry = null;
+    const ends = pairings.filter((p) => p.device === null).map((p) => p.expiresAt ?? p.at + PAIR_CODE_MS);
+    if (this.closed || !ends.length) return;
+    const wait = Math.max(0, Math.min(...ends) - (this.opts.now?.() ?? Date.now()));
+    this.pairingExpiry = setTimeout(() => {
+      this.pairingExpiry = null;
+      this.pruneLinkPairings();
+    }, wait + 1000);
+    this.pairingExpiry.unref();
+  }
+
+  /** Kept, and sent to every open page: through the public name too, as Waiting for you counts them (issue #412). */
   private setLinkPairings(pairings: LinkPairingInfo[]): void {
     this.opts.store.setMeta(LINK_PAIRINGS_KEY, JSON.stringify(pairings));
+    this.schedulePairingExpiry(pairings);
     this.waitingChanged();
-    const data = JSON.stringify({ type: 'linkPairings', pairings } satisfies ServerEvent);
-    for (const [ws, { device }] of this.pageKeys) if (device === null && ws.readyState === ws.OPEN) ws.send(data);
+    this.sendToPages({ type: 'linkPairings', pairings });
   }
 
   /** Why this Ledung can't link with others, or null when it can. */
@@ -1575,6 +1636,9 @@ export class LedungServer {
     this.passkeys?.lock(id);
     this.push?.unsubscribe(id);
     for (const [ws, { device, browser }] of this.pageKeys) if (device === id || browser === id) ws.close(1008, 'This device was removed from Ledung.');
+    // Its pairing card, if a linked computer paired it, goes with it (issue #412); also when Devices revoked it already
+    // (a reused cookie, onReuse), so the pages are told then too (self-check of PR #413, finding 1).
+    this.pruneLinkPairings();
     return revoked;
   }
 
@@ -1703,10 +1767,22 @@ export class LedungServer {
         if (typeof answer.code !== 'string' || !/^[0-9a-z]{1,64}$/.test(answer.code)) throw new HttpError(502, `${computer.publicName} gave no usable pairing code.`);
         return { url: `https://${computer.publicName}/p/${answer.code}`, expiresAt: answer.expiresAt };
       }
+      // OK only takes the card away, so it works through the public name too, unlocked as every change there (issue #412).
       case 'POST link-pairings/:id/dismiss':
-        this.requireLocal(req);
         this.setLinkPairings(this.linkPairings().filter((p) => p.id !== decodeURIComponent(id)));
         return;
+      // The card's Remove device, through the public name too (Martin, 2026-11-19, question #589 "a"): only the device
+      // the card names, with the open page and, through the public name, this request signed: by the passkey, or by a
+      // trusted computer's own screen (#313), as every signed change. Removing any other
+      // device, and the device list, stay on this computer (devices/:id/revoke).
+      case 'POST link-pairings/:id/remove-device': {
+        await this.requirePage(req, url);
+        const card = this.linkPairings().find((p) => p.id === decodeURIComponent(id));
+        if (!card?.device) throw new HttpError(400, 'That card names no device.');
+        this.revokeDevice(card.device.id);
+        this.setLinkPairings(this.linkPairings().filter((p) => p.id !== card.id));
+        return;
+      }
       case 'POST links/:id/remove':
         this.requireLocal(req, LINKED_HERE);
         if (!this.unlinkComputer(decodeURIComponent(id))) throw new HttpError(400, 'No such linked computer.');
@@ -2532,7 +2608,8 @@ export class LedungServer {
           throw new HttpError(400, (e as Error).message);
         }
       }
-      // Settings → Relay on the relay admin's Ledung (issue #237): local only, and every change from the open page.
+      // Settings → Relay on the relay admin's Ledung (issue #237): local only but I added it (#420), and every change from
+      // the open page.
       // The admin key and the Cloudflare token never leave the data folder: the view carries a hash and a yes/no.
       case 'GET relay-admin':
         this.requireLocal(req);
@@ -2574,8 +2651,10 @@ export class LedungServer {
         this.requireLocal(req);
         await this.requirePage(req, url);
         return adminCall(() => this.relayAdmin().approve(decodeURIComponent(id)));
+      // I added it through the public name too (issue #420; Martin, 2026-11-19, Ledung question #615 "a"): with the open
+      // page and, there, this request signed by the passkey or a trusted computer's own screen (#313), as the pairing
+      // card's Remove device (#412). It only tells the relay a record is in place; Approve, which writes one, stays here.
       case 'POST relay-computers/:id/added':
-        this.requireLocal(req);
         await this.requirePage(req, url);
         return adminCall(() => this.relayAdmin().markAdded(decodeURIComponent(id)));
       case 'POST remote-leave':

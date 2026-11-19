@@ -201,7 +201,11 @@ function OwnerRow({ owner: o, onCap }: { owner: RelayOwnerInfo; onCap: (owner: s
 }
 
 /** The Approve card in Waiting for you: a computer that joined and waits for its CAA record. */
-export function NewComputerCard({ computer, run }: { computer: NewComputerInfo; run: Run }) {
+/**
+ * throughPublicName: shown through the relay (issue #412), where Approve is not offered (#237) and I added it is, the
+ * request signed by the passkey or a trusted computer's screen, which the page asks for itself (issue #420).
+ */
+export function NewComputerCard({ computer, run, throughPublicName = false }: { computer: NewComputerInfo; run: Run; throughPublicName?: boolean }) {
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const act = (action: () => Promise<unknown>) => {
@@ -215,12 +219,20 @@ export function NewComputerCard({ computer, run }: { computer: NewComputerInfo; 
       <div className="new-computer-head">New computer <code>{computer.name}</code> for {computer.owner}</div>
       <p className="muted">It joined the relay as {computer.host}{computer.enrolledAt ? ` at ${new Date(computer.enrolledAt).toLocaleString()}` : ''}. Its certificate needs this CAA record, which names its own ACME account:</p>
       <p><code className="remote-record">{computer.record}</code></p>
+      {throughPublicName ? <>
+        <div className="restart-confirm">
+          <CopyButton text={computer.record} />
+          <button className="small" disabled={busy} onClick={() => act(() => api.computerAdded(computer.name))}>I added it</button>
+        </div>
+        <p className="muted">Approve it on the computer this Ledung runs on, in Waiting for you on its own screen: approving is not done through the relay. If the record is in the DNS already, press I added it. The card also goes by itself once the computer is in use.</p>
+      </> : <>
       <div className="restart-confirm">
         {computer.approvable && <button className="small" disabled={busy} onClick={approve} title="Writes the record through Cloudflare with the token in Settings → Relay; never changes an existing one">{busy ? 'Approving…' : 'Approve'}</button>}
         <CopyButton text={computer.record} />
         {!computer.approvable && <button className="small" disabled={busy} onClick={() => act(() => api.computerAdded(computer.name))}>I added it</button>}
       </div>
       {!computer.approvable && <p className="muted">No Cloudflare token is set in Settings → Relay: copy the record into the DNS yourself, then press I added it.</p>}
+      </>}
       {problem && <p className="restart-problem">{problem}</p>}
     </div>
   );

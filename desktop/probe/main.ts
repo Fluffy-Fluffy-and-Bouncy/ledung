@@ -7,7 +7,7 @@
 //
 //   PROBE_PHASE=attach      a Ledung runs: signed in, address, settings, permissions, refused navigation and
 //                           windows, links, Ledung's icon, the menu bar that never shows and the keys that still
-//                           work off the Mac (#384, #389), the page's one bridge to the app (#360); saves the device
+//                           work off the Mac (#384, #389), the page's bridge to the app (#360, #414); saves the device
 //                           list for "again"
 //   PROBE_PHASE=again       a second start: still signed in, the same devices as after "attach"
 //   PROBE_PHASE=notrunning  none runs: the "not running" page, whose call to show the window is refused (#360); the
@@ -31,6 +31,10 @@
 //   PROBE_PHASE=startfail   none runs, LEDUNG_DESKTOP_START names a script that isn't there: Start fails, the page
 //                           says so in one line and offers Start and Retry, no error dialog, and the menu's Quit ends
 //                           the app
+//   PROBE_PHASE=windows     a Ledung runs (#414): File → New Window on ⌘N/Ctrl+N and the page's New window button
+//                           each open another signed-in window at the start page, the first keeping its own route;
+//                           the "not running" page cannot ask for one; closing one leaves the others; the last one
+//                           closed hides; the Dock and a second start show the most recently used; Quit ends the app
 //
 // Run from desktop/: `LEDUNG_CONFIG=… LEDUNG_DATA_DIR=… PROBE_PHASE=attach npx electron probe`. macOS and Linux
 // only for now: it reads command lines with `ps` (code review of PR #366, Minor 3).
@@ -348,14 +352,16 @@ async function askToShow(w: BrowserWindow): Promise<{ hiddenBefore: boolean; vis
 }
 
 /**
- * The preload gives the page one function and nothing of Node (#360), and that function shows the hidden window.
- * Leaves the window shown.
+ * The preload gives the page two functions and nothing of Node (#360, #414), and showWindow shows the hidden window
+ * (newWindow is the "windows" phase's). Leaves the window shown.
  */
 async function bridge(w: BrowserWindow): Promise<void> {
   const exposed = await page(w, `({ keys: Object.keys(window.ledungDesktop ?? {}), type: typeof window.ledungDesktop?.showWindow,
+    newWindow: typeof window.ledungDesktop?.newWindow,
     require: typeof require, process: typeof process, ipcRenderer: typeof ipcRenderer, electron: typeof electron })`);
   out('bridge', exposed);
-  expect(JSON.stringify(exposed.keys) === '["showWindow"]' && exposed.type === 'function', 'the page has the one function, showWindow', exposed);
+  expect(JSON.stringify(exposed.keys) === '["showWindow","newWindow"]' && exposed.type === 'function' && exposed.newWindow === 'function',
+    'the page has the two functions, showWindow and newWindow', exposed);
   expect(['require', 'process', 'ipcRenderer', 'electron'].every((k) => exposed[k] === 'undefined'), 'the page has no Node and no ipcRenderer', exposed);
   const shown = await askToShow(w);
   out('bridge-show', shown);
@@ -605,6 +611,138 @@ async function windowPhase(w: BrowserWindow): Promise<void> {
   expect(false, 'Quit ended the app');
 }
 
+/** The app's windows still open, in the order they were made. */
+const openNow = () => BrowserWindow.getAllWindows().filter((x) => !x.isDestroyed()).sort((a, b) => a.id - b.id);
+
+/** Waits until `count` windows are open and the newest has loaded Ledung's page; returns the newest. */
+async function newest(count: number): Promise<BrowserWindow | null> {
+  for (let i = 0; i < 75; i++) {
+    const all = openNow();
+    const last = all.at(-1);
+    if (all.length === count && last && !last.webContents.isLoading() && last.webContents.getURL() === `${origin}/`) return last;
+    await sleep(200);
+  }
+  return null;
+}
+
+/** A window's page: signed in (its data request answers), its own route, and whether the probe's mark is on it. */
+async function pageState(w: BrowserWindow) {
+  const state = await api(w, 'state');
+  return { url: w.webContents.getURL(), signedIn: state.status === 200, mark: await page(w, `window.__probeMark ?? null`), sidebar: await page(w, `!!document.querySelector('aside')`) };
+}
+
+/** More windows (#414). Ends the app with its own Quit; the probe exits from will-quit. */
+async function windowsPhase(first: BrowserWindow): Promise<void> {
+  // The first window on a route of its own, with a mark only its page has.
+  await page(first, `window.__probeMark = 'first'; history.pushState(null, '', '/#usage'); 1`);
+  const firstUrl = first.webContents.getURL();
+
+  // File → New Window, ⌘N on the Mac and Ctrl+N elsewhere.
+  const item = menuItem('new-window');
+  out('new-window-item', { label: item?.label ?? null, accelerator: item?.accelerator ?? null });
+  expect(item?.label === 'New Window' && item.accelerator === 'CmdOrCtrl+N', 'File → New Window is on ⌘N / Ctrl+N', item?.accelerator);
+  item?.click();
+  const second = await newest(2);
+  expect(second !== null, 'New Window opened a second window showing Ledung', openNow().map((x) => x.webContents.getURL()));
+  if (!second) return;
+  await sleep(1500);
+  const states = { first: await pageState(first), second: await pageState(second), secondVisible: second.isVisible(), firstVisible: first.isVisible() };
+  out('new-window', states);
+  expect(states.second.signedIn && states.second.sidebar && states.second.url === `${origin}/`, 'the new window is signed in, at the start page', states.second);
+  expect(states.second.mark === null, "the new window's page is its own, not the first one's", states.second);
+  expect(states.first.url === firstUrl && states.first.mark === 'first' && states.firstVisible, 'the first window kept its route and page', states.first);
+  expect(states.secondVisible, 'the new window shows');
+  const devices = (await api(second, 'devices')).body?.devices?.length ?? null;
+
+  // The page's New window button, clicked as a person would (a user gesture), in the second window.
+  const clicked = await second.webContents.executeJavaScript(`(() => { const b = document.querySelector('button.new-window'); if (!b) return null; b.click(); return b.title; })()`, true);
+  const third = await newest(3);
+  out('new-window-button', { title: clicked, windows: openNow().length, browserOpened: [...external] });
+  expect(clicked === (process.platform === 'darwin' ? 'New window (⌘N)' : 'New window (Ctrl+N)'), "the footer's button is there, its tooltip naming the key", clicked);
+  expect(third !== null && external.length === 0, 'the button opened a third app window, nothing in the browser', openNow().length);
+  if (!third) return;
+  await sleep(1500);
+  const devicesAfter = (await api(third, 'devices')).body?.devices?.length ?? null;
+  out('devices', { afterSecond: devices, afterThird: devicesAfter });
+  expect(devices !== null && devices === devicesAfter, 'another window adds no device: the windows share one sign-in', { devices, devicesAfter });
+
+  // The "not running" page has the same preload, and may not ask: only Ledung's own page can (#360's check).
+  await third.loadFile(path.join(here, '..', 'not-running.html'), { query: { reason: 'probe', state: 'stopped' } });
+  await page(third, `window.ledungDesktop?.newWindow(); 1`);
+  await sleep(1500);
+  out('not-running-asks', { windows: openNow().length });
+  expect(openNow().length === 3, 'the "not running" page could not open a window', openNow().length);
+
+  // Closing one of three closes it for real; the others stay, their pages answering.
+  third.close();
+  await sleep(1000);
+  const afterClose = { thirdDestroyed: third.isDestroyed(), windows: openNow().length, first: (await windowState(first)).pageAnswers, second: (await windowState(second)).pageAnswers };
+  out('close-one', afterClose);
+  expect(afterClose.thirdDestroyed && afterClose.windows === 2 && afterClose.first && afterClose.second, 'closing one window closed it, and the other two stay', afterClose);
+
+  // Close Window with no focused window while two are open (all minimised on the Mac): nothing closes (code review of
+  // PR #416, Minor 2).
+  menuItem('close-window')?.click();
+  await sleep(800);
+  const unfocused = { windows: openNow().length, firstVisible: first.isVisible(), secondVisible: second.isVisible() };
+  out('close-window-unfocused', unfocused);
+  expect(unfocused.windows === 2 && unfocused.firstVisible && unfocused.secondVisible, 'Close Window with no focused window closed and hid nothing', unfocused);
+
+  // Close Window (⌘W / Ctrl+W) on the second: of two, it closes for real.
+  menuItem('close-window')?.click(undefined, second);
+  await sleep(1000);
+  const afterKey = { secondDestroyed: second.isDestroyed(), windows: openNow().length, first: await windowState(first) };
+  out('close-window-key', afterKey);
+  expect(afterKey.secondDestroyed && afterKey.windows === 1 && afterKey.first.visible, 'Close Window closed the second, and the first stays', afterKey);
+
+  // The last window closed only hides, as before (#359): the app and its page stay.
+  first.close();
+  await sleep(800);
+  const last = await windowState(first);
+  out('close-last', last);
+  expect(!last.visible && !last.destroyed && last.windows === 1 && last.pageAnswers && last.url === firstUrl, 'closing the last window hid it, its page still there', last);
+
+  // Two again, the newest used last: the Dock and a second start bring that one forward.
+  menuItem('new-window')?.click();
+  const fourth = await newest(2);
+  expect(fourth !== null, 'New Window opened a window with the first hidden');
+  if (!fourth) return;
+  fourth.hide();
+  await sleep(500);
+  app.emit('activate', {}, false);
+  await sleep(800);
+  const activated = { fourth: fourth.isVisible(), first: first.isVisible() };
+  out('activate', activated);
+  expect(activated.fourth && !activated.first, 'the Dock click showed the most recently used window', activated);
+  fourth.hide();
+  await sleep(500);
+  const child = spawn(process.execPath, [here], { env: { ...process.env, PROBE_PHASE: 'child' }, stdio: 'ignore' });
+  const exit = await Promise.race([new Promise<number | null>((r) => child.once('exit', (code) => r(code))), sleep(20_000).then(() => 'still running' as const)]);
+  if (exit === 'still running') child.kill('SIGKILL');
+  await sleep(800);
+  const again = { exit, fourth: fourth.isVisible(), first: first.isVisible(), windows: openNow().length };
+  out('second-start', again);
+  expect(exit === 0 && again.fourth && !again.first && again.windows === 2, 'a second start showed the most recently used window, and opened no app', again);
+
+  // Quit closes every window and ends the app; the Ledung still answers.
+  const t = token();
+  quitExpected = true;
+  app.once('will-quit', (event) => {
+    event.preventDefault();
+    void (async () => {
+      const after = { windows: BrowserWindow.getAllWindows().length, ledungAnswers: t !== null && port !== undefined && (await answersSignIn(port, t)) };
+      out('quit', after);
+      expect(after.windows === 0, 'Quit closed every window', after.windows);
+      expect(after.ledungAnswers, 'the Ledung still answers on its port after Quit');
+      out('done', { passed: !failed });
+      app.exit(failed ? 1 : 0);
+    })();
+  });
+  menuItem('quit')?.click();
+  await sleep(10_000);
+  expect(false, 'Quit ended the app');
+}
+
 /** Set just before the probe presses Quit; any other quit (the window closing for real, say) is a failure. */
 let quitExpected = false;
 
@@ -757,6 +895,10 @@ async function run(): Promise<void> {
       const w = await showing(`${origin}/`);
       await signedIn(w);
       await windowPhase(w);
+    } else if (phase === 'windows') {
+      const w = await showing(`${origin}/`);
+      await signedIn(w);
+      await windowsPhase(w);
     } else if (phase === 'notify') {
       const w = await showing(`${origin}/`);
       await signedIn(w);
