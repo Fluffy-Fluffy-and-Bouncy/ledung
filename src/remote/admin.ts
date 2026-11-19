@@ -10,14 +10,21 @@
 // - Computers that joined wait for their CAA record. This Ledung asks the relay for them once a minute while an invite
 //   is open or a computer waits (#405 default 4), and shows each as an Approve card in Waiting for you. Approve writes
 //   the record through Cloudflare (refusing a name that has one already), then tells the relay it is done.
+// - A card clears itself once its computer is in use (issue #420; Martin, 2026-11-19, Ledung question #615 "a"): at
+//   each look, this Ledung opens TLS to the computer's public name, its certificate checked as any site's. A handshake
+//   that succeeds means the computer is connected to the relay (the relay passes nothing through to one that is not)
+//   and holds a trusted certificate for that name, which its Ledung orders only once the CAA record names its account
+//   (acme.ts). The relay is then told it is done, as I added it does.
 // - Bytes per owner and their monthly caps (issue #161): read from the relay and set on it, never kept here. The relay
 //   is told which of its computers this Ledung is, so it knows the admin's own owner, who is never capped.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import tls from 'node:tls';
 import { PUBLIC_NAME } from '../config.ts';
 import { caaRecord, caaValue } from '../server/acme.ts';
 import type { NewComputerInfo, RelayAdminView, RelayInviteInfo, RelayOwnersView } from '../shared/protocol.ts';
+import { exercisedLine } from '../platform/exercised.ts';
 import { Cloudflare } from './cloudflare.ts';
 import { joinCode } from './join-code.ts';
 import { secureRelay } from './tunnel.ts';
@@ -25,6 +32,10 @@ import { secureRelay } from './tunnel.ts';
 export const ADMIN_FILE = 'relay-admin.json';
 /** How often the relay is asked for new computers while something is pending. */
 export const POLL_MS = 60_000;
+/** How long the in-use check waits for a computer's TLS handshake: Settings → Relay's list waits for it too. */
+export const IN_USE_MS = 5_000;
+/** The EXERCISED line of issue #420, once per run of Ledung. */
+let exercised420 = false;
 /** An ACME account URL as a CA gives it: https, and nothing that could break out of the CAA value. */
 const SAFE_ACCOUNT_URL = (url: string) => /^https:\/\/[A-Za-z0-9._~:/?#[\]@!$&'()*+,=%-]{1,500}$/.test(url);
 
@@ -44,6 +55,11 @@ export interface RelayAdminOptions {
    * (issue #161); null: on none.
    */
   self?: () => { relay: string; name: string } | null;
+  /**
+   * Opens TLS to a computer's public name, for the in-use check (issue #420): main.ts gives `connectPublic`, or the
+   * config's linkVia in a loopback, as for linked computers. None: no in-use check, so a test never reaches out.
+   */
+  connect?: (publicName: string) => tls.TLSSocket;
   /** Tests: a stand-in for the relay's admin API and Cloudflare's. */
   fetch?: typeof fetch;
   setTimer?: (fn: () => void, ms: number) => unknown;
@@ -69,6 +85,8 @@ export class RelayAdmin {
   private openInvites = 0;
   private timer: unknown = null;
   private stopped = false;
+  /** The look at the relay under way: another one asked for meanwhile waits for it instead of checking again. */
+  private looking: Promise<void> | null = null;
 
   constructor(opts: RelayAdminOptions) {
     this.opts = opts;
@@ -211,20 +229,50 @@ export class RelayAdmin {
   }
 
   /** Asks the relay for computers waiting for their record; keeps asking every minute while anything is pending. */
-  private async poll(): Promise<void> {
+  private poll(): Promise<void> {
+    this.looking ??= this.look().finally(() => {
+      this.looking = null;
+    });
+    return this.looking;
+  }
+
+  private async look(): Promise<void> {
     if (!this.ready()) return;
     try {
       const { computers } = await this.relayCall<{ computers: RelayComputer[] }>('GET', '/admin/computers');
-      this.set(computers.flatMap((c) => {
+      const waiting = computers.flatMap((c) => {
         // What the relay says is checked before it can reach a card or Cloudflare: a name and an account URL that
         // can't break out of the record (the relay is not trusted with more than names).
         if (c.approved || !c.accountUrl || !SAFE_ACCOUNT_URL(c.accountUrl) || !PUBLIC_NAME.test(c.host)) return [];
         return [{ name: c.name, owner: c.owner, host: c.host, accountUrl: c.accountUrl, record: caaRecord(c.host, c.accountUrl), enrolledAt: c.enrolledAt ?? 0 }];
-      }));
+      });
+      const inUse = await Promise.all(waiting.map((c) => this.inUse(c)));
+      this.set(waiting.filter((_, i) => !inUse[i]));
     } catch (e) {
       this.log(`Relay admin: ${(e as Error).message}`);
     }
     if (this.openInvites > 0 || this.computers.length > 0) this.later(POLL_MS);
+  }
+
+  /**
+   * Whether a waiting computer is in use (issue #420): its public name answers with a certificate trusted for that name.
+   * If so the relay is told it is done, as I added it does, and true; offline, no certificate yet, or the relay could
+   * not be told: false, and the card stays for the next look.
+   */
+  private async inUse(computer: { name: string; host: string }): Promise<boolean> {
+    if (!this.opts.connect || !await servesCertificate(this.opts.connect, computer.host, IN_USE_MS)) return false;
+    try {
+      await this.relayCall('POST', `/admin/computers/${encodeURIComponent(computer.name)}/approved`, {});
+    } catch (e) {
+      this.log(`Relay admin: ${computer.host} is in use, but the relay could not be told: ${(e as Error).message}`);
+      return false;
+    }
+    this.log(`Relay admin: ${computer.host} is in use with its certificate; its New computer card cleared itself.`);
+    if (!exercised420) {
+      exercised420 = true;
+      exercisedLine('EXERCISED #420 a new computer\'s card cleared itself once it was in use');
+    }
+    return true;
   }
 
   private later(ms: number): void {
@@ -295,6 +343,42 @@ export class RelayAdmin {
     fs.writeFileSync(temp, `${JSON.stringify(saved, null, 2)}\n`, { mode: 0o600 });
     fs.renameSync(temp, this.file());
   }
+}
+
+/** TLS to port 443 of a public name, its certificate checked as any site's: the in-use check's own (issue #420). */
+export const connectPublic = (name: string): tls.TLSSocket => tls.connect({ host: name, port: 443, servername: name, ALPNProtocols: ['http/1.1'] });
+
+/**
+ * Opens TLS to a public name and says whether the handshake succeeded with a certificate trusted for that name and
+ * made for exactly that name; any error, a refused certificate or no handshake within `ms`: false. Nothing is sent.
+ * A wildcard certificate does not count: a relay whose front proxy ended TLS itself with one (instead of passing the
+ * names through) would otherwise make every waiting computer look in use (self-check of #420, finding 3).
+ */
+export function servesCertificate(connect: (publicName: string) => tls.TLSSocket, publicName: string, ms: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    let socket: tls.TLSSocket | undefined;
+    const done = (ok: boolean) => {
+      clearTimeout(timer);
+      socket?.destroy();
+      resolve(ok);
+    };
+    const timer = setTimeout(() => done(false), ms);
+    try {
+      socket = connect(publicName);
+    } catch {
+      done(false);
+      return;
+    }
+    // tls.connect checks the certificate and the name by default; authorized is checked too, so a connect that was
+    // given rejectUnauthorized: false can't pass.
+    const opened = socket;
+    opened.once('secureConnect', () => {
+      const names = String(opened.getPeerCertificate().subjectaltname ?? '').split(', ');
+      done(opened.authorized && names.some((n) => n.toLowerCase() === `dns:${publicName.toLowerCase()}`));
+    });
+    opened.once('error', () => done(false));
+    opened.once('close', () => done(false));
+  });
 }
 
 function sameHost(a: string, b: string): boolean {
