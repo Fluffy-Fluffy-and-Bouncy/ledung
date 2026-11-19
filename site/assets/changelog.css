@@ -53,7 +53,12 @@ footer pre { margin: 0; font: 9px/1.05 var(--mono); color: var(--footer-ship); }
 
 @media (max-width: 700px) {
   .wrap { padding: 0 20px; }
-  nav .links { gap: 12px; }
-  nav .links .gh span { display: none; }
+  /* Room at 390 px for both pages' names and the mode switch: GitHub is in the footer, the brand keeps its icon. */
+  nav .links { gap: 14px; }
+  nav .links a { white-space: nowrap; }
+  nav .links .gh { display: none; }
+}
+@media (max-width: 480px) {
+  .brand span { display: none; }
   .cl h2.cl-release { font-size: 26px; }
 }

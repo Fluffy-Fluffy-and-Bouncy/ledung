@@ -94,7 +94,7 @@
     const url = src && /^[\w./-]+$/.test(src) && !src.startsWith('/') ? src : RAW + file;
     try {
       const res = await fetch(url, { cache: 'no-cache' });
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`.trim());
       body.innerHTML = render(await res.text());
       if (location.hash) document.getElementById(decodeURIComponent(location.hash.slice(1)))?.scrollIntoView();
     } catch (e) {
