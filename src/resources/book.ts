@@ -134,7 +134,7 @@ interface Unreserved {
   told: boolean;
   peak: Amounts;
   since: number | null;
-  /** Kinds of the calls under way while it was above the allowance (R4). */
+  /** Kinds of the calls whose own processes were busy while it was above the allowance (R4). */
   commands: string[];
 }
 
@@ -146,10 +146,16 @@ interface Call {
   ended: number | null;
 }
 
-/** A call never seen to end (refused by a later check, a lost result) is forgotten: Bash's own limit is 10 minutes. */
-const CALL_FORGOTTEN_MS = 11 * 60_000;
-/** A background call is never seen to end: it belongs to a job it began shortly before or during; kept this long. */
-const BACKGROUND_KEPT_MS = 6 * 3600_000;
+/**
+ * How long a call is remembered, to tell whose processes are whose: a background call is never seen to end, and a
+ * process a call left running (`cmd &`) outlives it.
+ */
+const CALL_KEPT_MS = 6 * 3600_000;
+/** A process belongs to the call begun last before it started; this much leeway for the clocks' rounding. */
+const START_LEEWAY_MS = 250;
+
+/** Work above the small allowance in one sample: what makes a call's processes busy (R4). */
+const busyNow = (u: Amounts) => Object.entries(u).some(([dim, v]) => v > (isMemory(dim) ? ALLOWANCE.bytes : ALLOWANCE.percent));
 
 interface SessionWaiter {
   sessionId: string;
@@ -200,8 +206,10 @@ export class ResourceBook {
   private readonly unreserved = new Map<string, Unreserved>();
   private readonly waiters = new Map<string, SessionWaiter>();
   private readonly averages = new Averages();
-  /** Shell calls under way per session, by tool call id: a job learns only the kinds under way while it is busy (R4). */
+  /** Shell calls per session, by tool call id: a job learns only the kinds whose own processes were busy (R4). */
   private readonly calls = new Map<string, Map<string, Call>>();
+  /** When a session's process was first seen, where the system gives no start time (macOS, Linux). */
+  private readonly firstSeen = new Map<number, number>();
   /** New sessions being watched for their footprint: when they started, their peak memory. */
   private readonly footprints = new Map<string, { at: number; peak: number }>();
   /** Priorities lowered before a restart of Ledung, put back at the first sample (finding 12). */
@@ -445,9 +453,9 @@ export class ResourceBook {
   }
 
   /**
-   * A shell call starts (session.ts), with its kinds (light ones already left out). A job learns a kind only if its call
-   * was under way during one of the job's busy samples (R4): a `git status` between two builds, or a background loop
-   * started before the build, never gets the build's peak (security review, finding 7).
+   * A shell call starts (session.ts), with its kinds (light ones already left out). A job learns a kind only if the
+   * call's own processes were busy in one of its samples (R4, busyCalls): a `git status` between two builds, or a
+   * background loop started before the build, never gets the build's peak (security review, finding 7).
    */
   callStarted(sessionId: string, callId: string, kinds: string[], background: boolean): void {
     if (!kinds.length) return;
@@ -472,28 +480,52 @@ export class ResourceBook {
   }
 
   /**
-   * The kinds of a session's calls under way at this sample, for a job busy now: foreground calls not yet ended, and
-   * background calls begun since `from` (they are never seen to end).
+   * The kinds of the calls whose own processes are busy in this sample (R4; acceptance test round 1). Each process
+   * belongs to the call begun last before its top process (the call's shell, a child of Claude Code) started, and a
+   * call counts only if its processes in `pids` are together above the small allowance now. So a short script after
+   * a build, or a background loop begun beside it, never gets the build's peak: their own processes are never busy.
+   * `work` is the session's whole work tree (workOf), so a job's process is traced to its shell even if the shell is
+   * older than the job.
    */
-  private callsUnderWay(sessionId: string, from: number): string[] {
+  private busyCalls(sessionId: string, work: ProcInfo[], pids: number[], usage: (pids: number[]) => Amounts, at: number): string[] {
+    const calls = [...(this.calls.get(sessionId)?.values() ?? [])];
+    if (!calls.length || !pids.length) return [];
+    const byPid = new Map(work.map((p) => [p.pid, p]));
+    const groups = new Map<number, number[]>();
+    for (const pid of pids) {
+      let top = byPid.get(pid);
+      if (!top) continue;
+      for (let hops = 0; hops < 64; hops++) {
+        const parent = byPid.get(top.ppid);
+        if (!parent || parent.pid === top.pid) break;
+        top = parent;
+      }
+      const group = groups.get(top.pid);
+      if (group) group.push(pid);
+      else groups.set(top.pid, [pid]);
+    }
     const out: string[] = [];
-    for (const c of this.calls.get(sessionId)?.values() ?? []) {
-      if (c.background ? c.at >= from : c.ended === null) out.push(...c.kinds);
+    for (const [top, members] of groups) {
+      if (!busyNow(usage(members))) continue;
+      // Windows gives a start time; elsewhere the sample it was first seen in, which may be a little late.
+      const started = byPid.get(top)?.started ?? this.firstSeen.get(top) ?? at;
+      let owner: Call | null = null;
+      for (const c of calls) if (c.at <= started + START_LEEWAY_MS && (!owner || c.at > owner.at)) owner = c;
+      if (owner) out.push(...owner.kinds);
     }
     return out;
   }
 
-  /** Ended calls have had their samples; old ones are forgotten. */
-  private pruneCalls(at: number): void {
+  /** Old calls are forgotten, and so are the processes no longer running. */
+  private pruneCalls(at: number, list: ProcessList): void {
     for (const [sessionId, calls] of this.calls) {
       if (!this.ctx.session(sessionId)) {
         this.calls.delete(sessionId);
         continue;
       }
-      for (const [id, c] of calls) {
-        if (c.ended !== null || at - c.at > (c.background ? BACKGROUND_KEPT_MS : CALL_FORGOTTEN_MS)) calls.delete(id);
-      }
+      for (const [id, c] of calls) if (at - c.at > CALL_KEPT_MS) calls.delete(id);
     }
+    for (const pid of this.firstSeen.keys()) if (!list.has(pid)) this.firstSeen.delete(pid);
   }
 
   /**
@@ -681,6 +713,7 @@ export class ResourceBook {
     this.lastHosts = x.hosts;
     this.restorePending();
     this.sampled = true;
+    for (const tree of x.trees.values()) for (const p of tree) if (p.started === undefined && !this.firstSeen.has(p.pid)) this.firstSeen.set(p.pid, at);
     // The PC's totals.
     this.averages.add('pc|cpu', at, (x.cores / this.threads) * 100);
     this.averages.add('pc|ram', at, x.memUsed);
@@ -774,8 +807,8 @@ export class ResourceBook {
         changed = true;
         continue;
       }
-      // A busy sample: the kinds of the calls under way now are the job's (R4); background ones only if begun since the go.
-      if (list.length) for (const k of this.callsUnderWay(r.sessionId, r.goAt ?? r.since)) if (!r.commands.includes(k) && r.commands.length < 40) r.commands.push(k);
+      // The calls whose own processes in the job are busy now are the job's (R4).
+      for (const k of this.busyCalls(r.sessionId, workOf(r.sessionId), list, usage, at)) if (!r.commands.includes(k) && r.commands.length < 40) r.commands.push(k);
       const u = usage(list);
       for (const [dim, v] of Object.entries(u)) this.averages.add(`r:${r.id}|${dim}`, at, v);
       const avg = this.usingOf(r);
@@ -824,9 +857,9 @@ export class ResourceBook {
       if (u0.over.since !== null) {
         u0.since ??= u0.over.since;
         for (const [dim, v] of Object.entries(avg)) u0.peak[dim] = Math.max(u0.peak[dim] ?? 0, v);
-        // A busy sample (R4). The average lags the work by its window: a background call begun that long before counts.
-        const from = u0.since - this.settings.averageSec * 1000 - 30_000;
-        for (const k of this.callsUnderWay(sessionId, from)) if (!u0.commands.includes(k) && u0.commands.length < 40) u0.commands.push(k);
+        // The calls whose own processes are busy now are the stretch's (R4), not every call made while it lasts.
+        const own = workOf(sessionId).filter((p) => !jobs.has(p.pid));
+        for (const k of this.busyCalls(sessionId, own, own.map((p) => p.pid), usage, at)) if (!u0.commands.includes(k) && u0.commands.length < 40) u0.commands.push(k);
       }
       if (u0.over.over) {
         const ok = actable(sessionId);
@@ -874,7 +907,7 @@ export class ResourceBook {
       }
     }
     for (const id of [...this.waiters.keys()]) if (!this.ctx.session(id)) this.waiters.delete(id);
-    this.pruneCalls(at);
+    this.pruneCalls(at, x.list);
     this.dispatch();
     if (changed) this.persist();
   }

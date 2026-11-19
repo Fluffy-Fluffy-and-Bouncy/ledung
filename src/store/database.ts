@@ -790,6 +790,12 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX command_calls_by_kind ON command_calls(project, kind, at);
   `,
+  // Which job records learned their commands from the calls whose own processes were busy (R4; acceptance test round
+  // 1). Older records took every call made during the job, so `git status` or a 3-second script got a build's peak:
+  // those count only for a kind Ledung has since seen take longer than 10 s (JobStore.heavyCommands).
+  `
+  ALTER TABLE job_runs ADD COLUMN by_call INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
 
 export function databaseFile(dir = userDataDir()): string {

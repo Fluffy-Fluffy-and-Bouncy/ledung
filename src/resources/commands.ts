@@ -19,13 +19,17 @@ const LIGHT_GIT = new Set(['status', 'log', 'diff', 'show', 'branch', 'rev-parse
 
 export function isLightKind(kind: string): boolean {
   // A file-reading word is never a kind now, but old records may have one (`cut` before it joined TRIVIAL).
-  if (kind === 'gh' || kind.startsWith('gh ') || kind === 'git' || TRIVIAL.has(kind)) return true;
+  if (kind === 'gh' || kind.startsWith('gh ') || kind === 'git' || TRIVIAL.has(kind) || SYNTAX.has(kind) || KEYWORD_BEFORE.has(kind)) return true;
   return kind.startsWith('git ') && LIGHT_GIT.has(kind.slice(4));
 }
 
 /** Tools that take a subcommand: keep it ("git status", "docker build"); npm-like runners keep the script too. */
 const WITH_SUBCOMMAND = new Set(['git', 'docker', 'cargo', 'go', 'dotnet', 'gh', 'kubectl', 'pip', 'uv', 'poetry', 'make', 'npx', 'bunx', 'node', 'python', 'python3', 'deno', 'bun']);
 const RUNNERS = new Set(['npm', 'pnpm', 'yarn']);
+/** Shell words a command may follow (`do npm test`, `if make`): dropped, and the command after them kept. */
+const KEYWORD_BEFORE = new Set(['do', 'then', 'else', 'elif', 'if', 'while', 'until', '!', '{', '}']);
+/** Parts that are only syntax (`for f in *.ts`, `done`), or a line of a script given inline (`node -e "…"`). */
+const SYNTAX = new Set(['for', 'select', 'in', 'done', 'fi', 'esac', 'case', 'function', 'const', 'let', 'var', 'import', 'return']);
 
 /** The kinds of command in one shell command line, e.g. "cd app && npm run build | tee x" → ["npm run build"]. */
 export function commandKinds(command: string): string[] {
@@ -34,7 +38,10 @@ export function commandKinds(command: string): string[] {
     const words = (part.trim().match(/"[^"]*"|'[^']*'|\S+/g) ?? [])
       .map((w) => w.replace(/^["']|["']$/g, ''))
       .filter((w) => w && !/^[A-Z_][A-Z0-9_]*=/.test(w));
-    if (!words.length) continue;
+    // Shell syntax isn't a command (`for`, `while`, `do npm test`), nor is a line of a script passed inline (`const x = …`):
+    // the old Ledung refused "for" and "const" as "~3.1 GB" (acceptance test of R4, round 1).
+    while (words.length && KEYWORD_BEFORE.has(words[0]!)) words.shift();
+    if (!words.length || SYNTAX.has(words[0]!)) continue;
     const first = words[0]!.replace(/^.*[\\/]/, '').replace(/\.(exe|cmd|bat)$/i, '').toLowerCase();
     if (TRIVIAL.has(first) || first.startsWith('$') || first.startsWith('-')) continue;
     let kind = first;

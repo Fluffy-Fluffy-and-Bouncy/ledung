@@ -107,7 +107,7 @@ export class JobStore {
   }
 
   add(r: JobRun): void {
-    this.db.prepare('INSERT INTO job_runs (project, kind, commands, asked, peak, mean, duration_ms, over, undeclared, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+    this.db.prepare('INSERT INTO job_runs (project, kind, commands, asked, peak, mean, duration_ms, over, undeclared, ended_at, by_call) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)').run(
       r.project, r.kind, JSON.stringify(r.commands.slice(0, 40)), JSON.stringify(r.asked), JSON.stringify(r.peak), JSON.stringify(r.mean),
       Math.round(r.durationMs), r.over ? 1 : 0, r.undeclared ? 1 : 0, r.endedAt,
     );
@@ -187,9 +187,9 @@ export class JobStore {
    */
   heavyCommands(project?: string): HeavyCommand[] {
     const rows = (project === undefined
-      ? this.db.prepare("SELECT project, commands, peak, undeclared, ended_at FROM job_runs WHERE kind NOT LIKE 'session:%' ORDER BY ended_at DESC LIMIT 2000").all()
-      : this.db.prepare("SELECT project, commands, peak, undeclared, ended_at FROM job_runs WHERE project = ? AND kind NOT LIKE 'session:%' ORDER BY ended_at DESC LIMIT 500").all(project)) as Record<string, unknown>[];
-    const by = new Map<string, { project: string; command: string; peaks: Amounts[]; unreserved: number; lastAt: number }>();
+      ? this.db.prepare("SELECT project, commands, peak, undeclared, ended_at, by_call FROM job_runs WHERE kind NOT LIKE 'session:%' ORDER BY ended_at DESC LIMIT 2000").all()
+      : this.db.prepare("SELECT project, commands, peak, undeclared, ended_at, by_call FROM job_runs WHERE project = ? AND kind NOT LIKE 'session:%' ORDER BY ended_at DESC LIMIT 500").all(project)) as Record<string, unknown>[];
+    const by = new Map<string, { project: string; command: string; runs: { peak: Amounts; unreserved: boolean; at: number; byCall: boolean }[] }>();
     for (const r of rows) {
       const peak = parse(r.peak);
       if (!aboveAllowance(peak)) continue;
@@ -203,25 +203,26 @@ export class JobStore {
       for (const c of new Set(commands.filter((x): x is string => typeof x === 'string'))) {
         if (isLightKind(c)) continue;
         const key = `${r.project}\u0000${c}`;
-        const e = by.get(key) ?? { project: String(r.project), command: c, peaks: [], unreserved: 0, lastAt: 0 };
-        e.peaks.push(peak);
-        if (Number(r.undeclared)) e.unreserved++;
-        e.lastAt = Math.max(e.lastAt, Number(r.ended_at));
+        const e = by.get(key) ?? { project: String(r.project), command: c, runs: [] };
+        e.runs.push({ peak, unreserved: Number(r.undeclared) === 1, at: Number(r.ended_at), byCall: Number(r.by_call) === 1 });
         by.set(key, e);
       }
     }
     const marks = new Set((this.db.prepare('SELECT project, command FROM command_marks WHERE never = 1').all() as Record<string, unknown>[]).map((m) => `${m.project}\u0000${m.command}`));
     const out: HeavyCommand[] = [];
     for (const [key, e] of by) {
-      if (e.peaks.length < HEAVY_AFTER) continue;
       const usualMs = this.usualMs(e.project, e.command);
       if (usualMs !== null && usualMs <= SHORT_MS) continue;
-      const dims = new Set(e.peaks.flatMap((p) => Object.keys(p)));
+      // Records from before R4 took every call made during a job: they count only once its calls are seen to be long.
+      const runs = usualMs === null ? e.runs.filter((r) => r.byCall) : e.runs;
+      if (runs.length < HEAVY_AFTER) continue;
+      const dims = new Set(runs.flatMap((r) => Object.keys(r.peak)));
       const peak: Amounts = {};
-      for (const d of dims) peak[d] = p90(e.peaks.map((p) => p[d] ?? 0));
+      for (const d of dims) peak[d] = p90(runs.map((r) => r.peak[d] ?? 0));
+      const unreserved = runs.filter((r) => r.unreserved).length;
       out.push({
-        project: e.project, command: e.command, runs: e.peaks.length, peak, never: marks.has(key),
-        reserved: e.peaks.length - e.unreserved, unreserved: e.unreserved, lastAt: e.lastAt, usualMs,
+        project: e.project, command: e.command, runs: runs.length, peak, never: marks.has(key),
+        reserved: runs.length - unreserved, unreserved, lastAt: Math.max(...runs.map((r) => r.at)), usualMs,
       });
     }
     return out.sort((a, b) => b.runs - a.runs);
