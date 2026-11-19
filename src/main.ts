@@ -16,6 +16,7 @@ import { exercisedLine } from './platform/exercised.ts';
 import { lanNames } from './platform/network.ts';
 import { iconFiles, launchTarget, Shortcuts } from './platform/shortcuts.ts';
 import { appDir, appVersion, chatImagesDir, envSetting, PACKAGED, remoteDir, userDataDir } from './platform/paths.ts';
+import { desktopAppState } from './platform/desktop-app.ts';
 import { ChatImages } from './sessions/chat-images.ts';
 import { loadOrCreateToken } from './server/security.ts';
 import { LedungServer } from './server/server.ts';
@@ -206,6 +207,9 @@ async function main(): Promise<void> {
     // Made only when asked, in the first-run question or Settings (issue #415).
     shortcuts: new Shortcuts({ launch: launchTarget(), iconDir: userDataDir(), icons: iconFiles(), meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) } }),
     updater,
+    // The made desktop app (#407) against this Ledung, so the app's window restarts after Update Ledung (#408). Only
+    // the npm package makes one.
+    desktopApp: PACKAGED ? () => desktopAppState({ dataDir: userDataDir(), ledungVersion: appVersion() }) : undefined,
     checkIn,
     tray: traySwitch,
     lanNames: lan,

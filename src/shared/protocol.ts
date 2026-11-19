@@ -1185,6 +1185,14 @@ export interface UpdateStepView {
 /** Where a shortcut that starts Ledung goes (issue #415): the Desktop and Start menu on Windows, Applications on macOS. */
 export type ShortcutPlaceId = 'desktop' | 'start-menu' | 'applications';
 
+/** The desktop app made on this computer, as the page is told it (#408). */
+export interface DesktopAppInfo {
+  /** The app runs an older Ledung's code than the running one: its window restarts to update. */
+  stale: boolean;
+  /** Why the browser opened instead of the app, the last time it did; null when the app opened since. */
+  notice: string | null;
+}
+
 export interface ShortcutPlace {
   id: ShortcutPlaceId;
   label: string;
@@ -1522,6 +1530,8 @@ export type ServerEvent =
       newComputers?: NewComputerInfo[];
       /** Pairings linked computers asked for (issue #273); local pages only, left out through the public name. */
       linkPairings?: LinkPairingInfo[];
+      /** The desktop app made on this computer (#408); left out: none, or not the npm package. */
+      desktopApp?: DesktopAppInfo;
       /** The chats' settings (issue #211). */
       chats?: ChatsInfo;
       /** The Ledung Helper and the setup (docs/steps/ledung-helper.md). */

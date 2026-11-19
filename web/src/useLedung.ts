@@ -1,7 +1,7 @@
 // The page's live view of Ledung: sessions, pending permissions and the open session's messages,
 // kept up to date over the live connection.
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AccountChoices, AccountInfoView, DefaultAccountView, ChatsInfo, AwayInfo, ConfigStatus, BoardStatus, GitHubBudget, LimitInfo, UsageStopInfo, SignInProblem, MachineInfo, Overview, PermissionInfo, ProjectInfo, QuestionInfo, NewComputerInfo, LinkPairingInfo, RemoteStatus, ServerEvent, SessionInfo, SourceOffer } from '../../src/shared/protocol.ts';
+import type { AccountChoices, AccountInfoView, DefaultAccountView, ChatsInfo, AwayInfo, ConfigStatus, BoardStatus, GitHubBudget, LimitInfo, UsageStopInfo, SignInProblem, MachineInfo, Overview, PermissionInfo, ProjectInfo, QuestionInfo, NewComputerInfo, LinkPairingInfo, DesktopAppInfo, RemoteStatus, ServerEvent, SessionInfo, SourceOffer } from '../../src/shared/protocol.ts';
 import type { HelperInfo } from '../../src/shared/setup.ts';
 import type { OrderInfo } from '../../src/shared/orders.ts';
 import type { Macro } from '../../src/shared/macros.ts';
@@ -69,6 +69,8 @@ export function useLedung(openSessionId: string | null) {
   const [computers, setComputers] = useState<ComputerInfo[]>([]);
   const [newComputers, setNewComputers] = useState<NewComputerInfo[]>([]);
   const [linkPairings, setLinkPairings] = useState<LinkPairingInfo[]>([]);
+  /** The desktop app made on this computer (#408): out of date after an update, or why the browser opened instead. */
+  const [desktopApp, setDesktopApp] = useState<DesktopAppInfo | null>(null);
   const [throughPublicName, setThroughPublicName] = useState(false);
   /** The config file's reloads (issue #353). */
   const [configStatus, setConfigStatus] = useState<ConfigStatus | null>(null);
@@ -176,6 +178,7 @@ export function useLedung(openSessionId: string | null) {
             setComputers(event.computers ?? []);
             setNewComputers(event.newComputers ?? []);
             setLinkPairings(event.linkPairings ?? []);
+            setDesktopApp(event.desktopApp ?? null);
             setThroughPublicName(event.throughPublicName ?? false);
             setConfigStatus(event.config ?? null);
             setPermissions(Object.fromEntries(event.permissions.map((p) => [p.id, p])));
@@ -343,5 +346,5 @@ export function useLedung(openSessionId: string | null) {
     };
   }, []);
 
-  return { runs, workflows, connection, loaded, canRestart, hellos, updated, userName, source, questions, limits, usageStops, macros, signedOut, claudeProblem, claudeLooked, accountProblems, overview, machine, away, orders, accounts, accountChoices, defaultIdentity, board, github, remote, computers, newComputers, linkPairings, throughPublicName, configStatus, chats, helper, profiles, lockdownB, bangShell, sessions, olderArchived, loadArchived, loadHistory, projects, permissions, messages, hasEarlier, loadEarlier };
+  return { runs, workflows, connection, loaded, canRestart, hellos, updated, desktopApp, userName, source, questions, limits, usageStops, macros, signedOut, claudeProblem, claudeLooked, accountProblems, overview, machine, away, orders, accounts, accountChoices, defaultIdentity, board, github, remote, computers, newComputers, linkPairings, throughPublicName, configStatus, chats, helper, profiles, lockdownB, bangShell, sessions, olderArchived, loadArchived, loadHistory, projects, permissions, messages, hasEarlier, loadEarlier };
 }

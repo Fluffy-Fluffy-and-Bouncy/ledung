@@ -11,6 +11,8 @@
 //                                      browser when the app is not installed or can't be made
 //   ledung --browser                   the same, but opens the page in the browser
 //   ledung app                         the same, but always the app: says why when it can't, and opens no browser
+//   ledung --after-app=<pid>           the same, run by the desktop app to restart into an update (#408): waits for
+//                                      that app to quit first
 //   ledung --foreground [--no-open]    runs it in this terminal; Ctrl+C or closing the terminal stops it
 //   ledung stop                        stops the running Ledung and its sessions; exits 3 when none runs
 //   ledung account token <name>        puts a long-lived token into an account's Claude Code sign-in (#85)
@@ -24,8 +26,10 @@ import { coreArgs } from './platform/node-warnings.ts';
 import { configuredPort, NOT_RUNNING_CODE, openIfRunning, savedToken } from './platform/running.ts';
 import { startInBackground, stopRunning } from './platform/background.ts';
 import { accountCommand } from './accounts/token-command.ts';
-import { madeConfigFor } from '../desktop/made.ts';
-import { backgroundArgs, desktopAppOff, desktopAvailability, ensureApp, openChoice, openApp, openDesktop, progressPrinter } from './platform/desktop-app.ts';
+import { afterApp, madeConfigFor } from '../desktop/made.ts';
+import {
+  backgroundArgs, codeIntoKept, desktopAppOff, desktopAvailability, ensureApp, openChoice, openApp, openDesktop, progressPrinter, waitForExit,
+} from './platform/desktop-app.ts';
 import { openBrowser } from './platform/open-browser.ts';
 import { startMenuFolder } from './platform/shortcuts.ts';
 
@@ -46,7 +50,11 @@ if (passthrough[0] === 'account') process.exit(await accountCommand(passthrough.
 // app. Not for --no-open (the app's own Start Ledung, the sign-in start), --open-only (the shortcuts, unchanged) or
 // --foreground (development, where the core opens the browser itself).
 // The choice is openChoice's (src/platform/desktop-app.ts), tested there (test review of PR #411, finding 1).
-const choice = openChoice(process.argv.slice(2), desktopAppOff(configPath()));
+// --after-app=<pid> (#408): the app ran this to restart its window into an updated Ledung. It waits for the app to have
+// quit, then opens it as `ledung` does, which writes its new code first; a failure opens the browser, saying why.
+const after = afterApp(process.argv.slice(2));
+if (after.pid !== null && !(await waitForExit(after.pid))) console.log('The desktop app had not quit after 15 s; opening it anyway.');
+const choice = openChoice(after.rest, desktopAppOff(configPath()));
 const { appCommand, noOpen } = choice;
 passthrough = choice.passthrough;
 const desktop = choice.tryApp ? desktopAvailability() : null;
@@ -70,8 +78,10 @@ async function openTheApp(): Promise<number> {
       startMenu: process.platform === 'win32' ? await startMenuFolder() : undefined,
     },
     fallback: !appCommand,
+    restarted: after.pid !== null,
     steps: {
       ensure: ensureApp,
+      keep: codeIntoKept,
       open: (paths) => openApp(paths),
       browser: () => {
         const port = configuredPort(configPath());

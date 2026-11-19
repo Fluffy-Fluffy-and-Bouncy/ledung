@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import type { Socket } from 'node:net';
 import path from 'node:path';
-import type { MadeConfig } from './made.ts';
+import { AFTER_APP_ARG, type MadeConfig } from './made.ts';
 
 /**
  * A test points the start at a worktree with this: the path of a Node script, normally `<worktree>/src/cli.ts`, run as
@@ -31,6 +31,15 @@ export function startCommand(env: NodeJS.ProcessEnv = process.env, made: MadeCon
   if (script) return { command: 'node', args: [path.resolve(script), '--no-open'] };
   if (made && fs.existsSync(made.node) && fs.existsSync(made.cli)) return { command: made.node, args: [made.cli, '--no-open'] };
   return { command: 'ledung', args: ['--no-open'] };
+}
+
+/**
+ * What restarts the made app into an updated Ledung (#408, made.ts AFTER_APP_ARG): the Node and `ledung` script that
+ * made it, which `npm install -g` has replaced with the new version's. Null for a clone run, or when they are gone.
+ */
+export function restartCommand(made: MadeConfig | null, pid: number): StartCommand | null {
+  if (!made || !fs.existsSync(made.node) || !fs.existsSync(made.cli)) return null;
+  return { command: made.node, args: [made.cli, `${AFTER_APP_ARG}=${pid}`] };
 }
 
 /** Variables `npm start` adds besides its npm_* ones (npm 11, checked on macOS 2026-11-17). */

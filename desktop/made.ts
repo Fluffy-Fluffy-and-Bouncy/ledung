@@ -20,6 +20,30 @@ export const APP_ID = 'org.ledung.app';
  */
 export const WRITE_SHORTCUT_ARG = '--ledung-write-shortcut';
 
+/**
+ * Updating Ledung (#408): the app restarts its window to take the new version's code by running the `ledung` that made
+ * it with `--after-app=<its pid>`, then quitting. That command waits for it to end, writes the new code into it (or
+ * makes it again for a new Electron) and opens it, as `ledung` does.
+ */
+export const AFTER_APP_ARG = '--after-app';
+
+/**
+ * Left in the data folder's desktop/ by an app that restarts while no window is visible (#408): the new one starts
+ * hidden too. A restart that ends in the browser removes it.
+ */
+export const START_HIDDEN_FILE = '.start-hidden';
+
+/**
+ * The app's process id from `--after-app=<pid>` in a command line, and the arguments without it; null when it is not
+ * there or not a process id.
+ */
+export function afterApp(args: string[]): { pid: number | null; rest: string[] } {
+  const given = args.find((a) => a.startsWith(`${AFTER_APP_ARG}=`));
+  const rest = args.filter((a) => a !== given);
+  const pid = given === undefined ? NaN : Number(given.slice(AFTER_APP_ARG.length + 1));
+  return { pid: Number.isInteger(pid) && pid > 0 ? pid : null, rest };
+}
+
 /** The LEDUNG_* settings the made app takes over from the command that made it: they pick which Ledung it shows. */
 export const PASSED_SETTINGS = ['LEDUNG_CONFIG', 'LEDUNG_DATA_DIR'] as const;
 
