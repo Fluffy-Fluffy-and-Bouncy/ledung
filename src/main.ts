@@ -15,7 +15,7 @@ import { waitingCount } from './shared/waiting.ts';
 import { exercisedLine } from './platform/exercised.ts';
 import { lanNames } from './platform/network.ts';
 import { iconFiles, launchTarget, Shortcuts, startMenuFolder } from './platform/shortcuts.ts';
-import { appDir, appVersion, chatImagesDir, envSetting, PACKAGED, remoteDir, userDataDir } from './platform/paths.ts';
+import { appDir, appVersion, chatImagesDir, envSetting, PACKAGED, remoteDir, runningVersion, userDataDir } from './platform/paths.ts';
 import {
   codeIntoKept, desktopAppState, desktopAvailability, ensureApp, offersApp, openApp, openMadeApp, progressPrinter, trayOpen,
 } from './platform/desktop-app.ts';
@@ -63,6 +63,8 @@ async function main(): Promise<void> {
     console.log(remoteSecretText());
     return;
   }
+  // The version this process runs, before anything can install another (#435).
+  runningVersion();
   // The npm package has no clone to copy the example in: its first start writes the defaults (#105).
   if (PACKAGED && createDefaultConfig()) console.log(`Wrote a default config to ${configPath()}.`);
   const config = loadConfig();
@@ -210,14 +212,14 @@ async function main(): Promise<void> {
     connect: config.remote?.linkVia ? connectVia(config.remote.linkVia) : connectPublic,
   });
   const updater = new Updater({
-    appDir: appDir(), dataDir: userDataDir(), configPath: configPath(), onRestart, npmVersion: PACKAGED ? appVersion() : undefined,
+    appDir: appDir(), dataDir: userDataDir(), configPath: configPath(), onRestart, npmVersion: PACKAGED ? runningVersion() : undefined,
     // The update channel (#461) is this computer's, like its shortcuts.
     meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) },
   });
   // The anonymous daily check-in (#220): on by default, announced on the page, only from the npm package.
   const checkIn = new CheckIn({
     meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) },
-    version: appVersion(), channel: () => updater.channel(), packaged: PACKAGED,
+    version: runningVersion(), channel: () => updater.channel(), packaged: PACKAGED,
   });
   server = new LedungServer({
     port: config.port, token: loadOrCreateToken(), store, manager,

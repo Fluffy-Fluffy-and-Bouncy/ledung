@@ -19,6 +19,12 @@ after(() => removeTemp(base));
 const tags = (t: Record<string, string>): Command => ({ cmd: process.execPath, args: ['-e', `console.log(${JSON.stringify(JSON.stringify(t))})`] });
 const NPM_TAGS = { latest: '1.0.0', dev: '1.2.0' };
 
+/** A stand-in for npm install -g that writes the package.json of `version` into `dir` and says what npm says. */
+function installInto(dir: string, version: string): Command {
+  const script = `const fs = require('node:fs'); fs.mkdirSync(${JSON.stringify(dir)}, { recursive: true }); fs.writeFileSync(${JSON.stringify(path.join(dir, 'package.json'))}, JSON.stringify({ name: 'ledung', version: ${JSON.stringify(version)} })); console.log("added 1 package")`;
+  return { cmd: process.execPath, args: ['-e', script] };
+}
+
 function memoryMeta() {
   const m = new Map<string, string>();
   return { get: (k: string) => m.get(k) ?? null, set: (k: string, v: string) => void m.set(k, v), map: m };
@@ -32,7 +38,8 @@ function npmUpdater(extra: Partial<UpdaterOptions> = {}) {
     appDir: path.join(base, 'pkg'), dataDir: base, configPath: path.join(base, 'c.json'), npmVersion: '1.0.0', meta,
     onRestart: () => { restarts++; },
     distTags: tags(NPM_TAGS),
-    npmInstall: (spec) => { installs.push(spec); return { cmd: process.execPath, args: ['-e', `console.log("added 1 package")`] }; },
+    // Like npm, it puts the version into the folder Ledung runs from, which Update checks before restarting (#435).
+    npmInstall: (spec) => { installs.push(spec); return installInto(path.join(base, 'pkg'), spec.split('@')[1]!); },
     ...extra,
   });
   return { u, meta, installs, restarts: () => restarts };
