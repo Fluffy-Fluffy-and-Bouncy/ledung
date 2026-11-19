@@ -6,6 +6,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { APP_ID, MADE_CONFIG, madeConfigFor, readMadeConfig, WRITE_SHORTCUT_ARG, type MadeConfig } from '../desktop/made.ts';
@@ -19,6 +20,7 @@ import { icoFromPng } from '../src/platform/icons.ts';
 import { appDir } from '../src/platform/paths.ts';
 import { removeAppShortcut, Shortcuts } from '../src/platform/shortcuts.ts';
 import { parseConfig, SETTING_RELOAD } from '../src/config.ts';
+import { listenOk } from './free-port.ts';
 import { removeTemp } from './temp.ts';
 
 let base: string;
@@ -403,4 +405,43 @@ test("Settings' Remove takes the app's Start-menu shortcut too, and its folder o
   removeAppShortcut(startMenu);
   assert.equal(fs.existsSync(lnk), false);
   assert.equal(fs.existsSync(path.join(path.dirname(lnk), 'mine.txt')), true);
+});
+
+// The real download (test review of PR #411): Electron's own downloader and its checksums, against a server of the
+// test's own that hands out a file that is not Electron. No network: ELECTRON_MIRROR points it here.
+
+test("a download whose file fails Electron's checksum: progress was shown, the make stops with that reason, nothing is left", async (t) => {
+  const electron = electronPackage(appDir());
+  if (!electron) return t.skip('Electron is not installed here (optional dependencies left out)');
+  const body = Buffer.alloc(64 * 1024, 7);
+  const asked: string[] = [];
+  const server = http.createServer((req, res) => {
+    asked.push(req.url ?? '');
+    res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Length': body.length });
+    res.end(body);
+  });
+  const port = await listenOk(server);
+  const mirror = process.env.ELECTRON_MIRROR;
+  process.env.ELECTRON_MIRROR = `http://127.0.0.1:${port}/`;
+  try {
+    const data = path.join(base, 'checksum');
+    const lines: string[] = [];
+    const progress: number[] = [];
+    await assert.rejects(
+      ensureApp({ dataDir: data, electron, source: path.join(fakePackage('checksum-src', null), 'dist', 'desktop'), ledungVersion: '1.2', config, platform: 'linux', arch: 'x64', print: (l) => lines.push(l), progress: (p) => progress.push(p) }),
+      /checksum|sha256|integrity/i,
+    );
+    const version = electron.version.replace(/\./g, '\\.');
+    assert.equal(asked.length, 1, 'the zip was asked for once');
+    assert.match(asked[0]!, new RegExp(`electron-v${version}-linux-x64\\.zip$`));
+    assert.match(lines[0] ?? '', new RegExp(`^Making the desktop app, once: downloading Electron ${version} for linux-x64`));
+    assert.ok(progress.length > 0 && progress.at(-1) === 1, `progress reached the end: ${progress.join(',')}`);
+    const paths = madePaths(data, 'linux');
+    assert.equal(fs.existsSync(paths.work), false, 'no making folder, download cache included');
+    assert.equal(fs.existsSync(paths.bundle), false);
+  } finally {
+    if (mirror === undefined) delete process.env.ELECTRON_MIRROR;
+    else process.env.ELECTRON_MIRROR = mirror;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });
