@@ -76,6 +76,7 @@ function toSession(r: Row): SessionInfo {
     uac: raisesUac(r.runner, process.platform),
     runBlock: r.run_block ? JSON.parse(r.run_block) : null,
     accountSwitch: r.account_switch ? JSON.parse(r.account_switch) : null,
+    accountChosen: !!r.account_chosen,
   };
 }
 
@@ -213,7 +214,7 @@ export class Store {
     id: string,
     fields: Partial<Pick<SessionInfo,
       'status' | 'title' | 'permissionMode' | 'claudeSessionId' | 'model' | 'claudeVersion' | 'claudeProgram' | 'cwd' | 'endedAt' | 'endReason' | 'branch' | 'contextTokens' | 'contextWindow' | 'pr'
-      | 'priority' | 'priorityNote' | 'paused' | 'queuedAt' | 'account' | 'archivedAt' | 'clearDue' | 'clearedAt' | 'compacting' | 'runBlock' | 'requestedModel' | 'requestedEffort' | 'effort' | 'accountSwitch'>>,
+      | 'priority' | 'priorityNote' | 'paused' | 'queuedAt' | 'account' | 'archivedAt' | 'clearDue' | 'clearedAt' | 'compacting' | 'runBlock' | 'requestedModel' | 'requestedEffort' | 'effort' | 'accountSwitch' | 'accountChosen'>>,
   ): void {
     const columns: Record<string, string> = {
       pr: 'pr',
@@ -225,6 +226,7 @@ export class Store {
       compacting: 'compacting',
       runBlock: 'run_block',
       accountSwitch: 'account_switch',
+      accountChosen: 'account_chosen',
       priorityNote: 'priority_note',
       paused: 'paused',
       queuedAt: 'queued_at',

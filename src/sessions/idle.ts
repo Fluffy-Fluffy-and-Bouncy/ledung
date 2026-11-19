@@ -8,6 +8,8 @@ export interface IdleFacts {
   backgroundTasks: number;
   /** Scheduled wake-ups (/loop, ScheduleWakeup, CronCreate); null: this Claude Code doesn't say. */
   crons: number | null;
+  /** How many of them repeat (issue #395: such a session never has a quiet moment to switch accounts); left out: not known. */
+  repeating?: number;
 }
 
 /** A fresh Claude Code process has nothing running in the background and nothing scheduled. */

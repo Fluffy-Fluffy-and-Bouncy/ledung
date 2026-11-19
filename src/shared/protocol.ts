@@ -219,12 +219,19 @@ export interface SessionInfo {
    * `to` didn't work and it stayed on its account; it isn't tried again on its own. Null or left out: none.
    */
   accountSwitch?: AccountSwitch | null;
+  /** A chat whose account was picked in New chat (issue #395): it keeps it when Settings' account for chats changes. */
+  accountChosen?: boolean;
 }
 
 /** A session's account switch (issue #395); `to` null: the computer's own login. */
 export interface AccountSwitch {
   to: string | null;
   failed?: string;
+  /**
+   * What a waiting switch waits for, as last checked: the turn (a turn under way, a prompt open; left out: the same),
+   * background work, a one-off wake-up, or a repeating wake-up, which never leaves a quiet moment: only Switch now.
+   */
+  waitsFor?: 'turn' | 'background' | 'wakeup' | 'repeating';
 }
 
 /**

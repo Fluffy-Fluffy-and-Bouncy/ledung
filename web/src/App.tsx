@@ -13,7 +13,7 @@ import { WorkingIndicator } from './components/WorkingIndicator.tsx';
 import { SailingShip, shipMode } from './components/SailingShip.tsx';
 import { indexSessions, REMOVED_PROJECTS, sidebarTree, type Row, type SessionIndex } from './sessionTree.ts';
 import { useNow } from './clock.ts';
-import { accountName, switchState, switchTooltip } from './accountSwitch.ts';
+import { accountName, reasonParts, switchState, switchTooltip } from './accountSwitch.ts';
 import { FileViewer } from './components/FileViewer.tsx';
 import { FilesPane } from './components/FilesPane.tsx';
 import type { PaneFolderKey } from '../../src/shared/files-pane.ts';
@@ -2147,7 +2147,7 @@ function AccountSwitchNotice({ session, run }: { session: SessionInfo; run: (f: 
   if (state.kind === 'failed') {
     return (
       <div className="account-switch failed" role="status">
-        <span><strong>{state.text}</strong> <span className="account-switch-reason">{state.reason}</span></span>
+        <span><strong>{state.text}</strong> <span className="account-switch-reason">{reasonParts(state.reason).map((p, i) => (p.code ? <code key={i}>{p.text}</code> : p.text))}</span></span>
         <button className="small" title={`Switch to ${to} at its next quiet moment`} onClick={() => run(() => api.accountSwitch(session.id, 'retry'))}>Try again</button>
       </div>
     );

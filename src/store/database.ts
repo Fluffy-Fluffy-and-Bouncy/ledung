@@ -805,9 +805,11 @@ const MIGRATIONS: string[] = [
   DELETE FROM meta WHERE key = 'default-account-identity';
   `,
   // An account switch waiting for a quiet moment, or one that failed (issue #395): JSON { to, failed? }; null: none.
-  // On the session, so a pending switch outlives Restart Ledung and the page gets it with the session.
+  // On the session, so a pending switch outlives Restart Ledung and the page gets it with the session. account_chosen:
+  // a chat whose account was picked in New chat, which keeps it when Settings' account for chats changes.
   `
   ALTER TABLE sessions ADD COLUMN account_switch TEXT;
+  ALTER TABLE sessions ADD COLUMN account_chosen INTEGER NOT NULL DEFAULT 0;
   `,
 ];
 

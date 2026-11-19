@@ -51,9 +51,13 @@ const send = (m) => process.stdout.write(JSON.stringify(m) + '\\n');
 const textOf = (m) => typeof m.message?.content === 'string' ? m.message.content : (m.message?.content ?? []).map((c) => c.text ?? '').join('\\n');
 const rl = readline.createInterface({ input: process.stdin });
 rl.on('close', () => process.exit(0));
+// Ledung's Stop hook, told at each turn's end what is scheduled: "CRON" sets a repeating wake-up, "CRONOFF" drops it.
+let stopHooks = [];
+let crons = [];
 rl.on('line', (line) => {
   let m; try { m = JSON.parse(line); } catch { return; }
   if (m.type === 'control_request' && m.request?.subtype === 'initialize') {
+    stopHooks = (m.request.hooks?.Stop ?? []).flatMap((h) => h.hookCallbackIds ?? []);
     send({ type: 'control_response', response: { subtype: 'success', request_id: m.request_id, response: { commands: [], models: [], account: {}, output_style: 'default', available_output_styles: [] } } });
     send({ type: 'system', subtype: 'init', session_id: sid, model: 'claude-haiku-4-5', cwd: process.cwd(), tools: [], mcp_servers: [], permissionMode: 'default', apiKeySource: 'none', claude_code_version: '${version}' });
     return;
@@ -67,10 +71,18 @@ rl.on('line', (line) => {
   const slow = Number(/SLOW:(\\d+)/.exec(text)?.[1] ?? 0);
   const usage = { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
   const reply = 'Running on the account "' + account + '".';
+  // "PERM": asks to run a command and waits for the answer, which (dropped by a switch) never comes.
+  if (text.includes('PERM')) {
+    send({ type: 'control_request', request_id: 'perm-' + Date.now(), request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command: 'npm run deploy -- --target staging', description: 'Deploy' }, tool_use_id: 'toolu_' + Date.now() } });
+    return;
+  }
+  if (text.includes('CRONOFF')) crons = [];
+  else if (text.includes('CRON')) crons = [{ id: 'c1', schedule: '*/10 * * * *', recurring: true, prompt: 'Check the deploy.' }];
   send({ type: 'assistant', parent_tool_use_id: null, session_id: sid, message: { id: 'msg_' + process.pid + '_' + Date.now(), model: 'claude-haiku-4-5', role: 'assistant', content: [{ type: 'text', text: slow ? 'Working on it (' + slow + ' s)…' : reply }], usage } });
   setTimeout(() => {
     if (slow) send({ type: 'assistant', parent_tool_use_id: null, session_id: sid, message: { id: 'msg_' + process.pid + '_' + Date.now(), model: 'claude-haiku-4-5', role: 'assistant', content: [{ type: 'text', text: 'Done. ' + reply }], usage } });
-    send({ type: 'result', subtype: 'success', num_turns: 1, is_error: false, result: reply, session_id: sid, modelUsage: { 'claude-haiku-4-5': { contextWindow: 200000 } } });
+    for (const id of stopHooks) send({ type: 'control_request', request_id: 'stop-' + id + '-' + Date.now(), request: { subtype: 'hook_callback', callback_id: id, input: { hook_event_name: 'Stop', session_id: sid, stop_hook_active: false, background_tasks: [], session_crons: crons } } });
+    setTimeout(() => send({ type: 'result', subtype: 'success', num_turns: 1, is_error: false, result: reply, session_id: sid, modelUsage: { 'claude-haiku-4-5': { contextWindow: 200000 } } }), 100);
   }, slow * 1000);
 });
 `;
@@ -209,6 +221,36 @@ async function main(): Promise<void> {
     await shot(desk, '395-now-on-1280-dark');
     await shot(phone, '395-now-on-390-dark');
 
+    // Switch now with a permission prompt open: the chat says the prompt was dropped (acceptance of #395, point 4).
+    await ok('ask for a prompt', page.api('POST', `sessions/${worker}/messages`, { text: 'PERM Deploy it.' }));
+    await until(async () => (await status(worker)) === 'waiting' || null, 'the worker waiting on its prompt');
+    await setAccount('work');
+    await until(async () => on(mgr, 'work'), 'the manager on "work"');
+    check((await session(worker)).accountSwitch?.to === 'work' && (await session(worker)).account === 'personal', 'the worker with its prompt open waits');
+    await ok('switch now', page.api('POST', `sessions/${worker}/account-switch`, { action: 'now' }));
+    await until(async () => on(worker, 'work'), 'the worker on "work"');
+    const dropped = 'The open permission prompt (Bash: npm run deploy -- --target staging) was dropped by the switch; ask again if it is still needed.';
+    check((await events(worker)).includes(dropped), 'its chat says the open prompt was dropped by the switch', JSON.stringify((await events(worker)).slice(-5)));
+    await shot(desk, '395-dropped-prompt-1280-dark');
+    await shot(phone, '395-dropped-prompt-390-dark');
+
+    // A repeating wake-up: Ready, with nothing to wait for that ends, so it says it won't switch on its own.
+    await ok('a repeating wake-up', page.api('POST', `sessions/${worker}/messages`, { text: 'CRON Watch the deploy.' }));
+    await until(async () => (await status(worker)) === 'idle' || null, 'the worker idle with its wake-up');
+    await setAccount('personal');
+    await until(async () => on(mgr, 'personal'), 'the manager on "personal" again');
+    await until(async () => (await session(worker)).accountSwitch?.waitsFor === 'repeating' || null, 'the worker waiting on its repeating wake-up');
+    for (const tab of [desk, phone]) {
+      await tab.waitForTimeout(500);
+      const notice = await tab.locator('.account-switch').first().textContent();
+      check(/Won't switch to personal on its own while it has a repeating wake-up; use Switch now\./.test(notice ?? ''), `${tab === desk ? 'desk' : 'phone'}: it says it won't switch on its own, with Switch now`, notice ?? '');
+    }
+    await shot(desk, '395-pending-repeating-1280-dark');
+    await shot(phone, '395-pending-repeating-390-dark');
+    await ok('no more wake-up', page.api('POST', `sessions/${worker}/messages`, { text: 'CRONOFF' }));
+    await until(async () => on(worker, 'personal'), 'the worker on "personal" once its wake-up is gone');
+    check(true, 'with its wake-up gone, it switched at its turn end');
+
     // A switch that fails: the manager stays on "personal", once. The account is added only now, so the sign-in
     // banner it brings is in the failed switch's screenshots alone.
     await addAccount('signed-out');
@@ -222,6 +264,16 @@ async function main(): Promise<void> {
     const mphone = await open(390, 844, mgr);
     const failedNotice = await mdesk.locator('.account-switch.failed').first().textContent();
     check(/Couldn't switch to signed-out; still on personal\./.test(failedNotice ?? ''), 'the header says it couldn\'t switch, with Try again', failedNotice ?? '');
+    // How to sign in shows once, in the banner; the chat and the strip say it briefly; no backticks; no sideways scroll.
+    check(me.includes('Could not start: The account "signed-out" is not signed in; the notice at the top of the page says how to sign in.'), 'the chat says briefly why', JSON.stringify(me.slice(-4)));
+    check(!(failedNotice ?? '').includes('`'), 'no backticks in the strip', failedNotice ?? '');
+    for (const tab of [mdesk, mphone]) {
+      await tab.waitForTimeout(500);
+      const body = (await tab.locator('body').textContent()) ?? '';
+      check(body.split('CLAUDE_SECURESTORAGE_CONFIG_DIR').length - 1 === 1, `${tab === mdesk ? 'desk' : 'phone'}: the sign-in help shows once`, String(body.split('CLAUDE_SECURESTORAGE_CONFIG_DIR').length - 1));
+    }
+    const wide = await mphone.evaluate(() => document.documentElement.scrollWidth);
+    check(wide <= 390, 'the phone page doesn\'t scroll sideways', String(wide));
     await shot(mdesk, '395-failed-1280-dark');
     await shot(mphone, '395-failed-390-dark');
     const tries = (await events(mgr)).filter((t: string) => t === 'Session resumed.').length;
@@ -235,9 +287,15 @@ async function main(): Promise<void> {
     started.push(chat);
     await until(async () => (await status(chat)) === 'idle' || null, 'the chat idle');
     check((await session(chat)).account === 'work', 'the chat starts on "work"');
+    // One whose account was picked in New chat, the same one: it keeps it (acceptance of #395, point 1).
+    const picked = (await ok('a chat on a picked account', page.api('POST', 'chats-new', { text: 'Hello', account: 'work' }))).id as string;
+    started.push(picked);
+    await until(async () => (await status(picked)) === 'idle' || null, 'the picked chat idle');
     await ok('chats on personal', page.api('POST', 'account-choices', { chats: 'personal' }));
     await until(async () => on(chat, 'personal'), 'the chat on "personal"');
     check((await events(chat)).includes('Now on the account "personal".'), 'the chat says "Now on …"');
+    const p = await session(picked);
+    check(p.account === 'work' && !p.accountSwitch, 'the chat whose account was picked stays on "work"', JSON.stringify(p));
 
     // Restart Ledung with a switch waiting: it happens afterwards.
     await setAccount('work');

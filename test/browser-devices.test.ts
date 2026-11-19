@@ -135,7 +135,7 @@ test('a browser signed in before the update stays signed in through it: its #476
   const other = crypto.randomBytes(32).toString('hex');
   const usedAt = Date.now() - 2 * DAY;
   const before = openDatabase(file);
-  before.exec('DROP TABLE allowed_calls; ALTER TABLE sessions DROP COLUMN account_switch; ALTER TABLE devices DROP COLUMN paired_via_link; DROP TABLE waiting_lines; ALTER TABLE flow_runs DROP COLUMN fork; PRAGMA user_version = 51');
+  before.exec('DROP TABLE allowed_calls; ALTER TABLE sessions DROP COLUMN account_switch; ALTER TABLE sessions DROP COLUMN account_chosen; ALTER TABLE devices DROP COLUMN paired_via_link; DROP TABLE waiting_lines; ALTER TABLE flow_runs DROP COLUMN fork; PRAGMA user_version = 51');
   const signIns = { [sha(kept)]: usedAt, [sha(other)]: usedAt - DAY, 'not-a-hash': usedAt, [sha('x')]: 'yesterday' };
   before.prepare("INSERT INTO meta (key, value) VALUES ('sign-ins', ?)").run(JSON.stringify(signIns));
   // The premise: the hash is in meta before the update.

@@ -14,13 +14,25 @@ export function switchState(s: Pick<SessionInfo, 'accountSwitch' | 'status' | 'a
   | null {
   const sw = s.accountSwitch;
   if (!sw) return null;
-  if (sw.failed) return { kind: 'failed', text: `Couldn't switch to ${accountName(sw.to)}; still on ${accountName(s.account)}.`, reason: sw.failed };
+  const to = accountName(sw.to);
+  if (sw.failed) return { kind: 'failed', text: `Couldn't switch to ${to}; still on ${accountName(s.account)}.`, reason: sw.failed };
   // An ended one takes the new account when it is resumed.
-  if (s.status === 'ended') return { kind: 'pending', text: `Resumes on ${accountName(sw.to)}` };
-  return { kind: 'pending', text: `Switches to ${accountName(sw.to)} when this turn ends` };
+  if (s.status === 'ended') return { kind: 'pending', text: `Resumes on ${to}` };
+  // What it waits for, as Ledung last found it (acceptance of #395): a Ready session isn't in a turn.
+  switch (sw.waitsFor) {
+    case 'background': return { kind: 'pending', text: `Switches to ${to} when its background work ends` };
+    case 'wakeup': return { kind: 'pending', text: `Switches to ${to} after its scheduled wake-up` };
+    case 'repeating': return { kind: 'pending', text: `Won't switch to ${to} on its own while it has a repeating wake-up; use Switch now` };
+    default: return { kind: 'pending', text: `Switches to ${to} when this turn ends` };
+  }
 }
 
 /** The sidebar row's tooltip line for it; empty when there is none. */
 export function switchTooltip(s: Pick<SessionInfo, 'accountSwitch' | 'status' | 'account'>): string {
   return switchState(s)?.text ?? '';
+}
+
+/** A reason with what to type between backticks, as the sign-in banner shows it: plain text and code, in turn. */
+export function reasonParts(reason: string): { text: string; code: boolean }[] {
+  return reason.split('`').map((text, i) => ({ text, code: i % 2 === 1 })).filter((p) => p.text);
 }

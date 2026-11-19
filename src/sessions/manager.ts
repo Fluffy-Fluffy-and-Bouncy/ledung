@@ -91,7 +91,7 @@ import {
 import { McpError } from './mcp.ts';
 import { appDir, envSetting, PACKAGED, userDataDir } from '../platform/paths.ts';
 import { validateSensitive } from './sensitive.ts';
-import { idleReason, idleStopBlocker } from './idle.ts';
+import { idleReason, idleStopBlocker, type IdleState } from './idle.ts';
 import { chooseProfile, FULL_PROFILE, pluginIdsIn, profileByName, profileNames, type Profile } from './profiles.ts';
 import { Boards } from '../board/boards.ts';
 import { BOARD_FILE_PREFIX, bytesKind, MAX_IMAGE_BYTES as EVIDENCE_IMAGE_MAX_BYTES, MAX_TEXT_BYTES as EVIDENCE_TEXT_MAX_BYTES, readEvidence, readLinkOutgoing, type AttachmentKind, type OutgoingFile } from '../board/attachments.ts';
@@ -1316,8 +1316,8 @@ export class SessionManager {
       // Not signed in: the start says how to sign in instead of failing on the first turn (issue #333). In a
       // container without an account it is the container's own login, which Ledung doesn't look at.
       signInRefusal: project.runner === 'local'
-        ? (where: SignInContext) => this.signInRefusal(project.account ?? DEFAULT_ACCOUNT, where)
-        : project.account ? () => this.containerSignInRefusal(project.account!, { container: project.container, user: project.user || undefined }) : undefined,
+        ? (where: SignInContext) => this.switchRefusal(info.id, project.account ?? DEFAULT_ACCOUNT, this.signInRefusal(project.account ?? DEFAULT_ACCOUNT, where))
+        : project.account ? () => this.switchRefusal(info.id, project.account!, this.containerSignInRefusal(project.account!, { container: project.container, user: project.user || undefined })) : undefined,
       runner: this.runnerFor(project, info), store: this.store, publish: this.publish, model: info.requestedModel ?? undefined, defaultModel: defaultModelFor(project, info.role),
       // Read from the stored session on every start, resume and reattach, so it is kept as the model is (issue #202).
       effort: info.requestedEffort ?? undefined, defaultEffort: defaultEffortFor(project, info.role),
@@ -1431,6 +1431,35 @@ export class SessionManager {
     this.publish({ type: 'session', session: this.live.get(id)?.info ?? this.store.getSession(id)! });
   }
 
+  /**
+   * What a waiting switch waits for, so the page says it truly (acceptance of #395): a turn that ended with background
+   * work or a wake-up left switches when that is done, and one with a repeating wake-up never does by itself.
+   */
+  private noteWaitsFor(info: SessionInfo, state: IdleState): void {
+    const sw = info.accountSwitch;
+    if (!sw || sw.failed) return;
+    const turn = (state.info.status !== 'idle' && state.info.status !== 'starting') || state.info.paused || state.turnOpen || state.pendingPermissions || !info.claudeSessionId;
+    const waitsFor: NonNullable<AccountSwitch['waitsFor']> = turn ? 'turn'
+      : state.backgroundTasks || state.facts?.backgroundTasks ? 'background'
+      : state.facts?.crons ? (state.facts.repeating ? 'repeating' : 'wakeup') : 'turn';
+    if ((sw.waitsFor ?? 'turn') !== waitsFor) this.setSwitch(info.id, waitsFor === 'turn' ? { to: sw.to } : { to: sw.to, waitsFor });
+  }
+
+  /**
+   * A sign-in refusal while a session switches accounts (acceptance of #395): the banner at the top of the page says
+   * how to sign in, so the chat says only that it isn't signed in, and the long help shows once. The account's check
+   * is run first, so the banner is there; one that then doesn't show it keeps the help in the chat.
+   */
+  private async switchRefusal(id: string, name: string, found: Promise<{ refuse: string } | { warn: string } | null>): Promise<{ refuse: string } | { warn: string } | null> {
+    const r = await found;
+    if (!r || !('refuse' in r) || !this.switching.has(id)) return r;
+    await this.checkSignInOf(name).catch(() => undefined);
+    this.publishAccounts();
+    if (!this.signedOut().some((s) => s.account === name)) return r;
+    const who = name === DEFAULT_ACCOUNT ? "The computer's own login" : `The account "${name}"`;
+    return { refuse: `${who} is not signed in; the notice at the top of the page says how to sign in.` };
+  }
+
   /** Whether this session waits to switch accounts (a failed switch doesn't wait). */
   private switchDue(id: string): boolean {
     const sw = this.store.getSession(id)?.accountSwitch;
@@ -1447,8 +1476,14 @@ export class SessionManager {
     const reason = by
       ? `Stopped by ${by} to switch to ${accountLabel(to)} now; its conversation is kept.`
       : `Ledung restarted this session to switch to ${accountLabel(to)}; its conversation is kept.`;
+    // A prompt open now (only Switch now stops one) is withdrawn by the stop; the chat says which, so it isn't missed.
+    const prompts = this.store.pendingPermissions().filter((p) => p.sessionId === id);
     await session.stop(reason, { restart: true });
     this.live.delete(id);
+    for (const p of prompts) {
+      const text = `The open permission prompt (${p.toolName}: ${shortRequest(p.input)}) was dropped by the switch; ask again if it is still needed.`;
+      this.publish({ type: 'message', message: this.store.addMessage(id, 'event', { text }) });
+    }
     let failed: string | null;
     // A start that ended has said why in the chat already ("Could not start: …"); a resume that threw has not.
     let said = false;
@@ -1525,7 +1560,10 @@ export class SessionManager {
       // "starting" with no turn open is a resumed session not spoken to since (resumedState), as quiet as an idle one;
       // one that has no Claude Code session id yet can't be resumed, so it waits for one.
       if (!state || (state.info.status !== 'idle' && state.info.status !== 'starting') || state.info.paused || state.turnOpen || state.pendingPermissions
-        || state.backgroundTasks || state.facts?.backgroundTasks || state.facts?.crons || !info.claudeSessionId) continue;
+        || state.backgroundTasks || state.facts?.backgroundTasks || state.facts?.crons || !info.claudeSessionId) {
+        if (state) this.noteWaitsFor(info, state);
+        continue;
+      }
       this.relaunching.delete(id);
       const sw = info.accountSwitch && !info.accountSwitch.failed ? info.accountSwitch : null;
       this.switching.add(id);
@@ -2320,11 +2358,11 @@ export class SessionManager {
     this.publishAccounts();
     const after = this.accountChoices();
     // The running chats on the chats' account (or on their way to it) switch to the new one at their next quiet
-    // moment (issue #395); a chat started on another account keeps it.
+    // moment (issue #395); a chat whose account was picked in New chat keeps it, whichever it is.
     if (after.chats !== before) {
       for (const s of this.live.values()) {
         const info = this.store.getSession(s.id);
-        if (!info || info.project !== CHATS || info.status === 'ended') continue;
+        if (!info || info.project !== CHATS || info.status === 'ended' || info.accountChosen) continue;
         const heading = info.accountSwitch ? info.accountSwitch.to : info.account ?? null;
         if (heading === before) this.noteSwitch(info, after.chats);
       }
@@ -3487,6 +3525,8 @@ export class SessionManager {
       permissionMode: opts.permissionMode ?? project.permissionMode ?? 'auto', requestedModel: opts.model?.trim() || null, requestedEffort: effort, profile, workDir,
     });
     if (project.account) this.store.updateSession(info.id, { account: project.account });
+    // Picked in New chat, the computer's own login included: it keeps it when Settings' account for chats changes (#395).
+    if (opts.account !== undefined) this.store.updateSession(info.id, { accountChosen: true });
     this.publish({ type: 'session', session: info });
     const session = new Session({ info, ...this.sessionOptions(project, info) });
     this.noteLaunch(project, info);
@@ -4743,10 +4783,16 @@ function mcpLines(profile: Profile): string[] {
 /** A profile error with the workflow's profiles file problem after it, when that is why the profile is missing (#298). */
 const withWarning = (message: string, profiles: EffectiveProfiles) => (profiles.warning ? `${message} ${profiles.warning}` : message);
 
-/** Where a project's sessions run, for its account's login folder. */
 /** An account as a session's chat names it (issue #395); null: the computer's own login. */
 function accountLabel(account: string | null): string {
   return account ? `the account "${account}"` : "the computer's own login";
+}
+
+/** A permission request's input in one short line, for the chat (issue #395). */
+export function shortRequest(input: Record<string, unknown>): string {
+  const main = ['command', 'file_path', 'notebook_path', 'url', 'pattern', 'path', 'query'].map((k) => input[k]).find((v) => typeof v === 'string' && v.trim());
+  const text = (typeof main === 'string' ? main : JSON.stringify(input)).replace(/\s+/g, ' ').trim();
+  return text.length > 80 ? `${text.slice(0, 79)}…` : text;
 }
 
 /** These settings on another account (issue #395); null: the computer's own login. */
@@ -4755,6 +4801,7 @@ function onAccount(project: ProjectConfig, account: string | null): ProjectConfi
   return (account ? { ...rest, account } : rest) as ProjectConfig;
 }
 
+/** Where a project's sessions run, for its account's login folder. */
 function placeOf(project: ProjectConfig): AccountPlace {
   return project.runner === 'docker' ? 'docker' : 'local';
 }

@@ -1435,6 +1435,7 @@ export class Session {
             this.store.setIdleFacts(this.id, {
               backgroundTasks: Array.isArray(i.background_tasks) ? i.background_tasks.length : 0,
               crons: Array.isArray(i.session_crons) ? i.session_crons.length : null,
+              ...(Array.isArray(i.session_crons) ? { repeating: i.session_crons.filter((c) => (c as { recurring?: unknown })?.recurring === true).length } : {}),
             });
           } catch (e) {
             console.error(`Idle facts for session ${this.id}: ${(e as Error).message}`);

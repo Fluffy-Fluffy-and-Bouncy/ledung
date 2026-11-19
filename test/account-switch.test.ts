@@ -57,7 +57,7 @@ after(() => {
 });
 
 /** What the quiet check reads, per session: a turn running, background work, a prompt open. */
-const busy = new Map<string, { turnOpen?: boolean; backgroundTasks?: number; pendingPermissions?: number; crons?: number }>();
+const busy = new Map<string, { turnOpen?: boolean; backgroundTasks?: number; pendingPermissions?: number; crons?: number; repeating?: number }>();
 
 function ledung(store = new Store(openDatabase(':memory:'))) {
   const manager = refuseRealSignInStores(new SessionManager(parseConfig({
@@ -88,7 +88,7 @@ function liveFake(m: ReturnType<typeof ledung>, id: string): void {
     idleState: () => {
       const info = m.store.getSession(id)!;
       const b = busy.get(id) ?? {};
-      return { info, turnOpen: !!b.turnOpen, pendingPermissions: b.pendingPermissions ?? 0, openQuestions: 0, waitingDeliveries: 0, backgroundTasks: b.backgroundTasks ?? 0, facts: { backgroundTasks: 0, crons: b.crons ?? 0 }, lastActivity: 0 };
+      return { info, turnOpen: !!b.turnOpen, pendingPermissions: b.pendingPermissions ?? 0, openQuestions: 0, waitingDeliveries: 0, backgroundTasks: b.backgroundTasks ?? 0, facts: { backgroundTasks: 0, crons: b.crons ?? 0, repeating: b.repeating ?? 0 }, lastActivity: 0 };
     },
     stop: (reason: string) => Session.prototype.stop.call({ id, store: m.store } as never, reason),
     detach: () => {},
@@ -119,10 +119,10 @@ test("a project's new account: its running sessions wait for a quiet moment, the
   busy.set('worker', { backgroundTasks: 1 });
   setProjectAccount(m.manager, 'b');
   await m.manager.relaunchWaiting();
-  for (const id of ['mgr', 'worker']) {
-    assert.deepEqual(m.store.getSession(id)!.accountSwitch, { to: 'b' }, 'waits to switch, shown on the session');
-    assert.equal(m.store.getSession(id)!.account, 'a');
-  }
+  // Each says what it waits for (acceptance of #395): a turn, or, its turn over, its background work.
+  assert.deepEqual(m.store.getSession('mgr')!.accountSwitch, { to: 'b' }, 'waits to switch, shown on the session');
+  assert.deepEqual(m.store.getSession('worker')!.accountSwitch, { to: 'b', waitsFor: 'background' });
+  for (const id of ['mgr', 'worker']) assert.equal(m.store.getSession(id)!.account, 'a');
   assert.deepEqual(stops, [], 'a running turn and background work are never interrupted');
   // The manager's turn ends; the worker's background command is still going.
   busy.delete('mgr');
@@ -136,12 +136,17 @@ test("a project's new account: its running sessions wait for a quiet moment, the
   assert.equal(mgr.requestedModel, 'haiku');
   assert.equal(mgr.profile, 'full');
   assert.ok(events(m.store, 'mgr').includes('Now on the account "b".'));
-  assert.deepEqual(m.store.getSession('worker')!.accountSwitch, { to: 'b' }, 'still waiting');
-  // A scheduled wake-up or an open prompt holds it too; then it switches.
+  assert.deepEqual(m.store.getSession('worker')!.accountSwitch, { to: 'b', waitsFor: 'background' }, 'still waiting');
+  // A scheduled wake-up or an open prompt holds it too; then it switches. A repeating wake-up never ends by itself.
   busy.set('worker', { crons: 1 });
   assert.deepEqual(await m.manager.relaunchWaiting(), []);
+  assert.deepEqual(m.store.getSession('worker')!.accountSwitch, { to: 'b', waitsFor: 'wakeup' });
+  busy.set('worker', { crons: 2, repeating: 1 });
+  assert.deepEqual(await m.manager.relaunchWaiting(), []);
+  assert.deepEqual(m.store.getSession('worker')!.accountSwitch, { to: 'b', waitsFor: 'repeating' });
   busy.set('worker', { pendingPermissions: 1 });
   assert.deepEqual(await m.manager.relaunchWaiting(), []);
+  assert.deepEqual(m.store.getSession('worker')!.accountSwitch, { to: 'b' }, 'a prompt is in a turn');
   busy.delete('worker');
   // Resumed and not spoken to since ("starting", shown as Ready) is as quiet as idle; with no Claude Code session id
   // yet it can't be resumed, so it waits for one.
@@ -164,7 +169,10 @@ test('changed back before it switched, a session stops waiting; Switch now switc
   setProjectAccount(m.manager, null);
   assert.deepEqual(m.store.getSession('w1')!.accountSwitch, { to: null }, "to the computer's own login");
   const stopped = stops.length;
+  // A permission prompt open: the switch drops it, and the chat says which (acceptance of #395).
+  m.store.createPermission({ id: 'p1', sessionId: 'w1', toolName: 'Bash', input: { command: 'npm   test\n  -- --watch' }, title: null, reason: null });
   await m.manager.accountSwitchAction('w1', 'now');
+  assert.ok(events(m.store, 'w1').includes('The open permission prompt (Bash: npm test -- --watch) was dropped by the switch; ask again if it is still needed.'), JSON.stringify(events(m.store, 'w1')));
   assert.equal(stops.length, stopped + 1);
   assert.match(stops.at(-1)!.reason, /^Stopped by Simon to switch to the computer's own login now/);
   assert.equal(m.store.getSession('w1')!.account, null);
@@ -206,11 +214,13 @@ test("a switch that fails leaves the session on its old account, says so, and is
   assert.equal(m.store.getSession('w2')!.accountSwitch, null);
 });
 
-test("the chats' account: running chats on it switch, a chat started on another keeps its own", async () => {
+test("the chats' account: running chats on it switch, a chat started on another or picked in New chat keeps its own", async () => {
   const m = ledung();
   m.manager.setAccountChoices({ chats: 'a' });
   running(m, 'chat-a', CHATS, 'a');
   running(m, 'chat-other', CHATS, 'b');
+  // On the chats' account, but picked for it in New chat (acceptance of #395): it keeps it.
+  running(m, 'chat-picked', CHATS, 'a', { accountChosen: true });
   m.manager.setAccountChoices({ chats: 'b' });
   await settled(m);
   assert.equal(m.store.getSession('chat-a')!.account, 'b');
@@ -219,6 +229,33 @@ test("the chats' account: running chats on it switch, a chat started on another 
   assert.equal(m.store.getSession('chat-other')!.account, 'b');
   assert.equal(m.store.getSession('chat-other')!.accountSwitch ?? null, null, 'never touched');
   assert.equal(starts.filter((s) => s.id === 'chat-other').length, 0, 'not restarted');
+  assert.equal(m.store.getSession('chat-picked')!.account, 'a');
+  assert.equal(m.store.getSession('chat-picked')!.accountSwitch ?? null, null);
+  assert.equal(starts.filter((s) => s.id === 'chat-picked').length, 0);
+});
+
+test('New chat records an account picked there, and only then', async () => {
+  const m = ledung();
+  const picked = await m.manager.startChat({ account: 'a' });
+  const followed = await m.manager.startChat({});
+  assert.equal(m.store.getSession(picked.id)!.accountChosen, true);
+  assert.equal(m.store.getSession(followed.id)!.accountChosen, false);
+});
+
+test("a switch refused for sign-in says so briefly in the chat: the banner at the top has how, so it shows once", async () => {
+  const m = ledung();
+  const inner = m.manager as unknown as { switching: Set<string>; switchRefusal(id: string, name: string, r: Promise<unknown>): Promise<unknown> };
+  const long = { refuse: 'The account "broken" is not signed in. In PowerShell, run `$env:X="C:\\very\\long"; claude` and type `/login`; then press Check again.' };
+  m.manager.checkSignInWith = async () => ({ state: 'out', method: null, detail: null, checkedAt: 0 });
+  // Not switching: the start's refusal as it was.
+  assert.deepEqual(await inner.switchRefusal('w9', 'broken', Promise.resolve(long)), long);
+  inner.switching.add('w9');
+  assert.deepEqual(await inner.switchRefusal('w9', 'broken', Promise.resolve(long)), { refuse: 'The account "broken" is not signed in; the notice at the top of the page says how to sign in.' });
+  assert.ok(m.manager.signedOut().some((s) => s.account === 'broken'), 'the banner shows it');
+  // A start that may go on, or warns, is left alone.
+  assert.equal(await inner.switchRefusal('w9', 'broken', Promise.resolve(null)), null);
+  assert.deepEqual(await inner.switchRefusal('w9', 'broken', Promise.resolve({ warn: 'w' })), { warn: 'w' });
+  inner.switching.delete('w9');
 });
 
 test('a pending switch outlives Restart Ledung and happens afterwards', async () => {
@@ -246,5 +283,12 @@ test('the page words a switch as the issue says: waiting, resuming on it, or fai
   assert.equal(switchTooltip({ accountSwitch: { to: 'b' }, status: 'ended', account: 'a' }), 'Resumes on b');
   assert.deepEqual(switchState({ accountSwitch: { to: 'b', failed: 'Not signed in.' }, status: 'idle', account: 'a' }), { kind: 'failed', text: "Couldn't switch to b; still on a.", reason: 'Not signed in.' });
   assert.equal(switchState({ accountSwitch: null, status: 'idle', account: 'a' }), null);
+  // Its turn over, what it still waits for (acceptance of #395).
+  assert.equal(switchTooltip({ accountSwitch: { to: 'b', waitsFor: 'background' }, status: 'idle', account: 'a' }), 'Switches to b when its background work ends');
+  assert.equal(switchTooltip({ accountSwitch: { to: 'b', waitsFor: 'wakeup' }, status: 'idle', account: 'a' }), 'Switches to b after its scheduled wake-up');
+  assert.equal(switchTooltip({ accountSwitch: { to: 'b', waitsFor: 'repeating' }, status: 'idle', account: 'a' }), "Won't switch to b on its own while it has a repeating wake-up; use Switch now");
+  // What to type in a reason shows as code, without its backticks.
+  const { reasonParts } = await import('../web/src/accountSwitch.ts');
+  assert.deepEqual(reasonParts('Run `claude` and type `/login`.'), [{ text: 'Run ', code: false }, { text: 'claude', code: true }, { text: ' and type ', code: false }, { text: '/login', code: true }, { text: '.', code: false }]);
   assert.equal(switchTooltip({ status: 'idle', account: 'a' }), '');
 });
