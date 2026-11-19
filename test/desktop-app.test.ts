@@ -253,6 +253,21 @@ test('a failed download says so in one line and opens the browser instead; `ledu
   assert.ok(!app.lines.some((l) => l.includes('--browser')), '`ledung app` offers no browser');
 });
 
+test('the Ctrl+C hint comes once, right after the line announcing the download, not after later lines', async () => {
+  // Test review of PR #411, round 2, Minor 1: a full make on Windows can print a second line (a shortcut not written).
+  const s = steps({
+    ensure: async (o) => {
+      o.print?.('Making the desktop app, once: downloading Electron 45.4.1');
+      o.print?.("The desktop app's Start-menu shortcut was not written: it exited with code 1.");
+      return { made: 'all', paths: madePaths(base, 'win32') };
+    },
+  });
+  assert.equal(await openDesktop({ make: make(), fallback: true, steps: s }), 0);
+  const hint = 'Ledung is already running: to use the browser instead, press Ctrl+C and run "ledung --browser".';
+  assert.equal(s.lines.filter((l) => l === hint).length, 1);
+  assert.deepEqual(s.lines.slice(0, 3), ['Making the desktop app, once: downloading Electron 45.4.1', hint, "The desktop app's Start-menu shortcut was not written: it exited with code 1."]);
+});
+
 test('an app that was made but would not open: its line, then the browser', async () => {
   const s = steps({ ensure: async () => ({ made: 'all', paths: madePaths(base, 'darwin') }), open: async () => 'Could not open the desktop app: open exited with code 1.' });
   assert.equal(await openDesktop({ make: make(), fallback: true, steps: s }), 0);
@@ -297,8 +312,9 @@ test('the started Ledung opens no browser of its own only when the app opens; --
   assert.deepEqual(backgroundArgs(openChoice([], false), true), ['--no-open'], 'the app opens: the core opens no browser');
   assert.deepEqual(backgroundArgs(openChoice([], false), false), [], 'no app here: the core opens the browser, as before');
   assert.deepEqual(backgroundArgs(openChoice(['--browser'], false), false), []);
-  assert.deepEqual(backgroundArgs(openChoice(['--no-open'], false), false), ['--no-open'], 'once, not twice');
-  assert.deepEqual(backgroundArgs(openChoice(['app', '--no-open'], false), false), ['--no-open']);
+  // With the app ready all the same (test review of PR #411, round 2, Minor 2): --no-open is passed on once, not twice.
+  assert.deepEqual(backgroundArgs(openChoice(['--no-open'], false), true), ['--no-open'], 'once, not twice');
+  assert.deepEqual(backgroundArgs(openChoice(['app', '--no-open'], false), true), ['--no-open']);
 });
 
 // The real make's failure path (test review of PR #411, finding 2): the fake Electron has no downloader, so the
@@ -444,4 +460,27 @@ test("a download whose file fails Electron's checksum: progress was shown, the m
     else process.env.ELECTRON_MIRROR = mirror;
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
+});
+
+test("Settings lists the desktop app's Start-menu entry with no launcher shortcut there, and Remove takes it (code review of PR #411, round 2)", async () => {
+  const root = path.join(base, 'entry-only');
+  const startMenu = path.join(root, 'Programs');
+  const lnk = path.join(startMenu, APP_SHORTCUT);
+  const s = new Shortcuts({
+    launch: { node: process.execPath, script: 'x' }, iconDir: path.join(root, 'data'),
+    icons: { png256: path.join(appDir(), 'web', 'public', 'icon-256.png'), png512: path.join(appDir(), 'web', 'public', 'icon-512.png') },
+    meta: { get: () => null, set: () => {} }, platform: 'win32', folders: async () => ({ desktop: path.join(root, 'Desktop'), 'start-menu': startMenu, startup: path.join(root, 'Startup') }),
+  });
+  assert.deepEqual((await s.view()).appEntry, { label: 'Desktop app in the Start menu', file: lnk, present: false });
+  fs.mkdirSync(path.dirname(lnk), { recursive: true });
+  fs.writeFileSync(lnk, 'lnk');
+  const before = await s.view();
+  assert.equal(before.appEntry?.present, true);
+  assert.deepEqual(before.places.filter((p) => p.present), [], 'no launcher shortcut: an npm-only install');
+  const after = await s.act('remove');
+  assert.equal(fs.existsSync(lnk), false);
+  assert.equal(after.appEntry?.present, false);
+  // Not on the Mac: it has no such entry.
+  const mac = new Shortcuts({ launch: { node: process.execPath, script: 'x' }, iconDir: path.join(root, 'mac'), icons: { png256: '', png512: '' }, meta: { get: () => null, set: () => {} }, platform: 'darwin', folders: async () => ({ applications: path.join(root, 'Applications') }) });
+  assert.equal((await mac.view()).appEntry, null);
 });

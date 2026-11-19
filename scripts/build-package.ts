@@ -57,11 +57,7 @@ type Lock = { lockfileVersion?: number; packages?: Record<string, Record<string,
  */
 export function pinnedDependencies(clone: Record<string, unknown>, lock: Lock, field: 'dependencies' | 'optionalDependencies' = 'dependencies'): Record<string, string> {
   const ranges = (clone[field] ?? {}) as Record<string, string>;
-  // npm may also list an optional dependency under the lockfile's dependencies (it did for resedit, #587, not for
-  // Electron): it is compared as optional only.
-  const optional = (lock.packages?.['']?.optionalDependencies ?? {}) as Record<string, string>;
-  const listed = (lock.packages?.['']?.[field] ?? {}) as Record<string, string>;
-  const locked = field === 'dependencies' ? Object.fromEntries(Object.entries(listed).filter(([name]) => !(name in optional))) : listed;
+  const locked = (lock.packages?.['']?.[field] ?? {}) as Record<string, string>;
   if (JSON.stringify(Object.entries(ranges).sort()) !== JSON.stringify(Object.entries(locked).sort())) {
     throw new Error(`package-lock.json does not match package.json's ${field}: run npm install first`);
   }

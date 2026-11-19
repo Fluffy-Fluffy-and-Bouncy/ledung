@@ -85,7 +85,9 @@ What `npm install -g ledung` and `ledung` give (`src/platform/desktop-app.ts`, #
   with `resedit` (plain JavaScript, an optional dependency like Electron) so Task Manager says "Ledung"; the app sets the
   AppUserModelID `org.ledung.app`, and making the app runs it once with `--ledung-write-shortcut=<file>` to write its
   Start-menu shortcut, `Ledung app\Ledung.lnk`, carrying that id, so its notifications say "Ledung". Settings →
-  Shortcuts → Remove takes that shortcut away; a later make writes it again only for a new Electron. On Linux the program
+  Shortcuts → Remove takes that shortcut away (Settings lists it whenever it is there); a later make writes it again
+  only for a new Electron. Without `resedit` (its optional install failed) the Windows app can't be made: `ledung` says
+  so in one line and opens the browser. On Linux the program
   is `ledung` and the app's name is "Ledung".
 - **Its settings.** `ledung-app.json` next to its `main.js` names the Node and the `ledung` script that made it, and
   `LEDUNG_CONFIG` and `LEDUNG_DATA_DIR` when that command had them. So **Start Ledung** runs them and needs no `ledung`

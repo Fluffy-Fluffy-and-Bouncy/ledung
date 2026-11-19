@@ -4,7 +4,7 @@
 import { useEffect, useState } from 'react';
 import type { TrayView } from '../../../src/shared/protocol.ts';
 import { inFrame } from '../computerFrame.ts';
-import { SHORTCUT_ABOUT, asksFirstRun, questionText, settingsText, stopRefusal } from '../shortcuts.ts';
+import { SHORTCUT_ABOUT, asksFirstRun, offersRemove, questionText, settingsText, stopRefusal } from '../shortcuts.ts';
 import { useShortcuts } from '../useShortcuts.ts';
 import { api } from '../api.ts';
 
@@ -41,7 +41,6 @@ export function ShortcutSettings({ run }: { run: Run }) {
   const { view, act } = useShortcuts();
   if (!view) return null;
   const missing = view.places.filter((p) => !p.present);
-  const present = view.places.filter((p) => p.present);
   return (
     <>
       <section>
@@ -55,10 +54,11 @@ export function ShortcutSettings({ run }: { run: Run }) {
               {view.places.map((p) => (
                 <li key={p.id}><b>{p.label}</b> <span className="muted">{p.present ? 'added' : 'not there'}</span></li>
               ))}
+              {view.appEntry?.present && <li title={view.appEntry.file}><b>{view.appEntry.label}</b> <span className="muted">added by the desktop app</span></li>}
             </ul>
             <div className="restart-confirm">
               {missing.length > 0 && <button className="small primary" onClick={() => void run(() => act('add'))}>Add shortcuts</button>}
-              {present.length > 0 && <button className="small" onClick={() => void run(() => act('remove'))}>Remove</button>}
+              {offersRemove(view) && <button className="small" onClick={() => void run(() => act('remove'))}>Remove</button>}
             </div>
           </>
         )}

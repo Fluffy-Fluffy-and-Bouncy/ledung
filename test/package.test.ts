@@ -168,17 +168,6 @@ test('staging refuses a lockfile out of step with package.json, instead of pinni
   assert.throws(() => pinnedDependencies(clone, { lockfileVersion: 3, packages: { '': { dependencies: { zod: '^4.6.5' } } } }), /no version of zod/);
 });
 
-test("an optional dependency npm also lists under the lockfile's dependencies counts as optional only (#587)", () => {
-  const clone = { dependencies: { zod: '^4.6.5' }, optionalDependencies: { resedit: '3.1.1' } };
-  const root = { dependencies: { zod: '^4.6.5', resedit: '3.1.1' }, optionalDependencies: { resedit: '3.1.1' } };
-  const lock = { lockfileVersion: 3, packages: { '': root, 'node_modules/zod': { version: '4.6.7' }, 'node_modules/resedit': { version: '3.1.1', optional: true } } };
-  assert.deepEqual(pinnedDependencies(clone, lock), { zod: '4.6.7' });
-  assert.deepEqual(pinnedDependencies(clone, lock, 'optionalDependencies'), { resedit: '3.1.1' });
-  // A real difference still stops it: a plain dependency the clone no longer has.
-  const stale = { ...lock, packages: { ...lock.packages, '': { ...root, dependencies: { ...root.dependencies, ws: '^8.0.0' } } } };
-  assert.throws(() => pinnedDependencies(clone, stale), /does not match package.json's dependencies/);
-});
-
 test('from the source, Ledung is not packaged and hosts run the TypeScript host', () => {
   assert.equal(PACKAGED, false);
   assert.ok(fs.existsSync(path.join(appDir(), 'package.json')));

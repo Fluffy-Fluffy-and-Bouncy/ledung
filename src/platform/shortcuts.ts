@@ -312,6 +312,15 @@ export class Shortcuts {
     });
   }
 
+  /** Windows: the desktop app's Start-menu entry (#587), there or not; null elsewhere or when the Start menu is unknown. */
+  private async appEntry(): Promise<ShortcutsView['appEntry']> {
+    if (this.kind() !== 'windows') return null;
+    const startMenu = (await this.folders())['start-menu'];
+    if (!startMenu) return null;
+    const file = path.join(startMenu, APP_SHORTCUT);
+    return { label: 'Desktop app in the Start menu', file, present: fs.existsSync(file) };
+  }
+
   /** The sign-in start's file in Startup, LaunchAgents or autostart (SIGN_IN_FILES). */
   private async signInFile(): Promise<string | null> {
     const folder = (await this.folders()).startup;
@@ -335,7 +344,7 @@ export class Shortcuts {
     if (kind === 'other') {
       return { kind, available: false, reason: 'Shortcuts are made on Windows and macOS. Here, start Ledung with ledung.sh or the ledung command.', asked, places: [], signIn, log };
     }
-    return { kind, available: true, reason: null, asked, places: await this.places(), signIn, log };
+    return { kind, available: true, reason: null, asked, places: await this.places(), appEntry: await this.appEntry(), signIn, log };
   }
 
   /**
