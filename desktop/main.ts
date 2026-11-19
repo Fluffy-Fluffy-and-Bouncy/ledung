@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import { dataDir, findRunning } from './attach.ts';
 import { dockIconLayout, padBitmap } from './dock-icon.ts';
 import { zoomed, zoomKey } from './keys.ts';
-import { APP_ID, readMadeConfig, WRITE_SHORTCUT_ARG } from './made.ts';
+import { APP_ID, readMadeConfig, START_HIDDEN_FILE, WRITE_SHORTCUT_ARG } from './made.ts';
 import { menuTemplate } from './menu.ts';
 import { restartCommand, runStart, startCommand, startEnv } from './start.ts';
 import { WindowList } from './windows.ts';
@@ -52,7 +52,7 @@ export const RESTART_FOR_UPDATE_MESSAGE = 'ledung-desktop:restart-for-update';
  */
 const MADE_APP_ARG = '--ledung-made-app';
 /** Left by an app that restarted while hidden (#408): the new one starts hidden too, as the person left it. */
-const START_HIDDEN = path.join(dataDir(), 'desktop', '.start-hidden');
+const START_HIDDEN = path.join(dataDir(), 'desktop', START_HIDDEN_FILE);
 /**
  * Ledung's own icon (#384), the page's app icon: next to main.js in the npm package and the made app (#407), from the
  * clone's web/public in a clone run. A PNG, since Electron's images load no SVG. Exported for the probe, which checks
@@ -346,9 +346,25 @@ let restartOnQuit = false;
 /** Whether any window is in sight: shown and not minimised. */
 const anyShown = (): boolean => openWindows().some((w) => w.isVisible() && !w.isMinimized());
 
-/** Restarts the app to take the updated Ledung's code (#408): quits, and the `ledung` that made it opens it again. */
+/**
+ * Whether the app had no visible window when its restart began: then the new one starts hidden too. Taken before the
+ * quit, since by will-quit every window has closed (self-check finding 1). A minimised window is still visible here, so
+ * it comes back shown rather than vanishing from the Windows taskbar (self-check finding 2).
+ */
+let hiddenAtRestart = false;
+
+/**
+ * Restarts the app to take the updated Ledung's code (#408): quits, and the `ledung` that made it opens it again. Not
+ * when that command is gone (a Node upgraded or moved): quitting would leave nothing to open the app again, so it stays
+ * on the old code with its banner, and starting `ledung` updates it (self-check finding 4).
+ */
 function restartForUpdate(): void {
   if (!made || restartOnQuit) return;
+  if (!restartCommand(made, process.pid)) {
+    console.error('Ledung desktop: the ledung command that made this app is gone; start it again with ledung to update it.');
+    return;
+  }
+  hiddenAtRestart = !openWindows().some((w) => w.isVisible());
   restartOnQuit = true;
   quit();
 }
@@ -373,8 +389,8 @@ function startAfterQuit(): void {
   let out: number | 'ignore' = 'ignore';
   try {
     fs.mkdirSync(dir, { recursive: true });
-    // No window in sight: the new app starts hidden too, so a restart the person did not ask for shows nothing.
-    if (!anyShown()) fs.writeFileSync(START_HIDDEN, '');
+    // No window was visible: the new app starts hidden too, so a restart the person did not ask for shows nothing.
+    if (hiddenAtRestart) fs.writeFileSync(START_HIDDEN, '');
     out = fs.openSync(path.join(dir, 'restart.log'), 'a');
   } catch (e) {
     console.error(`Ledung desktop: ${(e as Error).message}`);
@@ -383,6 +399,8 @@ function startAfterQuit(): void {
     spawn(cmd.command, cmd.args, { detached: true, stdio: ['ignore', out, out], windowsHide: true, env: startEnv(process.env) }).unref();
   } catch (e) {
     console.error(`Ledung desktop: could not restart for the update: ${(e as Error).message}`);
+    // Nothing restarts it: the next start, by hand, shows its window (self-check finding 2).
+    fs.rmSync(START_HIDDEN, { force: true });
   } finally {
     if (typeof out === 'number') fs.closeSync(out);
   }
@@ -510,8 +528,10 @@ function createWindow(bounds?: { x: number; y: number; width: number; height: nu
     if (choice === 0) event.preventDefault();
     else {
       quitting = false;
-      // A restart for an update waits too (#408): the page asks again when it sees the update still pending.
+      // A restart for an update waits too (#408), until the page asks again at its next connection: not at the next
+      // hide, which would ask the same question again (self-check finding 5).
       restartOnQuit = false;
+      updatePending = false;
       // A window that was closing stays: back in the list (#414).
       if (!windows.has(w)) windows.add(w);
     }
@@ -606,10 +626,12 @@ if (shortcutFile) {
   // Reached only while quitting, since closing the last window hides it (#414: the list counts one closing as gone).
   app.on('window-all-closed', () => app.quit());
   // Started hidden after a restart for an update (#408): the start itself is no reason to show it.
+  // Only a fresh marker counts: one a failed restart left behind must not hide a later start by hand (self-check
+  // finding 2). Ten minutes covers the wait for this app to end and a new Electron's download.
   let startedHidden = false;
   try {
-    fs.rmSync(START_HIDDEN);
-    startedHidden = true;
+    startedHidden = Date.now() - fs.statSync(START_HIDDEN).mtimeMs < 10 * 60_000;
+    fs.rmSync(START_HIDDEN, { force: true });
   } catch {
     // Not there: a usual start.
   }

@@ -797,8 +797,10 @@ export class LedungServer {
       // Martin, question #588). Approve stays on this computer's own screen (#237); the page says so.
       newComputers: this.opts.relayAdmin?.newComputers() ?? [],
       linkPairings: this.linkPairings(),
-      // After Update Ledung the app's page learns here that the app still runs the old code (#408); a stamp read.
-      desktopApp: this.opts.desktopApp?.() ?? undefined,
+      // After Update Ledung the app's page learns here that the app still runs the old code (#408); a stamp read. Not
+      // through the public name: the app is on this computer, and the browser-fallback line can name its folders
+      // (self-check finding 7).
+      desktopApp: viaPublic ? undefined : this.opts.desktopApp?.() ?? undefined,
     };
   }
 

@@ -16,7 +16,7 @@ import { exercisedLine } from './platform/exercised.ts';
 import { lanNames } from './platform/network.ts';
 import { iconFiles, launchTarget, Shortcuts } from './platform/shortcuts.ts';
 import { appDir, appVersion, chatImagesDir, envSetting, PACKAGED, remoteDir, userDataDir } from './platform/paths.ts';
-import { desktopAppState, electronPackage } from './platform/desktop-app.ts';
+import { desktopAppState } from './platform/desktop-app.ts';
 import { ChatImages } from './sessions/chat-images.ts';
 import { loadOrCreateToken } from './server/security.ts';
 import { LedungServer } from './server/server.ts';
@@ -199,8 +199,6 @@ async function main(): Promise<void> {
     meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) },
     version: appVersion(), channel: () => updater.channel(), packaged: PACKAGED,
   });
-  // Looked up once: the package's files only change under a running Ledung through npm, and a restart follows that.
-  const electronVersion = PACKAGED ? electronPackage()?.version ?? null : null;
   server = new LedungServer({
     port: config.port, token: loadOrCreateToken(), store, manager,
     onRestart,
@@ -210,8 +208,8 @@ async function main(): Promise<void> {
     shortcuts: new Shortcuts({ launch: launchTarget(), iconDir: userDataDir(), icons: iconFiles(), meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) } }),
     updater,
     // The made desktop app (#407) against this Ledung, so the app's window restarts after Update Ledung (#408). Only
-    // the npm package makes one; its Electron is the one installed with it.
-    desktopApp: PACKAGED ? () => desktopAppState({ dataDir: userDataDir(), ledungVersion: appVersion(), electronVersion: electronVersion }) : undefined,
+    // the npm package makes one.
+    desktopApp: PACKAGED ? () => desktopAppState({ dataDir: userDataDir(), ledungVersion: appVersion() }) : undefined,
     checkIn,
     tray: traySwitch,
     lanNames: lan,

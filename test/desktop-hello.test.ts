@@ -52,7 +52,7 @@ test("hello tells the page the made app is out of date after an update, from the
   // The core after Update Ledung: version 1.3, the app still made by 1.2.
   const server = new LedungServer({
     port, token: TOKEN, store, manager, webRoot,
-    desktopApp: () => desktopAppState({ dataDir: data, ledungVersion: '1.3', electronVersion: '45.4.1', platform: 'linux' }),
+    desktopApp: () => desktopAppState({ dataDir: data, ledungVersion: '1.3', platform: 'linux' }),
   });
   await server.listen();
   try {

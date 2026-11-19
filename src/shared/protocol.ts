@@ -1187,7 +1187,7 @@ export type ShortcutPlaceId = 'desktop' | 'start-menu' | 'applications';
 
 /** The desktop app made on this computer, as the page is told it (#408). */
 export interface DesktopAppInfo {
-  /** The app runs an older Ledung's code or another Electron than the running Ledung's: its window restarts to update. */
+  /** The app runs an older Ledung's code than the running one: its window restarts to update. */
   stale: boolean;
   /** Why the browser opened instead of the app, the last time it did; null when the app opened since. */
   notice: string | null;

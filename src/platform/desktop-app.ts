@@ -15,7 +15,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { dockIconLayout } from '../../desktop/dock-icon.ts';
-import { APP_ID, MADE_CONFIG, WRITE_SHORTCUT_ARG, type MadeConfig } from '../../desktop/made.ts';
+import { APP_ID, MADE_CONFIG, START_HIDDEN_FILE, WRITE_SHORTCUT_ARG, type MadeConfig } from '../../desktop/made.ts';
 import { startEnv } from '../../desktop/start.ts';
 import type { DesktopAppInfo } from '../shared/protocol.ts';
 import { exercisedLine } from './exercised.ts';
@@ -420,8 +420,12 @@ export const noticeFile = (dataDir: string): string => path.join(dataDir, 'deskt
 /**
  * The made app against the running Ledung, read from its stamp at each ask: a restart without an update (#408: "Restart
  * Ledung alone never remakes or restarts the app") finds them the same, and the restarted app's stamp is the new one.
+ * Only Ledung's version counts, not Electron's: an app kept on its old Electron after a failed download (codeIntoKept)
+ * has the new Ledung, and counting it out of date would restart it again and again while offline (self-check finding
+ * 3). A new Electron comes with a new Ledung version, so the update's restart makes it; a failed one is tried again at
+ * the next start. The made config (its Node, its command) does not count either: `ledung` rewrites it when it changes.
  */
-export function desktopAppState(o: { dataDir: string; ledungVersion: string; electronVersion: string | null; platform?: NodeJS.Platform }): DesktopAppInfo | null {
+export function desktopAppState(o: { dataDir: string; ledungVersion: string; platform?: NodeJS.Platform }): DesktopAppInfo | null {
   const paths = madePaths(o.dataDir, o.platform ?? process.platform);
   const stamp = readStamp(paths.stamp);
   let notice: string | null = null;
@@ -432,7 +436,7 @@ export function desktopAppState(o: { dataDir: string; ledungVersion: string; ele
   }
   const made = stamp !== null && fs.existsSync(paths.exe);
   if (!made && notice === null) return null;
-  const stale = made && (stamp.ledung !== o.ledungVersion || (o.electronVersion !== null && stamp.electron !== o.electronVersion));
+  const stale = made && stamp.ledung !== o.ledungVersion;
   return { stale, notice };
 }
 
@@ -565,6 +569,9 @@ export async function openDesktop(o: { make: Omit<MakeOptions, 'print'>; fallbac
   try {
     fs.mkdirSync(path.dirname(notice), { recursive: true });
     fs.writeFileSync(notice, `${why} Ledung opened in the browser instead; the next start of the app tries again.\n`);
+    // A hidden app's restart that ended here: the app's next start, by hand, shows its window (desktop/main.ts,
+    // self-check finding 2).
+    fs.rmSync(path.join(path.dirname(notice), START_HIDDEN_FILE), { force: true });
   } catch {
     // The terminal has the line; only the page misses it.
   }

@@ -28,6 +28,12 @@ export const WRITE_SHORTCUT_ARG = '--ledung-write-shortcut';
 export const AFTER_APP_ARG = '--after-app';
 
 /**
+ * Left in the data folder's desktop/ by an app that restarts while no window is visible (#408): the new one starts
+ * hidden too. A restart that ends in the browser removes it.
+ */
+export const START_HIDDEN_FILE = '.start-hidden';
+
+/**
  * The app's process id from `--after-app=<pid>` in a command line, and the arguments without it; null when it is not
  * there or not a process id.
  */

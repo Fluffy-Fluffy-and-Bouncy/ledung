@@ -12,7 +12,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
-import { AFTER_APP_ARG, afterApp, APP_ID, MADE_CONFIG, madeConfigFor, readMadeConfig, WRITE_SHORTCUT_ARG, type MadeConfig } from '../desktop/made.ts';
+import { AFTER_APP_ARG, afterApp, APP_ID, MADE_CONFIG, madeConfigFor, readMadeConfig, START_HIDDEN_FILE, WRITE_SHORTCUT_ARG, type MadeConfig } from '../desktop/made.ts';
 import { findOnPath, restartCommand, runStart, startCommand } from '../desktop/start.ts';
 import {
   ADD_COMMAND, APP_SHORTCUT, appManifest, backgroundArgs, codeIntoKept, desktopAppOff, desktopAppState, desktopAvailability, electronPackage,
@@ -495,13 +495,11 @@ test("Settings lists the desktop app's Start-menu entry with no launcher shortcu
 test('the page is told the app is out of date after an update, and never after a restart alone (#408)', () => {
   const data = path.join(base, 'state-data');
   const now = { electron: '45.4.1', platform: 'linux', arch: 'x64', ledung: '1.2', config } satisfies Stamp;
-  const state = (ledung: string, electron: string | null = '45.4.1') => desktopAppState({ dataDir: data, ledungVersion: ledung, electronVersion: electron, platform: 'linux' });
+  const state = (ledung: string) => desktopAppState({ dataDir: data, ledungVersion: ledung, platform: 'linux' });
   assert.equal(state('1.2'), null, 'no app made here: nothing to say');
   madeEarlier(data, 'linux', now);
   assert.deepEqual(state('1.2'), { stale: false, notice: null }, 'Restart Ledung alone: the same version, nothing to restart');
   assert.deepEqual(state('1.3'), { stale: true, notice: null }, 'Update Ledung: a new version, the window restarts');
-  assert.deepEqual(state('1.2', '46.0.0'), { stale: true, notice: null }, 'a new Electron with the update: made again');
-  assert.deepEqual(state('1.2', null), { stale: false, notice: null }, "Electron's package gone: only the version counts");
   // The stamp is read at each ask: the restarted app's new stamp ends it.
   fs.writeFileSync(madePaths(data, 'linux').stamp, JSON.stringify({ ...now, ledung: '1.3' }));
   assert.deepEqual(state('1.3'), { stale: false, notice: null });
@@ -510,7 +508,7 @@ test('the page is told the app is out of date after an update, and never after a
   const none = path.join(base, 'state-none');
   fs.mkdirSync(path.dirname(noticeFile(none)), { recursive: true });
   fs.writeFileSync(noticeFile(none), 'why\n');
-  assert.deepEqual(desktopAppState({ dataDir: none, ledungVersion: '1.2', electronVersion: '45.4.1', platform: 'linux' }), { stale: false, notice: 'why' }, 'a notice with no app made yet');
+  assert.deepEqual(desktopAppState({ dataDir: none, ledungVersion: '1.2', platform: 'linux' }), { stale: false, notice: 'why' }, 'a notice with no app made yet');
 });
 
 test('a new Electron that cannot be downloaded: the same major keeps the app with the new code and tries again next start; another major keeps nothing', async () => {
@@ -526,6 +524,10 @@ test('a new Electron that cannot be downloaded: the same major keeps the app wit
   const stamp = readStamp(paths.stamp)!;
   assert.deepEqual({ electron: stamp.electron, ledung: stamp.ledung }, { electron: '45.3.3', ledung: '1.3' });
   assert.equal(whatToMake(stamp, { ...stamp, electron: '45.4.1' }, true), 'all', 'the next start downloads again');
+  // The kept app has the new Ledung: the page is not told to restart it again, which offline would loop (self-check
+  // finding 3). The same app before the code went in was out of date: the check is the version, not a constant.
+  assert.equal(desktopAppState({ dataDir: same, ledungVersion: '1.3', platform: 'linux' })?.stale, false);
+  assert.equal(desktopAppState({ dataDir: same, ledungVersion: '1.4', platform: 'linux' })?.stale, true);
 
   const other = path.join(base, 'kept-other');
   const earlier = { electron: '44.9.0', platform: 'linux', arch: 'x64', ledung: '1.2', config } satisfies Stamp;
@@ -560,11 +562,19 @@ test('a failed make with a kept app opens that app, saying why, with no browser;
   assert.ok(!kept.lines.some((l) => l.includes('Ctrl+C')), 'a restart the app asked for: no one is at a terminal');
 
   const lost = failing(async () => null);
+  // A hidden app's restart left its marker (desktop/main.ts); ending in the browser takes it away, so the app's next
+  // start by hand shows its window (self-check finding 2). The kept app's run above opened the app and left it.
+  const marker = path.join(data, 'desktop', START_HIDDEN_FILE);
+  fs.mkdirSync(path.dirname(marker), { recursive: true });
+  fs.writeFileSync(marker, '');
+  assert.equal(await openDesktop({ make: m, fallback: true, steps: kept, restarted: true }), 0);
+  assert.equal(fs.existsSync(marker), true, 'an app that opened: its marker is the new app\'s to read');
   assert.equal(await openDesktop({ make: m, fallback: true, steps: lost, restarted: true }), 0);
+  assert.equal(fs.existsSync(marker), false, 'the browser opened: no marker left');
   assert.equal(lost.browsers, 1);
   assert.equal(lost.lines.at(-1), 'The desktop app could not be made: fetch failed. Opening Ledung in the browser instead.');
   const notice = 'The desktop app could not be made: fetch failed. Ledung opened in the browser instead; the next start of the app tries again.';
-  assert.equal(desktopAppState({ dataDir: data, ledungVersion: '1.2', electronVersion: '46.0.0', platform: 'linux' })?.notice, notice, 'the page shows the line');
+  assert.equal(desktopAppState({ dataDir: data, ledungVersion: '1.2', platform: 'linux' })?.notice, notice, 'the page shows the line');
 
   // The next start that opens the app takes the line away.
   assert.equal(await openDesktop({ make: m, fallback: true, steps: steps() }), 0);
