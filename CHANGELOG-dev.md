@@ -9,6 +9,13 @@ together, are in [CHANGELOG.md](CHANGELOG.md). Online: https://projectledung.com
 ([docs/changes/README.md](docs/changes/README.md)); `npm run publish:dev` and `npm run publish:public` fold them in
 here under the version they publish, and push the result to main.
 
+## v3.16 — 2026-11-19 23:07 CET
+- Update Ledung from npm no longer restarts into the old version without saying so: when npm finishes but Ledung's folder still holds the old version, the update stops and shows npm's output and where npm installs to (#435)
+- After an update's restart, Settings → Update & restart says when Ledung still runs the old version (#435)
+- An npm update's outcome, and why it stopped, now goes to ledung.log too (#435)
+- Settings → About names the version that runs, not one installed after Ledung started (#435)
+- Desktop app: when the tray icon's **Open Ledung** opens the browser instead of the app, it now says why, once in Ledung's log and once in a banner on the page that opens, for example that Electron's package is missing or the app could not be made. With `"desktopApp": false` it says so in the log only. (#434)
+
 ## v3.15 — 2026-11-19 22:25 CET
 - What changed is now listed per release instead of per day: a changelog of the dev builds and one of the public releases, each heading with the version and when it was published. Settings → About links to both, online at projectledung.com/changelog and projectledung.com/dev-changelog, your own update channel's first. On an install from a clone, Check for updates still lists what is new on main. (#417)
 
