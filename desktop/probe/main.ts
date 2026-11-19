@@ -80,6 +80,18 @@ if (app.dock) {
     setIcon(image);
   };
 }
+/**
+ * Alpha at three points of a 512 px Dock icon (#404): the top-left corner, the last margin pixel of the middle row,
+ * and two pixels into the body on that row. Apple's grid gives a 50 px margin at 512 px (desktop/dock-icon.ts); the
+ * 4th byte is alpha in Electron's BGRA and in RGBA alike.
+ */
+function dockEdge(image: NativeImage): { corner: number; outside: number; inside: number } {
+  const { width } = image.getSize();
+  const bitmap = image.toBitmap();
+  const alpha = (x: number, y: number) => bitmap[(y * width + x) * 4 + 3] ?? -1;
+  const mid = Math.floor(width / 2);
+  return { corner: alpha(0, 0), outside: alpha(49, mid), inside: alpha(52, mid) };
+}
 /** main.ts's icon path, read from the module once it is loaded. */
 let appIcon = '';
 const out = (event: string, data: unknown = {}) => console.log('PROBE ' + JSON.stringify({ phase, event, data }));
@@ -170,7 +182,7 @@ async function signedIn(w: BrowserWindow): Promise<string[]> {
 }
 
 /**
- * Ledung's icon and the hidden menu bar (#384, #389): the icon file loads as a 512 px image, the Mac's Dock was given
+ * Ledung's icon and the hidden menu bar (#384, #389, #404): the icon file loads as a 512 px image, the Mac's Dock was given
  * it, Windows and Linux hide the menu bar with no auto-hide, and the menu still carries the items whose shortcuts must
  * work.
  */
@@ -181,7 +193,7 @@ function looks(w: BrowserWindow): void {
   const roles = (menu?.items ?? []).map((i) => i.role ?? i.label);
   const report = {
     icon: path.relative(clone, appIcon), iconSize: icon.getSize(), iconEmpty: icon.isEmpty(),
-    dockIcons: dockIcons.map((d) => ({ size: d.getSize(), sameAsIcon: d.toPNG().equals(icon.toPNG()) })),
+    dockIcons: dockIcons.map((d) => ({ size: d.getSize(), sameAsIcon: d.toPNG().equals(icon.toPNG()), edge: dockEdge(d) })),
     menuBarAutoHide: w.isMenuBarAutoHide(), menuBarVisible: w.isMenuBarVisible(), menu: roles,
     closeWindow: menuItem('close-window')?.accelerator ?? null, toolCalls: menuItem('tool-calls')?.accelerator ?? null,
   };
@@ -189,7 +201,13 @@ function looks(w: BrowserWindow): void {
   expect(appIcon.endsWith(path.join('web', 'public', 'icon-512.png')), "the icon is the page's own icon-512.png", report.icon);
   expect(!icon.isEmpty() && icon.getSize().width === 512 && icon.getSize().height === 512, 'the icon loads as a 512 × 512 image', report);
   if (mac) {
-    expect(report.dockIcons.length === 1 && report.dockIcons[0]!.sameAsIcon, "the Dock was given Ledung's icon, once", report.dockIcons);
+    // Padded, not the file as it is (#404): a 512 px image, clear up to the margin on the middle row, the body's
+    // own pixels just inside it. The second half is the positive branch of the first.
+    const dock = report.dockIcons[0];
+    expect(report.dockIcons.length === 1 && dock !== undefined && dock.size.width === 512 && dock.size.height === 512 && !dock.sameAsIcon,
+      "the Dock was given Ledung's icon, once, as a 512 px image of its own", report.dockIcons);
+    expect(dock !== undefined && dock.edge.outside === 0 && dock.edge.corner === 0, 'the Dock icon is clear outside the margin', dock?.edge);
+    expect(dock !== undefined && dock.edge.inside === 255, "the Dock icon's body starts just inside the margin", dock?.edge);
   } else {
     // Never shown, and not auto-hidden: auto-hide is what lets Alt show it (#389).
     expect(!report.menuBarAutoHide && !report.menuBarVisible, 'the menu bar is hidden, with no auto-hide', report);
