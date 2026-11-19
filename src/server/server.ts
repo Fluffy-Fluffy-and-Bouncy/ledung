@@ -79,7 +79,6 @@ const WAITING_POLL_MS = 30_000;
 const WAITING_PUSH_MS = 1000;
 /** Logged once, the first time a late answer after close is let go (#463). */
 let exercised463 = false;
-let exercised412 = false;
 
 /** Why linking refuses through the public name (#245 step 1: on the computer itself only). */
 const LINKED_HERE = 'Computers are linked and unlinked';
@@ -1396,10 +1395,6 @@ export class LedungServer {
     const stored = this.storedLinkPairings();
     const live = stored.filter((p) => this.pairingLive(p));
     if (live.length === stored.length) return;
-    if (!exercised412) {
-      exercised412 = true;
-      exercisedLine('EXERCISED #412 a pairing card cleared itself');
-    }
     this.setLinkPairings(live);
   }
 
