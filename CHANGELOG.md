@@ -10,6 +10,7 @@ that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commi
 is nothing user-facing in it).
 
 ## 2026-11-19
+- The projects' managers that were running when Ledung stopped (Stop Ledung, the tray's Exit, a reboot) are running again when Ledung starts, without a Resume. A manager you or another manager stopped stays stopped, and other sessions are unchanged. (#391)
 - Desktop app on Windows: **Start Ledung** now shows Ledung's page as soon as Ledung is up, instead of staying on "Starting Ledung in the background…". A start that fails still says what failed. (#385)
 - Desktop app: the window, the Windows taskbar and the Mac Dock show Ledung's own icon instead of Electron's. On Windows and Linux the File, Edit, View, Window menu bar is hidden; press Alt to show it. Its shortcuts work as before (Ctrl+W, copy and paste, zoom). The Mac is unchanged. (#384)
 - Settings → About → Check for updates finds the Dev and Public versions again on a computer with npm 12, instead of saying npm has no version yet. (#382)
