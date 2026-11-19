@@ -256,9 +256,11 @@ async function until(check: () => boolean, what: string): Promise<void> {
   assert.ok(check(), what);
 }
 
-test('a New computer card clears itself once its public name answers with a trusted certificate; offline, another name\'s or an untrusted one keeps it', async () => {
+test('a New computer card clears itself once its public name answers with a trusted certificate; offline, another name\'s, an untrusted or a wildcard one keeps it', async () => {
   const inUse = await holding('inuse.l.example.org');
   const untrusted = await holding('untrusted.l.example.org');
+  // A relay's front proxy that ends TLS itself with a wildcard certificate: trusted for every name, made for none.
+  const wildcard = await holding('*.l.example.org');
   // Where each public name is reached, and the CA it is checked against; none: only the system's, which trusts no test.
   const reach: Record<string, { port: number; ca?: string }> = {
     'inuse.l.example.org': inUse,
@@ -266,10 +268,11 @@ test('a New computer card clears itself once its public name answers with a trus
     // The in-use computer's own certificate, reached under another name: refused for the name.
     'wrongname.l.example.org': inUse,
     'untrusted.l.example.org': { port: untrusted.port },
+    'wildcard.l.example.org': wildcard,
   };
   const connect = (name: string) => tls.connect({ host: '127.0.0.1', port: reach[name]!.port, servername: name, ...(reach[name]!.ca ? { ca: reach[name]!.ca } : {}) });
   let key: string | undefined;
-  const state = { key: () => key, computers: ['inuse', 'offline', 'wrongname', 'untrusted'].map(joined) };
+  const state = { key: () => key, computers: ['inuse', 'offline', 'wrongname', 'untrusted', 'wildcard'].map(joined) };
   const lines: string[] = [];
   const { a, calls, sent, timers, saved } = admin(relayApi(state), { connect, log: (line) => lines.push(line) });
   a.update({ relay: 'wss://relay.example.org' });
@@ -277,11 +280,11 @@ test('a New computer card clears itself once its public name answers with a trus
   key = saved().adminKey;
 
   const listed = await a.list();
-  assert.deepEqual(listed.computers.map((c) => c.name), ['offline', 'wrongname', 'untrusted'], 'only the computer in use cleared');
-  assert.deepEqual(sent.at(-1)!.map((c) => c.name), ['offline', 'wrongname', 'untrusted'], 'the pages are told');
+  assert.deepEqual(listed.computers.map((c) => c.name), ['offline', 'wrongname', 'untrusted', 'wildcard'], 'only the computer in use cleared');
+  assert.deepEqual(sent.at(-1)!.map((c) => c.name), ['offline', 'wrongname', 'untrusted', 'wildcard'], 'the pages are told');
   // The relay was told for that one alone, as I added it does, so it never comes back as waiting.
   assert.deepEqual(calls.filter((c) => c.method === 'POST').map((c) => new URL(c.url).pathname), ['/admin/computers/inuse/approved']);
-  assert.deepEqual(state.computers.map((c) => c.approved), [true, false, false, false]);
+  assert.deepEqual(state.computers.map((c) => c.approved), [true, false, false, false, false]);
   assert.ok(lines.includes('Relay admin: inuse.l.example.org is in use with its certificate; its New computer card cleared itself.'), lines.join('\n'));
   assert.equal(calls.some((c) => c.url.startsWith(CF)), false, 'Cloudflare is never asked');
 
@@ -289,8 +292,8 @@ test('a New computer card clears itself once its public name answers with a trus
   reach['offline.l.example.org'] = await holding('offline.l.example.org');
   assert.ok(timers.length > 0, 'it keeps looking while cards wait');
   timers.shift()!();
-  await until(() => sent.at(-1)!.length === 2, 'the offline computer\'s card to clear once it is in use');
-  assert.deepEqual(sent.at(-1)!.map((c) => c.name), ['wrongname', 'untrusted']);
+  await until(() => sent.at(-1)!.length === 3, 'the offline computer\'s card to clear once it is in use');
+  assert.deepEqual(sent.at(-1)!.map((c) => c.name), ['wrongname', 'untrusted', 'wildcard']);
   assert.equal(state.computers[1]!.approved, true);
 });
 

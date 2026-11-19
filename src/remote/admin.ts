@@ -32,11 +32,11 @@ import { secureRelay } from './tunnel.ts';
 export const ADMIN_FILE = 'relay-admin.json';
 /** How often the relay is asked for new computers while something is pending. */
 export const POLL_MS = 60_000;
-/** How long the in-use check waits for a computer's TLS handshake. */
-export const IN_USE_MS = 10_000;
-/** An ACME account URL as a CA gives it: https, and nothing that could break out of the CAA value. */
+/** How long the in-use check waits for a computer's TLS handshake: Settings → Relay's list waits for it too. */
+export const IN_USE_MS = 5_000;
 /** The EXERCISED line of issue #420, once per run of Ledung. */
 let exercised420 = false;
+/** An ACME account URL as a CA gives it: https, and nothing that could break out of the CAA value. */
 const SAFE_ACCOUNT_URL = (url: string) => /^https:\/\/[A-Za-z0-9._~:/?#[\]@!$&'()*+,=%-]{1,500}$/.test(url);
 
 interface Saved {
@@ -85,6 +85,8 @@ export class RelayAdmin {
   private openInvites = 0;
   private timer: unknown = null;
   private stopped = false;
+  /** The look at the relay under way: another one asked for meanwhile waits for it instead of checking again. */
+  private looking: Promise<void> | null = null;
 
   constructor(opts: RelayAdminOptions) {
     this.opts = opts;
@@ -227,7 +229,14 @@ export class RelayAdmin {
   }
 
   /** Asks the relay for computers waiting for their record; keeps asking every minute while anything is pending. */
-  private async poll(): Promise<void> {
+  private poll(): Promise<void> {
+    this.looking ??= this.look().finally(() => {
+      this.looking = null;
+    });
+    return this.looking;
+  }
+
+  private async look(): Promise<void> {
     if (!this.ready()) return;
     try {
       const { computers } = await this.relayCall<{ computers: RelayComputer[] }>('GET', '/admin/computers');
@@ -340,8 +349,10 @@ export class RelayAdmin {
 export const connectPublic = (name: string): tls.TLSSocket => tls.connect({ host: name, port: 443, servername: name, ALPNProtocols: ['http/1.1'] });
 
 /**
- * Opens TLS to a public name and says whether the handshake succeeded with a certificate trusted for that name; any
- * error, a refused certificate or no handshake within `ms`: false. Nothing is sent over it.
+ * Opens TLS to a public name and says whether the handshake succeeded with a certificate trusted for that name and
+ * made for exactly that name; any error, a refused certificate or no handshake within `ms`: false. Nothing is sent.
+ * A wildcard certificate does not count: a relay whose front proxy ended TLS itself with one (instead of passing the
+ * names through) would otherwise make every waiting computer look in use (self-check of #420, finding 3).
  */
 export function servesCertificate(connect: (publicName: string) => tls.TLSSocket, publicName: string, ms: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -361,7 +372,10 @@ export function servesCertificate(connect: (publicName: string) => tls.TLSSocket
     // tls.connect checks the certificate and the name by default; authorized is checked too, so a connect that was
     // given rejectUnauthorized: false can't pass.
     const opened = socket;
-    opened.once('secureConnect', () => done(opened.authorized));
+    opened.once('secureConnect', () => {
+      const names = String(opened.getPeerCertificate().subjectaltname ?? '').split(', ');
+      done(opened.authorized && names.some((n) => n.toLowerCase() === `dns:${publicName.toLowerCase()}`));
+    });
     opened.once('error', () => done(false));
     opened.once('close', () => done(false));
   });
