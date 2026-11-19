@@ -137,6 +137,36 @@ test('the check lists the bullets waiting in docs/changes/ and those a publish f
   assert.deepEqual([...v.check!.changes].sort(), ['Eight. (#8)', 'Nine. (#9)', 'Second, from origin. (#7)']);
 });
 
+// A publish moves bullets the running Ledung already has: they are not new (self-check of PR #423).
+test('a bullet the running commit already has is not listed again after a publish moves it into a changelog', async () => {
+  // The running Ledung is built from a main where #8 has merged and waits in docs/changes/.
+  git(source, 'pull', '-q', 'origin', 'main');
+  fs.mkdirSync(path.join(source, 'docs', 'changes'), { recursive: true });
+  fs.writeFileSync(path.join(source, 'docs', 'changes', '8.md'), '- Eight. (#8)\n');
+  git(source, 'add', '-A');
+  git(source, 'commit', '-qm', 'merged #8');
+  git(source, 'push', '-q', 'origin', 'main');
+  const running = git(source, 'rev-parse', 'HEAD');
+  fs.writeFileSync(path.join(appDir, 'release.json'), JSON.stringify({ source, commit: running }));
+  fs.writeFileSync(path.join(dataDir, 'current.json'), JSON.stringify({ dir: appDir, source, commit: running }));
+  // Then #9 merges, and a dev publish moves both into the dev changelog.
+  git(other, 'pull', '-q', 'origin', 'main');
+  fs.writeFileSync(path.join(other, 'docs', 'changes', '9.md'), '- Nine. (#9)\n');
+  git(other, 'add', '-A');
+  git(other, 'commit', '-qm', 'merged #9');
+  fs.rmSync(path.join(other, 'docs', 'changes', '8.md'));
+  fs.rmSync(path.join(other, 'docs', 'changes', '9.md'));
+  fs.writeFileSync(path.join(other, 'CHANGELOG-dev.md'), '# Dev\n\n## v1.1 — 2026-11-19 15:02 CET\n- Nine. (#9)\n- Eight. (#8)\n');
+  git(other, 'add', '-A');
+  git(other, 'commit', '-qm', 'Changelog for v1.1');
+  git(other, 'push', '-q', 'origin', 'main');
+  const v = await updater().runCheck();
+  assert.equal(v.checkError, null);
+  assert.equal(v.check!.behind, 2);
+  // #9 is new; #8 was already running, and neither is the bullet the running commit had in CHANGELOG.md (#7).
+  assert.deepEqual(v.check!.changes, ['Nine. (#9)']);
+});
+
 test('the check says up to date when the running commit is origin/main', async () => {
   git(source, 'pull', '-q', '--ff-only', 'origin', 'main');
   const head = git(source, 'rev-parse', 'HEAD');
