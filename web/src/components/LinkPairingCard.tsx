@@ -27,10 +27,7 @@ export function LinkPairingCard({ pairing, run }: { pairing: LinkPairingInfo; ru
           : `At ${at}, from ${pairing.computer}'s own screen: a pairing code for a browser there, good for 10 minutes. Nothing has paired with it yet.`}
       </p>
       <div className="restart-confirm">
-        {device && <button className="small" disabled={busy} onClick={() => act(async () => {
-          await api.revokeDevice(device.id);
-          await api.dismissLinkPairing(pairing.id);
-        })}>Remove device</button>}
+        {device && <button className="small" disabled={busy} onClick={() => act(() => api.removeLinkPairingDevice(pairing.id))}>Remove device</button>}
         <button className="small" disabled={busy} onClick={() => act(() => api.dismissLinkPairing(pairing.id))} title="Takes this card away; the device stays in Settings → Phones">OK</button>
       </div>
       {problem && <p className="restart-problem">{problem}</p>}
