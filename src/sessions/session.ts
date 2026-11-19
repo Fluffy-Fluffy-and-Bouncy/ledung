@@ -40,6 +40,7 @@ import { commandKinds, heavyKinds } from '../resources/commands.ts';
 import { RESOURCE_SOURCE, type ReserveArgs } from '../resources/book.ts';
 import { FRESH_FACTS, pauseReason, type IdleState } from './idle.ts';
 import { skillsFromFiles, skillsOff, withSkillsOff, type SkillChoices } from './skills.ts';
+import { withLearned, type LearnedTools } from './manager-tools.ts';
 import { needsPluginIds, parseSettingsFile, pluginIdsIn, profileOptions, settingsFilePath, type Profile } from './profiles.ts';
 import { workflowInstructions, type ProjectWorkflow } from './workflow.ts';
 import { workflowLines } from './flow-files.ts';
@@ -293,6 +294,12 @@ export interface SessionOptions {
   profile?: Profile;
   /** Plugin ids turned off whatever the profile where installed (the workflow's and the config's pluginsOff, issues #265, #298). */
   pluginsOff?: string[];
+  /**
+   * The tools managers learn (issue #431). `limit`: for a manager whose workflow turns it on, what it leaves out of the
+   * installed plugins and the user's servers, asked at each start and resume (null: nothing). `noteCalls`: its tool
+   * calls go in the record (a manager here). `noteInit`: the user's servers it started with go in the record.
+   */
+  learnedTools?: { limit?: (installed: string[]) => LearnedTools | null; noteCalls?: (content: unknown) => void; noteInit?: (servers: unknown) => void };
   /** Which of the user's own skills it gets (#300); null or none: all of them (chats). */
   skills?: SessionSkills | null;
   /** Remote Control's name in the Claude app, for a manager (#19); null: no Remote Control. */
@@ -430,6 +437,7 @@ export class Session {
   private readonly signInRefusal: SessionOptions['signInRefusal'];
   private readonly profile: Profile | undefined;
   private readonly pluginsOff: string[];
+  private readonly learnedTools: SessionOptions['learnedTools'];
   private readonly skills: SessionSkills | null;
   /** The profile's settings file as read at this start or resume (#20 settingsFile). */
   private fileSettings: Record<string, unknown> | undefined;
@@ -541,6 +549,7 @@ export class Session {
     this.signInRefusal = opts.signInRefusal;
     this.profile = opts.profile;
     this.pluginsOff = opts.pluginsOff ?? [];
+    this.learnedTools = opts.learnedTools;
     this.skills = opts.skills ?? null;
     this.awaitingResumeResult = !!opts.resume && !opts.attachTo;
     this.openQuery = opts.query ?? query;
@@ -1268,10 +1277,19 @@ export class Session {
   async claudeOptions(handlers: ConnectionHandlers): Promise<Options> {
     // The profile's options (#20). Plugins go off one by one, by the ids the session's own settings name;
     // a running process being reattached already has its plugins, so it isn't asked again.
-    const pluginIds = this.profile && needsPluginIds(this.profile, this.pluginsOff) && !this.attachTo
+    const limit = this.learnedTools?.limit && !this.attachTo ? this.learnedTools.limit : null;
+    const pluginIds = this.profile && (needsPluginIds(this.profile, this.pluginsOff) || limit) && !this.attachTo
       ? pluginIdsIn(await this.runner.pluginSettingsTexts(this.loginFolder()))
       : [];
-    const profile = this.profile ? profileOptions(this.profile, pluginIds, this.fileSettings, this.pluginsOff) : {};
+    // A manager's learned tools (issue #431): the plugins and servers no manager here called lately go too.
+    let learned: LearnedTools | null = null;
+    try {
+      learned = limit && this.profile ? limit(pluginIds) : null;
+    } catch (e) {
+      // The record couldn't be read: the manager starts with its profile's tools, as with the switch off.
+      console.error(`Learned tools for session ${this.id}: ${(e as Error).message}`);
+    }
+    const profile = this.profile ? profileOptions(learned ? withLearned(this.profile, learned) : this.profile, pluginIds, this.fileSettings, [...this.pluginsOff, ...(learned?.pluginsOff ?? [])]) : {};
     // The user's own skills its project's picker turns off (#300), by the ones found where it runs, so a skill
     // added since is covered by its role's default; a reattached process already has its skills.
     if (this.skills && !this.attachTo) {
@@ -1669,6 +1687,15 @@ export class Session {
     this.management.onEnded(this.id, reason);
   }
 
+  /** Records for the tools managers learn (issue #431); a failure there never stops the session's messages. */
+  private noteTools(note: () => void): void {
+    try {
+      note();
+    } catch (e) {
+      console.error(`Learned tools for session ${this.id}: ${(e as Error).message}`);
+    }
+  }
+
   private onMessage(m: SDKMessage): void {
     try {
       this.watchRefusals(m);
@@ -1676,6 +1703,7 @@ export class Session {
       console.error(`Refusals for session ${this.id}: ${(e as Error).message}`);
     }
     if (m.type === 'system' && m.subtype === 'init') {
+      this.noteTools(() => this.learnedTools?.noteInit?.(m.mcp_servers));
       this.update({ claudeSessionId: m.session_id, model: m.model, claudeVersion: m.claude_code_version, cwd: m.cwd });
     }
     if (m.type === 'system' && m.subtype === 'background_tasks_changed') {
@@ -1684,6 +1712,7 @@ export class Session {
       this.publish({ type: 'session', session: this.info });
     }
     if (m.type === 'assistant') {
+      this.noteTools(() => this.learnedTools?.noteCalls?.(m.message.content));
       // A turn Claude Code started itself (a queued message, a finished background task): measure it too.
       if (!this.turnOpen) this.beginTurn(this.usage.currentTrigger);
       for (const b of m.message.content) {
