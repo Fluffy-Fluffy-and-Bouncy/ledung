@@ -142,7 +142,9 @@ function lockNavigation(wc: WebContents): void {
 
 type NotRunningState = 'stopped' | 'starting' | 'failed';
 /** What the "not running" page last said, for a window opened after it was shown (#414). */
-let notRunningAs: { reason: string; state: NotRunningState } = { reason: '', state: 'stopped' };
+// Before any was shown (an attach that failed on its way, self-check round 2, point 2): a reason that still says what
+// to do.
+let notRunningAs: { reason: string; state: NotRunningState } = { reason: 'Ledung could not be reached. Press Retry to look again.', state: 'stopped' };
 /**
  * Windows opened while an attach was finding the Ledung (#414): it may already have taken its list of windows, so it
  * shows them what it found when it ends (self-check finding 5).
@@ -161,7 +163,9 @@ async function loadNotRunning(w: BrowserWindow, reason: string, state: NotRunnin
 async function showNotRunning(reason: string, state: NotRunningState = 'stopped'): Promise<void> {
   ownOrigin = null;
   notRunningAs = { reason, state };
-  await Promise.all(openWindows().map((w) => loadNotRunning(w, reason, state)));
+  const all = openWindows();
+  for (const w of all) waitingForAttach.delete(w);
+  await Promise.all(all.map((w) => loadNotRunning(w, reason, state)));
 }
 
 /**
@@ -196,8 +200,11 @@ async function attach(failed?: string): Promise<void> {
     // One partition for every window, so signing it in signs them all in (#414).
     await signIn(session.fromPartition(PARTITION), origin, found.token);
     ownOrigin = origin;
-    // Every window: a window opened while this ran is in the list by now, and shows the page too.
-    await Promise.all(openWindows().map((w) => w.loadURL(`${origin}/`)));
+    // Every window: a window opened while this ran is in the list by now, and shows the page too; taken here, it
+    // needs no second load when this ends (self-check round 2, point 1).
+    const all = openWindows();
+    for (const w of all) waitingForAttach.delete(w);
+    await Promise.all(all.map((w) => w.loadURL(`${origin}/`)));
   } catch (e) {
     // A failed page load is shown by did-fail-load; this only says it in the terminal.
     console.error(`Ledung desktop: ${(e as Error).message}`);
