@@ -71,6 +71,7 @@ export function useLedung(openSessionId: string | null) {
   const [linkPairings, setLinkPairings] = useState<LinkPairingInfo[]>([]);
   /** The desktop app made on this computer (#408): out of date after an update, or why the browser opened instead. */
   const [desktopApp, setDesktopApp] = useState<DesktopAppInfo | null>(null);
+  const [desktopAppHere, setDesktopAppHere] = useState(false);
   const [throughPublicName, setThroughPublicName] = useState(false);
   /** The config file's reloads (issue #353). */
   const [configStatus, setConfigStatus] = useState<ConfigStatus | null>(null);
@@ -179,6 +180,7 @@ export function useLedung(openSessionId: string | null) {
             setNewComputers(event.newComputers ?? []);
             setLinkPairings(event.linkPairings ?? []);
             setDesktopApp(event.desktopApp ?? null);
+            setDesktopAppHere(event.desktopAppHere === true);
             setThroughPublicName(event.throughPublicName ?? false);
             setConfigStatus(event.config ?? null);
             setPermissions(Object.fromEntries(event.permissions.map((p) => [p.id, p])));
@@ -346,5 +348,5 @@ export function useLedung(openSessionId: string | null) {
     };
   }, []);
 
-  return { runs, workflows, connection, loaded, canRestart, hellos, updated, desktopApp, userName, source, questions, limits, usageStops, macros, signedOut, claudeProblem, claudeLooked, accountProblems, overview, machine, away, orders, accounts, accountChoices, defaultIdentity, board, github, remote, computers, newComputers, linkPairings, throughPublicName, configStatus, chats, helper, profiles, lockdownB, bangShell, sessions, olderArchived, loadArchived, loadHistory, projects, permissions, messages, hasEarlier, loadEarlier };
+  return { runs, workflows, connection, loaded, canRestart, hellos, updated, desktopApp, desktopAppHere, userName, source, questions, limits, usageStops, macros, signedOut, claudeProblem, claudeLooked, accountProblems, overview, machine, away, orders, accounts, accountChoices, defaultIdentity, board, github, remote, computers, newComputers, linkPairings, throughPublicName, configStatus, chats, helper, profiles, lockdownB, bangShell, sessions, olderArchived, loadArchived, loadHistory, projects, permissions, messages, hasEarlier, loadEarlier };
 }

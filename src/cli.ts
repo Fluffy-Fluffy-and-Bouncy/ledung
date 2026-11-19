@@ -17,7 +17,8 @@
 //   ledung stop                        stops the running Ledung and its sessions; exits 3 when none runs
 //   ledung account token <name>        puts a long-lived token into an account's Claude Code sign-in (#85)
 //   ledung --version
-//   ledung --open-only                 opens a running Ledung's page; exits 3 when none runs (the macOS app, issue #415)
+//   ledung --open-only                 opens a running Ledung: the app as `ledung` does (#409), else its page; exits 3
+//                                      when none runs (the macOS app, issue #415)
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { configPath } from './config.ts';
@@ -47,8 +48,8 @@ if (passthrough[0] === 'account') process.exit(await accountCommand(passthrough.
 
 // The desktop app (#407, Martin 2026-11-19, Ledung question #577): `ledung` opens it by default and the browser when
 // it is not installed or can't be made; --browser keeps to the browser. `ledung app` insists on the
-// app. Not for --no-open (the app's own Start Ledung, the sign-in start), --open-only (the shortcuts, unchanged) or
-// --foreground (development, where the core opens the browser itself).
+// app. Not for --no-open (the app's own Start Ledung, the sign-in start) or --foreground (development, where the core
+// opens the browser itself); --open-only, the Mac shortcut's, opens the app too (#409).
 // The choice is openChoice's (src/platform/desktop-app.ts), tested there (test review of PR #411, finding 1).
 // --after-app=<pid> (#408): the app ran this to restart its window into an updated Ledung. It waits for the app to have
 // quit, then opens it as `ledung` does, which writes its new code first; a failure opens the browser, saying why.

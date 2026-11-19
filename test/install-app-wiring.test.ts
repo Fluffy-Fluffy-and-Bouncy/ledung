@@ -4,7 +4,7 @@
 // module (a query on its address) on its own window, since the module keeps its state from when it loads.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { INSTALL_DISMISSED_KEY } from '../web/src/installApp.ts';
+import { DESKTOP_DISMISSED_KEY, INSTALL_DISMISSED_KEY } from '../web/src/installApp.ts';
 
 type Module = typeof import('../web/src/useInstallApp.ts');
 const CHROME = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
@@ -81,4 +81,26 @@ test('appinstalled (installed from the address bar) hides everything, and a late
   assert.equal(installState().notice, false);
   offer('dismissed');
   assert.deepEqual(installState().install, { kind: 'none' });
+});
+
+test('hello saying the desktop app is made here turns the notice into "Open in the Ledung app", dismissed on its own (#409)', async () => {
+  const { installState, setDesktopHere, dismiss, stored, offer } = await load();
+  offer('dismissed');
+  assert.deepEqual(installState().install, { kind: 'button' });
+  // The install notice dismissed before the app came: the app's pointer still shows.
+  dismiss();
+  assert.equal(stored.get(INSTALL_DISMISSED_KEY), '1');
+  assert.equal(installState().notice, false);
+  setDesktopHere(true);
+  assert.deepEqual(installState().install, { kind: 'desktop' });
+  assert.equal(installState().notice, true);
+  // Its own Not now: remembered under its own key, Settings keeps the button.
+  dismiss();
+  assert.equal(stored.get(DESKTOP_DISMISSED_KEY), '1');
+  assert.equal(installState().notice, false);
+  assert.deepEqual(installState().install, { kind: 'desktop' });
+  // Hello says no more (the app removed, "desktopApp": false): the install offer as before, still dismissed.
+  setDesktopHere(false);
+  assert.deepEqual(installState().install, { kind: 'button' });
+  assert.equal(installState().notice, false);
 });

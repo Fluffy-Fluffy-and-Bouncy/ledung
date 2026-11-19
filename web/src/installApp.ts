@@ -4,6 +4,11 @@
 // browser so they can be tested.
 
 export const INSTALL_DISMISSED_KEY = 'ledung.installDismissed';
+/**
+ * "Not now" on "Open in the Ledung app" (#409), kept apart from the install notice's: someone who said no to installing
+ * the page still hears about the desktop app once.
+ */
+export const DESKTOP_DISMISSED_KEY = 'ledung.desktopAppDismissed';
 
 /** What the browser says about this page. */
 export type InstallEnv = {
@@ -22,13 +27,19 @@ export type InstallEnv = {
   userAgent: string;
   /** An iPad asking for the desktop site says Macintosh too; only it has a touch screen. */
   maxTouchPoints: number;
+  /**
+   * Ledung's desktop app is made on this computer and this page is on its own screen (hello's desktopAppHere,
+   * #409): the page points at the app instead of installing itself.
+   */
+  desktopHere?: boolean;
 };
 
 /**
- * What to show: `button` opens the browser's dialog; `dock` is Safari's File → Add to Dock hint; `none` shows
- * nothing, with `reason` saying why for Settings (absent when there is nothing to say, as when it is installed).
+ * What to show: `button` opens the browser's dialog; `dock` is Safari's File → Add to Dock hint; `desktop` is "Open in
+ * the Ledung app" (#409); `none` shows nothing, with `reason` saying why for Settings (absent when there is nothing to
+ * say, as when it is installed).
  */
-export type Install = { kind: 'button' } | { kind: 'dock' } | { kind: 'none'; reason?: string };
+export type Install = { kind: 'button' } | { kind: 'dock' } | { kind: 'desktop' } | { kind: 'none'; reason?: string };
 
 const isSafariMac = (ua: string, touch: number) =>
   /Macintosh/.test(ua) && /Safari\//.test(ua) && !/Chrome|Chromium|CriOS|Edg|OPR|Firefox|FxiOS/.test(ua) && touch <= 1;
@@ -39,7 +50,11 @@ const isChromium = (ua: string) => /Chrome|Chromium|Edg\//.test(ua);
 const isElectron = (ua: string) => /\bElectron\//.test(ua);
 
 export function installOffer(env: InstallEnv): Install {
-  if (env.standalone || env.installed || isElectron(env.userAgent)) return { kind: 'none' };
+  if (isElectron(env.userAgent)) return { kind: 'none' };
+  // On the computer Ledung runs on, with its app made there: the app, in the browser and in a page installed as an app
+  // alike (#409). Only a hint: the page itself works as before.
+  if (env.desktopHere && !env.framed) return { kind: 'desktop' };
+  if (env.standalone || env.installed) return { kind: 'none' };
   if (env.framed) return { kind: 'none', reason: "Install this computer's own page, opened in a tab of its own." };
   if (env.offer) return { kind: 'button' };
   // Not "installed already or not allowed": the person just said no (review of #351).
@@ -57,14 +72,17 @@ export function installOffer(env: InstallEnv): Install {
 /** The parts of `localStorage` used here, so tests can pass their own. */
 export type InstallStore = Pick<Storage, 'getItem' | 'setItem'>;
 
-/** Whether "Not now" was pressed on the start notice in this browser. */
-export function readDismissed(store: InstallStore): boolean {
-  try { return store.getItem(INSTALL_DISMISSED_KEY) === '1'; } catch { return false; }
+/** Whether "Not now" was pressed on the start notice in this browser; `key` DESKTOP_DISMISSED_KEY for the app's (#409). */
+export function readDismissed(store: InstallStore, key = INSTALL_DISMISSED_KEY): boolean {
+  try { return store.getItem(key) === '1'; } catch { return false; }
 }
 
-export function saveDismissed(store: InstallStore): void {
-  try { store.setItem(INSTALL_DISMISSED_KEY, '1'); } catch { /* private mode: kept for this visit only */ }
+export function saveDismissed(store: InstallStore, key = INSTALL_DISMISSED_KEY): void {
+  try { store.setItem(key, '1'); } catch { /* private mode: kept for this visit only */ }
 }
+
+/** The "Not now" that counts for what is offered: the desktop app's own (#409), else the install notice's. */
+export const dismissKey = (install: Install): string => (install.kind === 'desktop' ? DESKTOP_DISMISSED_KEY : INSTALL_DISMISSED_KEY);
 
 /** The start notice shows what Settings shows, until it is dismissed; never a reason, only a button or the hint. */
 export const showsNotice = (install: Install, dismissed: boolean): boolean => !dismissed && install.kind !== 'none';

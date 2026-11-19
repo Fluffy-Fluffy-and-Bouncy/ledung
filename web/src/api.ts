@@ -290,6 +290,8 @@ export const api = {
   shortcuts: () => call<ShortcutsView>('GET', '/api/shortcuts'),
   tray: () => call<TrayView>('GET', '/api/tray'),
   setTray: (on: boolean) => call<TrayView>('POST', '/api/tray', { on }),
+  /** "Open in the Ledung app" in a browser on this computer (#409): opens the made desktop app there. */
+  openDesktopApp: () => call('POST', '/api/open-desktop-app', {}),
   shortcutsAct: (action: ShortcutAction) => call<ShortcutsView>('POST', '/api/shortcuts', { action }),
   /** The anonymous daily check-in's notice and switch (#220). */
   checkIn: () => call<CheckInView>('GET', '/api/checkin'),
