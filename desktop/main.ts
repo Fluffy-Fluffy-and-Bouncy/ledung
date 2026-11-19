@@ -7,14 +7,15 @@
 // check, sign-in cookie, Origin check and "no embedding" apply unchanged. Sign-in sets the cookie from this main
 // process (Mac spike 2026-11-17: GET /api/state 200 with no token in any URL); the token never goes into a URL or a
 // command line.
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, session, shell, type BaseWindow, type IpcMainEvent, type NativeImage, type Session, type WebContents } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, session, shell, WebContentsView, type BaseWindow, type IpcMainEvent, type NativeImage, type Session, type WebContents } from 'electron';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import { dataDir, findRunning } from './attach.ts';
 import { dockIconLayout, padBitmap } from './dock-icon.ts';
-import { zoomed, zoomKey } from './keys.ts';
+import { FindSession, type FindRequest } from './find.ts';
+import { findKey, zoomed, zoomKey, type FindKey } from './keys.ts';
 import { APP_ID, readMadeConfig, START_HIDDEN_FILE, WRITE_SHORTCUT_ARG } from './made.ts';
 import { menuTemplate } from './menu.ts';
 import { restartCommand, runStart, startCommand, startEnv } from './start.ts';
@@ -417,6 +418,127 @@ function sendToolCallsKey(w: BrowserWindow): void {
   w.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'O', modifiers: ['control'] });
 }
 
+/**
+ * The find bar (#445): Ctrl+F / ⌘F, or Edit → Find…, shows it over the window's top right; typing searches the page
+ * with Chromium's own find, which highlights the matches and scrolls to the active one, and the bar shows "n of m".
+ * The bar is a page of its own (find-bar.html) in a view laid over the window, not part of Ledung's page: the page's
+ * search then never finds the bar's text, and the page needs no change. One per window, made at its first open.
+ */
+const FIND_BAR_PAGE = path.join(here, 'find-bar.html');
+const FIND_BAR_PRELOAD = path.join(here, 'find-bar.cjs');
+/** The messages the bar's preload sends (find-bar.cjs). */
+export const FIND_QUERY_MESSAGE = 'ledung-find:query';
+export const FIND_STEP_MESSAGE = 'ledung-find:step';
+export const FIND_CLOSE_MESSAGE = 'ledung-find:close';
+/** The bar's size and place: a browser's find bar's, in from the window's right edge, below the page's top bar. */
+const FIND_BAR = { width: 400, height: 44, right: 16, top: 52 };
+
+interface FindBar {
+  view: WebContentsView;
+  search: FindSession;
+  open: boolean;
+  /** The bar's page has loaded: until then it can't take the focus or a message. */
+  loaded: Promise<void>;
+}
+/** Each window's bar, once it has been opened. */
+const findBars = new Map<BrowserWindow, FindBar>();
+
+/** Puts the bar at the window's top right; a window narrower than the bar gets one as wide as it. */
+function placeFindBar(w: BrowserWindow, bar: FindBar): void {
+  const { width: inside } = w.getContentBounds();
+  const width = Math.min(FIND_BAR.width, Math.max(0, inside - 2 * FIND_BAR.right));
+  bar.view.setBounds({ x: Math.max(0, inside - width - FIND_BAR.right), y: FIND_BAR.top, width, height: FIND_BAR.height });
+}
+
+/** The window's bar, made (hidden) the first time. */
+function findBarOf(w: BrowserWindow): FindBar {
+  const existing = findBars.get(w);
+  if (existing) return existing;
+  const view = new WebContentsView({ webPreferences: { preload: FIND_BAR_PRELOAD, sandbox: true, contextIsolation: true, nodeIntegration: false } });
+  // Clear, so the bar's rounded corners show the page behind them.
+  view.setBackgroundColor('#00000000');
+  view.setVisible(false);
+  w.contentView.addChildView(view);
+  const contents = view.webContents;
+  // The bar shows its own file and nothing else.
+  contents.on('will-navigate', (event) => event.preventDefault());
+  contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  // Enter, Shift+Enter, Esc and Ctrl+F / ⌘F in the bar (desktop/keys.ts); everything else types in its text box.
+  contents.on('before-input-event', (event, input) => {
+    const key = findKey(input, true);
+    if (!key) return;
+    event.preventDefault();
+    findAction(w, key);
+  });
+  const bar: FindBar = { view, search: new FindSession(), open: false, loaded: contents.loadFile(FIND_BAR_PAGE) };
+  bar.loaded.catch((e: Error) => console.error(`Ledung desktop: the find bar did not load: ${e.message}`));
+  w.on('resize', () => placeFindBar(w, bar));
+  w.on('closed', () => {
+    findBars.delete(w);
+    if (!contents.isDestroyed()) contents.close();
+  });
+  findBars.set(w, bar);
+  return bar;
+}
+
+/** Sends one search to the window's page; only its answers reach the bar. */
+function findInPage(w: BrowserWindow, bar: FindBar, request: FindRequest | 'stop'): void {
+  if (w.isDestroyed()) return;
+  if (request === 'stop') w.webContents.stopFindInPage('clearSelection');
+  else bar.search.sent(w.webContents.findInPage(request.text, { forward: request.forward, findNext: request.findNext }));
+}
+
+/**
+ * Opens the bar with its text box in focus and its text selected. Opened again after a close, it searches its kept
+ * text anew; pressed again while open, it only selects the text, as a browser's does.
+ */
+function openFind(w: BrowserWindow): void {
+  if (w.isDestroyed()) return;
+  const bar = findBarOf(w);
+  const wasOpen = bar.open;
+  bar.open = true;
+  placeFindBar(w, bar);
+  bar.view.setVisible(true);
+  void bar.loaded.then(() => {
+    if (!bar.open || w.isDestroyed()) return;
+    bar.view.webContents.focus();
+    bar.view.webContents.send('ledung-find:open', bar.search.text);
+    if (!wasOpen) {
+      const request = bar.search.reopen();
+      if (request) findInPage(w, bar, request);
+    }
+  }, () => {});
+}
+
+/** Closes the bar: the highlights go, and the page has the keys again. */
+function closeFind(w: BrowserWindow): void {
+  const bar = findBars.get(w);
+  if (!bar?.open) return;
+  bar.open = false;
+  bar.search.closed();
+  bar.view.setVisible(false);
+  if (w.isDestroyed()) return;
+  w.webContents.stopFindInPage('clearSelection');
+  w.webContents.focus();
+}
+
+/** A find key (desktop/keys.ts) pressed in the window: open, step or close. */
+function findAction(w: BrowserWindow, key: FindKey): void {
+  if (key === 'open') openFind(w);
+  else if (key === 'close') closeFind(w);
+  else {
+    const bar = findBars.get(w);
+    const request = bar?.open ? bar.search.step(key === 'next') : null;
+    if (bar && request) findInPage(w, bar, request);
+  }
+}
+
+/** The window whose bar a message came from; null for any other sender (the bar's preload is the only one sending these). */
+function findBarWindow(event: IpcMainEvent): BrowserWindow | null {
+  for (const [w, bar] of findBars) if (!w.isDestroyed() && bar.view.webContents === event.sender && bar.open) return w;
+  return null;
+}
+
 /** The app's menu (desktop/menu.ts); its items act on the focused window, which Electron hands them. */
 function buildMenu(): Menu {
   return Menu.buildFromTemplate(menuTemplate<BaseWindow>(process.platform, {
@@ -431,6 +553,10 @@ function buildMenu(): Menu {
     toolCalls: (w) => {
       const own = menuWindow(w);
       if (own) sendToolCallsKey(own);
+    },
+    find: (w) => {
+      const own = menuWindow(w);
+      if (own) openFind(own);
     },
     quit,
   }));
@@ -547,7 +673,21 @@ function createWindow(bounds?: { x: number; y: number; width: number; height: nu
       event.preventDefault();
       contents.zoomLevel = zoomed(contents.zoomLevel, 'in');
     }
+    // Ctrl+F / ⌘F opens the find bar from anywhere in the page, its text boxes too (#445): taken before the page sees
+    // it, which binds no Ctrl+F of its own, and before the menu's Find…, so it opens once.
+    if (findKey(input, false) === 'open') {
+      event.preventDefault();
+      openFind(w);
+    }
   });
+  // The bar's count: answers to its own search only (desktop/find.ts).
+  contents.on('found-in-page', (_event, result) => {
+    const bar = findBars.get(w);
+    const line = bar?.open ? bar.search.answer(result) : null;
+    if (bar && line !== null) bar.view.webContents.send('ledung-find:count', line);
+  });
+  // A new page in the window (a reload, the "not running" page): its highlights are gone, so the bar closes too.
+  contents.on('did-navigate', () => closeFind(w));
   // Ctrl and the mouse wheel: Electron only reports it, and zooms nothing unless the app does (#389). Off the Mac,
   // which is unchanged.
   contents.on('zoom-changed', (_event, direction) => {
@@ -616,6 +756,20 @@ if (shortcutFile) {
     updatePending = true;
     if (now === true) restartForUpdate();
     else restartIfHidden();
+  });
+  // The find bar's text, steps and close (#445).
+  ipcMain.on(FIND_QUERY_MESSAGE, (event, text: unknown) => {
+    const w = findBarWindow(event);
+    const bar = w ? findBars.get(w) : undefined;
+    if (w && bar && typeof text === 'string') findInPage(w, bar, bar.search.query(text));
+  });
+  ipcMain.on(FIND_STEP_MESSAGE, (event, forward: unknown) => {
+    const w = findBarWindow(event);
+    if (w) findAction(w, forward === true ? 'next' : 'previous');
+  });
+  ipcMain.on(FIND_CLOSE_MESSAGE, (event) => {
+    const w = findBarWindow(event);
+    if (w) closeFind(w);
   });
   app.on('before-quit', () => {
     quitting = true;

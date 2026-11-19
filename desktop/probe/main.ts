@@ -17,6 +17,10 @@
 //   PROBE_PHASE=window      a Ledung runs: closing hides, the Dock and a second start show the window again, ⌘O is
 //                           the page's Ctrl+O, timers keep their pace while hidden, Quit ends the app and not
 //                           Ledung (#359). PROBE_HIDDEN_SECONDS sets how long the timers run hidden (60)
+//   PROBE_PHASE=find        a Ledung runs (#445): ⌘F / Ctrl+F opens the find bar from a text box, typing counts the
+//                           page's matches ("n of m"), Enter and Shift+Enter step, Esc closes and clears the
+//                           highlights, Edit → Find… opens it again; PROBE_SHOT=<file.png> also saves the window with
+//                           the bar open on PROBE_FIND_TEXT ("Ledung")
 //   (PROBE_PHASE=child is the second start "window" launches itself)
 //   PROBE_PHASE=start      none runs: presses Start Ledung (#362), which runs LEDUNG_DESKTOP_START's script (the
 //                           worktree's src/cli.ts) as the app's start; the page loads signed in within 15 s, and
@@ -38,7 +42,7 @@
 //
 // Run from desktop/: `LEDUNG_CONFIG=… LEDUNG_DATA_DIR=… PROBE_PHASE=attach npx electron probe`. macOS and Linux
 // only for now: it reads command lines with `ps` (code review of PR #366, Minor 3).
-import { app, BrowserWindow, clipboard, dialog, Menu, nativeImage, shell, type MenuItem, type NativeImage } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, Menu, nativeImage, shell, WebContentsView, type MenuItem, type NativeImage, type WebContents } from 'electron';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -325,6 +329,213 @@ async function keys(w: BrowserWindow): Promise<void> {
   out('ctrl-w', { hidden, shownAgain: w.isVisible() });
   expect(hidden, 'Ctrl+W hides the window', hidden);
   expect(w.isVisible(), 'the window is shown again for the checks after this one', w.isVisible());
+}
+
+/** The window's find bar (#445): the view over it showing find-bar.html, once it has been opened. */
+function findBarView(w: BrowserWindow): WebContentsView | null {
+  for (const child of w.contentView.children) {
+    if (child instanceof WebContentsView && child.webContents.getURL().endsWith('/find-bar.html')) return child;
+  }
+  return null;
+}
+
+/** Presses a key in `wc` (the page or the bar), with the Mac's ⌘ as well as the others' modifiers. */
+async function pressIn(wc: WebContents, keyCode: string, modifiers: Array<'control' | 'meta' | 'alt' | 'shift'> = []): Promise<void> {
+  wc.sendInputEvent({ type: 'keyDown', keyCode, modifiers });
+  wc.sendInputEvent({ type: 'keyUp', keyCode, modifiers });
+  await sleep(500);
+}
+
+/** Pixels in `rect` of the page painted in Chromium's find highlights: yellow for every match, orange for the active one. */
+async function highlighted(w: BrowserWindow, rect: { x: number; y: number; width: number; height: number }): Promise<number> {
+  const image = await w.webContents.capturePage(rect);
+  const bitmap = image.toBitmap();
+  let count = 0;
+  // BGRA. Yellow (255, 255, 0) and orange (255, 150, 50): red high, blue low, which the page's own colours never are.
+  for (let i = 0; i < bitmap.length; i += 4) if (bitmap[i + 2]! > 200 && bitmap[i]! < 90 && bitmap[i + 1]! > 110) count++;
+  return count;
+}
+
+/**
+ * The window as a person sees it: the page with the find bar laid over it. Each is captured on its own (a window's
+ * capture holds only its page) and the bar drawn over the page at its place, blending its clear corners.
+ */
+async function windowShot(w: BrowserWindow, bar: WebContentsView): Promise<NativeImage> {
+  const pageImage = await w.webContents.capturePage();
+  const scale = pageImage.getSize().width / w.getContentBounds().width;
+  const barImage = await bar.webContents.capturePage().catch(async (e: Error) => {
+    // A locked screen paints the page but leaves the bar's surface out ("Current display surface not available"):
+    // the bar's own page, preload and text drawn off screen at its size instead, and the run says so.
+    out('shot-bar-offscreen', { reason: e.message });
+    const at = bar.getBounds();
+    const twin = new BrowserWindow({ show: false, width: at.width, height: at.height, frame: false, transparent: true, backgroundColor: '#00000000',
+      webPreferences: { offscreen: true, preload: path.join(here, '..', 'find-bar.cjs'), sandbox: true, contextIsolation: true } });
+    await twin.loadFile(path.join(here, '..', 'find-bar.html'));
+    const [text, line] = await bar.webContents.executeJavaScript(`[document.getElementById('text').value, document.getElementById('count').textContent]`);
+    twin.webContents.send('ledung-find:open', text);
+    twin.webContents.send('ledung-find:count', line);
+    await sleep(800);
+    const image = await twin.webContents.capturePage();
+    twin.destroy();
+    return image.resize({ width: Math.round(at.width * scale), height: Math.round(at.height * scale) });
+  });
+  const { width: pw, height: ph } = pageImage.getSize();
+  const { width: bw, height: bh } = barImage.getSize();
+  const pagePixels = Buffer.from(pageImage.toBitmap());
+  const barPixels = barImage.toBitmap();
+  const at = bar.getBounds();
+  const x0 = Math.round(at.x * scale);
+  const y0 = Math.round(at.y * scale);
+  for (let y = 0; y < bh && y0 + y < ph; y++) {
+    for (let x = 0; x < bw && x0 + x < pw; x++) {
+      const s = (y * bw + x) * 4;
+      const d = ((y0 + y) * pw + x0 + x) * 4;
+      const a = barPixels[s + 3]! / 255;
+      for (let c = 0; c < 3; c++) pagePixels[d + c] = Math.round(barPixels[s + c]! * a + pagePixels[d + c]! * (1 - a));
+    }
+  }
+  return nativeImage.createFromBitmap(pagePixels, { width: pw, height: ph, scaleFactor: scale });
+}
+
+/**
+ * The find bar (#445): ⌘F / Ctrl+F in a text box of the page opens it with the focus in it; typing counts the
+ * matches in the page and not in the bar; Enter and Shift+Enter step, around the end; Enter in the page stays the
+ * page's; Esc closes it and clears the highlights; Edit → Find… opens it again with the last search; nothing found
+ * says so. With PROBE_SHOT set, ends with the bar open on PROBE_FIND_TEXT and saves the window there as a PNG.
+ */
+async function findPhase(w: BrowserWindow): Promise<void> {
+  const wc = w.webContents;
+  const command = process.platform === 'darwin' ? 'meta' : 'control';
+  const word = 'zebraquokka';
+  // The window in front, so the focus checks below mean something (started from a terminal, it may not be).
+  w.show();
+  w.focus();
+  if (process.platform === 'darwin') app.focus({ steal: true });
+  await sleep(800);
+  // A locked screen (a run from another computer at night) puts no window in front: which part of the window has the
+  // keys is then read from inside the bar's page, and the run says so.
+  const inFront = w.isFocused();
+  out('find-window', { inFront });
+  const barHasKeys = async (bar: WebContentsView) => (inFront ? bar.webContents.isFocused() : true)
+    && (await bar.webContents.executeJavaScript(`document.activeElement?.id`)) === 'text';
+  // Three matches in a block of the probe's own, a text box standing in for the composer, and a list of the keys
+  // the page hears.
+  await page(w, `(() => {
+    const d = document.createElement('div'); d.id = '__probeFind';
+    d.style.cssText = 'position:fixed;left:40%;top:45%;z-index:99999;padding:8px;font:24px sans-serif;background:#16181d;color:#e3e6eb';
+    d.textContent = '${word} one, ${word} two, ${word} three';
+    const t = document.createElement('textarea'); t.id = '__probeComposer';
+    t.style.cssText = 'position:fixed;left:40%;top:60%;z-index:99999';
+    document.body.append(d, t);
+    window.__probeKeys = [];
+    window.addEventListener('keydown', (e) => window.__probeKeys.push({ key: e.key, code: e.code, ctrlKey: e.ctrlKey,
+      metaKey: e.metaKey, altKey: e.altKey, shiftKey: e.shiftKey, isComposing: e.isComposing }), true);
+    t.focus();
+    return 1;
+  })()`);
+  const rect = await page(w, `(() => { const r = document.getElementById('__probeFind').getBoundingClientRect();
+    return { x: Math.floor(r.x), y: Math.floor(r.y), width: Math.ceil(r.width), height: Math.ceil(r.height) }; })()`);
+  const count = (bar: WebContentsView) => bar.webContents.executeJavaScript(`document.getElementById('count').textContent`);
+  const heard = async () => (await page(w, 'window.__probeKeys.splice(0)')) as Array<{ key: string; ctrlKey: boolean; metaKey: boolean }>;
+  wc.focus();
+  await heard();
+
+  // ⌘F / Ctrl+F in the text box: the bar opens and takes the keys; the page never hears the F.
+  expect(findBarView(w) === null, 'no find bar before the first ⌘F / Ctrl+F');
+  await pressIn(wc, 'F', [command]);
+  await sleep(500);
+  const bar = findBarView(w);
+  const opened = { bar: bar !== null, visible: bar?.getVisible() ?? false, focused: bar ? await barHasKeys(bar) : false, pageHeard: await heard() };
+  out('find-open', opened);
+  expect(opened.bar && opened.visible && opened.focused, `${command}+F in a text box opens the find bar with the focus in it`, opened);
+  expect(!opened.pageHeard.some((k) => k.key.toLowerCase() === 'f'), 'the page did not hear the F', opened.pageHeard);
+  if (!bar) return;
+  const barPrefs = (bar.webContents as unknown as { getLastWebPreferences(): Record<string, unknown> }).getLastWebPreferences();
+  expect(barPrefs.sandbox === true && barPrefs.contextIsolation === true && barPrefs.nodeIntegration === false, 'the bar is sandboxed and isolated', barPrefs);
+
+  // Typing: the page's three matches, not the bar's own text (which holds the word too), the first active.
+  const before = await highlighted(w, rect);
+  await bar.webContents.insertText(word);
+  await sleep(800);
+  const typed = { count: await count(bar), barText: await bar.webContents.executeJavaScript(`document.getElementById('text').value`), highlightedBefore: before, highlighted: await highlighted(w, rect) };
+  out('find-typed', typed);
+  expect(typed.count === '1 of 3' && typed.barText === word, 'typing finds the page\'s three matches, not the bar\'s own text: "1 of 3"', typed);
+  expect(before === 0 && typed.highlighted > 0, 'the matches are highlighted in the page, and were not before', typed);
+
+  // Enter, Shift+Enter, and around the start.
+  const steps: string[] = [];
+  for (const shift of [false, true, true]) {
+    await pressIn(bar.webContents, 'Enter', shift ? ['shift'] : []);
+    steps.push(await count(bar));
+  }
+  out('find-steps', steps);
+  expect(JSON.stringify(steps) === JSON.stringify(['2 of 3', '1 of 3', '3 of 3']), 'Enter steps on, Shift+Enter back, and back past the first to the last', steps);
+
+  // Enter in the page, with the bar open: the page's, the bar stays as it was.
+  wc.focus();
+  await page(w, `document.getElementById('__probeComposer').focus(); 1`);
+  await heard();
+  await pressIn(wc, 'Return');
+  const pageEnter = { heard: await heard(), count: await count(bar), visible: bar.getVisible() };
+  out('find-page-enter', pageEnter);
+  expect(pageEnter.heard.some((k) => k.key === 'Enter') && pageEnter.count === '3 of 3' && pageEnter.visible, 'Enter in the page is the page\'s, and the bar stays', pageEnter);
+
+  // Esc in the bar: closed, highlights gone, the page has the keys again.
+  bar.webContents.focus();
+  await pressIn(bar.webContents, 'Escape');
+  const closed = { visible: bar.getVisible(), pageFocused: inFront ? wc.isFocused() : null, highlighted: await highlighted(w, rect) };
+  out('find-closed', closed);
+  expect(!closed.visible && closed.pageFocused !== false, 'Esc closes the bar and the page has the focus again', closed);
+  expect(closed.highlighted === 0, 'Esc clears the highlights', closed);
+
+  // The page's own keys still reach it: Ctrl+O, its Show tool calls key on every system.
+  await heard();
+  await pressIn(wc, 'O', ['control']);
+  const ctrlO = await heard();
+  out('find-ctrl-o', ctrlO);
+  expect(ctrlO.length === 1 && isToolCallsKey(ctrlO[0] as never), "the page's own Ctrl+O still reaches it", ctrlO);
+
+  // Edit → Find…: opens again with the last search, found anew, its text selected.
+  const item = Menu.getApplicationMenu()?.getMenuItemById('find') ?? null;
+  item?.click(undefined, w, wc);
+  await sleep(900);
+  const selection = `(() => { const t = document.getElementById('text'); return [t.selectionStart, t.selectionEnd, t.value.length]; })()`;
+  const menuOpen = { item: item?.label ?? null, accelerator: item?.accelerator ?? null, visible: bar.getVisible(), focused: await barHasKeys(bar),
+    count: await count(bar), selection: await bar.webContents.executeJavaScript(selection), highlighted: await highlighted(w, rect) };
+  out('find-menu', menuOpen);
+  expect(menuOpen.item === 'Find…' && menuOpen.accelerator === 'CmdOrCtrl+F', 'Edit → Find… is on ⌘F / Ctrl+F', menuOpen);
+  expect(menuOpen.visible && menuOpen.focused && menuOpen.count === '1 of 3' && menuOpen.highlighted > 0, 'Find… opens the bar again on the last search, found anew', menuOpen);
+  expect(JSON.stringify(menuOpen.selection) === JSON.stringify([0, word.length, word.length]), "the bar's text is selected, so typing replaces it", menuOpen.selection);
+
+  // ⌘F / Ctrl+F in the open bar: stays open, the search where it was.
+  await pressIn(bar.webContents, 'Enter');
+  await pressIn(bar.webContents, 'F', [command]);
+  const again = { visible: bar.getVisible(), count: await count(bar), selection: await bar.webContents.executeJavaScript(selection) };
+  out('find-again', again);
+  expect(again.visible && again.count === '2 of 3' && JSON.stringify(again.selection) === JSON.stringify([0, word.length, word.length]),
+    `${command}+F in the open bar selects its text and leaves the search where it was`, again);
+
+  // Nothing found, then an empty box.
+  await bar.webContents.insertText('qxqzvkw');
+  await sleep(800);
+  const none = await count(bar);
+  await bar.webContents.executeJavaScript(`(() => { const t = document.getElementById('text'); t.value = ''; t.dispatchEvent(new Event('input')); return 1; })()`);
+  await sleep(500);
+  const empty = { count: await count(bar), highlighted: await highlighted(w, rect) };
+  out('find-none', { none, empty });
+  expect(none === 'No matches', 'a text not in the page: "No matches"', none);
+  expect(empty.count === '' && empty.highlighted === 0, 'an emptied box shows no count and no highlights', empty);
+  await page(w, `document.getElementById('__probeFind')?.remove(); document.getElementById('__probeComposer')?.remove(); 1`);
+
+  const shot = process.env.PROBE_SHOT;
+  if (shot) {
+    await bar.webContents.insertText(process.env.PROBE_FIND_TEXT ?? 'Ledung');
+    await sleep(1000);
+    await pressIn(bar.webContents, 'Enter');
+    await sleep(500);
+    fs.writeFileSync(shot, (await windowShot(w, bar)).toPNG());
+    out('find-shot', { file: shot, count: await count(bar) });
+  }
 }
 
 /** Notifications and clipboard writes allowed for Ledung's page, anything else refused (code review, Minor 2). */
@@ -899,6 +1110,10 @@ async function run(): Promise<void> {
       const w = await showing(`${origin}/`);
       await signedIn(w);
       await windowsPhase(w);
+    } else if (phase === 'find') {
+      const w = await showing(`${origin}/`);
+      await signedIn(w);
+      await findPhase(w);
     } else if (phase === 'notify') {
       const w = await showing(`${origin}/`);
       await signedIn(w);

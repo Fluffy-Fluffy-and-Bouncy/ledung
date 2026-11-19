@@ -54,6 +54,11 @@ One window opens with your running Ledung's page, signed in. Nothing opens in th
   Ledung's own later (Martin, 2026-11-19, #389). The keys still work: Ctrl+W, Alt+F4 (Windows), copy and paste, Ctrl+O (Show tool
   calls), reload, and zoom with Ctrl and "+" (any keyboard layout; Ctrl and "=" too), Ctrl+-, Ctrl+0 and Ctrl and the
   mouse wheel. The Mac's menu is the system menu bar, as before.
+- **Find in the page** (#445): Ctrl+F (⌘F on the Mac), or Edit → Find…, opens a find bar at the window's top right,
+  from anywhere in the page, the composer too. Typing highlights the matches in what the page shows and the bar says
+  "n of m" (or "No matches"); Enter and Shift+Enter go to the next and previous match, around the ends; Esc or ✕
+  closes it and clears the highlights. Opened again, it searches its last text anew. It finds only what the page has
+  loaded, as a browser's Ctrl+F does. In a browser, the browser's own Ctrl+F is unchanged.
 - **⌘O on the Mac** does what Ctrl+O does in the page: Show tool calls. (In a browser the page keeps to Ctrl+O on
   every system, so that ⌘O stays the browser's; in the app ⌘O is the app's own.)
 - **Clicking a notification shows the window.** When a session asks for permission or a question comes, Ledung's
@@ -188,7 +193,13 @@ answers; `PROBE_HIDDEN_SECONDS` sets the hidden time, 60 by default) and `window
 Window on ⌘N/Ctrl+N and the footer's New window button each open another signed-in window at the start page while the
 first keeps its route, no new device, the "not running" page cannot ask for one, closing one of several closes it, the
 last only hides, the Dock and a second start show the most recently used, Quit closes them all and the Ledung still
-answers). A fresh data folder shows Ledung's Welcome,
+answers) and `find` (a Ledung runs, #445: ⌘F/Ctrl+F in a text box opens the find bar with the keys in it and the
+page never hears the F; typing counts the page's matches and not the bar's own text, "1 of 3", highlighted; Enter and
+Shift+Enter step, around the start; Enter in the page stays the page's; Esc closes the bar and clears the highlights;
+Ctrl+O still reaches the page; Edit → Find… opens it again on the last search; "No matches"; with `PROBE_SHOT=<file>`
+it also saves the window with the bar open on `PROBE_FIND_TEXT`. On a locked screen no window comes in front and the
+bar's view is not painted: the probe then reads the focus from inside the bar's page and draws the bar for the picture
+from its own page off screen, and says so). A fresh data folder shows Ledung's Welcome,
 which has no sidebar, so finish or leave the welcome in the page before the first run. Each check it makes prints
 `"event":"fail"` when it doesn't hold; the exit code is 0 only when all held, 1 otherwise, 2 when it refused to run.
 It refuses without both settings, on the default port, and on Windows (it reads command lines with `ps`; macOS and
@@ -211,8 +222,13 @@ Linux only for now).
   `menu.ts`: the app's menu and its keys per system. No Electron in either, so `test/desktop.test.ts` runs them.
 - `attach.ts`: finding the running Ledung. No Electron in it, so the root `npm run check` tests it
   (`test/desktop.test.ts`), including that its proof matches the core's.
-- `keys.ts`: the zoom keys off the Mac (#389): Ctrl and "+" or "=", in one zoom step. No Electron in it, so
-  `test/desktop.test.ts` runs it.
+- `keys.ts`: the zoom keys off the Mac (#389): Ctrl and "+" or "=", in one zoom step; and the find bar's keys (#445):
+  which open, step and close it. No Electron in it, so `test/desktop.test.ts` runs it.
+- `find-bar.html`, `find-bar.cjs` and `find.ts`: the find bar (#445). The bar is a small page of its own in a view laid
+  over the window, not part of Ledung's page, so the page's search never finds the bar's own text and the page needs
+  no change; its preload gives it three messages (the text, a step, close), which the app takes only from that
+  window's bar. The search itself is Chromium's, `findInPage`, on the window's page. `find.ts`, what to search for and
+  the "n of m" from the answers, has no Electron in it; `test/desktop.test.ts` runs it.
 - `start.ts`: Start Ledung: the command, its clean environment and the one line a failed start gives. No Electron in
   it either, so `test/desktop.test.ts` runs it, with scripts of its own in place of `ledung`.
 - `made.ts`: the made app's settings, `ledung-app.json` (#407). No Electron in it; `test/desktop-app.test.ts` runs it.
