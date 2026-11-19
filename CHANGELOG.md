@@ -1,13 +1,18 @@
 # Ledung changelog
 
-For the person using Ledung. Newest first. One `## YYYY-MM-DD` heading per day (Ledung has no version
-numbers, and releases are per machine), then TERSE `- ` bullets: one short line per change, plain words
-saying what changed for the user, no prose paragraphs and no mechanism (that belongs in the commit
-message). Each bullet ends with the issue number(s) it closes, `(#12)` or `(#12, #15)`, or `(no issue)`
-when there is none, so the omission is deliberate. A PR that changes what Ledung does adds its bullet
-under today's date, creating the heading at the top if it is missing; the pre-push check refuses a push
-that changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one (a commit trailer `Changelog: none` says there
-is nothing user-facing in it).
+Every public release (v4, v5 …), newest first: what `npm install -g ledung` and the Public update channel get. Each
+release has one heading with its version and when it was published, then terse `- ` bullets, one per change, each
+ending with its issue `(#12)` or `(no issue)`. A public release folds together every dev build since the one before;
+the dev builds one by one are in [CHANGELOG-dev.md](CHANGELOG-dev.md). Online: https://projectledung.com/changelog
+
+**Don't edit this file.** A pull request that changes what Ledung does writes its bullets in
+`docs/changes/<issue>.md` ([docs/changes/README.md](docs/changes/README.md)); the pre-push check refuses a push that
+changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one, unless a commit has the trailer `Changelog: none`.
+`npm run publish:dev` and `npm run publish:public` fold the waiting bullets in under the version they publish and push
+the result to main (issue #417). Before that, every change was listed by date: that history is below, under "Earlier,
+by date", as it was.
+
+## Earlier, by date
 
 ## 2026-11-19
 - Desktop app: when the tray icon's **Open Ledung** opens the browser instead of the app, it now says why, once in Ledung's log and in a banner on the page, for example that Electron's package is missing or the app could not be made. With `"desktopApp": false` it says so in the log only. (#434)
