@@ -72,8 +72,6 @@ const PACKAGE = 'ledung';
 const CHANNEL_KEY = 'update-channel';
 /** The EXERCISED line of issue #461, once per run. */
 let devCheckTraced = false;
-/** The EXERCISED line of issue #382, once per run. */
-let arrayAnswerTraced = false;
 
 /** The release the running Ledung came from, or null when it runs straight from a source folder. */
 export function readRunningRelease(appDir: string): ReleaseInfo | null {
@@ -438,10 +436,6 @@ export function readDistTags(answer: unknown): Record<string, string> | null {
   if (Array.isArray(answer)) {
     if (answer.length !== 1 || !answer[0] || typeof answer[0] !== 'object' || Array.isArray(answer[0])) return null;
     tags = answer[0];
-    if (!arrayAnswerTraced) {
-      arrayAnswerTraced = true;
-      exercisedLine('EXERCISED #382 npm answered dist-tags as an array and its tags were read');
-    }
   }
   if (!tags || typeof tags !== 'object') return null;
   return Object.fromEntries(Object.entries(tags).filter((e): e is [string, string] => typeof e[1] === 'string'));
