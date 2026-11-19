@@ -470,8 +470,6 @@ export function madeApp(dataDir: string, platform: NodeJS.Platform = process.pla
 /** Said when there is no app to open, so the caller opens the browser: no line to show for it, it is the usual case. */
 export const NO_APP = 'No desktop app is made on this computer.';
 
-let openedTraced = false;
-
 /**
  * Opens the app made on this computer from the running Ledung (#409): the tray's Open and the page's "Open in the Ledung
  * app". Null when it opened; else why not, and the caller opens the browser. Only an app that is made already: the
@@ -486,12 +484,7 @@ export async function openMadeApp(o: { dataDir: string; off: boolean; packaged?:
   if (!paths) return NO_APP;
   // The running Ledung's own settings stay with it: the app's Start Ledung would otherwise pass them on (#456, #408).
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !['LEDUNG_LAUNCHER', 'LEDUNG_LOG_FILE'].includes(name.toUpperCase())));
-  const failed = await (o.open ?? ((p) => openApp(p, platform, env)))(paths);
-  if (failed === null && !openedTraced) {
-    openedTraced = true;
-    exercisedLine('EXERCISED #409 the running Ledung opened the made desktop app');
-  }
-  return failed;
+  return (o.open ?? ((p) => openApp(p, platform, env)))(paths);
 }
 
 /**
@@ -584,7 +577,6 @@ export interface TrayOpenOptions {
 }
 
 let trayOpening: Promise<void> | null = null;
-let trayTraced = false;
 let fallbackTraced = false;
 
 /** The tray's line when "desktopApp" is false: the person's own choice, so it goes to the log only, never the page. */
@@ -650,17 +642,13 @@ export function trayOpen(o: TrayOpenOptions): Promise<void> {
   }
   if (trayOpening) return trayOpening;
   const desktop = o.desktop;
-  const open = o.steps.open;
   trayOpening = (async () => {
+    // An app that opened clears the tray's reason left from an earlier click (#434).
     const steps: OpenSteps = {
       ...o.steps,
       open: async (paths) => {
-        const failed = await open(paths);
+        const failed = await o.steps.open(paths);
         if (failed === null) dropTrayNotice(o.dataDir);
-        if (failed === null && !trayTraced) {
-          trayTraced = true;
-          exercisedLine('EXERCISED #409 the tray opened the desktop app, made first when needed');
-        }
         return failed;
       },
     };
