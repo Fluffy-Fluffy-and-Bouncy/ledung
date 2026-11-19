@@ -16,7 +16,7 @@ import { AFTER_APP_ARG, afterApp, APP_ID, MADE_CONFIG, madeConfigFor, readMadeCo
 import { findOnPath, restartCommand, runStart, startCommand } from '../desktop/start.ts';
 import {
   ADD_COMMAND, APP_SHORTCUT, appManifest, backgroundArgs, codeIntoKept, desktopAppOff, desktopAppState, desktopAvailability, electronPackage,
-  ensureApp, madeApp, madePaths, NO_APP, noticeFile, offersApp, openChoice, openDesktop, openMadeApp, trayOpen, TRAY_OFF_LINE, progressPrinter, readStamp, setExeDetails, waitForExit, whatToMake, writeAppCode,
+  ensureApp, madeApp, madePaths, NO_APP, noticeFile, offersApp, openChoice, openDesktop, openMadeApp, trayOpen, progressPrinter, readStamp, setExeDetails, waitForExit, whatToMake, writeAppCode,
   writeAppShortcut, type Availability, type MadePaths, type OpenSteps, type Stamp,
 } from '../src/platform/desktop-app.ts';
 import { icoFromPng } from '../src/platform/icons.ts';
@@ -359,7 +359,7 @@ test("the tray's Open makes the app when none is made, then opens it; no browser
     ensure: async (o) => { ensured.push(o.dataDir); o.print?.('Making the desktop app, once: downloading Electron 45.4.1'); return { made: 'all', paths: made }; },
     open: async (p) => { opened.push(p); return null; },
   });
-  await trayOpen({ dataDir: path.join(base, 'tray-data'), off: false, desktop: { ...AVAILABLE, electron: { dir: base, version: '45.4.1' } }, make: trayMake(data), steps: s });
+  await trayOpen({ dataDir: path.join(base, 'tray-data'), told: new Set(), off: false, desktop: { ...AVAILABLE, electron: { dir: base, version: '45.4.1' } }, make: trayMake(data), steps: s });
   assert.deepEqual(ensured, [data], 'made in the data folder it was given');
   assert.deepEqual(opened, [made], 'the made app opened');
   assert.equal(s.browsers, 0);
@@ -375,14 +375,14 @@ test("the tray's Open gives the browser with \"desktopApp\": false or no Electro
   for (const [off, desktop] of [[true, AVAILABLE], [false, { ok: false, reason: 'Run from a clone' }]] as const) {
     let ensured = 0;
     const s = steps({ ensure: async () => { ensured++; return { made: 'nothing', paths: madePaths(base, 'darwin') }; } });
-    await trayOpen({ dataDir: path.join(base, 'tray-data'), off, desktop, make: trayMake(path.join(base, 'tray-off')), steps: s });
+    await trayOpen({ dataDir: path.join(base, 'tray-data'), told: new Set(), off, desktop, make: trayMake(path.join(base, 'tray-off')), steps: s });
     assert.equal(s.browsers, 1, `off ${off}, ${desktop.ok}`);
     assert.equal(ensured, 0);
   }
   // Premise: on, with the package, the same steps make and open the app instead.
   let ensured = 0;
   const s = steps({ ensure: async () => { ensured++; return { made: 'nothing', paths: madePaths(base, 'darwin') }; } });
-  await trayOpen({ dataDir: path.join(base, 'tray-data'), off: false, desktop: { ...AVAILABLE, electron: { dir: base, version: '45.4.1' } }, make: trayMake(path.join(base, 'tray-on')), steps: s });
+  await trayOpen({ dataDir: path.join(base, 'tray-data'), told: new Set(), off: false, desktop: { ...AVAILABLE, electron: { dir: base, version: '45.4.1' } }, make: trayMake(path.join(base, 'tray-on')), steps: s });
   assert.equal(ensured, 1);
   assert.equal(s.browsers, 0);
 });
@@ -390,56 +390,75 @@ test("the tray's Open gives the browser with \"desktopApp\": false or no Electro
 test("the tray's Open: a failed make or open says why in one line and opens the browser", async () => {
   const desktop: Availability = { ...AVAILABLE, electron: { dir: base, version: '45.4.1' } };
   const failedMake = steps({ ensure: async () => { throw new Error('getaddrinfo ENOTFOUND github.com'); } });
-  await trayOpen({ dataDir: path.join(base, 'tray-data'), off: false, desktop, make: trayMake(path.join(base, 'tray-fail-make')), steps: failedMake });
+  await trayOpen({ dataDir: path.join(base, 'tray-data'), told: new Set(), off: false, desktop, make: trayMake(path.join(base, 'tray-fail-make')), steps: failedMake });
   assert.equal(failedMake.browsers, 1);
   assert.ok(failedMake.lines.includes('The desktop app could not be made: getaddrinfo ENOTFOUND github.com. Opening Ledung in the browser instead.'), failedMake.lines.join('\n'));
   const failedOpen = steps({ open: async () => 'Could not open the desktop app: open exited with code 1.' });
-  await trayOpen({ dataDir: path.join(base, 'tray-data'), off: false, desktop, make: trayMake(path.join(base, 'tray-fail-open')), steps: failedOpen });
+  await trayOpen({ dataDir: path.join(base, 'tray-data'), told: new Set(), off: false, desktop, make: trayMake(path.join(base, 'tray-fail-open')), steps: failedOpen });
   assert.equal(failedOpen.browsers, 1);
   assert.ok(failedOpen.lines.includes('Could not open the desktop app: open exited with code 1. Opening Ledung in the browser instead.'), failedOpen.lines.join('\n'));
   const noConfig = steps();
-  await trayOpen({ dataDir: path.join(base, 'tray-data'), off: false, desktop, make: async () => { throw new Error('no Start menu'); }, steps: noConfig });
+  await trayOpen({ dataDir: path.join(base, 'tray-data'), told: new Set(), off: false, desktop, make: async () => { throw new Error('no Start menu'); }, steps: noConfig });
   assert.equal(noConfig.browsers, 1);
   assert.deepEqual(noConfig.lines, ['The desktop app could not be made: no Start menu. Opening Ledung in the browser instead.']);
 });
 
 // #434: on Windows the tray's Open gave the browser with no word anywhere when the app was not available, so the cause
-// could not be told. Every fallback now says why: once in the log, and on the page the browser opens (the notice).
-test("the tray's Open says why it gives the browser: once in the log, and on the page; an opened app says nothing", async () => {
+// could not be told. Every fallback now says why: once in the log, and once on the page the browser opens. Nothing new
+// is imported, so this file also loads on the code before the fix (the revert check); the tray's line is in
+// desktop/tray-notice.txt in the data folder, apart from `ledung`'s notice.txt, which lasts until the app opens.
+const trayNotice = (dataDir: string) => path.join(dataDir, 'desktop', 'tray-notice.txt');
+const hello = (dataDir: string) => desktopAppState({ dataDir, ledungVersion: '1.2', platform: 'win32', takeTrayNotice: true } as Parameters<typeof desktopAppState>[0]);
+
+test("the tray's Open says why it gives the browser: once in the log, and once on the page; an opened app says nothing", async () => {
   const data = path.join(base, 'tray-why');
   const without = fakePackage('tray-without', null);
   const desktop = desktopAvailability({ app: without, packaged: true, env: {}, platform: 'win32' });
   assert.equal(desktop.ok, false, 'premise: no Electron package, no app');
   const why = `The desktop app is not installed: Electron's package is missing (its optional install failed or was left out). To add it, ${ADD_COMMAND}.`;
+  const told = new Set<string>();
   const s = steps();
-  await trayOpen({ dataDir: data, off: false, desktop, make: trayMake(data), steps: s });
+  await trayOpen({ dataDir: data, told, off: false, desktop, make: trayMake(data), steps: s });
   assert.equal(s.browsers, 1);
   assert.deepEqual(s.lines, [`${why} Opening Ledung in the browser instead.`]);
-  assert.equal(fs.readFileSync(noticeFile(data), 'utf8'), `${why} Ledung opened in the browser instead.\n`);
-  assert.deepEqual(desktopAppState({ dataDir: data, ledungVersion: '1.2', platform: 'win32' }), { stale: false, notice: `${why} Ledung opened in the browser instead.` }, 'the page gets it in hello');
-  // A second click: the browser again, the line not logged again.
-  await trayOpen({ dataDir: data, off: false, desktop, make: trayMake(data), steps: s });
+  assert.equal(fs.readFileSync(trayNotice(data), 'utf8'), `${why} Ledung opened in the browser instead.\n`);
+  // The page the browser opens gets it in hello; the next page does not, so a reload or Dismiss doesn't bring it back.
+  assert.deepEqual(hello(data), { stale: false, notice: `${why} Ledung opened in the browser instead.` });
+  assert.equal(hello(data), null, 'given once');
+  assert.equal(fs.existsSync(noticeFile(data)), false, "`ledung`'s own notice is not used");
+  // A second click: the browser again with its line for the page, but not logged again in this run.
+  await trayOpen({ dataDir: data, told, off: false, desktop, make: trayMake(data), steps: s });
   assert.equal(s.browsers, 2);
   assert.equal(s.lines.length, 1, s.lines.join('\n'));
-  // A make that throws leaves its reason for the page too.
+  assert.equal(hello(data)?.notice, `${why} Ledung opened in the browser instead.`);
+  // A make that throws leaves its reason for the page too, and one with no message still says something.
   const thrown = path.join(base, 'tray-why-thrown');
-  await trayOpen({ dataDir: thrown, off: false, desktop: AVAILABLE, make: async () => { throw new Error('no Node'); }, steps: steps() });
-  assert.equal(fs.readFileSync(noticeFile(thrown), 'utf8'), 'The desktop app could not be made: no Node. Ledung opened in the browser instead.\n');
-  // "desktopApp": false is the person's own choice: logged once, nothing on the page.
+  await trayOpen({ dataDir: thrown, told, off: false, desktop: AVAILABLE, make: async () => { throw new Error('no Node'); }, steps: steps() });
+  assert.equal(fs.readFileSync(trayNotice(thrown), 'utf8'), 'The desktop app could not be made: no Node. Ledung opened in the browser instead.\n');
+  const empty = steps();
+  await trayOpen({ dataDir: thrown, told, off: false, desktop: AVAILABLE, make: async () => { throw new Error(''); }, steps: empty });
+  assert.deepEqual(empty.lines, ['The desktop app could not be made: no reason given. Opening Ledung in the browser instead.']);
+  // "desktopApp": false is the person's own choice: logged once per run, nothing for the page, and a reason left from
+  // before it was switched off is taken away.
   const off = path.join(base, 'tray-why-off');
+  await trayOpen({ dataDir: off, told: new Set(), off: false, desktop, make: trayMake(off), steps: steps() });
+  assert.equal(fs.existsSync(trayNotice(off)), true, 'premise: a reason left from before');
   const o = steps();
-  await trayOpen({ dataDir: off, off: true, desktop: AVAILABLE, make: trayMake(off), steps: o });
-  await trayOpen({ dataDir: off, off: true, desktop: AVAILABLE, make: trayMake(off), steps: o });
+  const offTold = new Set<string>();
+  await trayOpen({ dataDir: off, told: offTold, off: true, desktop: AVAILABLE, make: trayMake(off), steps: o });
+  await trayOpen({ dataDir: off, told: offTold, off: true, desktop: AVAILABLE, make: trayMake(off), steps: o });
   assert.equal(o.browsers, 2);
-  // At most once per run of Ledung: an earlier test in this file may have logged it already.
-  assert.ok(o.lines.length <= 1 && o.lines.every((l) => l === TRAY_OFF_LINE), o.lines.join('\n'));
-  assert.equal(fs.existsSync(noticeFile(off)), false);
-  // The app opened: no line, no browser, and the notice from before is gone, as after `ledung`'s own fallback.
+  assert.deepEqual(o.lines, ['The tray opens Ledung in the browser: "desktopApp" is false in the config.']);
+  assert.equal(fs.existsSync(trayNotice(off)), false);
+  assert.equal(hello(off), null);
+  // The app opened: no line, no browser, and the reason from before is gone.
+  await trayOpen({ dataDir: data, told, off: false, desktop, make: trayMake(data), steps: steps() });
+  assert.equal(fs.existsSync(trayNotice(data)), true, 'premise: a reason left from before');
   const opened = steps();
-  await trayOpen({ dataDir: data, off: false, desktop: { ...AVAILABLE, electron: { dir: base, version: '45.4.1' } }, make: trayMake(data), steps: opened });
+  await trayOpen({ dataDir: data, told: new Set(), off: false, desktop: { ...AVAILABLE, electron: { dir: base, version: '45.4.1' } }, make: trayMake(data), steps: opened });
   assert.equal(opened.browsers, 0);
   assert.deepEqual(opened.lines, []);
-  assert.equal(fs.existsSync(noticeFile(data)), false);
+  assert.equal(fs.existsSync(trayNotice(data)), false);
 });
 
 test("a second click on the tray's Open while the app is being made waits for that make instead of starting another", async () => {
@@ -451,7 +470,7 @@ test("a second click on the tray's Open while the app is being made waits for th
     ensure: async () => { ensured++; await gate; return { made: 'all', paths: madePaths(base, 'darwin') }; },
     open: async () => { opened++; return null; },
   });
-  const o = { dataDir: path.join(base, 'tray-data'), off: false, desktop: { ...AVAILABLE, electron: { dir: base, version: '45.4.1' } } as Availability, make: trayMake(path.join(base, 'tray-twice')), steps: s };
+  const o = { dataDir: path.join(base, 'tray-data'), told: new Set<string>(), off: false, desktop: { ...AVAILABLE, electron: { dir: base, version: '45.4.1' } } as Availability, make: trayMake(path.join(base, 'tray-twice')), steps: s };
   const first = trayOpen(o);
   const second = trayOpen(o);
   release();

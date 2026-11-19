@@ -153,10 +153,13 @@ async function main(): Promise<void> {
   // runs. The page's "Open in the Ledung app" opens a made one; the tray's Open makes it first when needed.
   const desktopOff = () => manager.currentConfig.desktopApp === false;
   const openDesktopApp = () => openMadeApp({ dataDir: userDataDir(), off: desktopOff() });
+  // The tray's fallback reasons logged in this run: each once (#434).
+  const trayTold = new Set<string>();
   const openFromTray = () => trayOpen({
     off: desktopOff(),
     desktop: desktopAvailability(),
     dataDir: userDataDir(),
+    told: trayTold,
     // As `ledung` makes it (cli.ts), so the stamp agrees and neither makes it again for the other.
     make: async (desktop) => ({
       dataDir: userDataDir(), electron: desktop.electron, source: desktop.source, ledungVersion: appVersion(),
@@ -229,8 +232,8 @@ async function main(): Promise<void> {
     shortcuts: new Shortcuts({ launch: launchTarget(), iconDir: userDataDir(), icons: iconFiles(), meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) } }),
     updater,
     // The made desktop app (#407) against this Ledung, so the app's window restarts after Update Ledung (#408). Only
-    // the npm package makes one.
-    desktopApp: PACKAGED ? () => desktopAppState({ dataDir: userDataDir(), ledungVersion: appVersion() }) : undefined,
+    // the npm package makes one. The tray's browser-fallback line goes to the first page that asks, then is gone (#434).
+    desktopApp: PACKAGED ? () => desktopAppState({ dataDir: userDataDir(), ledungVersion: appVersion(), takeTrayNotice: true }) : undefined,
     canOpenDesktopApp: PACKAGED ? () => offersApp({ dataDir: userDataDir(), off: desktopOff() }) : undefined,
     openDesktopApp: PACKAGED ? openDesktopApp : undefined,
     checkIn,
