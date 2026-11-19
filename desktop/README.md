@@ -98,6 +98,18 @@ What `npm install -g ledung` and `ledung` give (`src/platform/desktop-app.ts`, #
 - **Opening it.** `ledung` opens it with `open` on the Mac and starts the program on Windows and Linux, without
   Electron's or npm's variables. A failure gives one line and the browser; `ledung --browser`, `"desktopApp": false` in
   the config and `--no-open` keep to the browser or to nothing; `ledung app` insists.
+- **Updating it** (#408). Settings → About's **Update Ledung** stays the one button: `npm install -g` replaces the package
+  (never the made app, which is in the data folder) and restarts the core. The core compares the app's `stamp.json` with
+  its own version and Electron at each page connection and tells the page in `hello`. In the made app the page then calls
+  the preload's `restartForUpdate()`: with no window in sight the app restarts at once, otherwise when its last window is
+  hidden or minimised, or when the person presses the banner's **Restart window** (Martin, Ledung question #593). The
+  app quits, and once nothing kept the quit (a "Leave this page?" Stay keeps it) it runs the Node and `ledung` that made
+  it with `--after-app=<its pid>`, output in `desktop/restart.log`. That command waits for the app to end, rewrites its
+  code (or makes it again for a new Electron) and opens it; an app that was hidden comes back hidden
+  (`desktop/.start-hidden`). Only the window restarts: the core and the sessions are untouched. A new Electron that can't
+  be downloaded keeps the app on its old Electron with the new code when the major is the same, and the next start tries
+  again; another major opens the browser, and the line saying why is left in `desktop/notice.txt` for the page, removed
+  when the app next opens. A restart without an update finds the stamp current and leaves the app alone.
 
 To try it from a worktree, pack and install into a throwaway prefix, with a throwaway Ledung's settings (everything,
 the downloaded Electron included, stays under `.test/`):

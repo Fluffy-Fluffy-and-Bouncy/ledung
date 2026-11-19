@@ -17,6 +17,7 @@ import { pathToFileURL } from 'node:url';
 import { dockIconLayout } from '../../desktop/dock-icon.ts';
 import { APP_ID, MADE_CONFIG, WRITE_SHORTCUT_ARG, type MadeConfig } from '../../desktop/made.ts';
 import { startEnv } from '../../desktop/start.ts';
+import type { DesktopAppInfo } from '../shared/protocol.ts';
 import { exercisedLine } from './exercised.ts';
 import { icnsFromPngs, icoFromPng } from './icons.ts';
 import { appDir, PACKAGED } from './paths.ts';
@@ -387,6 +388,77 @@ export async function ensureApp(o: MakeOptions): Promise<{ made: 'nothing' | 'co
   }
 }
 
+/** An Electron version's major: 45 of 45.4.1. Electron's majors are what change its API; its minors and patches don't. */
+export const electronMajor = (version: string): string => version.split('.')[0] ?? version;
+
+/**
+ * Updating Ledung (#408, Martin 2026-11-19, Ledung question #577): a new Electron the app's binary can't be downloaded
+ * for yet (offline) leaves the app it has. On the same Electron major that app takes the new Ledung's code, and its
+ * stamp keeps its own Electron, so the next start downloads again; on another major it is left as it was (null) and the
+ * browser opens. Null too with no app made here, or one for another system. Returns the app and its Electron.
+ */
+export async function codeIntoKept(o: MakeOptions): Promise<{ paths: MadePaths; electron: string } | null> {
+  const platform = o.platform ?? process.platform;
+  const arch = o.arch ?? process.arch;
+  const paths = madePaths(o.dataDir, platform);
+  const kept = readStamp(paths.stamp);
+  if (!kept || !fs.existsSync(paths.exe) || kept.platform !== platform || kept.arch !== arch) return null;
+  if (electronMajor(kept.electron) !== electronMajor(o.electron.version)) return null;
+  writeAppCode(paths.code, o.source, o.ledungVersion, o.config);
+  if (platform === 'darwin') await run('/usr/bin/codesign', ['--force', '--deep', '-s', '-', paths.bundle]);
+  const stamp: Stamp = { electron: kept.electron, platform, arch, ledung: o.ledungVersion, config: o.config };
+  fs.writeFileSync(paths.stamp, `${JSON.stringify(stamp, null, 2)}\n`);
+  return { paths, electron: kept.electron };
+}
+
+/**
+ * The line the page shows when the app could not be opened and the browser opened instead (#408: "the browser opens,
+ * with one line saying why"): after an update no terminal shows it. Written by the fallback, removed when the app opens.
+ */
+export const noticeFile = (dataDir: string): string => path.join(dataDir, 'desktop', 'notice.txt');
+
+/**
+ * The made app against the running Ledung, read from its stamp at each ask: a restart without an update (#408: "Restart
+ * Ledung alone never remakes or restarts the app") finds them the same, and the restarted app's stamp is the new one.
+ */
+export function desktopAppState(o: { dataDir: string; ledungVersion: string; electronVersion: string | null; platform?: NodeJS.Platform }): DesktopAppInfo | null {
+  const paths = madePaths(o.dataDir, o.platform ?? process.platform);
+  const stamp = readStamp(paths.stamp);
+  let notice: string | null = null;
+  try {
+    notice = fs.readFileSync(noticeFile(o.dataDir), 'utf8').trim() || null;
+  } catch {
+    // None.
+  }
+  const made = stamp !== null && fs.existsSync(paths.exe);
+  if (!made && notice === null) return null;
+  const stale = made && (stamp.ledung !== o.ledungVersion || (o.electronVersion !== null && stamp.electron !== o.electronVersion));
+  return { stale, notice };
+}
+
+/**
+ * Waits for the app that asked for its restart (#408) to have ended: a new one started before would find the old one's
+ * single-instance lock, hand it the start and quit. True when it ended in time.
+ */
+export async function waitForExit(pid: number, timeoutMs = 15_000, isRunning: (pid: number) => boolean = processRuns): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (isRunning(pid)) {
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return true;
+}
+
+function processRuns(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // EPERM: it runs, as someone else.
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
 /**
  * Opens the made app, detached, with a clean environment (no ELECTRON_* or npm_*: desktop/start.ts). The Mac's through
  * `open`, so it is a proper app with its own Dock entry. An app that runs already shows its window (one app per
@@ -415,6 +487,8 @@ export function openApp(paths: MadePaths, platform: NodeJS.Platform = process.pl
 /** What opening the app does, besides the defaults; tests replace them. */
 export interface OpenSteps {
   ensure: (o: MakeOptions) => Promise<{ made: 'nothing' | 'code' | 'all'; paths: MadePaths }>;
+  /** A failed make keeps the app there when it can (#408): codeIntoKept. Left out: nothing is kept. */
+  keep?: (o: MakeOptions) => Promise<{ paths: MadePaths; electron: string } | null>;
   open: (paths: MadePaths) => Promise<string | null>;
   /** Opens Ledung's page in the browser, signed in: the fallback. */
   browser: () => void;
@@ -440,38 +514,63 @@ export function progressPrinter(write: (text: string) => void, tty: boolean): (p
 /**
  * Opens the desktop app for `ledung`, making it first when needed. When it can't be made or opened, one line says why
  * and the browser opens instead (issue #407: "A failed download opens the browser and says so in one line"); `ledung
- * app` (`fallback` false) only says why. Returns the command's exit code.
+ * app` (`fallback` false) only says why. A make that failed keeps the app there when it can (#408, `steps.keep`). A
+ * browser fallback's line is also left for the page (noticeFile), since after an update no terminal shows it; an app
+ * that opens removes it. `restarted`: the app asked for this, to finish an update (#408). Returns the exit code.
  */
-export async function openDesktop(o: { make: Omit<MakeOptions, 'print'>; fallback: boolean; steps: OpenSteps }): Promise<number> {
+export async function openDesktop(o: { make: Omit<MakeOptions, 'print'>; fallback: boolean; steps: OpenSteps; restarted?: boolean }): Promise<number> {
   let line: string;
   let hinted = false;
+  const print = (text: string) => {
+    o.steps.print(text);
+    // Ledung itself already runs: stopping this wait leaves it running, and "ledung --browser" opens its page
+    // (self-check finding 4). A stopped make leaves its folder, which the next make removes first.
+    // Once, after the line announcing the download; later lines (a shortcut not written) come without it. Not for a
+    // restart the app asked for: no one is at a terminal for it.
+    if (o.fallback && !hinted && !o.restarted) o.steps.print('Ledung is already running: to use the browser instead, press Ctrl+C and run "ledung --browser".');
+    hinted = true;
+  };
+  const notice = noticeFile(o.make.dataDir);
   try {
-    const { made, paths } = await o.steps.ensure({
-      ...o.make,
-      print: (text) => {
-        o.steps.print(text);
-        // Ledung itself already runs: stopping this wait leaves it running, and "ledung --browser" opens its page
-        // (self-check finding 4). A stopped make leaves its folder, which the next make removes first.
-        // Once, after the line announcing the download; later lines (a shortcut not written) come without it.
-        if (o.fallback && !hinted) o.steps.print('Ledung is already running: to use the browser instead, press Ctrl+C and run "ledung --browser".');
-        hinted = true;
-      },
-    });
+    let found: { made: 'nothing' | 'code' | 'all'; paths: MadePaths };
+    try {
+      found = await o.steps.ensure({ ...o.make, print });
+    } catch (e) {
+      const kept = await o.steps.keep?.({ ...o.make, print }).catch(() => null);
+      if (!kept) throw e;
+      o.steps.print(`Electron ${o.make.electron.version} could not be downloaded (${firstLine(e)}): the desktop app runs on Electron ${kept.electron} with the new Ledung until the next start tries again.`);
+      found = { made: 'code', paths: kept.paths };
+    }
+    const { made, paths } = found;
     if (made !== 'nothing') {
       exercisedLine(`EXERCISED #407 desktop app ${made === 'all' ? 'made' : 'code rewritten'} in the data folder`);
       o.steps.print(made === 'all' ? `Made the desktop app: ${paths.bundle}` : 'Brought the desktop app up to date.');
     }
     const failed = await o.steps.open(paths);
-    if (failed === null) return 0;
+    if (failed === null) {
+      if (o.restarted) exercisedLine(`EXERCISED #408 desktop app restarted to finish an update (${made})`);
+      fs.rmSync(notice, { force: true });
+      return 0;
+    }
     line = failed;
   } catch (e) {
-    line = `The desktop app could not be made: ${(e as Error).message.split('\n')[0]}`;
+    line = `The desktop app could not be made: ${firstLine(e)}`;
   }
   if (!o.fallback) {
     o.steps.print(line);
     return 1;
   }
-  o.steps.print(`${line.replace(/[.\s]*$/, '.')} Opening Ledung in the browser instead.`);
+  const why = line.replace(/[.\s]*$/, '.');
+  o.steps.print(`${why} Opening Ledung in the browser instead.`);
+  try {
+    fs.mkdirSync(path.dirname(notice), { recursive: true });
+    fs.writeFileSync(notice, `${why} Ledung opened in the browser instead; the next start of the app tries again.\n`);
+  } catch {
+    // The terminal has the line; only the page misses it.
+  }
   o.steps.browser();
   return 0;
 }
+
+/** An error's first line: a download's message can carry a stack. */
+const firstLine = (e: unknown): string => (e as Error).message.split('\n')[0] ?? '';

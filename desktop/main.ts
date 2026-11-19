@@ -8,6 +8,7 @@
 // process (Mac spike 2026-11-17: GET /api/state 200 with no token in any URL); the token never goes into a URL or a
 // command line.
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, session, shell, type BaseWindow, type IpcMainEvent, type NativeImage, type Session, type WebContents } from 'electron';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
@@ -16,7 +17,7 @@ import { dockIconLayout, padBitmap } from './dock-icon.ts';
 import { zoomed, zoomKey } from './keys.ts';
 import { APP_ID, readMadeConfig, WRITE_SHORTCUT_ARG } from './made.ts';
 import { menuTemplate } from './menu.ts';
-import { runStart, startCommand } from './start.ts';
+import { restartCommand, runStart, startCommand, startEnv } from './start.ts';
 import { WindowList } from './windows.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -44,6 +45,14 @@ const PRELOAD = path.join(here, 'preload.cjs');
 /** The messages the preload sends for them (preload.cjs). */
 export const SHOW_WINDOW_MESSAGE = 'ledung-desktop:show-window';
 export const NEW_WINDOW_MESSAGE = 'ledung-desktop:new-window';
+export const RESTART_FOR_UPDATE_MESSAGE = 'ledung-desktop:restart-for-update';
+/**
+ * Tells the preload that this is a made app, which can restart into an update (#408); a clone run can't, so its page
+ * gets no such function and shows no button that does nothing.
+ */
+const MADE_APP_ARG = '--ledung-made-app';
+/** Left by an app that restarted while hidden (#408): the new one starts hidden too, as the person left it. */
+const START_HIDDEN = path.join(dataDir(), 'desktop', '.start-hidden');
 /**
  * Ledung's own icon (#384), the page's app icon: next to main.js in the npm package and the made app (#407), from the
  * clone's web/public in a clone run. A PNG, since Electron's images load no SVG. Exported for the probe, which checks
@@ -326,6 +335,60 @@ function quit(): void {
 }
 
 /**
+ * Ledung was updated and this app still runs the old version's code (#408): the page said so. The window restarts by
+ * itself while no window is shown, and when the person presses the page's Restart (Martin, 2026-11-19, Ledung question
+ * #593: "restart by itself when hidden, ask when in front").
+ */
+let updatePending = false;
+/** A quit that restarts the app once it is sure (will-quit): a page that asked "Leave this page?" may still keep it. */
+let restartOnQuit = false;
+
+/** Whether any window is in sight: shown and not minimised. */
+const anyShown = (): boolean => openWindows().some((w) => w.isVisible() && !w.isMinimized());
+
+/** Restarts the app to take the updated Ledung's code (#408): quits, and the `ledung` that made it opens it again. */
+function restartForUpdate(): void {
+  if (!made || restartOnQuit) return;
+  restartOnQuit = true;
+  quit();
+}
+
+/** The update waits for the windows to be out of sight; called when one hides or is minimised. */
+function restartIfHidden(): void {
+  // Not while quitting: windows closing for a plain quit must not turn it into a restart.
+  if (updatePending && !quitting && !anyShown()) restartForUpdate();
+}
+
+/**
+ * The quit is sure: run the `ledung` that made this app, which waits for it to end, writes the new code into it and
+ * opens it (src/cli.ts, --after-app). Detached, so it outlives this app; its output goes to restart.log beside the app.
+ */
+function startAfterQuit(): void {
+  const cmd = restartCommand(made, process.pid);
+  if (!cmd) {
+    console.error('Ledung desktop: the ledung command that made this app is gone; start it again with ledung to update it.');
+    return;
+  }
+  const dir = path.dirname(START_HIDDEN);
+  let out: number | 'ignore' = 'ignore';
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    // No window in sight: the new app starts hidden too, so a restart the person did not ask for shows nothing.
+    if (!anyShown()) fs.writeFileSync(START_HIDDEN, '');
+    out = fs.openSync(path.join(dir, 'restart.log'), 'a');
+  } catch (e) {
+    console.error(`Ledung desktop: ${(e as Error).message}`);
+  }
+  try {
+    spawn(cmd.command, cmd.args, { detached: true, stdio: ['ignore', out, out], windowsHide: true, env: startEnv(process.env) }).unref();
+  } catch (e) {
+    console.error(`Ledung desktop: could not restart for the update: ${(e as Error).message}`);
+  } finally {
+    if (typeof out === 'number') fs.closeSync(out);
+  }
+}
+
+/**
  * Ctrl+O, as the page hears it: the page binds Show tool calls to Ctrl+O on every system so that ⌘O stays the
  * browser's (web/src/sessionMenu.ts). In the app ⌘O is the app's own, so it hands the page the page's key.
  */
@@ -367,11 +430,15 @@ function newWindow(): BrowserWindow {
   return createWindow(at ? { x: at.x + NEW_WINDOW_OFFSET, y: at.y + NEW_WINDOW_OFFSET, width: at.width, height: at.height } : undefined);
 }
 
-/** Opens a window and shows the attached Ledung in it, or finds one; `bounds` places it (newWindow), else the default. */
-function createWindow(bounds?: { x: number; y: number; width: number; height: number }): BrowserWindow {
+/**
+ * Opens a window and shows the attached Ledung in it, or finds one; `bounds` places it (newWindow), else the default.
+ * `hidden`: loaded but not shown, as after a restart for an update while hidden (#408).
+ */
+function createWindow(bounds?: { x: number; y: number; width: number; height: number }, hidden = false): BrowserWindow {
   limitPermissions(session.fromPartition(PARTITION));
   const w = new BrowserWindow({
     ...(bounds ?? { width: 1280, height: 860 }),
+    show: !hidden,
     title: 'Ledung',
     backgroundColor: '#1b1d22',
     // The window's and the Windows taskbar's icon; the Mac takes the Dock's, set at start (#384).
@@ -385,9 +452,11 @@ function createWindow(bounds?: { x: number; y: number; width: number; height: nu
       session: session.fromPartition(PARTITION),
       contextIsolation: true,
       sandbox: true,
-      // Two functions for the page: `ledungDesktop.showWindow()`, which a click on its notification calls (#360), and
-      // `ledungDesktop.newWindow()`, the New window button's (#414).
+      // Functions for the page: `ledungDesktop.showWindow()`, which a click on its notification calls (#360),
+      // `ledungDesktop.newWindow()`, the New window button's (#414), and in a made app `restartForUpdate()` (#408).
       preload: PRELOAD,
+      // A made app's page also gets `ledungDesktop.restartForUpdate()` (#408); the preload reads this.
+      additionalArguments: made ? [MADE_APP_ARG] : [],
       nodeIntegration: false,
       // A hidden window keeps its timers at full speed, so notifications come on time (Windows spike: one 13–14 ms
       // after a prompt, 400 s hidden). The page also stays "visible" then, so its polls keep running (#359).
@@ -441,6 +510,8 @@ function createWindow(bounds?: { x: number; y: number; width: number; height: nu
     if (choice === 0) event.preventDefault();
     else {
       quitting = false;
+      // A restart for an update waits too (#408): the page asks again when it sees the update still pending.
+      restartOnQuit = false;
       // A window that was closing stays: back in the list (#414).
       if (!windows.has(w)) windows.add(w);
     }
@@ -462,6 +533,9 @@ function createWindow(bounds?: { x: number; y: number; width: number; height: nu
     if (process.platform !== 'darwin') contents.zoomLevel = zoomed(contents.zoomLevel, direction);
   });
   w.on('closed', () => windows.remove(w));
+  // The last window out of sight lets a waiting update restart the app (#408).
+  w.on('hide', restartIfHidden);
+  w.on('minimize', restartIfHidden);
   // A window opened while a start runs (the Dock, New Window) shows that it runs; the start shows the outcome in it.
   if (starting) void loadNotRunning(w, 'Starting Ledung in the background…', 'starting');
   // An attach under way: it shows this window what it found when it ends.
@@ -514,18 +588,44 @@ if (shortcutFile) {
   ipcMain.on(NEW_WINDOW_MESSAGE, (event) => {
     if (askingWindow(event)) newWindow();
   });
+  // The page saw that Ledung was updated and this app runs the old code (#408): `now` from its Restart button, else
+  // the app restarts once no window is in sight, at once if none is now.
+  ipcMain.on(RESTART_FOR_UPDATE_MESSAGE, (event, now: unknown) => {
+    if (!askingWindow(event) || !made) return;
+    updatePending = true;
+    if (now === true) restartForUpdate();
+    else restartIfHidden();
+  });
   app.on('before-quit', () => {
     quitting = true;
   });
+  // Every window has closed and nothing kept the quit: the restart for an update may go (#408).
+  app.on('will-quit', () => {
+    if (restartOnQuit) startAfterQuit();
+  });
   // Reached only while quitting, since closing the last window hides it (#414: the list counts one closing as gone).
   app.on('window-all-closed', () => app.quit());
-  // A click on the app in the Dock (Mac), the windows hidden or not: the most recently used comes forward (#414).
-  app.on('activate', () => showWindow());
+  // Started hidden after a restart for an update (#408): the start itself is no reason to show it.
+  let startedHidden = false;
+  try {
+    fs.rmSync(START_HIDDEN);
+    startedHidden = true;
+  } catch {
+    // Not there: a usual start.
+  }
+  let readyAt = 0;
+  // A click on the app in the Dock (Mac), the windows hidden or not: the most recently used comes forward (#414). The
+  // Mac may count the launch itself as one; a hidden restart ignores that first moment.
+  app.on('activate', () => {
+    if (startedHidden && Date.now() - readyAt < 2000) return;
+    showWindow();
+  });
   void app.whenReady().then(() => {
+    readyAt = Date.now();
     Menu.setApplicationMenu(buildMenu());
     // Run from a clone the app is Electron's own, with Electron's icon in the Dock until it is told otherwise (#384),
     // and the Dock draws what it is given edge to edge, so it gets the margin Mac app icons carry (#404).
     if (process.platform === 'darwin') app.dock?.setIcon(dockIcon());
-    createWindow();
+    createWindow(undefined, startedHidden);
   });
 }

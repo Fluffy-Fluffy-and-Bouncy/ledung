@@ -79,6 +79,7 @@ import { useLedung, type Connection } from './useLedung.ts';
 import { STATUS_LABEL, statusLook } from './sessionStatus.ts';
 import { useNotifications } from './useNotifications.ts';
 import { isMacLike, newWindowTitle, openNewWindow, type NewWindowHost } from './newWindow.ts';
+import { desktopRestart, RESTART_LINE, type DesktopUpdateHost } from './desktopUpdate.ts';
 import { formatBytes, formatCores, MachinePanel, PRIORITY_LABEL } from './usage/MachinePanel.tsx';
 import { usePlainTyping } from './usePlainTyping.ts';
 import { coarsePointer } from './coarsePointer.ts';
@@ -250,6 +251,12 @@ export function App() {
   // The whole address, so moving between a conversation and the same conversation at a question renders too.
   const [hash, setHash] = useState(location.hash);
   const ledung = useLedung(isSessionId(openId) ? openId : null);
+  // Ledung was updated and the desktop app this page is in runs the old code (#408): it restarts once no window is in
+  // sight, asked again at each hello while the core still says so; the banner's Restart window does it now.
+  const desktopUpdate = useMemo(() => desktopRestart(window as unknown as DesktopUpdateHost, ledung.desktopApp), [ledung.desktopApp]);
+  useEffect(() => desktopUpdate?.(false), [desktopUpdate]);
+  /** The browser-fallback line the person dismissed (#408); a new line shows again. */
+  const [noticeDismissed, setNoticeDismissed] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The other computer (by id) whose page shows here (issue #241), null for this one's; and those opened so far, kept loaded.
   const [shownComputer, setShownComputer] = useState<string | null>(null);
@@ -527,10 +534,23 @@ export function App() {
 
   const banners = (
     <>
-      {ledung.updated && (
+      {/* In the made desktop app after an update (#408) the window restarts instead: a reload would keep the old app. */}
+      {desktopUpdate ? (
+        <div className="banner updated">
+          <span>{RESTART_LINE}</span>
+          <button className="small primary" onClick={() => desktopUpdate(true)}>Restart window</button>
+        </div>
+      ) : ledung.updated && (
         <div className="banner updated">
           <span>Ledung was updated — reload</span>
           <button className="small primary" onClick={() => location.reload()}>Reload</button>
+        </div>
+      )}
+      {/* Why the browser opened instead of the desktop app (#408), when no terminal showed it. */}
+      {ledung.desktopApp?.notice && ledung.desktopApp.notice !== noticeDismissed && (
+        <div className="banner updated">
+          <span>{ledung.desktopApp.notice}</span>
+          <button className="small" onClick={() => setNoticeDismissed(ledung.desktopApp?.notice ?? null)}>Dismiss</button>
         </div>
       )}
       {ledung.away && awayBannerShown(ledung.away, session) && <AwayBanner away={ledung.away} run={run} />}
