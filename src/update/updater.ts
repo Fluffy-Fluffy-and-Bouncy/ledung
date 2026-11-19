@@ -428,8 +428,12 @@ export class Updater {
           finish({ code: -1, out, tail: tail(all), timedOut: true });
         });
       }, command.limitMs ?? GIT_LIMIT_MS);
-      child.stdout.on('data', (d: Buffer) => { out += d; all += d; });
-      child.stderr.on('data', (d: Buffer) => { all += d; });
+      // Decoded as a stream, so a character split across two chunks ("—" in a changelog line) stays whole: the
+      // check compares whole changelog lines (self-check of PR #423, round 3).
+      child.stdout.setEncoding('utf8');
+      child.stderr.setEncoding('utf8');
+      child.stdout.on('data', (d: string) => { out += d; all += d; });
+      child.stderr.on('data', (d: string) => { all += d; });
       child.on('error', (e) => finish({ code: -1, out, tail: e.message }));
       child.on('close', (code) => finish({ code: code ?? -1, out, tail: tail(all) }));
     });

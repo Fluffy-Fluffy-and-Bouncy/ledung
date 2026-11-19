@@ -269,6 +269,15 @@ test('refuses when a step fails, showing its last output lines', async () => {
   assert.deepEqual(v.steps.slice(0, 3).map((s) => s.state), ['done', 'done', 'done']);
 });
 
+// A step's output is decoded as a stream: a character whose bytes arrive in two chunks stays whole (self-check of
+// PR #423, round 3; the clone check compares whole changelog lines, and "—" is three bytes).
+test("a character split across two output chunks is read whole, not as two broken ones", async () => {
+  const split: Command = { cmd: process.execPath, args: ['-e', "const b = Buffer.from('v1.1 — ok'); process.stdout.write(b.subarray(0, 6)); setTimeout(() => { process.stdout.write(b.subarray(6)); process.exit(3); }, 200);"] };
+  const v = await refused(updater({ release: split }), 3, /npm run release failed \(exit code 3\)/);
+  assert.match(v.steps[3]!.output ?? '', /v1\.1 — ok/);
+  assert.doesNotMatch(v.steps[3]!.output ?? '', /�/);
+});
+
 test('refuses without the launcher, before touching the source folder', async () => {
   const v = updater({ onRestart: undefined }).startUpdate();
   assert.match(v.refused ?? '', /not started by the launcher/);
