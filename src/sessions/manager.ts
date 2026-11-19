@@ -1548,6 +1548,8 @@ export class SessionManager {
     if (!session || info.status === 'ended') throw new UserError('The session has ended; it resumes on the new account.');
     if (!info.claudeSessionId) throw new UserError('The session has not started yet; try again once it has.');
     if (this.switching.has(id)) return;
+    // A plain Stop under way would mark the restarted session ended (code review of #395, finding 4).
+    if (info.status === 'stopping') throw new UserError('The session is stopping; it resumes on the new account.');
     this.relaunching.delete(id);
     await this.whileSwitching(id, () => this.switchAccount(id, session, sw.to, this.config.userName));
     this.dispatch();
@@ -4357,7 +4359,8 @@ ${firstMessage}`);
    * account switch (code review of #395, finding 1): what is sent then reaches the session on its new account.
    */
   async resumeIfEnded(id: string): Promise<void> {
-    await this.switching.get(id);
+    const w = this.switching.get(id);
+    if (w) await w;
     const info = this.store.getSession(id);
     if (!info) throw new UserError('No such session.');
     if (!this.resuming.has(id) && this.live.has(id) && info.status !== 'ended') return;

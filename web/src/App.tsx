@@ -2147,8 +2147,8 @@ function AccountSwitchNotice({ session, run }: { session: SessionInfo; run: (f: 
       </div>
     );
   }
-  // Switch now only while it waits: one under way is already switching.
-  const live = session.status !== 'ended' && !!session.claudeSessionId && !session.accountSwitch?.underWay;
+  // Switch now only while it waits: one under way is already switching, and a stopping one resumes on the new account.
+  const live = session.status !== 'ended' && session.status !== 'stopping' && !!session.claudeSessionId && !session.accountSwitch?.underWay;
   return (
     <div className="account-switch" role="status">
       {asking ? (

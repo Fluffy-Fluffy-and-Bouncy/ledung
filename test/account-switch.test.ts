@@ -183,6 +183,22 @@ test('changed back before it switched, a session stops waiting; Switch now switc
   busy.delete('w1');
 });
 
+test('Switch now during a plain Stop is refused: the stop would mark the restarted session ended', async () => {
+  const m = ledung();
+  setProjectAccount(m.manager, 'a');
+  running(m, 'w9', 'shop', 'a');
+  busy.set('w9', { turnOpen: true });
+  setProjectAccount(m.manager, 'b');
+  // A Stop started: the session is stopping, not for a switch.
+  m.store.updateSession('w9', { status: 'stopping' });
+  const stopped = stops.length;
+  await assert.rejects(m.manager.accountSwitchAction('w9', 'now'), /The session is stopping; it resumes on the new account/);
+  assert.equal(stops.length, stopped, 'no second stop');
+  assert.deepEqual(m.store.getSession('w9')!.accountSwitch, { to: 'b' }, 'not marked under way');
+  assert.equal(m.store.getSession('w9')!.account, 'a');
+  busy.delete('w9');
+});
+
 test("a switch that fails leaves the session on its old account, says so, and isn't tried again on its own", async () => {
   const m = ledung();
   setProjectAccount(m.manager, 'a');
