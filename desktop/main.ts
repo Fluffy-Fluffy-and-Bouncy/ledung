@@ -340,6 +340,9 @@ function buildMenu(): Menu {
   return Menu.buildFromTemplate(menuTemplate<BaseWindow>(process.platform, {
     newWindow: () => newWindow(),
     closeWindow: (w) => {
+      // No focused window with several open (all minimised on the Mac): nothing, as the Mac's own apps do, rather than
+      // close one the person cannot see for real (code review of PR #416, Minor 2). One window hides, as before.
+      if (w === undefined && windows.size > 1) return;
       const own = menuWindow(w);
       if (own) closeWindow(own);
     },

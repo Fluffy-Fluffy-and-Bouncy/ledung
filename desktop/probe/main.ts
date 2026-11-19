@@ -680,6 +680,14 @@ async function windowsPhase(first: BrowserWindow): Promise<void> {
   out('close-one', afterClose);
   expect(afterClose.thirdDestroyed && afterClose.windows === 2 && afterClose.first && afterClose.second, 'closing one window closed it, and the other two stay', afterClose);
 
+  // Close Window with no focused window while two are open (all minimised on the Mac): nothing closes (code review of
+  // PR #416, Minor 2).
+  menuItem('close-window')?.click();
+  await sleep(800);
+  const unfocused = { windows: openNow().length, firstVisible: first.isVisible(), secondVisible: second.isVisible() };
+  out('close-window-unfocused', unfocused);
+  expect(unfocused.windows === 2 && unfocused.firstVisible && unfocused.secondVisible, 'Close Window with no focused window closed and hid nothing', unfocused);
+
   // Close Window (⌘W / Ctrl+W) on the second: of two, it closes for real.
   menuItem('close-window')?.click(undefined, second);
   await sleep(1000);
