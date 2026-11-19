@@ -412,7 +412,7 @@ test('File → New Window is on ⌘N on the Mac and Ctrl+N on Windows and Linux,
   assert.equal(NEW_WINDOW_ACCELERATOR, 'CmdOrCtrl+N');
   for (const platform of ['darwin', 'win32', 'linux'] as const) {
     let opened = 0;
-    const template = menuTemplate<string>(platform, { newWindow: () => opened++, closeWindow: () => {}, toolCalls: () => {}, find: () => {}, quit: () => {} });
+    const template = menuTemplate<string>(platform, { newWindow: () => opened++, closeWindow: () => {}, toolCalls: () => {}, find: () => {}, page: () => {}, quit: () => {} });
     const items = menuItems(template).filter((i) => i.id === 'new-window');
     assert.equal(items.length, 1, `${platform}: one New Window item`);
     const item = items[0]!;
@@ -430,7 +430,7 @@ test("the menu's other keys stay: Close Window, Quit per system, ⌘O on the Mac
     const closed: Array<string | undefined> = [];
     const toolCalls: Array<string | undefined> = [];
     let quits = 0;
-    const template = menuTemplate<string>(platform, { newWindow: () => {}, closeWindow: (w) => closed.push(w), toolCalls: (w) => toolCalls.push(w), find: () => {}, quit: () => quits++ });
+    const template = menuTemplate<string>(platform, { newWindow: () => {}, closeWindow: (w) => closed.push(w), toolCalls: (w) => toolCalls.push(w), find: () => {}, page: () => {}, quit: () => quits++ });
     const byId = new Map(menuItems(template).filter((i) => i.id).map((i) => [i.id!, i]));
     assert.equal(byId.get('close-window')?.accelerator, 'CmdOrCtrl+W', platform);
     assert.equal(byId.get('quit')?.accelerator, platform === 'darwin' ? 'Cmd+Q' : 'Alt+F4', platform);
@@ -536,7 +536,7 @@ test('Edit → Find… is on ⌘F on the Mac and Ctrl+F elsewhere, opens the foc
   assert.equal(FIND_ACCELERATOR, 'CmdOrCtrl+F');
   for (const platform of ['darwin', 'win32', 'linux'] as const) {
     const found: Array<string | undefined> = [];
-    const template = menuTemplate<string>(platform, { newWindow: () => {}, closeWindow: () => {}, toolCalls: () => {}, find: (w) => found.push(w), quit: () => {} });
+    const template = menuTemplate<string>(platform, { newWindow: () => {}, closeWindow: () => {}, toolCalls: () => {}, find: (w) => found.push(w), page: () => {}, quit: () => {} });
     const edit = template.find((t) => t.role === 'editMenu');
     const items = edit?.submenu ?? [];
     const find = items.find((i) => i.id === 'find');
@@ -550,5 +550,24 @@ test('Edit → Find… is on ⌘F on the Mac and Ctrl+F elsewhere, opens the foc
     const roles = items.map((i) => i.role).filter(Boolean);
     for (const role of ['undo', 'redo', 'cut', 'copy', 'paste', 'delete', 'selectAll']) assert.ok(roles.includes(role as never), `${platform}: Edit keeps ${role}`);
     assert.equal(roles.includes('pasteAndMatchStyle'), platform === 'darwin', `${platform}: Paste and Match Style on the Mac only, as Electron's own Edit menu`);
+  }
+});
+
+test("View's items keep their names and keys and act on the window's page, never on the find bar in focus (#445)", () => {
+  for (const platform of ['darwin', 'win32', 'linux'] as const) {
+    const pressed: Array<[string | undefined, string]> = [];
+    const template = menuTemplate<string>(platform, { newWindow: () => {}, closeWindow: () => {}, toolCalls: () => {}, find: () => {}, page: (w, command) => pressed.push([w, command]), quit: () => {} });
+    const view = template.find((t) => t.role === 'viewMenu');
+    const items = (view?.submenu ?? []).filter((i) => i.id);
+    // Electron's own View menu: the same items and keys (its viewMenu role).
+    assert.deepEqual(items.map((i) => [i.id, i.label, i.accelerator]), [
+      ['reload', 'Reload', 'CmdOrCtrl+R'], ['forceReload', 'Force Reload', 'Shift+CmdOrCtrl+R'],
+      ['devTools', 'Toggle Developer Tools', platform === 'darwin' ? 'Alt+Cmd+I' : 'Ctrl+Shift+I'],
+      ['resetZoom', 'Actual Size', 'CmdOrCtrl+0'], ['zoomIn', 'Zoom In', 'CmdOrCtrl+Plus'], ['zoomOut', 'Zoom Out', 'CmdOrCtrl+-'],
+    ], platform);
+    assert.ok(items.every((i) => i.role === undefined), `${platform}: none is a standard role, which would act on the focused contents`);
+    assert.equal(view?.submenu?.at(-1)?.role, 'togglefullscreen', `${platform}: Full Screen stays the window's`);
+    for (const item of items) item.click!(undefined, 'focused');
+    assert.deepEqual(pressed, items.map((i) => ['focused', i.id]), `${platform}: each acts on the focused window's page`);
   }
 });

@@ -234,15 +234,8 @@ function looks(w: BrowserWindow): void {
 
 /** The View menu's Zoom In moves the zoom level by ZOOM_STEP, the step the app's own zoom keys take (#389). */
 async function menuZoomStep(w: BrowserWindow): Promise<void> {
-  const find = (items: MenuItem[]): MenuItem | undefined => {
-    for (const item of items) {
-      if (item.role?.toLowerCase() === 'zoomin') return item;
-      const inner = item.submenu ? find(item.submenu.items) : undefined;
-      if (inner) return inner;
-    }
-    return undefined;
-  };
-  const zoomIn = find(Menu.getApplicationMenu()?.items ?? []);
+  // The app's own Zoom In since #445 (desktop/menu.ts), by its id.
+  const zoomIn = Menu.getApplicationMenu()?.getMenuItemById('zoomIn') ?? undefined;
   w.focus();
   w.webContents.zoomLevel = 0;
   zoomIn?.click(undefined, w, w.webContents);
@@ -514,6 +507,18 @@ async function findPhase(w: BrowserWindow): Promise<void> {
   out('find-again', again);
   expect(again.visible && again.count === '2 of 3' && JSON.stringify(again.selection) === JSON.stringify([0, word.length, word.length]),
     `${command}+F in the open bar selects its text and leaves the search where it was`, again);
+
+  // The menu's View items while the bar has the focus: Electron hands a menu item the focused contents, the bar's,
+  // and its standard Zoom In zoomed the bar (self-check of PR #448, finding 1). Pressed as the menu does, with the bar
+  // as the focused contents.
+  wc.zoomLevel = 0;
+  Menu.getApplicationMenu()?.getMenuItemById('zoomIn')?.click(undefined, w, bar.webContents);
+  await sleep(400);
+  const zoom = { page: wc.zoomLevel, bar: bar.webContents.zoomLevel };
+  wc.zoomLevel = 0;
+  bar.webContents.zoomLevel = 0;
+  out('find-menu-zoom', zoom);
+  expect(zoom.page === ZOOM_STEP && zoom.bar === 0, "View → Zoom In with the bar in focus zooms the page, not the bar", zoom);
 
   // Nothing found, then an empty box.
   await bar.webContents.insertText('qxqzvkw');

@@ -7,7 +7,7 @@
 // check, sign-in cookie, Origin check and "no embedding" apply unchanged. Sign-in sets the cookie from this main
 // process (Mac spike 2026-11-17: GET /api/state 200 with no token in any URL); the token never goes into a URL or a
 // command line.
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, session, shell, WebContentsView, type BaseWindow, type IpcMainEvent, type NativeImage, type Session, type WebContents } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, session, shell, WebContentsView, type BaseWindow, type Input, type IpcMainEvent, type NativeImage, type Session, type WebContents } from 'electron';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,7 +17,7 @@ import { dockIconLayout, padBitmap } from './dock-icon.ts';
 import { FindSession, type FindRequest } from './find.ts';
 import { findKey, zoomed, zoomKey, type FindKey } from './keys.ts';
 import { APP_ID, readMadeConfig, START_HIDDEN_FILE, WRITE_SHORTCUT_ARG } from './made.ts';
-import { menuTemplate } from './menu.ts';
+import { menuTemplate, type PageCommand } from './menu.ts';
 import { restartCommand, runStart, startCommand, startEnv } from './start.ts';
 import { WindowList } from './windows.ts';
 
@@ -463,13 +463,9 @@ function findBarOf(w: BrowserWindow): FindBar {
   // The bar shows its own file and nothing else.
   contents.on('will-navigate', (event) => event.preventDefault());
   contents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  // Enter, Shift+Enter, Esc and Ctrl+F / ⌘F in the bar (desktop/keys.ts); everything else types in its text box.
-  contents.on('before-input-event', (event, input) => {
-    const key = findKey(input, true);
-    if (!key) return;
-    event.preventDefault();
-    findAction(w, key);
-  });
+  // Enter, Shift+Enter, Esc and Ctrl+F / ⌘F in the bar (desktop/keys.ts), and the window's own keys as in the page
+  // (Alt+F4, Ctrl and "+"); everything else types in its text box.
+  contents.on('before-input-event', (event, input) => windowKeys(w, event, input, true));
   const bar: FindBar = { view, search: new FindSession(), open: false, loaded: contents.loadFile(FIND_BAR_PAGE) };
   bar.loaded.catch((e: Error) => console.error(`Ledung desktop: the find bar did not load: ${e.message}`));
   w.on('resize', () => placeFindBar(w, bar));
@@ -533,10 +529,44 @@ function findAction(w: BrowserWindow, key: FindKey): void {
   }
 }
 
+/**
+ * The window's own keys, pressed in its page or in its find bar (`inBar`): the same in both, so a key works while the
+ * bar has the focus too (self-check of PR #448, finding 1).
+ */
+function windowKeys(w: BrowserWindow, event: { preventDefault(): void }, input: Input, inBar: boolean): void {
+  // Alt+F4 on Windows quits, where the window's close button hides; the system turns both into the same close, so the
+  // key is noted on its way in, in case the system handles it before the menu's accelerator does.
+  if (process.platform === 'win32' && input.type === 'keyDown' && input.alt && !input.control && !input.meta && input.key === 'F4') quitting = true;
+  // Ctrl and "+" zooms the page in on every layout (#389, desktop/keys.ts); the menu's own Zoom In matches the US key
+  // only. Taken here, so the menu does not zoom a second time on a US keyboard.
+  if (zoomKey(input) === 'in') {
+    event.preventDefault();
+    if (!w.isDestroyed()) w.webContents.zoomLevel = zoomed(w.webContents.zoomLevel, 'in');
+  }
+  // Ctrl+F / ⌘F opens the find bar from anywhere in the page, its text boxes too (#445): taken before the page sees it,
+  // which binds no Ctrl+F of its own, and before the menu's Find…, so it opens once. In the bar, its other keys too.
+  const key = findKey(input, inBar);
+  if (key) {
+    event.preventDefault();
+    findAction(w, key);
+  }
+}
+
 /** The window whose bar a message came from; null for any other sender (the bar's preload is the only one sending these). */
 function findBarWindow(event: IpcMainEvent): BrowserWindow | null {
   for (const [w, bar] of findBars) if (!w.isDestroyed() && bar.view.webContents === event.sender && bar.open) return w;
   return null;
+}
+
+/** A View menu item on the window's page (desktop/menu.ts): the zoom steps are the app's own keys' (#389). */
+function pageCommand(w: BrowserWindow, command: PageCommand): void {
+  if (w.isDestroyed()) return;
+  const page = w.webContents;
+  if (command === 'reload') page.reload();
+  else if (command === 'forceReload') page.reloadIgnoringCache();
+  else if (command === 'devTools') page.toggleDevTools();
+  else if (command === 'resetZoom') page.zoomLevel = 0;
+  else page.zoomLevel = zoomed(page.zoomLevel, command === 'zoomIn' ? 'in' : 'out');
 }
 
 /** The app's menu (desktop/menu.ts); its items act on the focused window, which Electron hands them. */
@@ -557,6 +587,10 @@ function buildMenu(): Menu {
     find: (w) => {
       const own = menuWindow(w);
       if (own) openFind(own);
+    },
+    page: (w, command) => {
+      const own = menuWindow(w);
+      if (own) pageCommand(own, command);
     },
     quit,
   }));
@@ -663,23 +697,7 @@ function createWindow(bounds?: { x: number; y: number; width: number; height: nu
       if (!windows.has(w)) windows.add(w);
     }
   });
-  // Alt+F4 on Windows quits, where the window's close button hides; the system turns both into the same close, so the
-  // key is noted on its way in, in case the system handles it before the menu's accelerator does.
-  contents.on('before-input-event', (event, input) => {
-    if (process.platform === 'win32' && input.type === 'keyDown' && input.alt && !input.control && !input.meta && input.key === 'F4') quitting = true;
-    // Ctrl and "+" zooms in on every layout (#389, desktop/keys.ts); the menu's own Zoom In matches the US key only.
-    // Taken here, so the menu does not zoom a second time on a US keyboard.
-    if (zoomKey(input) === 'in') {
-      event.preventDefault();
-      contents.zoomLevel = zoomed(contents.zoomLevel, 'in');
-    }
-    // Ctrl+F / ⌘F opens the find bar from anywhere in the page, its text boxes too (#445): taken before the page sees
-    // it, which binds no Ctrl+F of its own, and before the menu's Find…, so it opens once.
-    if (findKey(input, false) === 'open') {
-      event.preventDefault();
-      openFind(w);
-    }
-  });
+  contents.on('before-input-event', (event, input) => windowKeys(w, event, input, false));
   // The bar's count: answers to its own search only (desktop/find.ts).
   contents.on('found-in-page', (_event, result) => {
     const bar = findBars.get(w);

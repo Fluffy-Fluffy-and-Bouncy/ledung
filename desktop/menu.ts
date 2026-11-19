@@ -4,7 +4,8 @@
 
 /** The standard items the menu uses, by their Electron role. */
 type MenuRole = 'about' | 'services' | 'hide' | 'hideOthers' | 'unhide' | 'editMenu' | 'viewMenu' | 'minimize' | 'zoom' | 'front'
-  | 'undo' | 'redo' | 'cut' | 'copy' | 'paste' | 'pasteAndMatchStyle' | 'delete' | 'selectAll' | 'startSpeaking' | 'stopSpeaking';
+  | 'undo' | 'redo' | 'cut' | 'copy' | 'paste' | 'pasteAndMatchStyle' | 'delete' | 'selectAll' | 'startSpeaking' | 'stopSpeaking'
+  | 'togglefullscreen';
 
 export interface MenuEntry<Win> {
   id?: string;
@@ -24,11 +25,32 @@ export interface MenuActions<Win> {
   toolCalls: (window: Win | undefined) => void;
   /** Edit → Find…: opens the window's find bar (#445). */
   find: (window: Win | undefined) => void;
+  /** A View item, on the window's page: never on its find bar, which may have the focus (#445). */
+  page: (window: Win | undefined, command: PageCommand) => void;
   quit: () => void;
 }
 
 /** The New Window item's key (#414): ⌘N on the Mac, Ctrl+N on Windows and Linux, as Electron writes both. */
 export const NEW_WINDOW_ACCELERATOR = 'CmdOrCtrl+N';
+/** What the View menu does to a window's page. */
+export type PageCommand = 'reload' | 'forceReload' | 'devTools' | 'resetZoom' | 'zoomIn' | 'zoomOut';
+
+/**
+ * The View menu: Electron's standard items, as its `viewMenu` role gives them, with the same names and keys, but acting
+ * on the window's page. The standard items act on whatever has the focus, and with the find bar open that is the bar:
+ * Zoom In zoomed the bar and Reload reloaded it (self-check of PR #448, finding 1). Full Screen is the window's.
+ */
+function viewItems<Win>(mac: boolean, page: MenuActions<Win>['page']): MenuEntry<Win>[] {
+  const item = (id: PageCommand, label: string, accelerator: string): MenuEntry<Win> => ({ id, label, accelerator, click: (_item, w) => page(w, id) });
+  const separator: MenuEntry<Win> = { type: 'separator' };
+  return [
+    item('reload', 'Reload', 'CmdOrCtrl+R'), item('forceReload', 'Force Reload', 'Shift+CmdOrCtrl+R'),
+    item('devTools', 'Toggle Developer Tools', mac ? 'Alt+Cmd+I' : 'Ctrl+Shift+I'), separator,
+    item('resetZoom', 'Actual Size', 'CmdOrCtrl+0'), item('zoomIn', 'Zoom In', 'CmdOrCtrl+Plus'), item('zoomOut', 'Zoom Out', 'CmdOrCtrl+-'),
+    separator, { role: 'togglefullscreen' },
+  ];
+}
+
 /** Edit → Find…'s key (#445): ⌘F on the Mac, Ctrl+F on Windows and Linux. */
 export const FIND_ACCELERATOR = 'CmdOrCtrl+F';
 
@@ -53,7 +75,7 @@ function editItems<Win>(mac: boolean, find: MenuEntry<Win>): MenuEntry<Win>[] {
 /**
  * The app's menu owns the keys a browser keeps (#359): ⌘N/Ctrl+N opens another window (#414), ⌘W/Ctrl+W hides the
  * last window instead of closing it, ⌘O on the Mac is the page's Ctrl+O, ⌘Q (Mac) and Alt+F4 (Windows) end the app.
- * Edit gains Find… on ⌘F/Ctrl+F (#445). Edit, View and Window keep their standard items, so copy and paste, reload and zoom work as in the default menu. The
+ * Edit gains Find… on ⌘F/Ctrl+F, and View's items act on the page even with the find bar in focus (#445). Edit, View and Window keep their standard items, so copy and paste, reload and zoom work as in the default menu. The
  * ids let the probe press items. On Windows and Linux the menu is never shown (#389); it stays only for these keys.
  */
 export function menuTemplate<Win>(platform: NodeJS.Platform, actions: MenuActions<Win>): MenuEntry<Win>[] {
@@ -76,7 +98,7 @@ export function menuTemplate<Win>(platform: NodeJS.Platform, actions: MenuAction
       : []),
     { label: 'File', submenu: mac ? [newWindow, separator, toolCalls, closeWindow] : [newWindow, closeWindow, separator, quitItem] },
     { role: 'editMenu', submenu: editItems(mac, find) },
-    { role: 'viewMenu' },
+    { role: 'viewMenu', submenu: viewItems(mac, actions.page) },
     // Spelled out: the standard Window menu on Windows has a Close of its own on Ctrl+W.
     { label: 'Window', submenu: mac ? [{ role: 'minimize' }, { role: 'zoom' }, separator, { role: 'front' }] : [{ role: 'minimize' }] },
   ];
