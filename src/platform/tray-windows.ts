@@ -36,7 +36,8 @@ function Send([string]$word) { $out.WriteLine($word); $out.Flush() }
 # replace icon-256.png while the icon showed (EBUSY, issue #380). $source is drawn once below and then disposed.
 $sourceStream = New-Object System.IO.MemoryStream(,[System.IO.File]::ReadAllBytes($env:LEDUNG_TRAY_ICON))
 $source = [System.Drawing.Image]::FromStream($sourceStream)
-# The page's PNG is square with white corners; the icon is its rounded square (icon.svg's rx 112 of 512), cut out.
+# The icon is the PNG's rounded square (icon.svg's rx 112 of 512), cut out: the PNG's corners are see-through since
+# issue #388, and the cut keeps the 32-pixel edge clean however the scaling blends them.
 $scaled = New-Object System.Drawing.Bitmap 32, 32
 $sg = [System.Drawing.Graphics]::FromImage($scaled)
 $sg.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
