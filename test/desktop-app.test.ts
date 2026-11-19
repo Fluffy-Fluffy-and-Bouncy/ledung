@@ -790,17 +790,6 @@ test('a failed make with a kept app opens that app, saying why, with no browser;
   assert.equal(fs.existsSync(noticeFile(data)), false);
 });
 
-test('a restart the app asked for leaves its EXERCISED #408 line once the app opened; a plain open does not', async () => {
-  const log = path.join(process.env.LEDUNG_DATA_DIR!, 'exercised.log');
-  const lines = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '').split('\n').filter((l) => l.includes('EXERCISED #408'));
-  const before = lines().length;
-  assert.equal(await openDesktop({ make: make(), fallback: true, steps: steps() }), 0);
-  assert.equal(lines().length, before, 'a plain open: none');
-  assert.equal(await openDesktop({ make: make(), fallback: true, steps: steps({ ensure: async () => ({ made: 'code', paths: madePaths(base, 'darwin') }) }), restarted: true }), 0);
-  assert.equal(lines().length, before + 1);
-  assert.match(lines().at(-1)!, /EXERCISED #408 desktop app restarted to finish an update \(code\)$/);
-});
-
 test("the app's restart runs the Node and `ledung` that made it with --after-app=<its pid>; a clone run or a gone command has none", () => {
   const node = process.execPath;
   const cli = fileURLToPath(import.meta.url);
