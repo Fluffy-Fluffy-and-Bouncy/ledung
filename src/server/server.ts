@@ -26,7 +26,7 @@ import type { TraySwitch } from '../platform/tray.ts';
 import { capTurnCores, typicalCosts } from '../resources/typical.ts';
 import { BoardError } from '../board/types.ts';
 import type { ProjectConfig } from '../config.ts';
-import type { Overview, Priority, UsageFilter, UsagePeriod } from '../shared/protocol.ts';
+import type { DesktopAppInfo, Overview, Priority, UsageFilter, UsagePeriod } from '../shared/protocol.ts';
 import type { SecretLifetime } from '../shared/secrets.ts';
 import { levelProblem, NO_LOCKDOWN } from '../projects/lockdown.ts';
 import { CertificateFiles } from './tunnel-tls.ts';
@@ -174,6 +174,8 @@ export interface ServerOptions {
   usage?: UsageQueries;
   /** Settings' Update Ledung (#100). */
   updater?: Updater;
+  /** The made desktop app against this Ledung (#408), read at each hello; left out: not the npm package. */
+  desktopApp?: () => DesktopAppInfo | null;
   /** The first-run question and Settings → Shortcuts: a Ledung icon that starts Ledung (issue #415). */
   shortcuts?: Shortcuts;
   /** The anonymous daily check-in: its notice and Settings switch (#220). */
@@ -795,6 +797,10 @@ export class LedungServer {
       // Martin, question #588). Approve stays on this computer's own screen (#237); the page says so.
       newComputers: this.opts.relayAdmin?.newComputers() ?? [],
       linkPairings: this.linkPairings(),
+      // After Update Ledung the app's page learns here that the app still runs the old code (#408); a stamp read. Not
+      // through the public name: the app is on this computer, and the browser-fallback line can name its folders
+      // (self-check finding 7).
+      desktopApp: viaPublic ? undefined : this.opts.desktopApp?.() ?? undefined,
     };
   }
 
