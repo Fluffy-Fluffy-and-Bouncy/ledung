@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { runWithInput } from '../runners/runner.ts';
+import { writeFileSafely } from '../platform/safe-write.ts';
 
 /** A secret as it goes into a command's environment. */
 export interface SecretValue {
@@ -77,13 +78,11 @@ function ensurePrivateDir(dir: string): void {
 }
 
 function writePrivate(file: string, text: string): void {
-  const temp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(temp, text, { mode: 0o600 });
   try {
-    fs.renameSync(temp, file);
+    // Flushed before and after the rename, so a crash can't leave it empty (issue #460).
+    writeFileSafely(file, text, { mode: 0o600 });
   } catch {
     // Windows refuses to replace a file a shell has open just then; written in place instead.
-    fs.rmSync(temp, { force: true });
     fs.writeFileSync(file, text, { mode: 0o600 });
   }
 }

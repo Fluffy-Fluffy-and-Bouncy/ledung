@@ -12,6 +12,7 @@ import { SessionManager } from '../src/sessions/manager.ts';
 import { openDatabase } from '../src/store/database.ts';
 import { Store } from '../src/store/store.ts';
 import type { ServerEvent, StoredMessage } from '../src/shared/protocol.ts';
+import type { WaitingLine } from '../src/shared/waiting-line.ts';
 import { OpenSession, type OpenSessionView } from '../web/src/openSession.ts';
 import { removeTemp } from './temp.ts';
 import { refuseRealSignInStores } from './signin-stores.ts';
@@ -33,7 +34,7 @@ before(async () => {
   fs.mkdirSync(webRoot);
   fs.writeFileSync(path.join(webRoot, 'index.html'), '<!doctype html><title>Ledung</title>');
   store = new Store(openDatabase(':memory:'));
-  for (const id of ['A', 'B', 'C', 'D', 'E']) store.createSession({ id, project: 'p', runner: 'local', title: id, parentId: null, permissionMode: 'default', role: 'session' });
+  for (const id of ['A', 'B', 'C', 'D', 'E', 'F']) store.createSession({ id, project: 'p', runner: 'local', title: id, parentId: null, permissionMode: 'default', role: 'session' });
   const manager = refuseRealSignInStores(new SessionManager(parseConfig({ port }), store, () => {}));
   server = new LedungServer({ port, token: TOKEN, store, manager, webRoot });
   await server.listen();
@@ -150,6 +151,7 @@ test("opening a session misses none of its messages: stored before the read, aft
     },
     messagesBefore: async () => [],
     messagesAfter: (_id, afterId) => get(`&after=${afterId}`),
+    waitingLines: async () => [],
     changed: (v) => views.push(v),
   });
   live.ws.on('message', (data) => {
@@ -187,6 +189,7 @@ test("opened while the connection is down, the page reads at once, and the conne
     messages: () => get(''),
     messagesBefore: async () => [],
     messagesAfter: (_id, afterId) => get(`&after=${afterId}`),
+    waitingLines: async () => [],
     changed: (v) => views.push(v),
   });
   open.open('D');
@@ -238,6 +241,7 @@ test('switching A, B and back to A before any answer: a message of A stored betw
     },
     messagesBefore: async () => [],
     messagesAfter: (id, afterId) => get(id, `&after=${afterId}`),
+    waitingLines: async () => [],
     changed: (v) => views.push(v),
   });
   live.ws.on('message', (data) => {
@@ -266,6 +270,59 @@ test('switching A, B and back to A before any answer: a message of A stored betw
     const want = ['e0', 'between B and E', 'after'];
     await until(() => views.at(-1)?.messages.length === want.length, 'every message of E shown');
     assert.deepEqual(views.at(-1)!.messages.map((m) => m.data.text), want, 'each once, in order, none missed');
+  } finally {
+    live.ws.close();
+  }
+});
+
+test('a Waiting for you line decided while the page was away shows decided after it reconnects (code review of #350, finding 1)', async () => {
+  const waiting: WaitingLine = {
+    item: 'permission', ref: 'perm-f', sessionId: 'w', label: 'Permission prompt', number: null, title: 'Bash: rm -rf build',
+    state: 'waiting', answer: null, by: null, at: null,
+  };
+  const line = store.addWaitingLine('F', waiting)!;
+  say('F', 'f1');
+  const views: OpenSessionView[] = [];
+  const get = async (q: string) => (await fetch(`${origin}/api/sessions/F/messages?limit=500${q}`, { headers: { cookie: COOKIE } })).json() as Promise<StoredMessage[]>;
+  let live = await page();
+  const open = new OpenSession({
+    send: (text) => live.ws.send(text),
+    messages: () => get(''),
+    messagesBefore: async () => [],
+    messagesAfter: (_id, afterId) => get(`&after=${afterId}`),
+    waitingLines: (_id, from) => get(`&kind=waiting&from=${from}`),
+    changed: (v) => views.push(v),
+  });
+  const listen = () => live.ws.on('message', (data) => {
+    const e = JSON.parse(String(data)) as ServerEvent;
+    if (e.type === 'message') open.message(e.message);
+    if (e.type === 'watching') void open.watching(e.sessionId);
+  });
+  const lineShown = () => views.at(-1)?.messages.find((m) => m.id === line.id)?.data as WaitingLine | undefined;
+  listen();
+  try {
+    open.connected();
+    open.open('F');
+    await live.next('watching');
+    await until(() => views.at(-1)?.messages.length === 2, 'the chat read');
+    assert.equal(lineShown()?.state, 'waiting');
+    // The phone sleeps: the connection drops, and the prompt is denied elsewhere. Ledung changes the line in place
+    // and sends it to the pages watching F, which this one no longer is.
+    open.disconnected();
+    live.ws.removeAllListeners('message');
+    const closed = new Promise((r) => live.ws.once('close', r));
+    live.ws.close();
+    await closed;
+    const decided = store.updateWaitingLine(line.id, { ...waiting, state: 'denied', by: 'Simon', at: 5 });
+    server.broadcast({ type: 'message', message: decided });
+    say('F', 'f2');
+    live = await page();
+    listen();
+    open.connected();
+    await live.next('watching');
+    await until(() => views.at(-1)?.messages.length === 3, 'caught up after reconnecting');
+    await until(() => lineShown()?.state === 'denied', 'the line as stored now');
+    assert.deepEqual(views.at(-1)!.messages.map((m) => m.id), [line.id, line.id + 1, line.id + 2], 'replaced in place, nothing added twice');
   } finally {
     live.ws.close();
   }

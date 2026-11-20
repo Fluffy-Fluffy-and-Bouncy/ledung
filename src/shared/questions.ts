@@ -2,6 +2,7 @@
 // the page's question desk shows any question, structured or plain. Modelled on the Master Question Desk.
 // Every question has a tier from its project's list, which starts as the five below (issue #96).
 import type { OrderQuestionDetails } from './orders.ts';
+import type { QuestionInfo } from './protocol.ts';
 
 /** An option of a structured question: its key ("a"), its text in Markdown (a **bold** start is its label), its cost. */
 export interface QuestionOption {
@@ -40,6 +41,18 @@ export function ledungTier(projectTiers: readonly string[]): string {
   return projectTiers.includes('Process') ? 'Process' : projectTiers[0] ?? DEFAULT_TIERS[2]!;
 }
 
+/**
+ * The tier of a workflow person step's question (#351, Simon 2026-11-17, question #2032): the block's own when it names
+ * one of the project's tiers; else a review goes under the first tier (in the five, "Blocks a finished PR") and a
+ * question under the second ("Blocks a card from Ready": the run's work waits on it, but nothing finished does).
+ */
+export function stepTier(projectTiers: readonly string[], ask: 'question' | 'review' | undefined, own?: string): string {
+  const named = own?.trim() ? projectTiers.find((t) => t.toLowerCase() === own.trim().toLowerCase()) : undefined;
+  if (named) return named;
+  const first = projectTiers[0] ?? DEFAULT_TIERS[0]!;
+  return ask === 'review' ? first : projectTiers[1] ?? first;
+}
+
 /** One view on a question: who gave it, the option it picks (none: no pick among the options) and why. */
 export interface Opinion {
   who: string;
@@ -67,11 +80,48 @@ export interface ReviewDetails {
 }
 
 /**
- * A stored screenshot or evidence file as people read it: a container file's kept copy (issue #122) by its path in the
- * project; a file from a linked computer (issue #158) by its name, marked as from there.
+ * A stored screenshot or evidence file as people read it: a kept copy (a container's, issue #122, or any project's,
+ * issue #306) by its path in the project; a file from a linked computer (issue #158) by its name, marked as from there.
  */
 export function shownFile(file: string): string {
-  return file.replace(/^container:[0-9a-f]{32}\//, '').replace(/^linked:[0-9a-f]{16}\//, 'linked: ');
+  return file.replace(/^(?:container|kept):[0-9a-f]{32}\//, '').replace(/^linked:[0-9a-f]{16}\//, LINKED_MARK);
+}
+
+/**
+ * How a file from a linked computer is marked where it is shown, and the name its copy kept for a question has
+ * ("kept:<hash>/linked: shot.png"), so the mark stays (Martin, 2026-11-12 23:02, Ledung question #2148: "a — Keep the mark").
+ */
+export const LINKED_MARK = 'linked: ';
+
+/** Every kept copy a stored question names, by its hash, in the question's stored JSON (issues #122, #306). */
+export const COPY_REFS = /(?:container|kept):([0-9a-f]{32})\//g;
+
+/**
+ * Waiting for you history (issue #306; Martin, 2026-11-12, Ledung question #2145): per project at least the last
+ * 100 answered questions, and every question of the last 30 days if that is more.
+ */
+export const HISTORY_PER_PROJECT = 100;
+export const HISTORY_DAYS = 30;
+/** In a light question, each text cut to this many characters: what the history list shows, an excerpt of 180. */
+export const LIGHT_TEXT_CHARS = 300;
+
+/**
+ * A question as Waiting for you history lists it (issue #306): without what it refers to, and every text of it, the
+ * question's, the answer's and each of its fields', cut to LIGHT_TEXT_CHARS. Marked `light`: the page asks for it
+ * whole when it is opened.
+ */
+export function lightQuestion(q: QuestionInfo): QuestionInfo {
+  // A file's name (a screenshot's path, an evidence file) is never cut: the page shows the image by it.
+  const cut = (v: unknown): unknown => {
+    if (typeof v === 'string') return v.length > LIGHT_TEXT_CHARS ? `${v.slice(0, LIGHT_TEXT_CHARS)}…` : v;
+    if (Array.isArray(v)) return v.map(cut);
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, k === 'path' || k === 'file' ? x : cut(x)]));
+    return v;
+  };
+  return {
+    ...q, question: cut(q.question) as string, answer: cut(q.answer) as string | null, withdrawnReason: cut(q.withdrawnReason) as string | null,
+    details: cut(q.details) as QuestionDetails | null, shots: cut(q.shots) as QuestionInfo['shots'], original: null, earlier: null, sources: null, light: true,
+  };
 }
 
 /** At most this many evidence files per review. */
@@ -172,6 +222,20 @@ export interface RefusalDetails {
   always?: 'plain' | 'sensitive';
   /** With `sensitive`: the sensitive rule the command matched, as the question named it. */
   sensitiveRule?: string;
+  /**
+   * Not refused by the classifier but held by away mode (issue #262): a manager's own sensitive call, denied at once
+   * so its turn and inbox go on, and asked here instead of as a prompt. `reason` is then away mode's. Grants, Allow
+   * always and the passkey on the phone work as for a refusal. Absent: the classifier refused it.
+   * `prompt` (issue #308): a manager's own settings change or sensitive non-shell call, which would have been a
+   * permission prompt; `reason` is then the rule the prompt would have shown, and a settings change's retry is let
+   * through only while it still loosens exactly that.
+   */
+  held?: 'away' | 'prompt';
+  /**
+   * What the tool does, its own description's first sentence, when Ledung knew it (issue #399): a call to an MCP tool
+   * is otherwise only a name and its input. Shown to the person; never part of what makes it the same call.
+   */
+  description?: string;
 }
 
 /** The run and block a person block's question belongs to (workflow part 3b), with their titles as asked. */

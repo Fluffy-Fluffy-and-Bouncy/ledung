@@ -2,7 +2,7 @@
 
 This is for working on Ledung itself, from a clone of the repository. To install and use Ledung, see the [README](../README.md). Before you send a change, read [CONTRIBUTING.md](../CONTRIBUTING.md): outside contributions need a signed contributor license agreement.
 
-The plan and its steps are in [brief.md](brief.md); decisions made since are in [decisions.md](decisions.md); the work of each step is in [steps/](steps/); what changed and when is in [CHANGELOG.md](../CHANGELOG.md), where every PR that changes what Ledung does adds a bullet (the pre-push hook refuses a push of program changes without one). [CLAUDE.md](../CLAUDE.md) has the rules for Claude Code sessions that work on the repository.
+The plan and its steps are in [brief.md](brief.md); decisions made since are in [decisions.md](decisions.md); the work of each step is in [steps/](steps/); what changed in each release is in [CHANGELOG.md](../CHANGELOG.md) (public releases) and [CHANGELOG-dev.md](../CHANGELOG-dev.md) (dev builds). A PR never edits those: every PR that changes what Ledung does writes its bullet in `docs/changes/<issue>.md` ([changes/README.md](changes/README.md)), the pre-push hook refuses a push of program changes without one, and the publish step folds the waiting bullets in under the version it publishes (issue #417). [CLAUDE.md](../CLAUDE.md) has the rules for Claude Code sessions that work on the repository.
 
 ## Setup
 
@@ -22,7 +22,7 @@ Run from a clone, Ledung reads its settings from `ledung.config.local.json` in t
 | `npm run check` | Type check (core and page) and all tests. Run before every commit. |
 | `npm run build` | Builds the page into `web/dist`. |
 | `npm run release` | Check, build, copy to a new release folder and point the launcher at it. |
-| `npm run pack` | Builds the npm package into `dist/ledung-<version>.tgz` (plain JavaScript). |
+| `npm run pack` | Builds the npm package into `dist/ledung-<version>.tgz` (plain JavaScript, the desktop app included). |
 | `npm start` | Runs Ledung from this folder (development only; use a throwaway config and data folder). |
 
 ## Running Ledung from a clone
@@ -40,6 +40,19 @@ A running Ledung keeps its release until it is restarted. **Restart Ledung** (Se
 **Update Ledung**, also in Settings → Update & restart, does the same from the page: **Check for updates** fetches `origin/main` in the folder the running release was built from and lists the changelog lines since; **Update Ledung** then runs `git pull --ff-only`, `npm install` and `npm run release` there and restarts. It refuses, and leaves the running Ledung alone, when that folder has uncommitted changes, is not on `main`, can't fast-forward, or a step fails.
 
 For development, `npm start` runs Ledung straight from this folder (use another `port` in a separate config via `LEDUNG_CONFIG`, and `LEDUNG_DATA_DIR` for separate data, if a released Ledung is running too). `npm run build` rebuilds the page. `npm start` runs Ledung in the foreground; `node src/cli.ts` is the `ledung` command, which starts it in the background (log in the data folder's `ledung.log`, stopped with `node src/cli.ts stop`), and `node src/cli.ts --foreground` keeps it in the terminal with Restart Ledung working.
+
+### The desktop app
+
+`desktop/` holds an Electron app that shows the running Ledung's page in a window of its own, signed in, with no
+browser tab (epic #357). It ships in the npm package (#407): `npm run pack` bundles it into `dist/desktop/`, Electron is
+an optional dependency pinned to the same version as `desktop/package.json`'s, and the `ledung` command makes a
+"Ledung" app from Electron's binary in the data folder the first time it opens it (`src/platform/desktop-app.ts`).
+On the computer it runs on, the installed app is the way in (#409): `ledung`, the shortcuts and the tray's Open open it,
+and a browser's page there points at it; the browser stays a full way in.
+Electron's npm package has no install script, so the root `npm install` and `npm ci` download no Electron binary. From a
+clone it runs as before: `npm install` then `npm start` in `desktop/`, with Ledung already running. It reads
+`LEDUNG_CONFIG` and `LEDUNG_DATA_DIR` as the core does, so it can be pointed at a throwaway Ledung;
+[desktop/README.md](../desktop/README.md) says how, and how to try the made app from a packed build.
 
 ## The npm package
 

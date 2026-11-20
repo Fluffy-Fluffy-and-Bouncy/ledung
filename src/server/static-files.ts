@@ -62,3 +62,21 @@ export class PackedFiles {
     return bytes;
   }
 }
+
+/**
+ * API answers below this go as they are: compressing a few hundred bytes saves nothing a packet doesn't already
+ * hold (issue #330).
+ */
+export const PACK_MIN_BYTES = 1024;
+
+/**
+ * An API answer, compressed for the request (issue #330): a long chat's page of messages is ~3 MB of JSON, ~1.7 s
+ * on phone Wi-Fi at 30 Mbit/s. Made fresh each time, so quick settings: for 3 MB, Brotli 4 takes ~15-30 ms and gzip 4
+ * ~35-40 ms (gzip 6: ~65-85 ms for a little less), off the main thread. gzip matters: a browser on the local network's
+ * plain http:// address offers no Brotli.
+ */
+export function packAnswer(raw: Buffer, encoding: Exclude<Encoding, null>): Promise<Buffer> {
+  return encoding === 'br'
+    ? brotli(raw, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 4, [zlib.constants.BROTLI_PARAM_SIZE_HINT]: raw.length, [zlib.constants.BROTLI_PARAM_MODE]: zlib.constants.BROTLI_MODE_TEXT } })
+    : gzip(raw, { level: 4 });
+}

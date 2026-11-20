@@ -115,6 +115,10 @@ test("the package is stamped with the build's version, not the clone's, and the 
   }
   fs.symlinkSync(path.join(appDir(), 'src'), path.join(source, 'src'), process.platform === 'win32' ? 'junction' : 'dir');
   fs.cpSync(path.join(appDir(), 'plugins'), path.join(source, 'plugins'), { recursive: true });
+  // The desktop app's source and icon, which the package bundles since #407.
+  fs.symlinkSync(path.join(appDir(), 'desktop'), path.join(source, 'desktop'), process.platform === 'win32' ? 'junction' : 'dir');
+  fs.mkdirSync(path.join(source, 'web', 'public'), { recursive: true });
+  for (const icon of ['icon-512.png', 'icon-256.png']) fs.cpSync(path.join(appDir(), 'web', 'public', icon), path.join(source, 'web', 'public', icon));
   const before = fs.readFileSync(path.join(source, 'package.json'), 'utf8');
   const stage = path.join(base, 'stage');
   await stagePackage(source, stage, '1.4.0');
@@ -142,6 +146,8 @@ function cleanClone(name: string): string {
   git(base, 'init', '-q', '--bare', '-b', 'main', origin);
   git(base, 'clone', '-q', origin, clone);
   git(clone, 'checkout', '-q', '-B', 'main');
+  // The publish commits its changelog with the clone's own identity (#417).
+  for (const [key, value] of [['user.name', 't'], ['user.email', 't@t'], ['commit.gpgsign', 'false'], ['core.autocrlf', 'false']]) git(clone, 'config', key!, value!);
   fs.writeFileSync(path.join(clone, 'package.json'), JSON.stringify({ name: 'ledung', version: '1.0.0' }));
   fs.mkdirSync(path.join(clone, 'web', 'public'), { recursive: true });
   fs.writeFileSync(path.join(clone, 'web', 'public', 'icon.svg'), '<svg/>');
@@ -162,6 +168,7 @@ function recorder() {
     check: () => { calls.push('check'); },
     build: async (_s, version) => { calls.push(`build ${version}`); return `ledung-${version}.tgz`; },
     publish: (args) => { calls.push(`npm ${args.join(' ')}`); },
+    stamp: () => '2026-11-19 15:02 CET',
     log: () => {},
     error: (line) => { calls.push(line); },
   };
@@ -223,4 +230,120 @@ test('a refused clone stops before npm is asked or anything is built: changes, a
   git(clone, 'add', '-A');
   git(clone, 'commit', '-qm', 'not pushed');
   assert.match(await tryIt(), /main is not origin\/main/);
+});
+
+// The changelog per release (#417; Martin, 2026-11-19 14:20, Ledung question #613: "the publish step may push its
+// changelog commit to main"): the waiting docs/changes files go under the version published, in the package and on main.
+const show = (cwd: string, ref: string) => git(cwd, 'show', ref);
+
+/** A clean clone with two waiting change files, committed and pushed as two merged PRs would leave them. */
+function cloneWithChanges(name: string): string {
+  const clone = cleanClone(name);
+  fs.mkdirSync(path.join(clone, 'docs', 'changes'));
+  fs.writeFileSync(path.join(clone, 'docs', 'changes', 'README.md'), '# guide\n');
+  fs.writeFileSync(path.join(clone, 'docs', 'changes', '5.md'), '- Five. (#5)\n');
+  fs.writeFileSync(path.join(clone, 'docs', 'changes', '7.md'), '- Seven. (#7)\n');
+  git(clone, 'add', '-A');
+  git(clone, 'commit', '-qm', 'two merged PRs');
+  git(clone, 'push', '-q', 'origin', 'main');
+  return clone;
+}
+
+test('a dev publish folds the waiting bullets under the new version before the build, and pushes that commit to main after npm has it', async () => {
+  const clone = cloneWithChanges('fold');
+  const r = recorder();
+  let atBuild = '';
+  r.steps.build = async (s, version) => { atBuild = fs.readFileSync(path.join(s, 'CHANGELOG-dev.md'), 'utf8'); return `ledung-${version}.tgz`; };
+  assert.equal(await runPublish({ channel: 'dev', dryRun: false }, clone, r.steps), 0);
+  // The package is built with the new section in it.
+  assert.match(atBuild, /## v1\.1 — 2026-11-19 15:02 CET\n- Seven\. \(#7\)\n- Five\. \(#5\)\n/);
+  // On origin's main: one commit after the merged PRs, with the section and without the change files (but the guide).
+  const originDir = path.join(base, 'fold-origin.git');
+  assert.equal(git(originDir, 'log', '-1', '--format=%s', 'main'), "Changelog for v1.1, published to npm's dev tag");
+  assert.equal(show(originDir, 'main:CHANGELOG-dev.md'), atBuild.trim());
+  assert.deepEqual(git(originDir, 'ls-tree', '--name-only', 'main', 'docs/changes/').split('\n'), ['docs/changes/README.md']);
+  // The clone is clean and is origin/main again, so the next publish is not refused.
+  assert.equal(git(clone, 'status', '--porcelain'), '');
+  assert.equal(git(clone, 'rev-parse', 'HEAD'), git(clone, 'rev-parse', 'origin/main'));
+});
+
+test('a dry run shows the section and leaves the files and main as they were; a failed build or publish puts them back', async () => {
+  const clone = cloneWithChanges('dry');
+  const originDir = path.join(base, 'dry-origin.git');
+  const head = git(clone, 'rev-parse', 'HEAD');
+  const lines: string[] = [];
+  const dry = recorder();
+  dry.steps.log = (l) => { lines.push(l); };
+  assert.equal(await runPublish({ channel: 'dev', dryRun: true }, clone, dry.steps), 0);
+  assert.ok(lines.some((l) => l.includes('## v1.1 — 2026-11-19 15:02 CET\n- Seven. (#7)\n- Five. (#5)')), lines.join(' | '));
+  assert.equal(git(clone, 'status', '--porcelain', '--untracked-files=all'), '');
+  assert.equal(git(originDir, 'rev-parse', 'main'), head);
+
+  for (const failing of ['build', 'publish'] as const) {
+    const r = recorder();
+    if (failing === 'build') r.steps.build = async () => { throw new Error('esbuild broke'); };
+    else r.steps.publish = () => { throw new Error('npm said E403'); };
+    await assert.rejects(runPublish({ channel: 'dev', dryRun: false }, clone, r.steps), failing === 'build' ? /esbuild broke/ : /E403/);
+    assert.equal(git(clone, 'status', '--porcelain', '--untracked-files=all'), '', failing);
+    assert.equal(git(originDir, 'rev-parse', 'main'), head, failing);
+  }
+});
+
+test('a PR merged while the publish ran: the changelog commit goes on top of it; one that clashes leaves the commit in the clone and says what to do', async () => {
+  const clone = cloneWithChanges('race');
+  const originDir = path.join(base, 'race-origin.git');
+  const other = path.join(base, 'race-other');
+  git(base, 'clone', '-q', originDir, other);
+  /** Another clone merges a PR while npm publishes. */
+  const mergeDuring = (r: ReturnType<typeof recorder>, file: string, text: string) => {
+    r.steps.publish = () => {
+      git(other, 'pull', '-q', 'origin', 'main');
+      fs.writeFileSync(path.join(other, file), text);
+      git(other, 'add', '-A');
+      git(other, 'commit', '-qm', `merged ${file}`);
+      git(other, 'push', '-q', 'origin', 'main');
+    };
+  };
+
+  const first = recorder();
+  mergeDuring(first, 'docs/changes/9.md', '- Nine. (#9)\n');
+  assert.equal(await runPublish({ channel: 'dev', dryRun: false }, clone, first.steps), 0);
+  assert.deepEqual(git(originDir, 'log', '--format=%s', '-2', 'main').split('\n'), ["Changelog for v1.1, published to npm's dev tag", 'merged docs/changes/9.md']);
+  // The bullet that merged during the publish is not in v1.1: it waits for the next one.
+  assert.doesNotMatch(show(originDir, 'main:CHANGELOG-dev.md'), /Nine/);
+  assert.equal(show(originDir, 'main:docs/changes/9.md'), '- Nine. (#9)');
+
+  // This time the merged PR adds to a file the publish takes away: the push is refused and the rebase can't go on.
+  const second = recorder();
+  second.steps.npmView = () => ['1.0.0', '1.1.0'];
+  mergeDuring(second, 'docs/changes/9.md', '- Nine. (#9)\n- Nine again. (#9)\n');
+  assert.equal(await runPublish({ channel: 'dev', dryRun: false }, clone, second.steps), 1);
+  const said = second.calls.join(' | ');
+  assert.match(said, /Published v1\.2, but its changelog commit is not on origin\/main yet/);
+  assert.match(said, /git pull --rebase origin main\) and push it; until then the next publish is refused/);
+  assert.equal(git(clone, 'log', '-1', '--format=%s'), "Changelog for v1.2, published to npm's dev tag");
+  assert.equal(git(clone, 'status', '--porcelain'), '', 'the rebase was given up, not left half done');
+  assert.match(git(originDir, 'log', '-1', '--format=%s', 'main'), /merged docs\/changes\/9\.md/);
+  const third = recorder();
+  assert.equal(await runPublish({ channel: 'dev', dryRun: false }, clone, third.steps), 1);
+  assert.match(third.calls.join(' | '), /main is not origin\/main/);
+});
+
+test('a public publish writes CHANGELOG.md with every dev build since the last public release and pushes it to main', async () => {
+  const clone = cloneWithChanges('public-fold');
+  fs.writeFileSync(path.join(clone, 'CHANGELOG.md'), '# Ledung changelog\n\n## Earlier, by date\n\n## 2026-11-19\n- Old. (#1)\n');
+  git(clone, 'add', '-A');
+  git(clone, 'commit', '-qm', 'changelog');
+  git(clone, 'push', '-q', 'origin', 'main');
+  assert.equal(await runPublish({ channel: 'dev', dryRun: false }, clone, recorder().steps), 0);
+  fs.writeFileSync(path.join(clone, 'docs', 'changes', '8.md'), '- Eight. (#8)\n');
+  git(clone, 'add', '-A');
+  git(clone, 'commit', '-qm', 'merged 8');
+  git(clone, 'push', '-q', 'origin', 'main');
+  const pub = recorder();
+  pub.steps.npmView = () => ['1.0.0', '1.1.0'];
+  assert.equal(await runPublish({ channel: 'public', dryRun: false, confirm: '2.0.0' }, clone, pub.steps), 0);
+  const originDir = path.join(base, 'public-fold-origin.git');
+  assert.equal(show(originDir, 'main:CHANGELOG.md'), '# Ledung changelog\n\n## v2 — 2026-11-19 15:02 CET\n- Seven. (#7)\n- Five. (#5)\n- Eight. (#8)\n\n## Earlier, by date\n\n## 2026-11-19\n- Old. (#1)');
+  assert.equal(git(originDir, 'log', '-1', '--format=%s', 'main'), "Changelog for v2, published to npm's latest tag");
 });

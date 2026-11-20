@@ -17,7 +17,6 @@ import type { AccountChoices, AccountInfoView, BoardStatus, CertificateStatus, C
 import { UsageStopsSettings } from './UsageStopsSettings.tsx';
 import { SkillDefaults } from './SkillPicker.tsx';
 import { ProfilesSettings } from './ProfilesSettings.tsx';
-import { StepQuestionsSettings } from './StepQuestionsSettings.tsx';
 import { ClaudeCodeSettings } from './ClaudeCodeSettings.tsx';
 import { CopyButton } from './Markdown.tsx';
 import { certificateLine, remoteLine } from '../remoteStatus.ts';
@@ -30,7 +29,7 @@ import { LinkedSettings } from './LinkedSettings.tsx';
 import { JoinRelay, RelayAdminSettings, relaySetUp } from './RelaySettings.tsx';
 import { ComputersSettings } from './ComputersSettings.tsx';
 import type { ComputerInfo } from '../../../src/shared/computers.ts';
-import { displayVersion } from '../../../src/shared/version.ts';
+import { changelogLinks, displayVersion } from '../../../src/shared/version.ts';
 import type { useNotifications } from '../useNotifications.ts';
 import { THEMES, applyTheme, readTheme, saveTheme, type Theme } from '../theme.ts';
 import { useAutocorrect } from '../usePlainTyping.ts';
@@ -39,7 +38,7 @@ import { useCompactSidebar } from '../useCompactSidebar.ts';
 import { useArchivedLink } from '../useArchivedLink.ts';
 import { COMPACT_STEPS, type CompactStep } from '../compactSidebar.ts';
 import { InstallSettings } from './InstallApp.tsx';
-import { ShortcutSettings, StopSettings } from './Shortcuts.tsx';
+import { ShortcutSettings, StopSettings, TraySettings } from './Shortcuts.tsx';
 import { CheckInSettings } from './CheckIn.tsx';
 import { AccountsSettings, type DefaultIdentity } from '../projects/AccountsView.tsx';
 import { RestartButton, SettingsSplit, Where, useNarrow, type UpdateState } from './SettingsFrame.tsx';
@@ -116,6 +115,7 @@ function GroupContent(props: GroupProps) {
             )}
           </section>
           <StopSettings />
+          <TraySettings run={props.run} />
           <ShortcutSettings run={props.run} />
         </>
       );
@@ -134,7 +134,6 @@ function GroupContent(props: GroupProps) {
         <>
           <SkillDefaults run={props.run} />
           <ProfilesSettings />
-          <StepQuestionsSettings run={props.run} />
         </>
       );
     case 'helper':
@@ -345,7 +344,7 @@ function CompactSlider() {
   );
 }
 
-/** System, Light or Dark for this page; System follows the computer's setting (#113). */
+/** Dark (the default) or Light for this page (#113, #345). */
 function ThemeChoice() {
   const [theme, setTheme] = useState<Theme>(() => readTheme(localStorage));
   const choose = (t: Theme) => {
@@ -360,7 +359,7 @@ function ThemeChoice() {
           <button key={t.id} className={theme === t.id ? 'on' : ''} aria-pressed={theme === t.id} onClick={() => choose(t.id)}>{t.label}</button>
         ))}
       </div>
-      <p className="muted">System follows the computer's light or dark setting.</p>
+      <p className="muted">Dark is the default. Light gets basic support: readable, with less polish.</p>
     </>
   );
 }
@@ -547,6 +546,7 @@ function About({ source, update, run }: { source: SourceOffer | null; update: Up
           Running <code>{source.version}</code>. <a href={source.url} target="_blank" rel="noreferrer">Source</a>
         </p>
       )}
+      <Changelogs channel={update.view?.channel ?? 'public'} />
       {update.view && <ChannelChoice update={update} />}
       <CheckInSettings run={run} />
     </section>
@@ -555,6 +555,21 @@ function About({ source, update, run }: { source: SourceOffer | null; update: Up
 
 type Channel = NonNullable<UpdateView['channel']>;
 const CHANNEL_LABEL: Record<Channel, string> = { public: 'Public', dev: 'Dev' };
+
+/** What changed in each release, on projectledung.com (#417): the running Ledung's channel first. */
+function Changelogs({ channel }: { channel: Channel }) {
+  return (
+    <p className="muted">
+      What changed:{' '}
+      {changelogLinks(channel).map((l, i) => (
+        <Fragment key={l.channel}>
+          {i > 0 && ' · '}
+          <a href={l.url} target="_blank" rel="noreferrer">{l.channel === 'public' ? 'Changelog' : 'Dev changelog'}</a>
+        </Fragment>
+      ))}
+    </p>
+  );
+}
 
 /**
  * Update channel: Public / Dev (#461; Martin, 2026-11-02 00:38, Ledung question #1172). Public follows npm's

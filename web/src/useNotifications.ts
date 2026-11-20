@@ -10,6 +10,14 @@ const notificationsPossible = (): boolean => window.isSecureContext && 'Notifica
 
 const KEY = 'ledung.notify';
 
+/**
+ * In the desktop app, the one function its preload gives the page (desktop/preload.cjs): shows the app's window, which
+ * may be hidden, where `window.focus()` does nothing (#360). In a browser there is none, and this does nothing.
+ */
+const showDesktopWindow = (): void => {
+  (window as unknown as { ledungDesktop?: { showWindow?: () => void } }).ledungDesktop?.showWindow?.();
+};
+
 const stored = (): boolean => {
   try { return localStorage.getItem(KEY) === '1'; } catch { return false; }
 };
@@ -49,6 +57,7 @@ export function useNotifications(args: {
       try {
         const n = new Notification(item.title, { body: item.body, tag: item.id });
         n.onclick = () => {
+          showDesktopWindow();
           window.focus();
           openRef.current(item.sessionId);
           n.close();

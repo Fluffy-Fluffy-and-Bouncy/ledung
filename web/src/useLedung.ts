@@ -1,17 +1,18 @@
 // The page's live view of Ledung: sessions, pending permissions and the open session's messages,
 // kept up to date over the live connection.
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AccountChoices, AccountInfoView, ChatsInfo, AwayInfo, ConfigStatus, BoardStatus, GitHubBudget, LimitInfo, UsageStopInfo, SignInKind, SignInProblem, MachineInfo, Overview, PermissionInfo, ProjectInfo, QuestionInfo, NewComputerInfo, LinkPairingInfo, RemoteStatus, ServerEvent, SessionInfo, SourceOffer } from '../../src/shared/protocol.ts';
+import type { AccountChoices, AccountInfoView, DefaultAccountView, ChatsInfo, AwayInfo, ConfigStatus, BoardStatus, GitHubBudget, LimitInfo, UsageStopInfo, SignInProblem, MachineInfo, Overview, PermissionInfo, ProjectInfo, QuestionInfo, NewComputerInfo, LinkPairingInfo, DesktopAppInfo, RemoteStatus, ServerEvent, SessionInfo, SourceOffer } from '../../src/shared/protocol.ts';
 import type { HelperInfo } from '../../src/shared/setup.ts';
 import type { OrderInfo } from '../../src/shared/orders.ts';
 import type { Macro } from '../../src/shared/macros.ts';
 import type { FlowRun } from '../../src/shared/flow-run.ts';
 import type { ComputerInfo } from '../../src/shared/computers.ts';
 import { api, connectionHello, openConnection, setReconnect } from './api.ts';
-import { OpenSession, type OpenSessionView } from './openSession.ts';
+import { OpenSession, viewFor, type OpenSessionView } from './openSession.ts';
 import { secretsChanged } from './secretLock.ts';
 import { pollWhileShown } from './pollShown.ts';
-import { withArchived, withSession, type KnownSessions } from '../../src/shared/hello-sessions.ts';
+import { withArchived, withNamed, withSession, type KnownSessions } from '../../src/shared/hello-sessions.ts';
+import { withHistory } from './waitingLists.ts';
 
 export type Connection = 'connecting' | 'open' | 'closed';
 
@@ -25,7 +26,9 @@ export function useLedung(openSessionId: string | null) {
   const helloAtRef = useRef(0);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [permissions, setPermissions] = useState<Record<string, PermissionInfo>>({});
-  const [{ messages, hasEarlier }, setView] = useState<OpenSessionView>({ messages: [], hasEarlier: false });
+  const [view, setView] = useState<OpenSessionView>({ sessionId: null, messages: [], hasEarlier: false });
+  // Only the shown session's own messages: right after a switch the view still holds the previous chat's (issue #328).
+  const { messages, hasEarlier } = viewFor(view, openSessionId);
   const [canRestart, setCanRestart] = useState(false);
   /** How many times hello has arrived: a new one after a restart means Ledung is back. */
   const [hellos, setHellos] = useState(0);
@@ -51,7 +54,7 @@ export function useLedung(openSessionId: string | null) {
   const [profiles, setProfiles] = useState<string[]>(['full']);
   const [lockdownB, setLockdownB] = useState<string | null>(null);
   const [bangShell, setBangShell] = useState('Git Bash');
-  const [defaultIdentity, setDefaultIdentity] = useState<{ email: string | null; organization: string | null; plan: string | null; seenAt: number | null; signInKind?: SignInKind | null } | null>(null);
+  const [defaultIdentity, setDefaultIdentity] = useState<DefaultAccountView | null>(null);
   const [board, setBoard] = useState<BoardStatus | null>(null);
   const [github, setGithub] = useState<GitHubBudget[]>([]);
   const [remote, setRemote] = useState<RemoteStatus | null>(null);
@@ -66,6 +69,9 @@ export function useLedung(openSessionId: string | null) {
   const [computers, setComputers] = useState<ComputerInfo[]>([]);
   const [newComputers, setNewComputers] = useState<NewComputerInfo[]>([]);
   const [linkPairings, setLinkPairings] = useState<LinkPairingInfo[]>([]);
+  /** The desktop app made on this computer (#408): out of date after an update, or why the browser opened instead. */
+  const [desktopApp, setDesktopApp] = useState<DesktopAppInfo | null>(null);
+  const [desktopAppHere, setDesktopAppHere] = useState(false);
   const [throughPublicName, setThroughPublicName] = useState(false);
   /** The config file's reloads (issue #353). */
   const [configStatus, setConfigStatus] = useState<ConfigStatus | null>(null);
@@ -81,6 +87,7 @@ export function useLedung(openSessionId: string | null) {
     messages: (id) => api.messages(id),
     messagesBefore: (id, before) => api.messages(id, before),
     messagesAfter: (id, after) => api.messagesAfter(id, after),
+    waitingLines: (id, from) => api.waitingLines(id, from),
     changed: setView,
   });
   const open = openRef.current;
@@ -89,6 +96,16 @@ export function useLedung(openSessionId: string | null) {
   const loadArchived = useCallback(async () => {
     const archived = await api.archivedSessions();
     setKnown((known) => withArchived(known, archived));
+  }, []);
+
+  // Waiting for you history (issue #306): read when the view opens, not with every page load, and again after each
+  // hello once it has been read, since a hello replaces the questions.
+  const historyWanted = useRef(false);
+  const loadHistory = useCallback(async () => {
+    historyWanted.current = true;
+    const history = await api.questionHistory();
+    setQuestions((have) => withHistory(have, history.questions));
+    setKnown((known) => withNamed(known, history.sessions));
   }, []);
 
   const loadEarlier = useCallback(() => open.loadEarlier().catch(() => {}), [open]);
@@ -142,6 +159,7 @@ export function useLedung(openSessionId: string | null) {
             setUserName(event.userName);
             setSource(event.source ?? null);
             setQuestions(Object.fromEntries(event.questions.map((q) => [q.id, q])));
+            if (historyWanted.current) loadHistory().catch(() => {});
             setLimits(event.limits);
             setUsageStops(event.usageStops ?? []);
             setMacros(event.macros ?? []);
@@ -161,6 +179,8 @@ export function useLedung(openSessionId: string | null) {
             setComputers(event.computers ?? []);
             setNewComputers(event.newComputers ?? []);
             setLinkPairings(event.linkPairings ?? []);
+            setDesktopApp(event.desktopApp ?? null);
+            setDesktopAppHere(event.desktopAppHere === true);
             setThroughPublicName(event.throughPublicName ?? false);
             setConfigStatus(event.config ?? null);
             setPermissions(Object.fromEntries(event.permissions.map((p) => [p.id, p])));
@@ -328,5 +348,5 @@ export function useLedung(openSessionId: string | null) {
     };
   }, []);
 
-  return { runs, workflows, connection, loaded, canRestart, hellos, updated, userName, source, questions, limits, usageStops, macros, signedOut, claudeProblem, claudeLooked, accountProblems, overview, machine, away, orders, accounts, accountChoices, defaultIdentity, board, github, remote, computers, newComputers, linkPairings, throughPublicName, configStatus, chats, helper, profiles, lockdownB, bangShell, sessions, olderArchived, loadArchived, projects, permissions, messages, hasEarlier, loadEarlier };
+  return { runs, workflows, connection, loaded, canRestart, hellos, updated, desktopApp, desktopAppHere, userName, source, questions, limits, usageStops, macros, signedOut, claudeProblem, claudeLooked, accountProblems, overview, machine, away, orders, accounts, accountChoices, defaultIdentity, board, github, remote, computers, newComputers, linkPairings, throughPublicName, configStatus, chats, helper, profiles, lockdownB, bangShell, sessions, olderArchived, loadArchived, loadHistory, projects, permissions, messages, hasEarlier, loadEarlier };
 }

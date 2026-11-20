@@ -116,6 +116,8 @@ const Block = z.object({
   context: z.enum(['compact', 'clear'], { message: 'is "compact" or "clear" (its session is made fresh before the step) or left out' }).optional(),
   /** Part 3d: whose call a person block is, sub-steps run at once, a Run flow block handing on the caller's session. */
   person: Text(80).optional(),
+  /** #351: the question tier a person block's question is filed under. */
+  tier: Text(80).optional(),
   parallel: z.literal(true, { message: 'is true (its sub-steps run at once) or left out' }).optional(),
   session: z.literal('caller', { message: 'is "caller" (the flow it runs continues the session before it) or left out' }).optional(),
   at: z.object({ x: z.number().finite(), y: z.number().finite() }).optional(),
@@ -408,6 +410,7 @@ export function checkFlow(flow: Flow, exists: (file: string) => boolean, profile
         if (b[f] !== undefined) add(`${at}.${f}`, `"${b.title}" waits on something outside the flow; nobody here runs it: take "${f}" out (its brief may say what it waits for).`);
       }
     }
+    if (b.tier !== undefined && b.kind !== 'person') add(`${at}.tier`, `"tier" says where a person block's question is filed: take it out of "${b.title}", or make it a person block.`);
     if (b.person !== undefined && b.kind !== 'person') add(`${at}.person`, `"person" says whose call a person block is: take it out of "${b.title}", or make it a person block.`);
     if (b.parallel && !b.substeps?.length) add(`${at}.parallel`, `"${b.title}" has no sub-steps to run at once: take "parallel" out, or add sub-steps.`);
     else if (b.parallel && b.substeps!.length === 1) hint(`${at}.parallel`, `"${b.title}" has one sub-step, so "parallel" changes nothing.`);

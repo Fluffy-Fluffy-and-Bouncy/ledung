@@ -17,7 +17,6 @@ import { flowInstructions, flowPlaces, FOLLOW_LINE, readFlows } from '../src/ses
 import { decideStep, countBadge } from '../src/shared/flow-run.ts';
 import { checkFlow, checkFlowCalls, parseFlow } from '../src/shared/flow-check.ts';
 import { answerWord, FlowRuns, LATE_HEAD, lastReplyOf, WRITE_UP_MINUTES, type BlockSessionStart, type FlowRunsPorts } from '../src/sessions/flow-runs.ts';
-import type { StepQuestions } from '../src/shared/flow-run.ts';
 import type { WorktreeHost } from '../src/sessions/run-worktrees.ts';
 import { RunStore, runNumber } from '../src/sessions/run-store.ts';
 import { ledungToolServer, type RunHandlers, type ToolHandlers } from '../src/sessions/tools.ts';
@@ -64,7 +63,7 @@ test('part 3a: a counted word with no plain one says the flow has nothing for th
 });
 
 /** A run engine on the example flow with a real database, a manager and one of its sessions. */
-async function engine(opts: { following?: boolean; flows?: Awaited<ReturnType<typeof example>>; host?: WorktreeHost | null; setup?: string; questions?: StepQuestions } = {}) {
+async function engine(opts: { following?: boolean; flows?: Awaited<ReturnType<typeof example>>; host?: WorktreeHost | null; setup?: string } = {}) {
   const store = new Store(openDatabase(':memory:'));
   const flows = opts.flows ?? await example();
   const told: { id: string; text: string }[] = [];
@@ -115,13 +114,12 @@ async function engine(opts: { following?: boolean; flows?: Awaited<ReturnType<ty
       archived.push(id);
       store.updateSession(id, { archivedAt: Date.now() });
     },
+    waitsOnPerson: (id) => store.openQuestionCount(id) > 0,
     worktreeHost: () => opts.host ?? null,
     worktreeSetup: () => opts.setup,
     sessionsOf: (_p, run) => store.listSessions().filter((x) => x.runBlock?.run === run).map((x) => x.id),
     workingIn: (_p, folder) => store.listSessions().filter((x) => x.status !== 'ended' && x.workDir === folder).map((x) => x.title),
     tiers: () => ['Blocks a finished PR', 'Process'],
-    // Settings → Questions at a workflow step (#291): Ledung's card unless a test chooses the write-up.
-    stepQuestions: () => opts.questions ?? 'card',
     userName: 'Simon',
     now: () => (clock += 1000),
   };
@@ -168,7 +166,7 @@ test('part 3a: a run started by the manager moves through the example flow, the 
     assert.match(await runs.step('manager-1', { run: 'run-1', outcome: 'Fixed', block: 'fix' }), /goes to "Code review"/);
   }
   const third = await runs.step('manager-1', { run: 'run-1', outcome: 'changes requested' });
-  assert.match(third, /Recorded "Changes requested" for "Code review" \(its 3rd time\): run-1 "Fix the cart total" \(#142\) goes to "Person decides"\. At "Person decides" \(decide\), a person's step: Ledung put it to Simon as question #1\./);
+  assert.match(third, /Recorded "Changes requested" for "Code review" \(its 3rd time\): run-1 "Fix the cart total" \(#142\) goes to "Person decides"\. At "Person decides" \(decide\), a person's step: Simon decides\. Ledung has asked nothing/);
   const run = ports.runs.get('run-1')!;
   // Taken its last counted time, the word's count starts again (review of 3a).
   assert.deepEqual(run.counts['code-review'], { 'changes requested': 0 });
@@ -289,7 +287,7 @@ test('part 3a: a session remembers the run and block it serves', () => {
 });
 
 test('part 3b: blocks act: Build gets a new session with its settings, Fix continues it, the person answers move the run', async () => {
-  const { runs, ports, store, told, started, continued, replies, withdrawn, answer } = await engine();
+  const { runs, ports, store, told, started, continued, replies, withdrawn, answer, askUser } = await engine();
   await runs.start('manager-1', { title: 'Fix the cart total', ref: '#142' });
   await runs.step('manager-1', { run: 'run-1', outcome: 'Ready', note: 'The total adds VAT twice.' });
   // Build: a new session under the coordinator, with the block's model, its brief, sub-steps, the handoff and the words.
@@ -317,30 +315,37 @@ test('part 3b: blocks act: Build gets a new session with its settings, Fix conti
   // Back to Code review: a new-session block starts a session each time it is reached.
   await runs.step('manager-1', { run: 'run-1', outcome: 'Fixed' });
   assert.equal(started.length, 3);
-  // The 3rd "Changes requested" puts "Person decides" to Simon as a question with its words as the answers.
+  // The 3rd "Changes requested" hands "Person decides" to the manager (#351): nothing is asked until it asks.
   await runs.step('manager-1', { run: 'run-1', outcome: 'Changes requested' });
   await runs.step('manager-1', { run: 'run-1', outcome: 'Fixed' });
   const third = await runs.step('manager-1', { run: 'run-1', outcome: 'Changes requested' });
-  assert.match(third, /Ledung put it to Simon as question #1\. The answer moves the run by itself \("Go on" → Functional review; "Fix again" → Fix\); you are told then/);
+  assert.match(third, /Ledung has asked nothing: write the question yourself and ask it now with ask_user, giving run "run-1" and block "decide"/);
+  assert.equal(store.listQuestions().length, 0);
+  // The manager asks it, giving a PR tier: the step's tier wins (#351), as a question step is no finished PR.
+  const asked = await askUser('manager-1', {
+    run: 'run-1', block: 'decide', tier: 'Blocks a finished PR', refs: ['#142'], title: 'Code review: go on or fix again?', issue: 'Three rounds.',
+    options: [{ key: 'a', text: '**Go on**', outcome: 'Go on' }, { key: 'b', text: '**Fix again**', outcome: 'Fix again' }],
+  });
+  assert.equal(asked.error, false, asked.text);
   const q = store.getQuestion(1)!;
   assert.equal(q.addressedTo, 'user');
   assert.equal(q.sessionId, 'manager-1');
-  assert.deepEqual(q.options, ['Go on', 'Fix again']);
-  assert.deepEqual(q.details!.run, { run: 'run-1', block: 'decide', runTitle: 'Fix the cart total', blockTitle: 'Person decides', flow: 'main' });
+  assert.deepEqual(q.details!.run, { run: 'run-1', block: 'decide', runTitle: 'Fix the cart total', blockTitle: 'Person decides', flow: 'main', writeUp: true });
   assert.deepEqual(q.details!.refs, ['#142']);
-  assert.equal(q.details!.tier, 'Blocks a finished PR');
+  assert.equal(q.details!.tier, 'Process');
   assert.equal(ports.runs.get('run-1')!.state, 'waiting');
+  assert.equal(ports.runs.get('run-1')!.question, 1);
   // Simon answers: the run moves by itself, the coordinator is told, and the answer isn't delivered again as a plain one.
-  await answer(1, 'Go on');
+  await answer(1, 'a — Go on');
   let run = ports.runs.get('run-1')!;
   assert.equal(run.at, 'functional-review');
   assert.equal(run.history.at(-1)!.by, 'Simon');
   assert.ok(store.getQuestion(1)!.deliveredAt);
-  assert.match(told.at(-1)!.text, /^Ledung: Simon answered "Person decides" of run-1 "Fix the cart total" \(#142\) \(question #1\): Go on\n\nRecorded "Go on" .* goes to "Functional review"\. At "Functional review" \(functional-review\), a person's step: Ledung put it to Simon as review #2/);
-  // The functional review is a review page; "Changes needed:" takes the "Changes needed" outcome, the note handed on.
+  assert.match(told.at(-1)!.text, /^Ledung: Simon answered "Person decides" of run-1 "Fix the cart total" \(#142\) \(question #1\): a — Go on\n\nRecorded "Go on" .* goes to "Functional review"\. At "Functional review" \(functional-review\), a person's step: Simon decides\. Ledung has asked nothing/);
+  // The functional review is a review page, under the first tier; "Changes needed:" takes the "Changes needed" outcome, the note handed on.
+  assert.equal((await askUser('manager-1', { run: 'run-1', block: 'functional-review', tier: 'Process', title: 'Sign off the cart total', review: { solving: 'The total.', done: 'Rounded.' } })).error, false);
   const review = store.getQuestion(2)!;
-  assert.equal(review.details!.review!.solving, `Fix the cart total (#142), in the flow "Ledung's own process".`);
-  assert.match(review.details!.review!.notes!, /^Your answer moves run-1 by itself: "Accepted" → Merge \+ release; "Changes needed" → Fix\./);
+  assert.equal(review.details!.tier, 'Blocks a finished PR');
   await answer(2, 'Changes needed: the total is still off by a cent.');
   run = ports.runs.get('run-1')!;
   assert.equal(run.at, 'fix');
@@ -349,6 +354,7 @@ test('part 3b: blocks act: Build gets a new session with its settings, Fix conti
   // The manager reports a person block itself (the person's word in chat): the open question is withdrawn.
   await runs.step('manager-1', { run: 'run-1', outcome: 'Fixed' });
   await runs.step('manager-1', { run: 'run-1', outcome: 'Approved' });
+  await askUser('manager-1', { run: 'run-1', block: 'functional-review', title: 'Sign off again', review: { solving: 'The total.', done: 'Rounded to the cent.' } });
   const open = ports.runs.get('run-1')!.question!;
   await runs.step('manager-1', { run: 'run-1', outcome: 'Accepted' });
   assert.deepEqual(withdrawn, [open]);
@@ -359,7 +365,7 @@ test('part 3b: blocks act: Build gets a new session with its settings, Fix conti
 });
 
 test(`part 3b: a Run flow block runs its flow as a child run; the way that ends is the block's outcome`, async () => {
-  const { runs, ports, store, started, answer, told } = await engine();
+  const { runs, ports, store, started, answer, told, late } = await engine();
   await runs.start('manager-1', { title: 'New logo' });
   const at = await runs.step('manager-1', { run: 'run-1', outcome: 'Needs an asset' });
   assert.match(at, /At "Make the asset" \(asset\): Ledung started run-2 in the flow "Asset" for it, and run-1 waits; the way run-2 ends is "Make the asset"'s outcome\.\n\nrun-2: At "Produce" \(produce\): Ledung started session "Produce: New logo"/);
@@ -370,6 +376,8 @@ test(`part 3b: a Run flow block runs its flow as a child run; the way that ends 
   assert.equal(ports.runs.get('run-1')!.state, 'waiting');
   await runs.step('manager-1', { run: 'run-2', outcome: 'Done', note: 'logo.svg' });
   // The asset review has no "Accepted": Accepted takes its first outcome, Ready, which ends the child; the parent goes on.
+  // Asked by Ledung's own card here, no write-up having come (#351).
+  await late();
   const q = ports.runs.get('run-2')!.question!;
   await answer(q, 'Accepted.');
   assert.equal(ports.runs.get('run-2')!.state, 'ended');
@@ -384,9 +392,10 @@ test(`part 3b: a Run flow block runs its flow as a child run; the way that ends 
 });
 
 test('part 3b: an answer that is none of the words is left for the coordinator; a session coordinator hears of block turns', async () => {
-  const { runs, ports, answer, told } = await engine();
+  const { runs, ports, answer, told, late } = await engine();
   await runs.start('session-1', { title: 'Decide', flow: 'asset' });
   await runs.step('session-1', { run: 'run-1', outcome: 'Done' });
+  await late();
   const q = ports.runs.get('run-1')!.question!;
   await answer(q, 'Let me think about the colours first');
   assert.equal(ports.runs.get('run-1')!.at, 'review');
@@ -429,34 +438,65 @@ async function toDecide(e: Awaited<ReturnType<typeof engine>>): Promise<string> 
   return e.runs.step('manager-1', { run: 'run-1', outcome: 'Changes requested' });
 }
 
-test('#291 card (the default): a person step is asked at once by Ledung as before, and there is no write-up to give', async () => {
+test('#351: a person step asks nothing until the manager does, nor the minute check before 10 minutes; a stored #291 setting is ignored', async () => {
   const e = await engine();
+  // A Ledung that had chosen "card" under the old setting (#291): the value stays in its data and means nothing now.
+  e.store.setMeta('step-questions', 'card');
   const third = await toDecide(e);
-  assert.match(third, /At "Person decides" \(decide\), a person's step: Ledung put it to Simon as question #1\./);
+  assert.match(third, /a person's step: Simon decides\. Ledung has asked nothing/);
+  assert.equal(e.ports.runs.get('run-1')!.question, null);
+  assert.equal(e.ports.runs.get('run-1')!.state, 'waiting');
+  // Before the 10 minutes, the minute check asks nothing.
+  await e.runs.overdue();
+  assert.equal(e.store.listQuestions().length, 0);
+  const asked = await e.askUser('manager-1', { run: 'run-1', block: 'decide', tier: 'Process', issue: 'Why.', options: ['Go on (recommended)', 'Fix again'] });
+  assert.equal(asked.error, false, asked.text);
   assert.equal(e.ports.runs.get('run-1')!.question, 1);
-  // Its options are the words; a note under one is the coordinator's to read, as before #291.
-  assert.deepEqual(e.store.getQuestion(1)!.options, ['Go on', 'Fix again']);
-  const refused = await e.askUser('manager-1', { run: 'run-1', block: 'decide', tier: 'Process', issue: 'Why.', options: ['Go on', 'Fix again'] });
-  assert.equal(refused.error, true);
-  assert.match(refused.text, /This Ledung asks a run's person steps with Ledung's own card \(Simon's Settings, Questions at a workflow step\)/);
   // No late card on top of it.
   await e.late();
   assert.equal(e.store.listQuestions().length, 1);
-  await e.answer(1, 'Go on\n\nNote: rounding later.');
-  assert.equal(e.ports.runs.get('run-1')!.at, 'decide');
-  assert.match(e.told.at(-1)!.text, /with an answer that is none of its outcomes/);
+  await e.answer(1, 'Fix again');
+  assert.equal(e.ports.runs.get('run-1')!.at, 'fix');
 });
 
-test('#291 write-up: Ledung hands the step to the manager, which asks it as written; the answer moves the run (a question and a review)', async () => {
-  const e = await engine({ questions: 'write-up' });
+test("#351: the step says the tier: a question's fallback goes under the second tier with its words and no brief; a block's own tier wins", async () => {
+  const e = await engine();
+  await toDecide(e);
+  await e.late();
+  const card = e.store.getQuestion(e.ports.runs.get('run-1')!.question!)!;
+  assert.equal(card.details!.tier, 'Process');
+  assert.deepEqual(card.options, ['Go on', 'Fix again']);
+  assert.match(card.details!.issue!, /^\*\*The manager gave no write-up for this step\.\*\* Ledung wrote this card/);
+  assert.match(card.details!.issue!, /"Code review" handed on:\n\nTwo findings still open: rounding, and the VAT line\./);
+  // The brief is there for the manager, and never on Ledung's card.
+  assert.match((await (await example()).text('briefs/decide.md')) ?? '', /Two review rounds ended without a pass/);
+  assert.doesNotMatch(JSON.stringify(card), /Two review rounds ended without a pass|briefs\/decide/);
+  // A person block naming its tier, in any case: the manager is told it, and it is the tier whatever the manager gives.
+  const flows = await phases();
+  const named = parseFlow(JSON.stringify({ ...PHASES, blocks: PHASES.blocks.map((b) => (b.id === 'owner' ? { ...b, tier: 'blocks a finished pr' } : b)) }));
+  assert.deepEqual(named.problems, []);
+  flows.flows.set('main', named.flow!);
+  const f = await engine({ flows });
+  await f.runs.start('manager-1', { title: 'Speed up the cart' });
+  for (const w of ['Pushed', 'Green', 'Approved']) await f.runs.step('manager-1', { run: 'run-1', outcome: w });
+  assert.match(await f.runs.step('manager-1', { run: 'run-2', outcome: 'Polished' }), /It is filed under the tier "Blocks a finished PR", the step's/);
+  const asked = await f.askUser('manager-1', { run: 'run-1', block: 'owner', tier: 'Process', issue: 'Ship?', options: ['Ship it', 'Not yet'] });
+  assert.equal(asked.error, false, asked.text);
+  assert.equal(f.store.getQuestion(f.ports.runs.get('run-1')!.question!)!.details!.tier, 'Blocks a finished PR');
+});
+
+test('#291/#351 write-up: Ledung hands the step to the manager, which asks it as written; the answer moves the run (a question and a review)', async () => {
+  const e = await engine();
   const { runs, ports, store, told, continued, answer, askUser } = e;
   // Reaching "Person decides": no question; the manager is told how to ask, with the words its answer must lead to,
   // what a write-up holds, the handoff, and the brief for itself.
   const third = await toDecide(e);
-  assert.match(third, /At "Person decides" \(decide\), a person's step: Simon decides\. Ledung has asked nothing: write it up and ask it now with ask_user, giving run "run-1" and block "decide"\. Simon's answer then moves the run by itself/);
+  assert.match(third, /At "Person decides" \(decide\), a person's step: Simon decides\. Ledung has asked nothing: write the question yourself and ask it now with ask_user, giving run "run-1" and block "decide"\. Simon's answer then moves the run by itself/);
   assert.match(third, /each option's outcome one of the block's words: "Go on" → Functional review; "Fix again" → Fix\./);
-  assert.match(third, /the backstory .*what was done, the evidence .*the options with their cost, your recommendation as an opinion, and other sessions' views/);
-  assert.match(third, /If you have not asked within 10 minutes, Ledung asks its own short card instead/);
+  assert.match(third, /It is filed under the tier "Process", the step's/);
+  // Ledung's own quality floor (#351, point 5): self-contained, plain words, evidence where it helps, nothing meant for the manager.
+  assert.match(third, /in plain words: self-contained .*what was done, the evidence .*attach files or sources where they help.*the options with their cost, your recommendation as an opinion, and other sessions' views.*Nothing meant for you goes in it/);
+  assert.match(third, /If you have not asked within 10 minutes, Ledung asks Simon its own short card instead, headed as Ledung's/);
   assert.match(third, /"Code review" handed on:\n\nTwo findings still open: rounding, and the VAT line\./);
   assert.match(third, /For you, not for Simon: The brief \(briefs\/decide\.md\):\n\n# Person decides\n\nTwo review rounds ended without a pass\./);
   assert.equal(store.listQuestions().length, 0);
@@ -536,7 +576,7 @@ test(`#291 write-up: an option leads to its outcome, with or without the page's 
 });
 
 test('#291 write-up: ask_user at a person step is refused for a wrong run, block or outcome, with the valid ones named', async () => {
-  const { runs, ports, store, askUser } = await engine({ questions: 'write-up' });
+  const { runs, ports, store, askUser } = await engine();
   await runs.start('manager-1', { title: 'Cart', ref: '#142' });
   await runs.step('manager-1', { run: 'run-1', outcome: 'Ready' });
   const base = { tier: 'Process', issue: 'Why.', options: [{ key: 'a', text: '**On**', outcome: 'Go on' }, { key: 'b', text: '**Again**', outcome: 'Fix again' }] };
@@ -571,7 +611,7 @@ test('#291 write-up: ask_user at a person step is refused for a wrong run, block
 });
 
 test('#291 write-up: none within 10 minutes: Ledung asks its own card, headed so, without the brief, linked to the run', async () => {
-  const { runs, ports, store, told, answer, late, askUser } = await engine({ questions: 'write-up' });
+  const { runs, ports, store, told, answer, late, askUser } = await engine();
   await runs.start('manager-1', { title: 'Logo', ref: '#7', flow: 'asset' });
   await runs.step('manager-1', { run: 'run-1', outcome: 'Done', note: 'logo.svg is in the PR.' });
   // Before the 10 minutes: nothing.
@@ -586,6 +626,9 @@ test('#291 write-up: none within 10 minutes: Ledung asks its own card, headed so
   assert.equal(card.details!.title, `${LATE_HEAD}: Review the asset, Logo`);
   assert.match(card.details!.review!.solving, /^\*\*The manager gave no write-up for this step\.\*\* Ledung wrote this card from the run alone/);
   assert.equal(card.details!.review!.done, 'Produce: logo.svg is in the PR.');
+  // A review's fallback is a review, under the first tier (#351).
+  assert.equal(card.details!.tier, 'Blocks a finished PR');
+  assert.equal(card.options, null);
   assert.deepEqual(card.details!.run, { run: 'run-1', block: 'review', runTitle: 'Logo', blockTitle: 'Review the asset', flow: 'asset' });
   assert.deepEqual(card.details!.refs, ['#7']);
   // Linked as a write-up is; the coordinator told, and its own write-up now refused.
@@ -599,7 +642,7 @@ test('#291 write-up: none within 10 minutes: Ledung asks its own card, headed so
 });
 
 test('#291 write-up: the late card leaves the block brief out, and a write-up linked while the check reads the flow keeps its place', async () => {
-  const e = await engine({ questions: 'write-up' });
+  const e = await engine();
   await e.runs.start('manager-1', { title: 'Cart' });
   for (const w of ['Ready', 'PR opened', 'Approved']) await e.runs.step('manager-1', { run: 'run-1', outcome: w });
   assert.equal(e.ports.runs.get('run-1')!.at, 'functional-review');
@@ -653,7 +696,7 @@ test('#291 write-up: the late card leaves the block brief out, and a write-up li
 });
 
 test('#291 write-up: an answer that is none of its outcomes goes to the manager, and the run waits', async () => {
-  const e = await engine({ questions: 'write-up' });
+  const e = await engine();
   await toDecide(e);
   const asked = await e.askUser('manager-1', { run: 'run-1', block: 'decide', tier: 'Process', issue: 'Why.', options: [{ key: 'a', text: '**On**', outcome: 'Go on' }, { key: 'b', text: '**Again**', outcome: 'Fix again' }] });
   assert.equal(asked.error, false, asked.text);
@@ -678,9 +721,10 @@ test(`part 3b: a session's last reply is its last text of its own, not a subagen
 });
 
 test('part 3b review: the answer is delivered at once, only in the run note; a withdrawn person question goes back to the coordinator', async () => {
-  const { runs, ports, store, answer, told } = await engine();
+  const { runs, ports, store, answer, told, askUser, late } = await engine();
   await runs.start('manager-1', { title: 'Logo', flow: 'asset' });
   await runs.step('manager-1', { run: 'run-1', outcome: 'Done' });
+  await askUser('manager-1', { run: 'run-1', block: 'review', title: 'The logo', review: { solving: 'A logo.', done: 'logo.svg' } });
   const q = ports.runs.get('run-1')!.question!;
   store.answerQuestion(q, 'Accepted.', 'user');
   const moving = runs.onAnswered(store.getQuestion(q)!);
@@ -691,11 +735,13 @@ test('part 3b review: the answer is delivered at once, only in the run note; a w
   // An answer none of the words is still said in full in the note, as it no longer arrives on its own.
   await runs.start('manager-1', { title: 'Logo 2', flow: 'asset' });
   await runs.step('manager-1', { run: 'run-2', outcome: 'Done' });
+  await late();
   await answer(ports.runs.get('run-2')!.question!, 'Make it bluer first');
   assert.match(told.at(-1)!.text, /The answer:\n\nMake it bluer first$/);
   // Withdrawn on the page: the run is running again and its coordinator told.
   await runs.step('manager-1', { run: 'run-2', outcome: 'Changes needed' });
   await runs.step('manager-1', { run: 'run-2', outcome: 'Done' });
+  await late();
   const again = store.getQuestion(ports.runs.get('run-2')!.question!)!;
   store.withdrawQuestion(again.id, 'Withdrawn by Simon.');
   runs.onWithdrawn(store.getQuestion(again.id)!);
@@ -736,12 +782,13 @@ test('part 3b review: stopping a run stops its child runs; a child stopped leave
 });
 
 test('part 3b review: a person block answered with its word alone passes on what it was handed', async () => {
-  const { runs, ports, replies, answer, told } = await engine();
+  const { runs, ports, replies, answer, told, late } = await engine();
   await runs.start('manager-1', { title: 'Cart' });
   await runs.step('manager-1', { run: 'run-1', outcome: 'Ready' });
   await runs.step('manager-1', { run: 'run-1', outcome: 'PR opened' });
   replies.set(ports.runs.get('run-1')!.sessions['code-review']!, 'Approved: PR #143 reads well.');
   await runs.step('manager-1', { run: 'run-1', outcome: 'Approved' });
+  await late();
   await answer(ports.runs.get('run-1')!.question!, 'Accepted.');
   assert.equal(ports.runs.get('run-1')!.at, 'merge');
   assert.match(told.at(-1)!.text, /At "Merge \+ release" \(merge\): your own step\.\n\n"Code review" handed on:\n\nApproved: PR #143 reads well\./);
@@ -785,14 +832,14 @@ test('part 3d: the checks: each field only where it means something', () => {
   const bad = parseFlow(JSON.stringify({
     version: 1,
     blocks: [
-      { id: 'a', kind: 'work', title: 'A', runs: 'manager', person: 'the owner', session: 'caller', parallel: true, outcomes: [{ word: 'Go', to: 'w' }] },
+      { id: 'a', kind: 'work', title: 'A', runs: 'manager', person: 'the owner', tier: 'Process', session: 'caller', parallel: true, outcomes: [{ word: 'Go', to: 'w' }] },
       { id: 'w', kind: 'wait', title: 'W', runs: 'manager', model: 'opus', outcomes: [{ word: 'Done', to: 'f' }] },
       { id: 'f', kind: 'flow', title: 'F', flow: 'main', parallel: true },
       { id: 'one', kind: 'work', title: 'One', runs: 'manager', parallel: true, substeps: [{ id: 's', kind: 'check', title: 'S' }] },
     ],
   })).flow!;
   const said = checkFlow(bad, () => true).map((p) => `${p.at}${p.hint ? ' (hint)' : ''}`);
-  for (const at of ['blocks.a.person', 'blocks.a.session', 'blocks.a.parallel', 'blocks.w.runs', 'blocks.w.model', 'blocks.f.parallel', 'blocks.one.parallel (hint)']) {
+  for (const at of ['blocks.a.person', 'blocks.a.tier', 'blocks.a.session', 'blocks.a.parallel', 'blocks.w.runs', 'blocks.w.model', 'blocks.f.parallel', 'blocks.one.parallel (hint)']) {
     assert.ok(said.includes(at), `${at} in ${said.join(', ')}`);
   }
   // A field of the wrong shape is said and the flow doesn't read.
@@ -809,7 +856,7 @@ async function phases() {
 }
 
 test('part 3d: followed: a wait waits, sub-steps at once, the caller\'s session goes on in the called flow, the owner\'s call is said', async () => {
-  const { runs, ports, store, started, continued, answer } = await engine({ flows: await phases() });
+  const { runs, ports, store, started, continued, answer, late } = await engine({ flows: await phases() });
   await runs.start('manager-1', { title: 'Speed up the cart' });
   assert.equal(started[0]!.title, 'Build: Speed up the cart');
   // The wait: the run waits there, with what it waits for, until the coordinator reports how it came out.
@@ -833,8 +880,10 @@ test('part 3d: followed: a wait waits, sub-steps at once, the caller\'s session 
   assert.match(await runs.status('manager-1', 'run-2'), new RegExp(`Sessions: handed by its caller: ${builder}; Tidy: ${builder}\\.`));
   const before = started.length;
   // Polish ends; the owner is asked, the question saying whose call it is.
-  await runs.step('manager-1', { run: 'run-2', outcome: 'Polished' });
+  const owner = await runs.step('manager-1', { run: 'run-2', outcome: 'Polished' });
   assert.equal(started.length, before);
+  assert.match(owner, /a person's step: Simon decides\. It is the owner's call; Simon is asked all the same\./);
+  await late();
   const q = store.getQuestion(ports.runs.get('run-1')!.question!)!;
   assert.equal(q.details!.run!.person, 'the owner');
   assert.match(q.details!.issue!, /It is the owner's call\./);
@@ -843,33 +892,29 @@ test('part 3d: followed: a wait waits, sub-steps at once, the caller\'s session 
   assert.equal(ports.runs.get('run-1')!.ending, 'Ship it');
 });
 
-test('#291: a run waiting at a wait or a Run flow block gets no late card, whichever way person steps are asked; one at a person step does with the write-up', async () => {
-  // Test review of PR #294, finding 1: those runs wait with no question too, and the minute check runs in both modes.
-  for (const questions of ['card', 'write-up'] as const) {
-    const { runs, ports, store, late } = await engine({ flows: await phases(), questions });
-    await runs.start('manager-1', { title: 'Speed up the cart' });
-    // At the CI wait, more than 10 minutes.
-    await runs.step('manager-1', { run: 'run-1', outcome: 'Pushed' });
-    assert.deepEqual([ports.runs.get('run-1')!.at, ports.runs.get('run-1')!.state], ['ci', 'waiting'], questions);
-    await late();
-    assert.equal(store.listQuestions().length, 0, `${questions}: a wait`);
-    assert.equal(ports.runs.get('run-1')!.question, null);
-    // At Polish, a Run flow block, waiting for its child run, more than 10 minutes.
-    for (const w of ['Green', 'Approved']) await runs.step('manager-1', { run: 'run-1', outcome: w });
-    assert.deepEqual([ports.runs.get('run-1')!.at, ports.runs.get('run-1')!.state], ['polish', 'waiting'], questions);
-    await late();
-    assert.equal(store.listQuestions().length, 0, `${questions}: a Run flow block`);
-    assert.equal(ports.runs.get('run-1')!.question, null);
-    // The person step after it: with the write-up the same check does ask its card; with the card it was asked at once.
-    await runs.step('manager-1', { run: 'run-2', outcome: 'Polished' });
-    assert.equal(ports.runs.get('run-1')!.at, 'owner');
-    if (questions === 'write-up') {
-      assert.equal(store.listQuestions().length, 0);
-      await late();
-    }
-    assert.equal(store.listQuestions().length, 1, questions);
-    assert.equal(ports.runs.get('run-1')!.question, store.listQuestions()[0]!.id);
-  }
+test('#291: a run waiting at a wait or a Run flow block gets no late card; one at a person step does', async () => {
+  // Test review of PR #294, finding 1: those runs wait with no question too.
+  const { runs, ports, store, late } = await engine({ flows: await phases() });
+  await runs.start('manager-1', { title: 'Speed up the cart' });
+  // At the CI wait, more than 10 minutes.
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Pushed' });
+  assert.deepEqual([ports.runs.get('run-1')!.at, ports.runs.get('run-1')!.state], ['ci', 'waiting']);
+  await late();
+  assert.equal(store.listQuestions().length, 0, 'a wait');
+  assert.equal(ports.runs.get('run-1')!.question, null);
+  // At Polish, a Run flow block, waiting for its child run, more than 10 minutes.
+  for (const w of ['Green', 'Approved']) await runs.step('manager-1', { run: 'run-1', outcome: w });
+  assert.deepEqual([ports.runs.get('run-1')!.at, ports.runs.get('run-1')!.state], ['polish', 'waiting']);
+  await late();
+  assert.equal(store.listQuestions().length, 0, 'a Run flow block');
+  assert.equal(ports.runs.get('run-1')!.question, null);
+  // The person step after it: the same check asks its card.
+  await runs.step('manager-1', { run: 'run-2', outcome: 'Polished' });
+  assert.equal(ports.runs.get('run-1')!.at, 'owner');
+  assert.equal(store.listQuestions().length, 0);
+  await late();
+  assert.equal(store.listQuestions().length, 1);
+  assert.equal(ports.runs.get('run-1')!.question, store.listQuestions()[0]!.id);
 });
 
 test('part 3c review: the page gets every open run and only the latest others', () => {
@@ -995,11 +1040,13 @@ test('part 3f: tidy at the end: archived by default, stopped or kept as the flow
   await a.runs.step('manager-1', { run: 'run-1', outcome: 'Done' });
   assert.match(await a.runs.step('manager-1', { run: 'run-1', outcome: 'Merged' }), /has ended: "Merged"\. Its sessions: 2 archived\./);
   assert.deepEqual(a.archived.sort(), ['block-1', 'block-2']);
-  // A block visited twice had a session each time: both are tidied, not only its latest.
+  // A block visited twice had a session each time: the first was archived when the second took over (#402), the
+  // rest at the end.
   const twice = await engine({ flows: flowsOf3({ ...F3, limit: undefined }) });
   await twice.runs.start('manager-1', { title: 'Two' });
   for (const outcome of ['Done', 'Changes', 'Fixed']) await twice.runs.step('manager-1', { run: 'run-1', outcome });
-  assert.match(await twice.runs.step('manager-1', { run: 'run-1', outcome: 'Merged' }), /Its sessions: 3 archived\./);
+  assert.deepEqual(twice.archived, ['block-2']);
+  assert.match(await twice.runs.step('manager-1', { run: 'run-1', outcome: 'Merged' }), /Its sessions: 2 archived\./);
   assert.deepEqual(twice.archived.sort(), ['block-1', 'block-2', 'block-3']);
   const stop = await engine({ flows: flowsOf3({ ...F3, limit: undefined, tidy: 'stop' }) });
   await stop.runs.start('manager-1', { title: 'One' });
@@ -1151,6 +1198,7 @@ test('final review of part 3: who may start runs, who is told, and runs held rat
   await assert.rejects(e.runs.stopByPerson('shop', 'run-2', 'Simon'), /been stopped already/);
   // An answer that comes after the coordinator moved the run: still told, nothing recorded from it.
   for (const outcome of ['Done', 'Changes', 'Fixed', 'Changes', 'Fixed', 'Changes']) await e.runs.step('manager-1', { run: 'run-1', outcome });
+  await e.late();
   const q = e.ports.runs.get('run-1')!.question!;
   assert.ok(q);
   const stepped = e.runs.step('manager-1', { run: 'run-1', outcome: 'Fix' });
@@ -1206,4 +1254,219 @@ test('ledung#142: a sub-step brief is named where it is, a plain one in the work
   assert.equal(lines.length, 2);
   assert.ok(lines.some((l) => l.includes('process/briefs/security.md')));
   assert.ok(!lines.some((l) => l.includes('folder:')));
+});
+
+// #193: a fork starts every branch at once, and the join waits for each. Shaped as the flow the issue was found in:
+// Build → fork "Both reviews" → Code review and Test review → join "Both approved"; findings go to Route, then Fix.
+const FORKED = {
+  version: 1, title: 'Reviews at once', start: 'build',
+  blocks: [
+    { id: 'build', kind: 'work', title: 'Build', runs: 'new-session', outcomes: [{ word: 'PR opened', to: 'fork' }] },
+    { id: 'fork', kind: 'fork', title: 'Both reviews', outcomes: [{ word: 'Code', to: 'code-review' }, { word: 'Tests', to: 'test-review' }] },
+    { id: 'code-review', kind: 'check', title: 'Code review', runs: 'new-session', outcomes: [{ word: 'Approved', to: 'join' }, { word: 'Changes requested', to: 'route' }, { word: 'Reject', end: true }] },
+    { id: 'test-review', kind: 'check', title: 'Test review', runs: 'new-session', outcomes: [{ word: 'Tests hold', to: 'join' }, { word: 'Needs better test', to: 'route' }] },
+    { id: 'route', kind: 'check', title: 'Route', runs: 'manager', outcomes: [{ word: 'Needs fixes', to: 'fix' }] },
+    { id: 'fix', kind: 'work', title: 'Fix', runs: 'continue', continues: 'build', outcomes: [{ word: 'PR updated', to: 'fork' }, { word: 'Test fix', to: 'test-review' }] },
+    { id: 'join', kind: 'join', title: 'Both approved', outcomes: [{ word: 'Both approved', to: 'merge' }] },
+    { id: 'merge', kind: 'work', title: 'Merge', runs: 'manager', outcomes: [{ word: 'Merged', end: true }] },
+  ],
+};
+
+async function forked(join?: object) {
+  const flow = parseFlow(JSON.stringify(join ? { ...FORKED, blocks: FORKED.blocks.map((b) => (b.id === 'join' ? { ...b, ...join } : b)) } : FORKED)).flow;
+  assert.ok(flow);
+  return { folder: '/work/.ledung/workflow', flows: new Map([['main', flow]]), titles: new Map([['main', 'Reviews at once']]), text: async () => null };
+}
+
+test('#193: at a fork Ledung starts every branch at once, flow_status shows each, a branch steps while the other runs, and the join waits for both', async () => {
+  const { runs, ports, started, replies } = await engine({ flows: await forked() });
+  await runs.start('manager-1', { title: 'Fix the cart', ref: '#7' });
+  const at = await runs.step('manager-1', { run: 'run-1', outcome: 'PR opened', note: 'PR #8' });
+  // Both branches' sessions, at once, from one step; each told which branch it is and given what Build handed on.
+  assert.deepEqual(started.map((s) => s.title), ['Build: Fix the cart', 'Code review: Fix the cart', 'Test review: Fix the cart']);
+  assert.match(at, /At "Both reviews" \(fork\), a fork: Ledung started every branch at once\.\n- "Code" at "Code review" \(code-review\): Ledung started session "Code review: Fix the cart"[^\n]*\n- "Tests" at "Test review" \(test-review\): Ledung started session "Test review: Fix the cart"/);
+  assert.match(started[1]!.task, /This is the "Code" branch of the fork "Both reviews": its other branches \("Tests" at "Test review"\) run at the same time/);
+  assert.match(started[2]!.task, /What "Build" handed on:\n\nPR #8/);
+  const run = ports.runs.get('run-1')!;
+  assert.deepEqual(run.fork!.branches.map((b) => [b.word, b.at, b.joined]), [['Code', 'code-review', false], ['Tests', 'test-review', false]]);
+  assert.equal(run.sessions['code-review'], 'block-2');
+  assert.equal(run.sessions['test-review'], 'block-3');
+  // flow_status: every position the run holds.
+  assert.match(await runs.status('manager-1', 'run-1'), /in the fork "Both reviews", with a branch at each of: "Code" at "Code review" since [^;]+; "Tests" at "Test review" since/);
+  assert.match(await runs.status('manager-1'), /run-1 "Fix the cart" \(#7\), flow "Reviews at once": in the fork "Both reviews", with a branch at each of: "Code" at "Code review"/);
+  // Several branches out: the block must be named; the fork itself is not reported on.
+  await assert.rejects(runs.step('manager-1', { run: 'run-1', outcome: 'Tests hold' }), /at several blocks at once: give the block you report on\. Its branches: "Code" at "Code review" \(code-review\), "Tests" at "Test review" \(test-review\)\. Nothing was recorded\./);
+  await assert.rejects(runs.step('manager-1', { run: 'run-1', outcome: 'Code', block: 'fork' }), /Ledung started every branch of the fork "Both reviews" itself/);
+  // The second branch's step is accepted while the first still runs; the join waits for the other.
+  replies.set('block-3', 'The cart test fails without the fix.');
+  const tests = await runs.step('manager-1', { run: 'run-1', outcome: 'Tests hold', block: 'Test review' });
+  assert.match(tests, /Recorded "Tests hold" for "Test review", the "Tests" branch: it has reached the join "Both approved", which waits for "Code" \(at "Code review"\)\./);
+  const waiting = ports.runs.get('run-1')!;
+  assert.equal(waiting.at, 'fork');
+  assert.equal(waiting.state, 'running');
+  assert.deepEqual(waiting.fork!.branches.map((b) => [b.word, b.at, b.joined]), [['Code', 'code-review', false], ['Tests', 'join', true]]);
+  assert.match(await runs.status('manager-1', 'run-1'), /"Tests" waiting at the join "Both approved"/);
+  // A report for the block that branch has left, or for the branch at the join, records nothing.
+  await assert.rejects(runs.step('manager-1', { run: 'run-1', outcome: 'Tests hold', block: 'test-review' }), /No branch of run-1 "Fix the cart" \(#7\) is at "test-review"\. Its branches: "Code" at "Code review" \(code-review\), "Tests" waits at the join "Both approved"\. Nothing was recorded\./);
+  await assert.rejects(runs.step('manager-1', { run: 'run-1', outcome: 'Both approved', block: 'Tests' }), /The "Tests" branch of run-1 "Fix the cart" \(#7\) has reached the join "Both approved" and waits there for the others/);
+  assert.equal(ports.runs.get('run-1')!.history.length, waiting.history.length);
+  // The last branch in: the join moves on, with each branch's outcome; its one way on is taken.
+  const code = await runs.step('manager-1', { run: 'run-1', outcome: 'Approved', block: 'code-review', note: 'No findings.' });
+  assert.match(code, /every branch has reached the join "Both approved"\. Each branch's outcome:\n- "Code": Approved: No findings\.\n- "Tests": Tests hold: The cart test fails without the fix\.\n\nIt has one way on, so Ledung took it: Recorded "Both approved" for "Both approved": run-1 "Fix the cart" \(#7\) goes to "Merge"\./);
+  const merged = ports.runs.get('run-1')!;
+  assert.equal(merged.at, 'merge');
+  assert.equal(merged.fork, null);
+  assert.deepEqual(merged.history.map((h) => [h.block, h.word, h.branch ?? '', h.to]), [
+    ['build', 'PR opened', '', 'fork'], ['fork', 'Code', 'Code', 'code-review'], ['fork', 'Tests', 'Tests', 'test-review'],
+    ['test-review', 'Tests hold', 'Tests', 'join'], ['code-review', 'Approved', 'Code', 'join'], ['join', 'Both approved', '', 'merge'],
+  ]);
+  assert.match(merged.history.at(-1)!.by, /every branch in/);
+  // One position again: a step needs no block.
+  assert.match(await runs.step('manager-1', { run: 'run-1', outcome: 'Merged' }), /has ended: "Merged"/);
+});
+
+test('#193: a branch with findings goes on alone while the other waits at the join; back at the fork every branch starts afresh', async () => {
+  const { runs, ports, started, continued } = await engine({ flows: await forked() });
+  await runs.start('manager-1', { title: 'Fix the cart' });
+  await runs.step('manager-1', { run: 'run-1', outcome: 'PR opened' });
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Approved', block: 'code-review' });
+  // The test review's findings: that branch goes to Route, the coordinator's own step; the code branch keeps waiting.
+  const route = await runs.step('manager-1', { run: 'run-1', outcome: 'Needs better test', block: 'test-review' });
+  assert.match(route, /the "Tests" branch: the branch goes to "Route"\. "Tests" at "Route" \(route\): your own step\./);
+  assert.deepEqual(ports.runs.get('run-1')!.fork!.branches.map((b) => [b.word, b.at, b.joined]), [['Code', 'join', true], ['Tests', 'route', false]]);
+  // Only one branch out: its step needs no block.
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Needs fixes' });
+  assert.equal(continued.at(-1)!.id, 'block-1');
+  // The fix asked for the test review only: that one runs again, and the join takes both.
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Test fix' });
+  assert.equal(started.at(-1)!.title, 'Test review: Fix the cart');
+  const both = await runs.step('manager-1', { run: 'run-1', outcome: 'Tests hold' });
+  assert.match(both, /Each branch's outcome:\n- "Code": Approved[^\n]*\n- "Tests": Tests hold/);
+  assert.equal(ports.runs.get('run-1')!.at, 'merge');
+
+  // A second run: findings from the code review, the fix goes back to the fork, and both reviews start again.
+  await runs.start('manager-1', { title: 'Fix the till' });
+  await runs.step('manager-1', { run: 'run-2', outcome: 'PR opened' });
+  const before = started.length;
+  await runs.step('manager-1', { run: 'run-2', outcome: 'Changes requested', block: 'code-review' });
+  await runs.step('manager-1', { run: 'run-2', outcome: 'Needs fixes', block: 'route' });
+  const again = await runs.step('manager-1', { run: 'run-2', outcome: 'PR updated', block: 'fix' });
+  assert.match(again, /goes to "Both reviews"\. Its other branches \("Tests" at "Test review"\) are dropped: the fork starts every branch afresh\. At "Both reviews" \(fork\), a fork: Ledung started every branch at once\./);
+  assert.deepEqual(started.slice(before).map((s) => s.title), ['Code review: Fix the till', 'Test review: Fix the till']);
+  assert.deepEqual(ports.runs.get('run-2')!.fork!.branches.map((b) => [b.word, b.at, b.joined]), [['Code', 'code-review', false], ['Tests', 'test-review', false]]);
+});
+
+test("#193: two branches meeting at one block go on as one; a branch that ends the flow ends the run; a join with a choice is the coordinator's", async () => {
+  const { runs, ports, started } = await engine({ flows: await forked({ outcomes: [{ word: 'Merge', to: 'merge' }, { word: 'Hold', end: true }] }) });
+  await runs.start('manager-1', { title: 'Fix the cart' });
+  await runs.step('manager-1', { run: 'run-1', outcome: 'PR opened' });
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Changes requested', block: 'code-review' });
+  const met = await runs.step('manager-1', { run: 'run-1', outcome: 'Needs better test', block: 'test-review' });
+  assert.match(met, /it goes to "Route", where the "Code" branch already is, so the two go on as one there, as "Code"; nothing more was started\./);
+  assert.deepEqual(ports.runs.get('run-1')!.fork!.branches.map((b) => [b.word, b.at]), [['Code', 'route']]);
+  // Back through the fork, both in: the join has two ways on, so the coordinator is told each branch's outcome and picks.
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Needs fixes' });
+  await runs.step('manager-1', { run: 'run-1', outcome: 'PR updated' });
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Approved', block: 'code-review' });
+  const choice = await runs.step('manager-1', { run: 'run-1', outcome: 'Tests hold', block: 'test-review' });
+  assert.match(choice, /Each branch's outcome:\n- "Code": Approved\n- "Tests": Tests hold\n\nAt "Both approved" \(join\): a step for you to see through\.[\s\S]*Its outcomes: "Merge" → Merge; "Hold" ends the flow\./);
+  const atJoin = ports.runs.get('run-1')!;
+  assert.equal(atJoin.at, 'join');
+  assert.equal(atJoin.fork, null);
+  assert.match(await runs.step('manager-1', { run: 'run-1', outcome: 'Hold' }), /has ended: "Hold"/);
+
+  // A branch whose outcome ends the flow ends the whole run, the other branch with it.
+  await runs.start('manager-1', { title: 'Fix the till' });
+  await runs.step('manager-1', { run: 'run-2', outcome: 'PR opened' });
+  const n = started.length;
+  assert.match(await runs.step('manager-1', { run: 'run-2', outcome: 'Reject', block: 'code-review' }), /run-2 "Fix the till" has ended: "Reject"/);
+  const ended = ports.runs.get('run-2')!;
+  assert.equal(ended.state, 'ended');
+  assert.equal(ended.fork, null);
+  assert.equal(started.length, n);
+});
+
+test('#193 self-check: a join whose way on is not drawn yet keeps the branch step and says so; a fork with only joins to go to is the coordinator\'s', async () => {
+  // The join's one outcome leads nowhere yet: the last branch's step is recorded, and the run waits at the join.
+  const { runs, ports } = await engine({ flows: await forked({ outcomes: [{ word: 'Both approved' }] }) });
+  await runs.start('manager-1', { title: 'Fix the cart' });
+  await runs.step('manager-1', { run: 'run-1', outcome: 'PR opened' });
+  await runs.step('manager-1', { run: 'run-1', outcome: 'Tests hold', block: 'test-review' });
+  const last = await runs.step('manager-1', { run: 'run-1', outcome: 'Approved', block: 'code-review' });
+  assert.match(last, /Ledung could not take the join's way on: "Both approved" of "Both approved" leads nowhere yet[^\n]* The run is at "Both approved": report its outcome yourself/);
+  assert.doesNotMatch(last, /Nothing was recorded/);
+  const run = ports.runs.get('run-1')!;
+  assert.equal(run.at, 'join');
+  assert.equal(run.fork, null);
+  assert.deepEqual(run.history.at(-1)!.block, 'code-review');
+
+  // Every fork outcome goes straight to the join: no branch to start, so the fork is the coordinator's step as before.
+  const only = await forked();
+  only.flows.get('main')!.blocks.find((b) => b.id === 'fork')!.outcomes = [{ word: 'Code', to: 'join' }, { word: 'Tests', to: 'join' }];
+  const e = await engine({ flows: only });
+  await e.runs.start('manager-1', { title: 'Fix the cart' });
+  const at = await e.runs.step('manager-1', { run: 'run-1', outcome: 'PR opened' });
+  assert.match(at, /At "Both reviews" \(fork\): a step for you to see through\./);
+  assert.equal(e.ports.runs.get('run-1')!.fork, null);
+  // Positive branch of the same probe: a fork with somewhere to go does start its branches.
+  const both = await engine({ flows: await forked() });
+  await both.runs.start('manager-1', { title: 'Fix the cart' });
+  assert.match(await both.runs.step('manager-1', { run: 'run-1', outcome: 'PR opened' }), /a fork: Ledung started every branch at once/);
+  assert.match(await e.runs.step('manager-1', { run: 'run-1', outcome: 'Code' }), /goes to "Both approved"/);
+});
+
+test('#402: a new session taking a block archives the one it replaces at once, said to the coordinator; the run lists it', async () => {
+  const e = await engine({ flows: flowsOf3({ ...F3, limit: undefined }) });
+  await e.runs.start('manager-1', { title: 'Rounds' });
+  await e.runs.step('manager-1', { run: 'run-1', outcome: 'Done' });
+  await e.runs.step('manager-1', { run: 'run-1', outcome: 'Changes' });
+  const said = await e.runs.step('manager-1', { run: 'run-1', outcome: 'Fixed' });
+  // The first reviewer: stopped with a reason that says it is archived (the coordinator's "ended" note), then archived.
+  assert.deepEqual(e.stopped, ['block-2']);
+  assert.match(e.store.getSession('block-2')!.endReason!, /^A new session took "Review" of run-1; it is archived \(nothing is deleted; a message to it resumes it\)\.$/);
+  assert.deepEqual(e.archived, ['block-2']);
+  assert.match(said, /Ledung started session "Review: Rounds" \(block-3\) with profile full; the session it replaces, "Review: Rounds" \(block-2\), is archived/);
+  // Nothing deleted: the session is there, and flow_status names it among the earlier rounds'.
+  assert.ok(e.store.getSession('block-2'));
+  assert.match(await e.runs.status('manager-1', 'run-1'), /Earlier rounds' sessions: Review: block-2 \(archived\); read_session reads one, send_message resumes it\./);
+  assert.deepEqual(e.ports.runs.get('run-1')!.retired, ['block-2']);
+});
+
+test('#402: a replaced session that is mid-turn or waits on the person is stopped as before but never archived; the end tidies it', async () => {
+  for (const kind of ['running', 'question'] as const) {
+    const e = await engine({ flows: flowsOf3({ ...F3, limit: undefined }) });
+    await e.runs.start('manager-1', { title: 'Busy' });
+    await e.runs.step('manager-1', { run: 'run-1', outcome: 'Done' });
+    if (kind === 'running') e.store.updateSession('block-2', { status: 'running' });
+    else e.store.createQuestion({ sessionId: 'block-2', question: 'Which?', options: null, addressedTo: 'user', details: null });
+    await e.runs.step('manager-1', { run: 'run-1', outcome: 'Changes' });
+    const said = await e.runs.step('manager-1', { run: 'run-1', outcome: 'Fixed' });
+    assert.deepEqual(e.stopped, ['block-2'], kind);
+    assert.equal(e.store.getSession('block-2')!.endReason, 'A new session took "Review" of run-1.', kind);
+    assert.deepEqual(e.archived, [], kind);
+    assert.doesNotMatch(said, /is archived/, kind);
+    assert.deepEqual(e.ports.runs.get('run-1')!.retired, [], kind);
+  }
+});
+
+test('#402: one the coordinator resumed since is not archived again at the end; the current ones are, as before', async () => {
+  const e = await engine({ flows: flowsOf3({ ...F3, limit: undefined }) });
+  await e.runs.start('manager-1', { title: 'Resumed' });
+  for (const outcome of ['Done', 'Changes', 'Fixed']) await e.runs.step('manager-1', { run: 'run-1', outcome });
+  // A message to it resumes and unarchives it (resumeIfEnded in manager.ts); here it is idle again.
+  e.store.updateSession('block-2', { archivedAt: null, status: 'idle' });
+  assert.match(await e.runs.step('manager-1', { run: 'run-1', outcome: 'Merged' }), /Its sessions: 2 archived\./);
+  assert.deepEqual([e.archived[0], e.archived.slice(1).sort()], ['block-2', ['block-1', 'block-3']]);
+  assert.equal(e.store.getSession('block-2')!.archivedAt, null);
+  assert.equal(e.store.getSession('block-2')!.status, 'idle');
+});
+
+test('#402: a flow that keeps or only stops its sessions has none archived when a new session takes a block', async () => {
+  for (const tidy of ['keep', 'stop'] as const) {
+    const e = await engine({ flows: flowsOf3({ ...F3, limit: undefined, tidy }) });
+    await e.runs.start('manager-1', { title: 'Kept' });
+    for (const outcome of ['Done', 'Changes', 'Fixed']) await e.runs.step('manager-1', { run: 'run-1', outcome });
+    assert.deepEqual(e.stopped, ['block-2'], tidy);
+    assert.deepEqual(e.archived, [], tidy);
+  }
 });

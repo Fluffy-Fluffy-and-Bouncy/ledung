@@ -104,3 +104,14 @@ export function appVersion(): string {
     return 'unknown';
   }
 }
+
+let loadedVersion: string | null = null;
+/**
+ * The version this process runs: package.json as it was at the first call, which main.ts makes at start. appVersion()
+ * reads the disk, where an npm update may already have put another version before the restart (#435): Settings →
+ * About and the page's build must name what runs, not what is installed.
+ */
+export function runningVersion(read: () => string = appVersion): string {
+  loadedVersion ??= read();
+  return loadedVersion;
+}

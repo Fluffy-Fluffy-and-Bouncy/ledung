@@ -20,6 +20,7 @@ import type { CertificateStatus, RemoteStatus } from '../shared/protocol.ts';
 import { parseJoinCode } from './join-code.ts';
 import { hashSecret, makeSecret } from './secret.ts';
 import { Tunnel } from './tunnel.ts';
+import { writeFileSafely } from '../platform/safe-write.ts';
 
 export const SAVED_REMOTE = 'remote.json';
 /** The longest the relay's answer to an enrolment may take. */
@@ -238,7 +239,6 @@ export function savedRemote(dir: string, log: (line: string) => void = (line) =>
 
 /** Written whole and then renamed into place, private to this user (as remoteDir() is). */
 function writePrivate(file: string, data: string): void {
-  const temp = `${file}.${process.pid}.new`;
-  fs.writeFileSync(temp, data, { mode: 0o600 });
-  fs.renameSync(temp, file);
+  // Flushed before and after the rename, so a crash can't leave it empty (issue #460).
+  writeFileSafely(file, data, { mode: 0o600, temp: `${file}.${process.pid}.new` });
 }

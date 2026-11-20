@@ -6,26 +6,43 @@
 // Since #456 it runs Ledung in the background and returns, so no terminal has to stay open (Martin, 2026-11-01
 // 21:41, Ledung question #1149); --foreground keeps it in this terminal, for development and debugging.
 //
-//   ledung [--no-open]                 starts Ledung in the background, its output in ledung.log in the data folder
+//   ledung [--no-open]                 starts Ledung in the background, its output in ledung.log in the data folder;
+//                                      without --no-open it then opens the desktop app (#407), making it first, or the
+//                                      browser when the app is not installed or can't be made
+//   ledung --browser                   the same, but opens the page in the browser
+//   ledung app                         the same, but always the app: says why when it can't, and opens no browser
+//   ledung --after-app=<pid>           the same, run by the desktop app to restart into an update (#408): waits for
+//                                      that app to quit first
+//   ledung --after-app=<pid> --app-only  run by an app that started out of date (#455): waits for it to quit, brings
+//                                      it up to date and opens it, and never starts Ledung itself
 //   ledung --foreground [--no-open]    runs it in this terminal; Ctrl+C or closing the terminal stops it
 //   ledung stop                        stops the running Ledung and its sessions; exits 3 when none runs
 //   ledung account token <name>        puts a long-lived token into an account's Claude Code sign-in (#85)
 //   ledung --version
-//   ledung --open-only                 opens a running Ledung's page; exits 3 when none runs (the macOS app, issue #415)
+//   ledung --open-only                 opens a running Ledung: the app as `ledung` does (#409), else its page; exits 3
+//                                      when none runs (the macOS app, issue #415)
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { configPath } from './config.ts';
-import { appVersion, PACKAGED } from './platform/paths.ts';
+import { appVersion, PACKAGED, userDataDir } from './platform/paths.ts';
 import { coreArgs } from './platform/node-warnings.ts';
-import { NOT_RUNNING_CODE, openIfRunning } from './platform/running.ts';
+import { configuredPort, NOT_RUNNING_CODE, openIfRunning, savedToken } from './platform/running.ts';
 import { startInBackground, stopRunning } from './platform/background.ts';
 import { accountCommand } from './accounts/token-command.ts';
+import { afterApp, APP_ONLY_ARG, madeConfigFor } from '../desktop/made.ts';
+import {
+  backgroundArgs, codeIntoKept, desktopAppOff, desktopAvailability, ensureApp, madeApp, NO_APP, openChoice, openApp, openDesktop, progressPrinter,
+  waitForExit,
+} from './platform/desktop-app.ts';
+import { openBrowser } from './platform/open-browser.ts';
+import { startMenuFolder } from './platform/shortcuts.ts';
+import { exercisedLine } from './platform/exercised.ts';
 
 /** Must match main.ts. */
 const RESTART_CODE = 75;
 
-const OWN = ['--open-only', '--foreground'];
-const passthrough = process.argv.slice(2).filter((a) => !OWN.includes(a));
+const OWN = ['--open-only', '--foreground', '--browser'];
+let passthrough = process.argv.slice(2).filter((a) => !OWN.includes(a));
 if (passthrough.includes('--version') || passthrough.includes('-v')) {
   console.log(appVersion());
   process.exit(0);
@@ -33,13 +50,82 @@ if (passthrough.includes('--version') || passthrough.includes('-v')) {
 if (passthrough[0] === 'stop') process.exit(await stopRunning({ configFile: configPath() }));
 if (passthrough[0] === 'account') process.exit(await accountCommand(passthrough.slice(1)));
 
-// Already running (issue #415): open its page rather than start a second Ledung on the busy port.
-if (await openIfRunning({ configFile: configPath(), open: !passthrough.includes('--no-open') })) process.exit(0);
+// The desktop app (#407, Martin 2026-11-19, Ledung question #577): `ledung` opens it by default and the browser when
+// it is not installed or can't be made; --browser keeps to the browser. `ledung app` insists on the
+// app. Not for --no-open (the app's own Start Ledung, the sign-in start) or --foreground (development, where the core
+// opens the browser itself); --open-only, the Mac shortcut's, opens the app too (#409).
+// The choice is openChoice's (src/platform/desktop-app.ts), tested there (test review of PR #411, finding 1).
+// --after-app=<pid> (#408): the app ran this to restart its window into an updated Ledung. It waits for the app to have
+// quit, then opens it as `ledung` does, which writes its new code first; a failure opens the browser, saying why.
+const after = afterApp(process.argv.slice(2));
+if (after.pid !== null && !(await waitForExit(after.pid))) console.log('The desktop app had not quit after 15 s; opening it anyway.');
+// --app-only (#455): the app started from a shortcut, a pin or Finder with an older version's code. Only the app is
+// brought up to date and opened, as the restart above does; Ledung itself is left as it is, running or not.
+const appOnly = after.pid !== null && after.rest.includes(APP_ONLY_ARG);
+const choice = openChoice(after.rest.filter((a) => a !== APP_ONLY_ARG), desktopAppOff(configPath()));
+const { appCommand, noOpen } = choice;
+passthrough = choice.passthrough;
+const desktop = choice.tryApp ? desktopAvailability() : null;
+if (appCommand && desktop && !desktop.ok) {
+  console.error(`ledung app: ${desktop.reason}`);
+  process.exit(1);
+}
+
+/** Opens the desktop app, making it first; on failure the browser (or, for `ledung app`, only the reason). */
+async function openTheApp(): Promise<number> {
+  if (!desktop?.ok) return 0;
+  const cli = fileURLToPath(import.meta.url);
+  return openDesktop({
+    make: {
+      dataDir: userDataDir(),
+      electron: desktop.electron,
+      source: desktop.source,
+      ledungVersion: appVersion(),
+      config: madeConfigFor(process.execPath, cli, process.env),
+      progress: progressPrinter((text) => process.stdout.write(text), process.stdout.isTTY === true),
+      startMenu: process.platform === 'win32' ? await startMenuFolder() : undefined,
+    },
+    // The start's restart (#455) falls back to the app as it was, below, not to the browser: no Ledung may be running.
+    fallback: !appCommand && !appOnly,
+    restarted: after.pid !== null,
+    steps: {
+      ensure: ensureApp,
+      keep: codeIntoKept,
+      open: (paths) => openApp(paths),
+      browser: () => {
+        const port = configuredPort(configPath());
+        const token = savedToken();
+        if (port !== null && token !== null) openBrowser(`http://127.0.0.1:${port}/login?token=${token}`);
+      },
+      print: (line) => console.log(line),
+    },
+  });
+}
+
+if (appOnly) {
+  if ((desktop?.ok ? await openTheApp() : 1) === 0) {
+    // Only once the app has its new code and opened: a fallback below must not read as a pass (self-check finding 1).
+    exercisedLine('EXERCISED #455 desktop app started out of date: brought up to date before its window opened');
+    process.exit(0);
+  }
+  // Not brought up to date (no Electron package, "desktopApp": false, a failed make): the app opens on the code it has,
+  // and does not restart again for this version for ten minutes (desktop/made.ts updateAtStart).
+  const paths = madeApp(userDataDir());
+  const failed = paths ? await openApp(paths) : NO_APP;
+  if (failed) console.log(failed);
+  process.exit(failed ? 1 : 0);
+}
+
+// Already running (issue #415): open it (the app, or its page) rather than start a second Ledung on the busy port.
+if (await openIfRunning({ configFile: configPath(), open: !noOpen && !desktop?.ok })) process.exit(desktop?.ok ? await openTheApp() : 0);
 if (process.argv.includes('--open-only')) process.exit(NOT_RUNNING_CODE);
 
-// The background start runs this same command with --foreground, detached and with its output in the log (#456).
+// The background start runs this same command with --foreground, detached and with its output in the log (#456). With
+// the app, the started Ledung opens no browser: the app opens once it answers.
 if (!process.argv.includes('--foreground')) {
-  process.exit(await startInBackground({ args: [fileURLToPath(import.meta.url), '--foreground', ...passthrough], configFile: configPath() }));
+  const args = [fileURLToPath(import.meta.url), '--foreground', ...backgroundArgs(choice, desktop?.ok === true)];
+  const code = await startInBackground({ args, configFile: configPath() });
+  process.exit(code === 0 && desktop?.ok ? await openTheApp() : code);
 }
 
 // main.js next to this file in the package; main.ts when run from the source (node src/cli.ts).
