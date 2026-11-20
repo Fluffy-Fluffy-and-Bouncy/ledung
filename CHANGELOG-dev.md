@@ -9,6 +9,10 @@ together, are in [CHANGELOG.md](CHANGELOG.md). Online: https://projectledung.com
 ([docs/changes/README.md](docs/changes/README.md)); `npm run publish:dev` and `npm run publish:public` fold them in
 here under the version they publish, and push the result to main.
 
+## v4.6 — 2026-11-20 16:10 CET
+- Pairing another computer's tab inside the Ledung app works with one press of Pair: the app no longer cancels the redirect back to that computer's page (#468, #466)
+- A tab or browser whose daily cookie renewal was cut off (a restart, a dropped connection) stays paired and gets the new cookie again, instead of being removed as a copy (#468)
+
 ## v4.5 — 2026-11-20 15:44 CET
 - In Ledung's desktop app on a Mac, a change that needs your passkey now offers **Sign in the browser**: your browser opens a one-time link, shows what is signed and asks for Touch ID, and the app's change then goes through by itself (#463)
 
