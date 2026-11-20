@@ -36,6 +36,10 @@ export const PASSKEY_HEADER = 'x-ledung-passkey';
 export const VOUCH_HEADER = 'x-ledung-vouch';
 /** The refusal of a vouch for what still takes a passkey (choice 2a): the page then asks for the passkey itself. */
 export const PASSKEY_ONLY = 'This needs a passkey, or this computer\'s own screen: a trusted computer can\'t do it.';
+/** A sign link (#463) that is unknown, used or past its two minutes: what the browser and the app are told. */
+export const SIGN_LINK_GONE = 'This sign link is not valid any more: it was used, or its two minutes ran out. Make the change again in the app.';
+/** A sign link picked up by a device other than the one it was made for (#463). */
+export const SIGN_LINK_FOREIGN = 'This sign link is for another device.';
 /** ES256 and RS256: what phones and computers make; nothing weaker. */
 const ALGORITHMS = [-7, -257];
 /** Open challenges per device; more is a page (or someone) asking without answering. */
@@ -70,6 +74,13 @@ export class Passkeys {
    * another site (it can use one there), so a device paired in a frame sets its passkey up this way. In memory only.
    */
   private readonly enrolCodes = new Map<string, { deviceId: string; expiresAt: number }>();
+  /**
+   * Sign codes (#463): a one-time code that lets the default browser sign one waiting request for the device that asked
+   * for it, which can't show a passkey prompt itself (the desktop app on a Mac, #427). Bound to that device and that
+   * request's challenge, and gone with it after two minutes. The browser's answer waits here until the device picks it
+   * up and sends its request with it, where the passkey check runs in full (verify). In memory only.
+   */
+  private readonly signCodes = new Map<string, { deviceId: string; challenge: string; what: string; expiresAt: number; answer?: string; failed?: string }>();
   /** Each device's unlock, until when. In memory only: a restart locks every device again (fails closed). */
   private readonly unlocked = new Map<string, number>();
 
@@ -205,6 +216,80 @@ export class Passkeys {
     }).catch((e: Error) => { throw new PasskeyError(`The passkey was not accepted: ${e.message}`); });
     if (!verified.verified || !verified.authenticationInfo.userVerified) throw new PasskeyError('The passkey was not accepted.');
     this.devices.setCounter(device.id, verified.authenticationInfo.newCounter);
+  }
+
+  /**
+   * A sign code for one request by this device (#463): a fresh challenge for exactly `action`, which the default
+   * browser signs on the sign page. `what` is the request in words, shown there. Lives as long as its challenge.
+   */
+  signLink(device: Device, action: string, what: string): { code: string; expiresAt: number } {
+    if (!device.credentialId) throw new PasskeyError('This device has no passkey; it can only do this on the computer.');
+    const challenge = Buffer.from(this.issue(device.id, 'assert', action)).toString('base64url');
+    // A code whose challenge is gone (used, run out, or pushed out by MAX_OPEN) goes too: no more codes than challenges.
+    for (const [c, s] of this.signCodes) if (!this.open.has(s.challenge)) this.signCodes.delete(c);
+    const code = crypto.randomBytes(24).toString('base64url');
+    const expiresAt = this.open.get(challenge)!.expiresAt;
+    this.signCodes.set(code, { deviceId: device.id, challenge, what, expiresAt });
+    return { code, expiresAt };
+  }
+
+  /** The sign page's options (#463): the passkey check for the code's challenge, the device's name and what it signs. */
+  async signOptions(code: unknown): Promise<{ options: PublicKeyCredentialRequestOptionsJSON; name: string; what: string }> {
+    const s = this.signEntry(code);
+    const device = this.devices.get(s.deviceId);
+    // Works once: after an answer, right or wrong, the link is done.
+    if (s.answer !== undefined || s.failed !== undefined || !device?.credentialId) throw new PasskeyError(SIGN_LINK_GONE);
+    const options = await generateAuthenticationOptions({
+      rpID: this.rpID, challenge: new Uint8Array(Buffer.from(s.challenge, 'base64url')), timeout: Math.max(0, s.expiresAt - this.now()),
+      userVerification: 'required', allowCredentials: [{ id: device.credentialId }],
+    });
+    return { options, name: device.name, what: s.what };
+  }
+
+  /**
+   * The browser's answer for a sign code (#463), kept for the device to pick up. Only its challenge and credential are
+   * checked here; the signature, the origin and user verification are checked in full when the device sends its
+   * request with it (verify), which also uses the challenge up. One answer per code: a wrong one ends the link too.
+   */
+  signFinish(code: unknown, response: unknown): { name: string } {
+    const s = this.signEntry(code);
+    if (s.answer !== undefined || s.failed !== undefined) throw new PasskeyError(SIGN_LINK_GONE);
+    const device = this.devices.get(s.deviceId);
+    try {
+      const res = response as AuthenticationResponseJSON;
+      if (challengeIn(res) !== s.challenge) throw new PasskeyError('The passkey answer was for another check.');
+      if (!device?.credentialId || res.id !== device.credentialId) throw new PasskeyError("That is not this device's passkey.");
+      const answer = Buffer.from(JSON.stringify(res)).toString('base64url');
+      if (answer.length > 16 * 1024) throw new PasskeyError('The passkey answer could not be read.');
+      s.answer = answer;
+      return { name: device.name };
+    } catch (e) {
+      s.failed = e instanceof PasskeyError ? e.message : 'The passkey answer could not be read.';
+      throw e instanceof PasskeyError ? e : new PasskeyError(s.failed);
+    }
+  }
+
+  /**
+   * The browser's answer for this device's sign code (#463), once: the header its request then carries; null while the
+   * browser has not answered. Only the device the code was made for gets it.
+   */
+  signAnswer(device: Device, code: unknown): string | null {
+    const s = this.signEntry(code);
+    if (s.deviceId !== device.id) throw new PasskeyError(SIGN_LINK_FOREIGN);
+    if (s.answer === undefined && s.failed === undefined) return null;
+    this.signCodes.delete(code as string);
+    if (s.failed !== undefined) throw new PasskeyError(s.failed);
+    return s.answer!;
+  }
+
+  /** An open sign code: known, its challenge still open and fresh; otherwise it is dropped and SIGN_LINK_GONE thrown. */
+  private signEntry(code: unknown) {
+    const s = typeof code === 'string' ? this.signCodes.get(code) : undefined;
+    if (!s || s.expiresAt <= this.now() || !this.open.has(s.challenge)) {
+      if (typeof code === 'string') this.signCodes.delete(code);
+      throw new PasskeyError(SIGN_LINK_GONE);
+    }
+    return s;
   }
 
   /**

@@ -48,8 +48,11 @@ const remotePage = (): boolean => (globalThis as { location?: { protocol: string
 export type PasskeyCalls = {
   sign(options: { challenge: string }): Promise<string>;
   create(options: { challenge: string }): Promise<unknown>;
-  /** Set where no passkey prompt can come (the desktop app on a Mac, #427): why, said once instead of asking. */
-  unavailable?: string;
+  /**
+   * Set where no passkey prompt can come (the desktop app on a Mac, #427): each request is signed in the default
+   * browser instead, through a one-time sign link (#463), and `sign` is not called.
+   */
+  inBrowser?: true;
 };
 let passkeys: PasskeyCalls | null = null;
 export const setPasskeyCalls = (calls: PasskeyCalls | null) => {
@@ -67,7 +70,14 @@ export const PASSKEY_CANCELLED = 'The passkey check was cancelled.';
  * didn't go through, its reason and a retry. Resolves true to go on (Continue, Try again). Set by the page's
  * passkey dialog; without one (tests, a page with no dialog) the prompt comes straight away, as before.
  */
-export type PasskeyStep = { kind: 'unlock' | 'sign'; failed?: string };
+export type PasskeyStep = {
+  kind: 'unlock' | 'sign'; failed?: string;
+  /**
+   * Signed in the default browser (#463): the one-time link to open there, and the browser's answer arriving. The
+   * dialog opens the link on its button, then waits, and closes by itself (true) once `signed` settles.
+   */
+  browser?: { url: string; signed: Promise<string> };
+};
 export type PasskeyPrompter = (step: PasskeyStep) => Promise<boolean>;
 let prompter: PasskeyPrompter | null = null;
 export const setPasskeyPrompter = (p: PasskeyPrompter | null) => {
@@ -99,12 +109,8 @@ async function proofFor(method: string, path: string, text: string, passkey = fa
 async function signFor(method: string, path: string, text: string, passkey = false): Promise<string> {
   // The unlock's notice also says the signature that may follow, so that one goes straight on (#179).
   const kind = path === '/api/device-unlock' ? 'unlock' : 'sign';
-  // No prompt would come and the request would hang (#427): say why once, with no notice before it and no retry.
-  const unavailable = passkeys?.unavailable;
-  if (unavailable) {
-    if (prompter) await prompter({ kind, failed: unavailable });
-    throw new Error(unavailable);
-  }
+  // No prompt would come here and the request would hang (#427): the default browser signs it instead (#463).
+  if (passkeys?.inBrowser) return signInBrowser(method, path, text, kind);
   if (prompter && (kind === 'unlock' || !signExplained)) {
     if (!(await prompter({ kind }))) throw new Error(PASSKEY_CANCELLED);
     // Only once read and accepted: after a Cancel the next signature is explained again (#184 review).
@@ -115,6 +121,41 @@ async function signFor(method: string, path: string, text: string, passkey = fal
     const options = await call<{ challenge: string }>('POST', '/api/passkey-challenge', { method, path, body: text, ...(passkey ? { passkey: true } : {}) });
     try {
       return await passkeyCalls().sign(options);
+    } catch (e) {
+      const failed = e instanceof Error ? e.message : String(e);
+      if (!prompter || !(await prompter({ kind, failed }))) throw e;
+    }
+  }
+}
+
+/** How often the app asks whether the browser has signed (#463); a field so tests need not wait. */
+export const signPoll = { ms: 1000 };
+
+/**
+ * One signature for exactly this request, made in the default browser (#463): Ledung makes a one-time sign link for a
+ * challenge for it, the dialog opens the link, the browser signs it with Touch ID, and this page picks the answer up
+ * and sends the request with it, with no further click. Retried with a new link while the person asks to.
+ */
+async function signInBrowser(method: string, path: string, text: string, kind: PasskeyStep['kind']): Promise<string> {
+  for (;;) {
+    const link = await call<{ url: string; code: string; expiresAt: number }>('POST', '/api/passkey-challenge', { method, path, body: text, browser: true });
+    let stopped = false;
+    const signed = (async () => {
+      for (;;) {
+        await new Promise((r) => setTimeout(r, signPoll.ms));
+        if (stopped) throw new Error(PASSKEY_CANCELLED);
+        const { answer } = await call<{ answer: string | null }>('POST', '/api/passkey-sign-answer', { code: link.code });
+        if (answer) return answer;
+      }
+    })();
+    signed.catch(() => {}); // read below, or dropped after a Cancel
+    // Without a dialog (tests, a page with none) it only waits: something else opens the link.
+    if (prompter && !(await prompter({ kind, browser: { url: link.url, signed } }))) {
+      stopped = true;
+      throw new Error(PASSKEY_CANCELLED);
+    }
+    try {
+      return await signed;
     } catch (e) {
       const failed = e instanceof Error ? e.message : String(e);
       if (!prompter || !(await prompter({ kind, failed }))) throw e;

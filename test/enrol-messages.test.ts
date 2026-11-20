@@ -9,6 +9,7 @@ const path = '../web/public/enrol-messages.js';
 const m = await import(path) as {
   noPlatformPasskey(userAgent: string): string;
   passkeyError(e: unknown): string;
+  signError(e: unknown): string;
   NO_WEBAUTHN: string;
 };
 
@@ -39,4 +40,17 @@ test('a failed try names the reason in plain words and the browser\'s own error,
   // Ledung's own refusal (its answer) is shown as it is.
   assert.equal(m.passkeyError(new Error('This link is not valid any more.')), 'This link is not valid any more.');
   assert.match(m.NO_WEBAUTHN, /can't make passkeys/);
+});
+
+// The sign page (#463, sign.html) uses a passkey instead of making one: its words say "check", never "made".
+test('a failed check on the sign page names the reason in plain words and the browser\'s own error; Ledung\'s refusal as it is', () => {
+  const cancelled = m.signError(dom('NotAllowedError', 'The operation either timed out or was not allowed.'));
+  assert.match(cancelled, /^The passkey check was cancelled or timed out\. Press the button to try again\./);
+  assert.match(cancelled, /\(NotAllowedError: The operation either timed out or was not allowed\.\)$/);
+  assert.doesNotMatch(cancelled, /made/);
+  assert.match(m.signError(dom('SecurityError', 'bad rp')), /refused the passkey for this address.*\(SecurityError: bad rp\)$/);
+  const unknown = m.signError(dom('SomethingNew', 'error'));
+  assert.match(unknown, /^The passkey check did not go through/);
+  assert.ok(unknown.includes('SomethingNew'), unknown);
+  assert.equal(m.signError(new Error('This sign link is for another device.')), 'This sign link is for another device.');
 });
