@@ -56,6 +56,54 @@ export async function commandLines(): Promise<string[]> {
   return stdout.split('\n').filter((l) => l.trim());
 }
 
+/** A process's command line and, where the platform lets it be read cheaply (Linux), its working folder. */
+export interface ProcessCommand {
+  pid: number;
+  /** As listAll gives it, to tell the same process from a reused id. */
+  started: string;
+  command: string;
+  cwd: string | null;
+}
+
+/**
+ * The command lines of a few processes, for the person's Pause and Stop on a detached job: a process Ledung took as a
+ * session's only by when it started is acted on only if its command is the session's detaching call's (re-review of
+ * PR #476). Windows gives no other process's working folder without reading its memory, macOS only through lsof.
+ */
+export async function commandsOf(pids: number[]): Promise<ProcessCommand[]> {
+  const ids = [...new Set(pids)].filter((p) => Number.isInteger(p) && p > 0);
+  if (!ids.length) return [];
+  if (process.platform === 'win32') {
+    const filter = ids.map((p) => `ProcessId=${p}`).join(' OR ');
+    const script = `[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-CimInstance Win32_Process -Filter '${filter}' | ForEach-Object { "$($_.ProcessId)\`t$($_.CreationDate.ToFileTimeUtc())\`t$($_.CommandLine -replace '[\\r\\n\\t]', ' ')" }`;
+    const { stdout } = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
+    return stdout.split(/\r?\n/).filter(Boolean).map((line) => {
+      const [pid, started, ...rest] = line.split('\t');
+      return { pid: Number(pid), started: started ?? '', command: rest.join(' '), cwd: null };
+    }).filter((p) => ids.includes(p.pid));
+  }
+  let stdout = '';
+  try {
+    ({ stdout } = await run('ps', ['-ww', '-o', 'pid=,lstart=,args=', '-p', ids.join(',')], { maxBuffer: 16 * 1024 * 1024 }));
+  } catch (e) {
+    // ps exits 1 when none of them runs any more.
+    stdout = (e as { stdout?: string }).stdout ?? '';
+  }
+  const fs = await import('node:fs');
+  return stdout.split('\n').map((l) => l.trim().match(/^(\d+)\s+(\w{3}\s+\w{3}\s+\d+\s+[\d:]+\s+\d{4})\s+(.*)$/)).filter((m) => m !== null).map((m) => {
+    const pid = Number(m[1]);
+    let cwd: string | null = null;
+    if (process.platform === 'linux') {
+      try {
+        cwd = fs.readlinkSync(`/proc/${pid}/cwd`);
+      } catch {
+        // Not ours to read, or gone.
+      }
+    }
+    return { pid, started: m[2] ?? '', command: m[3] ?? '', cwd };
+  });
+}
+
 /** The process and all its descendants, as they are right now. */
 export async function snapshotTree(rootPid: number): Promise<ProcessInfo[]> {
   return treeFrom(await listAll(), rootPid);

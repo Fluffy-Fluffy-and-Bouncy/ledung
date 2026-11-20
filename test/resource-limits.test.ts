@@ -16,7 +16,7 @@ import { FRESH_FACTS, idleStopBlocker } from '../src/sessions/idle.ts';
 import { wslHintDue } from '../web/src/usage/machineFold.ts';
 import { LOWERED, type PriorityControl } from '../src/platform/process-control.ts';
 import { dragMax, dragStep, dragText, dragValue, limitShare, limitText, limitUnits, overFor, parseLimitInput, stepDrag, valueShare } from '../web/src/usage/resourceLimits.ts';
-import { fileTimeMs, JOB_BUSY, JobActions, jobProcessesNow, jobTargetsNow, type FreshProcess } from '../src/resources/job-actions.ts';
+import { commandIsCalls, fileTimeMs, JOB_BUSY, JobActions, jobProcessesNow, jobTargetsNow, provenByCommand, type FreshProcess } from '../src/resources/job-actions.ts';
 import { hostStill } from '../src/resources/monitor.ts';
 
 // --- Decisions ------------------------------------------------------------------------------------------------------
@@ -1378,29 +1378,38 @@ test('a heavy job started detached is taken as its session\'s, so its pass count
   r.sessions.get('s1')!.busy = true;
   r.tick({ s1: tree() });
   r.book.reserve('s1', { what: 'Train', cpu: 30, ram_gb: 4 });
-  r.book.callStarted('s1', 'd1', ['python train.py'], true, true);
+  r.book.callStarted('s1', 'd1', ['python train.py'], true, true, 'nohup python train.py > train.log 2>&1 &');
   // Its shell ended before any sample: the trainer's parent id names a process that is gone.
   const started77 = r.clock.now + 1000;
   for (let i = 1; i <= 3; i++) r.tick({ s1: tree() }, { outside: [{ pid: 77, ppid: 999, cpuSeconds: i * 20, memBytes: 3 * GB, started: started77 }] });
   const job = r.book.info().jobs[0]!;
   assert.equal(job.processes, 1);
   assert.equal(job.state, 'busy');
-  // Pause and Stop on its card reach it, though it is under no host (acceptance test 3 of PR #476): the book names
-  // it, and the fresh list is looked at from it as well as from the host, so what it started since is reached too.
+  // Pause and Stop on its card reach it, though it is under no host (acceptance test 3 of PR #476): its parent was
+  // never seen, so it was taken by timing alone, and the action checks its command line against the detaching call's
+  // (re-review of PR #476); the fresh list is looked at from it as well, so what it started since is reached too.
   const targets = r.book.jobTargets(job.id);
-  assert.deepEqual(targets.adopted, [77]);
+  assert.deepEqual(targets.adopted, []);
+  assert.deepEqual(targets.guessed, [{ pid: 77, commands: ['nohup python train.py > train.log 2>&1 &'] }]);
   const ft = (ms: number) => String((BigInt(ms) + 11644473600000n) * 10000n);
   const all: FreshProcess[] = [
     { pid: 10, ppid: 1, started: ft(1000), name: 'node.exe' },
     { pid: 11, ppid: 10, started: ft(2000), name: 'claude.exe' },
-    { pid: 77, ppid: 999, started: ft(started77), name: 'node.exe' },
-    { pid: 78, ppid: 77, started: ft(started77 + 500), name: 'node.exe' },
+    { pid: 77, ppid: 999, started: ft(started77), name: 'python.exe' },
+    { pid: 78, ppid: 77, started: ft(started77 + 500), name: 'python.exe' },
     { pid: 500, ppid: 4, started: ft(500), name: 'other.exe' },
   ];
-  const now = jobTargetsNow(targets.targets, jobProcessesNow(all, targets.host!, targets.adopted), targets.host!);
+  const lines = [{ pid: 77, started: ft(started77), command: '"C:\\Python312\\python.exe" train.py', cwd: null }];
+  const proven = provenByCommand(targets.guessed, all, lines, [], () => false);
+  assert.deepEqual(proven, [77]);
+  const now = jobTargetsNow(targets.targets, jobProcessesNow(all, targets.host!, proven), targets.host!);
   assert.deepEqual(now.map((t) => t.pid).sort(), [77, 78]);
-  // Without the adopted roots (as before the fix) nothing was reached.
+  // Without the adopted roots (as before acceptance test 3's fix) nothing was reached.
   assert.deepEqual(jobTargetsNow(targets.targets, jobProcessesNow(all, targets.host!, []), targets.host!), []);
+  // Another process at that pid now (a reused id), or one whose working folder is outside the session's: left alone.
+  assert.deepEqual(provenByCommand(targets.guessed, all, [{ ...lines[0]!, started: ft(started77 + 9) }], [], () => false), []);
+  assert.deepEqual(provenByCommand(targets.guessed, all, [{ ...lines[0]!, cwd: '/home/me/elsewhere' }], ['/home/me/project'], (f, c) => c.startsWith(f)), []);
+  assert.deepEqual(provenByCommand(targets.guessed, all, [{ ...lines[0]!, cwd: '/home/me/project/sub' }], ['/home/me/project'], (f, c) => c.startsWith(f)), [77]);
   r.sessions.get('s1')!.busy = false;
   r.tick({ s1: tree() });
   assert.equal(r.book.info().jobs.length, 0);
@@ -1415,6 +1424,59 @@ test('a heavy job started detached is taken as its session\'s, so its pass count
   const at = r2.clock.now + 500;
   for (let i = 1; i <= 3; i++) r2.tick({ s1: tree(), s2: tree2() }, { outside: [{ pid: 78, ppid: 998, cpuSeconds: i * 20, memBytes: 3 * GB, started: at }] });
   assert.equal(r2.book.info().jobs[0]!.processes, 0);
+});
+
+test("an outside program taken by timing alone is counted but Pause and Stop never touch it; one seen under the host is the session's (re-review of PR #476)", () => {
+  const r = rig();
+  r.sessions.get('s1')!.busy = true;
+  r.tick({ s1: tree() });
+  r.book.reserve('s1', { what: 'Daemon', cpu: 30, ram_gb: 4 });
+  r.book.callStarted('s1', 'd1', ['node daemon.mjs'], true, true, 'nohup node daemon.mjs &');
+  // The person starts a game: its launcher exits between two samples, so the game's parent is never seen, and it
+  // starts within the detaching call's window.
+  const game = { pid: 88, ppid: 990, cpuSeconds: 0, memBytes: 3 * GB, started: r.clock.now + 2000, name: 'game.exe' };
+  for (let i = 1; i <= 3; i++) r.tick({ s1: tree() }, { outside: [{ ...game, cpuSeconds: i * 20 }] });
+  const job = r.book.info().jobs[0]!;
+  assert.equal(job.processes, 1, 'counted: a timing guess is fine for counting');
+  const targets = r.book.jobTargets(job.id);
+  assert.deepEqual(targets.adopted, []);
+  assert.deepEqual(targets.guessed.map((g) => g.pid), [88]);
+  const ft = (ms: number) => String((BigInt(ms) + 11644473600000n) * 10000n);
+  const all: FreshProcess[] = [
+    { pid: 10, ppid: 1, started: ft(100), name: 'node.exe' },
+    { pid: 11, ppid: 10, started: ft(110), name: 'claude.exe' },
+    { pid: 88, ppid: 990, started: ft(game.started), name: 'game.exe' },
+    { pid: 89, ppid: 88, started: ft(game.started + 100), name: 'game-helper.exe' },
+  ];
+  // Stop never touches it: its command is not the session's call.
+  const proven = provenByCommand(targets.guessed, all, [{ pid: 88, started: ft(game.started), command: '"C:\\Games\\Game\\game.exe" --launcher-token abc', cwd: null }], [], () => false);
+  assert.deepEqual(proven, []);
+  assert.deepEqual(jobTargetsNow(targets.targets, jobProcessesNow(all, targets.host!, [...targets.adopted, ...proven]), targets.host!), []);
+  // A detached job whose shell a sample saw under the host is proven the session's, without its command.
+  const r2 = rig();
+  r2.sessions.get('s1')!.busy = true;
+  r2.tick({ s1: tree() });
+  r2.book.reserve('s1', { what: 'Train', cpu: 30, ram_gb: 4 });
+  r2.book.callStarted('s1', 'd2', ['python train.py'], true, true, 'python train.py &');
+  const shell = proc(40, 11);
+  const trainer = { pid: 41, ppid: 40, cpuSeconds: 0, memBytes: 3 * GB, started: r2.clock.now + 500 };
+  r2.tick({ s1: tree(shell, trainer) });
+  for (let i = 1; i <= 2; i++) r2.tick({ s1: tree() }, { outside: [{ ...trainer, cpuSeconds: i * 20 }] });
+  const t2 = r2.book.jobTargets(r2.book.info().jobs[0]!.id);
+  assert.deepEqual(t2.adopted, [41]);
+  assert.deepEqual(t2.guessed, []);
+});
+
+test('a process command line is a detaching call\'s only if its program and each argument are words of the call', () => {
+  assert.equal(commandIsCalls('"C:\\Program Files\\nodejs\\node.exe" daemon.mjs', 'nohup node daemon.mjs > out.log 2>&1 &'), true);
+  assert.equal(commandIsCalls('/usr/bin/python3 /home/me/p/train.py --epochs 3', 'cd /home/me/p && nohup python3 train.py --epochs 3 &'), true);
+  assert.equal(commandIsCalls('python.exe train.py', 'start /b python train.py'), true);
+  assert.equal(commandIsCalls('"C:\\Games\\game.exe"', 'nohup node daemon.mjs &'), false);
+  assert.equal(commandIsCalls('node other.mjs', 'nohup node daemon.mjs &'), false);
+  assert.equal(commandIsCalls('node daemon.mjs --inspect', 'nohup node daemon.mjs &'), false);
+  assert.equal(commandIsCalls('', 'nohup node daemon.mjs &'), false);
+  // A quoted argument stays one word, operators inside it included (tried on Windows' real command line).
+  assert.equal(commandIsCalls('"C:\\Program Files\\nodejs\\node.exe" -e "setTimeout(()=>{}, 20000)" daemon.mjs', 'nohup node -e "setTimeout(()=>{}, 20000)" daemon.mjs&'), true);
 });
 
 test("a program another program started is never taken as a detaching session's, however close in time (code review of PR #476, finding 4)", () => {

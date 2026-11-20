@@ -154,7 +154,7 @@ export interface TurnGate {
   /** The command kinds a Bash call runs; the reason to refuse it (a known heavy command with no reservation), or null. */
   commandCheck?(id: string, kinds: string[], opts?: { freeing?: boolean; subagent?: boolean }): string | null;
   /** A shell call with these kinds starts and ends: for learning what is heavy and how long a kind takes (R4). */
-  callStarted?(id: string, callId: string, kinds: string[], background: boolean, detached?: boolean): void;
+  callStarted?(id: string, callId: string, kinds: string[], background: boolean, detached?: boolean, command?: string): void;
   /** The session's reservation waits in line or has its go unused (round 2): it is never stopped for being idle. */
   passWaits?(id: string): 'waiting' | 'ready' | null;
   callEnded?(id: string, callId: string): void;
@@ -1401,7 +1401,7 @@ export class Session {
             // A call that detaches (`python train.py &`) is followed like a background one: its quick return is no duration,
             // and what it starts is taken as the session's even if its parent is gone before a sample sees it (round 2).
             const detached = detaches(command);
-            if (kinds.length && toolUseId) this.gate.callStarted?.(this.id, toolUseId, kinds, input.run_in_background === true || toolName === 'Monitor' || detached, detached);
+            if (kinds.length && toolUseId) this.gate.callStarted?.(this.id, toolUseId, kinds, input.run_in_background === true || toolName === 'Monitor' || detached, detached, command);
           }
           // Compacting or clearing is for the main session only, never a subagent (decided 2026-10-13).
           if (CONTEXT_TOOLS.includes(toolName) && (input as { agent_id?: string }).agent_id) {

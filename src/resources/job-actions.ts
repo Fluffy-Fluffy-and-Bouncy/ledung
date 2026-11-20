@@ -55,6 +55,53 @@ export function jobProcessesNow(all: FreshProcess[], host: number, adopted: numb
   return [...out.values()];
 }
 
+/** A command line's words, quotes taken off; `split`: a shell's operators (`&`, `;`, `>`) also end a word outside quotes. */
+function words(command: string, split = false): string[] {
+  return [...command.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)].flatMap((m) => m[1] ?? m[2] ?? (split ? (m[3] ?? '').split(/[;&|()<>]+/) : [m[3] ?? ''])).filter(Boolean);
+}
+
+/** A word as compared: lower case, a path down to its last part, a program without .exe, .cmd or .bat. */
+function bare(word: string): string {
+  return (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(exe|cmd|bat)$/, '');
+}
+
+/**
+ * Whether a process's command line is what a detaching call ran (re-review of PR #476): its program and each of its
+ * arguments are words of the call (a path compared by its last part, so `python train.py &` matches
+ * `C:\Python\python.exe train.py`). A program the call never named (an app another launcher started) never matches.
+ */
+export function commandIsCalls(processCommand: string, callCommand: string): boolean {
+  const [program, ...args] = words(processCommand).map(bare);
+  if (!program) return false;
+  const call = new Set(words(callCommand, true).map(bare));
+  return call.has(program) && args.every((a) => call.has(a));
+}
+
+/**
+ * Which detached processes Ledung took as a session's only by when they started may be acted on: the same process
+ * (start time as in the fresh list), its command one of the session's detaching calls', and its working folder inside
+ * one of the session's folders where that can be read. Counting on a timing guess is fine; pausing or ending an
+ * outside program on one is not (re-review of PR #476: a game whose launcher exited between two samples).
+ */
+export function provenByCommand(
+  guessed: { pid: number; commands: string[] }[],
+  fresh: FreshProcess[],
+  found: { pid: number; started: string; command: string; cwd: string | null }[],
+  folders: string[],
+  inside: (folder: string, cwd: string) => boolean,
+): number[] {
+  const out: number[] = [];
+  for (const g of guessed) {
+    const now = fresh.find((p) => p.pid === g.pid);
+    const c = found.find((f) => f.pid === g.pid);
+    if (!now || !c || c.started !== now.started) continue;
+    if (!g.commands.some((call) => commandIsCalls(c.command, call))) continue;
+    if (c.cwd !== null && !folders.some((f) => inside(f, c.cwd!))) continue;
+    out.push(g.pid);
+  }
+  return out;
+}
+
 /**
  * The processes to act on for a job, from a list taken just now of its session's host and everything under it
  * (finding 5): the job's processes that are still the same process (start time, where the platform gives one),

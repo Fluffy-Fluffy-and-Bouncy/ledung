@@ -188,7 +188,21 @@ interface Call {
   background: boolean;
   /** It leaves its work running and returns (`cmd &`, `nohup`, `start`): what it started may lose its parent at once. */
   detached: boolean;
+  /** The call's command, for a detached one: what Pause and Stop compare a timing-only claim with (re-review of PR #476). */
+  command: string;
   ended: number | null;
+}
+
+/**
+ * A detached process taken as a session's: its start time; `seen`: its parent (or itself) was seen under the session's
+ * host, so it is proven the session's; otherwise it was claimed on timing alone, and `commands` are the detaching calls
+ * it may be the work of. Counting on a timing guess is fine; Pause and Stop act on one only if its command line is one
+ * of those calls' (re-review of PR #476: an outside game whose launcher exited between two samples was stopped).
+ */
+interface Adopted {
+  started: number;
+  seen: boolean;
+  commands: string[];
 }
 
 /**
@@ -272,10 +286,13 @@ export class ResourceBook {
   private lastHosts = new Map<string, number>();
   /**
    * Processes a session started detached whose parent was gone before a sample saw them (round 2): taken into the
-   * session's work for counting and learning, and the person's Pause and Stop on the job's card reach them too
+   * session's work for counting and learning; the person's Pause and Stop on the job's card reach those proven the
+   * session's (seen under its host, or with the detaching call's command line; re-review of PR #476)
    * (acceptance test 3 of PR #476: a `nohup` job's card could neither pause nor stop it).
    */
-  private readonly adopted = new Map<string, Map<number, number>>();
+  private readonly adopted = new Map<string, Map<number, Adopted>>();
+  /** Each session's host tree in the last sample, without what was adopted: what "seen under its host" means. */
+  private lastHostTrees = new Map<string, ProcInfo[]>();
   /** WSL's memory, from the Windows process list; 0: not running or not Windows. */
   private wslBytes = 0;
   /** The largest other program by memory (name, bytes), for the page's "who holds the room". */
@@ -556,10 +573,10 @@ export class ResourceBook {
    * background loop started before the build, never gets the build's peak (security review, finding 7). `detached`:
    * the call leaves its work running (`&`, `nohup`), whose processes may be orphaned before a sample sees them.
    */
-  callStarted(sessionId: string, callId: string, kinds: string[], background: boolean, detached = false): void {
+  callStarted(sessionId: string, callId: string, kinds: string[], background: boolean, detached = false, command = ''): void {
     if (!kinds.length) return;
     const calls = this.calls.get(sessionId) ?? new Map<string, Call>();
-    calls.set(callId, { kinds, at: this.now(), background, detached, ended: null });
+    calls.set(callId, { kinds, at: this.now(), background, detached, command: detached ? command.slice(0, 4000) : '', ended: null });
     if (calls.size > 100) calls.delete(calls.keys().next().value!);
     this.calls.set(sessionId, calls);
   }
@@ -922,7 +939,8 @@ export class ResourceBook {
    * A heavy job started detached (`python train.py &`, `nohup`, `start`) can lose its parent before any sample sees
    * it, and then it is no session's (issue #356 comments): a parentless process that started within a few seconds
    * after exactly one session's detaching call is taken into that session's work, with what it starts, for as long
-   * as it is the same process. Counted, learned from, and reached by the person's Pause and Stop on its job's card.
+   * as it is the same process. Counted and learned from; Pause and Stop on its job's card reach it only if it was seen
+   * under the host or its command line is the call's (jobTargets, re-review of PR #476).
    */
   private withAdopted(x: BookSample): Map<string, ProcInfo[]> {
     const inTrees = new Set<number>();
@@ -933,12 +951,12 @@ export class ResourceBook {
         this.adopted.delete(sessionId);
         continue;
       }
-      for (const [pid, started] of kept) if (x.list.get(pid)?.started !== started) kept.delete(pid);
+      for (const [pid, a] of kept) if (x.list.get(pid)?.started !== a.started) kept.delete(pid);
     }
-    const detached: { sessionId: string; at: number }[] = [];
+    const detached: { sessionId: string; at: number; command: string }[] = [];
     for (const [sessionId, calls] of this.calls) {
       if (!x.trees.has(sessionId)) continue;
-      for (const c of calls.values()) if (c.detached && x.at - c.at < 10 * 60_000) detached.push({ sessionId, at: c.at });
+      for (const c of calls.values()) if (c.detached && x.at - c.at < 10 * 60_000) detached.push({ sessionId, at: c.at, command: c.command });
     }
     // Without the previous list, where a parent was can't be told.
     if (detached.length && x.prev) for (const p of x.list.values()) {
@@ -951,12 +969,16 @@ export class ResourceBook {
       // the session's only if it or its parent was in that session's tree.
       const lastIn = (pid: number) => [...this.lastTrees].filter(([, t]) => t.some((q) => q.pid === pid)).map(([id]) => id);
       const parentIn = x.prev.has(p.pid) ? new Set([...lastIn(p.pid), ...lastIn(p.ppid)]) : x.prev.has(p.ppid) ? new Set(lastIn(p.ppid)) : null;
-      const owners = new Set(detached.filter((c) => (!parentIn || parentIn.has(c.sessionId)) && started >= c.at - START_LEEWAY_MS && started <= c.at + DETACH_WINDOW_MS).map((c) => c.sessionId));
+      const calls = detached.filter((c) => (!parentIn || parentIn.has(c.sessionId)) && started >= c.at - START_LEEWAY_MS && started <= c.at + DETACH_WINDOW_MS);
+      const owners = new Set(calls.map((c) => c.sessionId));
       // Two sessions detached at about the same time: whose it is can't be told, so it is no one's.
       if (owners.size !== 1) continue;
       const [owner] = owners;
-      const kept = this.adopted.get(owner!) ?? new Map<number, number>();
-      kept.set(p.pid, started);
+      // Seen under the host: it, or its parent, was in the host's own tree last time, not only in what was adopted.
+      const underHost = (pid: number) => this.lastHostTrees.get(owner!)?.some((q) => q.pid === pid) === true;
+      const seen = x.prev.has(p.pid) ? underHost(p.pid) || underHost(p.ppid) : x.prev.has(p.ppid) && underHost(p.ppid);
+      const kept = this.adopted.get(owner!) ?? new Map<number, Adopted>();
+      kept.set(p.pid, { started, seen, commands: calls.map((c) => c.command).filter(Boolean) });
       this.adopted.set(owner!, kept);
     }
     if (!this.adopted.size) return x.trees;
@@ -980,6 +1002,7 @@ export class ResourceBook {
     this.gpu = x0.gpu;
     this.noGpu = x0.gpu?.adapters.length ? 0 : this.noGpu + 1;
     const x: BookSample = { ...x0, trees: this.withAdopted(x0) };
+    this.lastHostTrees = x0.trees;
     this.lastTrees = x.trees;
     this.lastList = x.list;
     this.lastHosts = x.hosts;
@@ -1372,14 +1395,22 @@ export class ResourceBook {
 
   /**
    * The job's processes now, with their start times, its session's host, and the detached ones among them whose
-   * parent is gone (`adopted`: not under the host, so the action looks them up on their own; acceptance test 3 of
-   * PR #476), for the person's Pause, Resume and Stop.
+   * parent is gone (not under the host, so the action looks them up on their own; acceptance test 3 of PR #476), for
+   * the person's Pause, Resume and Stop: `adopted`, seen under the host, are the session's; `guessed`, taken by timing
+   * alone, are acted on only if their command line is one of the detaching calls' (re-review of PR #476).
    */
-  jobTargets(id: string): { sessionId: string; host: number | null; paused: boolean; targets: Target[]; adopted: number[] } {
+  jobTargets(id: string): { sessionId: string; host: number | null; paused: boolean; targets: Target[]; adopted: number[]; guessed: { pid: number; commands: string[] }[] } {
     const r = this.reservations.get(id);
     if (!r || r.goAt === null) throw new Error('No such job.');
-    const adopted = [...(this.adopted.get(r.sessionId)?.keys() ?? [])].filter((pid) => r.pids[pid] !== undefined);
-    return { sessionId: r.sessionId, host: this.lastHosts.get(r.sessionId) ?? null, paused: r.paused, targets: Object.entries(r.pids).map(([pid, started]) => ({ pid: Number(pid), started })), adopted };
+    const mine = [...(this.adopted.get(r.sessionId) ?? [])].filter(([pid]) => r.pids[pid] !== undefined);
+    return {
+      sessionId: r.sessionId,
+      host: this.lastHosts.get(r.sessionId) ?? null,
+      paused: r.paused,
+      targets: Object.entries(r.pids).map(([pid, started]) => ({ pid: Number(pid), started })),
+      adopted: mine.filter(([, a]) => a.seen).map(([pid]) => pid),
+      guessed: mine.filter(([, a]) => !a.seen).map(([pid, a]) => ({ pid, commands: a.commands })),
+    };
   }
 
   setJobPaused(id: string, paused: boolean): void {
