@@ -5,7 +5,7 @@ import { afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   api, connectionClosed, connectionHello, DEVICE_LOCKED, openConnection, PASSKEY_CANCELLED, PASSKEY_NEEDED,
-  resetPasskeyExplained, setPasskeyCalls, setPasskeyPrompter, type PasskeyStep,
+  resetPasskeyExplained, setPasskeyCalls, setPasskeyPrompter, setVouchCall, type PasskeyStep,
 } from '../web/src/api.ts';
 import { asCancelled, MAC_APP_NO_PASSKEY, macAppPasskeys, macAppWithoutPasskeys, passkeyWords } from '../web/src/passkeyWords.ts';
 import { HANG_MS } from './limits.ts';
@@ -19,6 +19,7 @@ afterEach(() => {
   delete g.location;
   setPasskeyCalls(null);
   setPasskeyPrompter(null);
+  setVouchCall(null);
   resetPasskeyExplained();
   connectionClosed();
 });
@@ -174,12 +175,14 @@ test('only the desktop app on a Mac counts as having no passkey prompt; Windows 
   assert.equal(macAppWithoutPasskeys(MAC_SAFARI_UA), false);
 });
 
-// The timeout is the backstop: a check that reached the passkey call would hang, as in the app.
+// The dialog says yes three times, then no: a page that retried (the regression) ends in the asserts instead of
+// looping forever, which the timeout could not stop (test review of PR #458, finding 1). The timeout is a second net.
 test('in the Mac app a check says in one line to use the browser, at once: no notice, no passkey call, no retry, nothing sent', { timeout: HANG_MS }, async () => {
   publicPage();
   setPasskeyCalls(macAppPasskeys);
   const sent = ledung({ locked: true });
-  const shown = dialog([true, true, true]);
+  const shown: PasskeyStep[] = [];
+  setPasskeyPrompter(async (step) => (shown.push(step), shown.length <= 3));
   await assert.rejects(api.setPaused('s1', true), (e: Error) => e.message === MAC_APP_NO_PASSKEY);
   assert.deepEqual(shown, [{ kind: 'unlock', failed: MAC_APP_NO_PASSKEY }], 'one step, the reason, even after Open in browser');
   // The unlock is tried unsigned first, as in 'a retry turned down …' above; then no challenge, and no change again.
@@ -188,6 +191,29 @@ test('in the Mac app a check says in one line to use the browser, at once: no no
   setPasskeyCalls({ sign: async () => 'signature', create: async () => ({}) });
   await api.setPaused('s1', true);
   assert.ok(sent.includes('/api/passkey-challenge'));
+});
+
+// A computer that trusts this one's screen (#313) needs no passkey from its frame: that route keeps working in the
+// Mac app (test review of PR #458, finding 2).
+test('in the Mac app a frame of a computer that trusts this screen is vouched for, with no Mac line', { timeout: HANG_MS }, async () => {
+  publicPage();
+  setPasskeyCalls(macAppPasskeys);
+  const vouched: string[] = [];
+  setVouchCall(async (challenge) => { vouched.push(challenge); });
+  const sent: { path: string; vouch?: string }[] = [];
+  globalThis.fetch = (async (path: string, init: { headers: Record<string, string> }) => {
+    sent.push({ path, vouch: init.headers['X-Ledung-Vouch'] });
+    if (path === '/api/passkey-challenge') return new Response(JSON.stringify({ vouch: 'v-1' }), { status: 200 });
+    if (!init.headers['X-Ledung-Vouch']) return new Response(JSON.stringify({ error: PASSKEY_NEEDED }), { status: 403 });
+    return new Response('{}', { status: 200 });
+  }) as typeof fetch;
+  const shown = dialog([false, false]);
+  await api.decide('perm-1', { behavior: 'allow' });
+  assert.deepEqual(vouched, ['v-1']);
+  assert.deepEqual(sent, [
+    { path: '/api/permissions/perm-1', vouch: undefined }, { path: '/api/passkey-challenge', vouch: undefined }, { path: '/api/permissions/perm-1', vouch: 'v-1' },
+  ]);
+  assert.deepEqual(shown, [], 'no dialog: the vouch needs no passkey');
 });
 
 test('in the Mac app setting up a passkey says the same line at once', { timeout: HANG_MS }, async () => {
