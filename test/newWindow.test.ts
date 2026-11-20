@@ -46,6 +46,8 @@ const REMOTE = { url: 'https://second.l.example.test/', origin: 'https://second.
 
 type Module = typeof import('../web/src/newWindow.ts');
 let loads = 0;
+/** The framing page's time, in ms; it only moves on. */
+let clock = 0;
 
 /**
  * The framed page as the browser starts it: a parent window whose postMessage goes to `toParent`, and a fresh copy of
@@ -72,8 +74,9 @@ function framingPage(app: true | NewWindowHost['ledungDesktop']) {
   const answers: Array<{ answer: unknown; to: string }> = [];
   let windows = 0;
   const host = { ledungDesktop: app === true ? { newWindow: () => { windows++; } } : app };
-  const take = (data: unknown, active: boolean, origin = REMOTE.origin, fromFrame = true) =>
-    framedNewWindow({ data, origin, fromFrame }, REMOTE.url, host, (answer) => answers.push({ answer, to: origin }), active);
+  // Each message a minute after the one before, unless `at` says when: one click's window gap is not what these test.
+  const take = (data: unknown, active: boolean, origin = REMOTE.origin, fromFrame = true, at = (clock += 60_000)) =>
+    framedNewWindow({ data, origin, fromFrame }, REMOTE.url, host, (answer) => answers.push({ answer, to: origin }), active, at);
   return { take, answers, windows: () => windows };
 }
 
@@ -134,4 +137,20 @@ test("the page around the frame acts only for that computer's frame, at its orig
   assert.equal(page.answers.length, 1, 'and no answer to anyone else');
   // An app made before #414 has no newWindow: it does not say it is the app's.
   assert.equal(framingPage({ showWindow: () => {} }).take({ type: 'ledung:desktop?' }, true), false);
+});
+
+test('one click in the frame opens one window: repeats within the 5 s a click lasts are dropped', () => {
+  // Chromium keeps a click's user activation for 5 s, and the app's New window does not use it up (self-check of
+  // PR #457, finding 1), so the frame could send New window again and again on one click.
+  const page = framingPage(true);
+  const start = (clock += 60_000);
+  const ask = (at: number) => page.take({ type: 'ledung:new-window' }, true, REMOTE.origin, true, at);
+  assert.equal(ask(start), true);
+  assert.equal(page.windows(), 1, 'the first opens a window');
+  assert.equal(ask(start + 100), true);
+  assert.equal(ask(start + 4999), true);
+  assert.equal(page.windows(), 1, 'repeats within 5 s open none');
+  assert.equal(ask(start + 5000), true);
+  assert.equal(page.windows(), 2, 'a new click 5 s on opens the next');
+  clock = start + 5000;
 });

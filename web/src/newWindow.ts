@@ -66,15 +66,23 @@ const record = (data: unknown): Record<string, unknown> | null =>
 // The page around the frame: this computer's own page (#454).
 
 /**
+ * How long one click lets a frame's New window through: Chromium's user activation lasts 5 s, and the app's New
+ * window does not use it up as a popup would, so without this one click would let the frame open a window per message
+ * for that long (self-check of PR #457, finding 1).
+ */
+export const FRAMED_WINDOW_GAP_MS = 5000;
+let lastFramedWindow = -Infinity;
+
+/**
  * The framing page's handling of a message from a computer's frame: only from that frame's window, at that computer's
  * origin (as framePaired), and only where this page is the app's, with a New window of its own. Its ask is answered
- * that it is; its New window opens one here, when a click in the frame is what sent it (`active`: the click's user
- * activation, which reaches the frames around it), so a page in a frame cannot open windows on its own. Says whether
- * the message was one of these.
+ * that it is; its New window opens one here when a click is behind it (`active`: the page's user activation, which a
+ * click in the frame gives the frames around it too), and one per FRAMED_WINDOW_GAP_MS, so a page in a frame cannot
+ * open windows on its own nor several on one click. Says whether the message was one of these.
  */
 export function framedNewWindow(
   msg: { data: unknown; origin: string; fromFrame: boolean }, computerUrl: string, host: Pick<NewWindowHost, 'ledungDesktop'>,
-  reply: (answer: FramingAppMessage) => void, active: boolean,
+  reply: (answer: FramingAppMessage) => void, active: boolean, now = Date.now(),
 ): boolean {
   let origin: string;
   try { origin = new URL(computerUrl).origin; } catch { return false; }
@@ -82,7 +90,12 @@ export function framedNewWindow(
   if (!msg.fromFrame || msg.origin !== origin || typeof ask !== 'function') return false;
   const type = record(msg.data)?.type;
   if (type === DESKTOP_ASK) reply({ type: DESKTOP });
-  else if (type === NEW_WINDOW) { if (active) ask(); }
+  else if (type === NEW_WINDOW) {
+    if (active && now - lastFramedWindow >= FRAMED_WINDOW_GAP_MS) {
+      lastFramedWindow = now;
+      ask();
+    }
+  }
   else return false;
   return true;
 }
