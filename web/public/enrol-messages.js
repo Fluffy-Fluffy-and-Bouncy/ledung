@@ -26,6 +26,23 @@ const REASONS = {
   UnknownError: 'The passkey could not be made, for a reason the browser did not give. Press the button to try again, or use a phone.',
 };
 
+/** The sign page's (sign.html, #463) reasons: there the passkey is used, not made. */
+const SIGN_REASONS = {
+  NotAllowedError: 'The passkey check was cancelled or timed out. Press the button to try again.',
+  SecurityError: 'The browser refused the passkey for this address. Open the link exactly as the app gave it, at its https:// address.',
+  AbortError: 'The passkey check was stopped before it finished. Press the button to try again.',
+};
+
+/** A failed passkey check on the sign page in plain words, then the browser's own error name and message. */
+export function signError(e) {
+  const name = e && typeof e.name === 'string' ? e.name : '';
+  const message = e && typeof e.message === 'string' ? e.message.trim() : String(e ?? '').trim();
+  if (name === 'Error' || (!name && message)) return message || 'The passkey check did not go through. Press the button to try again.';
+  const reason = SIGN_REASONS[name] ?? 'The passkey check did not go through. Press the button to try again.';
+  const detail = [name, message && message.toLowerCase() !== 'error' ? message : ''].filter(Boolean).join(': ');
+  return detail ? `${reason} (${detail})` : reason;
+}
+
 /** A failed try in plain words, then the browser's own error name and message, so the real reason is always shown. */
 export function passkeyError(e) {
   const name = e && typeof e.name === 'string' ? e.name : '';

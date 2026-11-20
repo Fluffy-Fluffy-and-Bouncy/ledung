@@ -1898,6 +1898,131 @@ function changeRoutes(): string[] {
   return [...source.matchAll(/case '(POST|PUT|PATCH|DELETE) ([^']+)'/g)].map((m) => `${m[1]} /api/${m[2]!.replaceAll(':id', 'nope')}`);
 }
 
+// Issue #463: Ledung's desktop app on a Mac can't show Touch ID (#427), so the default browser signs one waiting request
+// for it from a one-time sign link, with the passkey that device set up in that browser. A new signed path: the link
+// works once, only for the device that made it and the one request it was made for, within two minutes, and the app's
+// request still passes the full passkey check.
+test('a sign link (#463): the browser signs exactly that request for exactly that device, once, within two minutes', async () => {
+  const d = await deviceWithPasskey('Mac app');
+  const other = await deviceWithPasskey('Other Mac app');
+  type Dev = typeof d;
+  const away = JSON.stringify({ until: '23:59' });
+  const linkFor = (dev: Dev, p: string, body: string, extra: Record<string, string> = dev.withKey) =>
+    pubChange('/api/passkey-challenge', { method: 'POST', path: p, body, browser: true }, dev.cookie, extra);
+  const codeOf = async (dev: Dev, p = '/api/away', body = away) => {
+    const res = await linkFor(dev, p, body);
+    assert.equal(res.status, 200, res.body);
+    return JSON.parse(res.body) as { url: string; code: string; expiresAt: number };
+  };
+  // The browser: no cookie, this Ledung's own page at the top level.
+  const browser = (p: string, body: unknown, headers: Record<string, string> = { origin: PUBLIC_ORIGIN }) =>
+    pub({ method: 'POST', path: p, body: JSON.stringify(body), headers: { 'content-type': 'application/json', ...headers } });
+  const optionsOf = async (code: string) => {
+    const res = await browser('/sign/options', { code });
+    assert.equal(res.status, 200, res.body);
+    return JSON.parse(res.body) as { options: { challenge: string; rpId: string; allowCredentials: { id: string }[] }; name: string; what: string };
+  };
+  const pickUp = (dev: Dev, code: string) => pubChange('/api/passkey-sign-answer', { code }, dev.cookie, dev.withKey);
+  const gone = /This sign link is not valid any more: it was used, or its two minutes ran out/;
+  try {
+    // The link: from the device's own open page only; the code in the fragment; two minutes.
+    assert.equal((await linkFor(d, '/api/device-unlock', '{}', {})).status, 403, 'no page key');
+    const unlock = await codeOf(d, '/api/device-unlock', '{}');
+    assert.match(unlock.url, new RegExp(`^${PUBLIC_ORIGIN.replaceAll('.', '\\.')}/sign\\.html#${unlock.code}$`));
+    assert.match(unlock.code, /^[A-Za-z0-9_-]{32}$/);
+    assert.ok(unlock.expiresAt <= Date.now() + clockShift + 2 * 60 * 1000 + 1000, 'two minutes');
+    // The browser's calls: public name only, its own page's Origin only, POST only, a valid code only.
+    const local = await request({ method: 'POST', path: '/sign/options', body: JSON.stringify({ code: unlock.code }), headers: { cookie: COOKIE, origin: ORIGIN, 'content-type': 'application/json' } });
+    assert.equal(local.status, 404, 'not locally');
+    assert.equal((await browser('/sign/options', { code: unlock.code }, { origin: 'https://evil.example.test' })).status, 403, 'not from another page');
+    assert.equal((await browser('/sign/options', { code: unlock.code }, {})).status, 403, 'no Origin');
+    assert.equal((await pub({ path: '/sign/options' })).status, 405);
+    const unknown = await browser('/sign/options', { code: 'x'.repeat(32) });
+    assert.equal(unknown.status, 403);
+    assert.match(errorOf(unknown), gone, 'a made-up link');
+    // What the browser shows: whose request and which one; the check is for that device's passkey only.
+    const o = await optionsOf(unlock.code);
+    assert.equal(o.name, 'Mac app');
+    assert.equal(o.what, 'Log this device on');
+    assert.equal(o.options.rpId, PUBLIC);
+    assert.deepEqual(o.options.allowCredentials.map((c) => c.id), [d.key.credentialId]);
+    // Until the browser answers, the device is told to wait; another device can't pick the link up at all. Open while
+    // locked: the device is locked, and this is how it logs on.
+    assert.deepEqual(JSON.parse((await pickUp(d, unlock.code)).body), { answer: null });
+    const foreign = await pickUp(other, unlock.code);
+    assert.equal(foreign.status, 403, foreign.body);
+    assert.equal(errorOf(foreign), 'This sign link is for another device.');
+    // The browser signs at the top level of this Ledung's own page.
+    const finished = await browser('/sign/finish', { code: unlock.code, response: d.key.assert(o.options) });
+    assert.equal(finished.status, 200, finished.body);
+    assert.deepEqual(JSON.parse(finished.body), { name: 'Mac app' });
+    assert.equal(errorOf(await pickUp(other, unlock.code)), 'This sign link is for another device.', 'signed, still not the other device\'s');
+    // The device picks the answer up, once, and its request goes through with it: the unlock.
+    const picked = await pickUp(d, unlock.code);
+    assert.equal(picked.status, 200, picked.body);
+    const answer = JSON.parse(picked.body).answer as string;
+    assert.equal(typeof answer, 'string');
+    assert.match(errorOf(await pickUp(d, unlock.code)), gone, 'picked up once');
+    assert.match(errorOf(await browser('/sign/options', { code: unlock.code })), gone, 'the browser can\'t open it again');
+    assert.match(errorOf(await browser('/sign/finish', { code: unlock.code, response: d.key.assert(o.options) })), gone, 'nor sign it again');
+    const unlocked = await pubChange('/api/device-unlock', '{}', d.cookie, { ...d.withKey, 'x-ledung-passkey': answer });
+    assert.equal(unlocked.status, 200, unlocked.body);
+    assert.match(errorOf(await pubChange('/api/device-unlock', '{}', d.cookie, { ...d.withKey, 'x-ledung-passkey': answer })), /already used/, 'the answer works once');
+
+    // Exactly that request: the browser's answer for one body does not carry another.
+    const signFor = async (dev: Dev, body = away) => {
+      const link = await codeOf(dev, '/api/away', body);
+      const opts = await optionsOf(link.code);
+      assert.equal(opts.what, 'POST /api/away');
+      assert.equal((await browser('/sign/finish', { code: link.code, response: dev.key.assert(opts.options) })).status, 200);
+      return JSON.parse((await pickUp(dev, link.code)).body).answer as string;
+    };
+    const otherBody = await pubChange('/api/away', JSON.stringify({ until: '23:58' }), d.cookie, { ...d.withKey, 'x-ledung-passkey': await signFor(d) });
+    assert.equal(otherBody.status, 403, otherBody.body);
+    assert.match(errorOf(otherBody), /something else/);
+    // Another device sending this device's answer as its own: refused.
+    const stolen = await pubChange('/api/away', away, other.cookie, { ...other.withKey, 'x-ledung-passkey': await signFor(d) });
+    assert.equal(stolen.status, 403, stolen.body);
+    // Premise: the right device with the right body goes through.
+    const ok = await pubChange('/api/away', away, d.cookie, { ...d.withKey, 'x-ledung-passkey': await signFor(d) });
+    assert.equal(ok.status, 200, ok.body);
+
+    // Another device's passkey in the browser: refused there, the link is done, and the device is told why.
+    const wrong = await codeOf(d);
+    const wrongOptions = await optionsOf(wrong.code);
+    const wrongKey = await browser('/sign/finish', { code: wrong.code, response: other.key.assert(wrongOptions.options) });
+    assert.equal(wrongKey.status, 403, wrongKey.body);
+    assert.equal(errorOf(wrongKey), "That is not this device's passkey.");
+    assert.equal(errorOf(await pickUp(d, wrong.code)), "That is not this device's passkey.");
+    assert.match(errorOf(await browser('/sign/options', { code: wrong.code })), gone);
+    // A signature over another challenge (another link's): refused.
+    const twin = await codeOf(d);
+    const twinOptions = await optionsOf(twin.code);
+    const mixed = await codeOf(d);
+    const swapped = await browser('/sign/finish', { code: mixed.code, response: d.key.assert(twinOptions.options) });
+    assert.equal(swapped.status, 403, swapped.body);
+    assert.match(errorOf(swapped), /for another check/);
+
+    // Past its two minutes the link is refused, in the browser and to the device, signed or not.
+    const late = await codeOf(d);
+    const lateOptions = await optionsOf(late.code);
+    const signedLate = await codeOf(d);
+    assert.equal((await browser('/sign/finish', { code: signedLate.code, response: d.key.assert((await optionsOf(signedLate.code)).options) })).status, 200);
+    clockShift += 2 * 60 * 1000 + 1000;
+    try {
+      assert.match(errorOf(await browser('/sign/options', { code: late.code })), gone, 'expired in the browser');
+      assert.match(errorOf(await browser('/sign/finish', { code: late.code, response: d.key.assert(lateOptions.options) })), gone, 'expired, signing');
+      assert.match(errorOf(await pickUp(d, late.code)), gone, 'expired, picking up');
+      assert.match(errorOf(await pickUp(d, signedLate.code)), gone, 'signed in time, picked up too late');
+    } finally {
+      clockShift -= 2 * 60 * 1000 + 1000;
+    }
+  } finally {
+    d.page.close();
+    other.page.close();
+  }
+});
+
 test('computers are linked and unlinked only on this computer: a paired device, unlocked and signing, is refused (#245 step 1)', async () => {
   const d = await deviceWithPasskey('Linking phone');
   try {
@@ -1992,7 +2117,8 @@ test('through the public name a device is read-only until its passkey unlocks it
   const d = await deviceWithPasskey();
   // Logging out (issue #241) only takes rights away, so it is open while locked too; so is the link that sets the
   // passkey up in a window of its own (issue #241), as setting it up here is.
-  const open = new Set(['/api/device-unlock', '/api/passkey-challenge', '/api/passkey-options', '/api/passkey', '/api/device-logout', '/api/passkey-enrol-link']);
+  // The Mac app picks up the browser's answer to its sign link (#463) while locked: that is how it logs on.
+  const open = new Set(['/api/device-unlock', '/api/passkey-challenge', '/api/passkey-options', '/api/passkey', '/api/device-logout', '/api/passkey-enrol-link', '/api/passkey-sign-answer']);
   const routes = changeRoutes().filter((r) => !open.has(r.split(' ')[1]!));
   assert.ok(routes.length >= 30, `found ${routes.length} change routes: the source was read`);
   // A copied cookie, page and all, without the unlock: every change route refuses before doing anything.

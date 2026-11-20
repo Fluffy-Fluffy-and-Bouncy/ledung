@@ -101,8 +101,13 @@ const PAIR_CODE_FORM = '<form method="get" action="/pair"><p><label>Pairing code
   + '<input name="code" autocomplete="off" autocapitalize="characters" spellcheck="false" style="font-size:1.1em;width:100%"></label></p>'
   + '<p><button style="font-size:1.1em">Next</button></p></form>';
 const NO_PASSKEY_LOCKED = 'This device has no passkey, so it can only look from here; make changes on the computer.';
+/**
+ * The EXERCISED line of ledung#463 (a sign link's answer picked up), once per run (worker.md, "EXERCISED line"). Not
+ * exercised463 above: that one is Project-Ledung#463's, another issue with the same number.
+ */
+let exercisedSignLink = false;
 /** Through the public name, the only changes a locked device may send (requireUnlocked). */
-const OPEN_WHILE_LOCKED = new Set(['/api/device-unlock', '/api/passkey-challenge', '/api/passkey-options', '/api/passkey', '/api/device-logout', '/api/passkey-enrol-link']);
+const OPEN_WHILE_LOCKED = new Set(['/api/device-unlock', '/api/passkey-challenge', '/api/passkey-options', '/api/passkey', '/api/device-logout', '/api/passkey-enrol-link', '/api/passkey-sign-answer']);
 /**
  * API reads that only read what Ledung already holds: its store, its memory, and files on this computer, with no
  * process started and no network call. Every other GET under /api/ does work (GitHub, docker, claude, git, the relay)
@@ -908,6 +913,22 @@ export class LedungServer {
           return { name: device.name };
         })
         : await passkeyCall(() => passkeys.registrationOptions(device));
+      await this.json(res, 200, result);
+      return;
+    }
+
+    // The sign page's calls (#463, POST passkey-challenge with browser): as the enrol page's, no cookie, the one-time
+    // code is the proof, through the public name only and from its own page at the top level only. The browser signs
+    // one waiting request for the device that made the link; that device picks the answer up (passkey-sign-answer).
+    if (url.pathname === '/sign/options' || url.pathname === '/sign/finish') {
+      if (!remote || !this.passkeys) throw new HttpError(404, 'Not found.');
+      if (req.method !== 'POST') throw new HttpError(405, 'Method not allowed.');
+      if (!this.guard.originAllowed(req)) throw new HttpError(403, 'Requests must come from Ledung\'s own page.');
+      const passkeys = this.passkeys;
+      const body = await readJson(req);
+      const result = url.pathname === '/sign/finish'
+        ? await passkeyCall(async () => passkeys.signFinish(body.code, body.response))
+        : await passkeyCall(() => passkeys.signOptions(body.code));
       await this.json(res, 200, result);
       return;
     }
@@ -1886,15 +1907,36 @@ export class LedungServer {
       // A challenge for one request the page is about to send: its method, path and exact body (requirePage).
       case 'POST passkey-challenge': {
         const { device, passkeys } = this.requireDevice(req);
-        const { method, path: target, body: payload, passkey } = await readJson(req);
+        const { method, path: target, body: payload, passkey, browser } = await readJson(req);
         if (typeof method !== 'string' || method.toUpperCase() === 'GET' || typeof target !== 'string' || !target.startsWith('/api/') || typeof payload !== 'string') {
           throw new HttpError(400, 'Send method, path (under /api/) and body (the exact text that will be sent).');
         }
-        const action = actionOf(method, new URL(target, 'http://127.0.0.1').pathname, payload);
+        const pathname = new URL(target, 'http://127.0.0.1').pathname;
+        const action = actionOf(method, pathname, payload);
+        // Signed in the default browser instead (#463): the Mac app can't show Touch ID (#427). A one-time link for a
+        // challenge for exactly this request; the code goes in the fragment, so it reaches no log and no Referer.
+        if (browser === true) {
+          if (!this.pageKeyMatches(req, device.id)) throw new HttpError(403, 'Only Ledung\'s open page can do this.');
+          const what = pathname === '/api/device-unlock' ? 'Log this device on' : `${method.toUpperCase()} ${pathname}`;
+          const { code, expiresAt } = await passkeyCall(async () => passkeys.signLink(device, action, what));
+          return { url: `https://${this.publicName}/sign.html#${code}`, code, expiresAt };
+        }
         // A trusted computer's frame (issue #313): a challenge for its own screen to vouch for, unless the page asks for
         // the passkey itself, as it does after a refusal for what a vouch doesn't cover (PASSKEY_ONLY).
         if (passkey !== true && this.trustedLink(device)) return { vouch: passkeys.vouchChallenge(device, action) };
         return passkeyCall(() => passkeys.challenge(device, action));
+      }
+      // The browser's answer to this device's sign link (#463), once it has signed; { answer: null } until then.
+      case 'POST passkey-sign-answer': {
+        const { device, passkeys } = this.requireDevice(req);
+        if (!this.pageKeyMatches(req, device.id)) throw new HttpError(403, 'Only Ledung\'s open page can do this.');
+        const { code } = await readJson(req);
+        const answer = await passkeyCall(async () => passkeys.signAnswer(device, code));
+        if (answer && !exercisedSignLink) {
+          exercisedSignLink = true;
+          exercisedLine('EXERCISED #463 the browser signed a request for the device that made the sign link');
+        }
+        return { answer };
       }
       case 'GET sessions/:id/messages': {
         const before = Number(url.searchParams.get('before')) || undefined;
