@@ -212,6 +212,11 @@ window on Overview and waits up to `PROBE_NOTIFY_SECONDS`, 180 by default, while
 for permission, e.g. a Haiku session told to run `mkdir x` with Bash in a project with `"permissionMode": "default"`;
 it then clicks the page's notification and checks the window shows that session; it records the notifications in the
 page, so the system need not display them),
+`frames` (a Ledung runs whose config's `computers` lists `other.example.test`, #468: the probe stands in for that
+computer with an HTTPS server of its own on loopback and a throwaway certificate made with `openssl`, frames its page
+on Ledung's page as a computer tab does, and submits a form there that answers 303 with a cookie, as Pair does; the
+frame lands on the page the answer names with its cookie, keeps it across a reload, and the window's own redirect away
+from Ledung is still refused),
 `start` (none runs; with `LEDUNG_DESKTOP_START` set as above and an `ELECTRON_*`
 variable of your own, e.g. `ELECTRON_PROBE=1`: presses Start Ledung, the page signed in within 15 s, no `ELECTRON_*`
 or `npm_*` variable in the started Ledung or its launcher; it leaves that Ledung running, so check it still answers

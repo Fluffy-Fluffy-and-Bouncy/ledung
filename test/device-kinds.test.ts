@@ -391,23 +391,89 @@ test('an enrol link runs out after five minutes, and only works in the 10 minute
   clock = 0;
 });
 
-test('strict rotation: a renewal whose reply was lost costs a pairing again; the old cookie is never accepted after the minute (round 6 of #244)', async () => {
-  // The manager's decision on review round 6 of #244 (Martin allowed it, question #217): no grace for a lost reply.
+test('a renewal whose answer was lost keeps the pairing: the old cookie gets the same new one again, which then retires it (#468)', async () => {
+  // Issue #468 (Martin, 2026-11-20 15:12, Ledung question #727: "a — Ready now, both fixes") replaces strict rotation
+  // (round 6 of Project-Ledung#244): a lost answer cost the pairing, which a restart mid-request could cause.
   clock = 0;
   const computer = await device('computer');
   assert.equal((await computer.unlock()).status, 200);
   const old = computer.cookie;
   clock += COOKIE_RENEW_MS + MIN;
-  // The renewal happens; its reply (with the new cookie) is lost on the way.
+  // The renewal happens; its answer (with the new cookie) is lost on the way.
   const lost = cookieIn(await pub({ path: '/api/state', headers: { cookie: old } }));
   assert.ok(lost, 'a new cookie was sent');
-  // Within the minute the old cookie still counts, for requests the browser sent before the reply came.
-  assert.equal((await pub({ path: '/api/state', headers: { cookie: old } })).status, 200);
-  // After it, the browser that lost the reply is taken for a second holder: the device is removed, and the cookie it
-  // never got is refused too. Pairing again is the way back.
+  // Within the minute: a request sent before the answer came. It counts, and gets nothing new.
+  const early = await pub({ path: '/api/state', headers: { cookie: old } });
+  assert.equal(early.status, 200);
+  assert.equal(cookieIn(early), null, 'within the minute nothing is sent again');
+  // Long after it the old cookie still counts: the device stays live and logged on, and it is sent the same new
+  // cookie again, not a third one.
   clock += OLD_COOKIE_GRACE_MS + 1000;
-  assert.equal((await pub({ path: '/api/state', headers: { cookie: old } })).status, 401);
-  assert.equal((await pub({ path: '/api/state', headers: { cookie: `__Host-ledung_device=${lost}` } })).status, 401, 'removed');
+  const later = await pub({ path: '/api/state', headers: { cookie: old } });
+  assert.equal(later.status, 200, 'the pairing outlived the lost answer');
+  assert.equal(cookieIn(later), lost, 'the same new cookie, sent again');
+  assert.ok(!locked(await pubChange('/api/sessions/nope/pause', '{}', old)), 'still logged on');
+  clock += 10 * MIN;
+  assert.equal(cookieIn(await pub({ path: '/api/state', headers: { cookie: old } })), lost, 'and again, as long as it is not used');
+  // The new one arrives and is used: from then on the old one has its minute, and then it is a copy.
+  const fresh = `__Host-ledung_device=${lost}`;
+  const used = await pub({ path: '/api/state', headers: { cookie: fresh } });
+  assert.equal(used.status, 200);
+  assert.equal(cookieIn(used), null, 'the new one is not renewed again');
+  assert.equal((await pub({ path: '/api/state', headers: { cookie: old } })).status, 200, 'the old one within its minute');
+  clock += OLD_COOKIE_GRACE_MS + 1000;
+  assert.equal((await pub({ path: '/api/state', headers: { cookie: old } })).status, 401, 'after it, the old one is a copy');
+  assert.equal((await pub({ path: '/api/state', headers: { cookie: fresh } })).status, 401, 'and the device is removed');
+  computer.page.close();
+  clock = 0;
+});
+
+test('a copy of the old cookie can\'t push the renewed one out: it only ever gets the cookie the owner has (#468; the takeovers of #244 rounds 4b to 6)', async () => {
+  clock = 0;
+  const computer = await device('computer');
+  assert.equal((await computer.unlock()).status, 200);
+  const stolen = computer.cookie;
+  // A day later the owner's request renews the cookie, the owner's browser keeps the new one, and the owner goes idle.
+  clock += COOKIE_RENEW_MS + MIN;
+  const owners = cookieIn(await pub({ path: '/api/state', headers: { cookie: stolen } }));
+  assert.ok(owners);
+  // The thief uses the old one past the minute, three times over (round 6's repeated cycle): each time it gets the
+  // owner's cookie, never one of its own, so the owner's is never forgotten.
+  for (let i = 0; i < 3; i++) {
+    clock += 2 * MIN;
+    const res = await pub({ path: '/api/state', headers: { cookie: stolen } });
+    assert.equal(res.status, 200);
+    assert.equal(cookieIn(res), owners, `cycle ${i + 1}: the same cookie as the owner's`);
+  }
+  // The owner comes back: still in, still logged on. The new one used, the thief's old one is now a copy.
+  const owner = `__Host-ledung_device=${owners}`;
+  assert.ok(!locked(await pubChange('/api/sessions/nope/pause', '{}', owner)), 'the owner is not shut out');
+  clock += OLD_COOKIE_GRACE_MS + 1000;
+  assert.equal((await pub({ path: '/api/state', headers: { cookie: stolen } })).status, 401, 'the old cookie, used again, removes the device');
+  assert.equal((await pub({ path: '/api/state', headers: { cookie: owner } })).status, 401, 'removed');
+  computer.page.close();
+  clock = 0;
+});
+
+test('a renewal waiting over a day: a copy that takes the new cookie can\'t shut the owner out unnoticed; the owner\'s old one removes the device (#468, self-check finding 1)', async () => {
+  clock = 0;
+  const computer = await device('computer');
+  assert.equal((await computer.unlock()).status, 200);
+  const owner = computer.cookie;
+  clock += COOKIE_RENEW_MS + MIN;
+  // The owner's renewal answer is lost, and the owner stays away for more than a day.
+  const sealed = cookieIn(await pub({ path: '/api/state', headers: { cookie: owner } }));
+  assert.ok(sealed);
+  clock += DAY + MIN;
+  // A copy of the old cookie comes back: it is sent the waiting new one, and uses it.
+  assert.equal(cookieIn(await pub({ path: '/api/state', headers: { cookie: owner } })), sealed);
+  const copy = await pub({ path: '/api/state', headers: { cookie: `__Host-ledung_device=${sealed}` } });
+  assert.equal(copy.status, 200);
+  assert.equal(cookieIn(copy), null, 'its first use starts a new day, not another renewal');
+  // The owner comes back with the old cookie after the minute: two holders, so the device is removed.
+  clock += OLD_COOKIE_GRACE_MS + 1000;
+  assert.equal((await pub({ path: '/api/state', headers: { cookie: owner } })).status, 401);
+  assert.equal((await pub({ path: '/api/state', headers: { cookie: `__Host-ledung_device=${sealed}` } })).status, 401, 'the copy is out too: removed');
   computer.page.close();
   clock = 0;
 });
