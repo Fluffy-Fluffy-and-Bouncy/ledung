@@ -1149,12 +1149,68 @@ test('work under a parked pass that starts without asking and does not fit runs,
   assert.equal(card.resumedAbove, true);
 });
 
+test('heavy work under a parked pass sent back into the line is still judged against its share (code review of PR #476, finding 2)', () => {
+  const r = rig();
+  r.sessions.get('s1')!.busy = true;
+  r.sessions.get('s2')!.busy = true;
+  r.book.setSettings({ parkSec: 30, overSec: 10, averageSec: 5 });
+  for (const at of [1, 2]) r.jobs.add({ project: 'p', kind: 'build', commands: ['npm run build'], asked: {}, peak: { ram: 6 * GB }, mean: {}, durationMs: 60_000, over: false, undeclared: false, endedAt: at });
+  const pc = { memUsed: 10 * GB };
+  r.tick({ s1: tree(), s2: tree2() }, pc);
+  r.book.setLimit('ram', 30);
+  r.book.reserve('s1', { what: 'Build', ram_gb: 8 });
+  for (let i = 0; i < 3; i++) r.tick({ s1: tree(proc(13, 11)), s2: tree2() }, { ...pc, cpuOf: { 13: 4 } });
+  for (let i = 0; i < 8; i++) r.tick({ s1: tree(), s2: tree2() }, pc);
+  assert.equal(r.book.info().jobs[0]!.state, 'parked');
+  assert.match(r.book.reserve('s2', { what: 'Train', ram_gb: 15 }), /^Go:/);
+  assert.match(r.book.commandRefusal('s1', ['npm run build']) ?? '', /^Wait: your reservation r1 "Build" was parked/);
+  assert.equal(r.book.passWaits('s1'), 'waiting');
+  // An unknown command runs anyway: 12 GB and 8 cores for 3 minutes.
+  const big = started(r, 50, 11, 12 * GB);
+  for (let i = 0; i < 36; i++) r.tick({ s1: tree(big), s2: tree2() }, { memUsed: 22 * GB, cpuOf: { 50: 8 } });
+  const card = r.book.info().jobs.find((j) => j.sessionId === 's1')!;
+  assert.equal(card.state, 'over');
+  assert.equal(card.resumedAbove, true);
+  assert.equal(r.book.isHeld('s1'), true);
+  assert.equal(r.book.info().line.length, 0, 'out of the line: its work started');
+});
+
+test('a paused job whose pass went back into the line is resumed when a new reservation replaces it (code review of PR #476, finding 3)', () => {
+  const r = rig();
+  r.sessions.get('s1')!.busy = true;
+  r.sessions.get('s2')!.busy = true;
+  r.book.setSettings({ parkSec: 30 });
+  for (const at of [1, 2]) r.jobs.add({ project: 'p', kind: 'build', commands: ['npm run build'], asked: {}, peak: { ram: 6 * GB }, mean: {}, durationMs: 60_000, over: false, undeclared: false, endedAt: at });
+  const pc = { memUsed: 10 * GB };
+  r.tick({ s1: tree(), s2: tree2() }, pc);
+  r.book.setLimit('ram', 30);
+  r.book.reserve('s1', { what: 'Build', ram_gb: 8 });
+  for (let i = 0; i < 3; i++) r.tick({ s1: tree(proc(13, 11)), s2: tree2() }, { ...pc, cpuOf: { 13: 4 } });
+  for (let i = 0; i < 8; i++) r.tick({ s1: tree(proc(13, 11)), s2: tree2() }, pc);
+  assert.equal(r.book.info().jobs[0]!.state, 'parked');
+  r.book.setJobPaused('r1', true);
+  r.book.reserve('s2', { what: 'Train', ram_gb: 15 });
+  assert.match(r.book.commandRefusal('s1', ['npm run build']) ?? '', /^Wait:/);
+  r.book.reserve('s1', { what: 'Tests', ram_gb: 4 });
+  assert.deepEqual(r.resumed, [13]);
+  assert.ok(!r.book.info().jobs.some((j) => j.id === 'r1'));
+  assert.equal(rows(r).length, 3, 'r1 recorded beside the two seeded runs');
+});
+
 test('a call that only frees resources always runs, even while the session is held (issue #356, 2026-11-19)', () => {
   for (const c of ['node scripts/emulator-lock.mjs release', 'taskkill /PID 1234 /F', 'npm run stop', './gradlew --stop', 'docker compose down', 'adb emu kill', './stop-emulator.sh']) {
     assert.equal(freesResources(c), true, c);
   }
   for (const c of ['npm run build', 'python train.py --kill-after 10', 'node emulator-lock.mjs release && npm run build', 'git status', 'node emulator.mjs start']) {
     assert.equal(freesResources(c), false, c);
+  }
+  // Release builds and a stray word are not freeing: only the command's own subcommand counts (code review of PR #476, finding 1).
+  for (const c of ['cargo build --release', 'dotnet build -c Release', 'cmake --build . --config Release', 'flutter build apk --release', 'python train.py --epochs 50 stop',
+    'node burn.mjs release', 'node scripts/build.mjs --out dist/release', 'npm run release', 'npm run build -- --stop-on-error', 'gradle assembleRelease']) {
+    assert.equal(freesResources(c), false, c);
+  }
+  for (const c of ['docker stop db', 'npm run emulator:stop', 'node release-lock.mjs', 'python scripts/unlock.py', 'pkill -f train.py', 'node emulator-lock.mjs unlock']) {
+    assert.equal(freesResources(c), true, c);
   }
   const r = rig();
   r.book.setSettings({ overSec: 5, averageSec: 5 });
@@ -1279,6 +1335,21 @@ test('a heavy job started detached is taken as its session\'s, so its pass count
   const at = r2.clock.now + 500;
   for (let i = 1; i <= 3; i++) r2.tick({ s1: tree(), s2: tree2() }, { outside: [{ pid: 78, ppid: 998, cpuSeconds: i * 20, memBytes: 3 * GB, started: at }] });
   assert.equal(r2.book.info().jobs[0]!.processes, 0);
+});
+
+test("a program another program started is never taken as a detaching session's, however close in time (code review of PR #476, finding 4)", () => {
+  const r = rig();
+  r.book.setSettings({ overSec: 5, averageSec: 5 });
+  const launcher = { pid: 4242, ppid: 4, cpuSeconds: 0, memBytes: 50 * 1024 ** 2, started: 5, name: 'launcher.exe' };
+  r.tick({ s1: tree() }, { outside: [launcher] });
+  r.book.callStarted('s1', 'd', ['python train.py'], true, true);
+  // 8 s later the launcher starts a game and exits: the game's parent was never in s1's tree.
+  r.clock.now += 3000;
+  const game = { pid: 5000, ppid: 4242, cpuSeconds: 0, memBytes: 6 * GB, started: r.clock.now + 5000, name: 'game.exe' };
+  r.tick({ s1: tree() }, { outside: [launcher, game] });
+  for (let i = 1; i <= 6; i++) r.tick({ s1: tree() }, { outside: [{ ...game, cpuSeconds: i * 40 }] });
+  assert.equal(r.book.info().unreserved.length, 0);
+  assert.equal(r.book.isHeld('s1'), false);
 });
 
 test('a reservation kept by a Ledung before passes loads as a pass: busy once it had a job, else ready', () => {

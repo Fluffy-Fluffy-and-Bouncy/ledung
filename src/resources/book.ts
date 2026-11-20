@@ -477,7 +477,10 @@ export class ResourceBook {
       r.minutes = minutes;
       r.learnedRuns = learnedRuns;
     } else {
-      if (waiting) this.reservations.delete(waiting.id);
+      // A waiting pass that had its go (a parked one sent back into the line) may have a paused or lowered job and
+      // what it used to record: ended properly, never just dropped (code review of PR #476, finding 3).
+      if (waiting && waiting.goAt !== null) this.end(waiting);
+      else if (waiting) this.reservations.delete(waiting.id);
       r = {
         id: `r${this.nextId++}`, sessionId, project: s.project, what, kind, asked, granted: need, extra: null, state: 'waiting',
         since: waiting?.since ?? this.now(), goAt: null, deliveredAt: null, minutes, learnedRuns, baseline: [], pids: {}, seenOnce: false, wasActive: false, hadJob: false,
@@ -681,7 +684,13 @@ export class ResourceBook {
   /** A parked pass's work may start again: what it holds back now fits under the limits beside everyone else's. */
   private resumeFits(r: Reservation): boolean {
     // A parked pass holds nothing, so unused() is everyone else's; what it uses now is already in the PC's total.
-    return notFitting(unusedOf(r.granted, this.usingOf(r)), this.pcTotals(), this.unused(), this.limitsNow()).length === 0;
+    // Every dim it books counts, also one it already uses all of: work already past the line doesn't fit (code review
+    // of PR #476, finding 2), where notFitting would skip a dim with nothing left to ask.
+    const rest = unusedOf(r.granted, this.usingOf(r));
+    const total = this.pcTotals();
+    const unused = this.unused();
+    const limits = this.limitsNow();
+    return Object.entries(r.granted).every(([dim, g]) => !(g > 0) || limits[dim] === undefined || (total[dim] ?? 0) + (unused[dim] ?? 0) + (rest[dim] ?? 0) <= limits[dim]!);
   }
 
   /** The go, or a parked pass resuming: it holds all its room until the work starts. `reached`: the session knows now. */
@@ -930,11 +939,18 @@ export class ResourceBook {
       if (!x.trees.has(sessionId)) continue;
       for (const c of calls.values()) if (c.detached && x.at - c.at < 10 * 60_000) detached.push({ sessionId, at: c.at });
     }
-    if (detached.length) for (const p of x.list.values()) {
+    // Without the previous list, where a parent was can't be told.
+    if (detached.length && x.prev) for (const p of x.list.values()) {
       const started = p.started;
       if (started === undefined || inTrees.has(p.pid) || x.list.has(p.ppid)) continue;
       if ([...this.adopted.values()].some((m) => m.has(p.pid))) continue;
-      const owners = new Set(detached.filter((c) => started >= c.at - START_LEEWAY_MS && started <= c.at + DETACH_WINDOW_MS).map((c) => c.sessionId));
+      // Its parent was in a session's tree last time, or came and went between two lists (the detaching shell). One
+      // whose parent was another program's (an app's launcher that has exited, an updater) is no session's, whenever
+      // it started (code review of PR #476, finding 4). A process already in the last list was judged then: it is
+      // the session's only if it or its parent was in that session's tree.
+      const lastIn = (pid: number) => [...this.lastTrees].filter(([, t]) => t.some((q) => q.pid === pid)).map(([id]) => id);
+      const parentIn = x.prev.has(p.pid) ? new Set([...lastIn(p.pid), ...lastIn(p.ppid)]) : x.prev.has(p.ppid) ? new Set(lastIn(p.ppid)) : null;
+      const owners = new Set(detached.filter((c) => (!parentIn || parentIn.has(c.sessionId)) && started >= c.at - START_LEEWAY_MS && started <= c.at + DETACH_WINDOW_MS).map((c) => c.sessionId));
       // Two sessions detached at about the same time: whose it is can't be told, so it is no one's.
       if (owners.size !== 1) continue;
       const [owner] = owners;
@@ -1049,7 +1065,6 @@ export class ResourceBook {
       jobPidsOf.set(r.sessionId, mine);
       const u = usage(list);
       for (const [dim, v] of Object.entries(u)) this.averages.add(`r:${r.id}|${dim}`, at, v);
-      if (r.state === 'waiting') continue;
       // Work under the pass: CPU or GPU above the small allowance, or memory growing (round 2, "Idle bookings").
       const active = list.length > 0 && (Object.entries(u).some(([d, v]) => !isMemory(d) && v > ALLOWANCE.percent) || (u.ram ?? 0) > r.refMem + GROW_BYTES);
       if (active) r.refMem = u.ram ?? 0;
@@ -1057,17 +1072,22 @@ export class ResourceBook {
       // A ready pass's work starts when its processes are seen in two samples in a row, active in either (a job that
       // loads its memory at once and then waits on the disk is still work); a short call caught once, a git command,
       // isn't (finding 16). A parked pass needs two active samples in a row: a leftover daemon's one blip of CPU
-      // doesn't take its room back.
-      const starts = r.state === 'parked' ? active && r.seenOnce && r.wasActive : list.length > 0 && r.seenOnce && (active || r.wasActive);
+      // doesn't take its room back. So does a parked pass sent back into the line (a refused command): its processes
+      // are still claimed for it, so work it starts anyway must be judged here, or nothing would (code review of
+      // PR #476, finding 2).
+      const idle = r.state === 'parked' || r.state === 'waiting';
+      const starts = idle ? active && r.seenOnce && r.wasActive : list.length > 0 && r.seenOnce && (active || r.wasActive);
       r.seenOnce = list.length > 0;
       r.wasActive = active;
+      // Still in line: it keeps its place, and the session's turn being over doesn't end it.
+      if (r.state === 'waiting' && !starts) continue;
       if (r.deliveredAt === null && !this.ctx.undelivered?.(r.sessionId)) r.deliveredAt = at;
       if (r.state === 'ready' && starts) {
         r.state = 'busy';
         r.hadJob = true;
         r.quietSince = null;
         changed = true;
-      } else if (r.state === 'parked' && starts) {
+      } else if (idle && starts) {
         // Work started again without asking first (a command Ledung didn't know was heavy): checked like a new start;
         // it can't be stopped, so above the limits it runs, judged against its share, and its card says so.
         r.resumedAbove = !this.resumeFits(r);
