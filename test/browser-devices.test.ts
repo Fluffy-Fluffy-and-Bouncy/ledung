@@ -135,7 +135,7 @@ test('a browser signed in before the update stays signed in through it: its #476
   const other = crypto.randomBytes(32).toString('hex');
   const usedAt = Date.now() - 2 * DAY;
   const before = openDatabase(file);
-  before.exec('ALTER TABLE flow_runs DROP COLUMN retired; DROP TABLE allowed_calls; ALTER TABLE sessions DROP COLUMN account_switch; ALTER TABLE sessions DROP COLUMN account_chosen; ALTER TABLE devices DROP COLUMN paired_via_link; DROP TABLE waiting_lines; ALTER TABLE flow_runs DROP COLUMN fork; PRAGMA user_version = 51');
+  before.exec('ALTER TABLE devices DROP COLUMN new_cookie_sealed; ALTER TABLE flow_runs DROP COLUMN retired; DROP TABLE allowed_calls; ALTER TABLE sessions DROP COLUMN account_switch; ALTER TABLE sessions DROP COLUMN account_chosen; ALTER TABLE devices DROP COLUMN paired_via_link; DROP TABLE waiting_lines; ALTER TABLE flow_runs DROP COLUMN fork; PRAGMA user_version = 51');
   const signIns = { [sha(kept)]: usedAt, [sha(other)]: usedAt - DAY, 'not-a-hash': usedAt, [sha('x')]: 'yesterday' };
   before.prepare("INSERT INTO meta (key, value) VALUES ('sign-ins', ?)").run(JSON.stringify(signIns));
   // The premise: the hash is in meta before the update.
@@ -143,7 +143,7 @@ test('a browser signed in before the update stays signed in through it: its #476
   before.close();
 
   const { store, request, list } = await serve(file);
-  assert.equal((store.database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 59);
+  assert.equal((store.database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 60);
   const rows = store.database.prepare('SELECT * FROM devices').all() as { cookie_hash: string; kind: string; name: string; revoked_at: number | null }[];
   assert.deepEqual(rows.map((r) => r.cookie_hash).sort(), [sha(kept), sha(other)].sort(), 'each sign-in is a row with the same hash; the two non-sign-ins are dropped');
   assert.ok(rows.every((r) => r.kind === 'browser' && r.revoked_at === null && r.name === 'Browser signed in before the update'));
@@ -242,6 +242,24 @@ test("a browser's cookie is renewed daily like a computer device's; a copy used 
   assert.equal((await request({ path: '/api/state', cookie: second })).status, 401, 'and the browser it was copied from is removed');
   assert.equal(await Promise.race([gone, new Promise<number>((r) => setTimeout(() => r(0), WAIT_MS))]), 1008, 'its open page is closed');
   assert.deepEqual((await list(other)).devices.map((d) => d.name), ['Chrome on Windows'], 'only the other browser is left');
+});
+
+test("a browser whose renewal answer was lost stays signed in and gets the same new cookie again (#468)", async () => {
+  clock = 0;
+  const { request, signIn } = await serve(path.join(dir, 'renew-lost.db'));
+  const first = await signIn();
+  clock += DAY + MIN;
+  const lost = String((await request({ path: '/api/state', cookie: first })).headers['set-cookie']).split(';')[0]!;
+  assert.match(lost, /^ledung_auth=[0-9a-f]{64}$/, 'renewed; this answer never reaches the browser');
+  // Past the minute the old cookie still signs in, and is sent the very same new one.
+  clock += 2 * MIN;
+  const again = await request({ path: '/api/state', cookie: first });
+  assert.equal(again.status, 200, 'still signed in');
+  assert.equal(String(again.headers['set-cookie']).split(';')[0], lost, 'the same new cookie, sent again');
+  // Once the new one is used, the old one is a copy after its minute.
+  assert.equal((await request({ path: '/api/state', cookie: lost })).status, 200);
+  clock += 2 * MIN;
+  assert.equal((await request({ path: '/api/state', cookie: first })).status, 401, 'the old one is a copy now');
 });
 
 test('the sign-in link opened in a browser already signed in keeps its row; a new browser gets one of its own', async () => {

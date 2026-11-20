@@ -861,7 +861,11 @@ export class LedungServer {
       const renewed = device ? this.devices.renewCookie(device) : null;
       if (device && renewed) {
         res.setHeader('Set-Cookie', deviceCookieHeader(renewed, device.partitioned));
-        console.log(`Devices: renewed the cookie of "${device.name}"${device.partitioned ? ' (paired in a frame)' : ''}.`);
+        // Its old cookie came back with the new one still unused: the answer that carried it looks lost (issue #468).
+        const framed = device.partitioned ? ' (paired in a frame)' : '';
+        console.log(device.renewalWaiting
+          ? `Devices: sent "${device.name}"${framed} its renewed cookie again: the answer that carried it looks lost.`
+          : `Devices: renewed the cookie of "${device.name}"${framed}.`);
       } else if (!device && req.method === 'GET' && req.headers['sec-fetch-dest'] === 'iframe') this.noteFrameUnpaired(req);
     } else {
       // A browser's cookie is renewed daily like a computer's, so a copy of it stops working within a day, and a copy
@@ -871,7 +875,9 @@ export class LedungServer {
         const renewed = this.devices.renewCookie(browser);
         if (renewed) {
           res.setHeader('Set-Cookie', browserCookieHeader(renewed));
-          console.log(`Browsers: renewed the cookie of "${browser.name}".`);
+          console.log(browser.renewalWaiting
+            ? `Browsers: sent "${browser.name}" its renewed cookie again: the answer that carried it looks lost.`
+            : `Browsers: renewed the cookie of "${browser.name}".`);
         }
         // Moved from #476's sign-ins with no name: named from what it is the first time it is used.
         if (browser.name === LEGACY_BROWSER_NAME && req.headers['user-agent']) this.devices.rename(browser.id, browserName(req.headers['user-agent']));
