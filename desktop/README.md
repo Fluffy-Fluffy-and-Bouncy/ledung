@@ -213,8 +213,14 @@ bar's view is not painted: the probe then reads the focus from inside the bar's 
 from its own page off screen, and says so). A fresh data folder shows Ledung's Welcome,
 which has no sidebar, so finish or leave the welcome in the page before the first run. Each check it makes prints
 `"event":"fail"` when it doesn't hold; the exit code is 0 only when all held, 1 otherwise, 2 when it refused to run.
-It refuses without both settings, on the default port, and on Windows for every phase but `context` and `pictures`
-(the others read command lines with `ps`).
+It refuses without both settings, on the default port, and on Windows for every phase but `context`, `pictures`
+and `framed` (the others read command lines with `ps`).
+
+`framed` (a Ledung runs, #451) is the case of another computer's tab, whose page is a frame of another site in a
+process of its own: it frames a small picture page from `localhost` over the page at `127.0.0.1` (the page's frame
+rule widened for it, in the probe only) and right-clicks the picture, checking the same as `pictures`. Electron's input
+call never reaches such a frame, so it needs `PROBE_CLICK=native` and an unlocked screen; `PROBE_FRAME_SAME=1` frames
+the picture from the page's own site instead, where Electron's input call does reach it (the control).
 
 `pictures` (a Ledung runs, #451) right-clicks the real page's pictures, not one the probe puts in: with
 `PROBE_PROJECT` naming a local project of the config whose sessions run on Haiku (`"model": "haiku"`), it copies two
