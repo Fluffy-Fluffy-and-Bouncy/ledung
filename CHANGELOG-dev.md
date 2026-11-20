@@ -9,6 +9,9 @@ together, are in [CHANGELOG.md](CHANGELOG.md). Online: https://projectledung.com
 ([docs/changes/README.md](docs/changes/README.md)); `npm run publish:dev` and `npm run publish:public` fold them in
 here under the version they publish, and push the result to main.
 
+## v4.4 — 2026-11-20 15:23 CET
+- After a linked computer is unlinked (or its link lost) and linked again, its tab here paired through the old link counts for the new link's trust, instead of still asking for a passkey (#462)
+
 ## v4.3 — 2026-11-20 15:07 CET
 - Linked computers survive a crash right after a save: links.json is flushed to the disk and kept with a backup, which Ledung loads (and logs) when links.json can't be read (#460)
 - The config file, sign-ins, locked secrets, the relay link and its admin file, certificates, the usage key and session secret files are flushed to the disk before they replace the old file, so a crash can't leave them empty (#460)
