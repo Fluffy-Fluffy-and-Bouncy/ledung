@@ -13,6 +13,8 @@
 //   ledung app                         the same, but always the app: says why when it can't, and opens no browser
 //   ledung --after-app=<pid>           the same, run by the desktop app to restart into an update (#408): waits for
 //                                      that app to quit first
+//   ledung --after-app=<pid> --app-only  run by an app that started out of date (#455): waits for it to quit, brings
+//                                      it up to date and opens it, and never starts Ledung itself
 //   ledung --foreground [--no-open]    runs it in this terminal; Ctrl+C or closing the terminal stops it
 //   ledung stop                        stops the running Ledung and its sessions; exits 3 when none runs
 //   ledung account token <name>        puts a long-lived token into an account's Claude Code sign-in (#85)
@@ -27,12 +29,14 @@ import { coreArgs } from './platform/node-warnings.ts';
 import { configuredPort, NOT_RUNNING_CODE, openIfRunning, savedToken } from './platform/running.ts';
 import { startInBackground, stopRunning } from './platform/background.ts';
 import { accountCommand } from './accounts/token-command.ts';
-import { afterApp, madeConfigFor } from '../desktop/made.ts';
+import { afterApp, APP_ONLY_ARG, madeConfigFor } from '../desktop/made.ts';
 import {
-  backgroundArgs, codeIntoKept, desktopAppOff, desktopAvailability, ensureApp, openChoice, openApp, openDesktop, progressPrinter, waitForExit,
+  backgroundArgs, codeIntoKept, desktopAppOff, desktopAvailability, ensureApp, madeApp, NO_APP, openChoice, openApp, openDesktop, progressPrinter,
+  waitForExit,
 } from './platform/desktop-app.ts';
 import { openBrowser } from './platform/open-browser.ts';
 import { startMenuFolder } from './platform/shortcuts.ts';
+import { exercisedLine } from './platform/exercised.ts';
 
 /** Must match main.ts. */
 const RESTART_CODE = 75;
@@ -55,7 +59,10 @@ if (passthrough[0] === 'account') process.exit(await accountCommand(passthrough.
 // quit, then opens it as `ledung` does, which writes its new code first; a failure opens the browser, saying why.
 const after = afterApp(process.argv.slice(2));
 if (after.pid !== null && !(await waitForExit(after.pid))) console.log('The desktop app had not quit after 15 s; opening it anyway.');
-const choice = openChoice(after.rest, desktopAppOff(configPath()));
+// --app-only (#455): the app started from a shortcut, a pin or Finder with an older version's code. Only the app is
+// brought up to date and opened, as the restart above does; Ledung itself is left as it is, running or not.
+const appOnly = after.pid !== null && after.rest.includes(APP_ONLY_ARG);
+const choice = openChoice(after.rest.filter((a) => a !== APP_ONLY_ARG), desktopAppOff(configPath()));
 const { appCommand, noOpen } = choice;
 passthrough = choice.passthrough;
 const desktop = choice.tryApp ? desktopAvailability() : null;
@@ -78,7 +85,8 @@ async function openTheApp(): Promise<number> {
       progress: progressPrinter((text) => process.stdout.write(text), process.stdout.isTTY === true),
       startMenu: process.platform === 'win32' ? await startMenuFolder() : undefined,
     },
-    fallback: !appCommand,
+    // The start's restart (#455) falls back to the app as it was, below, not to the browser: no Ledung may be running.
+    fallback: !appCommand && !appOnly,
     restarted: after.pid !== null,
     steps: {
       ensure: ensureApp,
@@ -92,6 +100,20 @@ async function openTheApp(): Promise<number> {
       print: (line) => console.log(line),
     },
   });
+}
+
+if (appOnly) {
+  if ((desktop?.ok ? await openTheApp() : 1) === 0) {
+    // Only once the app has its new code and opened: a fallback below must not read as a pass (self-check finding 1).
+    exercisedLine('EXERCISED #455 desktop app started out of date: brought up to date before its window opened');
+    process.exit(0);
+  }
+  // Not brought up to date (no Electron package, "desktopApp": false, a failed make): the app opens on the code it has,
+  // and does not restart again for this version for ten minutes (desktop/made.ts updateAtStart).
+  const paths = madeApp(userDataDir());
+  const failed = paths ? await openApp(paths) : NO_APP;
+  if (failed) console.log(failed);
+  process.exit(failed ? 1 : 0);
 }
 
 // Already running (issue #415): open it (the app, or its page) rather than start a second Ledung on the busy port.

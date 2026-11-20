@@ -79,3 +79,82 @@ export function madeConfigFor(node: string, cli: string, env: NodeJS.ProcessEnv)
   }
   return { node, cli, env: passed };
 }
+
+/**
+ * Started from a shortcut, a taskbar or Dock pin, Launchpad or Finder (#455), an app runs the code it was last written
+ * with, and only `ledung` and the tray's Open rewrite that after an npm update. So the app compares its own version
+ * with the installed package's at start and, when they differ, restarts as an update does (#408) before any window
+ * shows. With this the `ledung` that made it opens only the app: the core is left as it is, running or not.
+ */
+export const APP_ONLY_ARG = '--app-only';
+
+/**
+ * Left in the data folder's desktop/ by an app that restarted at start to take the installed version (#455), holding
+ * that version. If the restart could not bring it (a failed download, a package mid-update), the app that opens
+ * after it runs its own code instead of restarting again, so a failure never becomes a loop; ten minutes later a start
+ * tries again.
+ */
+export const START_UPDATE_FILE = '.start-update';
+export const START_UPDATE_RETRY_MS = 10 * 60_000;
+
+/**
+ * The version of the Ledung installed where `cli` is: the package.json nearest above it, the one that command's own
+ * version comes from (src/platform/paths.ts appDir). Null when it can't be read: the package is gone or being replaced.
+ */
+export function installedVersion(cli: string): string | null {
+  let dir = path.dirname(cli);
+  for (;;) {
+    const file = path.join(dir, 'package.json');
+    if (fs.existsSync(file)) {
+      try {
+        const version = (JSON.parse(fs.readFileSync(file, 'utf8')) as { version?: unknown }).version;
+        return typeof version === 'string' && version !== '' ? version : null;
+      } catch {
+        return null;
+      }
+    }
+    const up = path.dirname(dir);
+    if (up === dir) return null;
+    dir = up;
+  }
+}
+
+/** The start restart last tried (START_UPDATE_FILE): the version it was for and when; null when there is none. */
+export function readStartUpdate(file: string): { version: string; at: number } | null {
+  try {
+    const version = fs.readFileSync(file, 'utf8').trim();
+    return version === '' ? null : { version, at: fs.statSync(file).mtimeMs };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether an app starting with its own version `own` restarts first to take the installed one (#455): only when the
+ * installed version can be read and differs (a downgrade too: the app runs what is installed), and not when a restart
+ * for that same version was tried in the last ten minutes and still left the app on `own`.
+ */
+export function updateAtStart(o: { own: string; installed: string | null; tried: { version: string; at: number } | null; now: number }): boolean {
+  if (o.installed === null || o.installed === o.own) return false;
+  return !(o.tried !== null && o.tried.version === o.installed && o.now - o.tried.at < START_UPDATE_RETRY_MS);
+}
+
+/**
+ * Whether restarting for an update (#408) can bring anything: the `ledung` that made the app has another version than
+ * the app's own. Not when they are the same, as when the running Ledung is another install of another version (two
+ * Node versions, each with its own global `ledung`): the restart would write the same code again and the app, told
+ * once more it is out of date, would restart over and over (PR #425, review Minor 2).
+ */
+export function restartBrings(own: string, installed: string | null): boolean {
+  return installed !== null && installed !== own;
+}
+
+/**
+ * Whether a View menu command reloads by restarting the app instead (#455, Martin 2026-11-20 12:20: "when we press
+ * reload, why doesnt we reload with the new code?"). ⌘R/Ctrl+R, Reload and Force Reload reload the page, which comes
+ * from the running Ledung, but never the app's own code; while that code is not the installed version's (an update, or a downgrade) they
+ * restart the window into it, as the update banner's Restart window does.
+ */
+export function reloadRestarts(command: string, own: string, installed: string | null): boolean {
+  return (command === 'reload' || command === 'forceReload') && restartBrings(own, installed);
+}

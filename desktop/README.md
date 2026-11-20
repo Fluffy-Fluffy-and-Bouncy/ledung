@@ -143,6 +143,26 @@ What `npm install -g ledung` and `ledung` give (`src/platform/desktop-app.ts`, #
   be downloaded keeps the app on its old Electron with the new code when the major is the same, and the next start tries
   again; another major opens the browser, and the line saying why is left in `desktop/notice.txt` for the page, removed
   when the app next opens. A restart without an update finds the stamp current and leaves the app alone.
+  A restart goes only when the `ledung` that made the app has another version than the app: with two installs of
+  different versions (two Node versions, each with a global `ledung`) it would bring the same code back and be told
+  again it is out of date (PR #425 review, Minor 2), so the app keeps its banner and logs why instead.
+- **Started out of date** (#455). Opened from the Start menu, a taskbar or Dock pin, Launchpad, Finder or the page's
+  **Open in the Ledung app**, the app never went through `ledung`, so after an npm update it used to run the old
+  version's code until something restarted it. Now, before any window, it compares its own version with the package
+  where the `ledung` that made it is installed (the nearest `package.json` above that script). When they differ (a
+  downgrade too) it quits and runs that command with `--after-app=<its pid> --app-only`: the update's restart, which
+  writes the installed version's code into the app (or makes it again for a new Electron) and opens it, but which
+  never starts Ledung itself, running or not. Should that fail, the command opens the app as it was. The app leaves
+  the version it restarted for in `desktop/.start-update`; a start that finds itself still out of date for that version
+  within ten minutes runs its own code instead of restarting again, so a failure never becomes a loop, and the note
+  goes once the app starts up to date. An app whose `ledung` is gone, or whose package can't be read (mid-update),
+  runs what it has. An app made before this fix has no such check: it takes it the first time `ledung` or the tray's
+  **Open Ledung** writes its code.
+- **Reload takes the update too** (#455; Martin, 2026-11-20: "when we press reload, why doesnt we reload with the new
+  code?"). ⌘R/Ctrl+R, View → Reload and Force Reload reload the page, which comes from the running Ledung, but never
+  the app's own code. While that code is not the installed version's (an update, or a downgrade) they restart the window into it instead, in
+  the same "app only" way: every window closes and one comes back, shown, at the start page. A restart that can't go (the
+  `ledung` that made the app is gone) reloads the page. Up to date, they reload the page as before.
 
 To try it from a worktree, pack and install into a throwaway prefix, with a throwaway Ledung's settings (everything,
 the downloaded Electron included, stays under `.test/`):
