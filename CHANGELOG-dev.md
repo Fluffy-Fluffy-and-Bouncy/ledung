@@ -9,6 +9,9 @@ together, are in [CHANGELOG.md](CHANGELOG.md). Online: https://projectledung.com
 ([docs/changes/README.md](docs/changes/README.md)); `npm run publish:dev` and `npm run publish:public` fold them in
 here under the version they publish, and push the result to main.
 
+## v4 — 2026-11-20 01:20 CET
+The public release. Everything since v3: v3.10, v3.11, v3.12, v3.13, v3.14, v3.15, v3.16, v3.17. v3.1 to v3.9 came before the changelog per release: their changes are listed by date, under "Earlier, by date" in CHANGELOG.md.
+
 ## v3.17 — 2026-11-20 00:11 CET
 - Desktop app: right-clicking gives a menu, as in a browser: Copy Image and Save Image As… on a picture (screenshots too), Copy Link Address on a link, Copy on selected text, and Cut, Copy, Paste and Select All in a text box (#447)
 - Desktop app: Ctrl+F (⌘F on the Mac) opens a find bar, as in a browser: it highlights the matches on the page and shows "n of m"; Enter and Shift+Enter go to the next and previous match, Esc closes it. Also Edit → Find… (#445)
