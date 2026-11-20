@@ -16,7 +16,7 @@ import { UserError } from '../sessions/manager.ts';
 import type { Store } from '../store/store.ts';
 import { AWAY_DEFAULT, AWAY_KINDS, EFFORT_LEVELS, HELPER, type AwayKind, type PermissionDecision, type PermissionMode, type RemoteStatus, type ServerEvent, parseWatch } from '../shared/protocol.ts';
 import { browserCookieHeader, deviceCookieHeader, Guard, readCookies, securityHeaders } from './security.ts';
-import { browserName, DEVICE_COOKIE, type Device, type DeviceKind, deviceName, Devices, deviceView, LEGACY_BROWSER_NAME, PAIR_CODE_MS } from './devices.ts';
+import { browserName, DEVICE_COOKIE, type Device, type DeviceKind, deviceName, Devices, deviceView, LEGACY_BROWSER_NAME, PAIR_CODE_MS, pairedLink } from './devices.ts';
 import { actionOf, DEVICE_LOCKED, PASSKEY_HEADER, PASSKEY_NEEDED, PASSKEY_ONLY, PasskeyError, Passkeys, VOUCH_HEADER } from './passkeys.ts';
 import { linkedPushItem, Push, PushError, type LinkedPushItem } from './push.ts';
 import type { UsageQueries } from '../usage/queries.ts';
@@ -1276,8 +1276,7 @@ export class LedungServer {
   private untrust(linkId: string): void {
     const link = this.linked?.list().find((l) => l.id === linkId);
     if (!link || typeof link.trustedAt !== 'number') return;
-    const sameName = this.linked!.list().filter((l) => l.name === link.name).length === 1 ? link.name : null;
-    for (const device of this.devices.pairedThrough(link.id, sameName)) this.passkeys?.lock(device.id);
+    for (const device of this.devices.pairedThrough(link.id, this.linked!.list())) this.passkeys?.lock(device.id);
   }
 
   /** Calls per linked computer in the last minute: past LINK_PER_MINUTE, 429 (manager-link.md, "Loops and floods"). */
@@ -1576,15 +1575,12 @@ export class LedungServer {
   /**
    * The link whose computer this device is a frame of, when this computer trusts that computer's own screen (issue
    * #313, docs/steps/trusted-computer.md); null otherwise. Only a computer device paired through that link: never a
-   * phone, never one paired here. A device paired before the link id was kept counts by the link's name, when only one
-   * link has it.
+   * phone, never one paired here. A device whose link id is not kept, or names a link that is gone (a relink, #462),
+   * counts by the link's name, when only one link has it (pairedLink).
    */
   private trustedLink(device: Device): string | null {
-    if (device.kind !== 'computer' || !this.linked || (device.pairedViaLink === null && device.pairedVia === null)) return null;
-    const links = this.linked.list();
-    const link = device.pairedViaLink !== null
-      ? links.find((l) => l.id === device.pairedViaLink)
-      : links.filter((l) => l.name === device.pairedVia).length === 1 ? links.find((l) => l.name === device.pairedVia) : undefined;
+    if (!this.linked) return null;
+    const link = pairedLink(device, this.linked.list());
     return link && typeof link.trustedAt === 'number' ? link.id : null;
   }
 
