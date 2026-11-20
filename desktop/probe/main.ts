@@ -612,6 +612,10 @@ async function picturesPhase(w: BrowserWindow): Promise<void> {
   }
   const wc = w.webContents;
   const native = process.env.PROBE_CLICK === 'native';
+  if (native && process.platform === 'linux') {
+    expect(false, 'PROBE_CLICK=native runs on Windows and macOS only');
+    return;
+  }
   const state = await api(w, 'state');
   const entry = ((state.body?.projects ?? []) as { name: string; path?: string; model?: string }[]).find((p) => p.name === project);
   if (!entry?.path) {
@@ -691,10 +695,11 @@ async function picturesPhase(w: BrowserWindow): Promise<void> {
     const b = w.getContentBounds();
     const dip = { x: Math.round(b.x + x * zoom), y: Math.round(b.y + y * zoom) };
     if (process.platform === 'win32') {
-      // Physical pixels of the window's own display, with the helper per-monitor DPI aware (-4), so a scaled or second
-      // display puts the pointer on the picture. Hidden, or its console window could take the click.
+      // Physical pixels of the window's own display, with the helper's thread per-monitor DPI aware (-4; the thread's
+      // setting holds whatever PowerShell's own manifest says), so a scaled or second display puts the pointer on the
+      // picture. Hidden, or its console window could take the click.
       const p = screen.dipToScreenPoint(dip);
-      execFileSync('powershell', ['-NoProfile', '-Command', `Add-Type -Name M -Namespace P -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(System.IntPtr v); [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y); [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint d, System.UIntPtr e);'; [P.M]::SetProcessDpiAwarenessContext([System.IntPtr](-4)) | Out-Null; [P.M]::SetCursorPos(${p.x}, ${p.y}) | Out-Null; Start-Sleep -Milliseconds 100; [P.M]::mouse_event(8, 0, 0, 0, [System.UIntPtr]::Zero); Start-Sleep -Milliseconds 60; [P.M]::mouse_event(16, 0, 0, 0, [System.UIntPtr]::Zero)`], { windowsHide: true });
+      execFileSync('powershell', ['-NoProfile', '-Command', `Add-Type -Name M -Namespace P -MemberDefinition '[DllImport("user32.dll")] public static extern System.IntPtr SetThreadDpiAwarenessContext(System.IntPtr v); [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y); [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint d, System.UIntPtr e);'; [P.M]::SetThreadDpiAwarenessContext([System.IntPtr](-4)) | Out-Null; [P.M]::SetCursorPos(${p.x}, ${p.y}) | Out-Null; Start-Sleep -Milliseconds 100; [P.M]::mouse_event(8, 0, 0, 0, [System.UIntPtr]::Zero); Start-Sleep -Milliseconds 60; [P.M]::mouse_event(16, 0, 0, 0, [System.UIntPtr]::Zero)`], { windowsHide: true });
     } else {
       execFileSync('swift', [rclick, String(process.pid), String(dip.x), String(dip.y)]);
     }
@@ -712,15 +717,15 @@ async function picturesPhase(w: BrowserWindow): Promise<void> {
         // Scrolled into sight. Only Ledung's own pictures count; one in a closed block can't be clicked by anyone.
         const img = await page(w, `(() => { const i = document.querySelectorAll('img')[${n}]; if (!i || !new URL(i.src).pathname.startsWith('/api/')) return null;
           const src = i.src.replace(location.origin, '').slice(0, 70);
-          if (i.closest('details:not([open])')) return { src, hidden: true };
+          if (i.closest('details:not([open])')) return { src, hidden: 'in a closed block' };
           i.scrollIntoView({ block: 'center' });
           const r = i.getBoundingClientRect(); const x = r.left + r.width / 2, y = r.top + r.height / 2;
-          if (r.width === 0) return { src, hidden: true };
+          if (r.width === 0) return { src, hidden: 'no size (not loaded or not shown)' };
           const top = document.elementFromPoint(x, y);
-          return { x, y, src, natural: [i.naturalWidth, i.naturalHeight], onTop: top === i ? null : top ? top.tagName.toLowerCase() + (top.className ? '.' + String(top.className).split(' ').join('.') : '') : 'nothing' }; })()`) as { x: number; y: number; src: string; hidden?: boolean; natural: [number, number]; onTop: string | null } | null;
+          return { x, y, src, natural: [i.naturalWidth, i.naturalHeight], onTop: top === i ? null : top ? top.tagName.toLowerCase() + (top.className ? '.' + String(top.className).split(' ').join('.') : '') : 'nothing' }; })()`) as { x: number; y: number; src: string; hidden?: string; natural: [number, number]; onTop: string | null } | null;
         if (!img) continue;
         if (img.hidden) {
-          out('picture', { route, src: img.src, skipped: 'in a closed block' });
+          out('picture', { route, src: img.src, skipped: img.hidden });
           continue;
         }
         checked++;

@@ -221,7 +221,8 @@ skipped, and one with something else over it fails, naming what is on top. It le
 its open question in the throwaway. `PROBE_CLICK=native` clicks with the system's own mouse instead of Electron's
 input call (Windows through user32, the Mac through `probe/rclick.swift` run with `swift`): the screen must be
 unlocked, the window stays on top while it clicks, the pointer moves, and a person should leave the mouse alone for
-the minute it takes. Run it without first: a failure with the system's mouse alone then points at real clicks. `PROBE_MAIN=<folder>/dist/desktop/main.js` runs an npm
+the minute it takes. Run it without `PROBE_CLICK` first: a failure only with `PROBE_CLICK=native` then points at real
+clicks. Native clicks run on Windows and macOS only. `PROBE_MAIN=<folder>/dist/desktop/main.js` runs an npm
 package's built app instead of `main.ts`, to check what was shipped; `PROBE_SHOT_DIR=<folder>` saves the window per
 page. On Windows, in PowerShell from `desktop\`:
 
