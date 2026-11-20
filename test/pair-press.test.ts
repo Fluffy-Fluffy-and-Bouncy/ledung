@@ -9,6 +9,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import WebSocket from 'ws';
+import { Window } from 'happy-dom';
 import { parseConfig } from '../src/config.ts';
 import { LedungServer } from '../src/server/server.ts';
 import { SessionManager } from '../src/sessions/manager.ts';
@@ -302,5 +303,59 @@ test('the page after pairing opens only with the value its answer carried', asyn
   const code = await newCode();
   const pressed = await press(code, 'Real');
   assert.equal((await pub({ path: after303(pressed), headers: { cookie: cookieOf(pressed) } })).status, 200);
+  server.devices.revoke(liveDevices()[0]!.id);
+});
+
+test('the Pair button, in the form as served: the first press goes and shows "Pairing…", a second is held back, and Back makes it pressable again (test review of PR #472, finding 1)', async () => {
+  clock = 0;
+  const code = await newCode();
+  const served = await pub({ path: `/p/${code}`, headers: FRAME });
+  assert.equal(served.status, 200);
+  // The form's markup as the server sends it, and the script as the page is built with it (web/public).
+  const markup = /<div style="[^"]*">([\s\S]*)<\/div>$/.exec(served.body)![1]!.replace(/<script[^>]*><\/script>/, '');
+  const win = new Window({ url: `https://${MAC}/p/${code}` });
+  try {
+    win.document.body.innerHTML = markup;
+    win.eval(fs.readFileSync(path.join(import.meta.dirname, '..', 'web', 'public', 'pair.js'), 'utf8'));
+    const form = win.document.querySelector('form')!;
+    const button = () => win.document.querySelector('button')!;
+    const wait = () => win.document.getElementById('pair-wait') as unknown as { hidden: boolean };
+    /** A press: the submit event the browser fires; true when the script held it back. */
+    const submit = () => {
+      const e = new win.SubmitEvent('submit', { cancelable: true, bubbles: true });
+      form.dispatchEvent(e);
+      return e.defaultPrevented;
+    };
+    assert.equal(button().textContent, 'Pair');
+    assert.equal(wait().hidden, true, 'the waiting line is hidden before a press');
+    assert.equal(submit(), false, 'the first press is sent');
+    assert.equal(button().textContent, 'Pairing…');
+    assert.equal(button().getAttribute('aria-disabled'), 'true');
+    assert.equal(wait().hidden, false, 'the waiting line shows');
+    assert.equal(submit(), true, 'a second press is held back, so it can\'t cut the first one\'s answer off');
+    // Back to the page from the browser's history: pressable again, as before the first press.
+    win.dispatchEvent(new win.Event('pageshow'));
+    assert.equal(button().textContent, 'Pair');
+    assert.equal(button().getAttribute('aria-disabled'), null);
+    assert.equal(wait().hidden, true);
+    assert.equal(submit(), false, 'pressed again after Back, it is sent');
+  } finally {
+    await win.happyDOM.close();
+  }
+});
+
+test('the page after pairing, opened without the cookie once the pairing\'s cookie came back elsewhere: says so and removes nothing (test review of PR #472, finding 3)', async () => {
+  clock = 0;
+  const code = await newCode();
+  const pressed = await press(code, 'Came back');
+  const done = after303(pressed);
+  // The cookie comes back on another request first, as from the browser that holds it.
+  assert.equal((await pub({ path: '/api/state', headers: { ...FRAME, cookie: cookieOf(pressed) } })).status, 200);
+  const page = await pub({ path: done, headers: FRAME });
+  assert.equal(page.status, 403);
+  assert.match(page.body, /This link paired <b>Came back<\/b>, but this browser did not send its pairing back just now\./);
+  assert.doesNotMatch(page.body, /Not paired|<form/);
+  assert.deepEqual(liveDevices().map((d) => d.name), ['Came back'], 'the device that came back is kept');
+  assert.equal((await pub({ path: '/api/state', headers: { ...FRAME, cookie: cookieOf(pressed) } })).status, 200, 'and its cookie still lets it in');
   server.devices.revoke(liveDevices()[0]!.id);
 });
