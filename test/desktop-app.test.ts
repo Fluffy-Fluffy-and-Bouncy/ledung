@@ -5,6 +5,7 @@
 // a 121 MB download, and the 'all' make is never reached here.
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -12,7 +13,10 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
-import { AFTER_APP_ARG, afterApp, APP_ID, MADE_CONFIG, madeConfigFor, readMadeConfig, START_HIDDEN_FILE, WRITE_SHORTCUT_ARG, type MadeConfig } from '../desktop/made.ts';
+import {
+  AFTER_APP_ARG, afterApp, APP_ID, APP_ONLY_ARG, installedVersion, MADE_CONFIG, madeConfigFor, readMadeConfig, readStartUpdate, reloadRestarts, restartBrings,
+  START_HIDDEN_FILE, START_UPDATE_RETRY_MS, updateAtStart, WRITE_SHORTCUT_ARG, type MadeConfig,
+} from '../desktop/made.ts';
 import { findOnPath, restartCommand, runStart, startCommand } from '../desktop/start.ts';
 import {
   ADD_COMMAND, APP_SHORTCUT, appManifest, backgroundArgs, codeIntoKept, desktopAppOff, desktopAppState, desktopAvailability, electronPackage,
@@ -829,4 +833,352 @@ test("the preload gives a made app's page restartForUpdate, which sends its mess
   made.exposed.restartForUpdate!('yes');
   assert.deepEqual(made.sent, [['ledung-desktop:restart-for-update', true], ['ledung-desktop:restart-for-update', false], ['ledung-desktop:restart-for-update', false]]);
   assert.deepEqual(Object.keys(load(['electron']).exposed).sort(), ['newWindow', 'showWindow']);
+});
+
+// #455: an app opened from a shortcut, a taskbar or Dock pin, Launchpad or Finder never went through `ledung`, so after
+// an npm update it ran the old version's code. At start it now compares its own version with the installed package's.
+test('an app started out of date restarts first, once per installed version in ten minutes; an up-to-date one never does (#455)', () => {
+  const now = 1_000_000_000;
+  // The usual start: the app's code is the installed version's.
+  assert.equal(updateAtStart({ own: '3.17.0', installed: '3.17.0', tried: null, now }), false);
+  // After `npm install -g` the installed package is newer than the app's code: restart to take it.
+  assert.equal(updateAtStart({ own: '3.16.0', installed: '3.17.0', tried: null, now }), true);
+  // A downgrade too: the app runs what is installed.
+  assert.equal(updateAtStart({ own: '3.17.0', installed: '3.16.0', tried: null, now }), true);
+  // The installed package can't be read (uninstalled, mid-update): the app runs what it has.
+  assert.equal(updateAtStart({ own: '3.16.0', installed: null, tried: null, now }), false);
+  // A restart for 3.17.0 was tried a minute ago and the app is still 3.16.0: no second restart, so no loop.
+  assert.equal(updateAtStart({ own: '3.16.0', installed: '3.17.0', tried: { version: '3.17.0', at: now - 60_000 }, now }), false);
+  // Just inside the ten minutes still holds; at ten minutes the next start tries again.
+  assert.equal(START_UPDATE_RETRY_MS, 10 * 60_000);
+  assert.equal(updateAtStart({ own: '3.16.0', installed: '3.17.0', tried: { version: '3.17.0', at: now - (10 * 60_000 - 1) }, now }), false);
+  assert.equal(updateAtStart({ own: '3.16.0', installed: '3.17.0', tried: { version: '3.17.0', at: now - 10 * 60_000 }, now }), true);
+  // A note for another version says nothing about this one: 3.18.0 came since.
+  assert.equal(updateAtStart({ own: '3.16.0', installed: '3.18.0', tried: { version: '3.17.0', at: now - 60_000 }, now }), true);
+});
+
+test("the installed version is the package.json nearest above the made app's `ledung` script, as that command's own is (#455)", () => {
+  const pkg = path.join(base, 'installed-455');
+  fs.mkdirSync(path.join(pkg, 'dist'), { recursive: true });
+  fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: 'ledung', version: '3.17.0' }));
+  const cli = path.join(pkg, 'dist', 'cli.js');
+  fs.writeFileSync(cli, '');
+  assert.equal(installedVersion(cli), '3.17.0');
+  // An update replaces package.json: the next start reads the new one.
+  fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: 'ledung', version: '3.18.0' }));
+  assert.equal(installedVersion(cli), '3.18.0');
+  // Half written during an update, or with no version: unknown, never a guess.
+  fs.writeFileSync(path.join(pkg, 'package.json'), '{ "name": "led');
+  assert.equal(installedVersion(cli), null);
+  fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: 'ledung' }));
+  assert.equal(installedVersion(cli), null);
+  // This clone's own command reads the same file the core's version comes from.
+  const own = (JSON.parse(fs.readFileSync(path.join(appDir(), 'package.json'), 'utf8')) as { version: string }).version;
+  assert.equal(installedVersion(path.join(appDir(), 'src', 'cli.ts')), own);
+});
+
+test("the start restart's note gives back the version it was for and when, and nothing when it isn't there (#455)", () => {
+  const file = path.join(base, 'start-update-455');
+  assert.equal(readStartUpdate(file), null, 'no note');
+  fs.writeFileSync(file, '3.17.0\n');
+  const at = fs.statSync(file).mtimeMs;
+  assert.deepEqual(readStartUpdate(file), { version: '3.17.0', at });
+  fs.writeFileSync(file, '');
+  assert.equal(readStartUpdate(file), null, 'an empty note');
+});
+
+test("the start restart runs the made app's `ledung` with --app-only; the update's restart stays as it was (#455)", () => {
+  const node = process.execPath;
+  const cli = fileURLToPath(import.meta.url);
+  assert.equal(APP_ONLY_ARG, '--app-only');
+  assert.deepEqual(restartCommand({ node, cli, env: {} }, 4242, true), { command: node, args: [cli, `${AFTER_APP_ARG}=4242`, '--app-only'] });
+  assert.deepEqual(restartCommand({ node, cli, env: {} }, 4242, false), { command: node, args: [cli, `${AFTER_APP_ARG}=4242`] });
+  assert.equal(restartCommand(null, 4242, true), null, 'a clone run never restarts');
+});
+
+test('a restart for an update goes only when the `ledung` that made the app has another version (PR #425 review, Minor 2)', () => {
+  // Updated: the made app's command is the new version, the app still the old one.
+  assert.equal(restartBrings('3.16.0', '3.17.0'), true);
+  // Two installs: the running Ledung is 3.17.0 from another Node, but the app's own command is 3.16.0, the app's own
+  // version. A restart would write 3.16.0 again and be told again it is out of date: it does not go.
+  assert.equal(restartBrings('3.16.0', '3.16.0'), false);
+  // That command's package can't be read: nothing is known to come of it.
+  assert.equal(restartBrings('3.16.0', null), false);
+});
+
+test('`ledung --after-app=<pid> --app-only` never starts Ledung: it opens the app as it is, or says there is none (#455)', async () => {
+  // A config the core refuses at once, so the run without --app-only, which shows the probe finds a start, starts a
+  // Ledung that stops by itself: nothing is left running either way.
+  const run = async (name: string, args: string[]) => {
+    const data = path.join(base, name);
+    fs.mkdirSync(data, { recursive: true });
+    const config = path.join(data, 'config.json');
+    fs.writeFileSync(config, '{ not json');
+    const child = spawn(process.execPath, [path.join(appDir(), 'src', 'cli.ts'), ...args], {
+      env: { ...process.env, LEDUNG_CONFIG: config, LEDUNG_DATA_DIR: data },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '';
+    child.stdout.on('data', (d: Buffer) => { out += d.toString(); });
+    child.stderr.on('data', (d: Buffer) => { out += d.toString(); });
+    const code = await new Promise<number>((resolve) => child.on('exit', (c) => resolve(c ?? 1)));
+    return { code, out, log: path.join(data, 'ledung.log') };
+  };
+  // A pid no process has: the wait for the app to quit ends at once.
+  const gone = 2 ** 30;
+  // The restart an update makes (#408) starts Ledung when none runs: its log shows the start.
+  const plain = await run('after-app-plain-455', [`${AFTER_APP_ARG}=${gone}`, '--no-open']);
+  assert.equal(fs.existsSync(plain.log), true, plain.out);
+  assert.match(fs.readFileSync(plain.log, 'utf8'), /Ledung starting in the background/);
+  // The start's restart does not: no log, no start. A clone has no made app, so it says so and exits 1.
+  const only = await run('after-app-only-455', [`${AFTER_APP_ARG}=${gone}`, APP_ONLY_ARG]);
+  assert.equal(fs.existsSync(only.log), false, only.out);
+  assert.equal(only.code, 1, only.out);
+  assert.ok(only.out.includes(NO_APP), only.out);
+});
+
+test("⌘R, Reload and Force Reload restart an app whose code is not the installed version's into it; up to date they reload the page (#455)", () => {
+  // Martin, 2026-11-20 12:20: "when we press reload, why doesnt we reload with the new code?" After an update the
+  // installed package is newer than the app's own code: a reload restarts the window into it.
+  assert.equal(reloadRestarts('reload', '3.16.0', '3.17.0'), true);
+  assert.equal(reloadRestarts('forceReload', '3.16.0', '3.17.0'), true);
+  // Up to date, or nothing known about the install: the page reloads as before.
+  assert.equal(reloadRestarts('reload', '3.17.0', '3.17.0'), false);
+  assert.equal(reloadRestarts('forceReload', '3.17.0', '3.17.0'), false);
+  assert.equal(reloadRestarts('reload', '3.16.0', null), false);
+  // The View menu's other commands never restart, out of date or not.
+  for (const other of ['devTools', 'resetZoom', 'zoomIn', 'zoomOut']) assert.equal(reloadRestarts(other, '3.16.0', '3.17.0'), false, other);
+});
+
+/**
+ * A stand-in for Electron, for running the app's real main.ts outside it (test review of PR #459, rounds 1 and 2). It
+ * prints what the app did as `EVENT <name>` lines:
+ * - `window` when the app sets its menu, the first step of opening its window; without STAND_IN_ACTION it then exits;
+ * - `quit` when it quits; the quit runs the app's before-quit and will-quit handlers as Electron does, so the restart
+ *   command is really started;
+ * - `page-reload` and `page-reload-ignoring-cache` when the window's page reloads, and `done` when an action is over.
+ * With STAND_IN_ACTION it goes on: a stand-in window attaches to the Ledung the config names, and once its page loads
+ * the action runs: `reload` and `forceReload` click the View menu's item, `banner` sends the page's update message
+ * with `now` (the banner's Restart window, #408).
+ */
+const ELECTRON_STAND_IN = `
+const handlers = {};
+const ipc = {};
+const event = (name) => process.stdout.write('EVENT ' + name + '\\n');
+const action = process.env.STAND_IN_ACTION || '';
+// Anything else the app touches: callable, constructible, every property another such thing.
+const any = () => new Proxy(function () {}, {
+  get: (_t, key) => (key === 'then' || typeof key === 'symbol' ? undefined : any()),
+  apply: () => any(),
+  construct: () => any(),
+});
+const withRest = (o) => new Proxy(o, { get: (t, key) => (key in t ? t[key] : key === 'then' || typeof key === 'symbol' ? undefined : any()) });
+let template = [];
+const made = [];
+function act(w) {
+  if (action === 'reload' || action === 'forceReload') {
+    const label = action === 'reload' ? 'Reload' : 'Force Reload';
+    const item = template.flatMap((m) => m.submenu ?? []).find((i) => i.label === label);
+    item.click(item, undefined);
+  } else if (action === 'banner') {
+    for (const fn of ipc['ledung-desktop:restart-for-update'] ?? []) fn({ sender: w.webContents, senderFrame: { parent: null, url: w.shown } }, true);
+  }
+  setTimeout(() => { event('done'); process.exit(0); }, 600);
+}
+export class BrowserWindow {
+  constructor() {
+    // Set before the proxy: a missing field would read as one of its truthy stand-ins.
+    this.acted = false;
+    this.shown = null;
+    const self = withRest(this);
+    this.webContents = withRest({
+      reload: () => event('page-reload'),
+      reloadIgnoringCache: () => event('page-reload-ignoring-cache'),
+      on: () => {},
+    });
+    made.push(self);
+    return self;
+  }
+  static fromWebContents(c) { return made.find((w) => w.webContents === c) ?? null; }
+  isDestroyed() { return false; }
+  isVisible() { return true; }
+  isMinimized() { return false; }
+  isFullScreen() { return false; }
+  on() {}
+  loadFile() { return Promise.resolve(); }
+  loadURL(url) {
+    // The page of the Ledung it attached to: the action runs once, then.
+    this.shown = url;
+    if (action && !this.acted) { this.acted = true; setTimeout(() => act(this), 50); }
+    return Promise.resolve();
+  }
+}
+export const app = withRest({
+  getVersion: () => process.env.STAND_IN_VERSION,
+  on: (name, fn) => { (handlers[name] ??= []).push(fn); },
+  whenReady: () => Promise.resolve(),
+  isReady: () => false,
+  requestSingleInstanceLock: () => true,
+  quit: () => {
+    event('quit');
+    for (const name of ['before-quit', 'will-quit']) for (const fn of handlers[name] ?? []) fn({ preventDefault() {} });
+    setTimeout(() => process.exit(0), 300);
+  },
+  exit: (code) => process.exit(code),
+});
+export const Menu = withRest({
+  buildFromTemplate: (t) => { template = t; return any(); },
+  setApplicationMenu: () => { event('window'); if (!action) process.exit(0); },
+});
+export const ipcMain = withRest({ on: (name, fn) => { (ipc[name] ??= []).push(fn); } });
+// One signed-out partition: the app signs it in with the token cookie and goes on.
+const partition = withRest({ cookies: withRest({ get: async () => [], set: async () => {} }), fetch: async () => null });
+export const session = withRest({ fromPartition: () => partition });
+export const clipboard = any();
+export const dialog = any();
+export const nativeImage = any();
+export const shell = any();
+export const WebContentsView = any();
+`;
+
+const TOKEN_455 = 'd'.repeat(64);
+
+/**
+ * The real desktop/main.ts, bundled as the package bundles it (scripts/build-package.ts) with the stand-in for
+ * Electron, in a made app's folder whose `ledung` is a script that writes down how it was run. Its config names
+ * `ledungPort`, the Ledung an action attaches to. `start` runs it once.
+ */
+async function appHarness(name: string, ledungPort: number) {
+  const { build } = await import('esbuild');
+  const root = path.join(base, name);
+  const appCode = path.join(root, 'app');
+  fs.mkdirSync(appCode, { recursive: true });
+  const standIn = path.join(root, 'electron-stand-in.mjs');
+  fs.writeFileSync(standIn, ELECTRON_STAND_IN);
+  await build({
+    entryPoints: [path.join(appDir(), 'desktop', 'main.ts')],
+    outfile: path.join(appCode, 'main.js'),
+    bundle: true,
+    platform: 'node',
+    format: 'esm',
+    target: 'node24',
+    logLevel: 'error',
+    plugins: [{ name: 'electron-stand-in', setup: (b) => b.onResolve({ filter: /^electron$/ }, () => ({ path: standIn })) }],
+  });
+  const pkg = path.join(root, 'installed');
+  fs.mkdirSync(path.join(pkg, 'dist'), { recursive: true });
+  const cli = path.join(pkg, 'dist', 'cli.js');
+  const data = path.join(root, 'data');
+  fs.mkdirSync(data, { recursive: true });
+  fs.writeFileSync(path.join(data, 'auth-token'), TOKEN_455);
+  const config = path.join(root, 'config.json');
+  fs.writeFileSync(config, JSON.stringify({ port: ledungPort }));
+  const ran = path.join(root, 'cli-ran.json');
+  fs.writeFileSync(cli, `require('node:fs').writeFileSync(${JSON.stringify(ran)}, JSON.stringify(process.argv.slice(2)));\n`);
+  fs.writeFileSync(path.join(appCode, MADE_CONFIG), JSON.stringify({ node: process.execPath, cli, env: { LEDUNG_DATA_DIR: data, LEDUNG_CONFIG: config } }));
+  const note = path.join(data, 'desktop', '.start-update');
+  const start = async (own: string, installed: string, action = '') => {
+    fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: 'ledung', version: installed }));
+    fs.rmSync(ran, { force: true });
+    const env: NodeJS.ProcessEnv = { ...process.env, STAND_IN_VERSION: own, STAND_IN_ACTION: action };
+    delete env.LEDUNG_DATA_DIR;
+    delete env.LEDUNG_CONFIG;
+    const child = spawn(process.execPath, [path.join(appCode, 'main.js')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    child.stdout.on('data', (d: Buffer) => { out += d.toString(); });
+    child.stderr.on('data', (d: Buffer) => { out += d.toString(); });
+    await new Promise<void>((resolve) => child.on('exit', () => resolve()));
+    const events = out.split('\n').filter((l) => l.startsWith('EVENT ')).map((l) => l.slice(6));
+    // The restart command is detached: give it a moment to have written down how it ran.
+    for (let i = 0; i < 50 && events.includes('quit') && !fs.existsSync(ran); i++) await new Promise((r) => setTimeout(r, 100));
+    const args = fs.existsSync(ran) ? (JSON.parse(fs.readFileSync(ran, 'utf8')) as string[]) : null;
+    return { events, args, pid: child.pid, out };
+  };
+  return { start, note };
+}
+
+/** A stand-in Ledung on a port of its own: it answers /running as Ledung does (desktop/attach.ts runningProof). */
+async function standInLedung(): Promise<{ port: number; close: () => Promise<void> }> {
+  const server = http.createServer((req, res) => {
+    const nonce = new URL(req.url!, 'http://x').searchParams.get('nonce');
+    if (!nonce) return void res.writeHead(404).end();
+    const proof = crypto.createHmac('sha256', TOKEN_455).update(`ledung-running:${nonce}`).digest('hex');
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ proof }));
+  });
+  const port = await listenOk(server);
+  return { port, close: () => new Promise((resolve) => server.close(() => resolve())) };
+}
+
+test("the app's own start (desktop/main.ts) restarts it into the installed version before any window, once per version (#455)", async () => {
+  // No action: it never gets as far as looking for a Ledung, so the port is never asked.
+  const { start, note } = await appHarness('main-start-455', 1);
+
+  // Out of date after an update: it quits before any window and runs the made app's `ledung` in app-only mode with
+  // its own pid, and notes the version it restarts for.
+  const old = await start('1.0.0', '2.0.0');
+  assert.deepEqual(old.events, ['quit'], old.out);
+  assert.deepEqual(old.args, [`${AFTER_APP_ARG}=${old.pid}`, APP_ONLY_ARG], old.out);
+  assert.equal(fs.readFileSync(note, 'utf8').trim(), '2.0.0');
+
+  // Started again still out of date for that same version (the restart could not bring it): it opens on its own
+  // code, no second restart, so no loop.
+  const again = await start('1.0.0', '2.0.0');
+  assert.deepEqual(again.events, ['window'], again.out);
+  assert.equal(again.args, null, 'no restart command ran');
+  assert.equal(fs.existsSync(note), true, 'the note stays until the app is up to date');
+
+  // Up to date: it opens as before, no restart, and the note goes.
+  const current = await start('2.0.0', '2.0.0');
+  assert.deepEqual(current.events, ['window'], current.out);
+  assert.equal(current.args, null, 'no restart command ran');
+  assert.equal(fs.existsSync(note), false);
+});
+
+test("the app's View → Reload and Force Reload (desktop/main.ts) restart an out-of-date app into the installed version, app only; up to date they reload the page (#455)", async () => {
+  // Martin, 2026-11-20 12:20: "when we press reload, why doesnt we reload with the new code?" (test review of PR #459
+  // round 2, finding 1). Out of date here: a start restart for 2.0.0 was just tried (its note is fresh), so the app
+  // opened on its own 1.0.0 code and showed the page; then the person reloads.
+  const ledung = await standInLedung();
+  try {
+    const { start, note } = await appHarness('main-reload-455', ledung.port);
+    for (const [action, pageEvent] of [['reload', 'page-reload'], ['forceReload', 'page-reload-ignoring-cache']] as const) {
+      fs.mkdirSync(path.dirname(note), { recursive: true });
+      fs.writeFileSync(note, '2.0.0\n');
+      const old = await start('1.0.0', '2.0.0', action);
+      assert.ok(old.events.includes('quit'), `${action}: ${old.out}`);
+      assert.ok(!old.events.includes(pageEvent), `${action}: the page alone must not reload: ${old.out}`);
+      // App only: the reload's restart never starts Ledung.
+      assert.deepEqual(old.args, [`${AFTER_APP_ARG}=${old.pid}`, APP_ONLY_ARG], `${action}: ${old.out}`);
+
+      // Up to date: the page reloads, no restart.
+      const current = await start('2.0.0', '2.0.0', action);
+      assert.deepEqual(current.events, ['window', pageEvent, 'done'], `${action}: ${current.out}`);
+      assert.equal(current.args, null, `${action}: no restart command ran`);
+    }
+  } finally {
+    await ledung.close();
+  }
+});
+
+test("the banner's Restart window (desktop/main.ts) restarts through the app's `ledung` only when that one has another version (PR #425 review, Minor 2)", async () => {
+  // Test review of PR #459 round 2, finding 2: the gate in the app itself, not only the helper.
+  const ledung = await standInLedung();
+  try {
+    const { start, note } = await appHarness('main-banner-455', ledung.port);
+    // The app's `ledung` is another version (an update; the start restart for it was just tried, its note fresh): the
+    // banner's restart goes, as the update's restart does (#408), without --app-only.
+    fs.mkdirSync(path.dirname(note), { recursive: true });
+    fs.writeFileSync(note, '2.0.0\n');
+    const other = await start('1.0.0', '2.0.0', 'banner');
+    assert.ok(other.events.includes('quit'), other.out);
+    assert.deepEqual(other.args, [`${AFTER_APP_ARG}=${other.pid}`], other.out);
+
+    // Two installs: the running Ledung says the app is out of date, but the app's own `ledung` has the app's version.
+    // A restart would bring the same code back: none goes.
+    const same = await start('1.0.0', '1.0.0', 'banner');
+    assert.deepEqual(same.events, ['window', 'done'], same.out);
+    assert.equal(same.args, null, 'no restart command ran');
+  } finally {
+    await ledung.close();
+  }
 });
