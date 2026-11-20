@@ -45,7 +45,12 @@ export const OPEN_PAGE_ONLY = "Only Ledung's open page can do this";
 const remotePage = (): boolean => (globalThis as { location?: { protocol: string } }).location?.protocol === 'https:';
 
 /** The browser's passkey calls (web/src/passkey.ts), set by main.tsx; kept out of here so tests and the core type check need no DOM. */
-export type PasskeyCalls = { sign(options: { challenge: string }): Promise<string>; create(options: { challenge: string }): Promise<unknown> };
+export type PasskeyCalls = {
+  sign(options: { challenge: string }): Promise<string>;
+  create(options: { challenge: string }): Promise<unknown>;
+  /** Set where no passkey prompt can come (the desktop app on a Mac, #427): why, said once instead of asking. */
+  unavailable?: string;
+};
 let passkeys: PasskeyCalls | null = null;
 export const setPasskeyCalls = (calls: PasskeyCalls | null) => {
   passkeys = calls;
@@ -94,6 +99,12 @@ async function proofFor(method: string, path: string, text: string, passkey = fa
 async function signFor(method: string, path: string, text: string, passkey = false): Promise<string> {
   // The unlock's notice also says the signature that may follow, so that one goes straight on (#179).
   const kind = path === '/api/device-unlock' ? 'unlock' : 'sign';
+  // No prompt would come and the request would hang (#427): say why once, with no notice before it and no retry.
+  const unavailable = passkeys?.unavailable;
+  if (unavailable) {
+    if (prompter) await prompter({ kind, failed: unavailable });
+    throw new Error(unavailable);
+  }
   if (prompter && (kind === 'unlock' || !signExplained)) {
     if (!(await prompter({ kind }))) throw new Error(PASSKEY_CANCELLED);
     // Only once read and accepted: after a Cancel the next signature is explained again (#184 review).
