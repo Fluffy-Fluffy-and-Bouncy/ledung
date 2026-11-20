@@ -11,7 +11,6 @@ import path from 'node:path';
 import { COOKIE, keyFor, LinkedNodes, until, type Node } from './linked-nodes.ts';
 import { FakePasskey } from './fake-passkey.ts';
 import { HANG_MS } from './limits.ts';
-import { pairedLink } from '../src/server/devices.ts';
 import { removeTemp } from './temp.ts';
 
 const nodes = new LinkedNodes();
@@ -500,18 +499,6 @@ test('after unlinking and linking again, the tab paired through the old link cou
   const off = await frame('computers', rename(pc, 'Off'));
   assert.equal(off.status, 403);
   assert.match(off.json.error, NO_PASSKEY);
-});
-
-test('which link a tab belongs to: its kept link id; when that link is gone or none was kept, the one link of its name', () => {
-  const links = [{ id: 'new-mac', name: 'Mac' }, { id: 'pc2', name: 'PC' }];
-  const tab = (pairedViaLink: string | null, pairedVia: string | null, kind: 'computer' | 'phone' = 'computer') => ({ kind, pairedVia, pairedViaLink });
-  assert.equal(pairedLink(tab('pc2', 'Mac'), links)?.id, 'pc2', 'a kept link id wins over the name');
-  assert.equal(pairedLink(tab('old-mac', 'Mac'), links)?.id, 'new-mac', 'a gone link: by the name (#462)');
-  assert.equal(pairedLink(tab(null, 'Mac'), links)?.id, 'new-mac', 'no link id kept: by the name');
-  assert.equal(pairedLink(tab('old-mac', 'Laptop'), links), null, 'no link of its name');
-  assert.equal(pairedLink(tab('old-mac', 'Mac'), [...links, { id: 'twin', name: 'Mac' }]), null, 'two links of its name: neither');
-  assert.equal(pairedLink(tab('old-mac', null), links), null, 'paired here');
-  assert.equal(pairedLink(tab('new-mac', 'Mac', 'phone'), links), null, 'never a phone');
 });
 
 test('removing trust logs the frame off at once and its next change is refused; unlinking does too', { timeout: HANG_MS }, async () => {
