@@ -7,10 +7,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { LINKS_FILE, LinkedComputers } from '../src/remote/linked.ts';
+import { removeTemp } from './temp.ts';
 
 /** The backup's name, as the issue gives it. */
 const BACKUP = `${LINKS_FILE}.bak`;
-import { removeTemp } from './temp.ts';
 
 const dirs: string[] = [];
 after(() => dirs.forEach(removeTemp));
@@ -67,4 +67,14 @@ test('every save writes the backup too, with the same links', () => {
   assert.equal(fs.readFileSync(path.join(dir, BACKUP), 'utf8'), main);
   if (process.platform !== 'win32') assert.equal(fs.statSync(path.join(dir, BACKUP)).mode & 0o777, 0o600);
   assert.deepEqual(fs.readdirSync(dir).sort(), [LINKS_FILE, BACKUP], 'no temporary file left');
+});
+
+test('a links.json that can\'t be read at all (here a folder in its place) also loads the backup', (t) => {
+  const dir = tempDir();
+  fs.mkdirSync(path.join(dir, LINKS_FILE));
+  fs.writeFileSync(path.join(dir, BACKUP), saved(link(3)));
+  const logged: string[] = [];
+  t.mock.method(console, 'log', (line: string) => logged.push(line));
+  assert.deepEqual(new LinkedComputers({ dir, publicName: 'here.example.net' }).list().map((l) => l.publicName), ['c3.example.net']);
+  assert.ok(logged.some((l) => /links\.json can't be read: .*loaded 1 link\(s\) from its backup/.test(l)), logged.join('\n'));
 });

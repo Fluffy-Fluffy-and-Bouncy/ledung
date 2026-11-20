@@ -54,12 +54,20 @@ test('a private file is made readable by this user only, and replaces the one th
   assert.equal(fs.statSync(file).mode & 0o777, 0o600);
 });
 
-test('a write that fails leaves the old file as it was and no temporary file', () => {
+test('a write that fails leaves the old file as it was and no temporary file', (t) => {
   // A rename onto a folder that holds a file fails on every platform.
   const blocked = path.join(dir, 'blocked');
   fs.mkdirSync(blocked);
   fs.writeFileSync(path.join(blocked, 'x'), 'kept');
+  // The temporary file was there before the rename failed: the rename's own source, as it was called.
+  const renamedFrom: string[] = [];
+  const rename = fs.renameSync;
+  t.mock.method(fs, 'renameSync', (from: fs.PathLike, to: fs.PathLike) => {
+    renamedFrom.push(`${path.basename(String(from))} ${fs.existsSync(from) ? 'there' : 'missing'}`);
+    rename(from, to);
+  });
   assert.throws(() => writeFileSafely(blocked, 'new', { temp: path.join(dir, 'blocked.tmp') }));
+  assert.deepEqual(renamedFrom, ['blocked.tmp there']);
   assert.equal(fs.existsSync(path.join(dir, 'blocked.tmp')), false, 'the temporary file is removed');
   assert.equal(fs.readFileSync(path.join(blocked, 'x'), 'utf8'), 'kept');
   // The same call on a plain file works, so the throw above was the rename's.

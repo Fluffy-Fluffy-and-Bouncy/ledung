@@ -437,17 +437,13 @@ export class LinkedComputers {
   }
 
   private read(): Saved[] {
-    let text: string;
     try {
-      text = fs.readFileSync(this.file, 'utf8');
+      return parseLinks(fs.readFileSync(this.file, 'utf8'));
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') console.log(`Linked computers: ${this.file} can't be read: ${(e as Error).message}`);
-      return [];
-    }
-    try {
-      return parseLinks(text);
-    } catch (e) {
-      // Left as zeros by a crash, say (issue #460): the backup, written the same way just before, keeps the links.
+      // No file: no links, and no backup either (a file deleted by hand clears the list).
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      // Left as zeros by a crash, say, or unreadable (issue #460): the backup, written the same way just before, keeps
+      // the links.
       const backup = `${this.file}${BACKUP_SUFFIX}`;
       let links: Saved[];
       try {
@@ -463,7 +459,7 @@ export class LinkedComputers {
       }
       try {
         // Put back, so the next read finds it and the log says this once.
-        writeFileSafely(this.file, JSON.stringify({ links }, null, 2), { mode: 0o600 });
+        writeFileSafely(this.file, JSON.stringify({ links }, null, 2), { mode: 0o600, temp: `${this.file}.${process.pid}.new` });
       } catch (w) {
         console.log(`Linked computers: ${this.file} could not be put back from its backup: ${(w as Error).message}`);
       }
@@ -475,8 +471,9 @@ export class LinkedComputers {
   private write(links: Saved[]): void {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     const text = JSON.stringify({ links }, null, 2);
-    writeFileSafely(`${this.file}${BACKUP_SUFFIX}`, text, { mode: 0o600 });
-    writeFileSafely(this.file, text, { mode: 0o600 });
+    const backup = `${this.file}${BACKUP_SUFFIX}`;
+    writeFileSafely(backup, text, { mode: 0o600, temp: `${backup}.${process.pid}.new` });
+    writeFileSafely(this.file, text, { mode: 0o600, temp: `${this.file}.${process.pid}.new` });
   }
 
   /** One POST to another Ledung's public name over TLS; the JSON answer, or an error with the reason. */
