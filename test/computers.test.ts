@@ -140,7 +140,18 @@ test('another computer\'s tab shows its own page here in a frame, and stays a li
   // And a trusted computer's vouch (issue #313, design 3a: Martin, 2026-11-13, Ledung question #890: "a — Design a, with
   // a key on the tab"): the frame's ask, with only a one-time challenge, and the framing page's answer to that frame's
   // window at its origin. trusted-computer-page.test.ts pins who may ask and whose answer counts.
-  assert.equal(sources(new URL('../web/src/', import.meta.url)).join('\n').match(/postMessage/g)?.length, 7, 'the question and the answer, the Look settings, and the vouch');
+  // And New window in a linked computer's tab (#454, Martin, 2026-11-20, Ledung question #711: "a — Allow it and update
+  // the pin", Decision issuecomment-7038191191 on #454): the frame's ask whether the page around it is the app's, carrying nothing, that page's answer to that
+  // frame's window at its origin, and the frame's New window to the origin that answered. newWindow.test.ts pins who
+  // may ask and whose answer counts.
+  assert.equal(sources(new URL('../web/src/', import.meta.url)).join('\n').match(/postMessage/g)?.length, 11, 'the question and the answer, the Look settings, the vouch, and New window');
+  const newWindow = readFileSync(new URL('../web/src/newWindow.ts', import.meta.url), 'utf8');
+  assert.equal(newWindow.match(/postMessage/g)?.length, 3, "the frame: the parent's type, its ask and its New window");
+  assert.match(newWindow, /w\.parent\.postMessage\(\{ type: DESKTOP_ASK \}, '\*'\)/, 'the ask carries nothing');
+  assert.match(newWindow, /framing\.parent\.postMessage\(\{ type: NEW_WINDOW \}, framing\.origin\)/, 'New window goes only to the page that answered, at its origin');
+  assert.match(view, /framedNewWindow\(msg, c\.url!, window as unknown as NewWindowHost, \(answer\) => \(e\.source as Window\)\.postMessage\(answer, e\.origin\), active\)/, 'the framing page answers only that frame, at its origin');
+  // And opens a window only on a click: `active` is the browser's own record of one (test review of PR #457, finding 1).
+  assert.match(view, /const active = \(navigator as \{ userActivation\?: \{ isActive: boolean \} \}\)\.userActivation\?\.isActive \?\? true;/, "a click, from the browser's own record");
   const vouch = readFileSync(new URL('../web/src/vouch.ts', import.meta.url), 'utf8');
   assert.equal(vouch.match(/postMessage/g)?.length, 1, 'the frame: its ask');
   assert.match(vouch, /window\.parent\.postMessage\(vouchAsk\(id, challenge\), '\*'\)/, 'the ask carries the challenge only');
