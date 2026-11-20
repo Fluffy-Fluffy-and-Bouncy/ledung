@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { dockerExecArgs, shellFolder, type LoginPlace } from './signin.ts';
 import { runWithInput } from '../runners/runner.ts';
+import { writeFileSafely } from '../platform/safe-write.ts';
 
 /** The sign-in file in a sign-in folder, outside macOS. */
 export const CREDENTIALS = '.credentials.json';
@@ -85,8 +86,8 @@ export function localStore(platform = process.platform, run: RunInput = runWithI
       fs.mkdirSync(folder, { recursive: true });
       const temp = path.join(folder, `${CREDENTIALS}.ledung-${process.pid}`);
       try {
-        fs.writeFileSync(temp, record, { mode: 0o600, flag: 'wx' });
-        fs.renameSync(temp, path.join(folder, CREDENTIALS));
+        // Flushed before and after the rename, so a crash can't leave it empty (issue #460).
+        writeFileSafely(path.join(folder, CREDENTIALS), record, { mode: 0o600, temp, exclusive: true });
       } finally {
         fs.rmSync(temp, { force: true });
       }

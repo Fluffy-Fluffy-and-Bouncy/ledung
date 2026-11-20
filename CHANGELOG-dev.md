@@ -9,6 +9,10 @@ together, are in [CHANGELOG.md](CHANGELOG.md). Online: https://projectledung.com
 ([docs/changes/README.md](docs/changes/README.md)); `npm run publish:dev` and `npm run publish:public` fold them in
 here under the version they publish, and push the result to main.
 
+## v4.3 — 2026-11-20 15:07 CET
+- Linked computers survive a crash right after a save: links.json is flushed to the disk and kept with a backup, which Ledung loads (and logs) when links.json can't be read (#460)
+- The config file, sign-ins, locked secrets, the relay link and its admin file, certificates, the usage key and session secret files are flushed to the disk before they replace the old file, so a crash can't leave them empty (#460)
+
 ## v4.2 — 2026-11-20 14:31 CET
 - The desktop app runs the installed Ledung's code however it is opened (Start menu, taskbar, Dock, Launchpad, Finder, "Open in the Ledung app"): after an update it brings itself up to date at start, before its window opens (#455)
 - An app whose own `ledung` has the same version as the app no longer restarts over and over when another install of Ledung runs (#455)

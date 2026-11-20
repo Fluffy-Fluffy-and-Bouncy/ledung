@@ -4,6 +4,7 @@
 // never reads half a file. Until now no API wrote the config; this is the one place that does.
 import fs from 'node:fs';
 import path from 'node:path';
+import { writeFileSafely } from './platform/safe-write.ts';
 import { parseConfig, SETTING_RELOAD, type LedungConfig, type SettingName } from './config.ts';
 
 export class ConfigWriteError extends Error {}
@@ -51,16 +52,15 @@ export function configWith(file: string, key: SettingName, value: unknown): { ra
   return { raw, config };
 }
 
-/** Writes it: to a temporary file next to the config, then renamed over it, keeping the file's indentation. */
+/** Writes it: to a temporary file next to the config, flushed, then renamed over it, keeping the file's indentation. */
 export function writeConfig(file: string, raw: Record<string, unknown>): void {
   const old = fs.readFileSync(file, 'utf8');
   const indent = /^\{\s*\n(\s+)"/.exec(old)?.[1] ?? '  ';
   const temp = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.tmp`);
-  fs.writeFileSync(temp, `${JSON.stringify(raw, null, indent)}\n`, { flag: 'w' });
   try {
-    fs.renameSync(temp, file);
+    // Flushed before and after the rename, so a crash can't leave it empty (issue #460).
+    writeFileSafely(file, `${JSON.stringify(raw, null, indent)}\n`, { temp });
   } catch (e) {
-    fs.rmSync(temp, { force: true });
     throw new ConfigWriteError(`The config file could not be written: ${(e as Error).message}`);
   }
 }
