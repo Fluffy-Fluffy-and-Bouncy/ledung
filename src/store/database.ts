@@ -821,6 +821,7 @@ const MIGRATIONS: string[] = [
   // so a lost answer costs no pairing and a copy of the old one can't push the new one out. Null: none waiting.
   `
   ALTER TABLE devices ADD COLUMN new_cookie_sealed TEXT;
+  `,
   // How long shell calls take, per project and command kind (resource limits round 2, R4): a kind whose calls usually
   // finish within 10 s is never refused. Only the latest few per kind are kept (JobStore.addCall).
   `

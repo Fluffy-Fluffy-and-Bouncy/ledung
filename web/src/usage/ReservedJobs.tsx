@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { projectLabel, type HeavyCommandInfo, type JobKindInfo, type LightCommandInfo } from '../../../src/shared/protocol.ts';
 import { formatDim } from '../../../src/resources/limits.ts';
 import { api } from '../api.ts';
+import { usePlainTyping } from '../usePlainTyping.ts';
 
 /** Generic amounts ("cpu", "ram", "gpu", "vram"), as the learning store keeps them. */
 function amounts(a: Record<string, number>): string {
@@ -24,6 +25,7 @@ export function ReservedJobs() {
     api.projects().then((p) => setProjects(p.filter((x) => x.runner === 'local').map((x) => x.name)), () => setProjects([]));
   }, []);
   const project = addProject || projects[0] || '';
+  const typing = usePlainTyping();
   const act = (action: () => Promise<unknown>) => void action().then(load, (e: Error) => alert(e.message));
   return (
     <section>
@@ -102,7 +104,7 @@ export function ReservedJobs() {
               {projects.map((p) => <option key={p} value={p}>{projectLabel(p)}</option>)}
             </select>
           )}
-          <input type="text" aria-label="Command" placeholder="e.g. node scripts/emulator-lock.mjs" value={addCommand} maxLength={200} onChange={(e) => setAddCommand(e.target.value)} />
+          <input type="text" {...typing} aria-label="Command" placeholder="e.g. node scripts/emulator-lock.mjs" value={addCommand} maxLength={200} onChange={(e) => setAddCommand(e.target.value)} />
           <button type="submit" className="small" disabled={!addCommand.trim()}>Add</button>
         </form>
       )}
