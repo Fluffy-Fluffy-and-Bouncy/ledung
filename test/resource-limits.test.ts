@@ -1175,6 +1175,70 @@ test('heavy work under a parked pass sent back into the line is still judged aga
   assert.equal(r.book.info().line.length, 0, 'out of the line: its work started');
 });
 
+/** A parked pass (8 GB booked) refused and sent back into the line, as in the finding-2 test above. */
+function backInLine() {
+  const r = rig();
+  r.sessions.get('s1')!.busy = true;
+  r.sessions.get('s2')!.busy = true;
+  r.book.setSettings({ parkSec: 30, overSec: 10, averageSec: 5 });
+  for (const at of [1, 2]) r.jobs.add({ project: 'p', kind: 'build', commands: ['npm run build'], asked: {}, peak: { ram: 6 * GB }, mean: {}, durationMs: 60_000, over: false, undeclared: false, endedAt: at });
+  const pc = { memUsed: 10 * GB };
+  r.tick({ s1: tree(), s2: tree2() }, pc);
+  r.book.setLimit('ram', 30);
+  r.book.reserve('s1', { what: 'Build', ram_gb: 8 });
+  for (let i = 0; i < 3; i++) r.tick({ s1: tree(proc(13, 11)), s2: tree2() }, { ...pc, cpuOf: { 13: 4 } });
+  for (let i = 0; i < 8; i++) r.tick({ s1: tree(), s2: tree2() }, pc);
+  assert.equal(r.book.info().jobs[0]!.state, 'parked');
+  assert.match(r.book.reserve('s2', { what: 'Train', ram_gb: 15 }), /^Go:/);
+  assert.match(r.book.commandRefusal('s1', ['npm run build']) ?? '', /^Wait: your reservation r1 "Build" was parked/);
+  assert.equal(r.book.passWaits('s1'), 'waiting');
+  return r;
+}
+
+test('memory taken at once above the booking, then one thread, under a pass back in the line is judged (acceptance test 2 of PR #476, F2)', () => {
+  const r = backInLine();
+  // 10 GB at once against 8 GB booked, then one thread of 16 (3 points, under the CPU allowance), for 3 minutes.
+  const hog = started(r, 50, 11, 10 * GB);
+  for (let i = 0; i < 36; i++) r.tick({ s1: tree(hog), s2: tree2() }, { memUsed: 20 * GB, cpuOf: { 50: 0.5 } });
+  const card = r.book.info().jobs.find((j) => j.sessionId === 's1')!;
+  assert.equal(card.state, 'over');
+  assert.equal(card.resumedAbove, true);
+  assert.equal(r.book.isHeld('s1'), true);
+  assert.equal(r.book.info().line.length, 0, 'out of the line: its work started');
+});
+
+test('memory growing under a pass back in the line is still caught, from under its booking to above it (acceptance test 2 of PR #476, F2)', () => {
+  const r = backInLine();
+  const job = started(r, 50, 11);
+  for (let i = 0; i < 36; i++) {
+    const mem = Math.min(2 * GB + i * 512 * MB, 12 * GB);
+    r.tick({ s1: tree({ ...job, memBytes: mem }), s2: tree2() }, { memUsed: 10 * GB + mem, cpuOf: { 50: 0.5 } });
+    if (i === 3) assert.equal(r.book.info().jobs.find((j) => j.sessionId === 's1')!.state, 'busy', 'growing is work: out of the line');
+  }
+  assert.equal(r.book.info().jobs.find((j) => j.sessionId === 's1')!.state, 'over');
+  assert.equal(r.book.isHeld('s1'), true);
+});
+
+test('a pass back in the line claims none of its processes: work that is never active twice in a row is judged as unreserved (acceptance test 2 of PR #476, F2)', () => {
+  const r = backInLine();
+  r.book.setSettings({ averageSec: 30 });
+  // Bursts of 6 cores every other sample: never two active samples in a row, 19 points on average.
+  const job = started(r, 50, 11, 1 * GB);
+  for (let i = 0; i < 12; i++) r.tick({ s1: tree(job), s2: tree2() }, { memUsed: 11 * GB, cpuOf: { 50: i % 2 ? 0 : 6 } });
+  assert.equal(r.book.passWaits('s1'), 'waiting', 'still in line');
+  assert.equal(r.book.info().unreserved.length, 1, 'judged as the session\'s unreserved work');
+  assert.equal(r.book.isHeld('s1'), true);
+});
+
+test('a leftover daemon under a pass back in the line, within what it had booked, holds no one (acceptance test 2 of PR #476, F2)', () => {
+  const r = backInLine();
+  const daemon = proc(14, 11, 3 * GB);
+  for (let i = 0; i < 12; i++) r.tick({ s1: tree(daemon), s2: tree2() }, { memUsed: 13 * GB });
+  assert.equal(r.book.passWaits('s1'), 'waiting');
+  assert.equal(r.book.info().unreserved.length, 0);
+  assert.equal(r.book.isHeld('s1'), false);
+});
+
 test('a paused job whose pass went back into the line is resumed when a new reservation replaces it (code review of PR #476, finding 3)', () => {
   const r = rig();
   r.sessions.get('s1')!.busy = true;

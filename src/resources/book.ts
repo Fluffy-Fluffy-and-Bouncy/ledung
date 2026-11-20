@@ -1033,6 +1033,7 @@ export class ResourceBook {
     };
     let changed = false;
     const jobPidsOf = new Map<string, Set<number>>();
+    const waitingBooked = new Map<string, number>();
     for (const r of [...this.reservations.values()]) {
       const s = this.ctx.session(r.sessionId);
       if (!s) {
@@ -1060,13 +1061,13 @@ export class ResourceBook {
       }
       r.pids = pids;
       const list = Object.keys(pids).map(Number);
-      const mine = jobPidsOf.get(r.sessionId) ?? new Set<number>();
-      for (const pid of list) mine.add(pid);
-      jobPidsOf.set(r.sessionId, mine);
       const u = usage(list);
       for (const [dim, v] of Object.entries(u)) this.averages.add(`r:${r.id}|${dim}`, at, v);
-      // Work under the pass: CPU or GPU above the small allowance, or memory growing (round 2, "Idle bookings").
-      const active = list.length > 0 && (Object.entries(u).some(([d, v]) => !isMemory(d) && v > ALLOWANCE.percent) || (u.ram ?? 0) > r.refMem + GROW_BYTES);
+      // Work under the pass: CPU or GPU above the small allowance, memory growing (round 2, "Idle bookings"), or memory
+      // above what it booked: a job that takes its memory at once and then runs one thread is work too (acceptance
+      // test 2 of PR #476, F2).
+      const booked = Math.max(r.granted.ram ?? 0, ALLOWANCE.bytes);
+      const active = list.length > 0 && (Object.entries(u).some(([d, v]) => !isMemory(d) && v > ALLOWANCE.percent) || (u.ram ?? 0) > r.refMem + GROW_BYTES || (u.ram ?? 0) > booked);
       if (active) r.refMem = u.ram ?? 0;
       else r.refMem = Math.min(r.refMem, u.ram ?? 0);
       // A ready pass's work starts when its processes are seen in two samples in a row, active in either (a job that
@@ -1079,8 +1080,16 @@ export class ResourceBook {
       const starts = idle ? active && r.seenOnce && r.wasActive : list.length > 0 && r.seenOnce && (active || r.wasActive);
       r.seenOnce = list.length > 0;
       r.wasActive = active;
-      // Still in line: it keeps its place, and the session's turn being over doesn't end it.
-      if (r.state === 'waiting' && !starts) continue;
+      // Still in line: it keeps its place, and the session's turn being over doesn't end it. It holds no room, so its
+      // processes aren't claimed for it: they are the session's, judged by the unreserved check below up to what it had
+      // booked (a leftover daemon under it holds no one), and seen on the page as the session's (acceptance test 2, F2).
+      if (r.state === 'waiting' && !starts) {
+        waitingBooked.set(r.sessionId, (waitingBooked.get(r.sessionId) ?? 0) + (r.granted.ram ?? 0));
+        continue;
+      }
+      const mine = jobPidsOf.get(r.sessionId) ?? new Set<number>();
+      for (const pid of list) mine.add(pid);
+      jobPidsOf.set(r.sessionId, mine);
       if (r.deliveredAt === null && !this.ctx.undelivered?.(r.sessionId)) r.deliveredAt = at;
       if (r.state === 'ready' && starts) {
         r.state = 'busy';
@@ -1163,7 +1172,7 @@ export class ResourceBook {
       const counted = tree.filter((p) => p.pid !== host && !jobs.has(p.pid)).map((p) => p.pid);
       for (const [dim, v] of Object.entries(usage(counted))) this.averages.add(`s:${sessionId}|${dim}`, at, v);
       const avg = this.averages.all(`s:${sessionId}`, at, this.settings.averageSec);
-      const share: Amounts = { ram: this.sessionNeed(s.project, s.role) + ALLOWANCE.bytes };
+      const share: Amounts = { ram: this.sessionNeed(s.project, s.role) + ALLOWANCE.bytes + (waitingBooked.get(sessionId) ?? 0) };
       const step = overStep(u0.over, avg, share, this.settings, at);
       u0.over = step.state;
       if (u0.over.since !== null) {
