@@ -7,7 +7,10 @@
 // check, sign-in cookie, Origin check and "no embedding" apply unchanged. Sign-in sets the cookie from this main
 // process (Mac spike 2026-11-17: GET /api/state 200 with no token in any URL); the token never goes into a URL or a
 // command line.
-import { app, BrowserWindow, clipboard, ClipboardItem, dialog, ipcMain, Menu, nativeImage, session, shell, WebContentsView, type BaseWindow, type ContextMenuParams, type Input, type IpcMainEvent, type NativeImage, type Session, type WebContents, type WebFrameMain } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, session, shell, WebContentsView, type BaseWindow, type ContextMenuParams, type Input, type IpcMainEvent, type NativeImage, type Session, type WebContents, type WebFrameMain } from 'electron';
+// ClipboardItem through the namespace, not by name: the root tests bundle this file against an Electron stand-in with
+// a fixed list of exports (test/desktop-app.test.ts, #455), where a named import that isn't there stops the bundle.
+import * as electron from 'electron';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -621,7 +624,7 @@ export async function copyImage(contents: WebContents, params: Pick<ContextMenuP
     })()`) as string | null;
     if (!url) return;
     const png = nativeImage.createFromDataURL(url).toPNG();
-    await clipboard.write([new ClipboardItem({ 'image/png': new Blob([png], { type: 'image/png' }) })]);
+    await clipboard.write([new electron.ClipboardItem({ 'image/png': new Blob([png], { type: 'image/png' }) })]);
     if (!copiedFramed) {
       copiedFramed = true;
       exercised('EXERCISED #451 Copy Image copied a picture from a frame of another site');
