@@ -295,9 +295,11 @@ function limitPermissions(ses: Session): void {
  * second start, a click in the Dock. With none open, a new one.
  */
 function showWindow(w: BrowserWindow | null = windows.latest()): void {
-  // Not while restarting at start or for a reload (#455): a Dock click or a second start would make a window it then closes.
-  if (!app.isReady() || restartAppOnly) return;
+  if (!app.isReady()) return;
   if (!w || w.isDestroyed()) {
+    // Not while restarting at start or for a reload (#455): a Dock click or a second start would make a window it then
+    // closes. An open window still shows: a "Leave this page?" on a hidden one must be seen (self-check, finding 1).
+    if (restartAppOnly) return;
     createWindow();
     return;
   }
@@ -365,23 +367,24 @@ let hiddenAtRestart = false;
  * when that command is gone (a Node upgraded or moved): quitting would leave nothing to open the app again, so it stays
  * on the old code with its banner, and starting `ledung` updates it (self-check finding 4).
  */
-function restartForUpdate(appOnly = false): void {
-  if (!made || restartOnQuit) return;
+function restartForUpdate(appOnly = false): boolean {
+  if (!made || restartOnQuit) return false;
   if (!restartCommand(made, process.pid)) {
     console.error('Ledung desktop: the ledung command that made this app is gone; start it again with ledung to update it.');
-    return;
+    return false;
   }
   // That command is this app's own version: the running Ledung is another install, and a restart would bring the same
   // code back, told again it is out of date (PR #425, review Minor 2).
   if (!restartBrings(app.getVersion(), installedVersion(made.cli))) {
     console.error(`Ledung desktop: the ledung that made this app is version ${app.getVersion()} too; run the running Ledung's own ledung command to update the app.`);
-    return;
+    return false;
   }
   // Minimised counts as there: the Mac reports a minimised window as not visible (self-check round 2, finding 1).
   hiddenAtRestart = !openWindows().some((w) => w.isVisible() || w.isMinimized());
   restartOnQuit = true;
   restartAppOnly = appOnly;
   quit();
+  return true;
 }
 
 /** The update waits for the windows to be out of sight; called when one hides or is minimised. */
@@ -608,12 +611,9 @@ function showContextMenu(w: BrowserWindow, contents: WebContents, params: Contex
 function pageCommand(w: BrowserWindow, command: PageCommand): void {
   if (w.isDestroyed()) return;
   const page = w.webContents;
-  // This app's own code is older than the installed Ledung (#455): a reload restarts the window into it instead of
-  // reloading the page alone. App only: a reload never starts Ledung.
-  if (made && reloadRestarts(command, app.getVersion(), installedVersion(made.cli))) {
-    restartForUpdate(true);
-    return;
-  }
+  // This app's own code is not the installed Ledung's (#455): a reload restarts the window into it instead of
+  // reloading the page alone. App only: a reload never starts Ledung. A restart that can't go reloads the page.
+  if (made && reloadRestarts(command, app.getVersion(), installedVersion(made.cli)) && restartForUpdate(true)) return;
   if (command === 'reload') page.reload();
   else if (command === 'forceReload') page.reloadIgnoringCache();
   else if (command === 'devTools') page.toggleDevTools();

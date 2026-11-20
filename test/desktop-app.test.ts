@@ -936,7 +936,7 @@ test('`ledung --after-app=<pid> --app-only` never starts Ledung: it opens the ap
   assert.ok(only.out.includes(NO_APP), only.out);
 });
 
-test("⌘R, Reload and Force Reload restart an app older than the installed version into it; up to date they reload the page (#455)", () => {
+test("⌘R, Reload and Force Reload restart an app whose code is not the installed version's into it; up to date they reload the page (#455)", () => {
   // Martin, 2026-11-20 12:20: "when we press reload, why doesnt we reload with the new code?" After an update the
   // installed package is newer than the app's own code: a reload restarts the window into it.
   assert.equal(reloadRestarts('reload', '3.16.0', '3.17.0'), true);
