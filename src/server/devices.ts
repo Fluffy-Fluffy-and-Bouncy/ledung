@@ -10,6 +10,7 @@
 // phone. Browser rows count only locally and phone and computer rows only through the public name (byCookie's `where`).
 import crypto from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { exercisedLine } from '../platform/exercised.ts';
 
 /** The device cookie. `__Host-` makes the browser keep it only for this exact name, over HTTPS, at Path=/. */
 export const DEVICE_COOKIE = '__Host-ledung_device';
