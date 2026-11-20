@@ -20,6 +20,7 @@ import { buildPublishedUsage, contentKey, publishRange } from './publish-file.ts
 import type { UsageSlices } from './publish-source.ts';
 import { parseUsageBranch, usageBranch, UsageRepo } from './publish-github.ts';
 import { exercisedLine } from '../platform/exercised.ts';
+import { writeFileSafely } from '../platform/safe-write.ts';
 
 export const PUBLISH_MS = 5 * 60 * 1000;
 const RETRY_MS = 60 * 1000;
@@ -226,9 +227,8 @@ export class UsagePublisher {
     const k = typeof raw === 'string' ? raw.trim() : '';
     if (!KEY.test(k)) throw new BoardError('access', 'That is not a usage key: copy it whole from Settings on the other computer.');
     fs.mkdirSync(this.opts.keyDir, { recursive: true, mode: 0o700 });
-    const temp = `${this.keyFile()}.${process.pid}.new`;
-    fs.writeFileSync(temp, k, { mode: 0o600 });
-    fs.renameSync(temp, this.keyFile());
+    // Flushed before and after the rename, so a crash can't leave it empty (issue #460).
+    writeFileSafely(this.keyFile(), k, { mode: 0o600, temp: `${this.keyFile()}.${process.pid}.new` });
     // Labels change with the key: the next publish carries them.
     this.forget();
     this.opts.onChange?.();
