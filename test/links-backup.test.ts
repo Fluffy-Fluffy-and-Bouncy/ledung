@@ -6,7 +6,10 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { BACKUP_SUFFIX, LINKS_FILE, LinkedComputers } from '../src/remote/linked.ts';
+import { LINKS_FILE, LinkedComputers } from '../src/remote/linked.ts';
+
+/** The backup's name, as the issue gives it. */
+const BACKUP = `${LINKS_FILE}.bak`;
 import { removeTemp } from './temp.ts';
 
 const dirs: string[] = [];
@@ -28,7 +31,7 @@ test('a zero-filled links.json next to a good backup: the links come back, the l
   const good = saved(link(1), link(2));
   // As the crash left it: the size of a real save, every byte 0x00 (the issue's evidence: 975 bytes).
   fs.writeFileSync(path.join(dir, LINKS_FILE), Buffer.alloc(975));
-  fs.writeFileSync(path.join(dir, LINKS_FILE + BACKUP_SUFFIX), good);
+  fs.writeFileSync(path.join(dir, BACKUP), good);
   const logged: string[] = [];
   t.mock.method(console, 'log', (line: string) => logged.push(line));
 
@@ -57,11 +60,11 @@ test('every save writes the backup too, with the same links', () => {
   const key = crypto.randomBytes(32).toString('base64url');
   fs.writeFileSync(path.join(dir, LINKS_FILE), saved({ ...link(1), acceptSha256: crypto.createHash('sha256').update(key).digest('hex') }));
   const linked = new LinkedComputers({ dir, publicName: 'here.example.net', now: () => 1_800_000_000_000 });
-  assert.equal(fs.existsSync(path.join(dir, LINKS_FILE + BACKUP_SUFFIX)), false, 'no backup before a save');
+  assert.equal(fs.existsSync(path.join(dir, BACKUP)), false, 'no backup before a save');
   assert.equal(linked.byKey(`Bearer ${key}`)?.id, 'id-1');
   const main = fs.readFileSync(path.join(dir, LINKS_FILE), 'utf8');
   assert.equal(JSON.parse(main).links[0].lastUsedAt, 1_800_000_000_000);
-  assert.equal(fs.readFileSync(path.join(dir, LINKS_FILE + BACKUP_SUFFIX), 'utf8'), main);
-  if (process.platform !== 'win32') assert.equal(fs.statSync(path.join(dir, LINKS_FILE + BACKUP_SUFFIX)).mode & 0o777, 0o600);
-  assert.deepEqual(fs.readdirSync(dir).sort(), [LINKS_FILE, LINKS_FILE + BACKUP_SUFFIX], 'no temporary file left');
+  assert.equal(fs.readFileSync(path.join(dir, BACKUP), 'utf8'), main);
+  if (process.platform !== 'win32') assert.equal(fs.statSync(path.join(dir, BACKUP)).mode & 0o777, 0o600);
+  assert.deepEqual(fs.readdirSync(dir).sort(), [LINKS_FILE, BACKUP], 'no temporary file left');
 });
