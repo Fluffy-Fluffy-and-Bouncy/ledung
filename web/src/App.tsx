@@ -78,7 +78,7 @@ import { frameLevel, LOCK_HINT } from './lockdownFrame.ts';
 import { useLedung, type Connection } from './useLedung.ts';
 import { STATUS_LABEL, statusLook } from './sessionStatus.ts';
 import { useNotifications } from './useNotifications.ts';
-import { isMacLike, newWindowTitle, openNewWindow, type NewWindowHost } from './newWindow.ts';
+import { followFramingApp, isMacLike, newWindowTitle, openNewWindow, type NewWindowHost } from './newWindow.ts';
 import { desktopRestart, RESTART_LINE, type DesktopUpdateHost } from './desktopUpdate.ts';
 import { formatBytes, formatCores, MachinePanel, PRIORITY_LABEL } from './usage/MachinePanel.tsx';
 import { usePlainTyping } from './usePlainTyping.ts';
@@ -116,6 +116,8 @@ if (IN_FRAME) {
     if (answer) window.parent.postMessage(answer, e.origin);
   });
 }
+// New window in a linked computer's tab (#454): the page around this one opens it, where that page is the app's.
+if (IN_FRAME) followFramingApp();
 
 const MODE_LABEL: Record<PermissionMode, string> = {
   default: 'Ask',

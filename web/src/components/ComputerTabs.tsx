@@ -9,6 +9,7 @@ import type { ComputerInfo } from '../../../src/shared/computers.ts';
 import { computerStyle, FRAME_ANSWER_MS, frameAsk, pairsThroughLink, showsHere, tabWaiting, type ComputerFrame, type FramePairing } from '../computerFrame.ts';
 import { frameMessage, type FrameSettingsMessage } from '../frameSettings.ts';
 import { vouchAnswer, vouchAsked } from '../vouch.ts';
+import { framedNewWindow, type NewWindowHost } from '../newWindow.ts';
 
 const globe = (
   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
@@ -94,6 +95,9 @@ export function ComputerFrames({ computers, opened, shown, throughPublicName = f
         const msg = { data: e.data, origin: e.origin, fromFrame: e.source === frames.current[c.id]?.contentWindow };
         // That computer's Settings → Look, kept here where an iPhone keeps them (#459), and its "paired" (#286).
         const reply = (answer: FrameSettingsMessage) => (e.source as Window).postMessage(answer, e.origin);
+        // Its New window (#454): this page is the app's, and opens the window here, on a click in that frame only.
+        const active = (navigator as { userActivation?: { isActive: boolean } }).userActivation?.isActive ?? true;
+        if (framedNewWindow(msg, c.url!, window as unknown as NewWindowHost, (answer) => (e.source as Window).postMessage(answer, e.origin), active)) continue;
         // Its page asks this screen to vouch instead of a passkey, where that computer trusts this one (issue #313).
         const ask = vouchAsked(msg, { url: c.url!, trustsUs: c.trustsUs });
         if (ask) {

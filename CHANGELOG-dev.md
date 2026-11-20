@@ -9,6 +9,10 @@ together, are in [CHANGELOG.md](CHANGELOG.md). Online: https://projectledung.com
 ([docs/changes/README.md](docs/changes/README.md)); `npm run publish:dev` and `npm run publish:public` fold them in
 here under the version they publish, and push the result to main.
 
+## v4.1 — 2026-11-20 14:23 CET
+- Desktop app: New window in a linked computer's tab opens a new app window at your own start page, as in your own tab; needs this version on both computers (#454)
+- The desktop app on a Mac no longer waits forever for a Touch ID prompt that never comes: a passkey check there says in one line to make the change in your browser, and offers to open that page in it (#427)
+
 ## v4 — 2026-11-20 01:20 CET
 The public release. Everything since v3: v3.10, v3.11, v3.12, v3.13, v3.14, v3.15, v3.16, v3.17. v3.1 to v3.9 came before the changelog per release: their changes are listed by date, under "Earlier, by date" in CHANGELOG.md.
 

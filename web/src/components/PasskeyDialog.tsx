@@ -18,6 +18,8 @@ export function PasskeyDialog() {
   if (!open) return null;
   const words = passkeyWords(open.step);
   const answer = (goOn: boolean) => {
+    // The Mac app (#427): this page, another computer's, opens in the default browser, where Touch ID works.
+    if (goOn && words.openInBrowser) window.open(location.href, '_blank', 'noopener');
     setQueue((q) => q.slice(1));
     open.answer(goOn);
   };
