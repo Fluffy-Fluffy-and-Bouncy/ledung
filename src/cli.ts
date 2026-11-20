@@ -103,8 +103,11 @@ async function openTheApp(): Promise<number> {
 }
 
 if (appOnly) {
-  exercisedLine('EXERCISED #455 desktop app started out of date: brought up to date before its window opened');
-  if ((desktop?.ok ? await openTheApp() : 1) === 0) process.exit(0);
+  if ((desktop?.ok ? await openTheApp() : 1) === 0) {
+    // Only once the app has its new code and opened: a fallback below must not read as a pass (self-check finding 1).
+    exercisedLine('EXERCISED #455 desktop app started out of date: brought up to date before its window opened');
+    process.exit(0);
+  }
   // Not brought up to date (no Electron package, "desktopApp": false, a failed make): the app opens on the code it has,
   // and does not restart again for this version for ten minutes (desktop/made.ts updateAtStart).
   const paths = madeApp(userDataDir());

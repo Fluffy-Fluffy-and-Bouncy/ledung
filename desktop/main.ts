@@ -869,7 +869,13 @@ if (shortcutFile) {
   const own = app.getVersion();
   const installed = made ? installedVersion(made.cli) : null;
   const updateNow = made !== null && restartCommand(made, process.pid, true) !== null && updateAtStart({ own, installed, tried: readStartUpdate(START_UPDATE), now: Date.now() });
-  if (!updateNow && installed === own) fs.rmSync(START_UPDATE, { force: true });
+  if (!updateNow && installed === own) {
+    try {
+      fs.rmSync(START_UPDATE, { force: true });
+    } catch {
+      // Held for a moment (a virus scanner on Windows): left for the next start; a throw here would stop every start.
+    }
+  }
   void app.whenReady().then(() => {
     if (updateNow) {
       try {
