@@ -272,7 +272,8 @@ export class ResourceBook {
   private lastHosts = new Map<string, number>();
   /**
    * Processes a session started detached whose parent was gone before a sample saw them (round 2): taken into the
-   * session's work for counting and learning, never acted on (actions take only what is under the host now).
+   * session's work for counting and learning, and the person's Pause and Stop on the job's card reach them too
+   * (acceptance test 3 of PR #476: a `nohup` job's card could neither pause nor stop it).
    */
   private readonly adopted = new Map<string, Map<number, number>>();
   /** WSL's memory, from the Windows process list; 0: not running or not Windows. */
@@ -921,7 +922,7 @@ export class ResourceBook {
    * A heavy job started detached (`python train.py &`, `nohup`, `start`) can lose its parent before any sample sees
    * it, and then it is no session's (issue #356 comments): a parentless process that started within a few seconds
    * after exactly one session's detaching call is taken into that session's work, with what it starts, for as long
-   * as it is the same process. Only counted and learned from: actions on a job take only what is under its host now.
+   * as it is the same process. Counted, learned from, and reached by the person's Pause and Stop on its job's card.
    */
   private withAdopted(x: BookSample): Map<string, ProcInfo[]> {
     const inTrees = new Set<number>();
@@ -1369,11 +1370,16 @@ export class ResourceBook {
 
   // --- The person's actions on a job's card --------------------------------------------------------------------------
 
-  /** The job's processes now, with their start times, and its session's host, for the person's Pause, Resume and Stop. */
-  jobTargets(id: string): { sessionId: string; host: number | null; paused: boolean; targets: Target[] } {
+  /**
+   * The job's processes now, with their start times, its session's host, and the detached ones among them whose
+   * parent is gone (`adopted`: not under the host, so the action looks them up on their own; acceptance test 3 of
+   * PR #476), for the person's Pause, Resume and Stop.
+   */
+  jobTargets(id: string): { sessionId: string; host: number | null; paused: boolean; targets: Target[]; adopted: number[] } {
     const r = this.reservations.get(id);
     if (!r || r.goAt === null) throw new Error('No such job.');
-    return { sessionId: r.sessionId, host: this.lastHosts.get(r.sessionId) ?? null, paused: r.paused, targets: Object.entries(r.pids).map(([pid, started]) => ({ pid: Number(pid), started })) };
+    const adopted = [...(this.adopted.get(r.sessionId)?.keys() ?? [])].filter((pid) => r.pids[pid] !== undefined);
+    return { sessionId: r.sessionId, host: this.lastHosts.get(r.sessionId) ?? null, paused: r.paused, targets: Object.entries(r.pids).map(([pid, started]) => ({ pid: Number(pid), started })), adopted };
   }
 
   setJobPaused(id: string, paused: boolean): void {

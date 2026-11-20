@@ -1,3 +1,5 @@
+import { treeFrom } from '../platform/process-tree.ts';
+
 // One action at a time on a job's processes (acceptance test of PR #261, finding 1): two Pauses at once (a
 // double-click, or the phone and the PC together) both passed the "already paused?" check before either set it, so
 // Windows' suspend count went to 2 and one Resume left the job frozen for good. The guard is checked and set before
@@ -40,6 +42,17 @@ export interface FreshProcess {
 export function fileTimeMs(started: string): number | null {
   if (!/^\d+$/.test(started) || started === '0') return null;
   return Number(BigInt(started) / 10000n - 11644473600000n);
+}
+
+/**
+ * The part of a fresh list of every process that a job's action looks at: its session's host with everything under
+ * it, and each detached process of the job whose parent is gone (adopted by the book) with everything under that.
+ * A `nohup` job's shell has exited, so it is under no host (acceptance test 3 of PR #476).
+ */
+export function jobProcessesNow(all: FreshProcess[], host: number, adopted: number[]): FreshProcess[] {
+  const out = new Map<number, FreshProcess>();
+  for (const root of [host, ...adopted]) for (const p of treeFrom(all, root)) out.set(p.pid, p);
+  return [...out.values()];
 }
 
 /**

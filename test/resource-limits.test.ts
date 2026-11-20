@@ -16,7 +16,7 @@ import { FRESH_FACTS, idleStopBlocker } from '../src/sessions/idle.ts';
 import { wslHintDue } from '../web/src/usage/machineFold.ts';
 import { LOWERED, type PriorityControl } from '../src/platform/process-control.ts';
 import { dragMax, dragStep, dragText, dragValue, limitShare, limitText, limitUnits, overFor, parseLimitInput, stepDrag, valueShare } from '../web/src/usage/resourceLimits.ts';
-import { fileTimeMs, JOB_BUSY, JobActions, jobTargetsNow, type FreshProcess } from '../src/resources/job-actions.ts';
+import { fileTimeMs, JOB_BUSY, JobActions, jobProcessesNow, jobTargetsNow, type FreshProcess } from '../src/resources/job-actions.ts';
 import { hostStill } from '../src/resources/monitor.ts';
 
 // --- Decisions ------------------------------------------------------------------------------------------------------
@@ -1373,7 +1373,7 @@ test("who holds the room: named on the page; for sessions other jobs only as cou
   assert.equal(wslHintDue({ wsl: null, limits: { ram: 1 * GB } }, 64 * GB), false);
 });
 
-test('a heavy job started detached is taken as its session\'s, so its pass counts and learns it; two sessions detaching at once claim nothing', () => {
+test('a heavy job started detached is taken as its session\'s, so its pass counts and learns it and Pause and Stop on its card reach it; two sessions detaching at once claim nothing', () => {
   const r = rig();
   r.sessions.get('s1')!.busy = true;
   r.tick({ s1: tree() });
@@ -1385,6 +1385,22 @@ test('a heavy job started detached is taken as its session\'s, so its pass count
   const job = r.book.info().jobs[0]!;
   assert.equal(job.processes, 1);
   assert.equal(job.state, 'busy');
+  // Pause and Stop on its card reach it, though it is under no host (acceptance test 3 of PR #476): the book names
+  // it, and the fresh list is looked at from it as well as from the host, so what it started since is reached too.
+  const targets = r.book.jobTargets(job.id);
+  assert.deepEqual(targets.adopted, [77]);
+  const ft = (ms: number) => String((BigInt(ms) + 11644473600000n) * 10000n);
+  const all: FreshProcess[] = [
+    { pid: 10, ppid: 1, started: ft(1000), name: 'node.exe' },
+    { pid: 11, ppid: 10, started: ft(2000), name: 'claude.exe' },
+    { pid: 77, ppid: 999, started: ft(started77), name: 'node.exe' },
+    { pid: 78, ppid: 77, started: ft(started77 + 500), name: 'node.exe' },
+    { pid: 500, ppid: 4, started: ft(500), name: 'other.exe' },
+  ];
+  const now = jobTargetsNow(targets.targets, jobProcessesNow(all, targets.host!, targets.adopted), targets.host!);
+  assert.deepEqual(now.map((t) => t.pid).sort(), [77, 78]);
+  // Without the adopted roots (as before the fix) nothing was reached.
+  assert.deepEqual(jobTargetsNow(targets.targets, jobProcessesNow(all, targets.host!, []), targets.host!), []);
   r.sessions.get('s1')!.busy = false;
   r.tick({ s1: tree() });
   assert.equal(r.book.info().jobs.length, 0);

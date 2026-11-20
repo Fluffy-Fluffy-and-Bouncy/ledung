@@ -42,10 +42,10 @@ import { ResourceMonitor, type MonitorTarget } from '../resources/monitor.ts';
 import { ResourceBook, RESOURCE_SOURCE } from '../resources/book.ts';
 import { commandKinds } from '../resources/commands.ts';
 import { JobStore } from '../resources/jobs.ts';
-import { JobActions, jobTargetsNow } from '../resources/job-actions.ts';
+import { JobActions, jobProcessesNow, jobTargetsNow } from '../resources/job-actions.ts';
 import { mainGpu } from '../platform/gpu.ts';
 import { actOn, type Target } from '../platform/process-control.ts';
-import { snapshotTree } from '../platform/process-tree.ts';
+import { listAll } from '../platform/process-tree.ts';
 import { machineSender } from '../shared/machine-shown.ts';
 import {
   CHATS,
@@ -1121,8 +1121,9 @@ export class SessionManager {
 
   /**
    * A job's processes to act on, found just now: the job's processes still under its session's host in a fresh list,
-   * plus what they started since the last sample (acceptance test, finding 5), with their start times, which Windows
-   * checks again on the handle it acts through (security review, finding 1).
+   * or detached ones the book took as the session's (acceptance test 3 of PR #476), plus what they started since the
+   * last sample (acceptance test, finding 5), with their start times, which Windows checks again on the handle it
+   * acts through (security review, finding 1).
    */
   private async freshJobTargets(id: string): Promise<{ sessionId: string; paused: boolean; targets: Target[] }> {
     let job: ReturnType<ResourceBook['jobTargets']>;
@@ -1132,7 +1133,7 @@ export class SessionManager {
       throw new UserError((e as Error).message);
     }
     if (!job.host) throw new UserError("This job's session is not measured right now; try again in a few seconds.");
-    return { sessionId: job.sessionId, paused: job.paused, targets: jobTargetsNow(job.targets, await snapshotTree(job.host), job.host) };
+    return { sessionId: job.sessionId, paused: job.paused, targets: jobTargetsNow(job.targets, jobProcessesNow(await listAll(), job.host, job.adopted), job.host) };
   }
 
   /**
