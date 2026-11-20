@@ -132,6 +132,17 @@ Every "Waiting for … room" reason adds who holds it, largest first, at most th
 - **"Settings → Machine"** is the bar's limit editor in the sidebar's Machine panel (there is no Settings tab for it): "park after" and "tell the manager after" are next to the other averaging settings under "Spikes (all limits)", and the WSL hint shows under the bars, with a Hide that is kept on that device.
 - **WSL** is read from the process list (`vmmemWSL`, or `vmmem` on older WSL): its working set. On this PC on 2026-11-20 the list Ledung reads and PowerShell's `Get-Process` both gave 5.3 GB for `vmmemWSL`; Task Manager's own column was not compared by eye.
 
+**Checked live** (2026-11-20, throwaway Ledung on port 4396, Haiku sessions, `node burn.mjs` as the fake build and `node daemon.mjs` as the idle process a build leaves behind):
+
+- **The 2026-11-15 case:** two sessions reserved 6 GB each, built for 45 s and left a daemon running; a third, asking 6 GB under a 58 GB limit, waited ("held by other programs 34 GB, 2 other jobs (12 GB booked, 3.3 GB used), WSL 8.6 GB" in its answer; by job name on the page). About 2 minutes after the builds finished the first one parked and the third got its go in the same sample; the go was delivered at once, its build ran and its pass ended with its turn. The second parked 10 s later.
+- **The night of 16–17 Nov:** with old "heavy" marks planted on `git status`, `gh issue`, `cut`, `for` and `const`, a session ran `git status`, `gh --version` and `cut --version` unrefused, and a known heavy command under its parked pass went at once (it fitted). A session that reserved, handed a 60-second `node burn.mjs` (a known heavy command) to a background subagent and ended its turn kept its pass: busy while the subagent ran, no refusal; the session released it after.
+- **Held:** a session held for 2.5 GB of unreserved work ran `node emulator-lock.mjs release` (a known heavy kind) and was refused `node burn.mjs` with the new "commands that stop it or release a lock always run".
+- **Waking:** with idle stop at 1 minute, the sessions with nothing pending were stopped and a session waiting in the line for 30 GB was not; its header read "Waiting for its reservation".
+- **The page:** WSL's 8.6–9.1 GB in the line's reasons and the memory bar, the hint under a 30 GB limit, a parked job folded under "Parked · 1" (after a fix: the summary had the browser's own large heading), at 1280 and 390 px, dark mode. Adding `node emulator-lock.mjs release` to the light list through the page's API kept it as `node emulator-lock.mjs`; an unknown project and a call without the open page were refused.
+- **Seen, not changed:** `node daemon.mjs > log & node burn.mjs …` is one shell call, so R4's per-call learning gave the build's figures to both kinds and `node daemon.mjs` became "known heavy" after two runs. Separate calls don't have this; the person can mark it on the usage page.
+
+**Not checked live:** the go waiting undelivered behind a full working line (10+ minutes; unit test only), the manager's notice after 30 minutes (unit test only), a detached job whose shell exits before the first sample (unit test only; here the daemon's shell lived long enough to be seen), macOS and Linux.
+
 ## The parts
 
 Session time is the work only; review and CI waits come on top.

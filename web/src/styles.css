@@ -2107,6 +2107,9 @@ button.link-button:hover:not(:disabled) { border: none; }
 .other-gpus > .limits { margin: 0.3rem 0 0; }
 .machine-note { margin: 0.3rem 0.75rem 0; font-size: 0.78em; }
 .machine-sub { margin: 0.45rem 0.75rem 0; font-size: 0.78em; font-weight: 600; color: var(--muted); }
+/* Parked passes (resource limits round 2): folded under the other jobs, dimmed, with the panel's small heading. */
+.parked-jobs > summary { margin: 0.45rem 0.75rem 0; font-size: 0.78em; font-weight: 600; color: var(--muted); cursor: pointer; }
+.parked-jobs .job-cards { opacity: 0.7; }
 .resource-reason { display: block; font-size: 0.92em; }
 .job-what { font-style: italic; overflow-wrap: anywhere; }
 .job-cards { list-style: none; margin: 0.25rem 0.75rem 0; padding: 0; display: grid; gap: 0.35rem; }
