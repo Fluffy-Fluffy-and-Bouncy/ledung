@@ -121,6 +121,8 @@ function dockEdge(image: NativeImage): { corner: number; outside: number; inside
 }
 /** main.ts's icon path, read from the module once it is loaded. */
 let appIcon = '';
+/** main.ts's Copy Image, read from the module once it is loaded: "framed" calls it as the menu does (#451). */
+let appCopyImage: ((contents: WebContents, params: { x: number; y: number; srcURL: string; frame: Electron.WebFrameMain | null }) => Promise<void>) | null = null;
 const out = (event: string, data: unknown = {}) => console.log('PROBE ' + JSON.stringify({ phase, event, data }));
 /** A check the PR relies on: a failing one is printed and makes the run exit 1. */
 function expect(holds: boolean, what: string, seen?: unknown): void {
@@ -708,29 +710,57 @@ async function framedPhase(w: BrowserWindow): Promise<void> {
     const zoom = wc.getZoomFactor();
     // The picture's middle: the frame at (300, 150), the picture 20 px in, 240 px wide.
     const at = { x: Math.round((300 + 20 + 120) * zoom), y: Math.round((150 + 20 + 120) * zoom) };
-    rightClickAt(w, at.x / zoom, at.y / zoom, native);
-    for (let i = 0; i < 60 && !popped.at(-1)?.shown; i++) await sleep(50);
-    const p = reported[0];
-    const last = popped.at(-1);
-    const labels = last ? last.menu.items.map((i) => (i.type === 'separator' ? '-' : i.label)) : null;
-    out('framed-picture', { frameEvents: await child?.executeJavaScript('window.__ev'), reported: p ? { mediaType: p.mediaType, hasImageContents: p.hasImageContents, srcURL: p.srcURL, frame: p.frame?.url ?? null } : null, menu: labels, shown: last?.shown ?? false });
-    expect(p?.mediaType === 'image', 'Electron reports the framed picture as a picture', p?.mediaType ?? 'no context-menu event');
-    expect(JSON.stringify(labels) === JSON.stringify(['Copy Image', 'Save Image As…']), 'the framed picture gets Copy Image and Save Image As…', labels);
-    expect(last?.shown === true, 'the menu opened over the framed picture', last?.shown);
-    if (last) {
-      last.menu.closePopup(w);
-      await sleep(300);
-      clipboard.clear();
-      last.menu.items.find((i) => i.label === 'Copy Image')?.click();
+    /** The picture on the clipboard after `ms` at most, as its size; null for none. */
+    const clipboardSize = async (ms = 4000) => {
       let copied = await clipboardPicture();
-      for (let i = 0; i < 20 && copied.isEmpty(); i++) {
+      for (const end = Date.now() + ms; copied.isEmpty() && Date.now() < end;) {
         await sleep(200);
         copied = await clipboardPicture();
       }
-      const size = copied.isEmpty() ? null : copied.getSize();
-      out('framed-copied', { size });
-      expect(size !== null && size.width === 512, 'Copy Image copied the framed picture at its own size', size);
+      return copied.isEmpty() ? null : copied.getSize();
+    };
+    // The click and its menu: Electron's input call reaches only a frame of the page's own site, so the cross-site
+    // frame's click is checked with the system's mouse only.
+    if (native || same) {
+      rightClickAt(w, at.x / zoom, at.y / zoom, native);
+      for (let i = 0; i < 60 && !popped.at(-1)?.shown; i++) await sleep(50);
+      const p = reported[0];
+      const last = popped.at(-1);
+      const labels = last ? last.menu.items.map((i) => (i.type === 'separator' ? '-' : i.label)) : null;
+      out('framed-picture', { frameEvents: await child.executeJavaScript('window.__ev'), reported: p ? { mediaType: p.mediaType, hasImageContents: p.hasImageContents, srcURL: p.srcURL, frame: p.frame?.url ?? null } : null, menu: labels, shown: last?.shown ?? false });
+      expect(p?.mediaType === 'image', 'Electron reports the framed picture as a picture', p?.mediaType ?? 'no context-menu event');
+      expect(JSON.stringify(labels) === JSON.stringify(['Copy Image', 'Save Image As…']), 'the framed picture gets Copy Image and Save Image As…', labels);
+      expect(last?.shown === true, 'the menu opened over the framed picture', last?.shown);
+      if (last) {
+        last.menu.closePopup(w);
+        await sleep(300);
+        clipboard.clear();
+        last.menu.items.find((i) => i.label === 'Copy Image')?.click();
+        const size = await clipboardSize();
+        out('framed-copied', { size });
+        expect(size !== null && size.width === 512, 'Copy Image copied the framed picture at its own size', size);
+      }
+    } else {
+      out('framed-picture', { skipped: 'Electron\'s input call never reaches a frame of another site: PROBE_CLICK=native checks the click' });
     }
+    // Copy Image itself, called as the menu calls it for this picture, with any click: the app's own function (#451).
+    expect(appCopyImage !== null, 'the app has its Copy Image for the probe (a package from before #451 has none)');
+    if (appCopyImage) {
+      const srcURL = same ? `${origin}/icon-512.png` : `${frameOrigin}/p.png`;
+      clipboard.clear();
+      await appCopyImage(wc, { x: at.x, y: at.y, srcURL, frame: child });
+      const size = await clipboardSize();
+      out('framed-copy-direct', { size });
+      expect(size !== null && size.width === 512 && size.height === 512, 'the app\'s Copy Image copies the framed picture at its own size', size);
+    }
+    // Why the app asks the frame: the top page's copy, all Electron offers, copies nothing from a frame of another
+    // site (tubal-cain's run on PR #452). Its positive branch is the same call on the same-site control.
+    clipboard.clear();
+    wc.copyImageAt(at.x, at.y);
+    const topCopy = await clipboardSize(same ? 4000 : 2000);
+    out('framed-copy-top-page', { size: topCopy, same });
+    if (same) expect(topCopy !== null && topCopy.width === 512, 'the top page\'s copy copies a picture in a frame of its own site', topCopy);
+    else expect(topCopy === null, 'the top page\'s copy copies nothing from a frame of another site', topCopy);
   } finally {
     Menu.prototype.popup = realPopup;
     wc.off('context-menu', listen);
@@ -1712,8 +1742,10 @@ if (refused) {
   void import('../main.ts');
 } else {
   // Not awaited: Electron holds its ready event until a top-level await in the entry module settles.
-  void import(process.env.PROBE_MAIN ? pathToFileURL(process.env.PROBE_MAIN).href : '../main.ts').then((m: { APP_ICON: string }) => {
+  void import(process.env.PROBE_MAIN ? pathToFileURL(process.env.PROBE_MAIN).href : '../main.ts').then((m: { APP_ICON: string; copyImage?: typeof appCopyImage }) => {
     appIcon = m.APP_ICON;
+    // A package built before #451's fix has none; "framed" then says so.
+    appCopyImage = m.copyImage ?? null;
     return app.whenReady();
   }).then(run);
 }

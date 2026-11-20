@@ -7,7 +7,7 @@
 // check, sign-in cookie, Origin check and "no embedding" apply unchanged. Sign-in sets the cookie from this main
 // process (Mac spike 2026-11-17: GET /api/state 200 with no token in any URL); the token never goes into a URL or a
 // command line.
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, session, shell, WebContentsView, type BaseWindow, type ContextMenuParams, type Input, type IpcMainEvent, type NativeImage, type Session, type WebContents } from 'electron';
+import { app, BrowserWindow, clipboard, ClipboardItem, dialog, ipcMain, Menu, nativeImage, session, shell, WebContentsView, type BaseWindow, type ContextMenuParams, type Input, type IpcMainEvent, type NativeImage, type Session, type WebContents, type WebFrameMain } from 'electron';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -561,6 +561,61 @@ function findBarWindow(event: IpcMainEvent): BrowserWindow | null {
   return null;
 }
 
+/** Whether the frame runs in a process of its own: a page of another site in a frame, as another computer's tab is. */
+const ownProcess = (contents: WebContents, frame: WebFrameMain | null | undefined): frame is WebFrameMain =>
+  !!frame && !frame.isDestroyed() && frame !== contents.mainFrame && frame.osProcessId !== contents.mainFrame.osProcessId;
+
+let copiedFramed = false;
+
+/**
+ * An `EXERCISED #N` trace line (agent-workflow's EXERCISED line), as the core's src/platform/exercised.ts writes it:
+ * appended to exercised.log in the data folder, and printed when run from a clone, never by a made app. Not imported
+ * from there: its paths module would bring TypeScript file names into the package's bundle (test/package.test.ts).
+ */
+function exercised(line: string): void {
+  if (!made) console.log(line);
+  try {
+    fs.appendFileSync(path.join(dataDir(), 'exercised.log'), `${new Date().toISOString()} ${line}\n`);
+  } catch {
+    // A trace must not break the path it traces.
+  }
+}
+
+/**
+ * Copy Image. The window's own page, and frames in its process, by Electron's copyImageAt. Electron has that only for
+ * the window's top page, which sees just the frame element over a picture in a frame of another site (another
+ * computer's tab): it copied nothing there (tubal-cain's run on PR #452, #451). That frame draws its own picture at
+ * its full size instead, and the PNG goes on the clipboard; a picture the frame may not read (from yet another site)
+ * copies nothing, as before. Exported for the probe (desktop/probe, "framed").
+ */
+export async function copyImage(contents: WebContents, params: Pick<ContextMenuParams, 'x' | 'y' | 'srcURL' | 'frame'>): Promise<void> {
+  if (!ownProcess(contents, params.frame)) {
+    contents.copyImageAt(params.x, params.y);
+    return;
+  }
+  try {
+    const url = await params.frame.executeJavaScript(`(() => {
+      const want = ${JSON.stringify(params.srcURL)};
+      const i = [...document.images].find((im) => im.currentSrc === want || im.src === want);
+      if (!i || !i.complete || i.naturalWidth === 0) return null;
+      const c = document.createElement('canvas');
+      c.width = i.naturalWidth;
+      c.height = i.naturalHeight;
+      c.getContext('2d').drawImage(i, 0, 0);
+      try { return c.toDataURL('image/png'); } catch { return null; }
+    })()`) as string | null;
+    if (!url) return;
+    const png = nativeImage.createFromDataURL(url).toPNG();
+    await clipboard.write([new ClipboardItem({ 'image/png': new Blob([png], { type: 'image/png' }) })]);
+    if (!copiedFramed) {
+      copiedFramed = true;
+      exercised('EXERCISED #451 Copy Image copied a picture from a frame of another site');
+    }
+  } catch (e) {
+    console.error(`Ledung desktop: Copy Image: ${(e as Error).message}`);
+  }
+}
+
 /**
  * The right-click menu (#447): the items desktop/context-menu.ts picks for what was clicked, acting on the page (or
  * the find bar) that was clicked. Copy Image copies the picture under the pointer, as a browser's does; Save Image As…
@@ -571,7 +626,7 @@ function showContextMenu(w: BrowserWindow, contents: WebContents, params: Contex
   const entries = contextItems(params);
   if (entries.length === 0 || w.isDestroyed()) return;
   const act: Record<ContextItem, () => void> = {
-    copyImage: () => contents.copyImageAt(params.x, params.y),
+    copyImage: () => void copyImage(contents, params),
     saveImage: () => contents.downloadURL(params.srcURL),
     // Electron 45's clipboard is the W3C one, a promise.
     copyLink: () => void clipboard.writeText(params.linkURL).catch((e: Error) => console.error(`Ledung desktop: ${e.message}`)),

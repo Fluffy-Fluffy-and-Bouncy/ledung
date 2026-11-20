@@ -218,9 +218,13 @@ and `framed` (the others read command lines with `ps`).
 
 `framed` (a Ledung runs, #451) is the case of another computer's tab, whose page is a frame of another site in a
 process of its own: it frames a small picture page from `localhost` over the page at `127.0.0.1` (the page's frame
-rule widened for it, in the probe only) and right-clicks the picture, checking the same as `pictures`. Electron's input
-call never reaches such a frame, so it needs `PROBE_CLICK=native` and an unlocked screen; `PROBE_FRAME_SAME=1` frames
-the picture from the page's own site instead, where Electron's input call does reach it (the control).
+rule widened for it, in the probe only) and checks that it loaded. Electron's input call never reaches such a frame,
+so the right-click and its menu are checked with `PROBE_CLICK=native` and an unlocked screen only;
+`PROBE_FRAME_SAME=1` frames the picture from the page's own site instead, where Electron's input call does reach it
+(the control). With any click it then runs the app's own Copy Image for the framed picture, as the menu does, and
+checks the clipboard holds it at its own size; and it shows why the app needs its own way there: Electron's
+`copyImageAt`, which works only on the window's top page, copies nothing from a frame of another site, while it does
+copy from the control's frame.
 
 `pictures` (a Ledung runs, #451) right-clicks the real page's pictures, not one the probe puts in: with
 `PROBE_PROJECT` naming a local project of the config whose sessions run on Haiku (`"model": "haiku"`), it copies two
