@@ -9,7 +9,7 @@ import type {
   SkillListView, SignInProblem,
   ShortcutAction, ShortcutsView,
   CheckInAction, CheckInView,
-  HeavyCommandInfo, JobKindInfo,
+  HeavyCommandInfo, JobKindInfo, LightCommandInfo,
 } from '../../src/shared/protocol.ts';
 import type { ProjectColours } from '../../src/shared/name-colours.ts';
 import type { ComputerColour, ComputerInfo } from '../../src/shared/computers.ts';
@@ -358,11 +358,11 @@ export const api = {
   setStepQuestions: (choice: StepQuestions) => call<StepQuestionsView>('POST', '/api/step-questions', { choice }),
   /** Skip in the first-run picker (#293): the default stays and it is not asked again. */
   skipStepQuestions: () => call<StepQuestionsView>('POST', '/api/step-questions-skip', {}),
-  setResourceSettings: (settings: { averageSec?: number; marginPoints?: number; overSec?: number }) => call('POST', '/api/resource-settings', settings),
+  setResourceSettings: (settings: { averageSec?: number; marginPoints?: number; overSec?: number; parkSec?: number; tellManagerMin?: number }) => call('POST', '/api/resource-settings', settings),
   resourceStartNow: (id: string) => call('POST', `/api/resource-line/${encodeURIComponent(id)}/start-now`, {}),
   pauseJob: (id: string, paused: boolean) => call('POST', `/api/jobs/${encodeURIComponent(id)}/pause`, { paused }),
   stopJob: (id: string) => call('POST', `/api/jobs/${encodeURIComponent(id)}/stop`, {}),
-  jobKinds: () => call<{ kinds: JobKindInfo[]; commands: HeavyCommandInfo[] }>('GET', '/api/job-kinds'),
+  jobKinds: () => call<{ kinds: JobKindInfo[]; commands: HeavyCommandInfo[]; light?: LightCommandInfo[] }>('GET', '/api/job-kinds'),
   forgetJobKind: (project: string, kind: string) => call('POST', '/api/job-kinds-forget', { project, kind }),
   markCommand: (project: string, command: string, never: boolean) => call('POST', '/api/heavy-commands-mark', { project, command, never }),
   setUsageStop: (account: string, kind: string, percent: number | null) => call('POST', '/api/usage-stops', { account, kind, percent }),

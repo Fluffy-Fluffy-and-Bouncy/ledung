@@ -11,7 +11,9 @@ import { GpuTracker, type GpuReading, groupLoad, groupMem, mainGpu, parseDrmFdin
 import { parseWindowsLines, windowsBatchReader, type ProcInfo, type ProcessList } from '../src/platform/processes.ts';
 import { ResourceBook, LAPSE_MS, RESOURCE_SOURCE, type BookSample, type BookSession } from '../src/resources/book.ts';
 import { JobStore, fromGeneric, toGeneric } from '../src/resources/jobs.ts';
-import { detaches, heavyKinds } from '../src/resources/commands.ts';
+import { detaches, freesResources, heavyKinds } from '../src/resources/commands.ts';
+import { FRESH_FACTS, idleStopBlocker } from '../src/sessions/idle.ts';
+import { wslHintDue } from '../web/src/usage/machineFold.ts';
 import { LOWERED, type PriorityControl } from '../src/platform/process-control.ts';
 import { dragMax, dragStep, dragText, dragValue, limitShare, limitText, limitUnits, overFor, parseLimitInput, stepDrag, valueShare } from '../web/src/usage/resourceLimits.ts';
 import { fileTimeMs, JOB_BUSY, JobActions, jobTargetsNow, type FreshProcess } from '../src/resources/job-actions.ts';
@@ -187,9 +189,14 @@ interface Rig {
   clock: { now: number };
   jobs: JobStore;
   sessions: Map<string, BookSession>;
-  tick(trees: Record<string, ProcInfo[]>, opts?: { cpuOf?: Record<number, number>; memUsed?: number; cores?: number; gpu?: GpuReading }): void;
+  /** `outside`: processes in the PC's list but in no session's tree (other programs, orphans, WSL). */
+  tick(trees: Record<string, ProcInfo[]>, opts?: { cpuOf?: Record<number, number>; memUsed?: number; cores?: number; gpu?: GpuReading; outside?: ProcInfo[] }): void;
   resumed: number[];
   meta: Map<string, string>;
+  /** Sessions whose resource notice waits to be delivered (round 2: the go's clock starts at delivery). */
+  undelivered: Set<string>;
+  /** What managers were told. */
+  managers: { id: string; text: string }[];
 }
 
 function rig(opts: { unix?: boolean } = {}): Rig {
@@ -210,6 +217,8 @@ function rig(opts: { unix?: boolean } = {}): Rig {
   };
   const clock = { now: 1_000_000 };
   const resumed: number[] = [];
+  const undelivered = new Set<string>();
+  const managers: { id: string; text: string }[] = [];
   const sessions = new Map<string, BookSession>([
     ['s1', { id: 's1', title: 'One', project: 'p', role: 'session', priority: 'normal', local: true, busy: false }],
     ['s2', { id: 's2', title: 'Two', project: 'p', role: 'session', priority: 'normal', local: true, busy: false }],
@@ -223,6 +232,8 @@ function rig(opts: { unix?: boolean } = {}): Rig {
     wake: (id) => void woken.push(id),
     changed: () => {},
     resume: (targets) => void resumed.push(...targets.map((t) => t.pid)),
+    undelivered: (id) => undelivered.has(id),
+    tellManager: (id, text) => void managers.push({ id, text }),
     control,
     now: () => clock.now,
   });
@@ -243,11 +254,12 @@ function rig(opts: { unix?: boolean } = {}): Rig {
       treeMap.set(sid, withCpu);
       hosts.set(sid, withCpu[0]!.pid);
     }
+    for (const p of o.outside ?? []) list.set(p.pid, p);
     const sample: BookSample = { at: clock.now, threads: 16, cores: o.cores ?? 1, memUsed: o.memUsed ?? 10 * GB, memTotal: 64 * GB, list, prev, dt: 5, trees: treeMap, hosts, gpu: o.gpu ?? null };
     book.sample(sample);
     prev = list;
   };
-  return { book, told, woken, priorities, clock, jobs, sessions, tick, meta, resumed };
+  return { book, told, woken, priorities, clock, jobs, sessions, tick, meta, resumed, undelivered, managers };
 }
 
 const proc = (pid: number, ppid: number, mem = 100 * 1024 ** 2): ProcInfo => ({ pid, ppid, cpuSeconds: 0, memBytes: mem, started: pid * 10 });
@@ -266,7 +278,7 @@ test('reserve: go at once when it fits; wait with a reason when not; a raised li
   const go = r.book.reserve('s1', { what: 'Build', cpu: 25 });
   assert.match(go, /^Go: reservation r1 "Build", 25% CPU/);
   const wait = r.book.reserve('s2', { what: 'Train', cpu: 40 });
-  assert.match(wait, /^Wait: Waiting for CPU room: needs ~40%, 5% left under the 50% limit \(1st in line\)/);
+  assert.match(wait, /^Wait: Waiting for CPU room: needs ~40%, 5% left under the 50% limit; held by 1 other job \(25% booked, 0% used\), other programs 20% \(1st in line\)/);
   assert.match(wait, /Don't start it yet/);
   const line = r.book.info().line;
   assert.equal(line.length, 1);
@@ -306,29 +318,43 @@ test('a job is the processes started after the go; released when they end, and r
   assert.equal(kinds[0]!.kind, 'build');
 });
 
-test('at the end of a turn a going reservation with no job running is released; one with a background job is kept', () => {
+test("a pass ends when the session's work is over: no turn, nothing in the background, no process of it running", () => {
   const r = rig();
+  const s1 = r.sessions.get('s1')!;
+  const s2 = r.sessions.get('s2')!;
+  s1.busy = true;
   r.tick({ s1: tree() });
   r.book.reserve('s1', { what: 'Bg', cpu: 10 });
   r.tick({ s1: tree(proc(15, 11)) });
-  r.book.turnEnded('s1');
+  s1.busy = false;
   r.tick({ s1: tree(proc(15, 11)) });
   assert.equal(r.book.info().jobs.length, 1, 'kept while its process runs');
-  r.tick({ s1: tree(proc(15, 11)), s2: tree2() });
+  r.tick({ s1: tree() });
+  assert.equal(r.book.info().jobs.length, 0, 'ended with its process, the turn over');
+  s2.busy = true;
+  r.tick({ s2: tree2() });
   r.book.reserve('s2', { what: 'Nothing', cpu: 10 });
-  r.book.turnEnded('s2');
-  r.tick({ s1: tree(proc(15, 11)), s2: tree2() });
-  assert.equal(r.book.info().jobs.filter((j) => j.sessionId === 's2').length, 0, 'released: nothing ran');
+  r.tick({ s2: tree2() });
+  assert.equal(r.book.info().jobs.length, 1, 'kept while the turn that reserved goes on');
+  s2.busy = false;
+  r.tick({ s2: tree2() });
+  assert.equal(r.book.info().jobs.length, 0, 'released: nothing ran');
 });
 
-test('a go not used within 10 minutes lapses, and the session is told', () => {
+test('a go not used within 10 minutes of reaching the session parks the pass, and the session is told', () => {
   const r = rig();
+  r.sessions.get('s1')!.busy = true;
   r.tick({ s1: tree() });
   r.book.reserve('s1', { what: 'Later', cpu: 10 });
+  assert.equal(r.book.info().reserved.cpu, 10);
   r.clock.now += LAPSE_MS;
   r.tick({ s1: tree() });
-  assert.equal(r.book.info().jobs.length, 0);
-  assert.match(r.told.at(-1)!.text, /lapsed/);
+  assert.equal(r.book.info().jobs[0]!.state, 'parked');
+  assert.equal(r.book.info().reserved.cpu ?? 0, 0, 'parked: holds no room');
+  assert.match(r.told.at(-1)!.text, /parked: no work started within 10 minutes/);
+  r.sessions.get('s1')!.busy = false;
+  r.tick({ s1: tree() });
+  assert.equal(r.book.info().jobs.length, 0, 'the turn ended with nothing running: the pass ends');
 });
 
 test('a job over its share: priority lowered, session held and told; when back, priority restored and hold lifted; nothing killed', () => {
@@ -438,7 +464,9 @@ test('light commands are never refused, even with old "heavy" marks and a pass w
   r.book.callStarted('s2', 'b', ['npm run build'], false);
   r.clock.now += 60_000;
   r.book.callEnded('s2', 'b');
-  const why = r.book.commandRefusal('s1', ['npm run build']);
+  // s1's pass waits, so it is told to wait (round 2); s2 has none, so it is told to reserve.
+  assert.match(r.book.commandRefusal('s1', ['npm run build']) ?? '', /^Wait: your reservation r1 "Big" is waiting for room/);
+  const why = r.book.commandRefusal('s2', ['npm run build']);
   assert.match(why ?? '', /"npm run build" usually uses ~6\.0 GB memory: call reserve first/);
   assert.match(why ?? '', /learned this from 2 reserved jobs it ran in, the last on 1970-01-01; its calls usually take 60 s\. If that is wrong/);
   assert.doesNotMatch(why ?? '', /nightly build/, "no job's name reaches a session");
@@ -449,7 +477,7 @@ test('light commands are never refused, even with old "heavy" marks and a pass w
   assert.equal((r.jobs as unknown as { db: { prepare(q: string): { get(): { n: number } } } }).db.prepare("SELECT COUNT(*) AS n FROM command_calls WHERE kind = 'npm run build'").get().n, 10);
   // Records learned the new way count without durations.
   for (const at of [3, 4]) r.jobs.add({ project: 'p', kind: 'train', commands: ['python train.py'], asked: {}, peak: { ram: 4 * GB }, mean: {}, durationMs: 1, over: false, undeclared: false, endedAt: at });
-  assert.match(r.book.commandRefusal('s1', ['python train.py']) ?? '', /call reserve first/);
+  assert.match(r.book.commandRefusal('s2', ['python train.py']) ?? '', /call reserve first/);
 });
 
 test('quick calls never cancel what a command was measured to use; a call that detaches keeps no duration', () => {
@@ -846,6 +874,7 @@ test("Pause and Stop act on the job's processes now: what they started since the
 
 test("no go before the session's processes are known, not even with Start now (finding 6)", () => {
   const r = rig();
+  r.sessions.get('s1')!.busy = true;
   const answer = r.book.reserve('s1', { what: 'Early', cpu: 10 });
   assert.match(answer, /^Wait: Waiting for its session's processes to be measured/);
   r.book.startNow('r1');
@@ -970,4 +999,299 @@ test('a failed GPU read is no baseline: the next read is not a whole lifetime in
   assert.equal(first.adapters[0]!.load, 0, 'the first real read is the baseline');
   const r = t.update(parseWindowsGpu(row(9e9 + 5e6)), 10000);
   assert.equal(Math.round(r.adapters[0]!.load), 10);
+});
+
+// --- Round 2 (docs/steps/resource-limits-2.md): the pass, subagents, waking, who holds the room, WSL ------------------
+
+const MB = 1024 ** 2;
+const tree3 = (...work: ProcInfo[]) => [proc(30, 1), proc(31, 30, 300 * MB), ...work];
+const addSession = (r: Rig, id: string, extra: Partial<BookSession> = {}) => r.sessions.set(id, { id, title: id, project: 'p', role: 'session', priority: 'normal', local: true, busy: true, ...extra });
+
+test('a pass parks after 2 minutes quiet and its booking leaves the bar; work under it again needs no new reserve (R1)', () => {
+  const r = rig();
+  r.sessions.get('s1')!.busy = true;
+  r.tick({ s1: tree() });
+  r.book.setLimit('ram', 30);
+  assert.match(r.book.reserve('s1', { what: 'Build', ram_gb: 8, cpu: 20 }), /pass for your session and its subagents/);
+  const build = proc(13, 11, 4 * GB);
+  r.tick({ s1: tree(build) }, { cpuOf: { 13: 3 } });
+  assert.equal(r.book.info().jobs[0]!.state, 'ready', 'one active sample is not yet work');
+  r.tick({ s1: tree(build) }, { cpuOf: { 13: 3 } });
+  assert.equal(r.book.info().jobs[0]!.state, 'busy');
+  assert.ok((r.book.info().reserved.ram ?? 0) > 3 * GB, 'busy: holds booked minus used');
+  // The build is done; the compiler server it left idles, using almost nothing.
+  const daemon = proc(14, 13, 200 * MB);
+  let ticks = 0;
+  while (r.book.info().jobs[0]!.state === 'busy' && ticks < 40) {
+    r.tick({ s1: tree(daemon) });
+    ticks++;
+  }
+  assert.equal(r.book.info().jobs[0]!.state, 'parked');
+  assert.ok(ticks >= 24 && ticks <= 26, `parked after about 2 minutes quiet (${ticks} samples)`);
+  assert.equal(r.book.info().reserved.ram ?? 0, 0, 'parked: its booking leaves the bar');
+  assert.equal(r.book.info().jobs.length, 1, 'kept: the session is still in its turn and the daemon runs');
+  // A second run under the same pass, without a new reserve: busy again, and it fits.
+  const again = proc(15, 11, 3 * GB);
+  r.tick({ s1: tree(daemon, again) }, { cpuOf: { 15: 3 } });
+  r.tick({ s1: tree(daemon, again) }, { cpuOf: { 15: 3 } });
+  const job = r.book.info().jobs[0]!;
+  assert.equal(job.state, 'busy');
+  assert.equal(job.resumedAbove, false);
+  assert.equal(r.book.info().jobs.length, 1, 'one pass');
+});
+
+test('the 2026-11-15 case: two finished builds with leftover idle processes no longer hold the room; the third goes within about 2 minutes', () => {
+  const r = rig();
+  addSession(r, 's3', { title: 'Three' });
+  for (const id of ['s1', 's2']) r.sessions.get(id)!.busy = true;
+  const pc = { memUsed: 6 * GB };
+  r.tick({ s1: tree(), s2: tree2(), s3: tree3() }, pc);
+  r.book.setLimit('ram', 30);
+  assert.match(r.book.reserve('s1', { what: 'Build A', ram_gb: 12 }), /^Go:/);
+  assert.match(r.book.reserve('s2', { what: 'Build B', ram_gb: 12 }), /^Go:/);
+  assert.match(r.book.reserve('s3', { what: 'Build C', ram_gb: 10 }), /^Wait:/);
+  const a = proc(13, 11, 2 * GB);
+  const b = proc(23, 21, 2 * GB);
+  for (let i = 0; i < 4; i++) r.tick({ s1: tree(a), s2: tree2(b), s3: tree3() }, { ...pc, cpuOf: { 13: 4, 23: 4 } });
+  assert.deepEqual(r.book.info().jobs.map((j) => j.state), ['busy', 'busy']);
+  assert.equal(r.book.info().line.length, 1);
+  // Both finish; each leaves a daemon behind (a compiler server, a watcher).
+  const finished = r.clock.now;
+  const da = proc(14, 11, 150 * MB);
+  const db = proc(24, 21, 150 * MB);
+  while (r.book.info().line.length && r.clock.now - finished < 10 * 60_000) r.tick({ s1: tree(da), s2: tree2(db), s3: tree3() }, pc);
+  const waited = r.clock.now - finished;
+  assert.equal(r.book.info().line.length, 0, 'the third has its go');
+  assert.ok(waited <= 130_000, `within about 2 minutes (${waited / 1000} s)`);
+  assert.match(r.told.find((t) => t.id === 's3')!.text, /^You may go: reservation r3 "Build C"/);
+  assert.deepEqual(r.book.info().jobs.filter((j) => j.sessionId !== 's3').map((j) => j.state), ['parked', 'parked']);
+});
+
+test("a background subagent's job runs under the session's pass after the main turn has ended; the pass ends when it is over (R1, R2)", () => {
+  const r = rig();
+  const s1 = r.sessions.get('s1')!;
+  s1.busy = true;
+  r.tick({ s1: tree() });
+  r.book.reserve('s1', { what: 'Tests', cpu: 30 });
+  // The main turn ends with a tester subagent in the background, which hasn't started its job yet.
+  s1.busy = false;
+  s1.background = 1;
+  r.tick({ s1: tree() });
+  assert.equal(r.book.info().jobs.length, 1, 'kept: a background subagent runs');
+  // A subagent's reserve acts on the same pass: one pass, the extra added.
+  assert.match(r.book.reserve('s1', { what: 'Tests', cpu: 10 }), /^Go:/);
+  assert.equal(r.book.info().jobs.length, 1);
+  assert.equal(r.book.info().jobs[0]!.granted.cpu, 40);
+  const job = proc(16, 11, 1 * GB);
+  for (let i = 0; i < 3; i++) r.tick({ s1: tree(job) }, { cpuOf: { 16: 4 } });
+  assert.equal(r.book.info().jobs[0]!.state, 'busy');
+  assert.equal(r.book.commandRefusal('s1', ['npm test']), null);
+  s1.background = 0;
+  r.tick({ s1: tree() });
+  assert.equal(r.book.info().jobs.length, 0, 'over: no turn, nothing in the background, nothing running');
+  assert.equal(r.jobs.kinds()[0]!.kind, 'tests', 'what it used is recorded');
+});
+
+test('a parked pass whose known heavy command starts again: it goes if it fits; if not, it is refused and back in line with its original time (open choice 2)', () => {
+  const r = rig();
+  addSession(r, 's3', { title: 'Three' });
+  for (const id of ['s1', 's2']) r.sessions.get(id)!.busy = true;
+  r.book.setSettings({ parkSec: 30 });
+  for (const at of [1, 2]) r.jobs.add({ project: 'p', kind: 'build', commands: ['npm run build'], asked: {}, peak: { ram: 6 * GB }, mean: {}, durationMs: 60_000, over: false, undeclared: false, endedAt: at });
+  const pc = { memUsed: 10 * GB };
+  r.tick({ s1: tree(), s2: tree2(), s3: tree3() }, pc);
+  r.book.setLimit('ram', 30);
+  r.book.reserve('s1', { what: 'Build', ram_gb: 8 });
+  const first = r.book.info().jobs[0]!.goAt;
+  const job = proc(13, 11, 1 * GB);
+  for (let i = 0; i < 3; i++) r.tick({ s1: tree(job), s2: tree2(), s3: tree3() }, { ...pc, cpuOf: { 13: 4 } });
+  for (let i = 0; i < 8; i++) r.tick({ s1: tree(), s2: tree2(), s3: tree3() }, pc);
+  assert.equal(r.book.info().jobs[0]!.state, 'parked');
+  // It fits: the command runs, and the pass holds its room again.
+  assert.equal(r.book.commandRefusal('s1', ['npm run build']), null);
+  assert.equal(r.book.info().jobs[0]!.state, 'ready');
+  assert.equal(r.book.info().reserved.ram, 8 * GB);
+  // The go not used: 10 minutes on it parks again.
+  r.clock.now += LAPSE_MS;
+  r.tick({ s1: tree(), s2: tree2(), s3: tree3() }, pc);
+  // Now someone else takes the room, and a later reservation waits.
+  assert.match(r.book.reserve('s2', { what: 'Train', ram_gb: 15 }), /^Go:/);
+  r.clock.now += 1000;
+  assert.match(r.book.reserve('s3', { what: 'Other', ram_gb: 8 }), /^Wait:/);
+  assert.equal(r.book.info().jobs.find((j) => j.sessionId === 's1')!.state, 'parked');
+  const why = r.book.commandRefusal('s1', ['npm run build'], { subagent: true }) ?? '';
+  assert.match(why, /^Wait: your reservation r1 "Build" was parked, and there is no room to resume it now/);
+  assert.match(why, /Stop here and tell your parent/);
+  const line = r.book.info().line;
+  assert.equal(line[0]!.id, 'r1', 'first among equals: it keeps its original time');
+  assert.ok(line[0]!.since < first + 1, 'its original time');
+  assert.equal(r.book.passWaits('s1'), 'waiting');
+  // Still waiting: a second try is told to wait, not to reserve.
+  assert.match(r.book.commandRefusal('s1', ['npm run build']) ?? '', /^Wait: your reservation r1 "Build" is waiting for room/);
+});
+
+test('work under a parked pass that starts without asking and does not fit runs, judged against its share, and its card says so', () => {
+  const r = rig();
+  r.sessions.get('s1')!.busy = true;
+  r.sessions.get('s2')!.busy = true;
+  r.book.setSettings({ parkSec: 30 });
+  const pc = { memUsed: 10 * GB };
+  r.tick({ s1: tree(), s2: tree2() }, pc);
+  r.book.setLimit('ram', 30);
+  r.book.reserve('s1', { what: 'Build', ram_gb: 8 });
+  for (let i = 0; i < 3; i++) r.tick({ s1: tree(proc(13, 11)), s2: tree2() }, { ...pc, cpuOf: { 13: 4 } });
+  for (let i = 0; i < 8; i++) r.tick({ s1: tree(proc(13, 11)), s2: tree2() }, pc);
+  assert.equal(r.book.info().jobs[0]!.state, 'parked');
+  r.book.reserve('s2', { what: 'Train', ram_gb: 15 });
+  for (let i = 0; i < 2; i++) r.tick({ s1: tree(proc(13, 11)), s2: tree2() }, { ...pc, cpuOf: { 13: 4 } });
+  const card = r.book.info().jobs.find((j) => j.sessionId === 's1')!;
+  assert.equal(card.state, 'busy');
+  assert.equal(card.resumedAbove, true);
+});
+
+test('a call that only frees resources always runs, even while the session is held (issue #356, 2026-11-19)', () => {
+  for (const c of ['node scripts/emulator-lock.mjs release', 'taskkill /PID 1234 /F', 'npm run stop', './gradlew --stop', 'docker compose down', 'adb emu kill', './stop-emulator.sh']) {
+    assert.equal(freesResources(c), true, c);
+  }
+  for (const c of ['npm run build', 'python train.py --kill-after 10', 'node emulator-lock.mjs release && npm run build', 'git status', 'node emulator.mjs start']) {
+    assert.equal(freesResources(c), false, c);
+  }
+  const r = rig();
+  r.book.setSettings({ overSec: 5, averageSec: 5 });
+  for (const at of [1, 2]) r.jobs.add({ project: 'p', kind: '(unreserved)', commands: ['node scripts/emulator-lock.mjs'], asked: {}, peak: { ram: 4 * GB }, mean: {}, durationMs: 1, over: true, undeclared: true, endedAt: at });
+  for (let i = 0; i < 3; i++) r.tick({ s1: tree(proc(40, 11, 3 * GB)) }, { cpuOf: { 40: 10 } });
+  assert.equal(r.book.isHeld('s1'), true);
+  const kinds = heavyKinds('node scripts/emulator-lock.mjs release');
+  assert.deepEqual(kinds, ['node scripts/emulator-lock.mjs']);
+  assert.match(r.book.commandRefusal('s1', kinds) ?? '', /^Not now: .*commands that stop it or release a lock always run/);
+  assert.equal(r.book.commandRefusal('s1', kinds, { freeing: true }), null);
+});
+
+test("the go's 10 minutes count from when it reaches the session; until then it holds its room and its session isn't idle-stopped (R3)", () => {
+  const r = rig();
+  const s1 = r.sessions.get('s1')!;
+  r.tick({ s1: tree(), s2: tree2() }, { cores: 3.2 });
+  r.book.setLimit('cpu', 30);
+  assert.match(r.book.reserve('s1', { what: 'Train', cpu: 20 }), /^Wait:/);
+  assert.equal(r.book.passWaits('s1'), 'waiting');
+  const idle = { info: { role: 'session' as const, status: 'idle' as const, paused: false }, turnOpen: false, pendingPermissions: 0, openQuestions: 0, waitingDeliveries: 0, backgroundTasks: 0, facts: FRESH_FACTS, lastActivity: 0 };
+  assert.equal(idleStopBlocker({ ...idle, reservation: r.book.passWaits('s1') }, 10 * 3600_000, 3600_000), 'waiting for its reservation');
+  // The go is given while the working line is full: it waits in the session's inbox.
+  r.undelivered.add('s1');
+  r.book.setLimit('cpu', 90);
+  assert.match(r.told.at(-1)!.text, /^You may go/);
+  for (let i = 0; i < 15 * 12; i++) r.tick({ s1: tree(), s2: tree2() });
+  const job = r.book.info().jobs[0]!;
+  assert.equal(job.state, 'ready', 'not lapsed: the go has not reached it');
+  assert.equal(job.deliveredAt, null);
+  assert.equal(r.book.info().reserved.cpu, 20, 'the room is promised to it');
+  assert.equal(r.book.passWaits('s1'), 'ready');
+  assert.equal(idleStopBlocker({ ...idle, reservation: r.book.passWaits('s1') }, 10 * 3600_000, 3600_000), 'waiting for its reservation');
+  // It reaches the session (a turn starts with it); 10 minutes from then it parks.
+  r.undelivered.delete('s1');
+  s1.busy = true;
+  r.tick({ s1: tree(), s2: tree2() });
+  const reached = r.book.info().jobs[0]!.deliveredAt!;
+  assert.equal(reached, r.clock.now);
+  r.clock.now += LAPSE_MS - 10_000;
+  r.tick({ s1: tree(), s2: tree2() });
+  assert.equal(r.book.info().jobs[0]!.state, 'ready');
+  r.clock.now += 10_000;
+  r.tick({ s1: tree(), s2: tree2() });
+  assert.equal(r.book.info().jobs[0]!.state, 'parked');
+  assert.equal(r.book.passWaits('s1'), null, 'parked: idle stop may end it');
+  assert.equal(idleStopBlocker({ ...idle, reservation: null }, 10 * 3600_000, 3600_000), null);
+});
+
+test('the manager is told once when its session has waited 30 minutes, with who holds the room but no other session\'s words, and again at the go (R3, R6)', () => {
+  const r = rig();
+  r.sessions.get('s1')!.parentId = 'boss';
+  r.sessions.get('s2')!.busy = true;
+  r.sessions.get('s2')!.parentId = 'someone-else';
+  const pc = { memUsed: 8 * GB };
+  r.tick({ s1: tree(), s2: tree2() }, pc);
+  r.book.setLimit('ram', 20);
+  r.book.reserve('s2', { what: 'Secret plan', ram_gb: 10 });
+  assert.match(r.book.reserve('s1', { what: 'Fix tests', ram_gb: 6 }), /^Wait:/);
+  for (let i = 0; i < 6; i++) r.tick({ s1: tree(), s2: tree2(proc(23, 21, 2 * GB)) }, { ...pc, cpuOf: { 23: 4 } });
+  assert.equal(r.managers.length, 0);
+  r.clock.now += 30 * 60_000;
+  r.tick({ s1: tree(), s2: tree2(proc(23, 21, 2 * GB)) }, { ...pc, cpuOf: { 23: 4 } });
+  r.tick({ s1: tree(), s2: tree2(proc(23, 21, 2 * GB)) }, { ...pc, cpuOf: { 23: 4 } });
+  assert.equal(r.managers.length, 1, 'once');
+  assert.equal(r.managers[0]!.id, 'boss');
+  assert.match(r.managers[0]!.text, /^Your session "One" has waited \d+ min for its reservation "Fix tests": Waiting for memory room: .*; held by 1 other job \(10 GB booked, 2\.0 GB used\)/);
+  assert.doesNotMatch(r.managers[0]!.text, /Secret plan|Two/);
+  r.book.release('s2');
+  assert.match(r.managers.at(-1)!.text, /^Your session "One" may go now/);
+});
+
+test("who holds the room: named on the page; for sessions other jobs only as counts and figures; WSL and other programs by name (R5, R6)", () => {
+  const r = rig();
+  r.sessions.get('s2')!.busy = true;
+  const wsl = { pid: 900, ppid: 4, cpuSeconds: 0, memBytes: 6 * GB, started: 1, name: 'vmmemWSL' };
+  const chrome = [{ pid: 901, ppid: 4, cpuSeconds: 0, memBytes: 1 * GB, started: 1, name: 'chrome.exe' }, { pid: 902, ppid: 901, cpuSeconds: 0, memBytes: 1.5 * GB, started: 2, name: 'chrome.exe' }];
+  const pc = { memUsed: 13 * GB, outside: [wsl, ...chrome] };
+  r.tick({ s1: tree(), s2: tree2() }, pc);
+  assert.equal(r.book.info().wsl, 6 * GB);
+  r.book.setLimit('ram', 20);
+  r.book.reserve('s2', { what: 'Secret plan', ram_gb: 3 });
+  for (let i = 0; i < 3; i++) r.tick({ s1: tree(), s2: tree2(proc(23, 21, 1 * GB)) }, { ...pc, cpuOf: { 23: 4 } });
+  const answer = r.book.reserve('s1', { what: 'Mine', ram_gb: 6 });
+  assert.match(answer, /^Wait: Waiting for memory room: .*; held by WSL 6\.0 GB, other programs .*, 1 other job \(3\.0 GB booked, 1\.0 GB used\)/);
+  assert.doesNotMatch(answer, /Secret plan|Two|chrome/);
+  const line = r.book.info().line[0]!;
+  assert.match(line.reason, /"Secret plan" \(Two: 3\.0 GB booked, 1\.0 GB used\)/);
+  assert.match(line.reason, /other programs [\d.]+ GB \(most: chrome\.exe 2\.5 GB\)/);
+  assert.doesNotMatch(line.reasonForSessions, /Secret plan|Two|chrome/);
+  // Without WSL: nothing about it.
+  const r2 = rig();
+  r2.tick({ s1: tree() });
+  assert.equal(r2.book.info().wsl, null);
+  assert.equal(wslHintDue({ wsl: 6 * GB, limits: { ram: 20 * GB } }, 64 * GB), true);
+  assert.equal(wslHintDue({ wsl: 6 * GB, limits: {} }, 64 * GB), false);
+  assert.equal(wslHintDue({ wsl: null, limits: { ram: 1 * GB } }, 64 * GB), false);
+});
+
+test('a heavy job started detached is taken as its session\'s, so its pass counts and learns it; two sessions detaching at once claim nothing', () => {
+  const r = rig();
+  r.sessions.get('s1')!.busy = true;
+  r.tick({ s1: tree() });
+  r.book.reserve('s1', { what: 'Train', cpu: 30, ram_gb: 4 });
+  r.book.callStarted('s1', 'd1', ['python train.py'], true, true);
+  // Its shell ended before any sample: the trainer's parent id names a process that is gone.
+  const started77 = r.clock.now + 1000;
+  for (let i = 1; i <= 3; i++) r.tick({ s1: tree() }, { outside: [{ pid: 77, ppid: 999, cpuSeconds: i * 20, memBytes: 3 * GB, started: started77 }] });
+  const job = r.book.info().jobs[0]!;
+  assert.equal(job.processes, 1);
+  assert.equal(job.state, 'busy');
+  r.sessions.get('s1')!.busy = false;
+  r.tick({ s1: tree() });
+  assert.equal(r.book.info().jobs.length, 0);
+  assert.deepEqual(rows(r).at(-1)!.commands, ['python train.py']);
+  // Two sessions detach at the same moment: whose the orphan is can't be told.
+  const r2 = rig();
+  r2.sessions.get('s1')!.busy = true;
+  r2.tick({ s1: tree(), s2: tree2() });
+  r2.book.reserve('s1', { what: 'A', cpu: 30 });
+  r2.book.callStarted('s1', 'a', ['python a.py'], true, true);
+  r2.book.callStarted('s2', 'b', ['python b.py'], true, true);
+  const at = r2.clock.now + 500;
+  for (let i = 1; i <= 3; i++) r2.tick({ s1: tree(), s2: tree2() }, { outside: [{ pid: 78, ppid: 998, cpuSeconds: i * 20, memBytes: 3 * GB, started: at }] });
+  assert.equal(r2.book.info().jobs[0]!.processes, 0);
+});
+
+test('a reservation kept by a Ledung before passes loads as a pass: busy once it had a job, else ready', () => {
+  const r = rig();
+  r.tick({ s1: tree() });
+  r.book.reserve('s1', { what: 'Build', cpu: 20 });
+  const kept = JSON.parse(r.meta.get('resource-reservations')!) as Record<string, unknown>[];
+  for (const [hadJob, want] of [[true, 'busy'], [false, 'ready']] as const) {
+    const old = kept.map((k) => ({ ...k, state: 'going', hadJob, deliveredAt: undefined, quietSince: undefined, refMem: undefined, parkedAt: undefined, resumedAbove: undefined, managerTold: undefined }));
+    const again = new ResourceBook({
+      meta: { get: (k) => (k === 'resource-reservations' ? JSON.stringify(old) : null), set: () => {} }, jobs: r.jobs, session: (id) => r.sessions.get(id) ?? null,
+      tell: () => {}, wake: () => {}, changed: () => {},
+    });
+    assert.equal(again.info().jobs[0]!.state, want);
+  }
 });

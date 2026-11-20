@@ -8,7 +8,7 @@ import { dimLabel, formatDim } from '../../../src/resources/limits.ts';
 import { api } from '../api.ts';
 import { pollWhileShown } from '../pollShown.ts';
 import { dragMax, dragStep, dragText, dragValue, limitShare, limitText, limitUnits, overFor, parseLimitInput, stepDrag, valueShare } from './resourceLimits.ts';
-import { jobOpen, jobUse, waitingOpen } from './machineFold.ts';
+import { jobOpen, jobUse, passStateText, splitParked, waitingOpen, wslHintDue } from './machineFold.ts';
 
 // Shared with the server, which sends the machine's figures only when what they show here changes (#230).
 export { formatBytes, formatCores };
@@ -40,8 +40,10 @@ interface LimitSetting {
  * rather than in it so no control nests in another, and the editor opens on a double-click with a mouse, a tap, or
  * Enter on the bar (point 6).
  */
-function Load({ label, used, total, text, limit, reserved, dim, open, onOpen, setting }: {
+function Load({ label, used, total, text, limit, reserved, dim, open, onOpen, setting, note }: {
   label: string; used: number; total: number; text: string;
+  /** Said in its tooltip after the figures (WSL's share of memory). */
+  note?: string;
   /** The limit as a share of the bar (0–1); null: none. */
   limit?: number | null;
   reserved?: number;
@@ -82,7 +84,7 @@ function Load({ label, used, total, text, limit, reserved, dim, open, onOpen, se
     ? (now === null ? null : valueShare(dim, now, setting.total) * 100)
     : limit === null || limit === undefined ? null : Math.min(100, Math.max(0, limit * 100));
   const how = setting ? 'double-click or tap to set its limit, or drag its handle' : 'click to set its limit';
-  const title = `${label}: ${text}${cls === 'good' ? '' : cls === 'warning' ? ' (busy)' : ' (full)'}${limitPct !== null ? ` · limit at ${Math.round(limitPct)}%` : ''}${hatch > 0 ? ` · ${Math.round(hatch)}% reserved` : ''}${dim ? ` · ${how}` : ''}`;
+  const title = `${label}: ${text}${note ? ` · ${note}` : ''}${cls === 'good' ? '' : cls === 'warning' ? ' (busy)' : ' (full)'}${limitPct !== null ? ` · limit at ${Math.round(limitPct)}%` : ''}${hatch > 0 ? ` · ${Math.round(hatch)}% reserved` : ''}${dim ? ` · ${how}` : ''}`;
   const body = (
     <>
       <div className="limit-head">
@@ -208,6 +210,8 @@ function LimitEditor({ dim, label, total, r, run, onClose }: { dim: string; labe
   const [avg, setAvg] = useState(String(r.settings.averageSec));
   const [margin, setMargin] = useState(String(r.settings.marginPoints));
   const [over, setOver] = useState(String(Math.round(r.settings.overSec)));
+  const [park, setPark] = useState(String(Math.round((r.settings.parkSec ?? 120) / 60 * 10) / 10));
+  const [tellAfter, setTellAfter] = useState(String(r.settings.tellManagerMin ?? 30));
   const memory = dim === 'ram' || dim.startsWith('vram:');
   const save = (v: number | null) => void run(() => api.setResourceLimit(dim, v)).then(onClose);
   // An empty field is no limit, as the slider at its right end (issue #295); undefined: what is typed can't be a limit.
@@ -248,15 +252,24 @@ function LimitEditor({ dim, label, total, r, run, onClose }: { dim: string; labe
           <label>Average over <input type="number" min={5} max={600} value={avg} onChange={(e) => setAvg(e.target.value)} /> s</label>
           <label>margin <input type="number" min={0} max={100} value={margin} onChange={(e) => setMargin(e.target.value)} /> points</label>
           <label>over for <input type="number" min={5} max={3600} value={over} onChange={(e) => setOver(e.target.value)} /> s</label>
-          <button type="button" className="small" onClick={() => void run(() => api.setResourceSettings({ averageSec: Number(avg), marginPoints: Number(margin), overSec: Number(over) }))}>Save</button>
+          <label>park after <input type="number" min={0.5} max={60} step={0.5} value={park} onChange={(e) => setPark(e.target.value)} /> min quiet</label>
+          <label>tell the manager after <input type="number" min={5} max={1440} value={tellAfter} onChange={(e) => setTellAfter(e.target.value)} /> min waiting</label>
+          <button type="button" className="small" onClick={() => void run(() => api.setResourceSettings({ averageSec: Number(avg), marginPoints: Number(margin), overSec: Number(over), parkSec: Math.round(Number(park) * 60), tellManagerMin: Number(tellAfter) }))}>Save</button>
         </div>
-        <p className="muted small-print">A running job counts as over its share when its average stays above its reservation plus the margin (memory: 10% of it, at least 0.5 GB) for that long.</p>
+        <p className="muted small-print">A running job counts as over its share when its average stays above its reservation plus the margin (memory: 10% of it, at least 0.5 GB) for that long. A job quiet for the park time holds no room until its work starts again; a session waiting in line longer than the tell time is reported to its manager.</p>
       </details>
     </div>
   );
 }
 
-/** One going job: what it reserved and uses, its state, and the person's Pause, Resume and Stop. */
+const WSL_HINT_KEY = 'ledung.wslHintHidden';
+
+/** WSL's share of memory for the bar's tooltip, when it holds any. */
+function wslNote(r: ResourcesInfo | undefined): string | undefined {
+  return r?.wsl ? `WSL holds ${formatBytes(r.wsl)} (much of it may be Linux's file cache)` : undefined;
+}
+
+/** One job (a pass that has had its go): what it reserved and uses, its state, and the person's Pause, Resume and Stop. */
 function JobCard({ job, r, title, onOpen, run }: { job: ResourcesInfo['jobs'][number]; r: ResourcesInfo; title: string; onOpen: () => void; run: (action: () => Promise<unknown>) => Promise<void> }) {
   const label = (dim: string) => dimLabel(dim, (id) => r.gpus.find((g) => g.id === id && !g.main)?.name ?? null);
   const dims = Object.keys(job.granted);
@@ -269,7 +282,7 @@ function JobCard({ job, r, title, onOpen, run }: { job: ResourcesInfo['jobs'][nu
   };
   const state = job.state === 'over'
     ? `Over its share${job.overSince ? ` for ${overFor(Date.now() - job.overSince)}` : ''}: priority ${job.lowered ? 'lowered' : 'unchanged'}, session held, told`
-    : job.state === 'paused' ? 'Paused by you: its processes are suspended; their memory stays taken' : 'Going';
+    : job.state === 'paused' ? 'Paused by you: its processes are suspended; their memory stays taken' : passStateText(job, Date.now(), formatDuration);
   // One line a job, the full card a click away; over its share it stays open, since that needs the person (issue #284).
   const [expanded, setExpanded] = useState(false);
   if (!jobOpen(job) && !expanded) {
@@ -279,7 +292,7 @@ function JobCard({ job, r, title, onOpen, run }: { job: ResourcesInfo['jobs'][nu
       <li className={`job-row ${job.state}`}>
         <button type="button" className="job-row-button" aria-expanded={false} onClick={() => setExpanded(true)}
           title={`${title}: ${job.what}. ${state}. Using ${usage || 'nothing reserved'}. Click for Pause, Resume and Stop.`}>
-          <span className="job-row-mark" aria-hidden="true">{job.state === 'paused' ? '❚❚' : '●'}</span>
+          <span className="job-row-mark" aria-hidden="true">{job.state === 'paused' ? '❚❚' : job.state === 'parked' ? '○' : job.state === 'ready' ? '◌' : '●'}</span>
           <span className="job-row-who">{title}</span>
           <span className="job-what">{job.what}</span>
           <span className="job-track job-row-track" aria-label={`${Math.round(use.share * 100)}% of its reservation used`}>
@@ -313,7 +326,7 @@ function JobCard({ job, r, title, onOpen, run }: { job: ResourcesInfo['jobs'][nu
         );
       })}
       <div className="job-state">
-        {job.state === 'over' ? '▲ ' : job.state === 'paused' ? '❚❚ ' : '● '}{state}
+        {job.state === 'over' ? '▲ ' : job.state === 'paused' ? '❚❚ ' : job.state === 'parked' ? '○ ' : job.state === 'ready' ? '◌ ' : '● '}{state}
         {job.loweredStays ? "; stays lowered until the job ends (this OS doesn't let Ledung raise it)" : ''}
         {job.learnedRuns ? ` · learned from ${job.learnedRuns} runs` : ''}
       </div>
@@ -340,6 +353,8 @@ export function MachinePanel(props: {
 }) {
   const m = props.machine;
   const [editing, setEditing] = useState<string | null>(null);
+  // The WSL hint is shown once: hidden for good on this device when the person hides it.
+  const [wslHidden, setWslHidden] = useState(() => typeof localStorage !== 'undefined' && localStorage.getItem(WSL_HINT_KEY) === '1');
   // The person's open or fold of "Waiting for room"; null: as waitingOpen says. Forgotten when the list empties.
   const [lineOpen, setLineOpen] = useState<boolean | null>(null);
   const waits = m?.resources?.line.length ?? 0;
@@ -374,7 +389,7 @@ export function MachinePanel(props: {
       <div className="limits">
         <Load label="CPU" used={m.cores} total={m.cpus} text={`${formatCores(m.cores)} of ${m.cpus}`}
           {...(r ? { dim: 'cpu', limit: share('cpu', 100), reserved: reservedShare('cpu', 100), open: editing === 'cpu', onOpen: toggle, setting: setting('cpu', 100) } : {})} />
-        <Load label="Memory" used={m.memUsed} total={m.memTotal} text={`${formatBytes(m.memUsed)} of ${formatBytes(m.memTotal)}`}
+        <Load label="Memory" used={m.memUsed} total={m.memTotal} text={`${formatBytes(m.memUsed)} of ${formatBytes(m.memTotal)}`} note={wslNote(r)}
           {...(r ? { dim: 'ram', limit: share('ram', m.memTotal), reserved: reservedShare('ram', m.memTotal), open: editing === 'ram', onOpen: toggle, setting: setting('ram', m.memTotal) } : {})} />
         {main && gpuBars(main)}
         {m.docker && (
@@ -390,6 +405,13 @@ export function MachinePanel(props: {
         </details>
       )}
       {r?.gpuNote && <div className="machine-note muted">{r.gpuNote}</div>}
+      {r && wslHintDue(r, m.memTotal) && !wslHidden && (
+        <div className="machine-note muted wsl-hint">
+          WSL holds {formatBytes(r.wsl ?? 0)}, much of it may be Linux's file cache, and Windows counts all of it as used. WSL can give its cache back by itself:
+          add <code>autoMemoryReclaim=dropCache</code> (or <code>gradual</code>) under <code>[experimental]</code> in <code>.wslconfig</code> in your home folder, then run <code>wsl --shutdown</code> once. Ledung never changes that file.
+          {' '}<button type="button" className="small link" onClick={() => { localStorage.setItem(WSL_HINT_KEY, '1'); setWslHidden(true); }}>Hide</button>
+        </div>
+      )}
       {m.line.length > 0 && (
         <>
           {/* Its heading carries the count the removed "N of M working" line used to give (issue #300). */}
@@ -431,7 +453,7 @@ export function MachinePanel(props: {
         <>
           <div className="machine-sub">Jobs · {r.jobs.length + r.unreserved.length}</div>
           <ul className="job-cards">
-            {r.jobs.map((j) => <JobCard key={j.id} job={j} r={r} title={title(j.sessionId)} onOpen={() => props.onOpen(j.sessionId)} run={props.run} />)}
+            {splitParked(r.jobs).active.map((j) => <JobCard key={j.id} job={j} r={r} title={title(j.sessionId)} onOpen={() => props.onOpen(j.sessionId)} run={props.run} />)}
             {r.unreserved.map((u) => (
               <li key={u.sessionId} className="job-card over">
                 <div className="job-card-head"><button className="link" onClick={() => props.onOpen(u.sessionId)}>Unreserved: {title(u.sessionId)}</button></div>
@@ -439,6 +461,14 @@ export function MachinePanel(props: {
               </li>
             ))}
           </ul>
+          {splitParked(r.jobs).parked.length > 0 && (
+            <details className="parked-jobs">
+              <summary title="Passes whose work is quiet: they keep their place with their session and hold no room">Parked · {splitParked(r.jobs).parked.length}</summary>
+              <ul className="job-cards">
+                {splitParked(r.jobs).parked.map((j) => <JobCard key={j.id} job={j} r={r} title={title(j.sessionId)} onOpen={() => props.onOpen(j.sessionId)} run={props.run} />)}
+              </ul>
+            </details>
+          )}
         </>
       )}
     </section>

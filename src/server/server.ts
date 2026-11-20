@@ -2015,7 +2015,7 @@ export class LedungServer {
         await manager.stopJob(id);
         return;
       case 'GET job-kinds':
-        return { kinds: manager.jobKinds(), commands: manager.heavyCommands() };
+        return { kinds: manager.jobKinds(), commands: manager.heavyCommands(), light: manager.lightCommands() };
       case 'POST job-kinds-forget': {
         await this.requirePage(req, url);
         const body = await readJson(req);

@@ -1,6 +1,6 @@
 # Resource limits, round 2: subagents, waking, light commands, idle bookings, WSL
 
-Nov 17, 2026 · **Approved (Simon, 2026-11-19, #2119)**, with all recommended choices; built in two PRs, R4 (light commands) first. Issue #356 (Simon approved starting a design, question #2046 "a"). Builds on [resource-limits.md](resource-limits.md) (approved 2026-11-12, built and released). Nothing here is built.
+Nov 17, 2026 · **Approved (Simon, 2026-11-19, #2119)**, with all recommended choices; built in two PRs, R4 (light commands) first. Issue #356 (Simon approved starting a design, question #2046 "a"). Builds on [resource-limits.md](resource-limits.md) (approved 2026-11-12, built and released). **Built:** R4 in PR #400; R1–R3 and R5–R7 in the second PR (run-88), with the later findings below ("Added after approval"). Where the build differs from the text, the text below says what was built.
 
 ## Why
 
@@ -20,7 +20,7 @@ On the night of 16–17 Nov reservations cost about 2 h of worker time in anothe
 - **A reservation becomes a pass for the session**, shared by its subagents, kept until `release` or until the session's work is over (no turn, no background subagent, nothing running).
 - **A pass holds room only while it is used.** Room is held from the go until the work starts, and while the work is busy; after 2 minutes quiet the pass is **parked**: it keeps its place with the session but holds no room. When heavy work starts again it is checked against the limits like a new start. This is Simon's "booking should only start when it needs it", made to work across several commands.
 - **Waiting sessions are never idle-stopped**, the go's clock starts when the session actually gets it, and **the manager is told** when a session has waited 30 minutes.
-- **Light commands are never gated**: a built-in list (read-only git, gh, file reads), plus any command that usually finishes within 10 s. Ledung learns a command as heavy only from the calls that were running **while** the job was busy.
+- **Light commands are never gated**: a built-in list (read-only git, gh, file reads), plus the person's own additions on the usage page. Ledung learns a command as heavy only from the calls whose own processes were busy **while** the job was; old marks learned the old way count only for a command that usually takes over 10 s.
 - **WSL:** Ledung shows how much memory WSL holds and how to make WSL return its cache; it runs nothing inside WSL unless Simon switches it on.
 - **The line says who holds the room**: "held by 2 parked builds (24 GB booked, 1 GB used) and WSL (12.6 GB)".
 
@@ -64,12 +64,12 @@ What the job learned is recorded per pass, as now: peak and mean over its busy s
 A shell call is **never refused, and never learned as heavy**, when every command in it is light:
 
 1. **Built-in light list:** read-only git (`status`, `log`, `diff`, `show`, `branch`, `rev-parse`, `ls-files`, `blame`, `remote`, `fetch`, `worktree list`, `stash list`), all of `gh` (it waits on the network, not the PC), and the file-reading commands already left out (`cat`, `grep`, `ls` …). Fixed in the code (open choice 6); Simon's existing "never needs a reservation" mark on the usage page stays for the rest.
-2. **Short by habit:** a command kind whose calls in this project usually finish within 10 s (median of its last 10 calls) is never refused, so a small status script is never gated however it was learned.
+2. **Short by habit (as built in R4):** call durations are kept per kind (median of its last 10 calls). Marks learned **before** R4, which gave every call made during a job the job's peak, count only for a kind whose calls usually take over 10 s, so a small status script with old marks is never gated. Marks learned **since** R4 come from a call's own busy processes and stay evidence however quick its other calls are: one `python train.py &` that returns at once must not make a heavy command light (code review of PR #400, round 2). A call that detaches (`&`, `nohup`, `start`) keeps no duration.
 3. **Learned only from what was running at the time:** a command is counted in a job's record only if its call was **under way during the job's busy samples**, not just somewhere during the job. A `git status` between two builds, or a background status loop that starts before the build, no longer gets the build's peak.
 
 This holds while a pass waits and while the session is held: only heavy kinds are refused. The refusal also says where the figure comes from ("learned from 3 'nightly build' runs"), so a wrong mark is easy to spot and clear.
 
-Old wrong marks clear themselves: the light list and the 10-second rule are applied when marks are read, so no data change is needed.
+Old wrong marks clear themselves: the light list and the 10-second rule for old marks are applied when marks are read, so no data change is needed.
 
 ### Idle bookings (problem 4)
 
@@ -118,6 +118,19 @@ Every "Waiting for … room" reason adds who holds it, largest first, at most th
 - **Subagents** can't get more than their session: one pass per session, as now.
 - **Nothing runs inside WSL** and `.wslconfig` is never written; the optional reading is off unless Simon switches it on and never starts a distribution.
 - **Who holds the room** follows the approved rule: sessions and managers never see another session's job name or title.
+
+## Added after approval (issue #356 comments, built with R1–R3)
+
+- **Commands that free resources always run.** On 2026-11-19 a session held for an emulator over its share was refused `emulator-lock.mjs release`, the one command that would end the load, and deadlocked. A shell call whose every heavy part frees resources is never refused, held or not: `kill`, `taskkill`, `Stop-Process` and the like, or a command with `release`, `unlock`, `stop`, `kill`, `shutdown`, `terminate`, `quit` or `down` as a word (`npm run stop`, `gradle --stop`, `docker compose down`) or in a script's own name (`stop-emulator.sh`). Advisory like every refusal: what runs is still measured and judged.
+- **A heavy job started detached is the session's.** `python train.py &` or `nohup …` can lose its parent before Ledung's next sample, and then belonged to no session. A parentless process that started within 15 s after exactly one session's detaching call is taken into that session's work, with what it starts, while it is the same process (start time; Windows only, where start times are known). It is counted, judged and learned from like the rest of the pass; Pause and Stop still act only on what is under the session's host. Two sessions detaching at the same moment claim nothing.
+- **The person can extend the light list on the usage page** ("Never needs a reservation": a project and a command, kept as the kind Ledung matches). Sessions never can.
+
+## As built (R1–R3, R5–R7)
+
+- **Work** under a pass is its processes with CPU or GPU above the 5-point allowance, or memory grown by more than 256 MB since the last active sample. A ready pass starts (busy) when its processes are seen in two samples in a row, active in either; a parked one needs two active samples in a row, so a leftover daemon's single blip doesn't take its room back.
+- **The pass ends** when the go has reached the session and then: no turn under way, no non-ambient background task (subagent or command), no process of the pass. A ready pass whose go hasn't reached the session never ends for this.
+- **"Settings → Machine"** is the bar's limit editor in the sidebar's Machine panel (there is no Settings tab for it): "park after" and "tell the manager after" are next to the other averaging settings under "Spikes (all limits)", and the WSL hint shows under the bars, with a Hide that is kept on that device.
+- **WSL** is read from the process list (`vmmemWSL`, or `vmmem` on older WSL): its working set. On this PC on 2026-11-20 the list Ledung reads and PowerShell's `Get-Process` both gave 5.3 GB for `vmmemWSL`; Task Manager's own column was not compared by eye.
 
 ## The parts
 

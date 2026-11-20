@@ -692,7 +692,7 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
     // Kept short: every session carries it (docs/steps/resource-limits.md, "The tools").
     const several = res.gpus.length > 1;
     tools.push(
-      tool('reserve', `Before heavy work (a long build, a big test suite, training, rendering: many cores for minutes, several GB of memory, or the GPU), reserve it. Light work needs none. Give what you expect at its busiest; what you leave out counts as almost nothing. The answer is go, or wait with your place in line: then don't start it; do other work, and Ledung tells you when you may go. Released when you call release, when the job's processes end, or at the end of your turn if none run.`, {
+      tool('reserve', `Before heavy work (a long build, a big test suite, training, rendering: many cores for minutes, several GB of memory, or the GPU), reserve it. Light work needs none. Give what you expect at its busiest; what you leave out counts as almost nothing. The answer is go, or wait with your place in line: then don't start it; do other work, and Ledung tells you when you may go. The go is a pass for your session and its subagents, kept until you call release or your work is over; it holds room only while the work is busy.`, {
         what: z.string().min(1).max(60).describe('A short name for this kind of job; use the same name next time.'),
         cpu: z.number().min(0).max(100).optional().describe(`% of this PC${res.threads ? `, which has ${res.threads} threads` : ''}.`),
         ram_gb: z.number().min(0).optional().describe('Memory in GB.'),
@@ -701,7 +701,7 @@ export function ledungToolServer(h: ToolHandlers): McpSdkServerConfigWithInstanc
         minutes: z.number().min(0).optional().describe('How long you expect it to run.'),
         ...(several ? { gpu_device: z.string().min(1).max(120).optional().describe(`Which GPU: ${res.gpus.join(', ')}; default the first.`) } : {}),
       }, async (a) => safely(() => res.reserve(a as never))) as never,
-      tool('release', 'Release your reservation now, when the heavy job is done or dropped.', {}, async () => safely(() => res.release())) as never,
+      tool('release', 'Release your reservation now, when the heavy work is done or dropped.', {}, async () => safely(() => res.release())) as never,
     );
   }
 

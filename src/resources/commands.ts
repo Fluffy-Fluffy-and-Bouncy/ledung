@@ -94,3 +94,34 @@ export function heavyKinds(command: string): string[] {
   for (let round = 0; round < 3; round++) c = c.replace(wrapper, '$1');
   return [...new Set([...commandKinds(c), ...commandKinds(command)].filter((k) => /^[\w.]/.test(k) && !/^(bash|sh|zsh|cmd|powershell|pwsh|nohup|time|env|nice|exec)$/.test(k) && !isLightKind(k)))];
 }
+
+/** Words that end or free work (`emulator-lock.mjs release`, `npm run stop`, `adb emu kill`, `gradle --stop`). */
+const FREEING_WORDS = new Set(['release', 'unlock', 'stop', 'kill', 'shutdown', 'terminate', 'quit', 'down']);
+/** Commands that only end processes. */
+const FREEING_FIRST = new Set(['kill', 'taskkill', 'tskill', 'pkill', 'killall', 'stop-process', 'stop-job']);
+
+/** One part of a shell command (between `&&`, `;`, `|`) frees resources: it ends processes or releases a lock. */
+function freeingPart(part: string): boolean {
+  const words = (part.trim().match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map((w) => w.replace(/^["']|["']$/g, '')).filter((w) => w && !/^[A-Z_][A-Z0-9_]*=/.test(w));
+  while (words.length && /^(nohup|time|exec|env|sudo)$/.test(words[0]!)) words.shift();
+  if (!words.length) return false;
+  const first = words[0]!.replace(/^.*[\\/]/, '').replace(/\.(exe|cmd|bat)$/i, '').toLowerCase();
+  if (FREEING_FIRST.has(first)) return true;
+  return words.some((w, i) => {
+    if (i > 0 && FREEING_WORDS.has(w.replace(/^-+/, '').toLowerCase())) return true;
+    // A script's own name says it (`stop-emulator.sh`, `release_lock.py`): only a word that names a file.
+    if (!/[./\\]/.test(w)) return false;
+    const name = w.replace(/^.*[\\/]/, '').replace(/\.[^.]*$/, '').toLowerCase();
+    return name.split(/[-_.]/).some((t) => FREEING_WORDS.has(t));
+  });
+}
+
+/**
+ * Every heavy part of a shell call frees resources (issue #356, 2026-11-19: a session held for an emulator over its
+ * share was refused `emulator-lock.mjs release`, the one command that would end the load, and deadlocked). Such a
+ * call is never refused, held or not. Advisory like every refusal here: what runs is still measured and judged.
+ */
+export function freesResources(command: string): boolean {
+  const heavyParts = command.split(/&&|\|\||;|\||\n/).filter((p) => heavyKinds(p).length > 0);
+  return heavyParts.length > 0 && heavyParts.every(freeingPart);
+}

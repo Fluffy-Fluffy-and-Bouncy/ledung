@@ -14,9 +14,13 @@ export interface LimitSettings {
   marginPoints: number;
   /** How long a job must stay above its share plus the margin to count as over, in seconds (default 60). */
   overSec: number;
+  /** How long a pass's work must be quiet before it parks and holds no room, in seconds (round 2, open choice 1). */
+  parkSec: number;
+  /** After how many minutes in line a session's manager is told (round 2, open choice 4). */
+  tellManagerMin: number;
 }
 
-export const DEFAULT_SETTINGS: LimitSettings = { averageSec: 30, marginPoints: 10, overSec: 60 };
+export const DEFAULT_SETTINGS: LimitSettings = { averageSec: 30, marginPoints: 10, overSec: 60, parkSec: 120, tellManagerMin: 30 };
 
 /** What work without a reservation counts as reserving: almost nothing (point 7). */
 export const ALLOWANCE = { percent: 5, bytes: 0.5 * GB };

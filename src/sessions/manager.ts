@@ -4,7 +4,7 @@ import type { DockerProjectConfig, LedungConfig, LocalProjectConfig, ProjectConf
 import { ProjectStore, type StoredProject } from '../projects/store.ts';
 import { AccountError, AccountStore, DEFAULT_ACCOUNT, SIGN_IN_ENV, type AccountPlace } from '../accounts/store.ts';
 import { removeSignIn } from '../accounts/signin-store.ts';
-import type { AccountChoices, AccountInfoView, AwayInfo, AwayKind, HeavyCommandInfo, JobKindInfo, SignInProblem } from '../shared/protocol.ts';
+import type { AccountChoices, AccountInfoView, AwayInfo, AwayKind, HeavyCommandInfo, JobKindInfo, LightCommandInfo, SignInProblem } from '../shared/protocol.ts';
 import { Away } from './away.ts';
 import { Orders } from './orders.ts';
 import { ChatImageError, type ChatImages } from './chat-images.ts';
@@ -39,6 +39,7 @@ import type { Store } from '../store/store.ts';
 import { lineOrder, mayStart, type LineEntry } from '../resources/line.ts';
 import { ResourceMonitor, type MonitorTarget } from '../resources/monitor.ts';
 import { ResourceBook, RESOURCE_SOURCE } from '../resources/book.ts';
+import { commandKinds } from '../resources/commands.ts';
 import { JobStore } from '../resources/jobs.ts';
 import { JobActions, jobTargetsNow } from '../resources/job-actions.ts';
 import { mainGpu } from '../platform/gpu.ts';
@@ -488,7 +489,6 @@ export class SessionManager {
       },
       ended: (id, commands, waits) => {
         this.recordTurn(id, commands, waits);
-        this.book.turnEnded(id);
         this.dispatch();
         // A session waiting to take new lockdown settings may now be free (issue #109).
         if (this.relaunching.has(id)) setImmediate(() => void this.relaunchWaiting());
@@ -504,8 +504,9 @@ export class SessionManager {
         return { threads: os.cpus().length, gpus: names };
       },
       resourceHeld: (id: string) => this.book.isHeld(id),
-      commandCheck: (id: string, kinds: string[]) => this.book.commandRefusal(id, kinds),
-      callStarted: (id: string, callId: string, kinds: string[], background: boolean) => this.book.callStarted(id, callId, kinds, background),
+      commandCheck: (id: string, kinds: string[], opts?: { freeing?: boolean; subagent?: boolean }) => this.book.commandRefusal(id, kinds, opts),
+      callStarted: (id: string, callId: string, kinds: string[], background: boolean, detached?: boolean) => this.book.callStarted(id, callId, kinds, background, detached),
+      passWaits: (id: string) => this.book.passWaits(id),
       callEnded: (id: string, callId: string) => this.book.callEnded(id, callId),
     } satisfies Partial<TurnGate>);
     this.jobs = new JobStore(store.database);
@@ -518,6 +519,7 @@ export class SessionManager {
         return {
           id, title: info.title, project: info.project, role: info.role, priority: info.priority, local: info.runner === 'local',
           busy: info.status === 'running' || info.status === 'waiting',
+          background: this.live.get(id)?.backgroundCount ?? 0, parentId: info.parentId,
         };
       },
       // A paused job that ends is resumed, never left frozen (security review of the resource limits, finding 10).
@@ -527,6 +529,13 @@ export class SessionManager {
         this.live.get(id)?.deliver();
       },
       wake: (id) => this.live.get(id)?.deliver(),
+      // The go's 10 minutes count from its delivery (resource limits round 2, "Waking").
+      undelivered: (id) => this.store.undeliveredInbox(id).some((i) => i.source === RESOURCE_SOURCE),
+      tellManager: (managerId, text) => {
+        if (this.store.getSession(managerId)?.status === 'ended') return;
+        this.store.addInbox(managerId, 'ledung', text);
+        this.live.get(managerId)?.deliver();
+      },
       // A limit set, a reservation, a go: always sent (#230's sender, without onlyIfChanged).
       changed: () => this.publishMachine(),
     });
@@ -1164,8 +1173,22 @@ export class SessionManager {
     this.jobs.forget(project, kind);
   }
 
+  /** The person's additions to the light list (round 2): page only, never a session's. */
+  lightCommands(): LightCommandInfo[] {
+    return this.jobs.lightMarks();
+  }
+
+  /**
+   * The person's "never needs a reservation" mark, from a heavy command's row or typed in (round 2: the person extends
+   * the light list; sessions never can). A typed command is kept as the kind Ledung matches ("node x.mjs release" →
+   * "node x.mjs").
+   */
   markCommand(project: string, command: string, never: boolean): void {
-    this.jobs.markNever(project, command, never);
+    if (!this.projectStore.get(project)) throw new UserError('No such project.');
+    const typed = command.replace(/\s+/g, ' ').trim();
+    if (!typed || typed.length > 200) throw new UserError('Give a command.');
+    const kind = never && !this.jobs.heavyCommands(project).some((h) => h.command === typed) ? commandKinds(typed)[0] ?? typed.toLowerCase() : typed;
+    this.jobs.markNever(project, kind.slice(0, 60), never);
   }
 
   private targets(): MonitorTarget[] {
