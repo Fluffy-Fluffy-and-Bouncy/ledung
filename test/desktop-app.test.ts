@@ -12,7 +12,10 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
-import { AFTER_APP_ARG, afterApp, APP_ID, MADE_CONFIG, madeConfigFor, readMadeConfig, START_HIDDEN_FILE, WRITE_SHORTCUT_ARG, type MadeConfig } from '../desktop/made.ts';
+import {
+  AFTER_APP_ARG, afterApp, APP_ID, APP_ONLY_ARG, installedVersion, MADE_CONFIG, madeConfigFor, readMadeConfig, readStartUpdate, restartBrings,
+  START_HIDDEN_FILE, START_UPDATE_RETRY_MS, updateAtStart, WRITE_SHORTCUT_ARG, type MadeConfig,
+} from '../desktop/made.ts';
 import { findOnPath, restartCommand, runStart, startCommand } from '../desktop/start.ts';
 import {
   ADD_COMMAND, APP_SHORTCUT, appManifest, backgroundArgs, codeIntoKept, desktopAppOff, desktopAppState, desktopAvailability, electronPackage,
@@ -829,4 +832,106 @@ test("the preload gives a made app's page restartForUpdate, which sends its mess
   made.exposed.restartForUpdate!('yes');
   assert.deepEqual(made.sent, [['ledung-desktop:restart-for-update', true], ['ledung-desktop:restart-for-update', false], ['ledung-desktop:restart-for-update', false]]);
   assert.deepEqual(Object.keys(load(['electron']).exposed).sort(), ['newWindow', 'showWindow']);
+});
+
+// #455: an app opened from a shortcut, a taskbar or Dock pin, Launchpad or Finder never went through `ledung`, so after
+// an npm update it ran the old version's code. At start it now compares its own version with the installed package's.
+test('an app started out of date restarts first, once per installed version in ten minutes; an up-to-date one never does (#455)', () => {
+  const now = 1_000_000_000;
+  // The usual start: the app's code is the installed version's.
+  assert.equal(updateAtStart({ own: '3.17.0', installed: '3.17.0', tried: null, now }), false);
+  // After `npm install -g` the installed package is newer than the app's code: restart to take it.
+  assert.equal(updateAtStart({ own: '3.16.0', installed: '3.17.0', tried: null, now }), true);
+  // A downgrade too: the app runs what is installed.
+  assert.equal(updateAtStart({ own: '3.17.0', installed: '3.16.0', tried: null, now }), true);
+  // The installed package can't be read (uninstalled, mid-update): the app runs what it has.
+  assert.equal(updateAtStart({ own: '3.16.0', installed: null, tried: null, now }), false);
+  // A restart for 3.17.0 was tried a minute ago and the app is still 3.16.0: no second restart, so no loop.
+  assert.equal(updateAtStart({ own: '3.16.0', installed: '3.17.0', tried: { version: '3.17.0', at: now - 60_000 }, now }), false);
+  // Just inside the ten minutes still holds; at ten minutes the next start tries again.
+  assert.equal(START_UPDATE_RETRY_MS, 10 * 60_000);
+  assert.equal(updateAtStart({ own: '3.16.0', installed: '3.17.0', tried: { version: '3.17.0', at: now - (10 * 60_000 - 1) }, now }), false);
+  assert.equal(updateAtStart({ own: '3.16.0', installed: '3.17.0', tried: { version: '3.17.0', at: now - 10 * 60_000 }, now }), true);
+  // A note for another version says nothing about this one: 3.18.0 came since.
+  assert.equal(updateAtStart({ own: '3.16.0', installed: '3.18.0', tried: { version: '3.17.0', at: now - 60_000 }, now }), true);
+});
+
+test("the installed version is the package.json nearest above the made app's `ledung` script, as that command's own is (#455)", () => {
+  const pkg = path.join(base, 'installed-455');
+  fs.mkdirSync(path.join(pkg, 'dist'), { recursive: true });
+  fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: 'ledung', version: '3.17.0' }));
+  const cli = path.join(pkg, 'dist', 'cli.js');
+  fs.writeFileSync(cli, '');
+  assert.equal(installedVersion(cli), '3.17.0');
+  // An update replaces package.json: the next start reads the new one.
+  fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: 'ledung', version: '3.18.0' }));
+  assert.equal(installedVersion(cli), '3.18.0');
+  // Half written during an update, or with no version: unknown, never a guess.
+  fs.writeFileSync(path.join(pkg, 'package.json'), '{ "name": "led');
+  assert.equal(installedVersion(cli), null);
+  fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: 'ledung' }));
+  assert.equal(installedVersion(cli), null);
+  // This clone's own command reads the same file the core's version comes from.
+  const own = (JSON.parse(fs.readFileSync(path.join(appDir(), 'package.json'), 'utf8')) as { version: string }).version;
+  assert.equal(installedVersion(path.join(appDir(), 'src', 'cli.ts')), own);
+});
+
+test("the start restart's note gives back the version it was for and when, and nothing when it isn't there (#455)", () => {
+  const file = path.join(base, 'start-update-455');
+  assert.equal(readStartUpdate(file), null, 'no note');
+  fs.writeFileSync(file, '3.17.0\n');
+  const at = fs.statSync(file).mtimeMs;
+  assert.deepEqual(readStartUpdate(file), { version: '3.17.0', at });
+  fs.writeFileSync(file, '');
+  assert.equal(readStartUpdate(file), null, 'an empty note');
+});
+
+test("the start restart runs the made app's `ledung` with --app-only; the update's restart stays as it was (#455)", () => {
+  const node = process.execPath;
+  const cli = fileURLToPath(import.meta.url);
+  assert.equal(APP_ONLY_ARG, '--app-only');
+  assert.deepEqual(restartCommand({ node, cli, env: {} }, 4242, true), { command: node, args: [cli, `${AFTER_APP_ARG}=4242`, '--app-only'] });
+  assert.deepEqual(restartCommand({ node, cli, env: {} }, 4242, false), { command: node, args: [cli, `${AFTER_APP_ARG}=4242`] });
+  assert.equal(restartCommand(null, 4242, true), null, 'a clone run never restarts');
+});
+
+test('a restart for an update goes only when the `ledung` that made the app has another version (PR #425 review, Minor 2)', () => {
+  // Updated: the made app's command is the new version, the app still the old one.
+  assert.equal(restartBrings('3.16.0', '3.17.0'), true);
+  // Two installs: the running Ledung is 3.17.0 from another Node, but the app's own command is 3.16.0, the app's own
+  // version. A restart would write 3.16.0 again and be told again it is out of date: it does not go.
+  assert.equal(restartBrings('3.16.0', '3.16.0'), false);
+  // That command's package can't be read: nothing is known to come of it.
+  assert.equal(restartBrings('3.16.0', null), false);
+});
+
+test('`ledung --after-app=<pid> --app-only` never starts Ledung: it opens the app as it is, or says there is none (#455)', async () => {
+  // A config the core refuses at once, so the run without --app-only, which shows the probe finds a start, starts a
+  // Ledung that stops by itself: nothing is left running either way.
+  const run = async (name: string, args: string[]) => {
+    const data = path.join(base, name);
+    fs.mkdirSync(data, { recursive: true });
+    const config = path.join(data, 'config.json');
+    fs.writeFileSync(config, '{ not json');
+    const child = spawn(process.execPath, [path.join(appDir(), 'src', 'cli.ts'), ...args], {
+      env: { ...process.env, LEDUNG_CONFIG: config, LEDUNG_DATA_DIR: data },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '';
+    child.stdout.on('data', (d: Buffer) => { out += d.toString(); });
+    child.stderr.on('data', (d: Buffer) => { out += d.toString(); });
+    const code = await new Promise<number>((resolve) => child.on('exit', (c) => resolve(c ?? 1)));
+    return { code, out, log: path.join(data, 'ledung.log') };
+  };
+  // A pid no process has: the wait for the app to quit ends at once.
+  const gone = 2 ** 30;
+  // The restart an update makes (#408) starts Ledung when none runs: its log shows the start.
+  const plain = await run('after-app-plain-455', [`${AFTER_APP_ARG}=${gone}`, '--no-open']);
+  assert.equal(fs.existsSync(plain.log), true, plain.out);
+  assert.match(fs.readFileSync(plain.log, 'utf8'), /Ledung starting in the background/);
+  // The start's restart does not: no log, no start. A clone has no made app, so it says so and exits 1.
+  const only = await run('after-app-only-455', [`${AFTER_APP_ARG}=${gone}`, APP_ONLY_ARG]);
+  assert.equal(fs.existsSync(only.log), false, only.out);
+  assert.equal(only.code, 1, only.out);
+  assert.ok(only.out.includes(NO_APP), only.out);
 });

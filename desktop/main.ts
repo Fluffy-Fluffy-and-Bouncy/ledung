@@ -17,7 +17,7 @@ import { CONTEXT_LABELS, contextItems, type ContextItem } from './context-menu.t
 import { dockIconLayout, padBitmap } from './dock-icon.ts';
 import { FindSession, type FindRequest } from './find.ts';
 import { findKey, zoomed, zoomKey, type FindKey } from './keys.ts';
-import { APP_ID, readMadeConfig, START_HIDDEN_FILE, WRITE_SHORTCUT_ARG } from './made.ts';
+import { APP_ID, installedVersion, readMadeConfig, readStartUpdate, restartBrings, START_HIDDEN_FILE, START_UPDATE_FILE, updateAtStart, WRITE_SHORTCUT_ARG } from './made.ts';
 import { menuTemplate, type PageCommand } from './menu.ts';
 import { restartCommand, runStart, startCommand, startEnv } from './start.ts';
 import { WindowList } from './windows.ts';
@@ -55,6 +55,8 @@ export const RESTART_FOR_UPDATE_MESSAGE = 'ledung-desktop:restart-for-update';
 const MADE_APP_ARG = '--ledung-made-app';
 /** Left by an app that restarted while hidden (#408): the new one starts hidden too, as the person left it. */
 const START_HIDDEN = path.join(dataDir(), 'desktop', START_HIDDEN_FILE);
+/** Left by an app that restarted at start to take the installed version (#455): the next start does not try it again. */
+const START_UPDATE = path.join(dataDir(), 'desktop', START_UPDATE_FILE);
 /**
  * Ledung's own icon (#384), the page's app icon: next to main.js in the npm package and the made app (#407), from the
  * clone's web/public in a clone run. A PNG, since Electron's images load no SVG. Exported for the probe, which checks
@@ -293,7 +295,8 @@ function limitPermissions(ses: Session): void {
  * second start, a click in the Dock. With none open, a new one.
  */
 function showWindow(w: BrowserWindow | null = windows.latest()): void {
-  if (!app.isReady()) return;
+  // Not while restarting at start (#455): the Dock's launch click or a second start would make a window it then closes.
+  if (!app.isReady() || restartAppOnly) return;
   if (!w || w.isDestroyed()) {
     createWindow();
     return;
@@ -344,6 +347,8 @@ function quit(): void {
 let updatePending = false;
 /** A quit that restarts the app once it is sure (will-quit): a page that asked "Leave this page?" may still keep it. */
 let restartOnQuit = false;
+/** That restart is the one at start (#455): the `ledung` it runs opens the app only, never starting Ledung itself. */
+let restartAppOnly = false;
 
 /** Whether any window is in sight: shown and not minimised. */
 const anyShown = (): boolean => openWindows().some((w) => w.isVisible() && !w.isMinimized());
@@ -366,6 +371,12 @@ function restartForUpdate(): void {
     console.error('Ledung desktop: the ledung command that made this app is gone; start it again with ledung to update it.');
     return;
   }
+  // That command is this app's own version: the running Ledung is another install, and a restart would bring the same
+  // code back, told again it is out of date (PR #425, review Minor 2).
+  if (!restartBrings(app.getVersion(), installedVersion(made.cli))) {
+    console.error(`Ledung desktop: the ledung that made this app is version ${app.getVersion()} too; run the running Ledung's own ledung command to update the app.`);
+    return;
+  }
   // Minimised counts as there: the Mac reports a minimised window as not visible (self-check round 2, finding 1).
   hiddenAtRestart = !openWindows().some((w) => w.isVisible() || w.isMinimized());
   restartOnQuit = true;
@@ -383,7 +394,7 @@ function restartIfHidden(): void {
  * opens it (src/cli.ts, --after-app). Detached, so it outlives this app; its output goes to restart.log beside the app.
  */
 function startAfterQuit(): void {
-  const cmd = restartCommand(made, process.pid);
+  const cmd = restartCommand(made, process.pid, restartAppOnly);
   if (!cmd) {
     console.error('Ledung desktop: the ledung command that made this app is gone; start it again with ledung to update it.');
     return;
@@ -851,7 +862,31 @@ if (shortcutFile) {
     if (startedHidden && Date.now() - readyAt < 2000) return;
     showWindow();
   });
+  // Started from a shortcut, a pin, Launchpad or Finder after an npm update (#455): this app still has the old version's
+  // code. It restarts at once, before any window, through the `ledung` that made it, which writes the installed
+  // version's code into it and opens it; only once per version in ten minutes, so a restart that could not bring it
+  // leaves this app running its own code (made.ts updateAtStart).
+  const own = app.getVersion();
+  const installed = made ? installedVersion(made.cli) : null;
+  const updateNow = made !== null && restartCommand(made, process.pid, true) !== null && updateAtStart({ own, installed, tried: readStartUpdate(START_UPDATE), now: Date.now() });
+  if (!updateNow && installed === own) fs.rmSync(START_UPDATE, { force: true });
   void app.whenReady().then(() => {
+    if (updateNow) {
+      try {
+        fs.mkdirSync(path.dirname(START_UPDATE), { recursive: true });
+        fs.writeFileSync(START_UPDATE, `${installed}\n`);
+      } catch (e) {
+        // Without the note a failed restart is tried again at the next start, not in a loop: the next start is a person's.
+        console.error(`Ledung desktop: ${(e as Error).message}`);
+      }
+      console.error(`Ledung desktop: this app runs Ledung ${own} and ${installed} is installed; restarting to take it.`);
+      // An app that was itself restarting hidden (#408) comes back hidden; one a person opened comes back shown.
+      hiddenAtRestart = startedHidden;
+      restartOnQuit = true;
+      restartAppOnly = true;
+      quit();
+      return;
+    }
     readyAt = Date.now();
     Menu.setApplicationMenu(buildMenu());
     // Run from a clone the app is Electron's own, with Electron's icon in the Dock until it is told otherwise (#384),
