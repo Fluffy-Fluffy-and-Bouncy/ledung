@@ -572,6 +572,71 @@ async function contextPhase(w: BrowserWindow): Promise<void> {
   }
 }
 
+/** Investigation (#451): right-clicks every picture on the real page's routes and prints what Electron reports. */
+async function picturesPhase(w: BrowserWindow): Promise<void> {
+  const realPopup = Menu.prototype.popup;
+  const popped: Menu[] = [];
+  const shownMenus: string[] = [];
+  Menu.prototype.popup = function popup(this: Menu, options?: Electron.PopupOptions) {
+    popped.push(this);
+    if (!process.env.PROBE_REALPOPUP) return;
+    this.once('menu-will-show', () => shownMenus.push('will-show'));
+    this.once('menu-will-close', () => shownMenus.push('will-close'));
+    out('popup-options', { window: options?.window?.id, frame: options?.frame ? `${options.frame.url.slice(0, 40)} top=${options.frame.parent === null}` : null });
+    realPopup.call(this, options);
+    setTimeout(() => this.closePopup(), 400);
+  };
+  const wc = w.webContents;
+  const seen: unknown[] = [];
+  wc.on('context-menu', (_e, p) => seen.push({ mediaType: p.mediaType, srcURL: p.srcURL.slice(0, 80), has: p.hasImageContents, link: p.linkURL, editable: p.isEditable, x: p.x, y: p.y }));
+  w.show();
+  try {
+    for (const route of (process.env.PROBE_ROUTES ?? '').split(',').filter(Boolean)) {
+      await page(w, `location.hash = ${JSON.stringify(route)}; if (!window.__probeEvents) { window.__probeEvents = [];
+        for (const t of ['mousedown', 'mouseup', 'contextmenu']) addEventListener(t, (e) => window.__probeEvents.push(t + ':' + e.button + ':' + e.target.tagName + (e.defaultPrevented ? ':prevented' : '')), true);
+        addEventListener('contextmenu', (e) => window.__probeEvents.push('contextmenu-bubbled' + (e.defaultPrevented ? ':prevented' : '')), false); } 1`);
+      await sleep(3000);
+      const imgs = await page(w, `[...document.querySelectorAll('img')].map((i) => { const r = i.getBoundingClientRect(); const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return { src: i.src.slice(0, 80), cls: i.className, x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height, complete: i.complete, natural: i.naturalWidth,
+          top: top === i ? 'self' : top ? top.tagName + '.' + top.className : null, parents: (() => { const a = []; let e = i.parentElement; while (e && a.length < 4) { a.push(e.tagName + '.' + e.className); e = e.parentElement; } return a; })() }; })`) as { x: number; y: number; w: number }[];
+      const zoom = wc.getZoomFactor();
+      out('route', { route, html: await page(w, `[...document.querySelectorAll('.msg')].map((m) => m.className + ':' + m.querySelectorAll('img').length + ':' + m.textContent.slice(0, 60)).join(' | ')`) });
+      for (const [n, img0] of imgs.entries()) {
+        const img = await page(w, `(() => { const i = document.querySelectorAll('img')[${n}]; i.scrollIntoView({ block: 'center' }); const r = i.getBoundingClientRect(); const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+          return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, top: top === i ? 'self' : top ? top.tagName + '.' + top.className : null, vw: innerWidth, vh: innerHeight }; })()`) as { x: number; y: number; w: number };
+        Object.assign(img0, img);
+        if (img.w === 0) { out('picture', { route, img: img0, skipped: 'not shown' }); continue; }
+        seen.length = 0;
+        popped.length = 0;
+        const x = Math.round(img.x * zoom), y = Math.round(img.y * zoom);
+        if (process.env.PROBE_NATIVE) {
+          const b = w.getContentBounds();
+          execFileSync(process.env.PROBE_NATIVE, [String(process.pid), String(b.x + img.x * zoom), String(b.y + img.y * zoom)]);
+        } else {
+          wc.sendInputEvent({ type: 'mouseDown', x, y, button: 'right', clickCount: 1 });
+          wc.sendInputEvent({ type: 'mouseUp', x, y, button: 'right', clickCount: 1 });
+        }
+        await sleep(700);
+        const dom = await page(w, `(() => { const e = window.__probeEvents ?? []; window.__probeEvents = []; return e; })()`);
+        const hit = seen[0] && (seen[0] as { mediaType: string }).mediaType !== 'image'
+          ? await page(w, `(() => { const e = document.elementFromPoint(${img.x}, ${img.y}); const i = document.querySelectorAll('img')[${n}]; const r = i.getBoundingClientRect();
+            const clip = []; let a = i.parentElement; while (a) { const s = getComputedStyle(a); if (s.overflow !== 'visible') { const q = a.getBoundingClientRect(); clip.push(a.tagName + '.' + a.className + ' ' + s.overflow + ' ' + [q.top, q.bottom].map(Math.round).join('-')); } a = a.parentElement; }
+            return { at: e ? e.outerHTML.slice(0, 160) : null, imgTop: r.top, clip }; })()`)
+          : undefined;
+        out("picture", { route, img: img0, dom, hit, shownMenus: shownMenus.splice(0), params: seen[0] ?? null, menu: popped.at(-1)?.items.map((i) => i.label) ?? null });
+      }
+      if (process.env.PROBE_CAPTURE) {
+        const shot = await wc.capturePage();
+        const file = `${process.env.PROBE_CAPTURE}-${route.replace(/\W+/g, '_').slice(0, 20)}.png`;
+        fs.writeFileSync(file, shot.toPNG());
+        out('capture', { file });
+      }
+    }
+  } finally {
+    Menu.prototype.popup = realPopup;
+  }
+}
+
 /** contextPhase's checks: `popped` collects the menus the app built, `shown.real` shows them for the screenshot. */
 async function contextChecks(w: BrowserWindow, popped: Menu[], shown: { real: boolean }): Promise<void> {
   const wc = w.webContents;
@@ -1298,6 +1363,10 @@ async function run(): Promise<void> {
       const w = await showing(`${origin}/`);
       await signedIn(w);
       await contextPhase(w);
+    } else if (phase === 'pictures') {
+      const w = await showing(`${origin}/`);
+      await signedIn(w);
+      await picturesPhase(w);
     } else if (phase === 'notify') {
       const w = await showing(`${origin}/`);
       await signedIn(w);
@@ -1358,7 +1427,7 @@ if (refused) {
   void import('../main.ts');
 } else {
   // Not awaited: Electron holds its ready event until a top-level await in the entry module settles.
-  void import('../main.ts').then((m: { APP_ICON: string }) => {
+  void import(process.env.PROBE_MAIN ?? '../main.ts').then((m: { APP_ICON: string }) => {
     appIcon = m.APP_ICON;
     return app.whenReady();
   }).then(run);
