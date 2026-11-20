@@ -9,6 +9,9 @@ together, are in [CHANGELOG.md](CHANGELOG.md). Online: https://projectledung.com
 ([docs/changes/README.md](docs/changes/README.md)); `npm run publish:dev` and `npm run publish:public` fold them in
 here under the version they publish, and push the result to main.
 
+## v4.5 — 2026-11-20 15:44 CET
+- In Ledung's desktop app on a Mac, a change that needs your passkey now offers **Sign in the browser**: your browser opens a one-time link, shows what is signed and asks for Touch ID, and the app's change then goes through by itself (#463)
+
 ## v4.4 — 2026-11-20 15:23 CET
 - After a linked computer is unlinked (or its link lost) and linked again, its tab here paired through the old link counts for the new link's trust, instead of still asking for a passkey (#462)
 
