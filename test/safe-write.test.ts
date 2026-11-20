@@ -68,6 +68,39 @@ test('a write that fails leaves the old file as it was and no temporary file', (
   assert.equal(fs.readFileSync(file, 'utf8'), 'new');
 });
 
+/**
+ * The files that may still rename a file into place themselves, and why each needs no flush: none of them is state
+ * whose loss costs the user something (issue #460). Private state goes through writeFileSafely instead.
+ */
+const BARE_RENAMES: Record<string, string> = {
+  'src/platform/safe-write.ts': 'the safe write itself',
+  'src/host/client.ts': "a session host's record: after a crash the host it names is gone too",
+  'src/board/attachments.ts': 'a cache of attachments, fetched again when missing',
+  'src/platform/desktop-app.ts': 'the desktop app bundle, made again from the package',
+  'src/platform/background.ts': 'a log moved aside, not written',
+  'src/remote/linked-files.ts': 'a file in transfer, with its database row; sent again when lost',
+  'src/remote/linked-outbox.ts': 'a file in transfer, with its database row; sent again when lost',
+  'src/sessions/container-files.ts': 'a copy cache for containers, made again from the project',
+  'src/sessions/flow-files.ts': "the project's own files, checked for links between the write and the rename",
+};
+
+test('every rename into place in src/ is the safe write or a file on the list, with its reason', () => {
+  const root = path.join(import.meta.dirname, '..');
+  const found = new Set<string>();
+  const walk = (rel: string) => {
+    for (const entry of fs.readdirSync(path.join(root, rel), { withFileTypes: true })) {
+      const child = `${rel}/${entry.name}`;
+      if (entry.isDirectory()) walk(child);
+      else if (child.endsWith('.ts') && fs.readFileSync(path.join(root, child), 'utf8').includes('renameSync(')) found.add(child);
+    }
+  };
+  walk('src');
+  // The search finds what it should: the safe write itself renames.
+  assert.ok(found.has('src/platform/safe-write.ts'), [...found].join('\n'));
+  const unlisted = [...found].filter((f) => !(f in BARE_RENAMES));
+  assert.deepEqual(unlisted, [], 'a private state file renames by itself: write it with writeFileSafely, or list it here with why it needs no flush');
+});
+
 test('exclusive: a temporary file already there is refused and left alone', () => {
   const file = path.join(dir, 'creds.json');
   const temp = path.join(dir, 'creds.json.ledung-1');
