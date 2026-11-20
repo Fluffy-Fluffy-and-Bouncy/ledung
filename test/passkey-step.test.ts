@@ -180,11 +180,11 @@ test('only the desktop app on a Mac counts as having no passkey prompt; Windows 
  * `browser`, and the browser's answers to pick up, given out in turn from `answers` per link (null: not signed yet;
  * an Error: Ledung's refusal). The unlock carrying an answer picked up goes through, and the device is unlocked then.
  */
-function signLinks(answers: (string | null | Error)[][]) {
+function signLinks(answers: (string | null | Error)[][], opts: { unlocked?: boolean } = {}) {
   const sent: { path: string; body?: unknown; passkey?: string }[] = [];
   const links: string[] = [];
   const signed = new Set<string>();
-  let unlocked = false;
+  let unlocked = opts.unlocked ?? false;
   globalThis.fetch = (async (path: string, init: { headers: Record<string, string>; body?: string }) => {
     const body = init.body ? JSON.parse(init.body) : undefined;
     sent.push({ path, body, passkey: init.headers['X-Ledung-Passkey'] });
@@ -206,7 +206,10 @@ function signLinks(answers: (string | null | Error)[][]) {
       unlocked = true;
       return answer(200, { unlockedUntil: 1 });
     }
-    return unlocked ? answer(200, {}) : answer(403, { error: DEVICE_LOCKED });
+    if (!unlocked) return answer(403, { error: DEVICE_LOCKED });
+    // A decision (standing for a sensitive one) is signed on its own, even unlocked.
+    if (path.startsWith('/api/permissions/') && !signed.has(init.headers['X-Ledung-Passkey'] ?? '')) return answer(403, { error: PASSKEY_NEEDED });
+    return answer(200, {});
   }) as typeof fetch;
   return { sent, links };
 }
@@ -245,6 +248,27 @@ test('in the Mac app a check is signed in the browser from a sign link, and the 
     assert.deepEqual(sent[2]!.body, { method: 'POST', path: '/api/device-unlock', body: '{}', browser: true });
     assert.deepEqual(sent[3]!.body, { code: 'code-1' });
     assert.equal(sent[6]!.passkey, 'answer-1', 'the unlock carries the browser\'s answer');
+  } finally {
+    signPoll.ms = 1000;
+  }
+});
+
+test('in the Mac app a sensitive decision is signed in the browser for exactly that decision, and goes through by itself', { timeout: HANG_MS }, async () => {
+  publicPage();
+  setPasskeyCalls(macAppPasskeys);
+  signPoll.ms = 1;
+  try {
+    const { sent } = signLinks([[null, 'answer-d']], { unlocked: true });
+    const shown = browserDialog();
+    await api.decide('perm-1', { behavior: 'allow' });
+    assert.equal(shown.length, 1);
+    assert.equal(shown[0]!.kind, 'sign');
+    assert.equal(shown[0]!.browser?.url, 'https://pc.example.test/sign.html#code-1');
+    assert.deepEqual(sent.map((r) => r.path), [
+      '/api/permissions/perm-1', '/api/passkey-challenge', '/api/passkey-sign-answer', '/api/passkey-sign-answer', '/api/permissions/perm-1',
+    ]);
+    assert.deepEqual(sent[1]!.body, { method: 'POST', path: '/api/permissions/perm-1', body: JSON.stringify({ behavior: 'allow' }), browser: true });
+    assert.equal(sent[4]!.passkey, 'answer-d', 'the decision carries the browser\'s answer');
   } finally {
     signPoll.ms = 1000;
   }

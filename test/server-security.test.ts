@@ -1983,6 +1983,7 @@ test('a sign link (#463): the browser signs exactly that request for exactly tha
     // Another device sending this device's answer as its own: refused.
     const stolen = await pubChange('/api/away', away, other.cookie, { ...other.withKey, 'x-ledung-passkey': await signFor(d) });
     assert.equal(stolen.status, 403, stolen.body);
+    assert.match(errorOf(stolen), /something else/, 'refused by the device check');
     // Premise: the right device with the right body goes through.
     const ok = await pubChange('/api/away', away, d.cookie, { ...d.withKey, 'x-ledung-passkey': await signFor(d) });
     assert.equal(ok.status, 200, ok.body);
