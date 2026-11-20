@@ -216,15 +216,19 @@ It refuses without both settings, on the default port, and on Windows for every 
 pictures into that project, starts a session, sends it a picture and has it ask a question with both as screenshots
 (up to `PROBE_QUESTION_SECONDS`, 120), then in the conversation and on Waiting for you checks that every picture in
 sight gets Copy Image and Save Image As…, that the menu really opens, and that Copy Image copies the first one.
-`PROBE_CLICK=native` clicks with the system's own mouse instead of Electron's input call (Windows through user32, the
-Mac through `probe/rclick.swift` run with `swift`): the screen must be unlocked, the pointer moves, and a person
-should leave the mouse alone for the minute it takes. `PROBE_MAIN=<folder>/dist/desktop/main.js` runs an npm
+It checks only Ledung's own `<img>` pictures (from `/api/`), three on each page; one inside a closed block is
+skipped, and one with something else over it fails, naming what is on top. It leaves the two pictures, the session and
+its open question in the throwaway. `PROBE_CLICK=native` clicks with the system's own mouse instead of Electron's
+input call (Windows through user32, the Mac through `probe/rclick.swift` run with `swift`): the screen must be
+unlocked, the window stays on top while it clicks, the pointer moves, and a person should leave the mouse alone for
+the minute it takes. Run it without first: a failure with the system's mouse alone then points at real clicks. `PROBE_MAIN=<folder>/dist/desktop/main.js` runs an npm
 package's built app instead of `main.ts`, to check what was shipped; `PROBE_SHOT_DIR=<folder>` saves the window per
 page. On Windows, in PowerShell from `desktop\`:
 
 ```powershell
 $env:LEDUNG_CONFIG="$PWD\..\.test\a\config.json"; $env:LEDUNG_DATA_DIR="$PWD\..\.test\a\data"
-$env:PROBE_PHASE="pictures"; $env:PROBE_PROJECT="pics"; $env:PROBE_CLICK="native"; npx electron probe
+$env:PROBE_PHASE="pictures"; $env:PROBE_PROJECT="pics"; npx electron probe
+$env:PROBE_CLICK="native"; npx electron probe
 ```
 
 ## How it is built

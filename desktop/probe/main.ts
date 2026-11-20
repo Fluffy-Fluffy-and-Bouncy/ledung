@@ -29,7 +29,8 @@
 //   PROBE_PHASE=pictures    a Ledung runs, with PROBE_PROJECT a local project whose sessions run on Haiku (#451): the
 //                           real page's pictures, set up by the probe (a sent picture, a question with two
 //                           screenshots), right-clicked in the conversation and on Waiting for you; each picture in
-//                           sight gets Copy Image and Save Image As…, the menu opens, Copy Image copies.
+//                           sight gets Copy Image and Save Image As…, the menu opens, Copy Image copies; one with
+//                           something over it fails, naming it.
 //                           PROBE_CLICK=native uses the system's mouse (unlocked screen, window in front);
 //                           PROBE_MAIN=<dist/desktop/main.js> runs a package's built app instead of ../main.ts;
 //                           PROBE_SHOT_DIR saves the window per route. Runs on Windows too, as does "context"
@@ -176,7 +177,7 @@ async function signedIn(w: BrowserWindow): Promise<string[]> {
   const cookies = await wc.session.cookies.get({ url: origin, name: 'ledung_auth' });
   const t = token();
   const commandLines = process.platform === 'win32'
-    ? execFileSync('powershell', ['-NoProfile', '-Command', 'Get-CimInstance Win32_Process | ForEach-Object CommandLine'], { encoding: 'utf8', maxBuffer: 64 << 20 })
+    ? execFileSync('powershell', ['-NoProfile', '-Command', 'Get-CimInstance Win32_Process | ForEach-Object CommandLine'], { encoding: 'utf8', maxBuffer: 64 << 20, windowsHide: true })
     : execFileSync('ps', ['-axww', '-o', 'command='], { encoding: 'utf8', maxBuffer: 64 << 20 });
   const history = wc.navigationHistory.getAllEntries().map((e) => e.url);
   const sidebar = await page(w, `!!document.querySelector('nav, aside, .sidebar')`);
@@ -595,11 +596,13 @@ async function clipboardPicture(): Promise<NativeImage> {
 /**
  * #451: right-clicks the real page's pictures, as Martin did, not a picture the probe put in. Sets them up itself in the
  * project PROBE_PROJECT names (its sessions on Haiku): two pictures in its folder, a session sent a picture, which is
- * then asked to raise a question with both as screenshots. Then on the session's conversation and on Waiting for you,
- * every picture a person can see (the one under its middle) gets Copy Image and Save Image As…, and the menu really
- * opens; Copy Image on the first puts it on the clipboard. PROBE_CLICK=native clicks with the system's mouse (Windows:
- * user32; macOS: desktop/probe/rclick.swift, run with swift; the screen must be unlocked and the window in front), not
- * Electron's input call; PROBE_SHOT_DIR saves the window per route. Prints what Electron reported for each picture.
+ * then asked to raise a question with both as screenshots. Then each of Ledung's own pictures (<img> from /api/) on the
+ * session's conversation (the sent one and the question's two thumbnails) and on Waiting for you (the big screenshot
+ * and the strip's two) gets Copy Image and Save Image As…, and the menu really opens; Copy Image on the first puts it
+ * on the clipboard. A picture inside a closed block is skipped; one with something else on top fails, naming it (an
+ * overlay is one of the issue's suspects). PROBE_CLICK=native clicks with the system's mouse (Windows: user32; macOS:
+ * desktop/probe/rclick.swift, run with swift; the screen must be unlocked), not Electron's input call; PROBE_SHOT_DIR
+ * saves the window per route. Prints what Electron reported for each picture.
  */
 async function picturesPhase(w: BrowserWindow): Promise<void> {
   const project = process.env.PROBE_PROJECT;
@@ -610,30 +613,48 @@ async function picturesPhase(w: BrowserWindow): Promise<void> {
   const wc = w.webContents;
   const native = process.env.PROBE_CLICK === 'native';
   const state = await api(w, 'state');
-  const folder = ((state.body?.projects ?? []) as { name: string; path?: string }[]).find((p) => p.name === project)?.path;
-  if (!folder) {
-    expect(false, 'the project is in the throwaway Ledung', project);
+  const entry = ((state.body?.projects ?? []) as { name: string; path?: string; model?: string }[]).find((p) => p.name === project);
+  if (!entry?.path) {
+    expect(false, 'the project is in the throwaway Ledung, with a folder', project);
     return;
   }
-  fs.copyFileSync(path.join(clone, 'web', 'public', 'icon-512.png'), path.join(folder, 'probe-shot.png'));
-  fs.copyFileSync(path.join(clone, 'web', 'public', 'icon-256.png'), path.join(folder, 'probe-small.png'));
+  // Test sessions run on Haiku (repo CLAUDE.md).
+  if (!/haiku/i.test(entry.model ?? '')) {
+    expect(false, 'the project\'s sessions run on Haiku ("model": "haiku" in the throwaway config)', entry.model ?? 'none');
+    return;
+  }
+  fs.copyFileSync(path.join(clone, 'web', 'public', 'icon-512.png'), path.join(entry.path, 'probe-shot.png'));
+  fs.copyFileSync(path.join(clone, 'web', 'public', 'icon-256.png'), path.join(entry.path, 'probe-small.png'));
+  // Each step's answer is checked: a session that did not start says why now, not as a question that never came.
   const setup = await page(w, `(async () => {
-    const send = (route, body, type) => fetch('/api/' + route, { method: 'POST', headers: { 'Content-Type': type ?? 'application/json' }, body: type ? body : JSON.stringify(body) }).then((r) => r.json());
-    const s = await send('sessions', { project: ${JSON.stringify(project)}, role: 'session' });
-    const picture = await (await fetch('/icon-512.png')).blob();
-    const sent = await send('sessions/' + s.id + '/images', picture, 'image/png');
-    await send('sessions/' + s.id + '/messages', { images: [sent.id], text: "Call the ask_user tool once, loading it with ToolSearch if you need to: question 'Do these look right?', tier the lowest one its description lists, screenshots [{file: 'probe-shot.png', look_for: 'the picture'}, {file: 'probe-small.png', look_for: 'the icon'}]. Nothing else, no other tools." });
-    return s.id;
-  })()`) as string;
-  out('pictures-session', { session: setup });
+    const send = async (route, body, type) => { const r = await fetch('/api/' + route, { method: 'POST', headers: { 'Content-Type': type ?? 'application/json' }, body: type ? body : JSON.stringify(body) });
+      const answer = await r.json().catch(() => ({})); if (!r.ok) throw new Error(route + ': ' + r.status + ' ' + (answer.error ?? '')); return answer; };
+    try {
+      const s = await send('sessions', { project: ${JSON.stringify(project)}, role: 'session' });
+      if (!s.id) return { error: 'no session id' };
+      const picture = await (await fetch('/icon-512.png')).blob();
+      const sent = await send('sessions/' + s.id + '/images', picture, 'image/png');
+      if (!sent.id) return { error: 'no picture id' };
+      await send('sessions/' + s.id + '/messages', { images: [sent.id], text: "Call the ask_user tool once, loading it with ToolSearch if you need to: question 'Do these look right?', tier the lowest one its description lists, screenshots [{file: 'probe-shot.png', look_for: 'the picture'}, {file: 'probe-small.png', look_for: 'the icon'}]. Nothing else, no other tools." });
+      return { id: s.id };
+    } catch (e) {
+      return { error: e.message };
+    }
+  })()`) as { id?: string; error?: string };
+  out('pictures-session', setup);
+  if (!setup.id) {
+    expect(false, 'the probe started a session and sent it a picture', setup.error);
+    return;
+  }
+  const session = setup.id;
   let question: number | null = null;
   const seconds = Number(process.env.PROBE_QUESTION_SECONDS ?? 120);
   for (let i = 0; i < seconds && question === null; i++) {
     await sleep(1000);
     const qs = ((await api(w, 'state')).body?.questions ?? []) as { id: number; sessionId: string; status: string; shots?: unknown[] }[];
-    question = qs.find((q) => q.sessionId === setup && q.status === 'open' && (q.shots?.length ?? 0) > 0)?.id ?? null;
+    question = qs.find((q) => q.sessionId === session && q.status === 'open' && (q.shots?.length ?? 0) > 0)?.id ?? null;
   }
-  expect(question !== null, `the session asked its question with screenshots within ${seconds} s`, setup);
+  expect(question !== null, `the session asked its question with screenshots within ${seconds} s`, session);
   if (question === null) return;
 
   const realPopup = Menu.prototype.popup;
@@ -652,6 +673,9 @@ async function picturesPhase(w: BrowserWindow): Promise<void> {
   wc.on('context-menu', listen);
   w.show();
   w.focus();
+  // A system click lands on whatever window is in front: Windows keeps the terminal the probe started from in front
+  // despite focus(), so the window stays on top while it clicks.
+  if (native) w.setAlwaysOnTop(true);
   w.moveTop();
   if (process.platform === 'darwin') app.focus({ steal: true });
   const rclick = path.join(here, 'rclick.swift');
@@ -667,29 +691,40 @@ async function picturesPhase(w: BrowserWindow): Promise<void> {
     const b = w.getContentBounds();
     const dip = { x: Math.round(b.x + x * zoom), y: Math.round(b.y + y * zoom) };
     if (process.platform === 'win32') {
-      // Physical pixels, with the helper DPI-aware, so a scaled display puts the pointer where the picture is.
+      // Physical pixels of the window's own display, with the helper per-monitor DPI aware (-4), so a scaled or second
+      // display puts the pointer on the picture. Hidden, or its console window could take the click.
       const p = screen.dipToScreenPoint(dip);
-      execFileSync('powershell', ['-NoProfile', '-Command', `Add-Type -Name M -Namespace P -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware(); [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y); [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint d, System.UIntPtr e);'; [P.M]::SetProcessDPIAware() | Out-Null; [P.M]::SetCursorPos(${p.x}, ${p.y}) | Out-Null; Start-Sleep -Milliseconds 100; [P.M]::mouse_event(8, 0, 0, 0, [System.UIntPtr]::Zero); Start-Sleep -Milliseconds 60; [P.M]::mouse_event(16, 0, 0, 0, [System.UIntPtr]::Zero)`]);
+      execFileSync('powershell', ['-NoProfile', '-Command', `Add-Type -Name M -Namespace P -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(System.IntPtr v); [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y); [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint d, System.UIntPtr e);'; [P.M]::SetProcessDpiAwarenessContext([System.IntPtr](-4)) | Out-Null; [P.M]::SetCursorPos(${p.x}, ${p.y}) | Out-Null; Start-Sleep -Milliseconds 100; [P.M]::mouse_event(8, 0, 0, 0, [System.UIntPtr]::Zero); Start-Sleep -Milliseconds 60; [P.M]::mouse_event(16, 0, 0, 0, [System.UIntPtr]::Zero)`], { windowsHide: true });
     } else {
       execFileSync('swift', [rclick, String(process.pid), String(dip.x), String(dip.y)]);
     }
   };
-  let checked = 0;
   let copiedOne = false;
+  /** Ledung's pictures each route should have in sight: the sent one and two thumbnails; the screenshot and two. */
+  const routes = [{ route: `#/s/${session}`, want: 3 }, { route: `#/waiting/q/${question}`, want: 3 }];
   try {
-    for (const route of [`#/s/${setup}`, `#/waiting/q/${question}`]) {
+    for (const { route, want } of routes) {
       await page(w, `location.hash = ${JSON.stringify(route)}; 1`);
       await sleep(3000);
       const count = await page(w, `document.querySelectorAll('img').length`) as number;
+      let checked = 0;
       for (let n = 0; n < count; n++) {
-        // Scrolled into sight; only a picture under its own middle counts: one in a closed block can't be clicked.
-        const img = await page(w, `(() => { const i = document.querySelectorAll('img')[${n}]; if (!i) return null; i.scrollIntoView({ block: 'center' });
+        // Scrolled into sight. Only Ledung's own pictures count; one in a closed block can't be clicked by anyone.
+        const img = await page(w, `(() => { const i = document.querySelectorAll('img')[${n}]; if (!i || !new URL(i.src).pathname.startsWith('/api/')) return null;
+          const src = i.src.replace(location.origin, '').slice(0, 70);
+          if (i.closest('details:not([open])')) return { src, hidden: true };
+          i.scrollIntoView({ block: 'center' });
           const r = i.getBoundingClientRect(); const x = r.left + r.width / 2, y = r.top + r.height / 2;
-          return { x, y, visible: r.width > 0 && document.elementFromPoint(x, y) === i, src: i.src.replace(location.origin, '').slice(0, 70), natural: [i.naturalWidth, i.naturalHeight] }; })()`) as { x: number; y: number; visible: boolean; src: string; natural: [number, number] } | null;
-        if (!img?.visible) {
-          out('picture', { route, src: img?.src, skipped: 'not in sight' });
+          if (r.width === 0) return { src, hidden: true };
+          const top = document.elementFromPoint(x, y);
+          return { x, y, src, natural: [i.naturalWidth, i.naturalHeight], onTop: top === i ? null : top ? top.tagName.toLowerCase() + (top.className ? '.' + String(top.className).split(' ').join('.') : '') : 'nothing' }; })()`) as { x: number; y: number; src: string; hidden?: boolean; natural: [number, number]; onTop: string | null } | null;
+        if (!img) continue;
+        if (img.hidden) {
+          out('picture', { route, src: img.src, skipped: 'in a closed block' });
           continue;
         }
+        checked++;
+        expect(img.onTop === null, `nothing lies over the picture on ${route} (${img.src})`, img.onTop);
         reported.length = 0;
         popped.length = 0;
         rightClick(img.x, img.y);
@@ -697,11 +732,10 @@ async function picturesPhase(w: BrowserWindow): Promise<void> {
         const p = reported[0];
         const last = popped.at(-1);
         const labels = last ? last.menu.items.map((i) => (i.type === 'separator' ? '-' : i.label)) : null;
-        out('picture', { route, src: img.src, reported: p ? { mediaType: p.mediaType, hasImageContents: p.hasImageContents, srcURL: p.srcURL.replace(origin, '').slice(0, 70), linkURL: p.linkURL } : null, menu: labels, shown: last?.shown ?? false });
+        out('picture', { route, src: img.src, onTop: img.onTop, reported: p ? { mediaType: p.mediaType, hasImageContents: p.hasImageContents, srcURL: p.srcURL.replace(origin, '').slice(0, 70), linkURL: p.linkURL } : null, menu: labels, shown: last?.shown ?? false });
         expect(p?.mediaType === 'image', `Electron reports a picture on ${route} (${img.src})`, p?.mediaType ?? 'no context-menu event');
         expect(JSON.stringify(labels) === JSON.stringify(['Copy Image', 'Save Image As…']), `the picture gets Copy Image and Save Image As… on ${route}`, labels);
         expect(last?.shown === true, `the menu opened on ${route}`, last?.shown);
-        checked++;
         if (!copiedOne && last) {
           copiedOne = true;
           clipboard.clear();
@@ -711,10 +745,13 @@ async function picturesPhase(w: BrowserWindow): Promise<void> {
             await sleep(200);
             copied = await clipboardPicture();
           }
-          out('picture-copied', { size: copied.isEmpty() ? null : copied.getSize(), natural: img.natural });
-          expect(!copied.isEmpty() && copied.getSize().width === img.natural[0], 'Copy Image put the picture, at its own size, on the clipboard', copied.isEmpty() ? null : copied.getSize());
+          const size = copied.isEmpty() ? null : copied.getSize();
+          out('picture-copied', { size, natural: img.natural });
+          expect(size !== null && size.width === img.natural[0] && size.height === img.natural[1], 'Copy Image put the picture, at its own size, on the clipboard', size);
         }
       }
+      out('pictures-checked', { route, checked, want });
+      expect(checked === want, `${want} of Ledung's pictures in sight on ${route}`, checked);
       if (process.env.PROBE_SHOT_DIR) {
         const file = path.join(process.env.PROBE_SHOT_DIR, `pictures-${route.startsWith('#/s/') ? 'conversation' : 'waiting'}.png`);
         fs.writeFileSync(file, (await wc.capturePage()).toPNG());
@@ -724,10 +761,8 @@ async function picturesPhase(w: BrowserWindow): Promise<void> {
   } finally {
     Menu.prototype.popup = realPopup;
     wc.off('context-menu', listen);
+    if (native) w.setAlwaysOnTop(false);
   }
-  // A sent picture and two question thumbnails in the conversation; the big screenshot and two thumbnails on Waiting for you.
-  out('pictures-checked', { checked });
-  expect(checked >= 6, 'at least six pictures in sight were right-clicked', checked);
 }
 
 
