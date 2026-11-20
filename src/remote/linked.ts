@@ -21,8 +21,20 @@ import https from 'node:https';
 import path from 'node:path';
 import tls from 'node:tls';
 import { PUBLIC_NAME } from '../config.ts';
+import { exercisedLine } from '../platform/exercised.ts';
+import { writeFileSafely } from '../platform/safe-write.ts';
 
 export const LINKS_FILE = 'links.json';
+/** links.json's last save, kept next to it and loaded when links.json can't be (issue #460). */
+export const BACKUP_SUFFIX = '.bak';
+let exercised460 = false;
+
+/** The links in a links.json; throws when it isn't one (not JSON, or no list of links). */
+function parseLinks(text: string): Saved[] {
+  const data = JSON.parse(text) as { links?: unknown } | null;
+  if (!data || typeof data !== 'object' || !Array.isArray(data.links)) throw new Error('it holds no list of links');
+  return (data.links as Saved[]).filter((l) => l && typeof l.sendKey === 'string' && typeof l.acceptSha256 === 'string');
+}
 export const LINK_CODE_MS = 10 * 60 * 1000;
 /** How long computer 2 waits for computer 1's callback after sending the code. */
 export const CONFIRM_MS = 60 * 1000;
@@ -425,20 +437,46 @@ export class LinkedComputers {
   }
 
   private read(): Saved[] {
+    let text: string;
     try {
-      const data = JSON.parse(fs.readFileSync(this.file, 'utf8')) as { links?: Saved[] };
-      return Array.isArray(data.links) ? data.links.filter((l) => l && typeof l.sendKey === 'string' && typeof l.acceptSha256 === 'string') : [];
+      text = fs.readFileSync(this.file, 'utf8');
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== 'ENOENT') console.log(`Linked computers: ${this.file} can't be read: ${(e as Error).message}`);
       return [];
     }
+    try {
+      return parseLinks(text);
+    } catch (e) {
+      // Left as zeros by a crash, say (issue #460): the backup, written the same way just before, keeps the links.
+      const backup = `${this.file}${BACKUP_SUFFIX}`;
+      let links: Saved[];
+      try {
+        links = parseLinks(fs.readFileSync(backup, 'utf8'));
+      } catch (b) {
+        console.log(`Linked computers: ${this.file} can't be read: ${(e as Error).message}; nor can its backup: ${(b as Error).message}`);
+        return [];
+      }
+      console.log(`Linked computers: ${this.file} can't be read: ${(e as Error).message}; loaded ${links.length} link(s) from its backup ${backup}`);
+      if (!exercised460) {
+        exercised460 = true;
+        exercisedLine('EXERCISED #460 links.json could not be read and its backup was loaded');
+      }
+      try {
+        // Put back, so the next read finds it and the log says this once.
+        writeFileSafely(this.file, JSON.stringify({ links }, null, 2), { mode: 0o600 });
+      } catch (w) {
+        console.log(`Linked computers: ${this.file} could not be put back from its backup: ${(w as Error).message}`);
+      }
+      return links;
+    }
   }
 
+  /** The backup first, then the file, each written durably: a crash during either leaves the other whole (#460). */
   private write(links: Saved[]): void {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
-    const temp = `${this.file}.${process.pid}.new`;
-    fs.writeFileSync(temp, JSON.stringify({ links }, null, 2), { mode: 0o600 });
-    fs.renameSync(temp, this.file);
+    const text = JSON.stringify({ links }, null, 2);
+    writeFileSafely(`${this.file}${BACKUP_SUFFIX}`, text, { mode: 0o600 });
+    writeFileSafely(this.file, text, { mode: 0o600 });
   }
 
   /** One POST to another Ledung's public name over TLS; the JSON answer, or an error with the reason. */
