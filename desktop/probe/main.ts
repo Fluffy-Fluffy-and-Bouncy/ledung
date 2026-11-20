@@ -650,11 +650,16 @@ async function framedPhase(w: BrowserWindow): Promise<void> {
   const framePort = (server.address() as { port: number }).port;
   const frameOrigin = `http://localhost:${framePort}`;
   const wc = w.webContents;
-  // The page lets only the config's computers be framed; this one is let in as one of them would be.
+  // The page lets only the config's computers be framed; this one is let in as one of them would be. Widened in the
+  // page's own frame-src when it has one (a config with computers): a second frame-src would be ignored (code review
+  // of PR #452, Minor 1).
+  const widen = (csp: string) => (/(^|;)\s*frame-src\s/.test(csp)
+    ? csp.replace(/((?:^|;)\s*frame-src)\s/, `$1 ${frameOrigin} `)
+    : `${csp}; frame-src 'self' ${frameOrigin}`);
   wc.session.webRequest.onHeadersReceived({ urls: [`${origin}/*`] }, (details, callback) => {
     const headers = { ...details.responseHeaders };
     for (const k of Object.keys(headers)) {
-      if (k.toLowerCase() === 'content-security-policy') headers[k] = headers[k]!.map((v) => `${v}; frame-src 'self' ${frameOrigin}`);
+      if (k.toLowerCase() === 'content-security-policy') headers[k] = headers[k]!.map(widen);
     }
     callback({ responseHeaders: headers });
   });
@@ -690,7 +695,16 @@ async function framedPhase(w: BrowserWindow): Promise<void> {
     const child = wc.mainFrame.framesInSubtree.find((f) => f.parent !== null);
     await child?.executeJavaScript(`window.__ev = []; for (const t of ['mousedown', 'contextmenu']) addEventListener(t, (e) => __ev.push(t + ':' + e.target.tagName), true); 1`);
     const onTop = await page(w, `(() => { const e = document.elementFromPoint(440, 290); return e ? e.tagName + '#' + e.id : null; })()`);
-    out('framed-frames', { frames, same, onTop });
+    // The frame came up with its picture before anything is clicked: a frame that never loaded would fail the checks
+    // below for the probe's own reason, not the app's (test review of PR #452, Minor 1).
+    const loaded = await child?.executeJavaScript(`(() => { const i = document.getElementById('pic'); return !!i && i.complete && i.naturalWidth > 0; })()`).catch(() => false);
+    const top = wc.mainFrame;
+    out('framed-frames', { frames, same, onTop, loaded });
+    expect(!!child && child.url === (same ? 'about:srcdoc' : `${frameOrigin}/`), 'the frame loaded its page', child?.url ?? 'no frame');
+    expect(same || (!!child && child.osProcessId !== top.osProcessId), 'the frame of another site runs in a process of its own', frames);
+    expect(loaded === true, 'the frame\'s picture loaded', loaded);
+    expect(onTop === 'IFRAME#__pFrame', 'the frame is what lies under the click', onTop);
+    if (!child || loaded !== true) return;
     const zoom = wc.getZoomFactor();
     // The picture's middle: the frame at (300, 150), the picture 20 px in, 240 px wide.
     const at = { x: Math.round((300 + 20 + 120) * zoom), y: Math.round((150 + 20 + 120) * zoom) };
