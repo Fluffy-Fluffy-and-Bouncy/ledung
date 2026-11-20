@@ -454,3 +454,26 @@ test('a copy of the old cookie can\'t push the renewed one out: it only ever get
   computer.page.close();
   clock = 0;
 });
+
+test('a renewal waiting over a day: a copy that takes the new cookie can\'t shut the owner out unnoticed; the owner\'s old one removes the device (#468, self-check finding 1)', async () => {
+  clock = 0;
+  const computer = await device('computer');
+  assert.equal((await computer.unlock()).status, 200);
+  const owner = computer.cookie;
+  clock += COOKIE_RENEW_MS + MIN;
+  // The owner's renewal answer is lost, and the owner stays away for more than a day.
+  const sealed = cookieIn(await pub({ path: '/api/state', headers: { cookie: owner } }));
+  assert.ok(sealed);
+  clock += DAY + MIN;
+  // A copy of the old cookie comes back: it is sent the waiting new one, and uses it.
+  assert.equal(cookieIn(await pub({ path: '/api/state', headers: { cookie: owner } })), sealed);
+  const copy = await pub({ path: '/api/state', headers: { cookie: `__Host-ledung_device=${sealed}` } });
+  assert.equal(copy.status, 200);
+  assert.equal(cookieIn(copy), null, 'its first use starts a new day, not another renewal');
+  // The owner comes back with the old cookie after the minute: two holders, so the device is removed.
+  clock += OLD_COOKIE_GRACE_MS + 1000;
+  assert.equal((await pub({ path: '/api/state', headers: { cookie: owner } })).status, 401);
+  assert.equal((await pub({ path: '/api/state', headers: { cookie: `__Host-ledung_device=${sealed}` } })).status, 401, 'the copy is out too: removed');
+  computer.page.close();
+  clock = 0;
+});

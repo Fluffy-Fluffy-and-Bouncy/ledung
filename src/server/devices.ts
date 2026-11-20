@@ -290,8 +290,12 @@ export class Devices {
     let renewalWaiting = false;
     if (r && r.new_cookie_sealed != null) {
       // The renewed cookie is used for the first time: it reached the browser, so from now on the old one has its
-      // minute and then only revokes the device.
-      this.db.prepare('UPDATE devices SET new_cookie_sealed = NULL, old_cookie_until = ? WHERE id = ? AND new_cookie_sealed IS NOT NULL').run(at + OLD_COOKIE_GRACE_MS, r.id);
+      // minute and then only revokes the device. Its day starts now too (self-check of #468, finding 1): renewed again
+      // at once after a wait of over a day, the old one would leave the row, and a copy that came back for the new one
+      // would then shut the owner, back with the old one, out unnoticed instead of removing the device.
+      const done = this.db.prepare('UPDATE devices SET new_cookie_sealed = NULL, old_cookie_until = ?, cookie_at = ? WHERE id = ? AND new_cookie_sealed IS NOT NULL')
+        .run(at + OLD_COOKIE_GRACE_MS, at, r.id);
+      if (Number(done.changes) > 0) r.cookie_at = at;
     }
     if (!r) {
       const old = this.db.prepare(`SELECT * FROM devices WHERE old_cookie_hash = ? AND revoked_at IS NULL AND ${kinds}`).get(hash(cookie)) as Row | undefined;
