@@ -10,7 +10,6 @@
 // phone. Browser rows count only locally and phone and computer rows only through the public name (byCookie's `where`).
 import crypto from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import { exercisedLine } from '../platform/exercised.ts';
 
 /** The device cookie. `__Host-` makes the browser keep it only for this exact name, over HTTPS, at Path=/. */
 export const DEVICE_COOKIE = '__Host-ledung_device';
@@ -127,8 +126,6 @@ export interface LinkRef {
   name: string;
 }
 
-let exercised462 = false;
-
 /**
  * The link a computer device was paired through (issue #313), among the links there are now; null for a phone, one
  * paired here, or one no link answers to. By the link id it kept; otherwise by the name the link had when it paired,
@@ -145,10 +142,6 @@ export function pairedLink<L extends LinkRef>(device: Pick<Device, 'kind' | 'pai
   if (device.pairedVia === null) return null;
   const named = links.filter((l) => l.name === device.pairedVia);
   if (named.length !== 1) return null;
-  if (device.pairedViaLink !== null && !exercised462) {
-    exercised462 = true;
-    exercisedLine('EXERCISED #462 a tab paired through a link that is gone counted for the new link of its name');
-  }
   return named[0]!;
 }
 
