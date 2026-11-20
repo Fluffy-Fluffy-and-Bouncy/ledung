@@ -77,6 +77,11 @@ One window opens with your running Ledung's page, signed in. Nothing opens in th
 - **Permissions.** Ledung's page may show notifications and copy to the clipboard, the two things it uses. Everything
   else a page can ask for (camera, microphone, screen, location, reading the clipboard) is refused: Electron would
   otherwise grant it without asking, where a browser asks you.
+- **No Touch ID on the Mac** (#427). A change on another computer's tab that needs your passkey can't be made in the app
+  on a Mac: Electron offers Touch ID only to an app signed with Apple's keychain entitlement, and this one is signed ad
+  hoc (#572). The page says so in one line, "make this change in your browser", and its **Open in browser** opens that
+  computer's page in your default browser. A computer that trusts this one's screen needs no passkey from it (#313).
+  On Windows the app asks for Windows Hello as a browser does.
 
 ## The made app
 

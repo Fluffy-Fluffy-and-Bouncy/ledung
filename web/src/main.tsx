@@ -5,13 +5,15 @@ import './styles.css';
 import { THEME_KEY, applyTheme, parseTheme, readTheme } from './theme.ts';
 import { setPasskeyCalls, setVouchCall } from './api.ts';
 import { browserPasskeys } from './passkey.ts';
+import { macAppPasskeys, macAppWithoutPasskeys } from './passkeyWords.ts';
 import { followKeyboard } from './phoneKeyboard.ts';
 import { PasskeyDialog } from './components/PasskeyDialog.tsx';
 import { followFramingPage } from './settingsStore.ts';
 import { vouchByFramingPage } from './vouch.ts';
 
 // Through the public name, page-key actions ask for the phone's passkey (#160).
-setPasskeyCalls(browserPasskeys);
+// In Ledung's desktop app on a Mac no Touch ID prompt can come (#427): it says to use the browser instead.
+setPasskeyCalls(macAppWithoutPasskeys(navigator.userAgent) ? macAppPasskeys : browserPasskeys);
 // In a frame on another computer's page: when this computer trusts that screen, it vouches instead (issue #313).
 if (window.parent !== window) setVouchCall(vouchByFramingPage);
 

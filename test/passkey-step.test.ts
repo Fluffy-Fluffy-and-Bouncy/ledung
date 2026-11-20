@@ -7,7 +7,7 @@ import {
   api, connectionClosed, connectionHello, DEVICE_LOCKED, openConnection, PASSKEY_CANCELLED, PASSKEY_NEEDED,
   resetPasskeyExplained, setPasskeyCalls, setPasskeyPrompter, type PasskeyStep,
 } from '../web/src/api.ts';
-import { asCancelled, passkeyWords } from '../web/src/passkeyWords.ts';
+import { asCancelled, MAC_APP_NO_PASSKEY, macAppPasskeys, macAppWithoutPasskeys, passkeyWords } from '../web/src/passkeyWords.ts';
 import { HANG_MS } from './limits.ts';
 
 const realFetch = globalThis.fetch;
@@ -156,4 +156,51 @@ test('the words say what comes, that a locked phone asks twice, and offer Try ag
   assert.equal(passkeyWords({ kind: 'sign', failed: PASSKEY_CANCELLED }).go, 'Try again');
   const other = passkeyWords({ kind: 'sign', failed: 'Ledung is not reachable.' });
   assert.ok(other.body.includes('Ledung is not reachable.'), 'another failure shows its reason');
+});
+
+// Issue #427: Ledung's desktop app on a Mac gets no Touch ID prompt (Electron serves it only to an app signed with
+// Apple's keychain entitlement; the app is ad hoc signed) and a passkey request there hangs. The User-Agents: the Mac
+// one as Electron 45.4.1's page sent it on magto-mini, 2026-11-20; the Windows one the same format with Chromium's
+// Windows platform part; Chrome and Safari as those browsers send them.
+const MAC_APP_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Ledung/0.0.0 Chrome/156.0.8078.100 Electron/45.4.1 Safari/537.36';
+const WINDOWS_APP_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Ledung/0.0.0 Chrome/156.0.8078.100 Electron/45.4.1 Safari/537.36';
+const MAC_CHROME_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36';
+const MAC_SAFARI_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15';
+
+test('only the desktop app on a Mac counts as having no passkey prompt; Windows (Windows Hello) and the browsers ask as before', () => {
+  assert.equal(macAppWithoutPasskeys(MAC_APP_UA), true);
+  assert.equal(macAppWithoutPasskeys(WINDOWS_APP_UA), false);
+  assert.equal(macAppWithoutPasskeys(MAC_CHROME_UA), false);
+  assert.equal(macAppWithoutPasskeys(MAC_SAFARI_UA), false);
+});
+
+// The timeout is the backstop: a check that reached the passkey call would hang, as in the app.
+test('in the Mac app a check says in one line to use the browser, at once: no notice, no passkey call, no retry, nothing sent', { timeout: HANG_MS }, async () => {
+  publicPage();
+  setPasskeyCalls(macAppPasskeys);
+  const sent = ledung({ locked: true });
+  const shown = dialog([true, true, true]);
+  await assert.rejects(api.setPaused('s1', true), (e: Error) => e.message === MAC_APP_NO_PASSKEY);
+  assert.deepEqual(shown, [{ kind: 'unlock', failed: MAC_APP_NO_PASSKEY }], 'one step, the reason, even after Open in browser');
+  // The unlock is tried unsigned first, as in 'a retry turned down …' above; then no challenge, and no change again.
+  assert.deepEqual(sent, ['/api/sessions/s1/pause', '/api/device-unlock'], 'no challenge asked for and the change not sent again');
+  // The same page with the browser's calls goes on to a challenge: the probe above reaches the passkey path.
+  setPasskeyCalls({ sign: async () => 'signature', create: async () => ({}) });
+  await api.setPaused('s1', true);
+  assert.ok(sent.includes('/api/passkey-challenge'));
+});
+
+test('in the Mac app setting up a passkey says the same line at once', { timeout: HANG_MS }, async () => {
+  publicPage();
+  setPasskeyCalls(macAppPasskeys);
+  globalThis.fetch = (async () => new Response(JSON.stringify({ challenge: 'chal' }), { status: 200 })) as typeof fetch;
+  await assert.rejects(api.addPasskey(), (e: Error) => e.message === MAC_APP_NO_PASSKEY);
+});
+
+test('the Mac app\'s words are one line and offer to open the page in the browser', () => {
+  const words = passkeyWords({ kind: 'sign', failed: MAC_APP_NO_PASSKEY });
+  assert.deepEqual(words.body, [MAC_APP_NO_PASSKEY]);
+  assert.equal(words.go, 'Open in browser');
+  assert.equal(words.openInBrowser, true);
+  assert.equal(passkeyWords({ kind: 'sign', failed: PASSKEY_CANCELLED }).openInBrowser, undefined, 'any other failure stays a retry');
 });
