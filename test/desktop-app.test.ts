@@ -948,3 +948,108 @@ test("⌘R, Reload and Force Reload restart an app whose code is not the install
   // The View menu's other commands never restart, out of date or not.
   for (const other of ['devTools', 'resetZoom', 'zoomIn', 'zoomOut']) assert.equal(reloadRestarts(other, '3.16.0', '3.17.0'), false, other);
 });
+
+/**
+ * A stand-in for Electron, for running the app's real main.ts outside it (test review of PR #459, finding 1). It
+ * prints what the app did as `EVENT <name>` lines: `window` when the app goes on to set its menu, the first step
+ * of opening its window (then it exits: the window itself needs the real Electron), `quit` when it quits. Its quit
+ * runs the app's before-quit and will-quit handlers as Electron does, so the restart command is really started.
+ */
+const ELECTRON_STAND_IN = `
+const handlers = {};
+const event = (name) => process.stdout.write('EVENT ' + name + '\\n');
+// Anything else the app touches at start: callable, constructible, every property another such thing.
+const any = () => new Proxy(function () {}, {
+  get: (_t, key) => (key === 'then' || typeof key === 'symbol' ? undefined : any()),
+  apply: () => any(),
+  construct: () => any(),
+});
+export const app = new Proxy({
+  getVersion: () => process.env.STAND_IN_VERSION,
+  on: (name, fn) => { (handlers[name] ??= []).push(fn); },
+  whenReady: () => Promise.resolve(),
+  isReady: () => false,
+  requestSingleInstanceLock: () => true,
+  quit: () => {
+    event('quit');
+    for (const name of ['before-quit', 'will-quit']) for (const fn of handlers[name] ?? []) fn({ preventDefault() {} });
+    setTimeout(() => process.exit(0), 300);
+  },
+  exit: (code) => process.exit(code),
+}, { get: (t, key) => (key in t ? t[key] : any()) });
+export const Menu = new Proxy({ setApplicationMenu: () => { event('window'); process.exit(0); } }, { get: (t, key) => (key in t ? t[key] : any()) });
+export const BrowserWindow = any();
+export const clipboard = any();
+export const dialog = any();
+export const ipcMain = any();
+export const nativeImage = any();
+export const session = any();
+export const shell = any();
+export const WebContentsView = any();
+`;
+
+test("the app's own start (desktop/main.ts) restarts it into the installed version before any window, once per version (#455)", async () => {
+  const { build } = await import('esbuild');
+  const root = path.join(base, 'main-start-455');
+  const appCode = path.join(root, 'app');
+  fs.mkdirSync(appCode, { recursive: true });
+  const standIn = path.join(root, 'electron-stand-in.mjs');
+  fs.writeFileSync(standIn, ELECTRON_STAND_IN);
+  // The real main.ts, bundled as the package bundles it (scripts/build-package.ts), with the stand-in for Electron.
+  await build({
+    entryPoints: [path.join(appDir(), 'desktop', 'main.ts')],
+    outfile: path.join(appCode, 'main.js'),
+    bundle: true,
+    platform: 'node',
+    format: 'esm',
+    target: 'node24',
+    logLevel: 'error',
+    plugins: [{ name: 'electron-stand-in', setup: (b) => b.onResolve({ filter: /^electron$/ }, () => ({ path: standIn })) }],
+  });
+  // An installed package whose `ledung` writes down how it was run, instead of restarting anything.
+  const pkg = path.join(root, 'installed');
+  fs.mkdirSync(path.join(pkg, 'dist'), { recursive: true });
+  const cli = path.join(pkg, 'dist', 'cli.js');
+  const data = path.join(root, 'data');
+  const ran = path.join(root, 'cli-ran.json');
+  fs.writeFileSync(cli, `require('node:fs').writeFileSync(${JSON.stringify(ran)}, JSON.stringify(process.argv.slice(2)));\n`);
+  fs.writeFileSync(path.join(appCode, MADE_CONFIG), JSON.stringify({ node: process.execPath, cli, env: { LEDUNG_DATA_DIR: data } }));
+  const note = path.join(data, 'desktop', '.start-update');
+
+  const start = async (own: string, installed: string) => {
+    fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: 'ledung', version: installed }));
+    fs.rmSync(ran, { force: true });
+    const env: NodeJS.ProcessEnv = { ...process.env, STAND_IN_VERSION: own };
+    delete env.LEDUNG_DATA_DIR;
+    const child = spawn(process.execPath, [path.join(appCode, 'main.js')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    child.stdout.on('data', (d: Buffer) => { out += d.toString(); });
+    child.stderr.on('data', (d: Buffer) => { out += d.toString(); });
+    await new Promise<void>((resolve) => child.on('exit', () => resolve()));
+    const events = out.split('\n').filter((l) => l.startsWith('EVENT ')).map((l) => l.slice(6));
+    // The restart command is detached: give it a moment to have written down how it ran.
+    for (let i = 0; i < 50 && events.includes('quit') && !fs.existsSync(ran); i++) await new Promise((r) => setTimeout(r, 100));
+    const args = fs.existsSync(ran) ? (JSON.parse(fs.readFileSync(ran, 'utf8')) as string[]) : null;
+    return { events, args, pid: child.pid, out };
+  };
+
+  // Out of date after an update: it quits before any window and runs the made app's `ledung` in app-only mode with
+  // its own pid, and notes the version it restarts for.
+  const old = await start('1.0.0', '2.0.0');
+  assert.deepEqual(old.events, ['quit'], old.out);
+  assert.deepEqual(old.args, [`${AFTER_APP_ARG}=${old.pid}`, APP_ONLY_ARG], old.out);
+  assert.equal(fs.readFileSync(note, 'utf8').trim(), '2.0.0');
+
+  // Started again still out of date for that same version (the restart could not bring it): it opens on its own
+  // code, no second restart, so no loop.
+  const again = await start('1.0.0', '2.0.0');
+  assert.deepEqual(again.events, ['window'], again.out);
+  assert.equal(again.args, null, 'no restart command ran');
+  assert.equal(fs.existsSync(note), true, 'the note stays until the app is up to date');
+
+  // Up to date: it opens as before, no restart, and the note goes.
+  const current = await start('2.0.0', '2.0.0');
+  assert.deepEqual(current.events, ['window'], current.out);
+  assert.equal(current.args, null, 'no restart command ran');
+  assert.equal(fs.existsSync(note), false);
+});
