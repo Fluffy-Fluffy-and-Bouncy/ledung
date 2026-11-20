@@ -201,7 +201,13 @@ test('a second press after the pairing worked says the link was used, and whethe
   assert.match(look.body, /That pairing worked/);
   assert.doesNotMatch(look.body, /<form/);
   assert.deepEqual(liveDevices().map((d) => d.name), ['Worked']);
+  // It worked, then was removed in Settings: every page says removed, not that it worked (self-check round 2).
   server.devices.revoke(liveDevices()[0]!.id);
+  for (const res of [await pub({ path: `/p/${code}` }), await press(code, 'Other')]) {
+    assert.equal(res.status, 403);
+    assert.match(res.body, /2 minutes ago, to pair <b>Worked<\/b>\. That device has been removed since/);
+    assert.doesNotMatch(res.body, /That pairing worked/);
+  }
 });
 
 test('opening a used link whose pairing never arrived only looks, and offers to pair; a link preview pairs nothing', async () => {
@@ -245,8 +251,9 @@ test('a used link stops after its 10 minutes, and a pairing removed in Settings 
   const look = await pub({ path: `/p/${code2}` });
   assert.match(look.body, /That device has been removed since/);
   assert.doesNotMatch(look.body, /<form/, 'no Pair button that would only refuse');
+  clock += 3 * MIN;
   const page = await pub({ path: removedDone, headers: FRAME });
-  assert.match(page.body, /That device has been removed since/);
+  assert.match(page.body, /already used, 3 minutes ago, to pair <b>Removed<\/b>\. That device has been removed since/);
   assert.doesNotMatch(page.body, /<form/);
   assert.deepEqual(liveDevices(), []);
 });

@@ -1513,8 +1513,8 @@ export class LedungServer {
         const used = this.devices.usedPairing(code);
         if (!used) return page(403, invalid);
         if (used.deviceId === here?.id) return page(200, pairUsedWords(used, this.opts.now?.() ?? Date.now(), 'here') + PAIRED_NEXT);
-        if (used.seen) return page(403, pairUsedWords(used, this.opts.now?.() ?? Date.now(), 'elsewhere'));
         if (used.removed) return page(403, pairUsedWords(used, this.opts.now?.() ?? Date.now(), 'removed'));
+        if (used.seen) return page(403, pairUsedWords(used, this.opts.now?.() ?? Date.now(), 'elsewhere'));
         return page(403, pairUsedWords(used, this.opts.now?.() ?? Date.now(), 'never') + form(code!, used.name, 'Pair this browser'));
       }
       // A code a linked computer asked for (issue #273) pairs a browser on that computer: named after it at first.
@@ -1569,7 +1569,7 @@ export class LedungServer {
         : '';
       return page(200, `<h2>Paired</h2><p>This browser is paired with Ledung as <b>${escapeHtml(done.name)}</b>.</p>${before}${PAIRED_NEXT}`, '<meta http-equiv="refresh" content="3;url=/#/settings">');
     }
-    if (done.removed) return page(403, pairUsedWords(done, done.at, 'removed'));
+    if (done.removed) return page(403, pairUsedWords(done, this.opts.now?.() ?? Date.now(), 'removed'));
     if (done.seen) return page(403, `<p>This link paired <b>${escapeHtml(done.name)}</b>, but this browser did not send its pairing back just now. If Ledung does not open here, make a new pairing link in Settings → Phones in Ledung on the computer.</p>`);
     this.devices.dropUnseen(check);
     console.log(`Devices: "${done.name}" was paired${done.partitioned ? ' in a frame' : ''}, but its browser did not keep the cookie; removed.`);
