@@ -17,7 +17,7 @@ import { CONTEXT_LABELS, contextItems, type ContextItem } from './context-menu.t
 import { dockIconLayout, padBitmap } from './dock-icon.ts';
 import { FindSession, type FindRequest } from './find.ts';
 import { findKey, zoomed, zoomKey, type FindKey } from './keys.ts';
-import { APP_ID, installedVersion, readMadeConfig, readStartUpdate, restartBrings, START_HIDDEN_FILE, START_UPDATE_FILE, updateAtStart, WRITE_SHORTCUT_ARG } from './made.ts';
+import { APP_ID, installedVersion, readMadeConfig, readStartUpdate, reloadRestarts, restartBrings, START_HIDDEN_FILE, START_UPDATE_FILE, updateAtStart, WRITE_SHORTCUT_ARG } from './made.ts';
 import { menuTemplate, type PageCommand } from './menu.ts';
 import { restartCommand, runStart, startCommand, startEnv } from './start.ts';
 import { WindowList } from './windows.ts';
@@ -295,7 +295,7 @@ function limitPermissions(ses: Session): void {
  * second start, a click in the Dock. With none open, a new one.
  */
 function showWindow(w: BrowserWindow | null = windows.latest()): void {
-  // Not while restarting at start (#455): the Dock's launch click or a second start would make a window it then closes.
+  // Not while restarting at start or for a reload (#455): a Dock click or a second start would make a window it then closes.
   if (!app.isReady() || restartAppOnly) return;
   if (!w || w.isDestroyed()) {
     createWindow();
@@ -347,7 +347,7 @@ function quit(): void {
 let updatePending = false;
 /** A quit that restarts the app once it is sure (will-quit): a page that asked "Leave this page?" may still keep it. */
 let restartOnQuit = false;
-/** That restart is the one at start (#455): the `ledung` it runs opens the app only, never starting Ledung itself. */
+/** That restart is the one at start or a reload's (#455): the `ledung` it runs opens the app only, never starting Ledung. */
 let restartAppOnly = false;
 
 /** Whether any window is in sight: shown and not minimised. */
@@ -365,7 +365,7 @@ let hiddenAtRestart = false;
  * when that command is gone (a Node upgraded or moved): quitting would leave nothing to open the app again, so it stays
  * on the old code with its banner, and starting `ledung` updates it (self-check finding 4).
  */
-function restartForUpdate(): void {
+function restartForUpdate(appOnly = false): void {
   if (!made || restartOnQuit) return;
   if (!restartCommand(made, process.pid)) {
     console.error('Ledung desktop: the ledung command that made this app is gone; start it again with ledung to update it.');
@@ -380,6 +380,7 @@ function restartForUpdate(): void {
   // Minimised counts as there: the Mac reports a minimised window as not visible (self-check round 2, finding 1).
   hiddenAtRestart = !openWindows().some((w) => w.isVisible() || w.isMinimized());
   restartOnQuit = true;
+  restartAppOnly = appOnly;
   quit();
 }
 
@@ -607,6 +608,12 @@ function showContextMenu(w: BrowserWindow, contents: WebContents, params: Contex
 function pageCommand(w: BrowserWindow, command: PageCommand): void {
   if (w.isDestroyed()) return;
   const page = w.webContents;
+  // This app's own code is older than the installed Ledung (#455): a reload restarts the window into it instead of
+  // reloading the page alone. App only: a reload never starts Ledung.
+  if (made && reloadRestarts(command, app.getVersion(), installedVersion(made.cli))) {
+    restartForUpdate(true);
+    return;
+  }
   if (command === 'reload') page.reload();
   else if (command === 'forceReload') page.reloadIgnoringCache();
   else if (command === 'devTools') page.toggleDevTools();
@@ -737,6 +744,7 @@ function createWindow(bounds?: { x: number; y: number; width: number; height: nu
       // A restart for an update waits too (#408), until the page asks again at its next connection: not at the next
       // hide, which would ask the same question again (self-check finding 5).
       restartOnQuit = false;
+      restartAppOnly = false;
       updatePending = false;
       // A window that was closing stays: back in the list (#414).
       if (!windows.has(w)) windows.add(w);

@@ -148,3 +148,13 @@ export function updateAtStart(o: { own: string; installed: string | null; tried:
 export function restartBrings(own: string, installed: string | null): boolean {
   return installed !== null && installed !== own;
 }
+
+/**
+ * Whether a View menu command reloads by restarting the app instead (#455, Martin 2026-11-20 12:20: "when we press
+ * reload, why doesnt we reload with the new code?"). ⌘R/Ctrl+R, Reload and Force Reload reload the page, which comes
+ * from the running Ledung, but never the app's own code; while that code is older than the installed version they
+ * restart the window into it, as the update banner's Restart window does.
+ */
+export function reloadRestarts(command: string, own: string, installed: string | null): boolean {
+  return (command === 'reload' || command === 'forceReload') && restartBrings(own, installed);
+}

@@ -13,7 +13,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 import {
-  AFTER_APP_ARG, afterApp, APP_ID, APP_ONLY_ARG, installedVersion, MADE_CONFIG, madeConfigFor, readMadeConfig, readStartUpdate, restartBrings,
+  AFTER_APP_ARG, afterApp, APP_ID, APP_ONLY_ARG, installedVersion, MADE_CONFIG, madeConfigFor, readMadeConfig, readStartUpdate, reloadRestarts, restartBrings,
   START_HIDDEN_FILE, START_UPDATE_RETRY_MS, updateAtStart, WRITE_SHORTCUT_ARG, type MadeConfig,
 } from '../desktop/made.ts';
 import { findOnPath, restartCommand, runStart, startCommand } from '../desktop/start.ts';
@@ -934,4 +934,17 @@ test('`ledung --after-app=<pid> --app-only` never starts Ledung: it opens the ap
   assert.equal(fs.existsSync(only.log), false, only.out);
   assert.equal(only.code, 1, only.out);
   assert.ok(only.out.includes(NO_APP), only.out);
+});
+
+test("⌘R, Reload and Force Reload restart an app older than the installed version into it; up to date they reload the page (#455)", () => {
+  // Martin, 2026-11-20 12:20: "when we press reload, why doesnt we reload with the new code?" After an update the
+  // installed package is newer than the app's own code: a reload restarts the window into it.
+  assert.equal(reloadRestarts('reload', '3.16.0', '3.17.0'), true);
+  assert.equal(reloadRestarts('forceReload', '3.16.0', '3.17.0'), true);
+  // Up to date, or nothing known about the install: the page reloads as before.
+  assert.equal(reloadRestarts('reload', '3.17.0', '3.17.0'), false);
+  assert.equal(reloadRestarts('forceReload', '3.17.0', '3.17.0'), false);
+  assert.equal(reloadRestarts('reload', '3.16.0', null), false);
+  // The View menu's other commands never restart, out of date or not.
+  for (const other of ['devTools', 'resetZoom', 'zoomIn', 'zoomOut']) assert.equal(reloadRestarts(other, '3.16.0', '3.17.0'), false, other);
 });

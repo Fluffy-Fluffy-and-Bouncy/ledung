@@ -148,6 +148,10 @@ What `npm install -g ledung` and `ledung` give (`src/platform/desktop-app.ts`, #
   goes once the app starts up to date. An app whose `ledung` is gone, or whose package can't be read (mid-update),
   runs what it has. An app made before this fix has no such check: it takes it the first time `ledung` or the tray's
   **Open Ledung** writes its code.
+- **Reload takes the update too** (#455; Martin, 2026-11-20: "when we press reload, why doesnt we reload with the new
+  code?"). ⌘R/Ctrl+R, View → Reload and Force Reload reload the page, which comes from the running Ledung, but never
+  the app's own code. While that code is older than the installed version they restart the window into it instead, in
+  the same "app only" way, and the window comes back shown at the start page. Up to date, they reload the page as before.
 
 To try it from a worktree, pack and install into a throwaway prefix, with a throwaway Ledung's settings (everything,
 the downloaded Electron included, stays under `.test/`):
