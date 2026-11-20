@@ -9,6 +9,11 @@ together, are in [CHANGELOG.md](CHANGELOG.md). Online: https://projectledung.com
 ([docs/changes/README.md](docs/changes/README.md)); `npm run publish:dev` and `npm run publish:public` fold them in
 here under the version they publish, and push the result to main.
 
+## v4.2 — 2026-11-20 14:31 CET
+- The desktop app runs the installed Ledung's code however it is opened (Start menu, taskbar, Dock, Launchpad, Finder, "Open in the Ledung app"): after an update it brings itself up to date at start, before its window opens (#455)
+- An app whose own `ledung` has the same version as the app no longer restarts over and over when another install of Ledung runs (#455)
+- In the desktop app, Reload (⌘R or Ctrl+R, View → Reload, Force Reload) after an update restarts the app into the installed version instead of reloading only the page (#455)
+
 ## v4.1 — 2026-11-20 14:23 CET
 - Desktop app: New window in a linked computer's tab opens a new app window at your own start page, as in your own tab; needs this version on both computers (#454)
 - The desktop app on a Mac no longer waits forever for a Touch ID prompt that never comes: a passkey check there says in one line to make the change in your browser, and offers to open that page in it (#427)
