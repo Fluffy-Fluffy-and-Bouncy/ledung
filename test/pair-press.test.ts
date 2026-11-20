@@ -234,13 +234,39 @@ test('a used link stops after its 10 minutes, and a pairing removed in Settings 
 
   clock = 0;
   const code2 = await newCode();
-  after303(await press(code2, 'Removed'));
+  const removedDone = after303(await press(code2, 'Removed'));
   // The person removes it in Settings before its browser came back.
   server.devices.revoke(liveDevices()[0]!.id);
   const again = await press(code2, 'Removed');
   assert.equal(again.status, 403);
   assert.equal(cookieIn(again), null);
+  assert.match(again.body, /to pair <b>Removed<\/b>\. That device has been removed since, so this link pairs nothing more\./);
+  assert.doesNotMatch(again.body, /That pairing worked/, 'not told it worked (self-check of #466, finding 2)');
+  const look = await pub({ path: `/p/${code2}` });
+  assert.match(look.body, /That device has been removed since/);
+  assert.doesNotMatch(look.body, /<form/, 'no Pair button that would only refuse');
+  const page = await pub({ path: removedDone, headers: FRAME });
+  assert.match(page.body, /That device has been removed since/);
+  assert.doesNotMatch(page.body, /<form/);
   assert.deepEqual(liveDevices(), []);
+});
+
+test('a new pairing code ends what the last used one could still do: it pairs nothing in place of its lost device', async () => {
+  clock = 0;
+  const code = await newCode();
+  after303(await press(code, 'Lost first'));
+  // The positive branch first: before a new code, the used one still offers to pair in place of its lost device.
+  assert.match((await pub({ path: `/p/${code}` })).body, /That pairing never reached a browser/);
+  const fresh = await newCode();
+  const again = await press(code, 'Lost first');
+  assert.equal(again.status, 403);
+  assert.equal(cookieIn(again), null);
+  assert.match(again.body, /This pairing link is not valid any more/);
+  assert.deepEqual(liveDevices().map((d) => d.name), ['Lost first'], 'nothing removed or paired by the old code');
+  // The new code works as ever.
+  const pressed = await press(fresh, 'Second');
+  assert.equal((await pub({ path: after303(pressed), headers: { ...FRAME, cookie: cookieOf(pressed) } })).status, 200);
+  for (const d of liveDevices()) server.devices.revoke(d.id);
 });
 
 test('the pairing pages put a typed device name in as text, never as markup', async () => {

@@ -142,12 +142,14 @@ export interface UsedPairing {
   at: number;
   partitioned: boolean;
   seen: boolean;
+  /** Removed since, in Settings or by Ledung, and not by the page after pairing (which leaves pairAgain open). */
+  removed: boolean;
   /** Made by pairAgain: the earlier pairing with the same code, which never reached a browser. */
   replaced: { name: string; at: number } | null;
 }
 
 /** The last pairing as kept: its code and the check value too; `dropped`: removed as its browser kept no cookie. */
-type LastPairing = OpenCode & UsedPairing & { check: string; dropped: boolean };
+type LastPairing = OpenCode & Omit<UsedPairing, 'removed'> & { check: string; dropped: boolean };
 
 export class Devices {
   private readonly db: DatabaseSync;
@@ -169,6 +171,8 @@ export class Devices {
     const code = Array.from({ length: PAIR_CODE_LENGTH }, () => PAIR_CODE_CHARS[crypto.randomInt(PAIR_CODE_CHARS.length)]).join('');
     const expiresAt = this.now() + PAIR_CODE_MS;
     this.code = { value: Buffer.from(code), expiresAt, kind, via: via?.name ?? null, viaLink: via?.link ?? null };
+    // The last used code stops too (self-check of #466, finding 1): it can no longer pair again in its device's place.
+    this.used = null;
     return { code, expiresAt, kind };
   }
 
@@ -223,14 +227,17 @@ export class Devices {
     return this.used;
   }
 
-  private static view(used: UsedPairing): UsedPairing {
-    return { deviceId: used.deviceId, name: used.name, at: used.at, partitioned: used.partitioned, seen: used.seen, replaced: used.replaced };
+  private view(used: LastPairing): UsedPairing {
+    return {
+      deviceId: used.deviceId, name: used.name, at: used.at, partitioned: used.partitioned, seen: used.seen, replaced: used.replaced,
+      removed: !used.dropped && !this.get(used.deviceId),
+    };
   }
 
   /** The last pairing when `code` is the code that made it, used up but not yet expired (issue #466); null otherwise. */
   usedPairing(code: unknown): UsedPairing | null {
     const used = this.liveUsed();
-    return used && codeMatches(code, used.value) ? Devices.view(used) : null;
+    return used && codeMatches(code, used.value) ? this.view(used) : null;
   }
 
   /**
@@ -242,7 +249,7 @@ export class Devices {
     if (!used || typeof check !== 'string' || !/^[0-9a-f]{32}$/.test(check)) return null;
     const given = Buffer.from(check);
     if (!crypto.timingSafeEqual(given, Buffer.from(used.check))) return null;
-    return { ...Devices.view(used), code: used.value.toString() };
+    return { ...this.view(used), code: used.value.toString() };
   }
 
   /** A device's cookie came back (issue #466): if it is the last pairing's, that pairing reached its browser. */
@@ -263,7 +270,7 @@ export class Devices {
     // Removed in Settings meanwhile: that was the person's word, and the link stays used.
     if (!used.dropped && !this.revoke(used.deviceId)) return null;
     this.used = null;
-    const replaced = Devices.view(used);
+    const replaced = this.view(used);
     return { ...this.pairWith(used, name, partitioned, replaced), replaced };
   }
 
