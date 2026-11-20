@@ -21,13 +21,11 @@ import https from 'node:https';
 import path from 'node:path';
 import tls from 'node:tls';
 import { PUBLIC_NAME } from '../config.ts';
-import { exercisedLine } from '../platform/exercised.ts';
 import { writeFileSafely } from '../platform/safe-write.ts';
 
 export const LINKS_FILE = 'links.json';
 /** links.json's last save, kept next to it and loaded when links.json can't be (issue #460). */
 export const BACKUP_SUFFIX = '.bak';
-let exercised460 = false;
 
 /** The links in a links.json; throws when it isn't one (not JSON, or no list of links). */
 function parseLinks(text: string): Saved[] {
@@ -453,10 +451,6 @@ export class LinkedComputers {
         return [];
       }
       console.log(`Linked computers: ${this.file} can't be read: ${(e as Error).message}; loaded ${links.length} link(s) from its backup ${backup}`);
-      if (!exercised460) {
-        exercised460 = true;
-        exercisedLine('EXERCISED #460 links.json could not be read and its backup was loaded');
-      }
       try {
         // Put back, so the next read finds it and the log says this once.
         writeFileSafely(this.file, JSON.stringify({ links }, null, 2), { mode: 0o600, temp: `${this.file}.${process.pid}.new` });
