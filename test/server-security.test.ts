@@ -1957,6 +1957,12 @@ test('a sign link (#463): the browser signs exactly that request for exactly tha
     assert.equal(finished.status, 200, finished.body);
     assert.deepEqual(JSON.parse(finished.body), { name: 'Mac app' });
     assert.equal(errorOf(await pickUp(other, unlock.code)), 'This sign link is for another device.', 'signed, still not the other device\'s');
+    // Signed once: a second signature is refused while the first answer still waits to be picked up (PR #467 test review, Minor).
+    assert.match(errorOf(await browser('/sign/finish', { code: unlock.code, response: d.key.assert(o.options) })), gone, 'no second signature before the pickup');
+    // The device's cookie without its open page (a copied cookie) can't take the answer (PR #467 test review, Important).
+    const noPage = await pubChange('/api/passkey-sign-answer', { code: unlock.code }, d.cookie);
+    assert.equal(noPage.status, 403, noPage.body);
+    assert.equal(errorOf(noPage), "Only Ledung's open page can do this.");
     // The device picks the answer up, once, and its request goes through with it: the unlock.
     const picked = await pickUp(d, unlock.code);
     assert.equal(picked.status, 200, picked.body);
