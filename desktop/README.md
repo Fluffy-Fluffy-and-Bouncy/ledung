@@ -208,8 +208,24 @@ bar's view is not painted: the probe then reads the focus from inside the bar's 
 from its own page off screen, and says so). A fresh data folder shows Ledung's Welcome,
 which has no sidebar, so finish or leave the welcome in the page before the first run. Each check it makes prints
 `"event":"fail"` when it doesn't hold; the exit code is 0 only when all held, 1 otherwise, 2 when it refused to run.
-It refuses without both settings, on the default port, and on Windows (it reads command lines with `ps`; macOS and
-Linux only for now).
+It refuses without both settings, on the default port, and on Windows for every phase but `context` and `pictures`
+(the others read command lines with `ps`).
+
+`pictures` (a Ledung runs, #451) right-clicks the real page's pictures, not one the probe puts in: with
+`PROBE_PROJECT` naming a local project of the config whose sessions run on Haiku (`"model": "haiku"`), it copies two
+pictures into that project, starts a session, sends it a picture and has it ask a question with both as screenshots
+(up to `PROBE_QUESTION_SECONDS`, 120), then in the conversation and on Waiting for you checks that every picture in
+sight gets Copy Image and Save Image As…, that the menu really opens, and that Copy Image copies the first one.
+`PROBE_CLICK=native` clicks with the system's own mouse instead of Electron's input call (Windows through user32, the
+Mac through `probe/rclick.swift` run with `swift`): the screen must be unlocked, the pointer moves, and a person
+should leave the mouse alone for the minute it takes. `PROBE_MAIN=<folder>/dist/desktop/main.js` runs an npm
+package's built app instead of `main.ts`, to check what was shipped; `PROBE_SHOT_DIR=<folder>` saves the window per
+page. On Windows, in PowerShell from `desktop\`:
+
+```powershell
+$env:LEDUNG_CONFIG="$PWD\..\.test\a\config.json"; $env:LEDUNG_DATA_DIR="$PWD\..\.test\a\data"
+$env:PROBE_PHASE="pictures"; $env:PROBE_PROJECT="pics"; $env:PROBE_CLICK="native"; npx electron probe
+```
 
 ## How it is built
 
