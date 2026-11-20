@@ -15,6 +15,11 @@ npm install   # once, and after a pull that changes package.json: downloads Elec
 npm start
 ```
 
+A recent npm runs no package's install script it has not been told to allow ("install-scripts" warnings), and
+Electron's install script is what downloads Electron, so after `npm install` or `npm ci` here
+`node_modules/electron/dist` may be missing and Electron says it failed to install correctly. Run its script once by
+hand: `node node_modules/electron/install.js` (seen with npm 12.2.2 on Windows and npm 11.20.0 on the Mac, #451).
+
 One window opens with your running Ledung's page, signed in. Nothing opens in the browser.
 
 - **It attaches to the Ledung that runs.** With none running the window says "Ledung is not running" and offers
@@ -217,7 +222,8 @@ pictures into that project, starts a session, sends it a picture and has it ask 
 (up to `PROBE_QUESTION_SECONDS`, 120), then in the conversation and on Waiting for you checks that every picture in
 sight gets Copy Image and Save Image As…, that the menu really opens, and that Copy Image copies the first one.
 It checks only Ledung's own `<img>` pictures (from `/api/`), three on each page; one inside a closed block is
-skipped, and one with something else over it fails, naming what is on top. It leaves the two pictures, the session and
+skipped, and one with something else over it fails, naming what is on top. Each picture's line gives `showMs`, how long after the app asked
+the system showed the menu (it waits up to `PROBE_MENU_WAIT_MS`, 3000). It leaves the two pictures, the session and
 its open question in the throwaway. `PROBE_CLICK=native` clicks with the system's own mouse instead of Electron's
 input call (Windows through user32, the Mac through `probe/rclick.swift` run with `swift`): the screen must be
 unlocked, the window stays on top while it clicks, the pointer moves, and a person should leave the mouse alone for

@@ -662,15 +662,31 @@ async function picturesPhase(w: BrowserWindow): Promise<void> {
   if (question === null) return;
 
   const realPopup = Menu.prototype.popup;
-  const popped: { menu: Menu; shown: boolean }[] = [];
+  /**
+   * Each menu the app asked to open, with how long after its popup() the system showed it and closed it (ms). The
+   * probe closes a menu only once it has shown, and waits for that before the next click: closing it a fixed 500 ms
+   * after popup() cancelled one Windows had not shown yet (tubal-cain's run on #451, try 1, "shown":false).
+   */
+  type Popped = { menu: Menu; shown: boolean; showMs: number | null; closeMs: number | null };
+  const popped: Popped[] = [];
   Menu.prototype.popup = function popup(this: Menu, options?: Electron.PopupOptions) {
-    const entry = { menu: this, shown: false };
+    const calledAt = Date.now();
+    const entry: Popped = { menu: this, shown: false, showMs: null, closeMs: null };
     popped.push(entry);
     this.once('menu-will-show', () => {
       entry.shown = true;
+      entry.showMs = Date.now() - calledAt;
+    });
+    this.once('menu-will-close', () => {
+      entry.closeMs = Date.now() - calledAt;
     });
     realPopup.call(this, options);
-    setTimeout(() => this.closePopup(), 500);
+  };
+  const MENU_WAIT_MS = Number(process.env.PROBE_MENU_WAIT_MS ?? 3000);
+  /** Waits until `done` holds or `ms` passed; true when it held. */
+  const until = async (done: () => boolean, ms: number) => {
+    for (const end = Date.now() + ms; !done() && Date.now() < end;) await sleep(25);
+    return done();
   };
   const reported: Electron.ContextMenuParams[] = [];
   const listen = (_e: Electron.Event, p: Electron.ContextMenuParams) => reported.push(p);
@@ -733,14 +749,19 @@ async function picturesPhase(w: BrowserWindow): Promise<void> {
         reported.length = 0;
         popped.length = 0;
         rightClick(img.x, img.y);
-        await sleep(1200);
+        // The menu shows when the system shows it: up to MENU_WAIT_MS, then closed, and gone before the next click.
+        await until(() => popped.length > 0 && (popped.at(-1)!.shown || popped.at(-1)!.closeMs !== null), MENU_WAIT_MS);
         const p = reported[0];
         const last = popped.at(-1);
+        if (last?.shown) {
+          last.menu.closePopup(w);
+          await until(() => last.closeMs !== null, 2000);
+        }
         const labels = last ? last.menu.items.map((i) => (i.type === 'separator' ? '-' : i.label)) : null;
-        out('picture', { route, src: img.src, onTop: img.onTop, reported: p ? { mediaType: p.mediaType, hasImageContents: p.hasImageContents, srcURL: p.srcURL.replace(origin, '').slice(0, 70), linkURL: p.linkURL } : null, menu: labels, shown: last?.shown ?? false });
+        out('picture', { route, src: img.src, onTop: img.onTop, reported: p ? { mediaType: p.mediaType, hasImageContents: p.hasImageContents, srcURL: p.srcURL.replace(origin, '').slice(0, 70), linkURL: p.linkURL } : null, menu: labels, shown: last?.shown ?? false, showMs: last?.showMs ?? null, closeMs: last?.closeMs ?? null });
         expect(p?.mediaType === 'image', `Electron reports a picture on ${route} (${img.src})`, p?.mediaType ?? 'no context-menu event');
         expect(JSON.stringify(labels) === JSON.stringify(['Copy Image', 'Save Image As…']), `the picture gets Copy Image and Save Image As… on ${route}`, labels);
-        expect(last?.shown === true, `the menu opened on ${route}`, last?.shown);
+        expect(last?.shown === true, `the menu opened on ${route} within ${MENU_WAIT_MS} ms`, last ? { showMs: last.showMs, closeMs: last.closeMs } : null);
         if (!copiedOne && last) {
           copiedOne = true;
           clipboard.clear();
