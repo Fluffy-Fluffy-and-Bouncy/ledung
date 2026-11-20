@@ -11,6 +11,7 @@ import path from 'node:path';
 import { COOKIE, keyFor, LinkedNodes, until, type Node } from './linked-nodes.ts';
 import { FakePasskey } from './fake-passkey.ts';
 import { HANG_MS } from './limits.ts';
+import { pairedLink } from '../src/server/devices.ts';
 import { removeTemp } from './temp.ts';
 
 const nodes = new LinkedNodes();
@@ -459,6 +460,58 @@ test('a tab paired before the link id was kept counts by the link\'s name, only 
   assert.equal(header.status, 403);
   assert.match(header.json.error, /does not trust that computer's screen/);
 
+});
+
+// Issue #462 (Martin, 2026-11-20 14:19: "I enabled and dissabled it for tubal cain but it still didnt work"): linking
+// again makes a new link id, and the tab paired through the old link kept the old one, so the new link's trust never
+// covered it and it was still asked for a passkey.
+test('after unlinking and linking again, the tab paired through the old link counts for the new link\'s trust', { timeout: HANG_MS }, async () => {
+  const { mac, pc, frame, cookie, macLink } = await frameOfPc();
+  const device = pc.server.devices.byCookie(cookie.split('=')[1]!)!;
+  assert.equal(device.pairedViaLink, macLink.id);
+  const pcPage = await nodes.page(pc);
+  assert.equal((await pcPage('POST', `links/${macLink.id}/remove`, {})).status, 200);
+  const macPage = await nodes.page(mac);
+  await until(async () => ((await macPage('GET', 'links')).json.links as unknown[]).length === 0, 'the Mac to drop its link too');
+  await nodes.link(mac, pc, 'Mac');
+  const relinked = ((await pcPage('GET', 'links')).json.links as { id: string; name: string }[]);
+  assert.equal(relinked.length, 1);
+  assert.notEqual(relinked[0]!.id, macLink.id, 'a new link id');
+  // The tab's row still names the old link: nothing re-paired it.
+  assert.equal(pc.server.devices.get(device.id)!.pairedViaLink, macLink.id);
+
+  // Not trusted yet: it can only look, as before.
+  const before = await frame('computers', rename(pc, 'Before'));
+  assert.equal(before.status, 403);
+  assert.match(before.json.error, NO_PASSKEY);
+
+  // The new link trusted: the frame is offered a vouch, logs on by it and changes go through.
+  assert.equal((await pcPage('POST', `links/${relinked[0]!.id}/trust`, { on: true })).status, 200);
+  await until(async () => ((await macPage('GET', 'state')).json.computers as { id: string; trustsUs?: boolean }[]).find((c) => c.id === pc.name)?.trustsUs === true, 'the key on the Mac\'s tab for the PC');
+  const locked = await frame('computers', rename(pc, 'Locked'));
+  assert.equal(locked.status, 403);
+  assert.match(locked.json.error, DEVICE_LOCKED);
+  assert.equal((await frame('device-unlock', {}, await vouched(frame, macPage, pc, 'device-unlock'))).status, 200);
+  const changed = await frame('computers', rename(pc, 'Relinked'));
+  assert.equal(changed.status, 200, JSON.stringify(changed.json));
+
+  // Removing the new link's trust logs it off at once, as for a tab paired through that link itself.
+  assert.equal((await pcPage('POST', `links/${relinked[0]!.id}/trust`, { on: false })).status, 200);
+  const off = await frame('computers', rename(pc, 'Off'));
+  assert.equal(off.status, 403);
+  assert.match(off.json.error, NO_PASSKEY);
+});
+
+test('which link a tab belongs to: its kept link id; when that link is gone or none was kept, the one link of its name', () => {
+  const links = [{ id: 'new-mac', name: 'Mac' }, { id: 'pc2', name: 'PC' }];
+  const tab = (pairedViaLink: string | null, pairedVia: string | null, kind: 'computer' | 'phone' = 'computer') => ({ kind, pairedVia, pairedViaLink });
+  assert.equal(pairedLink(tab('pc2', 'Mac'), links)?.id, 'pc2', 'a kept link id wins over the name');
+  assert.equal(pairedLink(tab('old-mac', 'Mac'), links)?.id, 'new-mac', 'a gone link: by the name (#462)');
+  assert.equal(pairedLink(tab(null, 'Mac'), links)?.id, 'new-mac', 'no link id kept: by the name');
+  assert.equal(pairedLink(tab('old-mac', 'Laptop'), links), null, 'no link of its name');
+  assert.equal(pairedLink(tab('old-mac', 'Mac'), [...links, { id: 'twin', name: 'Mac' }]), null, 'two links of its name: neither');
+  assert.equal(pairedLink(tab('old-mac', null), links), null, 'paired here');
+  assert.equal(pairedLink(tab('new-mac', 'Mac', 'phone'), links), null, 'never a phone');
 });
 
 test('removing trust logs the frame off at once and its next change is refused; unlinking does too', { timeout: HANG_MS }, async () => {

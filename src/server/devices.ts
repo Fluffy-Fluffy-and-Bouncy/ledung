@@ -10,6 +10,7 @@
 // phone. Browser rows count only locally and phone and computer rows only through the public name (byCookie's `where`).
 import crypto from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { exercisedLine } from '../platform/exercised.ts';
 
 /** The device cookie. `__Host-` makes the browser keep it only for this exact name, over HTTPS, at Path=/. */
 export const DEVICE_COOKIE = '__Host-ledung_device';
@@ -118,6 +119,37 @@ export function browserName(userAgent: string | undefined): string {
   const os = /iPhone|iPad/.test(ua) ? 'iOS' : /Android/.test(ua) ? 'Android' : /Windows/.test(ua) ? 'Windows'
     : /Mac OS X|Macintosh/.test(ua) ? 'macOS' : /Linux|X11/.test(ua) ? 'Linux' : null;
   return os ? `${browser} on ${os}` : browser;
+}
+
+/** A linked computer as the devices see it: its link's id and the name it has here. */
+export interface LinkRef {
+  id: string;
+  name: string;
+}
+
+let exercised462 = false;
+
+/**
+ * The link a computer device was paired through (issue #313), among the links there are now; null for a phone, one
+ * paired here, or one no link answers to. By the link id it kept; otherwise by the name the link had when it paired,
+ * when one link alone has that name here. That is so for a device paired before link ids were kept, and for one whose
+ * link is gone: unlinking, or a crash that lost the links (#460), and linking again makes a new link id, and its tab
+ * paired through the old link was never covered by the new link's trust (issue #462).
+ */
+export function pairedLink<L extends LinkRef>(device: Pick<Device, 'kind' | 'pairedVia' | 'pairedViaLink'>, links: readonly L[]): L | null {
+  if (device.kind !== 'computer') return null;
+  if (device.pairedViaLink !== null) {
+    const byId = links.find((l) => l.id === device.pairedViaLink);
+    if (byId) return byId;
+  }
+  if (device.pairedVia === null) return null;
+  const named = links.filter((l) => l.name === device.pairedVia);
+  if (named.length !== 1) return null;
+  if (device.pairedViaLink !== null && !exercised462) {
+    exercised462 = true;
+    exercisedLine('EXERCISED #462 a tab paired through a link that is gone counted for the new link of its name');
+  }
+  return named[0]!;
 }
 
 export class Devices {
@@ -308,14 +340,11 @@ export class Devices {
     this.db.prepare('UPDATE devices SET logged_on_at = NULL WHERE id = ?').run(id);
   }
 
-  /**
-   * The live computer devices paired through a link (issue #313): those whose link id is kept, and older ones by the
-   * name the link had when they paired, when one link alone has that name here (`name`; null: none).
-   */
-  pairedThrough(linkId: string, name: string | null): Device[] {
-    const rows = this.db.prepare("SELECT * FROM devices WHERE revoked_at IS NULL AND kind = 'computer' AND (paired_via_link = ? OR (paired_via_link IS NULL AND paired_via = ?))")
-      .all(linkId, name) as Row[];
-    return rows.map(toDevice);
+  /** The live computer devices paired through the link `linkId`, among the links there are now (`pairedLink`). */
+  pairedThrough(linkId: string, links: readonly LinkRef[]): Device[] {
+    const rows = this.db.prepare("SELECT * FROM devices WHERE revoked_at IS NULL AND kind = 'computer' AND (paired_via_link IS NOT NULL OR paired_via IS NOT NULL)")
+      .all() as Row[];
+    return rows.map(toDevice).filter((d) => pairedLink(d, links)?.id === linkId);
   }
 
   /**
