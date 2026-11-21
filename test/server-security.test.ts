@@ -2032,6 +2032,45 @@ test('a sign link (#463): the browser signs exactly that request for exactly tha
   }
 });
 
+// Issue #481: the sign page says what it signs and for how long, from the rules themselves. The figures are the decided
+// ones: a computer stays logged on until it logs out or goes 14 days unused (question 5 on #245), a phone unlocks for 30
+// minutes (Martin, 2026-10-17, PR #164), a sign link lives two minutes (#463).
+test('a sign link\'s options tell the sign page whether it logs on, the device\'s kind and how long each lasts (#481)', async () => {
+  const phone = await deviceWithPasskey('Phone app');
+  // A computer with its passkey, as the Mac app is paired.
+  const live = await livePage();
+  const made = await change('/api/devices-pair', { kind: 'computer' }, { 'x-ledung-page': live.key });
+  live.close();
+  assert.equal(made.status, 200, made.body);
+  const code = new URL(JSON.parse(made.body).url).pathname.slice('/p/'.length);
+  const paired = await pub({
+    method: 'POST', path: '/pair', body: new URLSearchParams({ code, name: 'Mac app' }).toString(),
+    headers: { origin: PUBLIC_ORIGIN, 'content-type': 'application/x-www-form-urlencoded' },
+  });
+  assert.equal(paired.status, 303, paired.body);
+  const cookie = `__Host-ledung_device=${/__Host-ledung_device=([0-9a-f]{64})/.exec(String(paired.headers['set-cookie']))![1]}`;
+  const page = await publicPage(cookie);
+  const withKey = { 'x-ledung-page': page.key };
+  const key = new FakePasskey(PUBLIC);
+  const regOptions = JSON.parse((await pubChange('/api/passkey-options', {}, cookie, withKey)).body);
+  assert.equal((await pubChange('/api/passkey', { response: key.register(regOptions) }, cookie, withKey)).status, 200);
+  const termsOf = async (dev: { cookie: string; withKey: Record<string, string> }, p: string, body: string) => {
+    const link = await pubChange('/api/passkey-challenge', { method: 'POST', path: p, body, browser: true }, dev.cookie, dev.withKey);
+    assert.equal(link.status, 200, link.body);
+    const res = await pub({ method: 'POST', path: '/sign/options', body: JSON.stringify({ code: JSON.parse(link.body).code }), headers: { 'content-type': 'application/json', origin: PUBLIC_ORIGIN } });
+    assert.equal(res.status, 200, res.body);
+    return JSON.parse(res.body).terms;
+  };
+  try {
+    assert.deepEqual(await termsOf({ cookie, withKey }, '/api/device-unlock', '{}'), { logOn: true, kind: 'computer', idleDays: 14, unlockMinutes: 30, linkMinutes: 2 });
+    assert.deepEqual(await termsOf(phone, '/api/device-unlock', '{}'), { logOn: true, kind: 'phone', idleDays: 14, unlockMinutes: 30, linkMinutes: 2 });
+    assert.deepEqual(await termsOf({ cookie, withKey }, '/api/away', JSON.stringify({ until: '23:59' })), { logOn: false, kind: 'computer', idleDays: 14, unlockMinutes: 30, linkMinutes: 2 });
+  } finally {
+    page.close();
+    phone.page.close();
+  }
+});
+
 test('computers are linked and unlinked only on this computer: a paired device, unlocked and signing, is refused (#245 step 1)', async () => {
   const d = await deviceWithPasskey('Linking phone');
   try {

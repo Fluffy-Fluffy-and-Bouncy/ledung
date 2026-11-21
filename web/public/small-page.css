@@ -11,6 +11,8 @@
   --muted: #9aa1ad;
   --border: #333844;
   --accent: #7aa2f7;
+  --accent-text: #10131a;
+  --ok: #81c995;
 }
 html { background: var(--bg); }
 body {
@@ -50,3 +52,19 @@ input:focus { outline: none; border-color: var(--accent); }
   background: var(--panel);
   overflow-wrap: anywhere;
 }
+/* The pages' wording and layout as Martin passed them in the mockups (issue #481, 2026-11-21, Ledung question #751:
+   sign page variant A, no ASCII header). */
+h1 { font-size: 1.45em; margin: 0.2em 0 0.4em; }
+.muted { color: var(--muted); }
+.small { font-size: 0.88em; }
+.ok { color: var(--ok); }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+button.big { width: 100%; font-size: 1.15em; padding: 0.7rem 1rem; border-radius: 8px; }
+.facts { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 0.6em 1em; margin: 1em 0; }
+.facts h3 { margin: 0.2em 0 0.4em; font-size: 0.82em; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.facts ul { margin: 0; padding-left: 1.2em; }
+.facts li { margin: 0.3em 0; }
+.steps { padding-left: 1.3em; }
+.steps li { margin: 0.35em 0; }
+.row { display: flex; gap: 0.5em; }
+.row input { flex: 1; min-width: 0; }

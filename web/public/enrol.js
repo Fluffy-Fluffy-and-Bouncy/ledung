@@ -7,9 +7,17 @@ import { NO_WEBAUTHN, noPlatformPasskey, passkeyError } from '/enrol-messages.js
 
 const code = location.hash.slice(1);
 history.replaceState(null, '', location.pathname); // the code leaves the address bar
+const title = document.getElementById('title');
 const what = document.getElementById('what');
+const facts = document.getElementById('facts');
 const go = document.getElementById('go');
+const fine = document.getElementById('fine');
 const done = document.getElementById('done');
+/** A link that can't set anything up any more: only the reason stays (#481). */
+const dead = (text) => {
+  what.textContent = text;
+  for (const el of [facts, go, fine]) el.hidden = true;
+};
 
 const toB64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const fromB64 = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (s.length % 4)) % 4)), (c) => c.charCodeAt(0));
@@ -21,15 +29,21 @@ const post = async (path, body) => {
 };
 
 if (!code) {
-  what.textContent = 'This link has no code. Make a new one from the device that asked for it.';
+  dead('This link has no code. Make a new one from the device that asked for it.');
 } else {
-  what.textContent = 'Press the button, then use Touch ID, Face ID or Windows Hello. The passkey is for this Ledung, and for the device that sent you here.';
+  what.textContent = 'A passkey lets this device make changes in Ledung, not only look. You\'ll use Touch ID, Face ID or Windows Hello: nothing is typed, and the passkey itself never leaves your device.';
   go.hidden = false;
+  // The device's name in the title (#481), from the same call the button makes: a link no longer good says so at once.
+  // The button asks again, for a fresh check, as the page may wait longer than this one lasts.
+  post('/enrol/options', { code }).then((o) => {
+    title.textContent = `Set up the passkey for “${o.user?.name ?? 'this device'}”`;
+  }, (e) => dead(passkeyError(e)));
   // Said before trying (issue #273): no passkey can be made on this computer itself. The button stays, for a phone
   // (by its QR code) or a password manager's extension.
   if (!window.PublicKeyCredential) {
     what.textContent = NO_WEBAUTHN;
     go.hidden = true;
+    fine.hidden = true;
   } else if (PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable) {
     PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable().then((available) => {
       if (!available) what.textContent = noPlatformPasskey(navigator.userAgent);
@@ -55,7 +69,7 @@ if (!code) {
       };
       const { name } = await post('/enrol/finish', { code, response });
       what.textContent = `The passkey of "${name}" is set up.`;
-      go.hidden = true;
+      for (const el of [facts, go, fine]) el.hidden = true;
       done.hidden = false;
     } catch (e) {
       what.textContent = passkeyError(e);

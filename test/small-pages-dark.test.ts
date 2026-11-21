@@ -93,7 +93,7 @@ test('the small pages\' stylesheet is dark, in the main page\'s dark colours', (
   const small = fs.readFileSync(path.join(PUBLIC, 'small-page.css'), 'utf8');
   const main = fs.readFileSync(path.join(ROOT, 'web', 'src', 'styles.css'), 'utf8');
   assert.match(small, /:root\s*\{[^}]*color-scheme:\s*dark;/);
-  for (const name of ['--bg', '--panel', '--panel-2', '--text', '--muted', '--border', '--accent']) {
+  for (const name of ['--bg', '--panel', '--panel-2', '--text', '--muted', '--border', '--accent', '--accent-text', '--ok']) {
     assert.equal(colour(small, name), colour(main, name), `${name} is the main page's dark value`);
   }
   // The page itself, its text, buttons and fields take those colours.
@@ -124,7 +124,7 @@ test('the not-signed-in page on this computer loads the dark stylesheet', async 
 test('the not-paired page through the public name, with its pair-code form, loads the dark stylesheet', async () => {
   const res = await pub('/');
   assert.equal(res.status, 401);
-  assert.match(res.body, /not paired/);
+  assert.match(res.body, /isn't paired with this Ledung/);
   assert.match(res.body, /<form method="get" action="\/pair">/);
   assert.ok(res.body.includes(LINK) && res.body.includes(SCHEME), res.body);
 });
@@ -143,4 +143,40 @@ test('the pairing page of a link loads the dark stylesheet, and the stylesheet i
   assert.equal(css.status, 200);
   assert.match(String(css.headers['content-type']), /^text\/css/);
   assert.match(css.body, /color-scheme:\s*dark/);
+});
+
+// The wording Martin passed in the mockups (#481, Ledung question #751), its facts checked against the rules. The
+// figures are the decided ones: a pairing code lives 10 minutes and a passkey can be set up in the 10 minutes after
+// pairing (src/server/devices.ts, step 5), an enrol link lives 5 minutes (issue #241).
+test('the not-paired page says where a pairing code is made and how long it works, and its Next button is the main one', async () => {
+  const res = await pub('/');
+  assert.match(res.body, /<h1>Pair this device first<\/h1>/);
+  assert.ok(res.body.includes('open <b>Settings → Phones</b> and make a pairing code'), res.body);
+  assert.ok(res.body.includes('It works once, for 10 minutes.'), res.body);
+  assert.ok(res.body.includes('<button class="primary">Next</button>'), res.body);
+});
+
+test('the not-signed-in page says how to get in: the link Ledung printed, or the desktop app', async () => {
+  const res = await request({ path: '/' });
+  assert.match(res.body, /<h1>Not signed in<\/h1>/);
+  assert.match(res.body, /Open the link Ledung printed when it started/);
+  assert.match(res.body, /desktop app, which signs itself in/);
+  // Not the not-paired page's steps: those are for the public name.
+  assert.doesNotMatch(res.body, /pairing code/);
+  assert.match((await pub('/')).body, /pairing code/, 'the probe finds them on the not-paired page');
+});
+
+test('the pairing page says what pairing gives and the 10 minutes to set up a passkey, with one big Pair button', async () => {
+  const code = await newCode();
+  const form = await pub(`/p/${code}`);
+  assert.match(form.body, /<h1>Pair this device with Ledung<\/h1>/);
+  assert.ok(form.body.includes('set up its passkey in Settings within 10 minutes, then log on'), form.body);
+  assert.ok(form.body.includes('remove it any time in Settings → Phones'), form.body);
+  assert.ok(form.body.includes('<button class="primary big">Pair</button>'), form.body);
+});
+
+test('the passkey set-up page gives the 10 minutes after pairing and the link\'s 5', () => {
+  const html = fs.readFileSync(path.join(PUBLIC, 'enrol.html'), 'utf8');
+  assert.ok(html.includes('it can only be done in the 10 minutes after pairing, and this link runs out in 5'), html);
+  assert.ok(html.includes('<button id="go" class="primary big" hidden>'), html);
 });

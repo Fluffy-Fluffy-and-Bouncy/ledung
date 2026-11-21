@@ -7,13 +7,24 @@
 <link rel="stylesheet" href="/small-page.css">
 <title>Ledung · set up the passkey</title>
 <!-- Issue #241: a device paired inside a frame on another computer's page sets up its passkey here, at the top level,
-     because Safari can't create a passkey inside a frame on another site. The one-time code is the link's fragment. -->
+     because Safari can't create a passkey inside a frame on another site. The one-time code is the link's fragment.
+     The wording is #481's, as Martin passed it; its minutes are held equal to Ledung's own by test/small-pages-dark. -->
 <script src="/enrol.js" type="module"></script>
 </head>
 <body>
-<h2>Set up the passkey</h2>
+<p class="muted small">Ledung · passkey</p>
+<h1 id="title">Set up the passkey</h1>
 <p id="what">Checking the link…</p>
-<p><button id="go" hidden style="font-size: 1.1em">Set up passkey</button></p>
+<div id="facts" class="facts">
+<h3>Good to know</h3>
+<ul>
+<li>The passkey is for this Ledung and this one device only.</li>
+<li>Set it up now: it can only be done in the 10 minutes after pairing, and this link runs out in 5.</li>
+<li>After this, go back to Ledung and press <b>Log on</b>.</li>
+</ul>
+</div>
+<p><button id="go" class="primary big" hidden>Set up passkey</button></p>
+<p id="fine" class="muted small">Didn't pair a device just now? Close this window: nothing happens.</p>
 <p id="done" hidden>Done. Close this window and go back to Ledung: the tab there shows the passkey within a few seconds, then <b>Log on</b>.</p>
 </body>
 </html>

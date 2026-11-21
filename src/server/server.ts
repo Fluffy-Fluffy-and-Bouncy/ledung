@@ -16,8 +16,8 @@ import { UserError } from '../sessions/manager.ts';
 import type { Store } from '../store/store.ts';
 import { AWAY_DEFAULT, AWAY_KINDS, EFFORT_LEVELS, HELPER, type AwayKind, type PermissionDecision, type PermissionMode, type RemoteStatus, type ServerEvent, parseWatch } from '../shared/protocol.ts';
 import { browserCookieHeader, deviceCookieHeader, Guard, readCookies, securityHeaders } from './security.ts';
-import { browserName, DEVICE_COOKIE, type Device, type DeviceKind, deviceName, Devices, deviceView, LEGACY_BROWSER_NAME, PAIR_CODE_MS, pairedLink } from './devices.ts';
-import { actionOf, DEVICE_LOCKED, PASSKEY_HEADER, PASSKEY_NEEDED, PASSKEY_ONLY, PasskeyError, Passkeys, VOUCH_HEADER } from './passkeys.ts';
+import { browserName, DEVICE_COOKIE, type Device, type DeviceKind, deviceName, Devices, deviceView, LEGACY_BROWSER_NAME, PAIR_CODE_MS, pairedLink, PASSKEY_WINDOW_MS } from './devices.ts';
+import { actionOf, DEVICE_LOCKED, PASSKEY_HEADER, PASSKEY_NEEDED, PASSKEY_ONLY, PasskeyError, Passkeys, SIGN_LOG_ON, VOUCH_HEADER } from './passkeys.ts';
 import { linkedPushItem, Push, PushError, type LinkedPushItem } from './push.ts';
 import type { UsageQueries } from '../usage/queries.ts';
 import { readRunningRelease, type Updater } from '../update/updater.ts';
@@ -104,9 +104,24 @@ const NOT_PAIRED = 'This device is not paired with Ledung. Pair it from Settings
  * On the not-paired page through the public name: the pairing code or link typed in. Inside a frame on another
  * computer's page (issue #241) there is no address bar to open the link in, and pairing there must happen in the frame.
  */
-const PAIR_CODE_FORM = '<form method="get" action="/pair"><p><label>Pairing code or link<br>'
-  + '<input name="code" autocomplete="off" autocapitalize="characters" spellcheck="false" style="font-size:1.1em;width:100%"></label></p>'
-  + '<p><button style="font-size:1.1em">Next</button></p></form>';
+const PAIR_CODE_FORM = '<form method="get" action="/pair"><p><label>Pairing code or link<br><span class="row">'
+  + '<input name="code" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="e.g. l5q4waqa24eqn3r0owsa">'
+  + '<button class="primary">Next</button></span></label></p></form>';
+/** The small pages' wording (issue #481), as Martin passed the mockups (Ledung question #751); minutes from the rules. */
+const PAGE_BRAND = (what = '') => `<p class="muted small">Ledung${what ? ` · ${what}` : ''}</p>`;
+const minutes = (ms: number) => Math.round(ms / 60_000);
+const NOT_PAIRED_PAGE = PAGE_BRAND() + '<h1>Pair this device first</h1><p>This phone or computer isn\'t paired with this Ledung yet.</p>'
+  + '<ol class="steps"><li>In Ledung on the computer, open <b>Settings → Phones</b> and make a pairing code.</li>'
+  + `<li>Type the code, or paste the link, here. It works once, for ${minutes(PAIR_CODE_MS)} minutes.</li></ol>`
+  + PAIR_CODE_FORM
+  + '<p class="muted small">Paired devices can look at once; to make changes they set up a passkey and log on.</p>';
+const NOT_SIGNED_IN_PAGE = PAGE_BRAND() + '<h1>Not signed in</h1><p>This browser has no sign-in for this Ledung.</p>'
+  + '<div class="facts"><h3>To get in</h3><ul><li>Open the link Ledung printed when it started: it carries the sign-in for this browser.</li>'
+  + '<li>Or use Ledung\'s desktop app, which signs itself in.</li></ul></div>';
+/** Under the Pair form: what pairing gives and what comes after. */
+const PAIR_AFTER = '<div class="facts"><h3>After pairing</h3><ul><li>This device can look at Ledung right away.</li>'
+  + `<li>To make changes, set up its passkey in Settings within ${minutes(PASSKEY_WINDOW_MS)} minutes, then log on.</li>`
+  + '<li>You can remove it any time in Settings → Phones on the computer.</li></ul></div>';
 /** After pairing (issue #466): what comes next, on the page that says this browser is paired. */
 const PAIRED_NEXT = '<p>Next, set up its passkey in Settings, so it can make changes and not only look.</p><p><a href="/#/settings">Go on to Settings</a></p>';
 
@@ -1532,8 +1547,8 @@ export class LedungServer {
     // relay the answer can take a while, and a second press then cut the first one's answer off, cookie and all.
     const form = (formCode: string, name: string, button = 'Pair') => '<form method="post" action="/pair">'
       + `<input type="hidden" name="code" value="${formCode}">`
-      + `<p><label>Name of this device<br><input name="name" value="${escapeHtml(name)}" maxlength="60" style="font-size:1.1em"></label></p>`
-      + `<p><button style="font-size:1.1em">${button}</button></p><p id="pair-wait" hidden>Pairing… this can take a few seconds.</p></form>`
+      + `<p><label>Name of this device<br><input name="name" value="${escapeHtml(name)}" maxlength="60" style="width:100%"></label></p>`
+      + `<p><button class="primary big">${button}</button></p><p id="pair-wait" hidden>Pairing… this can take a few seconds.</p></form>`
       + '<script src="/pair.js"></script>';
     const here = this.guard.deviceOf(req);
     if (req.method === 'GET' && check !== null) return this.pairChecked(check, here, page, form);
@@ -1551,7 +1566,8 @@ export class LedungServer {
       // A code a linked computer asked for (issue #273) pairs a browser on that computer: named after it at first.
       const via = this.devices.codeVia(code);
       const name = via ? `Browser on ${via}`.replace(/[^\p{L}\p{N} .'-]/gu, '').slice(0, 60) : 'Phone';
-      return page(200, '<h2>Pair this device with Ledung</h2>' + form(code!, name));
+      return page(200, PAGE_BRAND('pairing') + '<h1>Pair this device with Ledung</h1><p>Give it a name you\'ll recognise in Settings → Phones.</p>'
+        + form(code!, name) + PAIR_AFTER);
     }
     if (req.method !== 'POST') throw new HttpError(405, 'Method not allowed.');
     if (!this.guard.originAllowed(req)) throw new HttpError(403, 'Requests must come from Ledung\'s own page.');
@@ -2008,7 +2024,7 @@ export class LedungServer {
         // challenge for exactly this request; the code goes in the fragment, so it reaches no log and no Referer.
         if (browser === true) {
           if (!this.pageKeyMatches(req, device.id)) throw new HttpError(403, 'Only Ledung\'s open page can do this.');
-          const what = pathname === '/api/device-unlock' ? 'Log this device on' : `${method.toUpperCase()} ${pathname}`;
+          const what = pathname === '/api/device-unlock' ? SIGN_LOG_ON : `${method.toUpperCase()} ${pathname}`;
           const { code, expiresAt } = await passkeyCall(async () => passkeys.signLink(device, action, what));
           return { url: `https://${this.publicName}/sign.html#${code}`, code, expiresAt };
         }
@@ -2890,7 +2906,7 @@ export class LedungServer {
       // The page itself is only served to a signed-in browser; its assets are not secret.
       if (!signedIn) {
         res.writeHead(401, { ...this.headersFor(res), 'Content-Type': 'text/html; charset=utf-8' });
-        res.end(`<!doctype html>${SMALL_PAGE_HEAD}<title>Ledung</title><div style="max-width:30em;margin:2em auto"><p>${remote ? NOT_PAIRED : 'Not signed in. Open Ledung through the link it prints when it starts.'}</p>${remote ? PAIR_CODE_FORM : ''}</div>`);
+        res.end(`<!doctype html>${SMALL_PAGE_HEAD}<title>Ledung</title><div style="max-width:30em;margin:2em auto">${remote ? NOT_PAIRED_PAGE : NOT_SIGNED_IN_PAGE}</div>`);
         return;
       }
       file = path.join(root, 'index.html');
