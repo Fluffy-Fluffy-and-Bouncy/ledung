@@ -135,8 +135,11 @@ function lockNavigation(wc: WebContents): void {
     event.preventDefault();
     if (webLink(url)) void shell.openExternal(url);
   });
-  wc.on('will-redirect', (event, url) => {
-    if (!sameOrigin(url)) event.preventDefault();
+  // The window itself only, as will-navigate is: a frame is a linked computer's page in its tab, which the page's own
+  // frame-src already limits to those computers. Refusing its redirects cancelled the Pair form's answer, which goes
+  // back to that computer's own page, so pairing a tab in the app never landed (#468, #466).
+  wc.on('will-redirect', (event) => {
+    if (event.isMainFrame && !sameOrigin(event.url)) event.preventDefault();
   });
   wc.setWindowOpenHandler(({ url }) => {
     if (webLink(url) && !sameOrigin(url)) void shell.openExternal(url);

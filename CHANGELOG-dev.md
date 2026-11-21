@@ -9,6 +9,20 @@ together, are in [CHANGELOG.md](CHANGELOG.md). Online: https://projectledung.com
 ([docs/changes/README.md](docs/changes/README.md)); `npm run publish:dev` and `npm run publish:public` fold them in
 here under the version they publish, and push the result to main.
 
+## v4.6 — 2026-11-20 16:10 CET
+- Pairing another computer's tab inside the Ledung app works with one press of Pair: the app no longer cancels the redirect back to that computer's page (#468, #466)
+- A tab or browser whose daily cookie renewal was cut off (a restart, a dropped connection) stays paired and gets the new cookie again, instead of being removed as a copy (#468)
+
+## v4.5 — 2026-11-20 15:44 CET
+- In Ledung's desktop app on a Mac, a change that needs your passkey now offers **Sign in the browser**: your browser opens a one-time link, shows what is signed and asks for Touch ID, and the app's change then goes through by itself (#463)
+
+## v4.4 — 2026-11-20 15:23 CET
+- After a linked computer is unlinked (or its link lost) and linked again, its tab here paired through the old link counts for the new link's trust, instead of still asking for a passkey (#462)
+
+## v4.3 — 2026-11-20 15:07 CET
+- Linked computers survive a crash right after a save: links.json is flushed to the disk and kept with a backup, which Ledung loads (and logs) when links.json can't be read (#460)
+- The config file, sign-ins, locked secrets, the relay link and its admin file, certificates, the usage key and session secret files are flushed to the disk before they replace the old file, so a crash can't leave them empty (#460)
+
 ## v4.2 — 2026-11-20 14:31 CET
 - The desktop app runs the installed Ledung's code however it is opened (Start menu, taskbar, Dock, Launchpad, Finder, "Open in the Ledung app"): after an update it brings itself up to date at start, before its window opens (#455)
 - An app whose own `ledung` has the same version as the app no longer restarts over and over when another install of Ledung runs (#455)

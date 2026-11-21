@@ -816,6 +816,12 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE flow_runs ADD COLUMN retired TEXT;
   `,
+  // A renewed device cookie whose answer may have been lost (issue #468): the new value, sealed with the cookie it
+  // replaced, until the new one is first used. Till then the old one still works and gets the same new value again,
+  // so a lost answer costs no pairing and a copy of the old one can't push the new one out. Null: none waiting.
+  `
+  ALTER TABLE devices ADD COLUMN new_cookie_sealed TEXT;
+  `,
 ];
 
 export function databaseFile(dir = userDataDir()): string {

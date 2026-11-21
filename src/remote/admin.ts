@@ -22,6 +22,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import tls from 'node:tls';
 import { PUBLIC_NAME } from '../config.ts';
+import { writeFileSafely } from '../platform/safe-write.ts';
 import { caaRecord, caaValue } from '../server/acme.ts';
 import type { NewComputerInfo, RelayAdminView, RelayInviteInfo, RelayOwnersView } from '../shared/protocol.ts';
 import { Cloudflare } from './cloudflare.ts';
@@ -332,9 +333,8 @@ export class RelayAdmin {
 
   /** Written whole and renamed into place, private to this user (0600 on macOS and Linux; the profile's on Windows). */
   private write(saved: Saved): void {
-    const temp = `${this.file()}.${process.pid}.new`;
-    fs.writeFileSync(temp, `${JSON.stringify(saved, null, 2)}\n`, { mode: 0o600 });
-    fs.renameSync(temp, this.file());
+    // Flushed before and after the rename, so a crash can't leave it empty (issue #460).
+    writeFileSafely(this.file(), `${JSON.stringify(saved, null, 2)}\n`, { mode: 0o600, temp: `${this.file()}.${process.pid}.new` });
   }
 }
 

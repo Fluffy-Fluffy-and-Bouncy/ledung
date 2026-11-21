@@ -38,6 +38,12 @@
 //   PROBE_PHASE=framed      a Ledung runs (#451): a picture in a frame of another site, as another computer's tab
 //                           shows its page, right-clicked with PROBE_CLICK=native (Electron's input call never
 //                           reaches such a frame); PROBE_FRAME_SAME=1 frames it from the page's own site, the control
+//   PROBE_PHASE=frames      a Ledung runs whose config lists the computer other.example.test (#468): the probe stands
+//                           in for that computer with an HTTPS server of its own on loopback, and shows its page in a
+//                           frame on Ledung's page, as a computer tab does; a form there answers 303 with a cookie, as
+//                           Pair does. The frame lands on the page the answer names, its cookie comes back there and
+//                           on a reload, and the window itself still refuses a redirect away from Ledung. Needs
+//                           openssl on PATH (a throwaway certificate, in the data folder)
 //   (PROBE_PHASE=child is the second start "window" launches itself)
 //   PROBE_PHASE=start      none runs: presses Start Ledung (#362), which runs LEDUNG_DESKTOP_START's script (the
 //                           worktree's src/cli.ts) as the app's start; the page loads signed in within 15 s, and
@@ -63,6 +69,8 @@ import { app, BrowserWindow, clipboard, dialog, Menu, nativeImage, screen, shell
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
+import https from 'node:https';
+import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isToolCallsKey } from '../../web/src/sessionMenu.ts';
@@ -1575,6 +1583,88 @@ async function menuQuit(): Promise<boolean> {
   return quitting;
 }
 
+/** The `frames` phase's linked computer (#468): its public name, which the config lists and Chromium maps to loopback. */
+const FRAME_HOST = 'other.example.test';
+const FRAME_COOKIE = '__Host-probe_device=paired';
+/** What the stand-in was asked, in order: each path and whether the request carried the cookie its form set. */
+const frameHostSeen: { path: string; cookie: boolean }[] = [];
+
+/**
+ * The stand-in for a linked computer: HTTPS on a loopback port, with a throwaway certificate for FRAME_HOST, which
+ * the app is started with leave to ignore. Its /form posts to /pair, which answers as Ledung's Pair form does: 303 to a
+ * page of the same computer, with a Secure, Partitioned, SameSite=None cookie, as a frame gets (issue #241).
+ */
+async function startFrameHost(): Promise<number> {
+  const dir = path.join(dataDir(), 'probe-frame-host');
+  fs.mkdirSync(dir, { recursive: true });
+  const key = path.join(dir, 'key.pem');
+  const cert = path.join(dir, 'cert.pem');
+  execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', cert, '-days', '1',
+    '-subj', `/CN=${FRAME_HOST}`, '-addext', `subjectAltName=DNS:${FRAME_HOST}`], { stdio: 'ignore' });
+  const server = https.createServer({ key: fs.readFileSync(key), cert: fs.readFileSync(cert) }, (req, res) => {
+    const where = (req.url ?? '/').replace(/\?.*/, '');
+    frameHostSeen.push({ path: where, cookie: (req.headers.cookie ?? '').split(/;\s*/).includes(FRAME_COOKIE) });
+    if (req.method === 'POST' && where === '/pair') {
+      res.writeHead(303, { location: '/landed', 'set-cookie': `${FRAME_COOKIE}; Secure; HttpOnly; SameSite=None; Partitioned; Path=/` });
+      res.end();
+    } else if (where === '/bounce') {
+      res.writeHead(303, { location: '/landed-top' });
+      res.end();
+    } else {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end(where === '/form' ? '<form method="post" action="/pair"><input name="code" value="probe"></form>' : `<p id="at">${where}</p>`);
+    }
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+  return (server.address() as AddressInfo).port;
+}
+
+/** The first frame in the window at `route` on FRAME_HOST, waited for up to 10 s; null if none got there. */
+async function frameAt(w: BrowserWindow, route: string) {
+  for (let i = 0; i < 50; i++) {
+    const frame = w.webContents.mainFrame.framesInSubtree.find((f) => f !== w.webContents.mainFrame && f.url === `https://${FRAME_HOST}${route}`);
+    if (frame) return frame;
+    await sleep(200);
+  }
+  return null;
+}
+
+/**
+ * A linked computer's tab, paired in the app (#468, #466): the Pair form's answer is a redirect inside the frame, which
+ * the app's navigation lock used to cancel; the window's own redirects away from Ledung stay refused.
+ */
+async function framesPhase(w: BrowserWindow): Promise<void> {
+  await page(w, `(() => { const f = document.createElement('iframe'); f.src = 'https://${FRAME_HOST}/form'; document.body.append(f); return 1; })()`);
+  const form = await frameAt(w, '/form');
+  expect(form !== null, "the linked computer's page shows in a frame on Ledung's page", w.webContents.mainFrame.framesInSubtree.map((f) => f.url));
+  if (!form) return;
+  await form.executeJavaScript('document.forms[0].submit(); 1');
+  const landed = await frameAt(w, '/landed');
+  out('framed-pair', { landed: landed?.url ?? null, frames: w.webContents.mainFrame.framesInSubtree.map((f) => f.url), seen: [...frameHostSeen] });
+  expect(landed !== null, "the form's 303 landed in the frame, on the page it names", frameHostSeen);
+  expect(frameHostSeen.some((s) => s.path === '/landed' && s.cookie), 'the redirected request carried the cookie the answer set', frameHostSeen);
+  if (landed) {
+    // Kept, not only sent once: the frame reloaded still sends it.
+    const before = frameHostSeen.length;
+    await landed.executeJavaScript('location.reload(); 1');
+    for (let i = 0; i < 50 && frameHostSeen.length === before; i++) await sleep(200);
+    const again = frameHostSeen.slice(before);
+    out('framed-reload', { seen: again });
+    expect(again.some((s) => s.path === '/landed' && s.cookie), 'the frame kept its cookie: a reload sends it again', again);
+  }
+  // The window itself: a redirect away from Ledung's address is still cancelled. loadURL, so will-navigate (which
+  // sends a link to the browser) is not what refuses it.
+  let refusedTop = false;
+  try {
+    await w.webContents.loadURL(`https://${FRAME_HOST}/bounce`);
+  } catch {
+    refusedTop = true;
+  }
+  const top = { refused: refusedTop, url: w.webContents.getURL(), seen: frameHostSeen.filter((s) => s.path.endsWith('-top') || s.path === '/bounce') };
+  out('window-redirect', top);
+  expect(refusedTop && !frameHostSeen.some((s) => s.path === '/landed-top'), "the window's own redirect away from Ledung is still refused", top);
+}
+
 async function run(): Promise<void> {
   let core: ChildProcess | null = null;
   // Without this, an app that quits on its own would end the probe with exit code 0 (found by the #359 revert check).
@@ -1686,6 +1776,10 @@ async function run(): Promise<void> {
       const w = await showing(`${origin}/`);
       await signedIn(w);
       await notifyPhase(w);
+    } else if (phase === 'frames') {
+      const w = await showing(`${origin}/`);
+      await signedIn(w);
+      await framesPhase(w);
     } else if (phase === 'start') {
       const w = await notRunningPage();
       const pressed = Date.now();
@@ -1741,6 +1835,13 @@ if (refused) {
   // The second start "window" launches: the app alone, which should hand over to the first and end.
   void import('../main.ts');
 } else {
+  if (phase === 'frames') {
+    // Before ready, so Chromium takes the switches: the linked computer's name goes to the stand-in, whose throwaway
+    // certificate it accepts. Awaited here, before ready, since the switches need its port.
+    const framePort = await startFrameHost();
+    app.commandLine.appendSwitch('host-resolver-rules', `MAP ${FRAME_HOST} 127.0.0.1:${framePort}`);
+    app.commandLine.appendSwitch('ignore-certificate-errors');
+  }
   // Not awaited: Electron holds its ready event until a top-level await in the entry module settles.
   void import(process.env.PROBE_MAIN ? pathToFileURL(process.env.PROBE_MAIN).href : '../main.ts').then((m: { APP_ICON: string; copyImage?: typeof appCopyImage }) => {
     appIcon = m.APP_ICON;
