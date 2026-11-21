@@ -360,8 +360,6 @@ let restartOnQuit = false;
  * none runs (#477), never a second one.
  */
 let restartAppOnly = false;
-/** That restart is a start's that reached this app running out of date (#479): traced once the quit is sure. */
-let restartForStart = false;
 
 /** Whether any window is in sight: shown and not minimised. */
 const anyShown = (): boolean => openWindows().some((w) => w.isVisible() && !w.isMinimized());
@@ -429,8 +427,6 @@ function startAfterQuit(): void {
   }
   try {
     spawn(cmd.command, cmd.args, { detached: true, stdio: ['ignore', out, out], windowsHide: true, env: startEnv(process.env) }).unref();
-    // Here, not where the start asked: a "Leave this page?" kept open would make it a restart that never happened.
-    if (restartForStart) exercised('EXERCISED #479 a start reached the app running out of date: restarted it into the installed version');
   } catch (e) {
     console.error(`Ledung desktop: could not restart for the update: ${(e as Error).message}`);
     // Nothing restarts it: the next start, by hand, shows its window (self-check finding 2).
@@ -817,8 +813,6 @@ function createWindow(bounds?: { x: number; y: number; width: number; height: nu
       // hide, which would ask the same question again (self-check finding 5).
       restartOnQuit = false;
       restartAppOnly = false;
-      // A start's restart kept here is not one: a later restart for another reason must not trace it (#479 self-check).
-      restartForStart = false;
       updatePending = false;
       // A window that was closing stays: back in the list (#414).
       if (!windows.has(w)) windows.add(w);
@@ -894,10 +888,7 @@ if (shortcutFile) {
   // ask when in front" (Martin, Ledung question #593).
   app.on('second-instance', () => {
     if (made && !anyShown() && restartBrings(app.getVersion(), installedVersion(made.cli))) {
-      // Set first: the quit may reach will-quit before restartForUpdate returns.
-      restartForStart = true;
       if (restartForUpdate(true, true)) return;
-      restartForStart = false;
     }
     showWindow();
   });
