@@ -1016,7 +1016,7 @@ function act(w) {
   } else if (action.startsWith('activate')) {
     for (const fn of handlers['activate'] ?? []) fn({}, false);
   }
-  setTimeout(() => { event('done'); process.exit(0); }, 600);
+  setTimeout(() => { event('done'); process.exit(0); }, Number(process.env.STAND_IN_LINGER_MS || 600));
 }
 export class BrowserWindow {
   constructor() {
@@ -1044,6 +1044,8 @@ export class BrowserWindow {
   loadURL(url) {
     // The page of the Ledung it attached to: the action runs once, then.
     this.shown = url;
+    // A later load of the page: the app attached again after the action (a start, #490).
+    if (this.acted) event('page-load');
     // A Dock click (activate) comes after the Mac's launch moment, 2 s after ready (#485); activate-launch within it.
     const wait = action === 'activate' || action === 'activate-shown' ? 2100 : 50;
     if (action && !this.acted) { this.acted = true; setTimeout(() => act(this), wait); }
@@ -1116,10 +1118,11 @@ async function appHarness(name: string, ledungPort: number) {
   fs.writeFileSync(cli, `require('node:fs').writeFileSync(${JSON.stringify(ran)}, JSON.stringify(process.argv.slice(2)));\n`);
   fs.writeFileSync(path.join(appCode, MADE_CONFIG), JSON.stringify({ node: process.execPath, cli, env: { LEDUNG_DATA_DIR: data, LEDUNG_CONFIG: config } }));
   const note = path.join(data, 'desktop', '.start-update');
-  const start = async (own: string, installed: string, action = '') => {
+  /** `lingerMs`: how long the stand-in app stays after its action (600 ms unless a test waits for more, #490). */
+  const start = async (own: string, installed: string, action = '', lingerMs = 600) => {
     fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: 'ledung', version: installed }));
     fs.rmSync(ran, { force: true });
-    const env: NodeJS.ProcessEnv = { ...process.env, STAND_IN_VERSION: own, STAND_IN_ACTION: action };
+    const env: NodeJS.ProcessEnv = { ...process.env, STAND_IN_VERSION: own, STAND_IN_ACTION: action, STAND_IN_LINGER_MS: String(lingerMs) };
     delete env.LEDUNG_DATA_DIR;
     delete env.LEDUNG_CONFIG;
     const child = spawn(process.execPath, [path.join(appCode, 'main.js')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -1133,14 +1136,20 @@ async function appHarness(name: string, ledungPort: number) {
     const args = fs.existsSync(ran) ? (JSON.parse(fs.readFileSync(ran, 'utf8')) as string[]) : null;
     return { events, args, pid: child.pid, out };
   };
-  return { start, note };
+  return { start, note, ran, data };
 }
 
-/** A stand-in Ledung on a port of its own: it answers /running as Ledung does (desktop/attach.ts runningProof). */
-async function standInLedung(): Promise<{ port: number; close: () => Promise<void> }> {
+/**
+ * A stand-in Ledung on a port of its own: it answers /running as Ledung does (desktop/attach.ts runningProof). After
+ * `answers` proofs it answers no more, as a Ledung stopped meanwhile (#490), until `startedWhen` says it was started
+ * again.
+ */
+async function standInLedung(answers = Infinity, startedWhen: () => boolean = () => false): Promise<{ port: number; close: () => Promise<void> }> {
+  let given = 0;
   const server = http.createServer((req, res) => {
     const nonce = new URL(req.url!, 'http://x').searchParams.get('nonce');
-    if (!nonce) return void res.writeHead(404).end();
+    if (!nonce || (given >= answers && !startedWhen())) return void res.writeHead(404).end();
+    given++;
     const proof = crypto.createHmac('sha256', TOKEN_455).update(`ledung-running:${nonce}`).digest('hex');
     res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ proof }));
   });
@@ -1244,6 +1253,42 @@ test("a second start of an app running out of date with no window in sight (desk
     assert.equal(current.args, null, 'no restart command ran');
   } finally {
     await ledung.close();
+  }
+});
+
+test('a second start of an up-to-date app with no window in sight (desktop/main.ts) starts Ledung when none answers; a running one is left as it is (#490)', async () => {
+  // Martin, Ledung question #764 (2026-11-21 23:07): "a — Start Ledung". The window was closed (hidden), Ledung was
+  // stopped, and the app was started again from the Start menu: it showed a page with nothing behind it.
+  // Stopped: the stand-in answers the window's attach at the app's start, then no more until the made app's `ledung`
+  // has run, as a Ledung that the start brought up.
+  let ranFile = '';
+  const stopped = await standInLedung(1, () => ranFile !== '' && fs.existsSync(ranFile));
+  try {
+    const { start, ran, data } = await appHarness('main-second-stopped-490', stopped.port);
+    ranFile = ran;
+    // Time for the start and the look for Ledung after it, which polls every 0.5 s.
+    const run = await start('2.0.0', '2.0.0', 'second', 5000);
+    // The window comes forward, the made app's own `ledung` runs as Start Ledung runs it (no restart, no quit), and
+    // once that Ledung answers the window loads its page again.
+    assert.ok(run.events.includes('show'), run.out);
+    assert.ok(!run.events.includes('quit'), run.out);
+    assert.deepEqual(run.args, ['--no-open'], run.out);
+    assert.ok(run.events.indexOf('page-load') > run.events.indexOf('show'), run.out);
+    assert.match(fs.readFileSync(path.join(data, 'exercised.log'), 'utf8'), /EXERCISED #490 /);
+  } finally {
+    await stopped.close();
+  }
+
+  // Running: the same second start only shows the window and starts nothing.
+  const running = await standInLedung();
+  try {
+    const { start, data } = await appHarness('main-second-running-490', running.port);
+    const run = await start('2.0.0', '2.0.0', 'second');
+    assert.deepEqual(run.events, ['window', 'show', 'done'], run.out);
+    assert.equal(run.args, null, 'no start command ran');
+    assert.equal(fs.existsSync(path.join(data, 'exercised.log')), false, 'no #490 trace without a start');
+  } finally {
+    await running.close();
   }
 });
 

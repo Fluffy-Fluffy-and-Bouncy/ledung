@@ -279,6 +279,24 @@ async function start(): Promise<void> {
   await attach(failed);
 }
 
+let startedOnSecond = false;
+
+/**
+ * A second start reached the hidden app (#490): starts Ledung, as Start Ledung does, when none answers; a running one,
+ * a start or attach under way, or a quit is left alone.
+ */
+async function startIfStopped(): Promise<void> {
+  if (starting || attaching || quitting) return;
+  if ((await findRunning()).running) return;
+  // Looked again after the wait: a Start Ledung pressed meanwhile is the one start.
+  if (starting || attaching || quitting) return;
+  if (!startedOnSecond) {
+    startedOnSecond = true;
+    exercised('EXERCISED #490 a second start of the hidden app started Ledung');
+  }
+  await start();
+}
+
 /**
  * What the page may use without asking: notifications (and push, which Electron asks as notifications) and writing to
  * the clipboard, the two the page uses, and only for Ledung's own address. Everything else (camera, microphone,
@@ -895,8 +913,13 @@ if (shortcutFile) {
   // 2026-11-21 (#479): such a start showed the old window with its update banner to press. With no window in sight
   // it restarts the app into the installed version instead (restartForStart).
   app.on('second-instance', () => {
+    const hidden = !anyShown();
     if (restartForStart()) return;
     showWindow();
+    // Up to date and hidden, the app outlived a `ledung stop` too (#490): the start starts Ledung, as the out-of-date
+    // restart does (#477), instead of showing a page with nothing behind it (Martin, Ledung question #764: "a — Start
+    // Ledung"). A window in sight keeps what it shows.
+    if (hidden) void startIfStopped();
   });
   // A click on one of the page's notifications (#360) shows the window whose page showed it: the page then opens the
   // session it was about there.
