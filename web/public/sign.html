@@ -3,16 +3,22 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width">
+<meta name="color-scheme" content="dark">
+<link rel="stylesheet" href="/small-page.css">
 <title>Ledung · sign in the browser</title>
 <!-- Issue #463: Ledung's desktop app on a Mac can't show Touch ID (#427), so the default browser signs one waiting
-     request for it here. The one-time code is the link's fragment. -->
+     request for it here. The one-time code is the link's fragment. The wording is #481's, as Martin passed it
+     (variant A): what is asked, the rules and how long it lasts, filled in by sign.js from what Ledung says. -->
 <script src="/sign.js" type="module"></script>
 </head>
-<body style="font-family: system-ui, sans-serif; max-width: 30em; margin: 2em auto; padding: 0 1em; line-height: 1.4">
-<h2>Sign for the Ledung app</h2>
+<body>
+<p class="muted small">Ledung · passkey</p>
+<h1 id="title">Sign for the Ledung app</h1>
 <p id="what">Checking the link…</p>
-<p id="request" hidden style="font-family: ui-monospace, monospace; padding: 0.5em; border: 1px solid #8884; border-radius: 4px; overflow-wrap: anywhere"></p>
-<p><button id="go" hidden style="font-size: 1.1em">Sign with Touch ID</button></p>
-<p id="done" hidden>Signed. Go back to the Ledung app: the change goes through there by itself. You can close this tab.</p>
+<p id="request" class="mono" hidden></p>
+<div id="facts" class="facts" hidden><h3 id="facts-title"></h3><ul id="rules"></ul></div>
+<p><button id="go" class="primary big" hidden>Sign with Touch ID</button></p>
+<p id="fine" class="muted small" hidden></p>
+<p id="done" hidden>Go back to the app: it carries on by itself. You can close this tab.</p>
 </body>
 </html>
