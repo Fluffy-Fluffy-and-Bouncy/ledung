@@ -279,8 +279,6 @@ async function start(): Promise<void> {
   await attach(failed);
 }
 
-let startedOnSecond = false;
-
 /**
  * A second start reached the hidden app (#490): starts Ledung, as Start Ledung does, when none answers; a running one,
  * a start or attach under way, or a quit is left alone.
@@ -290,10 +288,6 @@ async function startIfStopped(): Promise<void> {
   if ((await findRunning()).running) return;
   // Looked again after the wait: a Start Ledung pressed meanwhile is the one start.
   if (starting || attaching || quitting) return;
-  if (!startedOnSecond) {
-    startedOnSecond = true;
-    exercised('EXERCISED #490 a second start of the hidden app started Ledung');
-  }
   await start();
 }
 

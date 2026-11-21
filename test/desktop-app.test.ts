@@ -1274,7 +1274,6 @@ test('a second start of an up-to-date app with no window in sight (desktop/main.
     assert.ok(!run.events.includes('quit'), run.out);
     assert.deepEqual(run.args, ['--no-open'], run.out);
     assert.ok(run.events.indexOf('page-load') > run.events.indexOf('show'), run.out);
-    assert.match(fs.readFileSync(path.join(data, 'exercised.log'), 'utf8'), /EXERCISED #490 /);
   } finally {
     await stopped.close();
   }
@@ -1286,7 +1285,6 @@ test('a second start of an up-to-date app with no window in sight (desktop/main.
     const run = await start('2.0.0', '2.0.0', 'second');
     assert.deepEqual(run.events, ['window', 'show', 'done'], run.out);
     assert.equal(run.args, null, 'no start command ran');
-    assert.equal(fs.existsSync(path.join(data, 'exercised.log')), false, 'no #490 trace without a start');
   } finally {
     await running.close();
   }
