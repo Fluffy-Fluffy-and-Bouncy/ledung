@@ -291,6 +291,12 @@ export class ResourceBook {
    * (acceptance test 3 of PR #476: a `nohup` job's card could neither pause nor stop it).
    */
   private readonly adopted = new Map<string, Map<number, Adopted>>();
+  /**
+   * Processes taken by timing alone that the person's Stop left alone: no longer the job's, and never taken again
+   * while they are the same process (pid → start time), so a stopped job's card goes away instead of staying for an
+   * outside program (acceptance test 5 of PR #476).
+   */
+  private readonly disowned = new Map<number, number>();
   /** Each session's host tree in the last sample, without what was adopted: what "seen under its host" means. */
   private lastHostTrees = new Map<string, ProcInfo[]>();
   /** WSL's memory, from the Windows process list; 0: not running or not Windows. */
@@ -953,6 +959,7 @@ export class ResourceBook {
       }
       for (const [pid, a] of kept) if (x.list.get(pid)?.started !== a.started) kept.delete(pid);
     }
+    for (const [pid, started] of this.disowned) if (x.list.get(pid)?.started !== started) this.disowned.delete(pid);
     const detached: { sessionId: string; at: number; command: string }[] = [];
     for (const [sessionId, calls] of this.calls) {
       if (!x.trees.has(sessionId)) continue;
@@ -962,7 +969,7 @@ export class ResourceBook {
     if (detached.length && x.prev) for (const p of x.list.values()) {
       const started = p.started;
       if (started === undefined || inTrees.has(p.pid) || x.list.has(p.ppid)) continue;
-      if ([...this.adopted.values()].some((m) => m.has(p.pid))) continue;
+      if ([...this.adopted.values()].some((m) => m.has(p.pid)) || this.disowned.get(p.pid) === started) continue;
       // Its parent was in a session's tree last time, or came and went between two lists (the detaching shell). One
       // whose parent was another program's (an app's launcher that has exited, an updater) is no session's, whenever
       // it started (code review of PR #476, finding 4). A process already in the last list was judged then: it is
@@ -1399,18 +1406,37 @@ export class ResourceBook {
    * the person's Pause, Resume and Stop: `adopted`, seen under the host, are the session's; `guessed`, taken by timing
    * alone, are acted on only if their command line is one of the detaching calls' (re-review of PR #476).
    */
-  jobTargets(id: string): { sessionId: string; host: number | null; paused: boolean; targets: Target[]; adopted: number[]; guessed: { pid: number; commands: string[] }[] } {
+  jobTargets(id: string): { sessionId: string; what: string; host: number | null; paused: boolean; targets: Target[]; adopted: number[]; guessed: { pid: number; commands: string[] }[] } {
     const r = this.reservations.get(id);
     if (!r || r.goAt === null) throw new Error('No such job.');
     const mine = [...(this.adopted.get(r.sessionId) ?? [])].filter(([pid]) => r.pids[pid] !== undefined);
     return {
       sessionId: r.sessionId,
+      what: r.what,
       host: this.lastHosts.get(r.sessionId) ?? null,
       paused: r.paused,
       targets: Object.entries(r.pids).map(([pid, started]) => ({ pid: Number(pid), started })),
       adopted: mine.filter(([, a]) => a.seen).map(([pid]) => pid),
       guessed: mine.filter(([, a]) => !a.seen).map(([pid, a]) => ({ pid, commands: a.commands })),
     };
+  }
+
+  /**
+   * After the person's Stop: the processes it left alone (taken by timing alone, their command not the session's) are
+   * no longer the job's, so its card goes away once the session's own work is over (acceptance test 5 of PR #476).
+   */
+  disown(id: string, pids: number[]): void {
+    const r = this.reservations.get(id);
+    if (!r || !pids.length) return;
+    const kept = this.adopted.get(r.sessionId);
+    for (const pid of pids) {
+      const started = kept?.get(pid)?.started ?? r.pids[pid] ?? null;
+      kept?.delete(pid);
+      delete r.pids[pid];
+      if (started !== null) this.disowned.set(pid, started);
+    }
+    this.persist();
+    this.ctx.changed();
   }
 
   setJobPaused(id: string, paused: boolean): void {

@@ -2285,13 +2285,13 @@ export class LedungServer {
       case 'POST jobs/:id/pause': {
         await this.requireSignedPage(req, url);
         const body = await readJson(req);
-        await manager.pauseJob(id, body.paused !== false);
-        return;
+        return await manager.pauseJob(id, body.paused !== false);
       }
       case 'POST jobs/:id/stop':
         await this.requireSignedPage(req, url);
-        await manager.stopJob(id);
-        return;
+        return await manager.stopJob(id);
+      case 'GET jobs/:id/reach':
+        return await manager.jobReach(id);
       case 'GET job-kinds':
         return { kinds: manager.jobKinds(), commands: manager.heavyCommands(), light: manager.lightCommands() };
       case 'POST job-kinds-forget': {

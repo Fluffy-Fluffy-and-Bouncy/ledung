@@ -17,6 +17,7 @@ import { wslHintDue } from '../web/src/usage/machineFold.ts';
 import { LOWERED, type PriorityControl } from '../src/platform/process-control.ts';
 import { dragMax, dragStep, dragText, dragValue, limitShare, limitText, limitUnits, overFor, parseLimitInput, stepDrag, valueShare } from '../web/src/usage/resourceLimits.ts';
 import { commandIsCalls, fileTimeMs, JOB_BUSY, JobActions, jobProcessesNow, jobTargetsNow, provenByCommand, type FreshProcess } from '../src/resources/job-actions.ts';
+import { jobActionNote, namesText, stopConfirmText } from '../src/shared/job-notes.ts';
 import { hostStill } from '../src/resources/monitor.ts';
 
 // --- Decisions ------------------------------------------------------------------------------------------------------
@@ -1465,6 +1466,48 @@ test("an outside program taken by timing alone is counted but Pause and Stop nev
   const t2 = r2.book.jobTargets(r2.book.info().jobs[0]!.id);
   assert.deepEqual(t2.adopted, [41]);
   assert.deepEqual(t2.guessed, []);
+});
+
+test("after Stop, an outside program it left alone is off the job for good, so the stopped job's card goes away (acceptance test 5 of PR #476)", () => {
+  const r = rig();
+  r.sessions.get('s1')!.busy = true;
+  r.tick({ s1: tree() });
+  r.book.reserve('s1', { what: 'Daemon', cpu: 30, ram_gb: 3 });
+  r.book.callStarted('s1', 'd1', ['node daemon.mjs'], true, true, 'nohup node daemon.mjs &');
+  const game = { pid: 88, ppid: 990, cpuSeconds: 0, memBytes: 2 * GB, started: r.clock.now + 2000, name: 'game.exe' };
+  for (let i = 1; i <= 3; i++) r.tick({ s1: tree() }, { outside: [{ ...game, cpuSeconds: i * 20 }] });
+  const job = r.book.info().jobs[0]!;
+  assert.equal(job.processes, 1);
+  r.book.disown(job.id, [88]);
+  assert.equal(r.book.info().jobs[0]!.processes, 0, 'off the card at once');
+  // The game runs on: never taken again while it is the same process, and the pass ends with the session's work.
+  r.sessions.get('s1')!.busy = false;
+  for (let i = 4; i <= 6; i++) r.tick({ s1: tree() }, { outside: [{ ...game, cpuSeconds: i * 20 }] });
+  assert.equal(r.book.info().jobs.length, 0, 'the card goes away');
+  // A later process that reuses the id is judged afresh.
+  r.sessions.get('s1')!.busy = true;
+  r.tick({ s1: tree() });
+  r.book.reserve('s1', { what: 'Daemon 2', cpu: 30, ram_gb: 3 });
+  r.book.callStarted('s1', 'd2', ['node daemon.mjs'], true, true, 'nohup node daemon.mjs &');
+  const again = { ...game, started: r.clock.now + 1000 };
+  for (let i = 1; i <= 3; i++) r.tick({ s1: tree() }, { outside: [{ ...again, cpuSeconds: i * 20 }] });
+  assert.equal(r.book.info().jobs[0]!.processes, 1);
+});
+
+test('the Stop confirm counts only what it will end and names what it leaves alone; the note after says the same (acceptance test 5 of PR #476)', () => {
+  assert.equal(stopConfirmText('build W1', { act: 2, others: 0, names: [] }), 'Stop "build W1"? Its 2 processes will be ended, and the session told.');
+  assert.equal(stopConfirmText('build W1', { act: 2, others: 2, names: ['game.exe', 'conhost.exe'] }),
+    'Stop "build W1"? Its 2 processes will be ended, and the session told. 2 others Ledung only guessed belong to it (game.exe and conhost.exe) are left alone and taken off the job; Stop never ends them.');
+  assert.equal(stopConfirmText('build W1', { act: 0, others: 1, names: ['game.exe'] }),
+    'Stop "build W1"? None of its own processes are still running; the session will be told. 1 other Ledung only guessed belongs to it (game.exe) is left alone and taken off the job; Stop never ends it.');
+  assert.equal(jobActionNote('stop', 'build W1', { done: 2, leftAlone: ['game.exe', 'conhost.exe'] }),
+    'Stopped "build W1": 2 processes ended. Left alone: game.exe and conhost.exe. Ledung only guessed they belong to the job, from when they started, so it doesn\'t end them; no longer counted as the job\'s.');
+  assert.equal(jobActionNote('stop', 'build W1', { done: 1, leftAlone: [] }), 'Stopped "build W1": 1 process ended.');
+  assert.equal(jobActionNote('pause', 'build W1', { done: 2, leftAlone: ['game.exe'] }),
+    'Paused "build W1". Left alone: game.exe. Ledung only guessed it belongs to the job, from when it started, so it doesn\'t pause it.');
+  assert.equal(jobActionNote('pause', 'build W1', { done: 2, leftAlone: [] }), null);
+  assert.equal(jobActionNote('resume', 'build W1', { done: 2, leftAlone: [] }), null);
+  assert.equal(namesText(['a.exe', 'b.exe', 'c.exe']), 'a.exe, b.exe and c.exe');
 });
 
 test('a process command line is a detaching call\'s only if its program and each argument are words of the call', () => {

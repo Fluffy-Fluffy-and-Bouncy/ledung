@@ -4,6 +4,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { projectLabel, type MachineInfo, type Priority, type ResourcesInfo, type SessionInfo, type TurnResource, type TypicalCost } from '../../../src/shared/protocol.ts';
 import { formatBytes, formatCores, meterLevel } from '../../../src/shared/machine-shown.ts';
+import { jobActionNote, stopConfirmText } from '../../../src/shared/job-notes.ts';
 import { dimLabel, formatDim } from '../../../src/resources/limits.ts';
 import { api } from '../api.ts';
 import { pollWhileShown } from '../pollShown.ts';
@@ -270,7 +271,7 @@ function wslNote(r: ResourcesInfo | undefined): string | undefined {
 }
 
 /** One job (a pass that has had its go): what it reserved and uses, its state, and the person's Pause, Resume and Stop. */
-function JobCard({ job, r, title, onOpen, run }: { job: ResourcesInfo['jobs'][number]; r: ResourcesInfo; title: string; onOpen: () => void; run: (action: () => Promise<unknown>) => Promise<void> }) {
+function JobCard({ job, r, title, onOpen, run, onNote }: { job: ResourcesInfo['jobs'][number]; r: ResourcesInfo; title: string; onOpen: () => void; run: (action: () => Promise<unknown>) => Promise<void>; onNote: (note: string | null) => void }) {
   const label = (dim: string) => dimLabel(dim, (id) => r.gpus.find((g) => g.id === id && !g.main)?.name ?? null);
   const dims = Object.keys(job.granted);
   // One request at a time from this card: a double-click on Pause suspended a job twice (acceptance test, finding 1).
@@ -333,11 +334,14 @@ function JobCard({ job, r, title, onOpen, run }: { job: ResourcesInfo['jobs'][nu
       {job.state === 'over' && <div className="muted small-print">A lower priority only shares out CPU time; for memory and the GPU, the session's own cut-back is what helps.</div>}
       <div className="job-actions">
         {job.state === 'paused'
-          ? <button className="small" disabled={busy} onClick={() => act(() => api.pauseJob(job.id, false))}>Resume</button>
-          : <button className="small" disabled={busy} title="Suspends the job's processes; their memory and GPU memory stay taken" onClick={() => act(() => api.pauseJob(job.id, true))}>Pause</button>}
-        <button className="small danger" disabled={busy} onClick={() => {
-          if (confirm(`Stop "${job.what}"? Its ${job.processes} process${job.processes === 1 ? '' : 'es'} will be ended, and the session told.`)) act(() => api.stopJob(job.id));
-        }}>Stop</button>
+          ? <button className="small" disabled={busy} onClick={() => act(async () => onNote(jobActionNote('resume', job.what, await api.pauseJob(job.id, false))))}>Resume</button>
+          : <button className="small" disabled={busy} title="Suspends the job's processes; their memory and GPU memory stay taken" onClick={() => act(async () => onNote(jobActionNote('pause', job.what, await api.pauseJob(job.id, true))))}>Pause</button>}
+        <button className="small danger" disabled={busy} onClick={() => act(async () => {
+          // Counted just now, so the confirm names only what Stop will end, and what it leaves alone (acceptance test 5 of PR #476).
+          const reach = await api.jobReach(job.id);
+          if (!reach.act && !reach.others) throw new Error(`"${job.what}" has no processes running any more: there is nothing to stop.`);
+          if (confirm(stopConfirmText(job.what, reach))) onNote(jobActionNote('stop', job.what, await api.stopJob(job.id)));
+        })}>Stop</button>
         {busy && <span className="muted">Working…</span>}
       </div>
     </li>
@@ -357,6 +361,8 @@ export function MachinePanel(props: {
   const [wslHidden, setWslHidden] = useState(() => typeof localStorage !== 'undefined' && localStorage.getItem(WSL_HINT_KEY) === '1');
   // The person's open or fold of "Waiting for room"; null: as waitingOpen says. Forgotten when the list empties.
   const [lineOpen, setLineOpen] = useState<boolean | null>(null);
+  // What the person's last Pause or Stop did, above the jobs: a stopped job's card goes away (acceptance test 5 of PR #476).
+  const [jobNote, setJobNote] = useState<string | null>(null);
   const waits = m?.resources?.line.length ?? 0;
   useEffect(() => {
     if (!waits) setLineOpen(null);
@@ -449,11 +455,17 @@ export function MachinePanel(props: {
           </ol>}
         </>
       )}
+      {jobNote && (
+        <div className="job-note" role="status">
+          <span>{jobNote}</span>
+          <button type="button" className="small link" title="Hide this note" onClick={() => setJobNote(null)}>✕</button>
+        </div>
+      )}
       {r && (r.jobs.length > 0 || r.unreserved.length > 0) && (
         <>
           <div className="machine-sub">Jobs · {r.jobs.length + r.unreserved.length}</div>
           <ul className="job-cards">
-            {splitParked(r.jobs).active.map((j) => <JobCard key={j.id} job={j} r={r} title={title(j.sessionId)} onOpen={() => props.onOpen(j.sessionId)} run={props.run} />)}
+            {splitParked(r.jobs).active.map((j) => <JobCard key={j.id} job={j} r={r} title={title(j.sessionId)} onOpen={() => props.onOpen(j.sessionId)} run={props.run} onNote={setJobNote} />)}
             {r.unreserved.map((u) => (
               <li key={u.sessionId} className="job-card over">
                 <div className="job-card-head"><button className="link" onClick={() => props.onOpen(u.sessionId)}>Unreserved: {title(u.sessionId)}</button></div>
@@ -465,7 +477,7 @@ export function MachinePanel(props: {
             <details className="parked-jobs">
               <summary title="Passes whose work is quiet: they keep their place with their session and hold no room">Parked · {splitParked(r.jobs).parked.length}</summary>
               <ul className="job-cards">
-                {splitParked(r.jobs).parked.map((j) => <JobCard key={j.id} job={j} r={r} title={title(j.sessionId)} onOpen={() => props.onOpen(j.sessionId)} run={props.run} />)}
+                {splitParked(r.jobs).parked.map((j) => <JobCard key={j.id} job={j} r={r} title={title(j.sessionId)} onOpen={() => props.onOpen(j.sessionId)} run={props.run} onNote={setJobNote} />)}
               </ul>
             </details>
           )}
