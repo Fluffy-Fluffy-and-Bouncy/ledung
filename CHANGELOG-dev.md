@@ -9,6 +9,12 @@ together, are in [CHANGELOG.md](CHANGELOG.md). Online: https://projectledung.com
 ([docs/changes/README.md](docs/changes/README.md)); `npm run publish:dev` and `npm run publish:public` fold them in
 here under the version they publish, and push the result to main.
 
+## v4.7 — 2026-11-21 11:53 CET
+- Pairing: pressing Pair now leads to a page that says plainly whether this browser is paired, and what to do next (#466)
+- Pairing: the Pair button greys and says "Pairing…" while it works, so a slow first press no longer looks like nothing happened (#466)
+- Pairing: when a browser in another computer's frame drops the pairing cookie, the page says so and why, removes the unusable device and offers to pair again or in a tab of its own (#466)
+- Pairing: pressing a used pairing link again says when it was used and whether that pairing worked, and pairs this browser if the first never arrived (#466)
+
 ## v4.6 — 2026-11-20 16:10 CET
 - Pairing another computer's tab inside the Ledung app works with one press of Pair: the app no longer cancels the redirect back to that computer's page (#468, #466)
 - A tab or browser whose daily cookie renewal was cut off (a restart, a dropped connection) stays paired and gets the new cookie again, instead of being removed as a copy (#468)
