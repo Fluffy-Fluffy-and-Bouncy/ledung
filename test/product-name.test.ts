@@ -27,7 +27,7 @@ function filesUnder(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const full = path.join(dir, name);
     if (statSync(full).isDirectory()) return name === 'node_modules' || name === 'dist' ? [] : filesUnder(full);
-    return /\.(tsx?|html|css|json|webmanifest)$/.test(name) ? [full] : [];
+    return /\.(tsx?|[cm]?js|html|css|json|webmanifest)$/.test(name) ? [full] : [];
   });
 }
 function namedOldWay(files: string[]): string[] {
