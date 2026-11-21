@@ -130,11 +130,6 @@ function pairUsedWords(used: { name: string; at: number }, now: number, outcome:
 }
 
 const NO_PASSKEY_LOCKED = 'This device has no passkey, so it can only look from here; make changes on the computer.';
-/**
- * The EXERCISED line of ledung#463 (a sign link's answer picked up), once per run (worker.md, "EXERCISED line"). Not
- * exercised463 above: that one is Project-Ledung#463's, another issue with the same number.
- */
-let exercisedSignLink = false;
 /** Through the public name, the only changes a locked device may send (requireUnlocked). */
 const OPEN_WHILE_LOCKED = new Set(['/api/device-unlock', '/api/passkey-challenge', '/api/passkey-options', '/api/passkey', '/api/device-logout', '/api/passkey-enrol-link', '/api/passkey-sign-answer']);
 /**
@@ -2022,10 +2017,6 @@ export class LedungServer {
         if (!this.pageKeyMatches(req, device.id)) throw new HttpError(403, 'Only Ledung\'s open page can do this.');
         const { code } = await readJson(req);
         const answer = await passkeyCall(async () => passkeys.signAnswer(device, code));
-        if (answer && !exercisedSignLink) {
-          exercisedSignLink = true;
-          exercisedLine('EXERCISED #463 the browser signed a request for the device that made the sign link');
-        }
         return { answer };
       }
       case 'GET sessions/:id/messages': {
