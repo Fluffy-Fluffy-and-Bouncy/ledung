@@ -968,7 +968,7 @@ if (shortcutFile) {
     if (restartForStart()) {
       if (!exercised485) {
         exercised485 = true;
-        exercised('EXERCISED #485 activate restarted the hidden out-of-date app into the installed version');
+        exercised('EXERCISED #485 activate began a restart of the hidden out-of-date app into the installed version');
       }
       return;
     }
