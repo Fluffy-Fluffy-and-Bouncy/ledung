@@ -984,7 +984,9 @@ test("⌘R, Reload and Force Reload restart an app whose code is not the install
  * - `page-reload` and `page-reload-ignoring-cache` when the window's page reloads, and `done` when an action is over.
  * With STAND_IN_ACTION it goes on: a stand-in window attaches to the Ledung the config names, and once its page loads
  * the action runs: `reload` and `forceReload` click the View menu's item, `banner` sends the page's update message
- * with `now` (the banner's Restart window, #408).
+ * with `now` (the banner's Restart window, #408), `second` is a second start of the app (Electron's second-instance)
+ * while its window is hidden, as closing it leaves it (#479), `second-shown` the same with the window in sight, and `hidden-update` the page's update message without
+ * `now` while that window is hidden (#408's restart by itself).
  */
 const ELECTRON_STAND_IN = `
 const handlers = {};
@@ -1007,6 +1009,10 @@ function act(w) {
     item.click(item, undefined);
   } else if (action === 'banner') {
     for (const fn of ipc['ledung-desktop:restart-for-update'] ?? []) fn({ sender: w.webContents, senderFrame: { parent: null, url: w.shown } }, true);
+  } else if (action === 'hidden-update') {
+    for (const fn of ipc['ledung-desktop:restart-for-update'] ?? []) fn({ sender: w.webContents, senderFrame: { parent: null, url: w.shown } }, false);
+  } else if (action === 'second' || action === 'second-shown') {
+    for (const fn of handlers['second-instance'] ?? []) fn({}, [], '');
   }
   setTimeout(() => { event('done'); process.exit(0); }, 600);
 }
@@ -1026,7 +1032,7 @@ export class BrowserWindow {
   }
   static fromWebContents(c) { return made.find((w) => w.webContents === c) ?? null; }
   isDestroyed() { return false; }
-  isVisible() { return true; }
+  isVisible() { return action !== 'second' && action !== 'hidden-update'; }
   isMinimized() { return false; }
   isFullScreen() { return false; }
   on() {}
@@ -1180,6 +1186,53 @@ test("the app's View → Reload and Force Reload (desktop/main.ts) restart an ou
       assert.deepEqual(current.events, ['window', pageEvent, 'done'], `${action}: ${current.out}`);
       assert.equal(current.args, null, `${action}: no restart command ran`);
     }
+  } finally {
+    await ledung.close();
+  }
+});
+
+test("a second start of an app running out of date with no window in sight (desktop/main.ts) restarts it into the installed version, shown, app only; in sight or up to date it only shows the window (#479)", async () => {
+  // Martin, 2026-11-21 18:09 (#477's play check): after an npm update a Start-menu start opened the app with its update
+  // banner to press. Closing the app's window hides it, so the old app was still running and the start only showed it.
+  const ledung = await standInLedung();
+  try {
+    const { start, note } = await appHarness('main-second-479', ledung.port);
+    const desktopDir = path.dirname(note);
+    const hiddenMarker = path.join(desktopDir, START_HIDDEN_FILE);
+    const restartLog = path.join(desktopDir, 'restart.log');
+
+    // Out of date (it opened on its own code: the start restart for 2.0.0 was just tried), its window hidden, and
+    // started again: it quits and runs its `ledung` in app-only mode, which starts Ledung when none runs (#477).
+    fs.mkdirSync(desktopDir, { recursive: true });
+    fs.writeFileSync(note, '2.0.0\n');
+    const old = await start('1.0.0', '2.0.0', 'second');
+    assert.ok(old.events.includes('quit'), old.out);
+    assert.deepEqual(old.args, [`${AFTER_APP_ARG}=${old.pid}`, APP_ONLY_ARG], old.out);
+    // The person started it: it comes back shown, although its window was hidden when the restart began.
+    assert.equal(fs.existsSync(hiddenMarker), false, 'a restart for a start must not come back hidden');
+    // restart.log says when, which app and which restart.
+    const logged = fs.readFileSync(restartLog, 'utf8').trim().split('\n').at(-1) ?? '';
+    assert.match(logged, new RegExp(`^\\d{4}-\\d\\d-\\d\\dT\\S+Z restarting the app ${old.pid} \\(app only\\)$`), logged);
+
+    // The probe's positive branch: the same hidden window restarting by itself for an update (#408) does leave the
+    // marker, so its absence above is the start's doing, not a probe that finds nothing.
+    fs.writeFileSync(note, '2.0.0\n');
+    const hidden = await start('1.0.0', '2.0.0', 'hidden-update');
+    assert.deepEqual(hidden.args, [`${AFTER_APP_ARG}=${hidden.pid}`], hidden.out);
+    assert.equal(fs.existsSync(hiddenMarker), true, 'a hidden restart for an update comes back hidden');
+    fs.rmSync(hiddenMarker, { force: true });
+
+    // Out of date with its window in sight, in use: the start shows it and the page keeps its banner (Martin, #593:
+    // "ask when in front"), no restart.
+    fs.writeFileSync(note, '2.0.0\n');
+    const inUse = await start('1.0.0', '2.0.0', 'second-shown');
+    assert.deepEqual(inUse.events, ['window', 'done'], inUse.out);
+    assert.equal(inUse.args, null, 'no restart command ran');
+
+    // Up to date: a second start only shows the window, no restart.
+    const current = await start('2.0.0', '2.0.0', 'second');
+    assert.deepEqual(current.events, ['window', 'done'], current.out);
+    assert.equal(current.args, null, 'no restart command ran');
   } finally {
     await ledung.close();
   }
