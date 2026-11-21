@@ -36,8 +36,8 @@ before(async () => {
   const webRoot = path.join(dir, 'web');
   fs.mkdirSync(webRoot);
   fs.writeFileSync(path.join(webRoot, 'index.html'), '<!doctype html><title>Ledung</title>');
-  // The built page carries web/public as it is.
-  fs.copyFileSync(path.join(PUBLIC, 'small-page.css'), path.join(webRoot, 'small-page.css'));
+  // The built page carries web/public as it is. A missing stylesheet fails the tests below, each on its own assert.
+  if (fs.existsSync(path.join(PUBLIC, 'small-page.css'))) fs.copyFileSync(path.join(PUBLIC, 'small-page.css'), path.join(webRoot, 'small-page.css'));
   store = new Store(openDatabase(path.join(dir, 'ledung.db')));
   manager = refuseRealSignInStores(new SessionManager(parseConfig({ port, projects: [] }), store, () => {}));
   server = new LedungServer({ port, token: TOKEN, store, manager, webRoot, publicName: MAC });
