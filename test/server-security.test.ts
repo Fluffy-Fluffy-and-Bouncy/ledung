@@ -1780,12 +1780,14 @@ test('pairing: a code made on this computer from the open page, used once on the
   assert.equal((await post({ origin: PUBLIC_ORIGIN }, 'x'.repeat(20))).status, 403, 'a wrong code');
   const done = await post({ origin: PUBLIC_ORIGIN });
   assert.equal(done.status, 303);
-  assert.equal(done.headers.location, '/#/settings');
+  // To the page that says whether this browser is paired (issue #466), and from there to Settings.
+  assert.match(String(done.headers.location), /^\/pair\?done=[0-9a-f]{32}$/);
   assert.match(String(done.headers['set-cookie']), /^__Host-ledung_device=[0-9a-f]{64}; Secure; HttpOnly; SameSite=Strict; Path=\//);
-  assert.equal((await post({ origin: PUBLIC_ORIGIN })).status, 403, 'used once');
   const cookie = /^(__Host-ledung_device=[0-9a-f]{64})/.exec(String(done.headers['set-cookie']))![1]!;
   // The device is in through the public name, and nowhere else: locally its cookie is not a sign-in.
   assert.equal((await pub({ path: '/api/state', headers: { cookie } })).status, 200);
+  // Once its cookie came back, the code pairs nothing more (a press before that pairs in place of it, issue #466).
+  assert.equal((await post({ origin: PUBLIC_ORIGIN })).status, 403, 'used once');
   assert.equal((await pub({ path: '/', headers: { cookie } })).status, 200);
   assert.equal((await request({ path: '/api/state', headers: { cookie } })).status, 401);
   const me = JSON.parse((await pub({ path: '/api/device', headers: { cookie } })).body);
