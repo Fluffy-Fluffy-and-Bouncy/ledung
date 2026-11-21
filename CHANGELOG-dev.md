@@ -9,6 +9,9 @@ together, are in [CHANGELOG.md](CHANGELOG.md). Online: https://projectledung.com
 ([docs/changes/README.md](docs/changes/README.md)); `npm run publish:dev` and `npm run publish:public` fold them in
 here under the version they publish, and push the result to main.
 
+## v4.9 — 2026-11-21 13:41 CET
+- The desktop app opened from the Start menu, Dock or Finder after an update now starts Ledung in the background when none runs, instead of opening a window with nothing behind it (#477)
+
 ## v4.8 — 2026-11-21 12:04 CET
 - Desktop app: Copy Image now works on pictures in another computer's tab; it used to copy nothing there (#451)
 
