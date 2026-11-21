@@ -397,6 +397,16 @@ function restartForUpdate(appOnly = false, shown = false): boolean {
   return true;
 }
 
+/**
+ * A start of the app reached this running one (#479, #485): with no window in sight and its code not the installed
+ * version's, it restarts into that version, shown, as a fresh start would; app only, so Ledung is started when none runs
+ * (#477). A window in sight is in use and keeps its banner: "restart by itself when hidden, ask when in front" (Martin,
+ * Ledung question #593). Whether it restarts.
+ */
+function restartForStart(): boolean {
+  return made !== null && !anyShown() && restartBrings(app.getVersion(), installedVersion(made.cli)) && restartForUpdate(true, true);
+}
+
 /** The update waits for the windows to be out of sight; called when one hides or is minimised. */
 function restartIfHidden(): void {
   // Not while quitting: windows closing for a plain quit must not turn it into a restart.
@@ -883,13 +893,9 @@ if (shortcutFile) {
   // menu, a shortcut, a pin or `ledung` then reaches this one, never the check at a fresh start (#455); on Windows and
   // Linux, while the Mac's arrives as activate (#485). Martin,
   // 2026-11-21 (#479): such a start showed the old window with its update banner to press. With no window in sight
-  // the start restarts the app into the installed version instead, shown, as a fresh start would: app only, so Ledung
-  // is started when none runs (#477). A window in sight is in use and keeps its banner: "restart by itself when hidden,
-  // ask when in front" (Martin, Ledung question #593).
+  // it restarts the app into the installed version instead (restartForStart).
   app.on('second-instance', () => {
-    if (made && !anyShown() && restartBrings(app.getVersion(), installedVersion(made.cli))) {
-      if (restartForUpdate(true, true)) return;
-    }
+    if (restartForStart()) return;
     showWindow();
   });
   // A click on one of the page's notifications (#360) shows the window whose page showed it: the page then opens the
@@ -944,10 +950,28 @@ if (shortcutFile) {
     // Not there: a usual start.
   }
   let readyAt = 0;
+  /** How long after the app is ready an activate counts as the Mac's launch itself, not a person's click. */
+  const LAUNCH_MS = 2000;
+  let exercised485 = false;
   // A click on the app in the Dock (Mac), the windows hidden or not: the most recently used comes forward (#414). The
   // Mac may count the launch itself as one; a hidden restart ignores that first moment.
   app.on('activate', () => {
-    if (startedHidden && Date.now() - readyAt < 2000) return;
+    const atLaunch = readyAt === 0 || Date.now() - readyAt < LAUNCH_MS;
+    if (atLaunch) {
+      if (!startedHidden) showWindow();
+      return;
+    }
+    // The Mac's start that reached this running app (a Dock click, Finder, Launchpad, `ledung` opening it): restarts
+    // a hidden out-of-date app as a second start does on Windows (#485). Never at launch: an app that opened on its own
+    // code because the start restart for this version just failed (#455's once-per-version note) would restart again
+    // from that launch's own activate, a loop the note could no longer stop.
+    if (restartForStart()) {
+      if (!exercised485) {
+        exercised485 = true;
+        exercised('EXERCISED #485 activate restarted the hidden out-of-date app into the installed version');
+      }
+      return;
+    }
     showWindow();
   });
   // Started from a shortcut, a pin, Launchpad or Finder after an npm update (#455): this app still has the old version's
