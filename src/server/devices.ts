@@ -10,7 +10,6 @@
 // phone. Browser rows count only locally and phone and computer rows only through the public name (byCookie's `where`).
 import crypto from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import { exercisedLine } from '../platform/exercised.ts';
 
 /** The device cookie. `__Host-` makes the browser keep it only for this exact name, over HTTPS, at Path=/. */
 export const DEVICE_COOKIE = '__Host-ledung_device';
@@ -139,8 +138,6 @@ function unseal(sealed: string, oldCookie: string): string | null {
     return null;
   }
 }
-
-let exercised468 = false;
 
 export const deviceView = (d: Device): DeviceView => ({ id: d.id, name: d.name, createdAt: d.createdAt, lastUsedAt: d.lastUsedAt, passkey: !!d.credentialId, passkeyAt: d.passkeyAt, kind: d.kind, pairedVia: d.pairedVia });
 
@@ -506,12 +503,7 @@ export class Devices {
   private renewedAgain(device: Device, at: number): string | null {
     const r = this.db.prepare('SELECT new_cookie_sealed, old_cookie_until FROM devices WHERE id = ? AND revoked_at IS NULL').get(device.id) as Row | undefined;
     if (!r || r.new_cookie_sealed == null || device.presented === null || at <= Number(r.old_cookie_until)) return null;
-    const cookie = unseal(String(r.new_cookie_sealed), device.presented);
-    if (cookie !== null && !exercised468) {
-      exercised468 = true;
-      exercisedLine('EXERCISED #468 a renewed cookie whose answer looked lost was sent again, and the pairing kept');
-    }
-    return cookie;
+    return unseal(String(r.new_cookie_sealed), device.presented);
   }
 
   /** A computer logs on (after its passkey check): changes need no unlock until it logs off. */
