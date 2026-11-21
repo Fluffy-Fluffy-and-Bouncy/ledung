@@ -1129,11 +1129,16 @@ async function appHarness(name: string, ledungPort: number) {
   return { start, note };
 }
 
-/** A stand-in Ledung on a port of its own: it answers /running as Ledung does (desktop/attach.ts runningProof). */
-async function standInLedung(): Promise<{ port: number; close: () => Promise<void> }> {
+/**
+ * A stand-in Ledung on a port of its own: it answers /running as Ledung does (desktop/attach.ts runningProof). After
+ * `answers` proofs it answers no more, as a Ledung stopped meanwhile (#490).
+ */
+async function standInLedung(answers = Infinity): Promise<{ port: number; close: () => Promise<void> }> {
+  let given = 0;
   const server = http.createServer((req, res) => {
     const nonce = new URL(req.url!, 'http://x').searchParams.get('nonce');
-    if (!nonce) return void res.writeHead(404).end();
+    if (!nonce || given >= answers) return void res.writeHead(404).end();
+    given++;
     const proof = crypto.createHmac('sha256', TOKEN_455).update(`ledung-running:${nonce}`).digest('hex');
     res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ proof }));
   });
@@ -1237,6 +1242,34 @@ test("a second start of an app running out of date with no window in sight (desk
     assert.equal(current.args, null, 'no restart command ran');
   } finally {
     await ledung.close();
+  }
+});
+
+test('a second start of an up-to-date app with no window in sight (desktop/main.ts) starts Ledung when none answers; a running one is left as it is (#490)', async () => {
+  // Martin, Ledung question #764 (2026-11-21 23:07): "a — Start Ledung". The window was closed (hidden), Ledung was
+  // stopped, and the app was started again from the Start menu: it showed a page with nothing behind it.
+  // Stopped: the stand-in answers the window's attach at the app's start, then no more.
+  const stopped = await standInLedung(1);
+  try {
+    const { start } = await appHarness('main-second-stopped-490', stopped.port);
+    const run = await start('2.0.0', '2.0.0', 'second');
+    // The window comes forward, and the made app's own `ledung` runs as Start Ledung runs it: no restart, no quit.
+    assert.ok(run.events.includes('show'), run.out);
+    assert.ok(!run.events.includes('quit'), run.out);
+    assert.deepEqual(run.args, ['--no-open'], run.out);
+  } finally {
+    await stopped.close();
+  }
+
+  // Running: the same second start only shows the window and starts nothing.
+  const running = await standInLedung();
+  try {
+    const { start } = await appHarness('main-second-running-490', running.port);
+    const run = await start('2.0.0', '2.0.0', 'second');
+    assert.deepEqual(run.events, ['window', 'show', 'done'], run.out);
+    assert.equal(run.args, null, 'no start command ran');
+  } finally {
+    await running.close();
   }
 });
 
