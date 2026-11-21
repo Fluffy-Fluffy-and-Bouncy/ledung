@@ -9,6 +9,9 @@ together, are in [CHANGELOG.md](CHANGELOG.md). Online: https://projectledung.com
 ([docs/changes/README.md](docs/changes/README.md)); `npm run publish:dev` and `npm run publish:public` fold them in
 here under the version they publish, and push the result to main.
 
+## v4.8 — 2026-11-21 12:04 CET
+- Desktop app: Copy Image now works on pictures in another computer's tab; it used to copy nothing there (#451)
+
 ## v4.7 — 2026-11-21 11:53 CET
 - Pairing: pressing Pair now leads to a page that says plainly whether this browser is paired, and what to do next (#466)
 - Pairing: the Pair button greys and says "Pairing…" while it works, so a slow first press no longer looks like nothing happened (#466)
