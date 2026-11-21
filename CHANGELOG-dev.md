@@ -9,6 +9,9 @@ together, are in [CHANGELOG.md](CHANGELOG.md). Online: https://projectledung.com
 ([docs/changes/README.md](docs/changes/README.md)); `npm run publish:dev` and `npm run publish:public` fold them in
 here under the version they publish, and push the result to main.
 
+## v4.10 — 2026-11-21 20:38 CET
+- On Windows and Linux, the desktop app left running with its window closed takes an update when it is started again, instead of showing its window with a restart banner to press (#479)
+
 ## v4.9 — 2026-11-21 13:41 CET
 - The desktop app opened from the Start menu, Dock or Finder after an update now starts Ledung in the background when none runs, instead of opening a window with nothing behind it (#477)
 
