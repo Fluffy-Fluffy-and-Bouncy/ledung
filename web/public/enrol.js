@@ -3,7 +3,7 @@
 // there, so the device's frame logs on with it afterwards. No cookie is needed: the code in the fragment is the proof,
 // works once and for five minutes, and only for a device still in its 10 minutes after pairing. Plain script module,
 // no build.
-import { NO_WEBAUTHN, noPlatformPasskey, passkeyError } from '/enrol-messages.js';
+import { enrolLinkDead, NO_WEBAUTHN, noPlatformPasskey, passkeyError } from '/enrol-messages.js';
 
 const code = location.hash.slice(1);
 history.replaceState(null, '', location.pathname); // the code leaves the address bar
@@ -40,7 +40,7 @@ if (!code) {
   post('/enrol/options', { code }).then((o) => {
     title.textContent = `Set up the passkey for “${o.user?.name ?? 'this device'}”`;
   }, (e) => {
-    if (/not valid any more|only be set up in the|already has its passkey/.test(e?.message ?? '')) dead(passkeyError(e));
+    if (enrolLinkDead(e?.message)) dead(passkeyError(e));
   });
   // Said before trying (issue #273): no passkey can be made on this computer itself. The button stays, for a phone
   // (by its QR code) or a password manager's extension.

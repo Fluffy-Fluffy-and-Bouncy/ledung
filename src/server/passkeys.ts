@@ -36,6 +36,14 @@ export const PASSKEY_HEADER = 'x-ledung-passkey';
 export const VOUCH_HEADER = 'x-ledung-vouch';
 /** The refusal of a vouch for what still takes a passkey (choice 2a): the page then asks for the passkey itself. */
 export const PASSKEY_ONLY = 'This needs a passkey, or this computer\'s own screen: a trusted computer can\'t do it.';
+/**
+ * The set-up page's refusals that mean its link can set nothing up any more: the page (enrol.js, through
+ * enrolLinkDead in web/public/enrol-messages.js) then ends at once instead of offering a button (#481). Named so a
+ * test holds the page's match to these exact words.
+ */
+export const ENROL_LINK_GONE = 'This passkey link is not valid any more. Make a new one from the device that asked for it.';
+export const ALREADY_HAS_PASSKEY = 'This device already has its passkey.';
+export const PASSKEY_WINDOW_PASSED = 'A passkey can only be set up in the 10 minutes after pairing. Pair this device again from Settings on the computer.';
 /** What a sign link (#463) for logging the device on says it signs; the sign page words a log-on by it (#481). */
 export const SIGN_LOG_ON = 'Log this device on';
 /**
@@ -111,7 +119,7 @@ export class Passkeys {
   /** A new enrol code for this device, while it may still set up its passkey; any earlier one of it stops working. */
   enrolCode(device: Device): { code: string; expiresAt: number } {
     if (!this.devices.mayRegisterPasskey(device)) {
-      throw new PasskeyError(device.credentialId ? 'This device already has its passkey.' : 'A passkey can only be set up in the 10 minutes after pairing. Pair this device again from Settings on the computer.');
+      throw new PasskeyError(device.credentialId ? ALREADY_HAS_PASSKEY : PASSKEY_WINDOW_PASSED);
     }
     const at = this.now();
     for (const [c, e] of this.enrolCodes) if (e.deviceId === device.id || e.expiresAt <= at) this.enrolCodes.delete(c);
@@ -135,7 +143,7 @@ export class Passkeys {
 
   async registrationOptions(device: Device): Promise<PublicKeyCredentialCreationOptionsJSON> {
     if (!this.devices.mayRegisterPasskey(device)) {
-      throw new PasskeyError(device.credentialId ? 'This device already has its passkey.' : 'A passkey can only be set up in the 10 minutes after pairing. Pair this device again from Settings on the computer.');
+      throw new PasskeyError(device.credentialId ? ALREADY_HAS_PASSKEY : PASSKEY_WINDOW_PASSED);
     }
     const challenge = this.issue(device.id, 'register', '');
     return generateRegistrationOptions({
@@ -157,7 +165,7 @@ export class Passkeys {
     }).catch((e: Error) => { throw new PasskeyError(`The passkey was not accepted: ${e.message}`); });
     if (!verified.verified) throw new PasskeyError('The passkey was not accepted.');
     const { credential } = verified.registrationInfo;
-    if (!this.devices.setPasskey(device.id, credential.id, credential.publicKey, credential.counter)) throw new PasskeyError('This device already has its passkey.');
+    if (!this.devices.setPasskey(device.id, credential.id, credential.publicKey, credential.counter)) throw new PasskeyError(ALREADY_HAS_PASSKEY);
   }
 
   /** A challenge for one request by this device. */

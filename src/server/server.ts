@@ -17,7 +17,7 @@ import type { Store } from '../store/store.ts';
 import { AWAY_DEFAULT, AWAY_KINDS, EFFORT_LEVELS, HELPER, type AwayKind, type PermissionDecision, type PermissionMode, type RemoteStatus, type ServerEvent, parseWatch } from '../shared/protocol.ts';
 import { browserCookieHeader, deviceCookieHeader, Guard, readCookies, securityHeaders } from './security.ts';
 import { browserName, DEVICE_COOKIE, type Device, type DeviceKind, deviceName, Devices, deviceView, LEGACY_BROWSER_NAME, PAIR_CODE_MS, pairedLink, PASSKEY_WINDOW_MS } from './devices.ts';
-import { actionOf, DEVICE_LOCKED, PASSKEY_HEADER, PASSKEY_NEEDED, PASSKEY_ONLY, PasskeyError, Passkeys, SIGN_LOG_ON, VOUCH_HEADER } from './passkeys.ts';
+import { actionOf, DEVICE_LOCKED, ENROL_LINK_GONE, PASSKEY_HEADER, PASSKEY_NEEDED, PASSKEY_ONLY, PasskeyError, Passkeys, SIGN_LOG_ON, VOUCH_HEADER } from './passkeys.ts';
 import { linkedPushItem, Push, PushError, type LinkedPushItem } from './push.ts';
 import type { UsageQueries } from '../usage/queries.ts';
 import { readRunningRelease, type Updater } from '../update/updater.ts';
@@ -958,7 +958,7 @@ export class LedungServer {
       const body = await readJson(req);
       const finish = url.pathname === '/enrol/finish';
       const device = passkeys.enrolDevice(body.code, finish);
-      if (!device) throw new HttpError(403, 'This passkey link is not valid any more. Make a new one from the device that asked for it.');
+      if (!device) throw new HttpError(403, ENROL_LINK_GONE);
       const result = finish
         ? await passkeyCall(async () => {
           await passkeys.register(device, body.response);

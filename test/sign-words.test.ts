@@ -4,6 +4,7 @@
 // (Martin, 2026-10-17, PR #164); a sign link lives two minutes (#463). The button in Settings → Phones says "Log out".
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { ALREADY_HAS_PASSKEY, ENROL_LINK_GONE, PASSKEY_WINDOW_PASSED } from '../src/server/passkeys.ts';
 
 type Part = { text: string; bold?: boolean };
 type Words = {
@@ -12,7 +13,10 @@ type Words = {
 };
 // A plain browser module with no types; imported by a computed path so the type check leaves it alone.
 const modulePath = '../web/public/enrol-messages.js';
-const { signWords } = await import(modulePath) as { signWords(name: string, what: string, terms: unknown): Words };
+const { signWords, enrolLinkDead } = await import(modulePath) as {
+  signWords(name: string, what: string, terms: unknown): Words;
+  enrolLinkDead(message: unknown): boolean;
+};
 
 const text = (parts: Part[]) => parts.map((p) => p.text).join('');
 const terms = (logOn: boolean, kind: string) => ({ logOn, kind, idleDays: 14, unlockMinutes: 30, linkMinutes: 2 });
@@ -50,6 +54,32 @@ test('one change: the request as Ledung words it, signed once, and it does not l
   assert.match(rules, /It does not log the app on\./);
   assert.match(rules, /The link runs out in 2 minutes\./);
   assert.equal(w.doneTitle, 'Allowed');
+});
+
+// Test review of PR #486, finding 2: with only the decided figures, words written as fixed text would pass. Other
+// figures must show as given, and one minute is singular.
+test('the figures are the terms\' own: other terms give other words, and "1 minute" is singular', () => {
+  const other = { idleDays: 7, unlockMinutes: 15, linkMinutes: 1 };
+  const computer = signWords('Mac', 'Log this device on', { logOn: true, kind: 'computer', ...other });
+  const computerText = [...computer.rules.map(text), computer.fine, text(computer.doneLead)].join('\n');
+  assert.match(computerText, /goes 7 days unused/);
+  assert.match(computerText, /or 7 days without use/);
+  assert.match(computer.fine, /runs out in 1 minute\./);
+  assert.doesNotMatch(computerText, /14 days|2 minutes|1 minutes/);
+  const phone = signWords('Phone', 'Log this device on', { logOn: true, kind: 'phone', ...other });
+  assert.match([...phone.rules.map(text), text(phone.doneLead)].join('\n'), /stays unlocked for 15 minutes/);
+  assert.doesNotMatch([...phone.rules.map(text), phone.fine].join('\n'), /30 minutes/);
+  const change = signWords('Mac', 'POST /api/away', { logOn: false, kind: 'computer', ...other });
+  assert.match(change.rules.map(text).join('\n'), /The link runs out in 1 minute\./);
+});
+
+// Test review of PR #486, finding 3: the set-up page ends early only on Ledung's own words for a link that can set
+// nothing up, read from the server's named refusals, so rewording one turns this red.
+test('the set-up page ends early on each of Ledung\'s dead-link refusals, and not on a network error', () => {
+  for (const refusal of [ENROL_LINK_GONE, ALREADY_HAS_PASSKEY, PASSKEY_WINDOW_PASSED]) assert.ok(enrolLinkDead(refusal), refusal);
+  for (const passing of ['Ledung answered 502.', 'Failed to fetch', 'The passkey check was cancelled.', '', undefined]) {
+    assert.equal(enrolLinkDead(passing), false, String(passing));
+  }
 });
 
 test('a device\'s name is a text part, never markup', () => {

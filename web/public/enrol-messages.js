@@ -113,3 +113,13 @@ export function signWords(name, what, terms) {
     doneLead: [{ text: 'Signed for ' }, { text: name, bold: true }, { text: ': the change goes through in the app by itself.' }],
   };
 }
+
+/**
+ * Whether a refusal of the set-up page's first call means its link can set nothing up any more (#481): Ledung's own
+ * words for a dead link, a device that has its passkey already, or the 10 minutes after pairing gone
+ * (src/server/passkeys.ts ENROL_LINK_GONE, ALREADY_HAS_PASSKEY, PASSKEY_WINDOW_PASSED). Anything else, such as a
+ * passing network error, leaves the button for another try.
+ */
+export function enrolLinkDead(message) {
+  return /not valid any more|already has its passkey|can only be set up in the/.test(String(message ?? ''));
+}
