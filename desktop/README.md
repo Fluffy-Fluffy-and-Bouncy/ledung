@@ -160,6 +160,16 @@ What `npm install -g ledung` and `ledung` give (`src/platform/desktop-app.ts`, #
   goes once the app starts up to date. An app whose `ledung` is gone, or whose package can't be read (mid-update),
   runs what it has. An app made before this fix has no such check: it takes it the first time `ledung` or the tray's
   **Open Ledung** writes its code.
+- **Started while it still runs out of date** (#479; Martin, 2026-11-21: a Start-menu start after an update showed the
+  window with its update banner to press). Closing the app's last window only hides it, so the app keeps running
+  through `ledung stop` and an npm update, and a later start from the Start menu, a shortcut, a pin or `ledung`
+  reaches that running app instead of a fresh one, so the check above never runs. On Windows and Linux such a start
+  (Electron's second-instance) now restarts the app the same "app only" way when its code is not the installed
+  version's and no window is in sight (a minimised one counts as out of sight), and it comes back shown. A window in
+  sight is in use: the start shows it and its page keeps the update banner (Martin, question #593: "restart by itself
+  when hidden, ask when in front"). Up to date, the start shows the window as before. On the Mac a Dock click, Finder
+  or `ledung` reaches the running app as activate instead, which still only shows it (#485). `desktop/restart.log`
+  gives each restart a line with its time, the app's process id and which restart it is (`app only` or `update`).
 - **Reload takes the update too** (#455; Martin, 2026-11-20: "when we press reload, why doesnt we reload with the new
   code?"). ⌘R/Ctrl+R, View → Reload and Force Reload reload the page, which comes from the running Ledung, but never
   the app's own code. While that code is not the installed version's (an update, or a downgrade) they restart the window into it instead, in
