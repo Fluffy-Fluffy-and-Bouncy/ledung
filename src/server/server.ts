@@ -102,8 +102,6 @@ const PAIR_CODE_FORM = '<form method="get" action="/pair"><p><label>Pairing code
   + '<p><button style="font-size:1.1em">Next</button></p></form>';
 /** After pairing (issue #466): what comes next, on the page that says this browser is paired. */
 const PAIRED_NEXT = '<p>Next, set up its passkey in Settings, so it can make changes and not only look.</p><p><a href="/#/settings">Go on to Settings</a></p>';
-/** The EXERCISED line of issue #466, once per run. */
-let exercised466 = false;
 
 /** Text for an HTML page: a device's name is typed by whoever pairs it. */
 function escapeHtml(text: string): string {
@@ -1566,10 +1564,6 @@ export class LedungServer {
       if (used.deviceId === here?.id) return page(200, pairUsedWords(used, now, 'here') + PAIRED_NEXT);
       paired = this.devices.pairAgain(posted.get('code'), posted.get('name'), framed);
       if (!paired) return page(403, pairUsedWords(used, now, used.removed ? 'removed' : 'elsewhere'));
-      if (!exercised466) {
-        exercised466 = true;
-        exercisedLine('EXERCISED #466 a used pairing code whose device never came back paired this browser in its place');
-      }
       console.log(`Devices: "${used.name}" never came back with its pairing cookie; removed, and the same link paired "${paired.device.name}" in its place.`);
     }
     if (paired.device.pairedVia !== null) this.linkPairingUsed(paired.device);
