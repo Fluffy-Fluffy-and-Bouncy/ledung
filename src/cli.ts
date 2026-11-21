@@ -115,8 +115,7 @@ if (appOnly) {
   // APP_ONLY_READY_MS for Ledung to answer, not the terminal start's minute; one slower than that is still starting
   // when the app opens, and the page's Retry finds it (#477 self-check, finding 1).
   if (!(await openIfRunning({ configFile: configPath(), open: false }))) {
-    const started = await startInBackground({ args: [fileURLToPath(import.meta.url), '--foreground', '--no-open'], configFile: configPath(), readyMs: APP_ONLY_READY_MS });
-    exercisedLine(`EXERCISED #477 desktop app started out of date with no Ledung running: started it in the background (exit ${started})`);
+    await startInBackground({ args: [fileURLToPath(import.meta.url), '--foreground', '--no-open'], configFile: configPath(), readyMs: APP_ONLY_READY_MS });
   }
   if ((desktop?.ok ? await openTheApp() : 1) === 0) {
     // Only once the app has its new code and opened: a fallback below must not read as a pass (self-check finding 1).
