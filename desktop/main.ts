@@ -817,6 +817,8 @@ function createWindow(bounds?: { x: number; y: number; width: number; height: nu
       // hide, which would ask the same question again (self-check finding 5).
       restartOnQuit = false;
       restartAppOnly = false;
+      // A start's restart kept here is not one: a later restart for another reason must not trace it (#479 self-check).
+      restartForStart = false;
       updatePending = false;
       // A window that was closing stays: back in the list (#414).
       if (!windows.has(w)) windows.add(w);
