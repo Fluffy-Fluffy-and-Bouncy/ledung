@@ -360,6 +360,8 @@ let restartOnQuit = false;
  * none runs (#477), never a second one.
  */
 let restartAppOnly = false;
+/** That restart is a start's that reached this app running out of date (#479): traced once the quit is sure. */
+let restartForStart = false;
 
 /** Whether any window is in sight: shown and not minimised. */
 const anyShown = (): boolean => openWindows().some((w) => w.isVisible() && !w.isMinimized());
@@ -375,8 +377,9 @@ let hiddenAtRestart = false;
  * Restarts the app to take the updated Ledung's code (#408): quits, and the `ledung` that made it opens it again. Not
  * when that command is gone (a Node upgraded or moved): quitting would leave nothing to open the app again, so it stays
  * on the old code with its banner, and starting `ledung` updates it (self-check finding 4).
+ * `shown`: the new app comes back with its window shown whatever this one shows, as a start asked for (#479).
  */
-function restartForUpdate(appOnly = false): boolean {
+function restartForUpdate(appOnly = false, shown = false): boolean {
   if (!made || restartOnQuit) return false;
   if (!restartCommand(made, process.pid)) {
     console.error('Ledung desktop: the ledung command that made this app is gone; start it again with ledung to update it.');
@@ -389,7 +392,7 @@ function restartForUpdate(appOnly = false): boolean {
     return false;
   }
   // Minimised counts as there: the Mac reports a minimised window as not visible (self-check round 2, finding 1).
-  hiddenAtRestart = !openWindows().some((w) => w.isVisible() || w.isMinimized());
+  hiddenAtRestart = !shown && !openWindows().some((w) => w.isVisible() || w.isMinimized());
   restartOnQuit = true;
   restartAppOnly = appOnly;
   quit();
@@ -419,11 +422,15 @@ function startAfterQuit(): void {
     // No window was visible: the new app starts hidden too, so a restart the person did not ask for shows nothing.
     if (hiddenAtRestart) fs.writeFileSync(START_HIDDEN, '');
     out = fs.openSync(path.join(dir, 'restart.log'), 'a');
+    // When and which restart, so a line in this log can be tied to a start (#479: tubal-cain's log had none).
+    fs.writeSync(out, `${new Date().toISOString()} restarting the app ${process.pid} (${restartAppOnly ? 'app only' : 'update'})\n`);
   } catch (e) {
     console.error(`Ledung desktop: ${(e as Error).message}`);
   }
   try {
     spawn(cmd.command, cmd.args, { detached: true, stdio: ['ignore', out, out], windowsHide: true, env: startEnv(process.env) }).unref();
+    // Here, not where the start asked: a "Leave this page?" kept open would make it a restart that never happened.
+    if (restartForStart) exercised('EXERCISED #479 a start reached the app running out of date: restarted it into the installed version');
   } catch (e) {
     console.error(`Ledung desktop: could not restart for the update: ${(e as Error).message}`);
     // Nothing restarts it: the next start, by hand, shows its window (self-check finding 2).
@@ -810,6 +817,8 @@ function createWindow(bounds?: { x: number; y: number; width: number; height: nu
       // hide, which would ask the same question again (self-check finding 5).
       restartOnQuit = false;
       restartAppOnly = false;
+      // A start's restart kept here is not one: a later restart for another reason must not trace it (#479 self-check).
+      restartForStart = false;
       updatePending = false;
       // A window that was closing stays: back in the list (#414).
       if (!windows.has(w)) windows.add(w);
@@ -875,8 +884,23 @@ if (shortcutFile) {
 } else if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  // A second start brings the most recently used window forward (#414).
-  app.on('second-instance', () => showWindow());
+  // A second start brings the most recently used window forward (#414). The app may still run an older version's code:
+  // closing its last window only hides it, so it outlives `ledung stop` and an npm update, and a start from the Start
+  // menu, a shortcut, a pin or `ledung` then reaches this one, never the check at a fresh start (#455); on Windows and
+  // Linux, while the Mac's arrives as activate (#485). Martin,
+  // 2026-11-21 (#479): such a start showed the old window with its update banner to press. With no window in sight
+  // the start restarts the app into the installed version instead, shown, as a fresh start would: app only, so Ledung
+  // is started when none runs (#477). A window in sight is in use and keeps its banner: "restart by itself when hidden,
+  // ask when in front" (Martin, Ledung question #593).
+  app.on('second-instance', () => {
+    if (made && !anyShown() && restartBrings(app.getVersion(), installedVersion(made.cli))) {
+      // Set first: the quit may reach will-quit before restartForUpdate returns.
+      restartForStart = true;
+      if (restartForUpdate(true, true)) return;
+      restartForStart = false;
+    }
+    showWindow();
+  });
   // A click on one of the page's notifications (#360) shows the window whose page showed it: the page then opens the
   // session it was about there.
   ipcMain.on(SHOW_WINDOW_MESSAGE, (event) => {
