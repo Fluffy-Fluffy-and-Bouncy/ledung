@@ -83,8 +83,9 @@ async function newCode(): Promise<string> {
 function colour(css: string, name: string): string {
   const m = new RegExp(`${name}:\\s*([^;]+);`).exec(css);
   assert.ok(m, `${name} is in the stylesheet`);
-  const pair = /^light-dark\(\s*[^,]+,\s*([^)]+)\)$/.exec(m[1].trim());
-  return (pair ? pair[1] : m[1]).trim().toLowerCase();
+  const value = (m[1] ?? '').trim();
+  const pair = /^light-dark\(\s*[^,]+,\s*([^)]+)\)$/.exec(value);
+  return (pair?.[1] ?? value).trim().toLowerCase();
 }
 
 test('the small pages\' stylesheet is dark, in the main page\'s dark colours', () => {
