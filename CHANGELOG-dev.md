@@ -9,6 +9,11 @@ together, are in [CHANGELOG.md](CHANGELOG.md). Online: https://projectledung.com
 ([docs/changes/README.md](docs/changes/README.md)); `npm run publish:dev` and `npm run publish:public` fold them in
 here under the version they publish, and push the result to main.
 
+## v4.12 — 2026-11-21 22:24 CET
+- The passkey sign and set-up pages, the "Not signed in" / not-paired page and the pairing page are now dark, in the main page's dark colours, even in a browser set to light (#481)
+- The passkey sign page in the browser says what you are signing and for how long: a Mac logs on until you log it out or 14 days unused, a phone unlocks for 30 minutes, one change is signed once; with one clear Touch ID button (#481)
+- The passkey set-up, "Not signed in", not-paired and pairing pages say what to do next and the time limits that apply (#481)
+
 ## v4.11 — 2026-11-21 22:18 CET
 - The page tries to reach Ledung again every half second while it is away, and at once when its window or tab is shown again, so the update banner comes within about a second of Ledung being back instead of after up to 10 seconds (#488)
 
