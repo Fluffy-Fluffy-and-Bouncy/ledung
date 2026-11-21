@@ -43,6 +43,7 @@ if (!code) {
   post('/sign/options', { code }).then((o) => {
     const words = signWords(o.name, o.what, o.terms);
     title.textContent = words.title;
+    document.title = `Ledung · ${words.title}`;
     fill(what, words.lead);
     if (words.request) {
       request.textContent = words.request;

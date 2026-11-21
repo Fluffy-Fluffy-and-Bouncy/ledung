@@ -10,6 +10,8 @@ import path from 'node:path';
 import WebSocket from 'ws';
 import { parseConfig } from '../src/config.ts';
 import { LedungServer } from '../src/server/server.ts';
+import { PASSKEY_WINDOW_MS } from '../src/server/devices.ts';
+import { ENROL_MS } from '../src/server/passkeys.ts';
 import { SessionManager } from '../src/sessions/manager.ts';
 import { openDatabase } from '../src/store/database.ts';
 import { Store } from '../src/store/store.ts';
@@ -177,6 +179,9 @@ test('the pairing page says what pairing gives and the 10 minutes to set up a pa
 
 test('the passkey set-up page gives the 10 minutes after pairing and the link\'s 5', () => {
   const html = fs.readFileSync(path.join(PUBLIC, 'enrol.html'), 'utf8');
-  assert.ok(html.includes('it can only be done in the 10 minutes after pairing, and this link runs out in 5'), html);
+  // The static page's figures are the rules': a change to either rule turns this red until the page follows.
+  const window = Math.round(PASSKEY_WINDOW_MS / 60_000);
+  const link = Math.round(ENROL_MS / 60_000);
+  assert.ok(html.includes(`it can only be done in the ${window} minutes after pairing, and this link runs out in ${link}`), html);
   assert.ok(html.includes('<button id="go" class="primary big" hidden>'), html);
 });

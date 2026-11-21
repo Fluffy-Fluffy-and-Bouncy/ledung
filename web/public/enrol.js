@@ -35,14 +35,19 @@ if (!code) {
   go.hidden = false;
   // The device's name in the title (#481), from the same call the button makes: a link no longer good says so at once.
   // The button asks again, for a fresh check, as the page may wait longer than this one lasts.
+  // Only Ledung's own "this link can't set anything up" ends the page here; a passing network or relay error leaves the
+  // button, which asks again when pressed.
   post('/enrol/options', { code }).then((o) => {
     title.textContent = `Set up the passkey for “${o.user?.name ?? 'this device'}”`;
-  }, (e) => dead(passkeyError(e)));
+  }, (e) => {
+    if (/not valid any more|only be set up in the|already has its passkey/.test(e?.message ?? '')) dead(passkeyError(e));
+  });
   // Said before trying (issue #273): no passkey can be made on this computer itself. The button stays, for a phone
   // (by its QR code) or a password manager's extension.
   if (!window.PublicKeyCredential) {
     what.textContent = NO_WEBAUTHN;
     go.hidden = true;
+    facts.hidden = true;
     fine.hidden = true;
   } else if (PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable) {
     PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable().then((available) => {

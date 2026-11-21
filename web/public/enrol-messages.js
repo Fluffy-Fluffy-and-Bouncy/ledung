@@ -72,7 +72,7 @@ export function signWords(name, what, terms) {
         [{ text: 'The app can make changes: send messages, allow prompts, start and stop sessions.' }],
         [{ text: 'It ' }, { text: 'stays logged on', bold: true }, { text: ' until you log it out (Settings → Phones), remove it, or it goes ' },
           { text: `${t.idleDays} days unused`, bold: true }, { text: '. A restart doesn\'t log it out.' }],
-        [{ text: 'Allowing a sensitive prompt, and settings such as pairing, away mode and usage stops, still ask for Touch ID each time.' }],
+        [{ text: 'Allowing a sensitive prompt, away mode, usage stops and shell commands still ask for Touch ID each time.' }],
       ],
       button: 'Log on with Touch ID',
       fine: `This link signs only this log-on, once, and runs out in ${link}. Didn't ask for it? Close this tab: nothing happens.`,
@@ -89,7 +89,7 @@ export function signWords(name, what, terms) {
       rules: [
         [{ text: 'The app can make changes: send messages, allow prompts, start and stop sessions.' }],
         [{ text: 'It ' }, { text: `stays unlocked ${lasts}`, bold: true }, { text: ', then locks again by itself.' }],
-        [{ text: 'Allowing a sensitive prompt, and settings such as pairing, away mode and usage stops, still ask for Touch ID each time.' }],
+        [{ text: 'Allowing a sensitive prompt, away mode, usage stops and shell commands still ask for Touch ID each time.' }],
       ],
       button: 'Unlock with Touch ID',
       fine: `This link signs only this unlock, once, and runs out in ${link}. Didn't ask for it? Close this tab: nothing happens.`,
