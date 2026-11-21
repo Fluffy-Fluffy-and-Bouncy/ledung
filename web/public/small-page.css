@@ -32,6 +32,8 @@ button {
   cursor: pointer;
 }
 button:hover:not(:disabled) { border-color: var(--accent); }
+/* As the main page's: the sign and set-up buttons are disabled while the passkey prompt is open (sign.js, enrol.js). */
+button:disabled { opacity: 0.5; cursor: default; }
 input {
   box-sizing: border-box;
   background: var(--panel);

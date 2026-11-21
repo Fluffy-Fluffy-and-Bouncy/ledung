@@ -81,7 +81,8 @@ async function newCode(): Promise<string> {
 
 /** A custom property's value in a stylesheet's text; for a light-dark() pair, its dark half. */
 function colour(css: string, name: string): string {
-  const m = new RegExp(`${name}:\\s*([^;]+);`).exec(css);
+  // Anchored, so --bg never matches --code-bg.
+  const m = new RegExp(`(?:^|[\\s;{])${name}:\\s*([^;]+);`).exec(css);
   assert.ok(m, `${name} is in the stylesheet`);
   const value = (m[1] ?? '').trim();
   const pair = /^light-dark\(\s*[^,]+,\s*([^)]+)\)$/.exec(value);
@@ -99,6 +100,10 @@ test('the small pages\' stylesheet is dark, in the main page\'s dark colours', (
   assert.match(small, /body\s*\{[^}]*background:\s*var\(--bg\);[^}]*color:\s*var\(--text\);/);
   assert.match(small, /button\s*\{[^}]*background:\s*var\(--panel-2\);/);
   assert.match(small, /input\s*\{[^}]*background:\s*var\(--panel\);/);
+  // A disabled button (the sign and set-up buttons while the passkey prompt is open) looks disabled, as on the main page.
+  const disabled = (css: string) => /button:disabled\s*\{([^}]*)\}/.exec(css)?.[1]?.replace(/\s+/g, ' ').trim();
+  assert.ok(disabled(main), 'the main page has a disabled-button rule');
+  assert.equal(disabled(small), disabled(main));
 });
 
 for (const file of ['sign.html', 'enrol.html']) {
