@@ -151,8 +151,10 @@ What `npm install -g ledung` and `ledung` give (`src/platform/desktop-app.ts`, #
   version's code until something restarted it. Now, before any window, it compares its own version with the package
   where the `ledung` that made it is installed (the nearest `package.json` above that script). When they differ (a
   downgrade too) it quits and runs that command with `--after-app=<its pid> --app-only`: the update's restart, which
-  writes the installed version's code into the app (or makes it again for a new Electron) and opens it, but which
-  never starts Ledung itself, running or not. Should that fail, the command opens the app as it was. The app leaves
+  writes the installed version's code into the app (or makes it again for a new Electron) and opens it. A running
+  Ledung is left as it is; when none runs, that command first starts one in the background, with no browser, and
+  waits up to 15 seconds for it to answer (#477), so the window does not open with nothing behind it. Should bringing
+  the app up to date fail, the command opens the app as it was. The app leaves
   the version it restarted for in `desktop/.start-update`; a start that finds itself still out of date for that version
   within ten minutes runs its own code instead of restarting again, so a failure never becomes a loop, and the note
   goes once the app starts up to date. An app whose `ledung` is gone, or whose package can't be read (mid-update),
