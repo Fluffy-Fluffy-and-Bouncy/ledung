@@ -7,6 +7,19 @@ import { treeFrom } from '../platform/process-tree.ts';
 
 export const JOB_BUSY = 'Another action on this job is still under way: wait for it to finish, then try again.';
 
+/**
+ * What a Stop or Pause leaves alone, from a fresh list: the job's processes the failed guesses reach that still run,
+ * and the job's processes that are gone. A gone one is never "another program" left alone (its command line can't be
+ * read, so it fails the check): a second Stop on a paused job counted what the first had just ended as an unnamed
+ * other program and told the session again (acceptance test 6 of PR #476). Gone ones are only dropped from the job.
+ */
+export function leftAloneNow(guessedOut: number[], fresh: FreshProcess[], reached: Set<number>, jobPids: number[]): { alone: number[]; gone: number[] } {
+  const alive = new Set(fresh.map((p) => p.pid));
+  const job = new Set(jobPids);
+  const alone = [...new Set([...guessedOut, ...guessedOut.flatMap((pid) => treeFrom(fresh, pid).map((p) => p.pid))])].filter((pid) => !reached.has(pid) && alive.has(pid) && job.has(pid));
+  return { alone, gone: jobPids.filter((pid) => !alive.has(pid)) };
+}
+
 export class JobActions {
   private readonly busy = new Set<string>();
 

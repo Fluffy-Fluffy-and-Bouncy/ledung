@@ -16,7 +16,7 @@ import { FRESH_FACTS, idleStopBlocker } from '../src/sessions/idle.ts';
 import { wslHintDue } from '../web/src/usage/machineFold.ts';
 import { LOWERED, type PriorityControl } from '../src/platform/process-control.ts';
 import { dragMax, dragStep, dragText, dragValue, limitShare, limitText, limitUnits, overFor, parseLimitInput, stepDrag, valueShare } from '../web/src/usage/resourceLimits.ts';
-import { commandIsCalls, fileTimeMs, JOB_BUSY, JobActions, jobProcessesNow, jobTargetsNow, provenByCommand, type FreshProcess } from '../src/resources/job-actions.ts';
+import { commandIsCalls, fileTimeMs, JOB_BUSY, JobActions, jobProcessesNow, leftAloneNow, jobTargetsNow, provenByCommand, type FreshProcess } from '../src/resources/job-actions.ts';
 import { jobActionNote, namesText, stopConfirmText } from '../src/shared/job-notes.ts';
 import { hostStill } from '../src/resources/monitor.ts';
 
@@ -1466,6 +1466,33 @@ test("an outside program taken by timing alone is counted but Pause and Stop nev
   const t2 = r2.book.jobTargets(r2.book.info().jobs[0]!.id);
   assert.deepEqual(t2.adopted, [41]);
   assert.deepEqual(t2.guessed, []);
+});
+
+test('a paused job stopped twice: the first Stop ends its own and leaves the game, the second finds nothing to stop and no unnamed "another program" (acceptance test 6 of PR #476)', () => {
+  const r = rig();
+  r.sessions.get('s1')!.busy = true;
+  r.tick({ s1: tree() });
+  r.book.reserve('s1', { what: 'Daemon', cpu: 30, ram_gb: 3 });
+  r.book.callStarted('s1', 'd1', ['node daemon.mjs'], true, true, 'nohup node daemon.mjs &');
+  const daemon = { pid: 77, ppid: 990, cpuSeconds: 0, memBytes: GB, started: r.clock.now + 1000, name: 'node.exe' };
+  const game = { pid: 88, ppid: 990, cpuSeconds: 0, memBytes: 2 * GB, started: r.clock.now + 2000, name: 'game.exe' };
+  for (let i = 1; i <= 3; i++) r.tick({ s1: tree() }, { outside: [{ ...daemon, cpuSeconds: i * 20 }, { ...game, cpuSeconds: i * 20 }] });
+  const id = r.book.info().jobs[0]!.id;
+  assert.equal(r.book.info().jobs[0]!.processes, 2);
+  r.book.setJobPaused(id, true);
+  assert.equal(r.book.info().jobs[0]!.state, 'paused');
+  const fresh = (list: typeof daemon[]) => list.map((p) => ({ pid: p.pid, ppid: p.ppid, started: String(p.started), name: p.name }));
+  // First Stop: the daemon's command is the session's (proven, reached), the game's isn't (left alone).
+  const first = leftAloneNow([88], fresh([daemon, game]), new Set([77]), r.book.jobTargets(id).targets.map((t) => t.pid));
+  assert.deepEqual(first, { alone: [88], gone: [] });
+  r.book.disown(id, first.alone, [77, ...first.gone]);
+  const after = r.book.info().jobs[0]!;
+  assert.equal(after.processes, 0, 'what Stop ended and left alone is off the card at once, before the next sample');
+  assert.notEqual(after.state, 'paused', 'no longer "Paused by you" with Stop active');
+  // Second Stop before the next sample: nothing of its own is left, so nothing to act on and nothing left alone.
+  assert.deepEqual(r.book.jobTargets(id).targets, []);
+  // Even if the ended daemon were still on the job, a gone process is never an unnamed "another program".
+  assert.deepEqual(leftAloneNow([77], fresh([game]), new Set(), [77]), { alone: [], gone: [77] });
 });
 
 test("after Stop, an outside program it left alone is off the job for good, so the stopped job's card goes away (acceptance test 5 of PR #476)", () => {

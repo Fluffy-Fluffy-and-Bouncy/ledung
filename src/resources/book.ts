@@ -1424,10 +1424,12 @@ export class ResourceBook {
   /**
    * After the person's Stop: the processes it left alone (taken by timing alone, their command not the session's) are
    * no longer the job's, so its card goes away once the session's own work is over (acceptance test 5 of PR #476).
+   * What Stop ended or found gone leaves the card at once and the job is no longer paused, so the card doesn't say
+   * "Paused by you" with Stop active for the seconds until the next sample (acceptance test 6 of PR #476).
    */
-  disown(id: string, pids: number[]): void {
+  disown(id: string, pids: number[], ended: number[] = []): void {
     const r = this.reservations.get(id);
-    if (!r || !pids.length) return;
+    if (!r) return;
     const kept = this.adopted.get(r.sessionId);
     for (const pid of pids) {
       const started = kept?.get(pid)?.started ?? r.pids[pid] ?? null;
@@ -1435,6 +1437,9 @@ export class ResourceBook {
       delete r.pids[pid];
       if (started !== null) this.disowned.set(pid, started);
     }
+    // One that didn't end comes back with the next sample; only Stop's own targets are dropped here.
+    for (const pid of ended) delete r.pids[pid];
+    r.paused = false;
     this.persist();
     this.ctx.changed();
   }

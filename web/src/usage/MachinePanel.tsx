@@ -281,7 +281,12 @@ function JobCard({ job, r, title, onOpen, run, onNote }: { job: ResourcesInfo['j
     setBusy(true);
     void run(action).finally(() => setBusy(false));
   };
-  const state = job.state === 'over'
+  // After the person's Stop the card stays until the session's own work is over: it says so and can't be stopped twice
+  // (acceptance test 6 of PR #476: a paused card still said "Paused by you" with Stop active).
+  const [stopped, setStopped] = useState(false);
+  const state = stopped
+    ? 'Stopped by you: the card goes away when its session is done'
+    : job.state === 'over'
     ? `Over its share${job.overSince ? ` for ${overFor(Date.now() - job.overSince)}` : ''}: priority ${job.lowered ? 'lowered' : 'unchanged'}, session held, told`
     : job.state === 'paused' ? 'Paused by you: its processes are suspended; their memory stays taken' : passStateText(job, Date.now(), formatDuration);
   // One line a job, the full card a click away; over its share it stays open, since that needs the person (issue #284).
@@ -334,13 +339,19 @@ function JobCard({ job, r, title, onOpen, run, onNote }: { job: ResourcesInfo['j
       {job.state === 'over' && <div className="muted small-print">A lower priority only shares out CPU time; for memory and the GPU, the session's own cut-back is what helps.</div>}
       <div className="job-actions">
         {job.state === 'paused'
-          ? <button className="small" disabled={busy} onClick={() => act(async () => onNote(jobActionNote('resume', job.what, await api.pauseJob(job.id, false))))}>Resume</button>
-          : <button className="small" disabled={busy} title="Suspends the job's processes; their memory and GPU memory stay taken" onClick={() => act(async () => onNote(jobActionNote('pause', job.what, await api.pauseJob(job.id, true))))}>Pause</button>}
-        <button className="small danger" disabled={busy} onClick={() => act(async () => {
+          ? <button className="small" disabled={busy || stopped} onClick={() => act(async () => onNote(jobActionNote('resume', job.what, await api.pauseJob(job.id, false))))}>Resume</button>
+          : <button className="small" disabled={busy || stopped} title="Suspends the job's processes; their memory and GPU memory stay taken" onClick={() => act(async () => onNote(jobActionNote('pause', job.what, await api.pauseJob(job.id, true))))}>Pause</button>}
+        <button className="small danger" disabled={busy || stopped} onClick={() => act(async () => {
+          const nothing = `"${job.what}" has no processes running any more: there is nothing to stop.`;
           // Counted just now, so the confirm names only what Stop will end, and what it leaves alone (acceptance test 5 of PR #476).
-          const reach = await api.jobReach(job.id);
-          if (!reach.act && !reach.others) throw new Error(`"${job.what}" has no processes running any more: there is nothing to stop.`);
-          if (confirm(stopConfirmText(job.what, reach))) onNote(jobActionNote('stop', job.what, await api.stopJob(job.id)));
+          const reach = await api.jobReach(job.id).catch((e: Error) => {
+            // The job ended while the card was still up: the same plain words, not a bare "No such job." (acceptance test 6).
+            throw e.message === 'No such job.' ? new Error(nothing) : e;
+          });
+          if (!reach.act && !reach.others) throw new Error(nothing);
+          if (!confirm(stopConfirmText(job.what, reach))) return;
+          onNote(jobActionNote('stop', job.what, await api.stopJob(job.id)));
+          setStopped(true);
         })}>Stop</button>
         {busy && <span className="muted">Working…</span>}
       </div>

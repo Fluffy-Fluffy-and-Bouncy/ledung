@@ -43,10 +43,10 @@ import { ResourceBook, RESOURCE_SOURCE } from '../resources/book.ts';
 import { commandKinds } from '../resources/commands.ts';
 import { namesText, type JobActionResult, type JobReach } from '../shared/job-notes.ts';
 import { JobStore } from '../resources/jobs.ts';
-import { JobActions, jobProcessesNow, jobTargetsNow, provenByCommand } from '../resources/job-actions.ts';
+import { JobActions, jobProcessesNow, leftAloneNow, jobTargetsNow, provenByCommand } from '../resources/job-actions.ts';
 import { mainGpu } from '../platform/gpu.ts';
 import { actOn, type Target } from '../platform/process-control.ts';
-import { commandsOf, listAll, treeFrom } from '../platform/process-tree.ts';
+import { commandsOf, listAll } from '../platform/process-tree.ts';
 import { machineSender } from '../shared/machine-shown.ts';
 import {
   CHATS,
@@ -1128,7 +1128,7 @@ export class SessionManager {
    * acted on only if its command line is the session's detaching call's (re-review of PR #476: an outside game whose
    * launcher exited between two samples was stopped); the others stay counted and are left alone (`alone`, with their programs' `names`).
    */
-  private async freshJobTargets(id: string): Promise<{ sessionId: string; what: string; paused: boolean; targets: Target[]; alone: number[]; names: string[] }> {
+  private async freshJobTargets(id: string): Promise<{ sessionId: string; what: string; paused: boolean; targets: Target[]; alone: number[]; names: string[]; gone: number[] }> {
     let job: ReturnType<ResourceBook['jobTargets']>;
     try {
       job = this.book.jobTargets(id);
@@ -1151,13 +1151,12 @@ export class SessionManager {
     }
     const targets = jobTargetsNow(job.targets, jobProcessesNow(all, job.host, [...job.adopted, ...proven]), job.host);
     const reached = new Set(targets.map((t) => t.pid));
-    // Left alone: what the guesses that failed reach that is the job's, alive or not (a gone one still leaves the card).
-    const guessedOut = job.guessed.filter((g) => !proven.includes(g.pid)).map((g) => g.pid);
-    const alone = [...new Set([...guessedOut, ...guessedOut.flatMap((pid) => treeFrom(all, pid).map((p) => p.pid))])].filter((pid) => !reached.has(pid) && job.targets.some((t) => t.pid === pid));
     const byPid = new Map(all.map((p) => [p.pid, p]));
+    const guessedOut = job.guessed.filter((g) => !proven.includes(g.pid)).map((g) => g.pid);
+    const { alone, gone } = leftAloneNow(guessedOut, all, reached, job.targets.map((t) => t.pid));
     const known = [...new Set(alone.map((pid) => byPid.get(pid)?.name).filter((n): n is string => !!n))];
     const names = known.length || !alone.length ? known : ['another program'];
-    return { sessionId: job.sessionId, what: job.what, paused: job.paused, targets, alone, names };
+    return { sessionId: job.sessionId, what: job.what, paused: job.paused, targets, alone, names, gone };
   }
 
   /** What Stop would act on, for the page's confirm: only what it will end is counted (acceptance test 5 of PR #476). */
@@ -1207,7 +1206,11 @@ export class SessionManager {
   stopJob(id: string): Promise<JobActionResult> {
     return this.jobActions.run(id, async () => {
       const job = await this.freshJobTargets(id);
-      if (!job.targets.length && !job.alone.length) throw new UserError(`Could not stop "${job.what}": none of its processes are running any more.`);
+      if (!job.targets.length && !job.alone.length) {
+        // Nothing to stop and nothing told: the same plain words as the page, never a second notice (acceptance test 6 of PR #476).
+        this.book.disown(id, [], job.gone);
+        throw new UserError(`"${job.what}" has no processes running any more: there is nothing to stop.`);
+      }
       let done = 0;
       if (job.targets.length) {
         try {
@@ -1217,7 +1220,7 @@ export class SessionManager {
         }
         if (!done) throw new UserError(`Could not stop "${job.what}": its processes ended or Ledung wasn't allowed to reach them.`);
       }
-      this.book.disown(id, job.alone);
+      this.book.disown(id, job.alone, [...job.targets.map((t) => t.pid), ...job.gone]);
       this.store.addInbox(job.sessionId, RESOURCE_SOURCE, `${this.config.userName} stopped your job (reservation ${id}) from its card: ${done ? `${done} of its processes were ended` : 'none of its own processes were still running'}.${this.leftAloneNote(job, 'end')}`);
       this.live.get(job.sessionId)?.deliver();
       return { done, leftAlone: job.names };
