@@ -18,6 +18,7 @@ import { FileViewer } from './components/FileViewer.tsx';
 import { FilesPane } from './components/FilesPane.tsx';
 import type { PaneFolderKey } from '../../src/shared/files-pane.ts';
 import { WaitingView, waitingCount } from './components/WaitingView.tsx';
+import { PRODUCT_NAME, pageTitle } from './pageTitle.ts';
 import { ArchivedView } from './components/ArchivedView.tsx';
 import { AwayBanner, AwayMarker, AwayPanel } from './components/AwayPanel.tsx';
 import { awayBannerShown } from './awayBanner.ts';
@@ -416,7 +417,7 @@ export function App() {
 
   // The count in the tab title, visible from another tab or the phone's tab switcher.
   useEffect(() => {
-    document.title = waiting ? `(${waiting}) Project Ledung` : 'Project Ledung';
+    document.title = pageTitle(waiting);
   }, [waiting]);
 
   const pendingBySession = useMemo(() => {
@@ -770,7 +771,7 @@ export function App() {
             />
           ) : (
             <div className="empty">
-              <h1>Project Ledung</h1>
+              <h1>{PRODUCT_NAME}</h1>
               <p>{ledung.projects.length ? 'Open a project on the left to talk to its manager.' : 'No projects yet. Add one to start talking to its manager.'}</p>
               <div className="empty-actions">
                 {!ledung.projects.length && <button className="primary" onClick={() => void newProject()}>✦ New project with the helper</button>}

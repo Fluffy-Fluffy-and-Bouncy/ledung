@@ -169,8 +169,10 @@ What `npm install -g ledung` and `ledung` give (`src/platform/desktop-app.ts`, #
   sight is in use: the start shows it and its page keeps the update banner (Martin, question #593: "restart by itself
   when hidden, ask when in front"). Up to date, the start shows the window as before, and when no window was in sight
   and no Ledung answers (a `ledung stop` since), it starts Ledung as **Start Ledung** does: the window says it is
-  starting, then shows the page (#490; Martin, question #764: "a — Start Ledung"). On the Mac a Dock click, Finder
-  or `ledung` reaches the running app as activate instead, which still only shows it (#485). `desktop/restart.log`
+  starting, then shows the page (#490; Martin, question #764: "a — Start Ledung"). On the Mac a Dock click, Finder,
+  Launchpad or `ledung` reaches the running app as activate instead, which now does the same restart (#485), except in the
+  first two seconds after the app is ready: the Mac may send an activate for the launch itself, and an app that opened
+  on its own code because its start restart just failed would otherwise restart again, in a loop. `desktop/restart.log`
   gives each restart a line with its time, the app's process id and which restart it is (`app only` or `update`).
 - **Reload takes the update too** (#455; Martin, 2026-11-20: "when we press reload, why doesnt we reload with the new
   code?"). ⌘R/Ctrl+R, View → Reload and Force Reload reload the page, which comes from the running Ledung, but never

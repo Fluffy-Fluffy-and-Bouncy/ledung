@@ -1,5 +1,5 @@
 {
-  "name": "Project Ledung",
+  "name": "Ledung",
   "short_name": "Ledung",
   "description": "Runs several Claude Code sessions and shows them in one place.",
   "start_url": "/",
