@@ -37,7 +37,6 @@ import {
 } from './platform/desktop-app.ts';
 import { openBrowser } from './platform/open-browser.ts';
 import { startMenuFolder } from './platform/shortcuts.ts';
-import { exercisedLine } from './platform/exercised.ts';
 
 /** Must match main.ts. */
 const RESTART_CODE = 75;
@@ -118,8 +117,6 @@ if (appOnly) {
     await startInBackground({ args: [fileURLToPath(import.meta.url), '--foreground', '--no-open'], configFile: configPath(), readyMs: APP_ONLY_READY_MS });
   }
   if ((desktop?.ok ? await openTheApp() : 1) === 0) {
-    // Only once the app has its new code and opened: a fallback below must not read as a pass (self-check finding 1).
-    exercisedLine('EXERCISED #455 desktop app started out of date: brought up to date before its window opened');
     process.exit(0);
   }
   // Not brought up to date (no Electron package, "desktopApp": false, a failed make): the app opens on the code it has,
