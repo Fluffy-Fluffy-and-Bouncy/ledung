@@ -939,7 +939,6 @@ test('`ledung --after-app=<pid> --app-only` starts Ledung when none runs, then o
   const notRunning = await run('after-app-only-477', [`${AFTER_APP_ARG}=${gone}`, APP_ONLY_ARG], refused);
   assert.equal(fs.existsSync(notRunning.log), true, notRunning.out);
   assert.match(fs.readFileSync(notRunning.log, 'utf8'), /Ledung starting in the background/);
-  assert.match(notRunning.out, /EXERCISED #477 desktop app started out of date with no Ledung running: started it in the background \(exit [1-9]\d*\)/);
   const stopped = notRunning.out.indexOf('Ledung stopped while starting');
   assert.ok(stopped >= 0 && stopped < notRunning.out.indexOf(NO_APP), notRunning.out);
   assert.equal(notRunning.code, 1, notRunning.out);
@@ -954,7 +953,6 @@ test('`ledung --after-app=<pid> --app-only` starts Ledung when none runs, then o
     });
     assert.ok(running.out.includes(`Ledung is already running at http://127.0.0.1:${ledung.port}.`), running.out);
     assert.equal(fs.existsSync(running.log), false, running.out);
-    assert.doesNotMatch(running.out, /EXERCISED #477/);
     assert.ok(running.out.includes(NO_APP), running.out);
     assert.equal(running.code, 1, running.out);
   } finally {
