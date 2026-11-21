@@ -360,6 +360,8 @@ let restartOnQuit = false;
  * none runs (#477), never a second one.
  */
 let restartAppOnly = false;
+/** That restart is a start's that reached this app running out of date (#479): traced once the quit is sure. */
+let restartForStart = false;
 
 /** Whether any window is in sight: shown and not minimised. */
 const anyShown = (): boolean => openWindows().some((w) => w.isVisible() && !w.isMinimized());
@@ -427,6 +429,8 @@ function startAfterQuit(): void {
   }
   try {
     spawn(cmd.command, cmd.args, { detached: true, stdio: ['ignore', out, out], windowsHide: true, env: startEnv(process.env) }).unref();
+    // Here, not where the start asked: a "Leave this page?" kept open would make it a restart that never happened.
+    if (restartForStart) exercised('EXERCISED #479 a start reached the app running out of date: restarted it into the installed version');
   } catch (e) {
     console.error(`Ledung desktop: could not restart for the update: ${(e as Error).message}`);
     // Nothing restarts it: the next start, by hand, shows its window (self-check finding 2).
@@ -880,15 +884,18 @@ if (shortcutFile) {
 } else {
   // A second start brings the most recently used window forward (#414). The app may still run an older version's code:
   // closing its last window only hides it, so it outlives `ledung stop` and an npm update, and a start from the Start
-  // menu, a shortcut, a pin or `ledung` then reaches this one, never the check at a fresh start (#455). Martin,
+  // menu, a shortcut, a pin or `ledung` then reaches this one, never the check at a fresh start (#455); on Windows and
+  // Linux, while the Mac's arrives as activate (#485). Martin,
   // 2026-11-21 (#479): such a start showed the old window with its update banner to press. With no window in sight
   // the start restarts the app into the installed version instead, shown, as a fresh start would: app only, so Ledung
   // is started when none runs (#477). A window in sight is in use and keeps its banner: "restart by itself when hidden,
   // ask when in front" (Martin, Ledung question #593).
   app.on('second-instance', () => {
-    if (made && !anyShown() && restartBrings(app.getVersion(), installedVersion(made.cli)) && restartForUpdate(true, true)) {
-      exercised('EXERCISED #479 a start reached the app running out of date: restarted it into the installed version');
-      return;
+    if (made && !anyShown() && restartBrings(app.getVersion(), installedVersion(made.cli))) {
+      // Set first: the quit may reach will-quit before restartForUpdate returns.
+      restartForStart = true;
+      if (restartForUpdate(true, true)) return;
+      restartForStart = false;
     }
     showWindow();
   });

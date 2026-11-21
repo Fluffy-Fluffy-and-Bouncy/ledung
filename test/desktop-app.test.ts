@@ -1031,6 +1031,8 @@ export class BrowserWindow {
   static fromWebContents(c) { return made.find((w) => w.webContents === c) ?? null; }
   isDestroyed() { return false; }
   isVisible() { return action !== 'second' && action !== 'hidden-update'; }
+  show() { event('show'); }
+  focus() {}
   isMinimized() { return false; }
   isFullScreen() { return false; }
   on() {}
@@ -1046,7 +1048,8 @@ export const app = withRest({
   getVersion: () => process.env.STAND_IN_VERSION,
   on: (name, fn) => { (handlers[name] ??= []).push(fn); },
   whenReady: () => Promise.resolve(),
-  isReady: () => false,
+  // Ready for a second start, so its showWindow shows: the other actions keep the app as it was before #479's test.
+  isReady: () => action.startsWith('second'),
   requestSingleInstanceLock: () => true,
   quit: () => {
     event('quit');
@@ -1198,6 +1201,8 @@ test("a second start of an app running out of date with no window in sight (desk
     const desktopDir = path.dirname(note);
     const hiddenMarker = path.join(desktopDir, START_HIDDEN_FILE);
     const restartLog = path.join(desktopDir, 'restart.log');
+    const trace = path.join(path.dirname(desktopDir), 'exercised.log');
+    const traced = () => (fs.existsSync(trace) ? fs.readFileSync(trace, 'utf8').split('\n').filter((l) => l.includes('EXERCISED #479')).length : 0);
 
     // Out of date (it opened on its own code: the start restart for 2.0.0 was just tried), its window hidden, and
     // started again: it quits and runs its `ledung` in app-only mode, which starts Ledung when none runs (#477).
@@ -1205,7 +1210,10 @@ test("a second start of an app running out of date with no window in sight (desk
     fs.writeFileSync(note, '2.0.0\n');
     const old = await start('1.0.0', '2.0.0', 'second');
     assert.ok(old.events.includes('quit'), old.out);
+    assert.ok(!old.events.includes('show'), `the old window is not shown: ${old.out}`);
     assert.deepEqual(old.args, [`${AFTER_APP_ARG}=${old.pid}`, APP_ONLY_ARG], old.out);
+    // Its trace, once the quit was sure: one line.
+    assert.equal(traced(), 1, 'one EXERCISED #479 line for the restart');
     // The person started it: it comes back shown, although its window was hidden when the restart began.
     assert.equal(fs.existsSync(hiddenMarker), false, 'a restart for a start must not come back hidden');
     // restart.log says when, which app and which restart.
@@ -1224,12 +1232,13 @@ test("a second start of an app running out of date with no window in sight (desk
     // "ask when in front"), no restart.
     fs.writeFileSync(note, '2.0.0\n');
     const inUse = await start('1.0.0', '2.0.0', 'second-shown');
-    assert.deepEqual(inUse.events, ['window', 'done'], inUse.out);
+    assert.deepEqual(inUse.events, ['window', 'show', 'done'], inUse.out);
     assert.equal(inUse.args, null, 'no restart command ran');
+    assert.equal(traced(), 1, 'no EXERCISED #479 line without a restart');
 
     // Up to date: a second start only shows the window, no restart.
     const current = await start('2.0.0', '2.0.0', 'second');
-    assert.deepEqual(current.events, ['window', 'done'], current.out);
+    assert.deepEqual(current.events, ['window', 'show', 'done'], current.out);
     assert.equal(current.args, null, 'no restart command ran');
   } finally {
     await ledung.close();
