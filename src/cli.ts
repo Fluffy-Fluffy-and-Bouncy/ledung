@@ -41,6 +41,8 @@ import { exercisedLine } from './platform/exercised.ts';
 
 /** Must match main.ts. */
 const RESTART_CODE = 75;
+/** How long the app's start restart waits for the Ledung it started to answer before opening the app anyway (#477). */
+const APP_ONLY_READY_MS = 15_000;
 
 const OWN = ['--open-only', '--foreground', '--browser'];
 let passthrough = process.argv.slice(2).filter((a) => !OWN.includes(a));
@@ -87,7 +89,8 @@ async function openTheApp(): Promise<number> {
       progress: progressPrinter((text) => process.stdout.write(text), process.stdout.isTTY === true),
       startMenu: process.platform === 'win32' ? await startMenuFolder() : undefined,
     },
-    // The start's restart (#455) falls back to the app as it was, below, not to the browser: no Ledung may be running.
+    // The start's restart (#455) falls back to the app as it was, below, not to the browser: the person opened the app,
+    // and the Ledung started for it (#477) may still be starting or may have failed, where its page offers Start Ledung.
     fallback: !appCommand && !appOnly,
     restarted: after.pid !== null,
     steps: {
@@ -108,8 +111,11 @@ if (appOnly) {
   // Not running (#477, Martin's try on Windows, 2026-11-21: the app "opened this window without the server running"):
   // started in the background before the app opens, so the window finds it, also when bringing the app up to date
   // fails below. Started first, and whatever comes of the start, the app still opens: its page offers Start Ledung.
+  // No browser (--no-open): the app is what opens. Nothing is on screen while this waits, so it waits at most
+  // APP_ONLY_READY_MS for Ledung to answer, not the terminal start's minute; one slower than that is still starting
+  // when the app opens, and the page's Retry finds it (#477 self-check, finding 1).
   if (!(await openIfRunning({ configFile: configPath(), open: false }))) {
-    const started = await startInBackground({ args: [fileURLToPath(import.meta.url), '--foreground', '--no-open'], configFile: configPath() });
+    const started = await startInBackground({ args: [fileURLToPath(import.meta.url), '--foreground', '--no-open'], configFile: configPath(), readyMs: APP_ONLY_READY_MS });
     exercisedLine(`EXERCISED #477 desktop app started out of date with no Ledung running: started it in the background (exit ${started})`);
   }
   if ((desktop?.ok ? await openTheApp() : 1) === 0) {
