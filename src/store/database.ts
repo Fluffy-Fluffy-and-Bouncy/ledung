@@ -822,6 +822,24 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE devices ADD COLUMN new_cookie_sealed TEXT;
   `,
+  // How long shell calls take, per project and command kind (resource limits round 2, R4): a kind whose calls usually
+  // finish within 10 s is never refused. Only the latest few per kind are kept (JobStore.addCall).
+  `
+  CREATE TABLE command_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    at INTEGER NOT NULL
+  );
+  CREATE INDEX command_calls_by_kind ON command_calls(project, kind, at);
+  `,
+  // Which job records learned their commands from the calls whose own processes were busy (R4; acceptance test round
+  // 1). Older records took every call made during the job, so `git status` or a 3-second script got a build's peak:
+  // those count only for a kind Ledung has since seen take longer than 10 s (JobStore.heavyCommands).
+  `
+  ALTER TABLE job_runs ADD COLUMN by_call INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
 
 export function databaseFile(dir = userDataDir()): string {

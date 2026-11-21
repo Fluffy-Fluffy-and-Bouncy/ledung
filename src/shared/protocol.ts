@@ -894,7 +894,7 @@ export type ResourceAmounts = Record<string, number>;
 export interface ResourcesInfo {
   /** The limits set, by resource; a resource left out has none. */
   limits: ResourceAmounts;
-  settings: { averageSec: number; marginPoints: number; overSec: number };
+  settings: { averageSec: number; marginPoints: number; overSec: number; parkSec: number; tellManagerMin: number };
   threads: number;
   memTotal: number;
   /** The PC's moving averages, by resource. */
@@ -908,6 +908,8 @@ export interface ResourcesInfo {
   jobs: ResourceJobInfo[];
   /** Sessions over the allowance with no reservation. */
   unreserved: { sessionId: string; using: ResourceAmounts; overSince: number | null; overDims: string[]; lowered: boolean }[];
+  /** Memory WSL's virtual machine holds (Windows counts it all as used, Linux's file cache included); null: none. */
+  wsl?: number | null;
 }
 
 export interface ResourceLineInfo {
@@ -934,7 +936,18 @@ export interface ResourceJobInfo {
   /** Its moving averages. */
   using: ResourceAmounts;
   learnedRuns: number;
-  state: 'going' | 'over' | 'paused';
+  /**
+   * A pass (docs/steps/resource-limits-2.md): ready (the go given, the work not started, holding all of it), busy,
+   * parked (quiet: holds no room), over its share, or paused by the person.
+   */
+  state: 'ready' | 'busy' | 'parked' | 'over' | 'paused';
+  /** When the go reached the session; null: not yet. */
+  deliveredAt: number | null;
+  /** Busy and quiet since; null: not quiet. */
+  quietSince: number | null;
+  parkedAt: number | null;
+  /** Its work resumed while parked without room under the limits. */
+  resumedAbove: boolean;
   overSince: number | null;
   overDims: string[];
   lowered: boolean;
@@ -964,6 +977,12 @@ export interface HeavyCommandInfo {
   runs: number;
   peak: ResourceAmounts;
   never: boolean;
+}
+
+/** A command the person marked as never needing a reservation (the light list's page-only extension, round 2). */
+export interface LightCommandInfo {
+  project: string;
+  command: string;
 }
 
 /** What one turn used (step 6c). */
