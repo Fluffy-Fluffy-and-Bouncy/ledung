@@ -9,6 +9,10 @@ together, are in [CHANGELOG.md](CHANGELOG.md). Online: https://projectledung.com
 ([docs/changes/README.md](docs/changes/README.md)); `npm run publish:dev` and `npm run publish:public` fold them in
 here under the version they publish, and push the result to main.
 
+## v4.14 — 2026-11-21 23:49 CET
+- Desktop app on Windows and Linux: starting it again while its window is closed and Ledung is stopped now starts Ledung and shows its page, instead of a page with nothing behind it (#490)
+- Mac: a Dock click, Finder or `ledung` on the desktop app left running hidden after an update now restarts it into the new version instead of showing its update banner (#485)
+
 ## v4.13 — 2026-11-21 23:30 CET
 - The browser tab, the desktop app's window and taskbar entry, the installed app and the empty view now say "Ledung" instead of "Project Ledung" (#428)
 
