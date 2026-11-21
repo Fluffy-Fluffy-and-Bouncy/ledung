@@ -906,14 +906,15 @@ test('a restart for an update goes only when the `ledung` that made the app has 
   assert.equal(restartBrings('3.16.0', null), false);
 });
 
-test('`ledung --after-app=<pid> --app-only` never starts Ledung: it opens the app as it is, or says there is none (#455)', async () => {
-  // A config the core refuses at once, so the run without --app-only, which shows the probe finds a start, starts a
-  // Ledung that stops by itself: nothing is left running either way.
-  const run = async (name: string, args: string[]) => {
+test('`ledung --after-app=<pid> --app-only` starts Ledung when none runs, then opens the app; a running one is left as it is (#477)', async () => {
+  // Martin's try on Windows (#477, 2026-11-21): the app started from the Start menu after an npm update "opened this
+  // window without the server running". The start's restart now starts Ledung first when none runs, and still opens
+  // the app whatever comes of bringing it up to date: a clone has no made app, so here it says so and exits 1.
+  const run = async (name: string, args: string[], setup: (data: string, config: string) => void) => {
     const data = path.join(base, name);
     fs.mkdirSync(data, { recursive: true });
     const config = path.join(data, 'config.json');
-    fs.writeFileSync(config, '{ not json');
+    setup(data, config);
     const child = spawn(process.execPath, [path.join(appDir(), 'src', 'cli.ts'), ...args], {
       env: { ...process.env, LEDUNG_CONFIG: config, LEDUNG_DATA_DIR: data },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -926,15 +927,39 @@ test('`ledung --after-app=<pid> --app-only` never starts Ledung: it opens the ap
   };
   // A pid no process has: the wait for the app to quit ends at once.
   const gone = 2 ** 30;
-  // The restart an update makes (#408) starts Ledung when none runs: its log shows the start.
-  const plain = await run('after-app-plain-455', [`${AFTER_APP_ARG}=${gone}`, '--no-open']);
+  const refused = (_data: string, config: string) => fs.writeFileSync(config, '{ not json');
+
+  // The restart an update makes (#408) starts Ledung when none runs, as it did: its log shows the start.
+  const plain = await run('after-app-plain-455', [`${AFTER_APP_ARG}=${gone}`, '--no-open'], refused);
   assert.equal(fs.existsSync(plain.log), true, plain.out);
   assert.match(fs.readFileSync(plain.log, 'utf8'), /Ledung starting in the background/);
-  // The start's restart does not: no log, no start. A clone has no made app, so it says so and exits 1.
-  const only = await run('after-app-only-455', [`${AFTER_APP_ARG}=${gone}`, APP_ONLY_ARG]);
-  assert.equal(fs.existsSync(only.log), false, only.out);
-  assert.equal(only.code, 1, only.out);
-  assert.ok(only.out.includes(NO_APP), only.out);
+
+  // None running: a config the core refuses at once, so the Ledung it starts stops by itself and nothing is left
+  // running. Its log shows the background start, and the start comes before the app is looked for.
+  const notRunning = await run('after-app-only-477', [`${AFTER_APP_ARG}=${gone}`, APP_ONLY_ARG], refused);
+  assert.equal(fs.existsSync(notRunning.log), true, notRunning.out);
+  assert.match(fs.readFileSync(notRunning.log, 'utf8'), /Ledung starting in the background/);
+  assert.match(notRunning.out, /EXERCISED #477 desktop app started out of date with no Ledung running: started it in the background \(exit [1-9]\d*\)/);
+  const stopped = notRunning.out.indexOf('Ledung stopped while starting');
+  assert.ok(stopped >= 0 && stopped < notRunning.out.indexOf(NO_APP), notRunning.out);
+  assert.equal(notRunning.code, 1, notRunning.out);
+
+  // Already running (a stand-in that proves it holds this data folder's token): no second start, no log, and the app
+  // is opened as before.
+  const ledung = await standInLedung();
+  try {
+    const running = await run('after-app-only-running-477', [`${AFTER_APP_ARG}=${gone}`, APP_ONLY_ARG], (data, config) => {
+      fs.writeFileSync(config, JSON.stringify({ port: ledung.port }));
+      fs.writeFileSync(path.join(data, 'auth-token'), TOKEN_455);
+    });
+    assert.ok(running.out.includes(`Ledung is already running at http://127.0.0.1:${ledung.port}.`), running.out);
+    assert.equal(fs.existsSync(running.log), false, running.out);
+    assert.doesNotMatch(running.out, /EXERCISED #477/);
+    assert.ok(running.out.includes(NO_APP), running.out);
+    assert.equal(running.code, 1, running.out);
+  } finally {
+    await ledung.close();
+  }
 });
 
 test("⌘R, Reload and Force Reload restart an app whose code is not the installed version's into it; up to date they reload the page (#455)", () => {

@@ -352,7 +352,10 @@ function quit(): void {
 let updatePending = false;
 /** A quit that restarts the app once it is sure (will-quit): a page that asked "Leave this page?" may still keep it. */
 let restartOnQuit = false;
-/** That restart is the one at start or a reload's (#455): the `ledung` it runs opens the app only, never starting Ledung. */
+/**
+ * That restart is the one at start or a reload's (#455): the `ledung` it runs opens the app, and starts Ledung only when
+ * none runs (#477), never a second one.
+ */
 let restartAppOnly = false;
 
 /** Whether any window is in sight: shown and not minimised. */
@@ -615,7 +618,8 @@ function pageCommand(w: BrowserWindow, command: PageCommand): void {
   if (w.isDestroyed()) return;
   const page = w.webContents;
   // This app's own code is not the installed Ledung's (#455): a reload restarts the window into it instead of
-  // reloading the page alone. App only: a reload never starts Ledung. A restart that can't go reloads the page.
+  // reloading the page alone. App only: a running Ledung is left as it is, and one that is not running is started
+  // as at the app's start (#477). A restart that can't go reloads the page.
   if (made && reloadRestarts(command, app.getVersion(), installedVersion(made.cli)) && restartForUpdate(true)) return;
   if (command === 'reload') page.reload();
   else if (command === 'forceReload') page.reloadIgnoringCache();

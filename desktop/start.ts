@@ -36,7 +36,8 @@ export function startCommand(env: NodeJS.ProcessEnv = process.env, made: MadeCon
 /**
  * What restarts the made app into an updated Ledung (#408, made.ts AFTER_APP_ARG): the Node and `ledung` script that
  * made it, which `npm install -g` has replaced with the new version's. Null for a clone run, or when they are gone.
- * `appOnly` (#455, the restart at the app's start): that command opens the app only and never starts Ledung itself.
+ * `appOnly` (#455, the restart at the app's start): that command opens the app, and starts Ledung only when none runs
+ * (#477).
  */
 export function restartCommand(made: MadeConfig | null, pid: number, appOnly = false): StartCommand | null {
   if (!made || !fs.existsSync(made.node) || !fs.existsSync(made.cli)) return null;

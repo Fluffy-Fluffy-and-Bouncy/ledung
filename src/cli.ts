@@ -13,8 +13,9 @@
 //   ledung app                         the same, but always the app: says why when it can't, and opens no browser
 //   ledung --after-app=<pid>           the same, run by the desktop app to restart into an update (#408): waits for
 //                                      that app to quit first
-//   ledung --after-app=<pid> --app-only  run by an app that started out of date (#455): waits for it to quit, brings
-//                                      it up to date and opens it, and never starts Ledung itself
+//   ledung --after-app=<pid> --app-only  run by an app that started out of date (#455): waits for it to quit, starts
+//                                      Ledung in the background when none runs (#477), brings the app up to date and
+//                                      opens it; a running Ledung is left as it is
 //   ledung --foreground [--no-open]    runs it in this terminal; Ctrl+C or closing the terminal stops it
 //   ledung stop                        stops the running Ledung and its sessions; exits 3 when none runs
 //   ledung account token <name>        puts a long-lived token into an account's Claude Code sign-in (#85)
@@ -59,8 +60,9 @@ if (passthrough[0] === 'account') process.exit(await accountCommand(passthrough.
 // quit, then opens it as `ledung` does, which writes its new code first; a failure opens the browser, saying why.
 const after = afterApp(process.argv.slice(2));
 if (after.pid !== null && !(await waitForExit(after.pid))) console.log('The desktop app had not quit after 15 s; opening it anyway.');
-// --app-only (#455): the app started from a shortcut, a pin or Finder with an older version's code. Only the app is
-// brought up to date and opened, as the restart above does; Ledung itself is left as it is, running or not.
+// --app-only (#455): the app started from a shortcut, a pin or Finder with an older version's code. The app is brought
+// up to date and opened, as the restart above does; a running Ledung is left as it is, and none running is started
+// first (#477).
 const appOnly = after.pid !== null && after.rest.includes(APP_ONLY_ARG);
 const choice = openChoice(after.rest.filter((a) => a !== APP_ONLY_ARG), desktopAppOff(configPath()));
 const { appCommand, noOpen } = choice;
@@ -103,6 +105,13 @@ async function openTheApp(): Promise<number> {
 }
 
 if (appOnly) {
+  // Not running (#477, Martin's try on Windows, 2026-11-21: the app "opened this window without the server running"):
+  // started in the background before the app opens, so the window finds it, also when bringing the app up to date
+  // fails below. Started first, and whatever comes of the start, the app still opens: its page offers Start Ledung.
+  if (!(await openIfRunning({ configFile: configPath(), open: false }))) {
+    const started = await startInBackground({ args: [fileURLToPath(import.meta.url), '--foreground', '--no-open'], configFile: configPath() });
+    exercisedLine(`EXERCISED #477 desktop app started out of date with no Ledung running: started it in the background (exit ${started})`);
+  }
   if ((desktop?.ok ? await openTheApp() : 1) === 0) {
     // Only once the app has its new code and opened: a fallback below must not read as a pass (self-check finding 1).
     exercisedLine('EXERCISED #455 desktop app started out of date: brought up to date before its window opened');

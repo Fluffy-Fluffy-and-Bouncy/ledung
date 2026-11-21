@@ -84,7 +84,8 @@ export function madeConfigFor(node: string, cli: string, env: NodeJS.ProcessEnv)
  * Started from a shortcut, a taskbar or Dock pin, Launchpad or Finder (#455), an app runs the code it was last written
  * with, and only `ledung` and the tray's Open rewrite that after an npm update. So the app compares its own version
  * with the installed package's at start and, when they differ, restarts as an update does (#408) before any window
- * shows. With this the `ledung` that made it opens only the app: the core is left as it is, running or not.
+ * shows. With this the `ledung` that made it opens the app, and starts Ledung in the background first only when none
+ * runs (#477): a running one is left as it is.
  */
 export const APP_ONLY_ARG = '--app-only';
 
