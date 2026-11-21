@@ -1264,7 +1264,7 @@ test('a second start of an up-to-date app with no window in sight (desktop/main.
   let ranFile = '';
   const stopped = await standInLedung(1, () => ranFile !== '' && fs.existsSync(ranFile));
   try {
-    const { start, ran } = await appHarness('main-second-stopped-490', stopped.port);
+    const { start, ran, data } = await appHarness('main-second-stopped-490', stopped.port);
     ranFile = ran;
     // Time for the start and the look for Ledung after it, which polls every 0.5 s.
     const run = await start('2.0.0', '2.0.0', 'second', 5000);
@@ -1281,7 +1281,7 @@ test('a second start of an up-to-date app with no window in sight (desktop/main.
   // Running: the same second start only shows the window and starts nothing.
   const running = await standInLedung();
   try {
-    const { start } = await appHarness('main-second-running-490', running.port);
+    const { start, data } = await appHarness('main-second-running-490', running.port);
     const run = await start('2.0.0', '2.0.0', 'second');
     assert.deepEqual(run.events, ['window', 'show', 'done'], run.out);
     assert.equal(run.args, null, 'no start command ran');
