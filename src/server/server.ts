@@ -92,6 +92,13 @@ const MAX_BODY = 1024 * 1024;
 const CHAT_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 /** A workflow's texts may have 4 MB together (src/sessions/flow-files.ts); JSON's escapes take some more (#311). */
 const FLOW_SAVE_MAX_BODY = 6 * 1024 * 1024;
+/**
+ * The head of Ledung's small pages (issue #481): the not-signed-in page and the pairing pages here, like sign.html
+ * and enrol.html, are always dark, in the main page's dark colours (web/public/small-page.css, served unsigned like
+ * pair.js). The color-scheme line keeps them dark even if the stylesheet doesn't load.
+ */
+const SMALL_PAGE_HEAD = '<meta name="viewport" content="width=device-width"><meta name="color-scheme" content="dark">'
+  + '<link rel="stylesheet" href="/small-page.css">';
 const NOT_PAIRED = 'This device is not paired with Ledung. Pair it from Settings → Phones in Ledung on the computer.';
 /**
  * On the not-paired page through the public name: the pairing code or link typed in. Inside a frame on another
@@ -1513,7 +1520,7 @@ export class LedungServer {
       // POST (a navigation), which the Origin check rightly refuses, and pairing would never work. Found taking
       // the round-2 screenshots of PR #164 in Chrome.
       res.writeHead(status, { ...this.headersFor(res), 'Content-Type': 'text/html; charset=utf-8', 'Referrer-Policy': 'same-origin' });
-      res.end(`<!doctype html><meta name="viewport" content="width=device-width">${head}<title>Ledung</title><div style="font-family:sans-serif;max-width:30em;margin:2em auto">${body}</div>`);
+      res.end(`<!doctype html>${SMALL_PAGE_HEAD}${head}<title>Ledung</title><div style="max-width:30em;margin:2em auto">${body}</div>`);
     };
     const invalid = '<p>This pairing link is not valid any more. Make a new one in Settings → Phones in Ledung on the computer.</p>';
     // The Pair form. pair.js (web/public) greys its button and says "Pairing…" once pressed (issue #466): through the
@@ -2874,7 +2881,7 @@ export class LedungServer {
       // The page itself is only served to a signed-in browser; its assets are not secret.
       if (!signedIn) {
         res.writeHead(401, { ...this.headersFor(res), 'Content-Type': 'text/html; charset=utf-8' });
-        res.end(`<!doctype html><title>Ledung</title><div style="font-family:sans-serif;max-width:30em;margin:2em auto"><p>${remote ? NOT_PAIRED : 'Not signed in. Open Ledung through the link it prints when it starts.'}</p>${remote ? PAIR_CODE_FORM : ''}</div>`);
+        res.end(`<!doctype html>${SMALL_PAGE_HEAD}<title>Ledung</title><div style="max-width:30em;margin:2em auto"><p>${remote ? NOT_PAIRED : 'Not signed in. Open Ledung through the link it prints when it starts.'}</p>${remote ? PAIR_CODE_FORM : ''}</div>`);
         return;
       }
       file = path.join(root, 'index.html');

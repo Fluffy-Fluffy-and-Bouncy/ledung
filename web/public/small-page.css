@@ -1,0 +1,52 @@
+/* Ledung's small pages outside the main page (issue #481): the passkey sign page (sign.html), the passkey set-up page
+   (enrol.html), the not-signed-in / not-paired page and the pairing pages (src/server/server.ts). Always dark, the
+   designed theme (#345): no light version (Martin, 2026-11-21). The colours are the dark half of the main page's
+   (web/src/styles.css); test/small-pages-dark.test.ts holds them equal. */
+:root {
+  color-scheme: dark;
+  --bg: #16181d;
+  --panel: #1d2026;
+  --panel-2: #252932;
+  --text: #e3e6eb;
+  --muted: #9aa1ad;
+  --border: #333844;
+  --accent: #7aa2f7;
+}
+html { background: var(--bg); }
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  max-width: 30em;
+  margin: 2em auto;
+  padding: 0 1em;
+  line-height: 1.4;
+  background: var(--bg);
+  color: var(--text);
+}
+a { color: var(--accent); }
+button, input { font: inherit; color: inherit; }
+button {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.35rem 0.8rem;
+  cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: var(--accent); }
+/* As the main page's: the sign and set-up buttons are disabled while the passkey prompt is open (sign.js, enrol.js). */
+button:disabled { opacity: 0.5; cursor: default; }
+input {
+  box-sizing: border-box;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.3rem 0.5rem;
+}
+input:focus { outline: none; border-color: var(--accent); }
+.mono {
+  font-family: ui-monospace, "Cascadia Code", Consolas, Menlo, monospace;
+  padding: 0.5em;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+  overflow-wrap: anywhere;
+}
