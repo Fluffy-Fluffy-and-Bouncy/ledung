@@ -9,6 +9,9 @@ together, are in [CHANGELOG.md](CHANGELOG.md). Online: https://projectledung.com
 ([docs/changes/README.md](docs/changes/README.md)); `npm run publish:dev` and `npm run publish:public` fold them in
 here under the version they publish, and push the result to main.
 
+## v4.11 — 2026-11-21 22:18 CET
+- The page tries to reach Ledung again every half second while it is away, and at once when its window or tab is shown again, so the update banner comes within about a second of Ledung being back instead of after up to 10 seconds (#488)
+
 ## v4.10 — 2026-11-21 20:38 CET
 - On Windows and Linux, the desktop app left running with its window closed takes an update when it is started again, instead of showing its window with a restart banner to press (#479)
 
