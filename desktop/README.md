@@ -15,6 +15,11 @@ npm install   # once, and after a pull that changes package.json: downloads Elec
 npm start
 ```
 
+A recent npm runs no package's install script it has not been told to allow ("install-scripts" warnings), and
+Electron's install script is what downloads Electron, so after `npm install` or `npm ci` here
+`node_modules/electron/dist` may be missing and Electron says it failed to install correctly. Run its script once by
+hand: `node node_modules/electron/install.js` (seen with npm 12.2.2 on Windows and npm 11.20.0 on the Mac, #451).
+
 One window opens with your running Ledung's page, signed in. Nothing opens in the browser.
 
 - **It attaches to the Ledung that runs.** With none running the window says "Ledung is not running" and offers
@@ -238,8 +243,40 @@ bar's view is not painted: the probe then reads the focus from inside the bar's 
 from its own page off screen, and says so). A fresh data folder shows Ledung's Welcome,
 which has no sidebar, so finish or leave the welcome in the page before the first run. Each check it makes prints
 `"event":"fail"` when it doesn't hold; the exit code is 0 only when all held, 1 otherwise, 2 when it refused to run.
-It refuses without both settings, on the default port, and on Windows (it reads command lines with `ps`; macOS and
-Linux only for now).
+It refuses without both settings, on the default port, and on Windows for every phase but `context`, `pictures`
+and `framed` (the others read command lines with `ps`).
+
+`framed` (a Ledung runs, #451) is the case of another computer's tab, whose page is a frame of another site in a
+process of its own: it frames a small picture page from `localhost` over the page at `127.0.0.1` (the page's frame
+rule widened for it, in the probe only) and checks that it loaded. Electron's input call never reaches such a frame,
+so the right-click and its menu are checked with `PROBE_CLICK=native` and an unlocked screen only;
+`PROBE_FRAME_SAME=1` frames the picture from the page's own site instead, where Electron's input call does reach it
+(the control). With any click it then runs the app's own Copy Image for the framed picture, as the menu does, and
+checks the clipboard holds it at its own size; and it shows why the app needs its own way there: Electron's
+`copyImageAt`, which works only on the window's top page, copies nothing from a frame of another site, while it does
+copy from the control's frame.
+
+`pictures` (a Ledung runs, #451) right-clicks the real page's pictures, not one the probe puts in: with
+`PROBE_PROJECT` naming a local project of the config whose sessions run on Haiku (`"model": "haiku"`), it copies two
+pictures into that project, starts a session, sends it a picture and has it ask a question with both as screenshots
+(up to `PROBE_QUESTION_SECONDS`, 120), then in the conversation and on Waiting for you checks that every picture in
+sight gets Copy Image and Save Image As…, that the menu really opens, and that Copy Image copies the first one.
+It checks only Ledung's own `<img>` pictures (from `/api/`), three on each page; one inside a closed block is
+skipped, and one with something else over it fails, naming what is on top. Each picture's line gives `showMs`, how long after the app asked
+the system showed the menu (it waits up to `PROBE_MENU_WAIT_MS`, 3000). It leaves the two pictures, the session and
+its open question in the throwaway. `PROBE_CLICK=native` clicks with the system's own mouse instead of Electron's
+input call (Windows through user32, the Mac through `probe/rclick.swift` run with `swift`): the screen must be
+unlocked, the window stays on top while it clicks, the pointer moves, and a person should leave the mouse alone for
+the minute it takes. Run it without `PROBE_CLICK` first: a failure only with `PROBE_CLICK=native` then points at real
+clicks. Native clicks run on Windows and macOS only. `PROBE_MAIN=<folder>/dist/desktop/main.js` runs an npm
+package's built app instead of `main.ts`, to check what was shipped; `PROBE_SHOT_DIR=<folder>` saves the window per
+page. On Windows, in PowerShell from `desktop\`:
+
+```powershell
+$env:LEDUNG_CONFIG="$PWD\..\.test\a\config.json"; $env:LEDUNG_DATA_DIR="$PWD\..\.test\a\data"
+$env:PROBE_PHASE="pictures"; $env:PROBE_PROJECT="pics"; npx electron probe
+$env:PROBE_CLICK="native"; npx electron probe
+```
 
 ## How it is built
 
