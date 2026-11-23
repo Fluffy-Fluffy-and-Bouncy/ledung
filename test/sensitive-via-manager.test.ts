@@ -250,7 +250,10 @@ test('the request is shown whole: no command can close its code block', () => {
   // Nothing in a sensitive request is cut either (Martin, 2026-10-13, question #80).
   const write = { file_path: '.env', content: `${'z'.repeat(5000)}END` };
   const sensitiveWrite = requestText({ toolName: 'Write', input: write, sensitive: '.env files' });
-  assert.ok(sensitiveWrite.includes(JSON.stringify(write, null, 2)), 'the whole input, in the block');
+  // As `key: value` lines, not JSON (issue #399).
+  assert.ok(sensitiveWrite.startsWith('Tool Write:') && sensitiveWrite.includes(`\nfile_path: .env\ncontent: ${write.content}\n`), 'the whole input, as lines, in the block');
+  // A tool without input is named, not shown as {} (issue #399).
+  assert.equal(requestText({ toolName: 'mcp__ledung__release', input: {} }), 'Tool Ledung · release (mcp__ledung__release), without input.');
   assert.doesNotMatch(sensitiveWrite, /not shown/);
   const long = requestText({ toolName: 'Write', input: { file_path: 'notes.txt', content: 'x'.repeat(5000) }, sensitive: null });
   assert.match(long, /more characters not shown; the whole request is in the session's chat/);

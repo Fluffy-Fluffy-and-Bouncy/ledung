@@ -83,7 +83,7 @@ export function NewChatView({ chats, profiles, accounts, defaultAccount, run, on
               Account <span className="muted">(the Claude login it runs on; it keeps it when resumed)</span>
               <select value={shownAccount} onChange={(e) => setAccount(e.target.value)}>
                 <option value="">this computer's own login</option>
-                {accounts.map((a) => <option key={a.name} value={a.name}>{a.name}{a.email ? ` (${a.email})` : ''}</option>)}
+                {accounts.map((a) => <option key={a.name} value={a.name}>{a.name}</option>)}
               </select>
             </label>
           )}

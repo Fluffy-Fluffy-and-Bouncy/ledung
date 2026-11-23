@@ -41,7 +41,13 @@ test("an npm install's Check for updates and Update Ledung follow the channel ch
     meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) },
     onRestart: () => { restarts++; },
     distTags: { cmd: process.execPath, args: ['-e', `console.log(${JSON.stringify(JSON.stringify(TAGS))})`] },
-    npmInstall: (spec) => { installs.push(spec); return { cmd: process.execPath, args: ['-e', ''] }; },
+    // Like npm, it puts the version into the folder Ledung runs from, which Update checks before restarting (#435).
+    npmInstall: (spec) => {
+      installs.push(spec);
+      const pkg = path.join(dir, 'pkg');
+      const script = `const fs = require('node:fs'); fs.mkdirSync(${JSON.stringify(pkg)}, { recursive: true }); fs.writeFileSync(${JSON.stringify(path.join(pkg, 'package.json'))}, JSON.stringify({ version: ${JSON.stringify(spec.split('@')[1])} }))`;
+      return { cmd: process.execPath, args: ['-e', script] };
+    },
   });
   const server = new LedungServer({ port, token: TOKEN, store, manager, webRoot, updater });
   await server.listen();

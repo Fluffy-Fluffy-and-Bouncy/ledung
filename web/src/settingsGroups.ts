@@ -33,6 +33,8 @@ export const LEDUNG_GROUPS: SettingsGroup[] = [
       { label: 'Restart Ledung', about: 'Starts Ledung again on its newest version; sessions keep running', keywords: ['reload', 'reboot'] },
       // Stopping Ledung from the page, start at sign-in and the background log (issue #456).
       { label: 'Stop Ledung', about: 'Stops Ledung and its sessions', keywords: ['quit', 'exit', 'shut down', 'close', 'background'] },
+      // Ledung's icon in the notification area or menu bar (issue #347).
+      { label: 'Tray icon', about: "Ledung's icon in the notification area or menu bar: open, restart, exit", keywords: ['tray', 'notification area', 'menu bar', 'system tray', 'taskbar', 'icon', 'exit', 'quit'] },
       // A Ledung icon that starts Ledung (issue #415).
       { label: 'Shortcuts', about: 'A Ledung icon on the Desktop and in the Start menu, or in Applications', keywords: ['desktop', 'icon', 'start menu', 'applications', 'launcher', 'dock', 'shortcut'] },
       { label: 'Start at sign-in', about: 'Start Ledung in the background when you sign in', keywords: ['startup', 'autostart', 'login', 'log in', 'boot', 'windows', 'launch agent'] },
@@ -54,8 +56,6 @@ export const LEDUNG_GROUPS: SettingsGroup[] = [
     settings: [
       { label: 'Skills', about: 'Which of your own skills managers and sessions get', keywords: ['skill', 'plugins', 'commands'] },
       { label: 'Session profiles', storedIn: 'config', about: 'Sets of tools and settings sessions start with', keywords: ['profile', 'tools', 'mcp'] },
-      // Issue #291: Ledung's card or the manager's full write-up.
-      { label: 'Questions at a workflow step', about: "Who writes the question when a run reaches a step where you decide: Ledung's card or the manager", keywords: ['workflow', 'run', 'question', 'write-up', 'merge', 'review', 'card', 'manager'] },
     ],
   },
   {
@@ -88,7 +88,7 @@ export const LEDUNG_GROUPS: SettingsGroup[] = [
   {
     id: 'look', label: 'Look & feel', part: 'browser',
     settings: [
-      { label: 'Appearance', storedIn: 'browser', about: 'Light, dark or the computer\'s own', keywords: ['theme', 'dark', 'light', 'mode', 'colour', 'color', 'system'] },
+      { label: 'Appearance', storedIn: 'browser', about: 'Dark (the default) or light', keywords: ['theme', 'dark', 'light', 'mode', 'colour', 'color'] },
       { label: 'Autocorrect', storedIn: 'browser', about: 'Whether the browser corrects words as you type', keywords: ['spelling', 'typing', 'spell'] },
       { label: 'Status dot', storedIn: 'browser', about: 'The coloured dot by each session in the sidebar', keywords: ['sidebar', 'dot', 'colour', 'color'] },
       { label: 'Show "Archived" in the sidebar', storedIn: 'browser', about: 'The Archived entry under each project', keywords: ['archive', 'sidebar'] },

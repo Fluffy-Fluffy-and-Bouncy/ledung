@@ -13,6 +13,7 @@ import { parseProject, type ProjectConfig, type WorkflowConfig } from '../config
 import type { NewProjectArgs, ProjectArgs } from './tools.ts';
 import { describeRule, ruleMatches, type GrantRule } from './grants.ts';
 import { oneLine } from '../shared/shots.ts';
+import { hasInput, inputLines, toolLabel } from '../shared/tool-call.ts';
 import { checkTier, reviewAnswerProblem, tiersOf, type QuestionDetails, type ReviewEvidence } from '../shared/questions.ts';
 import { CONTEXT_SENTENCE } from '../shared/delivery.ts';
 import { contextSize } from '../shared/context-size.ts';
@@ -34,6 +35,7 @@ import { refusalAnswerText, refusalOf } from './refusals.ts';
 import { keepAnswerText, orderPreamble, orderRecorded, type Orders, type OrderSpec } from './orders.ts';
 import type { OrderInfo } from '../shared/orders.ts';
 import { formatWorkHistory, workHistory } from '../usage/work-history.ts';
+import { waitingForYou } from './waiting-tool.ts';
 
 /** What managers need of the linked computers (#245): who they are, and one call to one of them. */
 export interface LinkedPort {
@@ -67,6 +69,8 @@ export interface SettingsPort {
   invite(owner: string, name?: string): Promise<RelayInviteInfo & { code: string }>;
   linkCode(): { code: string; expiresAt: number };
   link(code: string, name?: string): Promise<LinkedComputer>;
+  /** Settings' Unlink button (issue #346): the link goes here and the other computer is told; null: no such link. */
+  unlink(id: string): LinkedComputer | null;
   /** The linked computers, and why linking is not possible here (null: it is). */
   links(): { problem: string | null; links: LinkedComputer[] };
   computers(): ComputerInfo[];
@@ -183,8 +187,8 @@ export interface ManagementContext {
    */
   evidenceFile?(sessionId: string, file: string): { file: string; kind: 'image' | 'text' };
   /**
-   * A container project's screenshots and evidence, read from its container and kept in Ledung (issue #122): the names
-   * the question stores, in order; a local project's as given. Left out in tests of other parts: as given.
+   * A project's screenshots and evidence, read now and kept in Ledung (a container's since issue #122, every project's
+   * since #306), images as WebP: the names the question stores, in order. Left out in tests of other parts: as given.
    */
   keepContainerFiles?(sessionId: string, files: { file: string; as: 'shot' | 'evidence' }[]): Promise<string[]>;
   /** Orders on record (issue #105); left out where none are kept (tests of other parts): an order is then refused. */
@@ -246,7 +250,10 @@ export function plainTitle(title: string): string {
  */
 export function requestText(p: Pick<PermissionInfo, 'toolName' | 'input'> & { sensitive?: string | null }, limit = 4000): string {
   const bash = p.toolName === 'Bash';
-  let body = bash ? String(p.input.command ?? '') : JSON.stringify(p.input, null, 2);
+  // Not bare JSON, and no `{}` for a tool without input (issue #399): the tool in plain words, its input as lines.
+  const name = toolLabel(p.toolName) === p.toolName ? p.toolName : `${toolLabel(p.toolName)} (${p.toolName})`;
+  if (!bash && !hasInput(p.input)) return `Tool ${name}, without input.`;
+  let body = bash ? String(p.input.command ?? '') : inputLines(p.input);
   let cut = '';
   if (!bash && !p.sensitive && body.length > limit) {
     cut = `\n\n(${body.length - limit} more characters not shown; the whole request is in the session's chat.)`;
@@ -254,7 +261,7 @@ export function requestText(p: Pick<PermissionInfo, 'toolName' | 'input'> & { se
   }
   const longest = Math.max(0, ...(body.match(/`+/g) ?? []).map((r) => r.length));
   const fence = '`'.repeat(Math.max(3, longest + 1));
-  return `${bash ? 'Command' : `Tool ${p.toolName}`}:\n\n${fence}\n${body}\n${fence}${cut}`;
+  return `${bash ? 'Command' : `Tool ${name}`}:\n\n${fence}\n${body}\n${fence}${cut}`;
 }
 
 const short = (text: string, n: number) => (text.length > n ? `${text.slice(0, n)}…` : text);
@@ -537,7 +544,7 @@ export class Management {
     });
   }
 
-  /** ask_user's container files, kept before they are checked (keepContainerFiles). */
+  /** ask_user's files, kept before they are checked (keepContainerFiles; every project's since issue #306). */
   keepFiles(sessionId: string, files: { file: string; as: 'shot' | 'evidence' }[]): Promise<string[]> {
     return this.ctx.keepContainerFiles ? this.ctx.keepContainerFiles(sessionId, files) : Promise.resolve(files.map((f) => f.file));
   }
@@ -974,6 +981,15 @@ ${note}`);
   workHistory(managerId: string, days?: number, limit?: number): string {
     const project = this.store.getSession(managerId)!.project;
     return formatWorkHistory(workHistory(this.store.database, project, { days }), limit ?? 10);
+  }
+
+  /** waiting_for_you (issue #338): the manager's own project only, whatever its lockdown; reads, changes nothing. */
+  waitingForYou(managerId: string, answeredHours?: number): string {
+    return waitingForYou({
+      store: this.store, managerId, userName: this.ctx.userName, answeredHours,
+      tiers: (project) => this.ctx.projects().find((p) => p.name === project)?.questionTiers,
+      request: (p) => requestText(p),
+    });
   }
 
   /** normal or high on the manager's own judgement; critical only on the user's answer to one of its questions. */
@@ -1541,6 +1557,24 @@ ${note}`);
     return `Linked with "${linked.name}" (${linked.publicName}).`;
   }
 
+  /**
+   * unlink_computer (issue #346): a linked computer by its name or public name, as settings_status lists them, unlinked
+   * as Settings' Unlink button does. A name two links share is refused, so the public name says which.
+   */
+  unlinkComputer(managerId: string, computer: string): string {
+    const port = this.settingsPort(managerId);
+    const { links } = port.links();
+    const wanted = computer.trim().toLowerCase();
+    const byPublicName = links.filter((l) => l.publicName.toLowerCase() === wanted);
+    const hits = byPublicName.length ? byPublicName : links.filter((l) => l.name.toLowerCase() === wanted);
+    const listed = links.length ? links.map((l) => `"${l.name}" (${l.publicName})`).join(', ') : 'none';
+    if (hits.length > 1) throw new ManagementError(`${hits.length} linked computers are called "${computer.trim()}": give the public name of the one to unlink (${hits.map((l) => l.publicName).join(', ')}).`);
+    if (!hits.length) throw new ManagementError(`No linked computer is called "${computer.trim()}". Linked computers: ${listed}.`);
+    const gone = port.unlink(hits[0]!.id);
+    if (!gone) throw new ManagementError(`"${computer.trim()}" is no longer linked.`);
+    return `Unlinked "${gone.name}" (${gone.publicName}) here; that computer is told to drop its side too. To link it again: link_code on one computer, link_computer with that code on the other.`;
+  }
+
   async inviteComputer(managerId: string, owner: string, name?: string): Promise<string> {
     const invite = await this.settingsPort(managerId).invite(owner, name);
     return `Invited a computer for ${invite.owner} as ${invite.host}, until ${new Date(invite.expiresAt).toLocaleString()}. Its join code, shown once, for Settings → Relay → Join with a code on that computer: ${invite.code}`;
@@ -2096,7 +2130,19 @@ export interface Delivery {
   userText: string;
   /** Everything else, attached as context (not the user's words). Empty when there is none. */
   context: string;
+  /**
+   * The context without Ledung's workflow process text (FLOW_SOURCE items), when it had any: what a question's
+   * "Earlier in the conversation" may quote (#351 acceptance, round 1). Absent when it is the whole context.
+   */
+  quotable?: string;
 }
+
+/**
+ * The inbox source of what a workflow run tells a session (#351 acceptance, round 1): a coordinator's hand-off at a
+ * person step, with its brief "for you, not for" the person, and a worker's step. Process text for the session, so
+ * it is never quoted to the person in a question's "Earlier in the conversation".
+ */
+export const FLOW_SOURCE = 'ledung:flow';
 
 /**
  * How waiting answers and inbox messages reach a session (step 4, findings in
@@ -2109,7 +2155,7 @@ export interface Delivery {
 export function buildDelivery(
   userName: string,
   answers: QuestionInfo[],
-  inbox: { text: string }[],
+  inbox: { text: string; source?: string }[],
   titleOf: (id: string) => string,
   orderOf: (id: number) => OrderInfo | undefined = () => undefined,
 ): Delivery {
@@ -2139,10 +2185,16 @@ export function buildDelivery(
       );
     }
   }
-  for (const item of inbox) context.push(item.text);
+  const quotable = [...context];
+  for (const item of inbox) {
+    context.push(item.text);
+    if (item.source !== FLOW_SOURCE) quotable.push(item.text);
+  }
   // Anything besides the user's own answers: the fixed sentence points to it.
   if (inbox.length || answers.some((q) => q.answeredBy !== 'user')) userParts.push(CONTEXT_SENTENCE(userName));
-  return { userText: userParts.join('\n\n'), context: context.join('\n\n---\n\n') };
+  const joined = context.join('\n\n---\n\n');
+  const shown = quotable.join('\n\n---\n\n');
+  return { userText: userParts.join('\n\n'), context: joined, ...(shown !== joined ? { quotable: shown } : {}) };
 }
 
 interface UsagePublishInput { enabled?: boolean; repo: string | null; allAccounts?: boolean; accounts?: Record<string, boolean> }

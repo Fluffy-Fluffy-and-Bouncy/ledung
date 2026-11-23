@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ShortcutsView } from '../src/shared/protocol.ts';
-import { asksFirstRun, placesText, questionText, settingsText, stopRefusal } from '../web/src/shortcuts.ts';
+import { asksFirstRun, offersRemove, placesText, questionText, settingsText, stopRefusal } from '../web/src/shortcuts.ts';
 
 // Start at sign-in and the log (issue #456) don't change when the question is asked.
 const extra = { signIn: { available: true, reason: null, label: 'Start Ledung when I sign in to Windows', on: false, file: null }, log: { file: 'ledung.log', active: false } };
@@ -51,4 +51,17 @@ test("Stop Ledung: this computer's own page may; any other page is told where it
   assert.equal(stopRefusal(false, { protocol: 'https:', hostname: 'ledung.example.org', port: '' }),
     'Stop Ledung only works on the page at http://127.0.0.1 on the computer Ledung runs on.', 'through the public name the port is not known');
   assert.match(stopRefusal(true, { protocol: 'http:', hostname: '127.0.0.1', port: '41579' })!, /^This is another computer's page/);
+});
+
+// The desktop app's own Start-menu entry (#587; code review of PR #411, round 2): an npm-only install has it with no
+// launcher icon, and Settings must still offer Remove.
+test('Settings offers Remove while any Ledung shortcut is there: a launcher icon or the desktop app\'s Start-menu entry', () => {
+  const entry = { label: 'Desktop app in the Start menu', file: 'C:\\Users\\u\\Programs\\Ledung app\\Ledung.lnk', present: true };
+  assert.equal(offersRemove(windows), false, 'nothing there');
+  assert.equal(offersRemove({ ...windows, appEntry: { ...entry, present: false } }), false, 'the entry is not there either');
+  assert.equal(offersRemove({ ...windows, appEntry: entry }), true, 'only the desktop app\'s entry');
+  assert.equal(offersRemove({ ...windows, places: [{ ...windows.places[0]!, present: true }, windows.places[1]!] }), true, 'a launcher icon, as before');
+  assert.equal(offersRemove({ ...mac, appEntry: null }), false);
+  // The entry is not a launcher icon: it doesn't stop the first-run question about one.
+  assert.equal(asksFirstRun({ ...windows, appEntry: entry }, false), true);
 });

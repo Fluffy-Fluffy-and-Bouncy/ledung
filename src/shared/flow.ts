@@ -110,6 +110,11 @@ export interface FlowBlock {
    * person; the name tells them whose decision they make.
    */
   person?: string;
+  /**
+   * For a person block (#351): the question tier its question is filed under, one of the project's tiers. None, or one
+   * the project doesn't have: a review's the project's first tier, a question's its second (questionTierOf).
+   */
+  tier?: string;
   /** Its sub-steps run at once, their results merged into one report (part 3d: four reviewers in parallel). */
   parallel?: true;
   /**

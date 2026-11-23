@@ -145,7 +145,8 @@ test('a push runs npm run check: a failing check stops it, a passing one, a dele
   assert.equal(remoteHas('refs/heads/copy'), '');
 });
 
-test('a push that changes the program needs a changelog bullet or a "Changelog: none" trailer (issue #86)', () => {
+// Since #417 the bullet goes in docs/changes/<issue>.md, and one added to CHANGELOG.md no longer counts.
+test('a push that changes the program needs a bullet in docs/changes/ or a "Changelog: none" trailer (issues #86, #417)', () => {
   const dir = repo();
   // The project's check fails while a file named "fail" exists in the working tree, as in the gate test.
   fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ private: true, scripts: { check: 'node check.mjs' } }));
@@ -171,7 +172,7 @@ test('a push that changes the program needs a changelog bullet or a "Changelog: 
     fs.writeFileSync(path.join(dir, file), text);
   };
 
-  const bullet = () => fs.appendFileSync(path.join(dir, 'CHANGELOG.md'), '- Something new. (#1)\n');
+  const bullet = () => write('docs/changes/1.md', '- Something new. (#1)\n');
   const remoteHas = (ref: string) => spawnSync('git', ['rev-parse', '-q', '--verify', ref], { cwd: remote, env, encoding: 'utf8' }).stdout.trim();
 
   // Each watched folder is refused on its own, and nothing runs the check after a refusal.
@@ -180,9 +181,28 @@ test('a push that changes the program needs a changelog bullet or a "Changelog: 
     branch(`no-line-${name}`, () => write(file, 'a\n'));
     const refused = push(`no-line-${name}`);
     assert.notEqual(refused.status, 0, file);
-    assert.match(refused.stderr, /adds no '- ' bullet to CHANGELOG\.md/);
+    assert.match(refused.stderr, /adds no '- ' bullet in docs\/changes\//);
     assert.doesNotMatch(refused.stderr, /pre-push: running/);
     assert.equal(remoteHas(`refs/heads/no-line-${name}`), '');
+  }
+
+  // A bullet in a changelog itself, or only in the folder's guide, is not one; the refusal says what to do instead.
+  const elsewhere: [string, () => void][] = [
+    ['changelog', () => fs.appendFileSync(path.join(dir, 'CHANGELOG.md'), '- Something new. (#1)\n')],
+    ['dev-changelog', () => write('CHANGELOG-dev.md', '# Dev\n\n- Something new. (#1)\n')],
+    ['guide', () => write('docs/changes/README.md', '# Guide\n- An example. (#1)\n')],
+  ];
+  for (const [name, add] of elsewhere) {
+    branch(`elsewhere-${name}`, () => {
+      write('src/e.ts', 'e\n');
+      add();
+    });
+    const refused = push(`elsewhere-${name}`);
+    assert.notEqual(refused.status, 0, name);
+    assert.match(refused.stderr, /Write what changes for the person using Ledung in docs\/changes\/<issue>\.md/, name);
+    assert.match(refused.stderr, /Don't edit CHANGELOG\.md or CHANGELOG-dev\.md: the publish step folds docs\/changes\/ into them/, name);
+    assert.match(refused.stderr, /'Changelog: none' as a trailer/, name);
+    assert.equal(remoteHas(`refs/heads/elsewhere-${name}`), '', name);
   }
 
   // A logged change still meets npm run check: it runs, and a failing one stops the push.

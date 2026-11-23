@@ -19,6 +19,12 @@ after(() => removeTemp(base));
 const tags = (t: Record<string, string>): Command => ({ cmd: process.execPath, args: ['-e', `console.log(${JSON.stringify(JSON.stringify(t))})`] });
 const NPM_TAGS = { latest: '1.0.0', dev: '1.2.0' };
 
+/** A stand-in for npm install -g that writes the package.json of `version` into `dir` and says what npm says. */
+function installInto(dir: string, version: string): Command {
+  const script = `const fs = require('node:fs'); fs.mkdirSync(${JSON.stringify(dir)}, { recursive: true }); fs.writeFileSync(${JSON.stringify(path.join(dir, 'package.json'))}, JSON.stringify({ name: 'ledung', version: ${JSON.stringify(version)} })); console.log("added 1 package")`;
+  return { cmd: process.execPath, args: ['-e', script] };
+}
+
 function memoryMeta() {
   const m = new Map<string, string>();
   return { get: (k: string) => m.get(k) ?? null, set: (k: string, v: string) => void m.set(k, v), map: m };
@@ -32,7 +38,8 @@ function npmUpdater(extra: Partial<UpdaterOptions> = {}) {
     appDir: path.join(base, 'pkg'), dataDir: base, configPath: path.join(base, 'c.json'), npmVersion: '1.0.0', meta,
     onRestart: () => { restarts++; },
     distTags: tags(NPM_TAGS),
-    npmInstall: (spec) => { installs.push(spec); return { cmd: process.execPath, args: ['-e', `console.log("added 1 package")`] }; },
+    // Like npm, it puts the version into the folder Ledung runs from, which Update checks before restarting (#435).
+    npmInstall: (spec) => { installs.push(spec); return installInto(path.join(base, 'pkg'), spec.split('@')[1]!); },
     ...extra,
   });
   return { u, meta, installs, restarts: () => restarts };
@@ -79,6 +86,43 @@ test('a failing or nonsense answer from npm is a check error, not a crash', asyn
   assert.match((await failing.checkForUpdates()).checkError ?? '', /dist-tags failed[\s\S]*E404/);
   const garbled = npmUpdater({ distTags: { cmd: process.execPath, args: ['-e', 'console.log("not json")'] } }).u;
   assert.match((await garbled.checkForUpdates()).checkError ?? '', /did not answer with its tags/);
+});
+
+// Issue #382: npm 12 answers `npm view ledung dist-tags --json` with `[ { "dev": …, "latest": … } ]`, older npm with
+// the object itself; both are npm's tags, and an answer that is neither stays a check error.
+const answer = (json: string): Command => ({ cmd: process.execPath, args: ['-e', `console.log(${JSON.stringify(json)})`] });
+
+test("npm's dist-tags as an object or as npm 12's one-element array both offer the channel's newer version", async () => {
+  for (const json of [JSON.stringify(NPM_TAGS), JSON.stringify([NPM_TAGS], null, 2)]) {
+    const { u } = npmUpdater({ distTags: answer(json) });
+    const pub = await u.checkForUpdates();
+    assert.equal(pub.checkError, null, json);
+    assert.deepEqual({ ...pub.npmCheck, checkedAt: '' }, { checkedAt: '', channel: 'public', offered: '1.0.0', upToDate: true }, json);
+    u.setChannel('dev');
+    const dev = await u.checkForUpdates();
+    assert.equal(dev.checkError, null, json);
+    assert.deepEqual({ ...dev.npmCheck, checkedAt: '' }, { checkedAt: '', channel: 'dev', offered: '1.2.0', upToDate: false }, json);
+  }
+});
+
+test('Update Ledung on Dev installs the dev version when npm answers with the array', async () => {
+  const { u, installs } = npmUpdater({ distTags: answer(JSON.stringify([NPM_TAGS])) });
+  u.setChannel('dev');
+  u.runUpdate();
+  const v = await settled(u);
+  assert.equal(v.refused, null);
+  assert.deepEqual(installs, ['ledung@1.2.0']);
+  await afterRestartDelay();
+});
+
+test("an answer that is neither the tags nor npm 12's array of them is the existing check error", async () => {
+  // The positive branch of the same probe: the array shape is read.
+  assert.equal((await npmUpdater({ distTags: answer(JSON.stringify([NPM_TAGS])) }).u.checkForUpdates()).checkError, null);
+  for (const json of ['[]', JSON.stringify([NPM_TAGS, NPM_TAGS]), '["1.2.0"]', '[[{"dev":"1.2.0"}]]', '[null]', 'null', '"1.2.0"', '3']) {
+    const v = await npmUpdater({ distTags: answer(json) }).u.checkForUpdates();
+    assert.match(v.checkError ?? '', /did not answer with its tags/, json);
+    assert.equal(v.npmCheck, null, json);
+  }
 });
 
 test('Update Ledung on Dev installs the exact dev version with npm, then restarts', async () => {

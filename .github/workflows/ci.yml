@@ -3,15 +3,16 @@ name: CI
 # CI runs on the public repository since 2026-10-29 (question #487), where Actions minutes are free; on
 # the private one it had run by hand only, because Actions would not start any job (question #433).
 # The triggers keep the earlier limits: Windows per PR update and push to main, macOS weekly and by
-# hand, nothing for docs-only or site-only changes.
+# hand, nothing for docs-only or site-only changes, nor for the desktop app alone (issue #358: run from a
+# clone and tried by hand; its attach check is tested with the root tests, which a change to test/ runs).
 # Sessions run `npm run check` locally before every push, so CI is the last net, not the first.
 # Actions are pinned to a full commit SHA, the tag in a comment (audit L19): a tag can be moved, a SHA can't.
 on:
   pull_request:
-    paths-ignore: ['**.md', 'docs/**', 'site/**']
+    paths-ignore: ['**.md', 'docs/**', 'site/**', 'desktop/**']
   push:
     branches: [main]
-    paths-ignore: ['**.md', 'docs/**', 'site/**']
+    paths-ignore: ['**.md', 'docs/**', 'site/**', 'desktop/**']
   schedule:
     - cron: '0 5 * * 1'
   workflow_dispatch:

@@ -778,6 +778,50 @@ const MIGRATIONS: string[] = [
     UNIQUE (project, tool_name, command)
   );
   `,
+  // The link a device paired through the link came by (issue #313): its id in this computer's links, so a computer
+  // that trusts that link's own screen knows the device is its frame. Null: paired here, or before this column.
+  `
+  ALTER TABLE devices ADD COLUMN paired_via_link TEXT;
+  `,
+  // The fork a run is in (issue #193), as JSON RunFork (src/shared/flow-run.ts): a position per branch, each moving on
+  // its own until the join. Null: the run holds one position, at.
+  `
+  ALTER TABLE flow_runs ADD COLUMN fork TEXT;
+  `,
+  // A "Waiting for you" line in a manager's chat (issue #350): the one message per question or permission request, so
+  // a line is never added twice (Done looks like 8) and is found to update in place when it is decided.
+  `
+  CREATE TABLE waiting_lines (
+    item TEXT NOT NULL,
+    ref TEXT NOT NULL,
+    message_id INTEGER NOT NULL REFERENCES messages(id),
+    PRIMARY KEY (item, ref)
+  );
+  `,
+  // Accounts show no email or organisation any more (issue #378): Claude Code reported the computer's own login's for
+  // every account. Who sessions found themselves logged in as is forgotten, the default login's too; the columns stay.
+  `
+  UPDATE accounts SET email = NULL, organization = NULL, plan = NULL, seen_at = NULL;
+  DELETE FROM meta WHERE key = 'default-account-identity';
+  `,
+  // An account switch waiting for a quiet moment, or one that failed (issue #395): JSON { to, failed? }; null: none.
+  // On the session, so a pending switch outlives Restart Ledung and the page gets it with the session. account_chosen:
+  // a chat whose account was picked in New chat, which keeps it when Settings' account for chats changes.
+  `
+  ALTER TABLE sessions ADD COLUMN account_switch TEXT;
+  ALTER TABLE sessions ADD COLUMN account_chosen INTEGER NOT NULL DEFAULT 0;
+  `,
+  // A run's sessions archived when a new session took their block (issue #402), as a JSON array of ids: the run's end
+  // leaves them as they are, so one the coordinator has resumed since is not archived again. Null: none.
+  `
+  ALTER TABLE flow_runs ADD COLUMN retired TEXT;
+  `,
+  // A renewed device cookie whose answer may have been lost (issue #468): the new value, sealed with the cookie it
+  // replaced, until the new one is first used. Till then the old one still works and gets the same new value again,
+  // so a lost answer costs no pairing and a copy of the old one can't push the new one out. Null: none waiting.
+  `
+  ALTER TABLE devices ADD COLUMN new_cookie_sealed TEXT;
+  `,
   // How long shell calls take, per project and command kind (resource limits round 2, R4): a kind whose calls usually
   // finish within 10 s is never refused. Only the latest few per kind are kept (JobStore.addCall).
   `

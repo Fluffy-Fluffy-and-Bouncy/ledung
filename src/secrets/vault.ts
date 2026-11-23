@@ -8,6 +8,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { runWithInput } from '../runners/runner.ts';
+import { writeFileSafely } from '../platform/safe-write.ts';
 
 /** Keeps the vault's key: null from load when there is none yet. */
 export interface KeyGuard {
@@ -20,9 +21,8 @@ export interface KeyGuard {
 const TIMEOUT_MS = 20_000;
 
 function writeOwnerOnly(file: string, data: string): void {
-  const temp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(temp, data, { mode: 0o600 });
-  fs.renameSync(temp, file);
+  // Flushed before and after the rename, so a crash can't leave it empty (issue #460).
+  writeFileSafely(file, data, { mode: 0o600 });
 }
 
 function readOrNull(file: string): string | null {

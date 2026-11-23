@@ -7,16 +7,18 @@ import type { HelperCard } from '../../src/shared/helper-cards.ts';
 import { helperHasSpoken } from './helper/cardOrder.ts';
 import { backToSetupMarked, clearBackToSetup, helperToolWords, markBackToSetup } from './helper/helperNav.ts';
 import { api } from './api.ts';
-import { CHAT_IMAGE_TYPES, dataUrl, imageFiles, MAX_CHAT_IMAGES, prepareImage, SECRETS_HINT } from './chatImages.ts';
+import { dataUrl, imageFiles, MAX_CHAT_IMAGES, prepareImage, SECRETS_HINT } from './chatImages.ts';
 import { MessageList, formatTime } from './components/MessageList.tsx';
 import { WorkingIndicator } from './components/WorkingIndicator.tsx';
 import { SailingShip, shipMode } from './components/SailingShip.tsx';
 import { indexSessions, REMOVED_PROJECTS, sidebarTree, type Row, type SessionIndex } from './sessionTree.ts';
 import { useNow } from './clock.ts';
+import { accountName, composerClosed, reasonParts, switchState, switchTooltip } from './accountSwitch.ts';
 import { FileViewer } from './components/FileViewer.tsx';
 import { FilesPane } from './components/FilesPane.tsx';
 import type { PaneFolderKey } from '../../src/shared/files-pane.ts';
 import { WaitingView, waitingCount } from './components/WaitingView.tsx';
+import { PRODUCT_NAME, pageTitle } from './pageTitle.ts';
 import { ArchivedView } from './components/ArchivedView.tsx';
 import { AwayBanner, AwayMarker, AwayPanel } from './components/AwayPanel.tsx';
 import { awayBannerShown } from './awayBanner.ts';
@@ -56,6 +58,8 @@ import { deskStepsInto, isDeskView, leaveShots } from './deskNav.ts';
 import { backToList, deskFallback, phoneClass, type ListSteps } from './phonePane.ts';
 import { NARROW_QUERY } from './sidebarSize.ts';
 import { useDraft } from './useDraft.ts';
+import { readDraft, writeDraft } from './drafts.ts';
+import { dropProblem, dropToken, insertAt, splitDropped } from './drops.ts';
 import { useStableCallback } from './useStableCallback.ts';
 import { canInterrupt, escapeClosesMenu, isToolCallsKey, MCP_STATUS_LABEL, sessionControls, showsMcp, TOOL_CALLS_KEY } from './sessionMenu.ts';
 import { formatTokens, LimitMeters, pct, prLabel } from './usage/charts.tsx';
@@ -75,6 +79,8 @@ import { frameLevel, LOCK_HINT } from './lockdownFrame.ts';
 import { useLedung, type Connection } from './useLedung.ts';
 import { STATUS_LABEL, statusLook } from './sessionStatus.ts';
 import { useNotifications } from './useNotifications.ts';
+import { followFramingApp, isMacLike, newWindowTitle, openNewWindow, type NewWindowHost } from './newWindow.ts';
+import { desktopRestart, RESTART_LINE, type DesktopUpdateHost } from './desktopUpdate.ts';
 import { formatBytes, formatCores, MachinePanel, PRIORITY_LABEL } from './usage/MachinePanel.tsx';
 import { usePlainTyping } from './usePlainTyping.ts';
 import { coarsePointer } from './coarsePointer.ts';
@@ -89,10 +95,9 @@ import { fetchesArchived } from '../../src/shared/hello-sessions.ts';
 import { computerFrame, computerStyle, frameAnswer, inFrame, shownComputerOf } from './computerFrame.ts';
 import { ComputerFrames, ComputerTabs } from './components/ComputerTabs.tsx';
 import { useComputerLink } from './useComputerLink.ts';
-import { useInstallApp } from './useInstallApp.ts';
+import { setDesktopHere, useInstallApp } from './useInstallApp.ts';
 import { InstallNotice } from './components/InstallApp.tsx';
 import { ShortcutNotice } from './components/Shortcuts.tsx';
-import { StepQuestionsPicker } from './components/StepQuestionsPicker.tsx';
 import { CheckInNotice } from './components/CheckIn.tsx';
 import { caretPoint, MaskedSecret, SecretChips, SecretEditor, SelectionKey, SessionSecretsMenu } from './components/SecretLock.tsx';
 import { chipsFor, insertToken, lockInDraft, lockRange, renameToken } from './secretLock.ts';
@@ -100,6 +105,7 @@ import { useSessionSecrets } from './useSessionSecrets.ts';
 import { suggestSecretName } from '../../src/shared/secrets.ts';
 import { errorText, isStalePageError } from './pageError.ts';
 import { guardFor, heldRecently, noteHeld, setLeaveGuard, workflowFromHash, workflowHash } from './flowNav.ts';
+import { asideCount, badgeTitle, type WaitingFocus } from './waitingFocus.ts';
 
 /** Shown in a frame on another computer's page (issue #241): fixed for the page's life. */
 const IN_FRAME = inFrame();
@@ -111,6 +117,8 @@ if (IN_FRAME) {
     if (answer) window.parent.postMessage(answer, e.origin);
   });
 }
+// New window in a linked computer's tab (#454): the page around this one opens it, where that page is the app's.
+if (IN_FRAME) followFramingApp();
 
 const MODE_LABEL: Record<PermissionMode, string> = {
   default: 'Ask',
@@ -246,6 +254,12 @@ export function App() {
   // The whole address, so moving between a conversation and the same conversation at a question renders too.
   const [hash, setHash] = useState(location.hash);
   const ledung = useLedung(isSessionId(openId) ? openId : null);
+  // Ledung was updated and the desktop app this page is in runs the old code (#408): it restarts once no window is in
+  // sight, asked again at each hello while the core still says so; the banner's Restart window does it now.
+  const desktopUpdate = useMemo(() => desktopRestart(window as unknown as DesktopUpdateHost, ledung.desktopApp), [ledung.desktopApp]);
+  useEffect(() => desktopUpdate?.(false), [desktopUpdate]);
+  /** The browser-fallback line the person dismissed (#408); a new line shows again. */
+  const [noticeDismissed, setNoticeDismissed] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The other computer (by id) whose page shows here (issue #241), null for this one's; and those opened so far, kept loaded.
   const [shownComputer, setShownComputer] = useState<string | null>(null);
@@ -397,11 +411,13 @@ export function App() {
   const permissions = useMemo(() => Object.values(ledung.permissions), [ledung.permissions]);
   const waiting = waitingCount(questions, permissions) + ledung.newComputers.length + ledung.linkPairings.length;
   const installApp = useInstallApp();
+  // "Open in the Ledung app" instead of installing the page, on this computer with the app made (#409).
+  useEffect(() => setDesktopHere(ledung.desktopAppHere), [ledung.desktopAppHere]);
   const notify = useNotifications({ loaded: ledung.loaded, questions, permissions, sessions: ledung.sessions, usageStops: ledung.usageStops, onOpenSession: open });
 
   // The count in the tab title, visible from another tab or the phone's tab switcher.
   useEffect(() => {
-    document.title = waiting ? `(${waiting}) Project Ledung` : 'Project Ledung';
+    document.title = pageTitle(waiting);
   }, [waiting]);
 
   const pendingBySession = useMemo(() => {
@@ -409,6 +425,13 @@ export function App() {
     for (const p of permissions) if (p.status === 'pending') counts[p.sessionId] = (counts[p.sessionId] ?? 0) + 1;
     // Ledung also lists pending prompts addressed to managers; the badge counts them on the session that asked.
     for (const q of questions) if (q.status === 'open') counts[q.sessionId] = (counts[q.sessionId] ?? 0) + 1;
+    return counts;
+  }, [permissions, questions]);
+  // Of those, what is addressed to a manager: not in Waiting for you, so a badge's tooltip says so (issue #322).
+  const withManagerBySession = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const p of permissions) if (p.status === 'pending' && p.addressedTo !== 'user') counts[p.sessionId] = (counts[p.sessionId] ?? 0) + 1;
+    for (const q of questions) if (q.status === 'open' && q.addressedTo !== 'user') counts[q.sessionId] = (counts[q.sessionId] ?? 0) + 1;
     return counts;
   }, [permissions, questions]);
 
@@ -492,7 +515,22 @@ export function App() {
   // The sidebar is memoized (issue #233): a message or other live event that changes nothing it shows doesn't redraw
   // it. Its handlers keep their identity for that; they are only called on a click.
   const sidebarRun = useStableCallback(run);
-  const sidebarOpen = useStableCallback(open);
+  // A badge's project (issue #322) lasts while Waiting for you is open; anything else opened from the sidebar, the
+  // Waiting for you entry too, leaves it, so opening Waiting for you the usual way shows the kept filter.
+  const [waitingFocus, setWaitingFocus] = useState<WaitingFocus | null>(null);
+  useEffect(() => {
+    if (waitingFocus && !isDeskView(openId)) setWaitingFocus(null);
+  }, [openId, waitingFocus]);
+  const sidebarOpen = useStableCallback((id: string) => { setWaitingFocus(null); open(id); });
+  const sidebarOpenWaiting = useStableCallback((focus: WaitingFocus) => { setWaitingFocus(focus); open('waiting'); });
+  // A permission prompt's line in a manager's chat (issue #350): Waiting for you on what that session asked, as its badge;
+  // one with the manager, which Waiting for you doesn't list, opens the session's chat where its prompt is (re-review, 2).
+  const openWaitingFor = useStableCallback((sessionId: string, inChat?: boolean) => {
+    if (inChat && index.byId.has(sessionId)) { sidebarOpen(sessionId); return; }
+    const s = index.byId.get(sessionId);
+    if (s) sidebarOpenWaiting({ project: s.project, sessions: [s.id], from: s.title });
+    else open('waiting');
+  });
   const sidebarCloseSettings = useStableCallback(closeSettings);
   // The helper's entry and New project, stable so the memoized sidebar isn't drawn again for them (issue #233).
   const sidebarOpenHelper = useStableCallback(() => void openHelper());
@@ -501,10 +539,23 @@ export function App() {
 
   const banners = (
     <>
-      {ledung.updated && (
+      {/* In the made desktop app after an update (#408) the window restarts instead: a reload would keep the old app. */}
+      {desktopUpdate ? (
+        <div className="banner updated">
+          <span>{RESTART_LINE}</span>
+          <button className="small primary" onClick={() => desktopUpdate(true)}>Restart window</button>
+        </div>
+      ) : ledung.updated && (
         <div className="banner updated">
           <span>Ledung was updated — reload</span>
           <button className="small primary" onClick={() => location.reload()}>Reload</button>
+        </div>
+      )}
+      {/* Why the browser opened instead of the desktop app (#408), when no terminal showed it. */}
+      {ledung.desktopApp?.notice && ledung.desktopApp.notice !== noticeDismissed && (
+        <div className="banner updated">
+          <span>{ledung.desktopApp.notice}</span>
+          <button className="small" onClick={() => setNoticeDismissed(ledung.desktopApp?.notice ?? null)}>Dismiss</button>
         </div>
       )}
       {ledung.away && awayBannerShown(ledung.away, session) && <AwayBanner away={ledung.away} run={run} />}
@@ -513,8 +564,6 @@ export function App() {
       {backToSetup}
       {/* During the setup the helper shows these as steps of their own. */}
       {!inSetup && <ShortcutNotice run={run} />}
-      {/* The first-run picker for workflow-step questions (#293) comes after the setup too. */}
-      {!inSetup && <StepQuestionsPicker run={run} />}
       {!inSetup && <CheckInNotice run={run} />}
       {ledung.usageStops.filter((s) => s.holding).map((s) => (
         <div key={`${s.account}:${s.kind}`} className="banner updated">
@@ -591,6 +640,7 @@ export function App() {
           projects={ledung.projects}
           chats={ledung.chats}
           pending={pendingBySession}
+          withManager={withManagerBySession}
           waiting={waiting}
           limits={ledung.limits}
           usageStops={ledung.usageStops}
@@ -612,6 +662,7 @@ export function App() {
           questions={ledung.questions}
           helper={ledung.helper}
           onOpenHelper={sidebarOpenHelper}
+          onOpenWaiting={sidebarOpenWaiting}
           onNewProject={sidebarNewProject}
         />
         {!noSidebar && <SidebarResizer />}
@@ -633,6 +684,7 @@ export function App() {
           ) :  isDeskView(openId) ? (
             <WaitingView
               questions={questions}
+              onLoadHistory={ledung.loadHistory}
               permissions={permissions}
               sessions={ledung.sessions}
               projects={ledung.projects}
@@ -650,7 +702,10 @@ export function App() {
               newComputers={ledung.newComputers}
               orders={ledung.orders}
               linkPairings={ledung.linkPairings}
+              throughPublicName={ledung.throughPublicName}
               run={run}
+              focus={waitingFocus}
+              onClearFocus={() => setWaitingFocus(null)}
             />
           ) : openId === 'board' ? (
             <BoardListView board={ledung.board} onOpen={open} onOpenSettings={() => open(bannerView('board'))} />
@@ -678,6 +733,7 @@ export function App() {
                   project={openId.slice(3)}
                   liveRuns={ledung.runs[openId.slice(3)]}
                   connected={ledung.hellos}
+                  sessions={ledung.sessions}
                   // The flow it shows is in the address (#447): each one opened is a step Back and Forward go through.
                   shownFlow={workflowFromHash(hash)?.flow ?? null}
                   onShowFlow={(name) => { location.hash = workflowHash(openId.slice(3), name); }}
@@ -707,6 +763,7 @@ export function App() {
               focusMessage={messageFromHash(hash)?.messageId ?? null}
               cameFrom={deskState().ledungFrom ?? null}
               onOpenQuestion={(id) => open(`q:${id}`)}
+              onOpenWaitingFor={openWaitingFor}
               onOpenBoardThread={(repo, id) => open(threadOpenId(repo, id))}
               onOpenWorkflow={(project) => open(`wf:${project}`)}
               onBack={toList}
@@ -714,7 +771,7 @@ export function App() {
             />
           ) : (
             <div className="empty">
-              <h1>Project Ledung</h1>
+              <h1>{PRODUCT_NAME}</h1>
               <p>{ledung.projects.length ? 'Open a project on the left to talk to its manager.' : 'No projects yet. Add one to start talking to its manager.'}</p>
               <div className="empty-actions">
                 {!ledung.projects.length && <button className="primary" onClick={() => void newProject()}>✦ New project with the helper</button>}
@@ -785,6 +842,10 @@ const Sidebar = memo(function Sidebar(props: {
   /** The Ledung Helper (docs/steps/ledung-helper.md): its entry under Chats, and New project in a heading's menu. */
   helper: HelperInfo | null;
   onOpenHelper: () => void;
+  /** A row's question badge (issue #322): Waiting for you on its project. */
+  onOpenWaiting: (focus: WaitingFocus) => void;
+  /** Per session, its open questions and prompts addressed to a manager (in pending too): for the badge's tooltip. */
+  withManager: Record<string, number>;
   onNewProject: () => void;
 }) {
   // A tree per project: the project, its manager with the sessions it runs, then sessions started
@@ -1008,6 +1069,17 @@ const Sidebar = memo(function Sidebar(props: {
   const shows = compactRows(compact);
   // "Archived (N)" at the end of each group, when switched on in Settings (#157, #95).
   const [archivedShown] = useArchivedLink();
+  // A row's count of open questions and prompts, a button of its own beside the row's (no button inside a button), so
+  // a click opens Waiting for you on the row's project and never the chat too (issue #322).
+  const countBadge = (count: number, focus: WaitingFocus) => {
+    if (!count) return null;
+    const title = badgeTitle(count, focus.project, asideCount(focus, props.withManager, (id) => props.index.byId.get(id)?.project ?? ''));
+    return (
+      <button className="badge-button" title={title} aria-label={title} onClick={() => props.onOpenWaiting(focus)}>
+        <span className="badge">{count}</span>
+      </button>
+    );
+  };
   // The caret sits beside the row's button, not in it (no button inside a button), and carries no data-drag.
   const item = ({ s, depth, drag: group, hidden, folds, folded: isFolded }: FoldedRow<Row>) => {
     const time = `${formatTime(s.createdAt)}${s.backgroundTasks > 0 ? ` · ${s.backgroundTasks} in background` : ''}`;
@@ -1048,7 +1120,7 @@ const Sidebar = memo(function Sidebar(props: {
         ) : (
         <button
           className={`session-item${s.id === props.openId ? ' open' : ''}${depth ? ' child' : ''}${drag?.id === s.id ? ' dragging' : ''}${rowStatus(dotShown, s).ended ? ' ended-row' : ''}`}
-          title={rowTooltip(compact, rowStatus(dotShown, s).tooltip, time, usage)}
+          title={rowTooltip(compact, rowStatus(dotShown, s).tooltip, time, usage, switchTooltip(s))}
           onClick={() => props.onOpen(s.id)}
           onDoubleClick={() => setRenaming(s.id)}
           data-drag={group ?? undefined}
@@ -1065,9 +1137,13 @@ const Sidebar = memo(function Sidebar(props: {
             return mode && <span className={`session-ship ${statusLook(s)}`}><SailingShip mode={mode} width={10} sizeButton={false} hideWhenSunk maxSize={shows.shipMax} /></span>;
           })()}
           {hiddenChip(hidden, hidden?.count === 1 ? 'sub-session' : 'sub-sessions')}
-          {(props.pending[s.id] ?? 0) + (hidden?.pending ?? 0) ? <span className="badge">{(props.pending[s.id] ?? 0) + (hidden?.pending ?? 0)}</span> : null}
         </button>
         )}
+        {renaming !== s.id && countBadge((props.pending[s.id] ?? 0) + (hidden?.pending ?? 0), {
+          project: s.project, from: s.title,
+          // Folded sessions add their count to this row's, so their items are its too.
+          sessions: [s.id, ...(hidden ? props.index.childrenOf(s.id).map((c) => c.id) : [])],
+        })}
       </div>
     );
   };
@@ -1125,7 +1201,7 @@ ${moreHint}`}
 ${moreHint}`} onClick={() => props.onOpen('chat')}><Named colour={props.chats?.colour ?? null}>Chats</Named></button>
                   ) : <span className="project-name muted">{g.name}</span>}
                   {hiddenChip(g.view.project, g.view.project?.count === 1 ? 'session' : 'sessions')}
-                  {g.view.project?.pending ? <span className="badge">{g.view.project.pending}</span> : null}
+                  {countBadge(g.view.project?.pending ?? 0, { project: g.name, sessions: [], from: projectLabel(g.name) })}
                   {g.project && props.workflows[g.name] && (
                     <WorkflowButton
                       counts={workflowButton(props.runs[g.name] ?? [], (id) => props.questions[id]?.status === 'open')}
@@ -1188,6 +1264,20 @@ ${moreHint}`} onClick={() => props.onOpen('chat')}><Named colour={props.chats?.c
           aria-pressed={isSettingsView(props.openId)}
           onClick={() => (isSettingsView(props.openId) ? props.onCloseSettings() : props.onOpen('settings'))}
         >⚙</button>
+        {/* Another window of the page, beside the ⚙ (issue #414; icon 1, "Stacked windows", Martin, Ledung question
+            #590): the desktop app opens an app window, a browser a new window or tab. */}
+        <button
+          className="icon new-window"
+          title={newWindowTitle(isMacLike(navigator))}
+          aria-label="New window"
+          onClick={() => openNewWindow(window as unknown as NewWindowHost)}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M7 8V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-3" />
+            <rect x="3" y="8" width="13" height="13" rx="2" />
+            <path d="M3 12h13" />
+          </svg>
+        </button>
         {/* Usage and the board are chips here, not buttons at the top (issue #400, Ledung question #393), on one row. The
             connection is the board chip's border, or the Usage chip's when there is no board (Ledung question #397). */}
         <span className="footer-chips">
@@ -1216,6 +1306,8 @@ export function SessionView(props: {
   /** Opened from Waiting for you with Go to conversation: where Back returns. */
   cameFrom: CameFrom | null;
   onOpenQuestion: (id: number) => void;
+  /** Opens Waiting for you on what a session asked (a permission prompt's line, issue #350). */
+  onOpenWaitingFor?: (sessionId: string, inChat?: boolean) => void;
   /** Opens a board thread in the Board view. */
   onOpenBoardThread: (repo: string, id: string) => void;
   /** Opens a project's workflow page (issue #310), from a manager's ⚙. */
@@ -1305,6 +1397,7 @@ export function SessionView(props: {
   const loadEarlier = useCallback(() => run(ledung.loadEarlier), [ledung.loadEarlier]);
   const titleOf = useCallback((id: string) => index.byId.get(id)?.title ?? 'unknown', [index]);
   const openQuestion = useStableCallback(props.onOpenQuestion);
+  const openWaitingFor = useStableCallback((id: string, inChat?: boolean) => props.onOpenWaitingFor?.(id, inChat));
   const boardRepo = ledung.board?.projects[session.project]?.repo;
   const openBoardThread = useStableCallback((id: string) => props.onOpenBoardThread(boardRepo!, id));
 
@@ -1320,7 +1413,7 @@ export function SessionView(props: {
   };
   // Macros (issue #410): the global ones and this project's, as chips in the info bar and by their keybinds. None while
   // the message box takes nothing.
-  const takesText = !(session.status === 'stopping' || (session.status === 'ended' && !session.claudeSessionId));
+  const takesText = !composerClosed(session);
   const macros = useMemo(() => (takesText ? macrosFor(ledung.macros ?? [], session.project) : []), [ledung.macros, session.project, takesText]);
   const fireMacro = useStableCallback((m: Macro, other: boolean) => {
     const filled = fillMacro(m.text, session);
@@ -1450,6 +1543,12 @@ export function SessionView(props: {
             />
           </div>
         )}
+        {session.accountSwitch && (
+          // A line of its own under the header, like the compacting notice: the reason of a failed one can be long.
+          <div className="session-notice">
+            <AccountSwitchNotice key={session.id} session={session} run={run} />
+          </div>
+        )}
       </header>
       {props.cameFrom && (
         <div className="came-from">
@@ -1475,6 +1574,7 @@ export function SessionView(props: {
             focusQuestion={props.focusQuestion}
             focusMessage={props.focusMessage ?? null}
             onOpenQuestion={openQuestion}
+            onOpenWaitingFor={openWaitingFor}
             onOpenBoardThread={boardRepo ? openBoardThread : undefined}
             tint={tint}
             renderCard={isHelper ? renderCard : undefined}
@@ -1490,7 +1590,7 @@ export function SessionView(props: {
             extra={<MacroChips key={session.id} macros={macros} onUse={fireMacro} onEdit={() => (location.hash = '#/settings/macros')}
               actions={[
                 { id: 'secret', label: '🔑 Lock a secret…', title: 'Type or paste it into a masked field; Claude gets only its name', disabled: composerClosed(session), onPick: () => composerActions.current?.secret() },
-                { id: 'images', label: '📎 Add images…', title: 'PNG, JPEG, GIF or WebP (or paste or drop them on the box)', disabled: composerClosed(session), onPick: () => composerActions.current?.images() },
+                { id: 'images', label: '📎 Add images…', title: 'PNG, JPEG, GIF or WebP go as images; any other file is saved in the session\'s folder and its path put in the message (or drop them on the box)', disabled: composerClosed(session), onPick: () => composerActions.current?.images() },
               ]} />} />
           <Composer session={session} tint={tint} run={run} quoteInto={quoteInto} actionsInto={composerActions} bangShell={ledung.bangShell} />
         </div>
@@ -1519,7 +1619,7 @@ export function SessionView(props: {
         {flowPane && hasWorkflow && (
           <LoadFailed>
             <Suspense fallback={<aside className="file-panel workflow-pane"><p className="muted page-body">Loading the workflow…</p></aside>}>
-              <WorkflowPane session={session} liveRuns={ledung.runs[session.project]} connected={ledung.hellos} onClose={() => setFlowPane(false)} />
+              <WorkflowPane session={session} liveRuns={ledung.runs[session.project]} connected={ledung.hellos} sessions={ledung.sessions} onClose={() => setFlowPane(false)} />
             </Suspense>
           </LoadFailed>
         )}
@@ -1733,11 +1833,6 @@ function SecretsInMenu({ session, run }: { session: SessionInfo; run: (action: (
 /** What the macros' ＋ menu can ask of the composer (issue #186). */
 type ComposerActions = { secret: () => void; images: () => void };
 
-/** The message box takes nothing: an ended session that can't be resumed, or one stopping. */
-function composerClosed(session: Pick<SessionInfo, 'status' | 'claudeSessionId'>): boolean {
-  return (session.status === 'ended' && !session.claudeSessionId) || session.status === 'stopping';
-}
-
 function Composer({ session, tint, run, quoteInto, actionsInto, bangShell }: {
   session: SessionInfo;
   /** The shell a "!" command runs in on this computer (issue #212). */
@@ -1865,6 +1960,60 @@ function Composer({ session, tint, run, quoteInto, actionsInto, bangShell }: {
     }
     if (refused.length) throw new Error(refused.join(' '));
   });
+  // Any other file dropped or picked (issue #339): Ledung saves a copy in the session's folder and its path goes into
+  // the box where the caret was, one after another. Saved for the session it was dropped on, also if another is open by then.
+  // The box is drawn anew for each session (SessionView's key), so a box left behind is marked here when it goes; its
+  // late path then goes to the end of that session's saved draft, which the box wrote when it went (self-check, #339).
+  const sessionNow = useRef<string | null>(session.id);
+  sessionNow.current = session.id;
+  useEffect(() => {
+    sessionNow.current = session.id;
+    return () => { sessionNow.current = null; };
+  }, [session.id]);
+  const dropAt = useRef<number | null>(null);
+  const [saving, setSaving] = useState(0);
+  const putPath = (sessionId: string, token: string) => {
+    if (sessionId !== sessionNow.current || !area.current) {
+      const draft = readDraft(localStorage, sessionId);
+      writeDraft(localStorage, sessionId, insertAt(draft, draft.length, token).text);
+      return;
+    }
+    const current = area.current?.value ?? text;
+    const put = insertAt(current, dropAt.current ?? current.length, token);
+    saveNow(put.text);
+    dropAt.current = put.caret;
+    requestAnimationFrame(() => area.current?.setSelectionRange(put.caret, put.caret));
+  };
+  const addDrops = (files: File[]) => void run(async () => {
+    const sessionId = session.id;
+    const a = area.current;
+    dropAt.current = a ? a.selectionEnd : null;
+    // Each that can be saved is; what can't is said, together, after.
+    const refused: string[] = [];
+    for (const file of files) {
+      const problem = dropProblem(file);
+      if (problem) {
+        refused.push(problem);
+        continue;
+      }
+      setSaving((n) => n + 1);
+      try {
+        const { path } = await api.uploadDrop(sessionId, file, file.name);
+        putPath(sessionId, dropToken(path));
+      } catch (e) {
+        refused.push(`${file.name || 'A file'}: ${(e as Error).message}`);
+      } finally {
+        setSaving((n) => n - 1);
+      }
+    }
+    if (refused.length) throw new Error(refused.join(' '));
+  });
+  /** Dropped or picked: PNG, JPEG, GIF and WebP go as images, as before; every other file is saved and its path put in. */
+  const addFiles = (files: File[]) => {
+    const { images: pictures, others } = splitDropped(files);
+    if (pictures.length) addImages(pictures);
+    if (others.length) addDrops(others);
+  };
   const removeImage = (key: number) => setImages((list) => list.filter((i) => i.key !== key));
   const send = async () => {
     const t = text;
@@ -1908,7 +2057,7 @@ function Composer({ session, tint, run, quoteInto, actionsInto, bangShell }: {
         setDragging(false);
         if (ended || !e.dataTransfer.files.length) return;
         e.preventDefault();
-        addImages([...e.dataTransfer.files]);
+        addFiles([...e.dataTransfer.files]);
       }}
     >
       {grip}
@@ -1933,7 +2082,7 @@ function Composer({ session, tint, run, quoteInto, actionsInto, bangShell }: {
         />
       )}
       {selection && <SelectionKey left={selection.left} top={selection.top} onLock={lockSelected} />}
-      {(session.shell || ask || command || showChips || images.length > 0) && (
+      {(session.shell || ask || command || showChips || images.length > 0 || saving > 0) && (
       <div className="bang-strips">
       {showChips && <SecretChips known={chips.known} missing={chips.missing} onOpen={setEditing} />}
       {session.shell && (
@@ -1950,6 +2099,7 @@ function Composer({ session, tint, run, quoteInto, actionsInto, bangShell }: {
         </div>
       )}
       {command && !ask && <div className="bang-hint muted">{bangHint(bangShell, session.runner)}</div>}
+      {saving > 0 && <div className="bang-hint muted" role="status">Saving {saving === 1 ? 'a file' : `${saving} files`} into the session's folder…</div>}
       {images.length > 0 && (
         <div className="composer-images">
           {images.map((i, n) => (
@@ -2003,11 +2153,11 @@ function Composer({ session, tint, run, quoteInto, actionsInto, bangShell }: {
         </button>
         <div className="send-row">
           <input
-            ref={picker} type="file" hidden multiple accept={CHAT_IMAGE_TYPES.join(',')}
+            ref={picker} type="file" hidden multiple
             onChange={(e) => {
               const files = [...(e.target.files ?? [])];
               e.target.value = '';
-              if (files.length) addImages(files);
+              if (files.length) addFiles(files);
             }}
           />
           <button
@@ -2022,6 +2172,45 @@ function Composer({ session, tint, run, quoteInto, actionsInto, bangShell }: {
 }
 
 /** A clear (clear_session) counting down: the seconds left and Cancel, which keeps the conversation. */
+/**
+ * A session's account switch (issue #395): "Switches to … when this turn ends" with Switch now, which asks first as
+ * it stops what the session is doing; or a failed one with its reason and Try again.
+ */
+function AccountSwitchNotice({ session, run }: { session: SessionInfo; run: (f: () => Promise<unknown>) => void }) {
+  const [asking, setAsking] = useState(false);
+  const state = switchState(session);
+  if (!state) return null;
+  const to = accountName(session.accountSwitch!.to);
+  if (state.kind === 'failed') {
+    return (
+      <div className="account-switch failed" role="status">
+        <span><strong>{state.text}</strong> <span className="account-switch-reason">{reasonParts(state.reason).map((p, i) => (p.code ? <code key={i}>{p.text}</code> : p.text))}</span></span>
+        <button className="small" title={`Switch to ${to} at its next quiet moment`} onClick={() => run(() => api.accountSwitch(session.id, 'retry'))}>Try again</button>
+      </div>
+    );
+  }
+  // Switch now only while it waits: one under way is already switching, and a stopping one resumes on the new account.
+  const live = session.status !== 'ended' && session.status !== 'stopping' && !!session.claudeSessionId && !session.accountSwitch?.underWay;
+  return (
+    <div className="account-switch" role="status">
+      {asking ? (
+        <>
+          <span>This stops what it's doing now and resumes it on {to}; its conversation and open questions are kept.</span>
+          <span className="account-switch-buttons">
+            <button className="primary small" onClick={() => { setAsking(false); run(() => api.accountSwitch(session.id, 'now')); }}>Switch now</button>
+            <button className="small" onClick={() => setAsking(false)}>Cancel</button>
+          </span>
+        </>
+      ) : (
+        <>
+          <span>{state.text}.</span>
+          {live && <button className="small" title="Switch at once, stopping what it is doing" onClick={() => setAsking(true)}>Switch now</button>}
+        </>
+      )}
+    </div>
+  );
+}
+
 function ClearCountdown({ due, onCancel }: { due: number; onCancel: () => void }) {
   // The page's shared clock (issue #233).
   const now = useNow(500);

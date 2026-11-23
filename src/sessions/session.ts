@@ -28,7 +28,7 @@ import { promptTimeLine } from './elapsed.ts';
 import { settingsAction, wordsFor, type Word } from './word.ts';
 import { promptAwayLine, classify, CLASSIFIER_REFUSED, decide as awayDecide, KIND_NAMES, mergeWithoutReview, FLOOR_TIMEOUT_MS, formatLog, orderedMergeFloors, type Away, type AwayDecision, type Floor, type ViewPr } from './away.ts';
 import type { AwayInfo } from '../shared/protocol.ts';
-import { deskQuestion, questionText, type QuestionDetails } from '../shared/questions.ts';
+import { deskQuestion, questionText, type QuestionDetails, type RefusalDetails } from '../shared/questions.ts';
 import { compactionUsage, contextAfterCompact, UsageRecorder, type SessionFacts } from '../usage/recorder.ts';
 import { findTickets } from '../usage/links.ts';
 import { projectRepo, type PullRequestPoller } from './pr-poll.ts';
@@ -40,13 +40,15 @@ import { commandKinds, detaches, heavyKinds } from '../resources/commands.ts';
 import { RESOURCE_SOURCE, type ReserveArgs } from '../resources/book.ts';
 import { FRESH_FACTS, pauseReason, type IdleState } from './idle.ts';
 import { skillsFromFiles, skillsOff, withSkillsOff, type SkillChoices } from './skills.ts';
+import { withLearned, type LearnedTools } from './manager-tools.ts';
 import { needsPluginIds, parseSettingsFile, pluginIdsIn, profileOptions, settingsFilePath, type Profile } from './profiles.ts';
 import { workflowInstructions, type ProjectWorkflow } from './workflow.ts';
 import { workflowLines } from './flow-files.ts';
 import { promptNudges } from './workflow-nudges.ts';
 import { readInsideProject, readStartReadingFile, sessionStartText } from './start-reading.ts';
 import { RemoteControl } from './remote-control.ts';
-import { McpError, mcpServers, reconnectMcp } from './mcp.ts';
+import { McpError, mcpServers, mcpToolDescriptions, reconnectMcp } from './mcp.ts';
+import { mcpParts } from '../shared/tool-call.ts';
 import { boundarySettings, withBoundary } from './boundary.ts';
 import { airgapEnvironment, airgapSettings, airgapTempFolder, makeAirgapTempFolder, othersSettings, versionProblem, withAirgapSettings, withOthersSettings } from '../projects/lockdown.ts';
 import { userDataDir } from '../platform/paths.ts';
@@ -61,7 +63,7 @@ import { attachSources, type SourceContext } from './sources.ts';
 import type { SessionRole, ShellBlock } from '../shared/protocol.ts';
 import { effortLevel, type EffortLevel } from '../shared/protocol.ts';
 import { exercisedLine } from '../platform/exercised.ts';
-import { alwaysOffer, classifierReason, guardedWrite, ONCE_ACTION, ONCE_GRANT_MS, onceGrant, refusalOf, refusalQuestion, sameCall } from './refusals.ts';
+import { alwaysOffer, askedMessage, classifierReason, declinedMessage, guardedWrite, heldMessage, MANAGER_DECLINED_TOOLS, ONCE_ACTION, ONCE_GRANT_MS, onceGrant, refusalOf, refusalQuestion, sameCall } from './refusals.ts';
 import { orderNote, type Orders } from './orders.ts';
 import type { ChatImages, ImageBlock } from './chat-images.ts';
 import { heldImageNames, heldText } from '../store/store.ts';
@@ -83,6 +85,8 @@ let kindDroppedExercised = false;
 let byHandExercised = false;
 /** The EXERCISED line of issue #150, once per run. */
 let subagentGrantExercised = false;
+/** The EXERCISED line of issue #308, once per run. */
+let askedReturnsExercised = false;
 
 /** Notes for after a call, one per line; undefined when there are none. */
 function joinNotes(...notes: (string | undefined)[]): string | undefined {
@@ -206,6 +210,8 @@ interface PermissionOpts {
   requestId?: string;
   suggestions?: PermissionUpdate[];
   toolUseID?: string;
+  /** Set when the call is a subagent's: a held call's Allow once is then the subagent's (issues #146, #262). */
+  agentID?: string;
 }
 
 interface PendingPermission {
@@ -278,8 +284,6 @@ export interface SessionOptions {
   gate: TurnGate;
   /** The project's Claude account: its name, and the login it puts in the environment (P3). */
   account?: { name: string; env: Record<string, string> } | null;
-  /** Who Claude Code found itself logged in as, once the session is up. */
-  onAccountInfo?: (info: { email?: string; organization?: string; subscriptionType?: string }) => void;
   /**
    * Whether Claude Code is signed in for its account (issue #333), checked on every start in the session's
    * folder with the settings it gets: refuse with how to sign in, warn and go on when it couldn't tell, or null.
@@ -289,6 +293,12 @@ export interface SessionOptions {
   profile?: Profile;
   /** Plugin ids turned off whatever the profile where installed (the workflow's and the config's pluginsOff, issues #265, #298). */
   pluginsOff?: string[];
+  /**
+   * The tools managers learn (issue #431). `limit`: for a manager whose workflow turns it on, what it leaves out of the
+   * installed plugins and the user's servers, asked at each start and resume (null: nothing). `noteCalls`: its tool
+   * calls go in the record (a manager here). `noteInit`: the user's servers it started with go in the record.
+   */
+  learnedTools?: { limit?: (installed: string[]) => LearnedTools | null; noteCalls?: (content: unknown) => void; noteInit?: (servers: unknown) => void };
   /** Which of the user's own skills it gets (#300); null or none: all of them (chats). */
   skills?: SessionSkills | null;
   /** Remote Control's name in the Claude app, for a manager (#19); null: no Remote Control. */
@@ -375,6 +385,14 @@ export class Session {
   /** The latest tool calls by id, so a refusal in a tool result can be shown with its exact input (issue #104). */
   private readonly toolCalls = new Map<string, { toolName: string; input: Record<string, unknown> }>();
   /**
+   * What the session's other MCP servers' tools do, by full tool name, from Claude Code's list (issue #399): asked for
+   * once per server, when the session first calls one of its tools, so a refusal seconds later can say it.
+   */
+  private readonly mcpDescriptions = new Map<string, string>();
+  /** What this session's own Ledung tools do, by short name, from the tool server it built (issue #399). */
+  private ownDescriptions = new Map<string, string>();
+  private readonly mcpDescribed = new Set<string>();
+  /**
    * Away mode's decisions on merges taken in the PreToolUse hook (issue #133), by tool use id: onPermission uses a held
    * one rather than asking GitHub and recording it again, and a refusal that comes anyway reads the floors from it.
    */
@@ -415,10 +433,10 @@ export class Session {
   private finished: Promise<void> = Promise.resolve();
   private readonly gate: TurnGate;
   private readonly account: { name: string; env: Record<string, string> } | null;
-  private readonly onAccountInfo: SessionOptions['onAccountInfo'];
   private readonly signInRefusal: SessionOptions['signInRefusal'];
   private readonly profile: Profile | undefined;
   private readonly pluginsOff: string[];
+  private readonly learnedTools: SessionOptions['learnedTools'];
   private readonly skills: SessionSkills | null;
   /** The profile's settings file as read at this start or resume (#20 settingsFile). */
   private fileSettings: Record<string, unknown> | undefined;
@@ -521,10 +539,10 @@ export class Session {
     this.devShip = opts.devShip ?? null;
     this.gate = opts.gate;
     this.account = opts.account ?? null;
-    this.onAccountInfo = opts.onAccountInfo;
     this.signInRefusal = opts.signInRefusal;
     this.profile = opts.profile;
     this.pluginsOff = opts.pluginsOff ?? [];
+    this.learnedTools = opts.learnedTools;
     this.skills = opts.skills ?? null;
     this.awaitingResumeResult = !!opts.resume && !opts.attachTo;
     this.openQuery = opts.query ?? query;
@@ -570,6 +588,7 @@ export class Session {
       listPermissions: () => m.listPermissions(id),
       machineStatus: () => m.machineStatus(id),
       workHistory: (days, limit) => m.workHistory(id, days, limit),
+      waitingForYou: (hours) => m.waitingForYou(id, hours),
       setPriority: (sid, priority, q) => m.setPriority(id, sid, priority, q),
       setPaused: (sid, paused) => m.setPaused(id, sid, paused),
       mcpStatus: (sid) => m.mcpStatus(id, sid),
@@ -592,6 +611,7 @@ export class Session {
       relayAdminKey: () => m.relayAdminKey(id),
       linkCode: () => m.linkCode(id),
       linkComputer: (code, name) => m.linkComputer(id, code, name),
+      unlinkComputer: (computer) => m.unlinkComputer(id, computer),
       inviteComputer: (owner, name) => m.inviteComputer(id, owner, name),
       usagePublish: (args) => m.usagePublish(id, args),
     };
@@ -662,7 +682,8 @@ export class Session {
 
   /** Ledung's tool server for this session: the helper's own, or the session's and manager's tools. */
   private toolServer(tools: ToolHandlers): McpSdkServerConfigWithInstance {
-    return this.helper ? helperToolServer(this.userName, this.helper.handlers) : ledungToolServer(tools);
+    const describe = (d: Map<string, string>) => { this.ownDescriptions = d; };
+    return this.helper ? helperToolServer(this.userName, this.helper.handlers, describe) : ledungToolServer(tools, describe);
   }
 
   /** Whether the session's Claude Code has an older Ledung tool list than this Ledung's; unknown (before #164) counts as older. */
@@ -729,11 +750,6 @@ export class Session {
     this.finished = this.readLoop(this.q);
     this.refreshBranch();
     this.startRemoteControl();
-    // Which account it really is, for the page (accountInfo waits for Claude Code to be up).
-    if (this.onAccountInfo) {
-      const q = this.q;
-      void q.accountInfo().then((info) => this.onAccountInfo?.(info), () => {});
-    }
   }
 
   /**
@@ -823,10 +839,14 @@ export class Session {
    * mergeOnAnswer's does. Settings actions keep their own rule (settingsOnWord). Null: as before.
    */
   private onceOnTap(toolName: string, input: Record<string, unknown>, toolUseId: string | undefined, agentId: unknown): Record<string, unknown> | null {
-    if (settingsAction(toolName) || SETTINGS_CHANGE_TOOLS.includes(toolName)) return null;
+    if (SETTINGS_CHANGE_TOOLS.includes(toolName)) return null;
     const now = Date.now();
+    const answered = this.store.answeredSince(this.id, now - ONCE_GRANT_MS);
+    // A Settings action keeps its own rule (settingsOnWord): only the question Ledung asked instead of its prompt
+    // (issue #308) grants one, as the prompt's allow did; a refused call's question never does.
+    const pool = settingsAction(toolName) ? answered.filter((q) => refusalOf(q)?.held === 'prompt') : answered;
     // A subagent's identical call does not use up the session's own Allow once, nor the other way round (issue #146).
-    const q = onceGrant(this.store.answeredSince(this.id, now - ONCE_GRANT_MS), this.id, toolName, input, now, !!agentId);
+    const q = onceGrant(pool, this.id, toolName, input, now, !!agentId);
     // Used up atomically, so two calls racing for one grant can't both run.
     if (!q || !this.store.useWord(this.id, `q${q.id}`, ONCE_ACTION)) return null;
     const why = `${this.userName} allowed this exact call once, at ${new Date(q.answeredAt!).toLocaleTimeString()}, in their answer to question #${q.id}`;
@@ -839,6 +859,41 @@ export class Session {
       if (this.onceUsedBy.size > 300) this.onceUsedBy.delete(this.onceUsedBy.keys().next().value!);
     }
     return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: `Allowed by Ledung: ${why}.` } };
+  }
+
+  /**
+   * A manager's settings change the person allowed once on the question Ledung asked instead of its prompt (issue
+   * #308): the hook would ask; the exact call, once, within a day, by the person's own answer, and only while it still
+   * loosens exactly what that question showed. Then noted as approved with that rule, as a prompt's allow is (decide),
+   * so the tool's own check that it loosens no more than was allowed still runs (review of #306, M2). Null: as before.
+   */
+  private settingsOnceOnTap(toolName: string, raw: unknown, out: Record<string, unknown>, toolUseId: string | undefined, agentId: unknown): Record<string, unknown> | null {
+    if ((out as { hookSpecificOutput?: { permissionDecision?: string } }).hookSpecificOutput?.permissionDecision !== 'ask') return null;
+    const input = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+    let rule: string;
+    try {
+      rule = this.promptRule(toolName, input);
+    } catch {
+      return null;
+    }
+    const now = Date.now();
+    const shown = this.store.answeredSince(this.id, now - ONCE_GRANT_MS).filter((q) => refusalOf(q)?.held === 'prompt' && refusalOf(q)!.reason === rule);
+    const q = onceGrant(shown, this.id, toolName, input, now, !!agentId);
+    if (!q || !this.store.useWord(this.id, `q${q.id}`, ONCE_ACTION)) return null;
+    this.noteApproved(toolName, input, rule);
+    const why = `${this.userName} allowed this exact change once, at ${new Date(q.answeredAt!).toLocaleTimeString()}, in their answer to question #${q.id}`;
+    this.record('event', { text: `Settings change allowed once: ${why}.` });
+    this.allowedBy.onceAllowed(toolUseId, this.userName, q.answeredAt!, q.id);
+    if (toolUseId) {
+      this.onceUsedBy.set(toolUseId, q.id);
+      if (this.onceUsedBy.size > 300) this.onceUsedBy.delete(this.onceUsedBy.keys().next().value!);
+    }
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: `Allowed by Ledung: ${why}.` } };
+  }
+
+  /** The rule a settings change's prompt shows, as onPermission gives it: the project's sensitive list, else what it loosens. */
+  private promptRule(toolName: string, input: Record<string, unknown>): string {
+    return matchSensitive(toolName, input, this.sensitiveRules, this.alwaysAsked)?.rule ?? this.settingsChangeRule(toolName, input);
   }
 
   /**
@@ -1043,6 +1098,7 @@ export class Session {
     const refusal = {
       ...call, reason, toolUseId, ...(byAgent ? { byAgent } : {}), ...(byHand ? { byHand } : {}), ...(retryOf !== undefined ? { retryOf } : {}),
       ...(always ? { always } : {}), ...(always === 'sensitive' && sensitiveRule ? { sensitiveRule } : {}),
+      ...this.describedTool(call.toolName),
     };
     const asked = refusalQuestion(refusal, { title: info.title, project: info.project }, this.management.questionTiers(this.id)[0]);
     const q = this.store.createQuestion({ sessionId: this.id, question: asked.question, options: asked.options, addressedTo: 'user', details: asked.details });
@@ -1110,12 +1166,30 @@ export class Session {
     this.record('event', { text: `Away merge ${why}.` });
   }
 
+  /** What a tool does, for a question about a call to it (issue #399): Ledung's own tools, else the session's list. */
+  private describedTool(toolName: string): { description?: string } {
+    const mcp = mcpParts(toolName);
+    const description = !mcp ? null : mcp.server === LEDUNG_SERVER ? this.ownDescriptions.get(mcp.tool) ?? null : this.mcpDescriptions.get(toolName) ?? null;
+    return description ? { description } : {};
+  }
+
+  /** Asks Claude Code once what another MCP server's tools do, when the session first calls one of them (issue #399). */
+  private learnToolDescriptions(toolName: string): void {
+    const mcp = mcpParts(toolName);
+    if (!mcp || mcp.server === LEDUNG_SERVER || this.mcpDescribed.has(mcp.server) || !this.q || this.stopping) return;
+    this.mcpDescribed.add(mcp.server);
+    void mcpToolDescriptions(this.q).then((found) => {
+      for (const [name, description] of found) this.mcpDescriptions.set(name, description);
+    });
+  }
+
   /** The tool calls in an assistant message, kept for raiseRefusal; refusals in a user message's tool results. */
   private watchRefusals(m: SDKMessage): void {
     const content = (m.type === 'assistant' || m.type === 'user') && Array.isArray(m.message.content) ? m.message.content as unknown[] : [];
     for (const b of content as { type?: string; id?: string; name?: string; input?: unknown; tool_use_id?: string; content?: unknown; is_error?: boolean }[]) {
       if (m.type === 'assistant' && b.type === 'tool_use' && b.id && b.name) {
         this.toolCalls.set(b.id, { toolName: b.name, input: b.input && typeof b.input === 'object' ? b.input as Record<string, unknown> : {} });
+        this.learnToolDescriptions(b.name);
         // The latest few hundred are plenty: a refusal comes right after its call.
         if (this.toolCalls.size > 300) this.toolCalls.delete(this.toolCalls.keys().next().value!);
       }
@@ -1196,10 +1270,19 @@ export class Session {
   async claudeOptions(handlers: ConnectionHandlers): Promise<Options> {
     // The profile's options (#20). Plugins go off one by one, by the ids the session's own settings name;
     // a running process being reattached already has its plugins, so it isn't asked again.
-    const pluginIds = this.profile && needsPluginIds(this.profile, this.pluginsOff) && !this.attachTo
+    const limit = this.learnedTools?.limit && !this.attachTo ? this.learnedTools.limit : null;
+    const pluginIds = this.profile && (needsPluginIds(this.profile, this.pluginsOff) || limit) && !this.attachTo
       ? pluginIdsIn(await this.runner.pluginSettingsTexts(this.loginFolder()))
       : [];
-    const profile = this.profile ? profileOptions(this.profile, pluginIds, this.fileSettings, this.pluginsOff) : {};
+    // A manager's learned tools (issue #431): the plugins and servers no manager here called lately go too.
+    let learned: LearnedTools | null = null;
+    try {
+      learned = limit && this.profile ? limit(pluginIds) : null;
+    } catch (e) {
+      // The record couldn't be read: the manager starts with its profile's tools, as with the switch off.
+      console.error(`Learned tools for session ${this.id}: ${(e as Error).message}`);
+    }
+    const profile = this.profile ? profileOptions(learned ? withLearned(this.profile, learned) : this.profile, pluginIds, this.fileSettings, [...this.pluginsOff, ...(learned?.pluginsOff ?? [])]) : {};
     // The user's own skills its project's picker turns off (#300), by the ones found where it runs, so a skill
     // added since is covered by its role's default; a reattached process already has its skills.
     if (this.skills && !this.attachTo) {
@@ -1318,7 +1401,10 @@ export class Session {
             return { hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'deny' as const, permissionDecisionReason: 'Only the main session can compact or clear, not a subagent.' } };
           }
           if (unaskedTool(toolName, this.alwaysAsked)) return {};
-          if (SETTINGS_CHANGE_TOOLS.includes(toolName)) return this.settingsChangeHook(toolName, i.tool_input);
+          if (SETTINGS_CHANGE_TOOLS.includes(toolName)) {
+            const out = this.settingsChangeHook(toolName, i.tool_input);
+            return this.settingsOnceOnTap(toolName, i.tool_input, out, toolUseId, (input as { agent_id?: string }).agent_id) ?? out;
+          }
           // The helper's project tools are checked before the person is asked: an approval that can't work is never shown.
           const projectProblem = this.helper ? this.management.helperProjectProblem(this.id, toolName, i.tool_input) : null;
           if (projectProblem) return { hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'deny' as const, permissionDecisionReason: projectProblem } };
@@ -1384,6 +1470,7 @@ export class Session {
             this.store.setIdleFacts(this.id, {
               backgroundTasks: Array.isArray(i.background_tasks) ? i.background_tasks.length : 0,
               crons: Array.isArray(i.session_crons) ? i.session_crons.length : null,
+              ...(Array.isArray(i.session_crons) ? { repeating: i.session_crons.filter((c) => (c as { recurring?: unknown })?.recurring === true).length } : {}),
             });
           } catch (e) {
             console.error(`Idle facts for session ${this.id}: ${(e as Error).message}`);
@@ -1588,6 +1675,15 @@ export class Session {
     this.management.onEnded(this.id, reason);
   }
 
+  /** Records for the tools managers learn (issue #431); a failure there never stops the session's messages. */
+  private noteTools(note: () => void): void {
+    try {
+      note();
+    } catch (e) {
+      console.error(`Learned tools for session ${this.id}: ${(e as Error).message}`);
+    }
+  }
+
   private onMessage(m: SDKMessage): void {
     try {
       this.watchRefusals(m);
@@ -1595,6 +1691,7 @@ export class Session {
       console.error(`Refusals for session ${this.id}: ${(e as Error).message}`);
     }
     if (m.type === 'system' && m.subtype === 'init') {
+      this.noteTools(() => this.learnedTools?.noteInit?.(m.mcp_servers));
       this.update({ claudeSessionId: m.session_id, model: m.model, claudeVersion: m.claude_code_version, cwd: m.cwd });
     }
     if (m.type === 'system' && m.subtype === 'background_tasks_changed') {
@@ -1603,6 +1700,7 @@ export class Session {
       this.publish({ type: 'session', session: this.info });
     }
     if (m.type === 'assistant') {
+      this.noteTools(() => this.learnedTools?.noteCalls?.(m.message.content));
       // A turn Claude Code started itself (a queued message, a finished background task): measure it too.
       if (!this.turnOpen) this.beginTurn(this.usage.currentTrigger);
       for (const b of m.message.content) {
@@ -1713,6 +1811,15 @@ export class Session {
     input: Record<string, unknown>,
     opts: PermissionOpts,
   ): Promise<PermissionResult> {
+    // A manager's own call, not a request the host re-sent after a restart (that one is already a prompt on screen):
+    // since issue #308 none of the prompts below may stop its turn and its inbox. Not the Ledung Helper's, whose
+    // approvals stay the card it shows; workers' prompts stay their manager's (Martin 2026-11-13, question #2183).
+    const resent = !!(opts.requestId && this.store.pendingPermissionByRequest(this.id, opts.requestId));
+    const ownManager = !resent && !this.helper && this.store.getSession(this.id)?.role === 'manager';
+    if (ownManager && MANAGER_DECLINED_TOOLS.includes(toolName)) {
+      this.record('event', { text: `Ledung declined ${toolName} from this manager: it asks ${this.userName} with ask_user, so its turn and messages go on.` });
+      return Promise.resolve({ behavior: 'deny', message: declinedMessage(toolName, this.userName) });
+    }
     let route = routePermission(toolName, input, this.sensitiveRules, this.alwaysAsked, () => this.management.grantFor(this.id, toolName, input));
     // A projects' settings change comes here only when the hook asked: the user's alone, never a grant's (issue #306).
     if (SETTINGS_CHANGE_TOOLS.includes(toolName) && !('sensitive' in route)) route = { sensitive: { rule: this.settingsChangeRule(toolName, input) } };
@@ -1727,13 +1834,44 @@ export class Session {
     // Away mode (issue #35): only a manager's sensitive Bash call, only while the user is away, and not
     // a request the host re-sent after a restart (that one is already a prompt on screen).
     const away = sensitive ? this.away?.current() : null;
-    if (sensitive && away && toolName === 'Bash' && typeof input.command === 'string'
+    if (sensitive && away && (toolName === 'Bash' || toolName === 'PowerShell') && typeof input.command === 'string'
       && !(opts.requestId && this.store.pendingPermissionByRequest(this.id, opts.requestId))) {
       const info = this.store.getSession(this.id);
-      if (info?.role === 'manager') return this.awayPermission(away, input.command, toolName, input, opts, sensitive, null);
+      if (info?.role === 'manager') {
+        // A retry onceOnTap already let through on the person's Allow once, which Claude Code still brings here (its own
+        // checks come first): their Allow, not judged or held again, so no GitHub read and no false "held" away record
+        // (issue #262, code review Minor 1).
+        const granted = opts.toolUseID === undefined ? undefined : this.onceUsedBy.get(opts.toolUseID);
+        if (granted !== undefined) {
+          this.record('event', { text: `A call ${this.userName} allowed (question #${granted}) was asked again by Claude Code; allowed on that answer, not held again.` });
+          return Promise.resolve({ behavior: 'allow', updatedInput: input });
+        }
+        if (toolName === 'Bash') return this.awayPermission(away, input.command, toolName, input, opts, sensitive, null);
+        // Away mode judges Bash only, so a manager's own PowerShell call is always held; since issue #262 it returns at
+        // once too, saying so (Martin 2026-11-13, Ledung question #2179, C: "Bash + PowerShell").
+        const decision: AwayDecision = {
+          kind: 'other', allowed: false, pr: null, repo: null, floors: [],
+          reason: `held for ${this.userName}: away mode judges only Bash commands, so a PowerShell command is always held; a merge or dev ship away mode allows goes through only as one plain Bash command`,
+        };
+        this.away?.record(this.id, input.command, decision);
+        return Promise.resolve(this.holdForUser(toolName, input, opts, sensitive, decision.reason));
+      }
       // A session its manager started: its dev ship too, recorded in the manager's record (issue #408).
-      const manager = this.shipManager(info, away, input.command);
+      const manager = toolName === 'Bash' ? this.shipManager(info, away, input.command) : null;
       if (manager) return this.awayPermission(away, input.command, toolName, input, opts, sensitive, { managerId: manager, title: info!.title });
+    }
+    // A manager's own settings change or sensitive non-shell call (issue #308; Martin 2026-11-13, question #2183 "a — Fix
+    // both kinds"): asked as a question at once, away or present, not a prompt. Its shell calls keep the prompt while
+    // the person is here (#262 returns them only when away mode holds them).
+    if (sensitive && ownManager && toolName !== 'Bash' && toolName !== 'PowerShell') {
+      // A retry the person's Allow once already let through in the hook, which Claude Code still brings here: their
+      // allow, not asked again (as for #262).
+      const granted = opts.toolUseID === undefined ? undefined : this.onceUsedBy.get(opts.toolUseID);
+      if (granted !== undefined) {
+        this.record('event', { text: `A call ${this.userName} allowed (question #${granted}) was asked again by Claude Code; allowed on that answer, not asked again.` });
+        return Promise.resolve({ behavior: 'allow', updatedInput: input });
+      }
+      return Promise.resolve(this.holdForUser(toolName, input, opts, sensitive, sensitive.rule, 'prompt'));
     }
     return this.askPermission(toolName, input, opts, sensitive);
   }
@@ -1777,7 +1915,57 @@ export class Session {
       this.allowedBy.away(opts.toolUseID, decision.reason);
       return { behavior: 'allow', updatedInput: pinnedInput(input, decision) };
     }
+    // A manager's own held call returns at once as a question (issue #262), so its turn and inbox go on. Not when the
+    // person came back meanwhile (the floor read takes up to 20 s): then they are here, and get the prompt as before.
+    // A session's held dev ship stays a prompt to its manager (#408), whose turn it doesn't hold.
+    if (!fromSession && this.away?.current()) return this.holdForUser(toolName, input, opts, sensitive, decision.reason);
     return this.askPermission(toolName, input, { ...opts, decisionReason: [opts.decisionReason, `Away mode ${decision.reason}.`].filter(Boolean).join(' · ') }, sensitive);
+  }
+
+  /**
+   * A manager's own sensitive call away mode held (issue #262; Martin 2026-11-13, Ledung questions #2174 and #2179):
+   * denied at once, so the manager's turn goes on and ends and its inbox is delivered, instead of a prompt that holds
+   * both until the person answers (nine nights, about 37 hours, in the issue's evidence). The person is asked the
+   * refusal's question (#104, #225): Allow once, Allow always though sensitive, Deny, signed with the passkey on the
+   * phone like any refusal question (server: details.refusal). On Allow once, onceOnTap lets the manager's exact retry
+   * through, once. The same call while its question is open raises no second one. (A retry onceOnTap already let
+   * through never gets here: onPermission allows it before away mode judges it.)
+   * Since issue #308 also a manager's own settings change or sensitive non-shell call (`held` 'prompt'), away or
+   * present, with the rule its prompt would have shown as the reason.
+   */
+  private holdForUser(toolName: string, input: Record<string, unknown>, opts: PermissionOpts, sensitive: { rule: string }, reason: string, held: 'away' | 'prompt' = 'away'): PermissionResult {
+    const byAgent = !!opts.agentID;
+    // The manager is told what the question is (issue #308: a call that would have been a prompt) or why it was held.
+    const told = (id: number, again = false) => (held === 'prompt' ? askedMessage(id, reason, this.userName, again) : heldMessage(id, reason, this.userName, again));
+    const open = this.store.refusalQuestions(this.id).find((q) => {
+      const r = refusalOf(q);
+      return !!r && q.status === 'open' && !r.byHand && sameCall(r, toolName, input) && (r.byAgent ?? false) === byAgent;
+    });
+    if (open) {
+      this.record('event', { text: held === 'prompt'
+        ? `The same call again; it still waits for ${this.userName}'s allow as question #${open.id}.`
+        : `Away mode held the same call again; it still waits for ${this.userName} as question #${open.id}.` });
+      return { behavior: 'deny', message: told(open.id, true) };
+    }
+    const info = this.store.getSession(this.id)!;
+    const always = alwaysOffer(toolName, input, false, sensitive.rule);
+    const refusal: RefusalDetails = {
+      toolName, input, reason, toolUseId: opts.toolUseID ?? '', held,
+      ...(byAgent ? { byAgent } : {}), ...(always ? { always } : {}), ...(always === 'sensitive' ? { sensitiveRule: sensitive.rule } : {}),
+      ...this.describedTool(toolName),
+    };
+    const asked = refusalQuestion(refusal, { title: info.title, project: info.project }, this.management.questionTiers(this.id)[0]);
+    const q = this.store.createQuestion({ sessionId: this.id, question: asked.question, options: asked.options, addressedTo: 'user', details: asked.details });
+    this.record('event', { text: held === 'prompt'
+      ? `A ${toolName} call that needs ${this.userName}'s allow did not run; Ledung asked ${this.userName} (question #${q.id}) instead of a prompt.`
+      : `Away mode held a ${toolName} call; it did not run, and Ledung asked ${this.userName} (question #${q.id}).` });
+    this.record('question', { questionId: q.id });
+    this.publish({ type: 'question', question: q });
+    if (held === 'prompt' && !askedReturnsExercised) {
+      askedReturnsExercised = true;
+      exercisedLine(`EXERCISED #308 a manager's own ${toolName} call that needs the person's allow returned at once as question #${q.id}, not a prompt`);
+    }
+    return { behavior: 'deny', message: told(q.id) };
   }
 
   /** The prompt: to the manager, or the user if it has none; a sensitive one only the user allows (issue #51). */
@@ -1822,13 +2010,7 @@ export class Session {
     if (!p) return false;
     if (decision.behavior === 'allow') {
       // What the user allowed, with what its prompt showed, so the tool saves only that (review of #306, M2).
-      if (SETTINGS_CHANGE_TOOLS.includes(p.toolName)) {
-        const shown = this.store.getPermission(permissionId)?.sensitive ?? null;
-        if (USAGE_PUBLISH_TOOLS.includes(p.toolName)) this.management.noteApprovedUsagePublish(this.id, p.input, shown);
-        else if (BASICS_TOOLS.includes(p.toolName)) this.management.noteApprovedBasics(this.id, p.input, shown);
-        else if (LEDUNG_SETTING_TOOLS.includes(p.toolName)) this.management.noteApprovedLedungSetting(this.id, p.input, shown);
-        else this.management.noteApprovedSettings(this.id, p.input, shown);
-      }
+      if (SETTINGS_CHANGE_TOOLS.includes(p.toolName)) this.noteApproved(p.toolName, p.input, this.store.getPermission(permissionId)?.sensitive ?? null);
       const updatedInput = decision.answers ? { ...p.input, answers: decision.answers } : p.input;
       const scope = decision.scope === 'session' && !p.sensitive && !decision.answers ? 'session' : 'once';
       let updatedPermissions: PermissionUpdate[] | undefined;
@@ -1843,6 +2025,14 @@ export class Session {
     }
     const message = decision.message?.trim() || (by === 'user' ? `${this.userName} denied this.` : 'Your manager denied this.');
     return this.finishPermission(permissionId, 'denied', by, message, { behavior: 'deny', message });
+  }
+
+  /** The person allowed this settings change, as `shown` named it: the tool may then loosen exactly that (#306, M2). */
+  private noteApproved(toolName: string, input: unknown, shown: string | null): void {
+    if (USAGE_PUBLISH_TOOLS.includes(toolName)) this.management.noteApprovedUsagePublish(this.id, input, shown);
+    else if (BASICS_TOOLS.includes(toolName)) this.management.noteApprovedBasics(this.id, input, shown);
+    else if (LEDUNG_SETTING_TOOLS.includes(toolName)) this.management.noteApprovedLedungSetting(this.id, input, shown);
+    else this.management.noteApprovedSettings(this.id, input, shown);
   }
 
   private finishPermission(
@@ -2049,13 +2239,13 @@ export class Session {
       this.beginTurn('manager');
       return;
     }
-    const { userText: deliveredText, context } = buildDelivery(this.userName, answers, inbox, (id) => this.management.title(id), (id) => this.store.getOrder(id));
+    const { userText: deliveredText, context, quotable } = buildDelivery(this.userName, answers, inbox, (id) => this.management.title(id), (id) => this.store.getOrder(id));
     this.store.markDelivered(answers.map((a) => a.id));
     this.store.markInboxDelivered(inbox.map((i) => i.id));
     this.store.setHeldMessages(this.id, []);
     // Simon's held messages are already in the history (send() stored them); only Ledung's part is new.
     if (answers.length || inbox.length) {
-      this.record('user', { text: deliveredText, from: 'ledung', answerTo: answers.map((a) => a.id), context: context || undefined });
+      this.record('user', { text: deliveredText, from: 'ledung', answerTo: answers.map((a) => a.id), context: context || undefined, ...(quotable !== undefined ? { quotable } : {}) });
     }
     if (status === 'queued') this.record('event', { text: force ? `Started now by ${this.userName}, above the limit.` : 'A place came free; starting.' });
     const userText = [...held, deliveredText].filter(Boolean).join('\n\n');
@@ -2408,6 +2598,7 @@ export class Session {
       openQuestions: this.store.openQuestionCount(this.id),
       waitingDeliveries: this.store.heldMessages(this.id).length + this.store.undeliveredAnswers(this.id).length + this.store.undeliveredInbox(this.id).length,
       backgroundTasks: this.allBackgroundTasks, facts: this.store.idleFacts(this.id), lastActivity: this.lastActivity,
+      shellRunning: this.shellRun !== null,
     };
   }
 

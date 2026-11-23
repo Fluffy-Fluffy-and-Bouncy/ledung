@@ -11,6 +11,7 @@ import { bytesKind, type AttachmentKind } from '../board/attachments.ts';
 import { FileError, type ProjectFile, type ProjectImage } from './files.ts';
 import type { TreeEntry, TreeListing } from '../shared/files-pane.ts';
 import { GIT_READ_MAX_BYTES, type GitRead } from './git-read.ts';
+import { isWebp } from './webp.ts';
 
 /** One script run in the container: `sh -c <script> sh <args…>`, as bytes; a failure of docker itself is `failed`. */
 export type ContainerExec = (script: string, args: string[], opts: { input?: string; maxBytes: number; timeoutMs: number }) => Promise<ContainerRun>;
@@ -338,10 +339,21 @@ async function markIgnored(access: ContainerAccess, folder: string, entries: Tre
 // --- Copies kept for questions ------------------------------------------------------------------------
 // A screenshot or evidence file from a container is read when the question is asked and kept in Ledung's data
 // folder (Simon's approval on question #1626), so its page shows it later, with the container stopped too. The
-// question names it "container:<hash>/<path>": the hash finds the copy, the path is what the page shows.
+// question names it "container:<hash>/<path>": the hash finds the copy, the path is what the page shows. Since
+// issue #306 every project's are kept so, a local project's (and a linked computer's file) as "kept:<hash>/<path>",
+// so Waiting for you history still shows them once the worktree they came from is gone; images are kept as WebP.
 
 export const CONTAINER_FILE_PREFIX = 'container:';
-const COPY_REF = /^container:([0-9a-f]{32})\/(.+)$/;
+export const KEPT_FILE_PREFIX = 'kept:';
+const COPY_REF = /^(?:container|kept):([0-9a-f]{32})\/(.+)$/;
+
+/** A name a question stores for a copy Ledung kept: a container's (issue #122) or any other project's (issue #306). */
+export function isCopyRef(file: string): boolean {
+  return file.startsWith(CONTAINER_FILE_PREFIX) || file.startsWith(KEPT_FILE_PREFIX);
+}
+
+/** What a kept copy is: as an attachment, or a WebP made from a PNG or JPEG (issue #306). */
+export type CopyKind = AttachmentKind | 'webp';
 
 /** Removes the project's copies no question names (`named`: their hashes) that were kept before `before`. */
 export function pruneCopies(dir: string, project: string, named: ReadonlySet<string>, before: number): void {
@@ -368,8 +380,25 @@ function copyFolder(dir: string, project: string): string {
   return path.join(dir, crypto.createHash('sha256').update(project).digest('hex').slice(0, 16));
 }
 
-/** Keeps `bytes` as a copy for the project's questions; the name the question stores. */
-export function keepCopy(dir: string, project: string, inside: string, bytes: Buffer): string {
+/**
+ * A renamed project's copies go with it (issue #306): its questions name them by hash only, and the folder is found
+ * by the project's name. A copy already under the new name stays; the old folder goes once it is moved.
+ */
+export function moveCopies(dir: string, from: string, to: string): void {
+  const old = copyFolder(dir, from);
+  const now = copyFolder(dir, to);
+  if (old === now || !fs.existsSync(old)) return;
+  fs.mkdirSync(now, { recursive: true });
+  for (const name of fs.readdirSync(old)) {
+    const target = path.join(now, name);
+    if (fs.existsSync(target)) fs.rmSync(path.join(old, name), { force: true });
+    else fs.renameSync(path.join(old, name), target);
+  }
+  fs.rmSync(old, { recursive: true, force: true });
+}
+
+/** Keeps `bytes` as a copy for the project's questions; the name the question stores, under `prefix`. */
+export function keepCopy(dir: string, project: string, inside: string, bytes: Buffer, prefix = CONTAINER_FILE_PREFIX): string {
   const hash = crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 32);
   const folder = copyFolder(dir, project);
   fs.mkdirSync(folder, { recursive: true });
@@ -383,14 +412,15 @@ export function keepCopy(dir: string, project: string, inside: string, bytes: Bu
     const now = new Date();
     fs.utimesSync(file, now, now);
   }
-  return `${CONTAINER_FILE_PREFIX}${hash}/${inside}`;
+  return `${prefix}${hash}/${inside}`;
 }
 
 /**
  * A kept copy by the name a question stores, only from the project's own folder of copies, and only when its bytes
- * are still what the name's hash says and of the kind its name is (`kinds`).
+ * are still what the name's hash says and of the kind its name is (`kinds`). A copy of a PNG or JPEG may be a WebP
+ * (issue #306): its kind is then "webp", and it counts as the image its name says.
  */
-export function readCopy(dir: string, project: string, ref: string, kinds: readonly AttachmentKind[]): { path: string; kind: AttachmentKind; bytes: Buffer } {
+export function readCopy(dir: string, project: string, ref: string, kinds: readonly AttachmentKind[]): { path: string; kind: CopyKind; bytes: Buffer } {
   const m = COPY_REF.exec(ref);
   if (!m) throw new FileError('That is not a file Ledung kept for a question.');
   let bytes: Buffer;
@@ -400,7 +430,8 @@ export function readCopy(dir: string, project: string, ref: string, kinds: reado
     throw new FileError(`Ledung has no copy of ${m[2]} for this project.`);
   }
   if (crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 32) !== m[1]) throw new FileError(`Ledung's copy of ${m[2]} has changed; it is not shown.`);
-  const kind = bytesKind(bytes, m[2]!);
-  if (!kind || !kinds.includes(kind)) throw new FileError(`${m[2]} is not ${kinds.includes('text') ? 'a PNG or JPEG image or a .txt, .log or .md file' : 'a PNG or JPEG image'}.`);
+  const named = /\.png$/i.test(m[2]!) ? 'png' : /\.jpe?g$/i.test(m[2]!) ? 'jpeg' : null;
+  const kind: CopyKind | null = named && kinds.includes(named) && isWebp(bytes) ? 'webp' : bytesKind(bytes, m[2]!);
+  if (!kind || (kind !== 'webp' && !kinds.includes(kind))) throw new FileError(`${m[2]} is not ${kinds.includes('text') ? 'a PNG or JPEG image or a .txt, .log or .md file' : 'a PNG or JPEG image'}.`);
   return { path: m[2]!, kind, bytes };
 }

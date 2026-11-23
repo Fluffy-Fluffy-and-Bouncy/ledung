@@ -20,6 +20,7 @@ import { buildPublishedUsage, contentKey, publishRange } from './publish-file.ts
 import type { UsageSlices } from './publish-source.ts';
 import { parseUsageBranch, usageBranch, UsageRepo } from './publish-github.ts';
 import { exercisedLine } from '../platform/exercised.ts';
+import { writeFileSafely } from '../platform/safe-write.ts';
 
 export const PUBLISH_MS = 5 * 60 * 1000;
 const RETRY_MS = 60 * 1000;
@@ -61,7 +62,6 @@ export interface PublisherOptions {
   projects: () => PublisherProject[];
   /** Each project's remote address, when it has one; read before every build, so a label never flips to the name's. */
   remotes: (projects: string[]) => Promise<Map<string, string | null>>;
-  emailOf: (account: string) => string | null;
   /** Asks the linked computers for their usage key; null when none has one. */
   linkedKey: () => Promise<string | null>;
   repoFor?: (repo: string) => UsageRepo;
@@ -227,9 +227,8 @@ export class UsagePublisher {
     const k = typeof raw === 'string' ? raw.trim() : '';
     if (!KEY.test(k)) throw new BoardError('access', 'That is not a usage key: copy it whole from Settings on the other computer.');
     fs.mkdirSync(this.opts.keyDir, { recursive: true, mode: 0o700 });
-    const temp = `${this.keyFile()}.${process.pid}.new`;
-    fs.writeFileSync(temp, k, { mode: 0o600 });
-    fs.renameSync(temp, this.keyFile());
+    // Flushed before and after the rename, so a crash can't leave it empty (issue #460).
+    writeFileSafely(this.keyFile(), k, { mode: 0o600, temp: `${this.keyFile()}.${process.pid}.new` });
     // Labels change with the key: the next publish carries them.
     this.forget();
     this.opts.onChange?.();
@@ -484,7 +483,7 @@ export class UsagePublisher {
         login, computer: this.opts.computer(), computerId: this.computerId(), repo: repoName, now,
         slices: sliced.get(repoName)!,
         limits: limits.filter((l) => on(l.account) && (used.get(repoName)!.has(l.account || DEFAULT_ACCOUNT) || (t.rest && !anywhere.has(l.account || DEFAULT_ACCOUNT)))),
-        emailOf: this.opts.emailOf, named: new Set(named), remoteOf: (p) => remotes.get(p) ?? null, key,
+        named: new Set(named), remoteOf: (p) => remotes.get(p) ?? null, key,
       });
       const changed = contentKey(file);
       try {

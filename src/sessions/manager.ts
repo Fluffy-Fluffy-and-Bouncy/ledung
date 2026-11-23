@@ -4,9 +4,10 @@ import type { DockerProjectConfig, LedungConfig, LocalProjectConfig, ProjectConf
 import { ProjectStore, type StoredProject } from '../projects/store.ts';
 import { AccountError, AccountStore, DEFAULT_ACCOUNT, SIGN_IN_ENV, type AccountPlace } from '../accounts/store.ts';
 import { removeSignIn } from '../accounts/signin-store.ts';
-import type { AccountChoices, AccountInfoView, AwayInfo, AwayKind, HeavyCommandInfo, JobKindInfo, SignInProblem } from '../shared/protocol.ts';
+import type { AccountChoices, AccountInfoView, AccountSwitch, AwayInfo, AwayKind, HeavyCommandInfo, JobKindInfo, SignInProblem } from '../shared/protocol.ts';
 import { Away } from './away.ts';
 import { Orders } from './orders.ts';
+import { WaitingLines } from './waiting-lines.ts';
 import { ChatImageError, type ChatImages } from './chat-images.ts';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -23,7 +24,7 @@ import { matchSensitive } from './sensitive.ts';
 import { AIRGAP_PROFILE, isLocked, levelProblem, lockdownOf, opensUp, othersSettings, overlapProblem, projectFolders, within } from '../projects/lockdown.ts';
 import { LATER_SUGGESTIONS, withLaterBatch, withSuggestions } from '../shared/sensitive-suggestions.ts';
 import { isNameColour, parseNameColour } from '../shared/name-colours.ts';
-import { ACCEPTED, ledungTier, questionText, reviewAnswerProblem, tiersOf, type QuestionDetails } from '../shared/questions.ts';
+import { ACCEPTED, HISTORY_DAYS, HISTORY_PER_PROJECT, ledungTier, LINKED_MARK, questionText, reviewAnswerProblem, tiersOf, type QuestionDetails } from '../shared/questions.ts';
 import {
   BrowseError, createProjectFolder, defaultProjectsFolder, defaultRoots, isInside, listContainer, listContainers, listLocal,
   type ContainerInfo, type FolderListing,
@@ -69,18 +70,21 @@ import {
 } from '../shared/protocol.ts';
 import { resolveWorkFolder, WorkFolderError } from './work-folder.ts';
 import { saveIntoWorktree, type Saved } from './save-file.ts';
+import { saveDrop, type Dropped } from './drops.ts';
 import { FileError, handoffProblem, hiddenProblem, readProjectFile, readProjectImage, type ProjectFile, type ProjectImage } from './files.ts';
 import { listTree, type TreeListing } from './tree.ts';
 import type { PaneFolderKey, PaneFolders } from '../shared/files-pane.ts';
 import { sessionChanges, type SessionChanges } from './changes.ts';
 import {
-  CONTAINER_FILE_PREFIX, CONTAINER_IMAGE_MAX_BYTES, containerGit, diffHidden, keepCopy, listContainerFolder, pruneCopies, readContainerBytes, readContainerImage, readContainerText, readCopy,
-  type ContainerAccess, type ContainerExec,
+  CONTAINER_IMAGE_MAX_BYTES, containerGit, diffHidden, isCopyRef, keepCopy, KEPT_FILE_PREFIX, listContainerFolder, moveCopies, pruneCopies, readContainerBytes, readContainerImage, readContainerText, readCopy,
+  type ContainerAccess, type ContainerExec, type CopyKind,
 } from './container-files.ts';
+import { toWebp } from './webp.ts';
 import { checkLineComments, formatLineComments, lineCommentsMessage, openReviewFor, reviewAnswerWithComments } from '../shared/line-comments.ts';
-import { Management, type LinkedMessage, type LinkedPort, type SettingsPort } from './management.ts';
+import { FLOW_SOURCE, Management, type LinkedMessage, type LinkedPort, type SettingsPort } from './management.ts';
 import { findTickets } from '../usage/links.ts';
-import { claudeEnvironment, Session, type TurnGate } from './session.ts';
+import { claudeEnvironment, Session, type SessionOptions, type TurnGate } from './session.ts';
+import { ManagerTools } from './manager-tools.ts';
 import {
   checkContainerSignIn, checkSignIn, containerSignInHelp, dockerExecArgs, runCommand, sdkClaudeBinary, shellFolder, shownSignIn, signInCommand, signInHelp, tokenCommand,
   type ContainerPlace, type LoginPlace, type SignIn, type SignInContext,
@@ -88,7 +92,7 @@ import {
 import { McpError } from './mcp.ts';
 import { appDir, envSetting, PACKAGED, userDataDir } from '../platform/paths.ts';
 import { validateSensitive } from './sensitive.ts';
-import { idleReason, idleStopBlocker } from './idle.ts';
+import { idleReason, idleStopBlocker, type IdleState } from './idle.ts';
 import { chooseProfile, FULL_PROFILE, pluginIdsIn, profileByName, profileNames, type Profile } from './profiles.ts';
 import { Boards } from '../board/boards.ts';
 import { BOARD_FILE_PREFIX, bytesKind, MAX_IMAGE_BYTES as EVIDENCE_IMAGE_MAX_BYTES, MAX_TEXT_BYTES as EVIDENCE_TEXT_MAX_BYTES, readEvidence, readLinkOutgoing, type AttachmentKind, type OutgoingFile } from '../board/attachments.ts';
@@ -116,8 +120,8 @@ import type { SecretInfo, SecretLifetime } from '../shared/secrets.ts';
 import { FlowRunError, FlowRuns, lastReplyOf } from './flow-runs.ts';
 import { dockerWorktreeHost, localWorktreeHost } from './run-worktrees.ts';
 import { RunStore } from './run-store.ts';
-import { STEP_QUESTIONS, type FlowRun, type StepQuestions, type StepQuestionsView } from '../shared/flow-run.ts';
-import type { RunBlock } from '../shared/protocol.ts';
+import type { FlowRun } from '../shared/flow-run.ts';
+import type { RunBlock, SessionStatus } from '../shared/protocol.ts';
 import type { ProposeHandlers, RunHandlers } from './tools.ts';
 import { buildProposal, ProposalStore, proposalSummary, type ProposedChange } from './flow-propose.ts';
 import type { FlowProposal } from '../shared/flow-proposal.ts';
@@ -125,7 +129,7 @@ import type { FlowProposal } from '../shared/flow-proposal.ts';
 import { helperFolder, HELPER_BUILT_IN_TOOLS, HELPER_DEFAULT_MODEL, HELPER_MODELS, HELPER_PROFILE, setupKickoff, setupPromptLine } from './helper.ts';
 import type { HelperHandlers } from './helper-tools.ts';
 import { planSetting, settingRule, settingsList, type SettingPlan, type SettingsCtx } from './helper-settings.ts';
-import { cardLooksLikeApproval, CardSchema, type HelperCard } from '../shared/helper-cards.ts';
+import { applyCardProblem, cardLooksLikeApproval, CardSchema, type HelperCard } from '../shared/helper-cards.ts';
 import { isSetupStep, markProblem, setupView, stepLine, type HelperInfo, type SetupFacts, type SetupPhase, type SetupState, type SetupStepId, type SetupView } from '../shared/setup.ts';
 import { ASKED_KEY as SHORTCUTS_ASKED_KEY } from '../platform/shortcuts.ts';
 import { NOTICE_KEY as CHECKIN_NOTICE_KEY } from '../update/checkin.ts';
@@ -144,14 +148,6 @@ const ANSWERED_CARDS_KEY = 'helper-answered-cards';
 const USER_NAME = /^[\p{L}\p{M}][\p{L}\p{M} .'’-]{0,39}$/u;
 /** The meta key, with the project's name, that says "Record where this came from" was dismissed (workflow-origin.md, section 4). */
 const ORIGIN_DISMISSED = 'flow-origin-dismissed:';
-/** Where Settings → Questions at a workflow step is kept (#291): this Ledung's own data, not the config file. */
-const STEP_QUESTIONS_KEY = 'step-questions';
-/** Set when the first-run picker for it was skipped (#293), so it is not asked again; a saved choice does the same. */
-const STEP_QUESTIONS_SKIPPED_KEY = 'step-questions-skipped';
-/** The testFeatures name that turns the first-run picker on (#293, Martin 2026-11-12, Ledung question #881). */
-export const STEP_QUESTIONS_PICKER = 'step-questions-picker';
-/** The picker's EXERCISED line once per run, as the page reads the setting at every load. */
-let pickerTraced = false;
 
 /** Ledung's own plugin with the "workflow building" skill (part 3e, #1577), shipped beside src/ and web/. */
 export const WORKFLOW_PLUGIN = () => path.join(appDir(), 'plugins', 'ledung-workflow');
@@ -164,6 +160,10 @@ export function workflowGuide(dir = WORKFLOW_PLUGIN()): string {
 const LIMIT_KEY = 'max-working-sessions';
 /** New sessions waiting for memory to start, with their first message (resource limits, acceptance test finding 12). */
 const WAITERS_KEY = 'resource-waiters';
+/** The managers that were running when Ledung was stopped, written by shutdown() and read once at the next start (#391). */
+const MANAGERS_AT_STOP_KEY = 'managers-at-stop';
+/** What a session the database still calls running was doing; 'stopping' is not among them: it was being stopped. */
+const RUNNING_STATUSES: ReadonlySet<SessionStatus> = new Set(['starting', 'idle', 'queued', 'running', 'waiting']);
 /** Usage stops once set in Settings (issue #278), and the ones lifted by hand, by window; kept in meta, so no migration. */
 const USAGE_STOPS_KEY = 'usage-stops';
 const USAGE_LIFTED_KEY = 'usage-stops-lifted';
@@ -221,6 +221,8 @@ export class SessionManager {
   /** The config file's reloads, for Settings (issue #353); null: not watched. */
   private configState: ConfigStatus | null = null;
   private readonly store: Store;
+  /** The tools managers on this computer call (issue #431). */
+  private readonly managerTools: ManagerTools;
   private readonly publish: (event: ServerEvent) => void;
   private readonly management: Management;
   /** Runs through the projects' flows (workflow part 3). */
@@ -251,9 +253,16 @@ export class SessionManager {
   private waitTimer: NodeJS.Timeout | null = null;
   /** Resumes under way, so two messages arriving together start one resume, not two. */
   private readonly resuming = new Map<string, Promise<SessionInfo>>();
+  /** The managers found at start that resumeManagersAtStart brings back (#391); until then they are ended. */
+  private managersComingBack = new Set<string>();
   private idleTimer: NodeJS.Timeout | null = null;
   /** Sessions to restart with new lockdown settings once they are free (issue #109). */
   private readonly relaunching = new Set<string>();
+  /**
+   * Account switches under way (issue #395), so the minute check, a turn end and Switch now never start two; each
+   * settles when the session runs again, so a message sent meanwhile waits for it (code review of #395, finding 1).
+   */
+  private readonly switching = new Map<string, Promise<void>>();
   /** Away mode (issue #35): one state for the whole Ledung. */
   readonly away: Away;
   /** Orders on record (issue #105): the person's word, allowing one command in a manager and the session it sent it to. */
@@ -277,9 +286,18 @@ export class SessionManager {
     if (given) config.userName = given;
     this.config = config;
     this.store = store;
+    // Only this computer's sessions: a container's Claude Code has a setup of its own (issue #431).
+    this.managerTools = new ManagerTools(store, {
+      sessions: () => store.listSessions().filter((s) => s.runner === 'local' && s.project !== HELPER)
+        .map((s) => ({ id: s.id, manager: s.role === 'manager' && s.project !== CHATS && s.project !== HELPER, createdAt: s.createdAt, endedAt: s.endedAt })),
+      lines: (id, since, kind) => store.sdkLines(id, since, kind),
+    });
     // New plan-limit figures may reach or pass a usage stop (issue #278).
+    // A question or permission prompt for the person gets its line in a manager's chat (issue #350).
+    const lines = new WaitingLines({ store, publish, userName: () => this.config.userName });
     this.publish = (event) => {
       publish(event);
+      lines.seen(event);
       if (event.type === 'limits') this.refreshStops();
       // The helper's turns, for the setup's one-turn-per-step rule (acceptance round 1, 6.4).
       if (event.type === 'session' && event.session.project === HELPER) this.onHelperStatus(event.session);
@@ -295,7 +313,8 @@ export class SessionManager {
     const self = this;
     this.away = new Away(store, publish, { get userName() { return self.config.userName; }, notify: (text) => this.tellManagers(text), onEnded: (since, end) => void this.orders.settleAway(since, end) });
     this.orders = new Orders({
-      store, get userName() { return self.config.userName; }, publish,
+      // Through this.publish, so its questions get their Waiting for you lines (issue #350).
+      store, get userName() { return self.config.userName; }, publish: this.publish,
       tierOf: (managerId) => this.management.questionTiers(managerId)[0],
       tell: (id, text) => {
         this.store.addInbox(id, 'ledung', text);
@@ -316,7 +335,7 @@ export class SessionManager {
       store,
       // Read when used, so a name given in the setup reaches it at once.
       get userName() { return self.config.userName; },
-      publish,
+      publish: this.publish,
       orders: this.orders,
       away: () => this.away.current(),
       wake: (id) => this.live.get(id)?.deliver(),
@@ -371,11 +390,12 @@ export class SessionManager {
       handoffProblem: (id, file) => this.handoffProblem(id, file),
       // The file viewer's own image rules, so a shot that is attached can also be shown (issue #60).
       // A manager's board attachment ("board:...") is from its project's board cache instead.
-      // A container project's file is a copy Ledung kept when the question was asked (keepContainerFiles, issue #122).
-      // A file a manager on a linked computer sent this one ("linked:...") is the copy kept in the data folder (issue #158).
+      // A project's file is a copy Ledung kept when the question was asked (keepContainerFiles; a container's since
+      // issue #122, every project's since #306). A file a manager on a linked computer sent this one ("linked:...") is
+      // the copy kept in the data folder (issue #158); asked about, it is kept as a question's copy too.
       shotPath: (id, file) => file.startsWith(BOARD_FILE_PREFIX) ? this.readBoardShot(id, file)
         : file.startsWith(LINKED_FILE_PREFIX) ? (this.readLinkedCopy(id, file, ['png', 'jpeg']), file)
-        : file.startsWith(CONTAINER_FILE_PREFIX) ? (this.readContainerCopy(id, file, ['png', 'jpeg']), file) : this.readImageHere(id, file).path,
+        : isCopyRef(file) ? (this.readContainerCopy(id, file, ['png', 'jpeg']), file) : this.readImageHere(id, file).path,
       keepContainerFiles: (id, files) => this.keepContainerFiles(id, files),
       evidenceFile: (id, file) => {
         const ev = this.readEvidenceFile(id, file, true);
@@ -399,14 +419,14 @@ export class SessionManager {
       following: (project) => this.projectStore.get(project)?.config.followFlow !== false,
       // A coordinator that ended is resumed, as a continued block's session is (final review of part 3, finding 3).
       tell: (id, text) => {
-        this.store.addInbox(id, 'ledung', text);
+        this.store.addInbox(id, FLOW_SOURCE, text);
         void this.resumeIfEnded(id).then(() => this.live.get(id)?.deliver(), (e: Error) => {
           // One that can't be resumed: its project's manager is told what it was told, so the run is not stranded.
           const s = this.store.getSession(id);
           const manager = s ? this.projectStore.get(s.project)?.managerId : null;
           console.warn(`Workflow: could not resume ${id} to tell it: ${e.message}`);
           if (!manager || manager === id) return;
-          this.store.addInbox(manager, 'ledung', `Ledung could not resume "${s!.title}" (${id}), which coordinates a run, to tell it this (${e.message}); you may coordinate its runs:\n\n${text}`);
+          this.store.addInbox(manager, FLOW_SOURCE, `Ledung could not resume "${s!.title}" (${id}), which coordinates a run, to tell it this (${e.message}); you may coordinate its runs:\n\n${text}`);
           void this.resumeIfEnded(manager).then(() => this.live.get(manager)?.deliver(), () => {});
         });
       },
@@ -433,11 +453,12 @@ export class SessionManager {
           await this.management.freshStep(id, fresh.by, fresh.context, step);
           return;
         }
-        this.store.addInbox(id, 'ledung', step);
+        this.store.addInbox(id, FLOW_SOURCE, step);
         await this.resumeIfEnded(id);
         this.live.get(id)?.deliver();
       },
       archiveSession: (id, by) => void this.archive(id, by),
+      waitsOnPerson: (id) => this.store.openQuestionCount(id) > 0 || this.store.pendingPermissions().some((p) => p.sessionId === id),
       worktreeHost: (name) => {
         const config = this.projectStore.get(name)?.config;
         if (!config) return null;
@@ -474,7 +495,6 @@ export class SessionManager {
         if (this.store.withdrawQuestion(id, reason)) this.publish({ type: 'question', question: this.store.getQuestion(id)! });
       },
       tiers: (project) => tiersOf(this.projectStore.get(project)?.config.questionTiers),
-      stepQuestions: () => this.stepQuestions(),
       get userName() { return self.config.userName; },
     });
     this.gate = {
@@ -491,7 +511,7 @@ export class SessionManager {
         this.book.turnEnded(id);
         this.dispatch();
         // A session waiting to take new lockdown settings may now be free (issue #109).
-        if (this.relaunching.has(id)) setImmediate(() => void this.relaunchWaiting());
+        if (this.relaunching.has(id) || this.switchDue(id)) setImmediate(() => void this.relaunchWaiting());
       },
     };
     Object.assign(this.gate, {
@@ -574,6 +594,31 @@ export class SessionManager {
     } catch (e) {
       throw e instanceof ChatImageError ? new UserError(e.message) : e;
     }
+  }
+
+  // --- Files dropped in the message box (issue #339) --------------------------------------------------
+
+  /**
+   * Why a dropped file can't go to this session, or nothing: asked before its bytes are read, so a container project
+   * is refused without 50 MB coming in first. A container project's folder is inside the container; Ledung knows only
+   * the container's name and the path in it, not where that folder is on this computer (src/sessions/drops.ts).
+   */
+  dropCheck(sessionId: string): void {
+    const { info, project } = this.paneSession(sessionId);
+    if (project.runner !== 'local') throw new UserError(`"${info.title}" works in a container project; Ledung can't put a dropped file into a container yet. Only images can be sent there. Nothing was saved.`);
+  }
+
+  /** Saves a dropped file in the folder the session works in, under .ledung/drops; its path is what the message names. */
+  saveDrop(sessionId: string, name: string, bytes: Buffer): { path: string } {
+    this.dropCheck(sessionId);
+    const { info, project } = this.paneSession(sessionId);
+    let saved: Dropped;
+    try {
+      saved = saveDrop(this.sessionFolder(info, project), name, bytes);
+    } catch (e) {
+      throw e instanceof FileError ? new UserError(`Not saved: ${e.message}`) : e;
+    }
+    return { path: saved.path };
   }
 
   // --- Locked secrets (issue #468) -------------------------------------------------------------------
@@ -730,12 +775,12 @@ export class SessionManager {
    * rules, or a board attachment, which only a manager can give, from its own project's board when asked
    * (ownBoard) and from any board in use here when the page shows it, as board images are.
    */
-  private readEvidenceFile(sessionId: string, file: string, ownBoard: boolean): { file: string; kind: 'png' | 'jpeg' | 'text'; bytes: Buffer } {
+  private readEvidenceFile(sessionId: string, file: string, ownBoard: boolean): { file: string; kind: CopyKind; bytes: Buffer } {
     if (file.startsWith(LINKED_FILE_PREFIX)) {
       const copy = this.readLinkedCopy(sessionId, file, ['png', 'jpeg', 'text']);
       return { file, kind: copy.kind, bytes: copy.bytes };
     }
-    if (file.startsWith(CONTAINER_FILE_PREFIX)) {
+    if (isCopyRef(file)) {
       const copy = this.readContainerCopy(sessionId, file, ['png', 'jpeg', 'text']);
       if (copy.kind === 'text' && copy.bytes.length > EVIDENCE_TEXT_MAX_BYTES) throw new UserError(`${copy.path} is too large.`);
       return { file, kind: copy.kind, bytes: copy.bytes };
@@ -874,7 +919,8 @@ export class SessionManager {
   /** A note from Ledung to every manager that has not ended, delivered now (issue #328). */
   private tellManagers(text: string): void {
     for (const s of this.store.listSessions()) {
-      if (s.role !== 'manager' || s.status === 'ended') continue;
+      // The managers about to be resumed at start (#391) are still ended here; their resume delivers the note.
+      if (s.role !== 'manager' || (s.status === 'ended' && !this.managersComingBack.has(s.id))) continue;
       this.store.addInbox(s.id, 'ledung', text);
       this.live.get(s.id)?.deliver();
     }
@@ -994,6 +1040,11 @@ export class SessionManager {
    * Sessions working now: in a turn (running, or waiting on a permission prompt mid-turn, which goes on
    * as soon as it is answered), not paused. Managers, and sessions between turns, don't count.
    */
+  /** Sessions working now, as the Machine panel counts them (the tray icon's status line, #347). */
+  workingCount(): number {
+    return this.working();
+  }
+
   private working(): number {
     let n = 0;
     for (const s of this.live.values()) {
@@ -1041,41 +1092,6 @@ export class SessionManager {
     } catch (e) {
       throw new UserError((e as Error).message);
     }
-  }
-
-  /**
-   * Settings → Questions at a workflow step (#291, Martin 2026-11-12, Ledung questions #873 and #875): Ledung's card
-   * (the default, as before) or the manager's full write-up, kept in this Ledung's own data for all its projects.
-   */
-  stepQuestions(): StepQuestions {
-    const v = this.store.getMeta(STEP_QUESTIONS_KEY);
-    return v === 'write-up' ? 'write-up' : 'card';
-  }
-
-  setStepQuestions(value: unknown): StepQuestions {
-    if (!STEP_QUESTIONS.includes(value as StepQuestions)) throw new UserError(`Questions at a workflow step are ${STEP_QUESTIONS.map((s) => `"${s}"`).join(' or ')}.`);
-    this.store.setMeta(STEP_QUESTIONS_KEY, value as StepQuestions);
-    return this.stepQuestions();
-  }
-
-  /**
-   * The setting with the first-run picker's state (#293): asked, behind its test feature, while nothing was saved
-   * and it was not skipped; a Ledung that already has a choice never sees it.
-   */
-  stepQuestionsView(): StepQuestionsView {
-    const picker = this.config.testFeatures.includes(STEP_QUESTIONS_PICKER);
-    const ask = picker && this.store.getMeta(STEP_QUESTIONS_KEY) === null && this.store.getMeta(STEP_QUESTIONS_SKIPPED_KEY) === null;
-    if (ask && !pickerTraced) {
-      pickerTraced = true;
-      exercisedLine('EXERCISED #293 first-run picker for workflow-step questions asked');
-    }
-    return { choice: this.stepQuestions(), picker, ask };
-  }
-
-  /** Skip in the first-run picker (#293): the default stays, and the picker is not asked again. */
-  skipStepQuestions(): StepQuestionsView {
-    this.store.setMeta(STEP_QUESTIONS_SKIPPED_KEY, new Date().toISOString());
-    return this.stepQuestionsView();
   }
 
   setResourceSettings(body: Record<string, unknown>): void {
@@ -1303,17 +1319,17 @@ export class SessionManager {
     }
     return {
       account, profile, pluginsOff: profiles.pluginsOff,
+      learnedTools: this.learnedToolsFor(project, info, profiles.learnManagerTools && !helper && !launch.airgap),
       // The user's own skills it gets (#300); chats are the user's own and keep them all.
       skills: info.project === CHATS || helper ? null : { role: info.role, defaults: this.skillDefaults(), project: project.skills },
       lockdown: launch.others,
       airgap: launch.airgap,
       // A reattached session runs on the account it started with, not a chats' choice changed since (review of #287).
-      onAccountInfo: (who: { email?: string; organization?: string; subscriptionType?: string }) => this.noteIdentity((attaching ? info.account : project.account) ?? DEFAULT_ACCOUNT, who),
       // Not signed in: the start says how to sign in instead of failing on the first turn (issue #333). In a
       // container without an account it is the container's own login, which Ledung doesn't look at.
       signInRefusal: project.runner === 'local'
-        ? (where: SignInContext) => this.signInRefusal(project.account ?? DEFAULT_ACCOUNT, where)
-        : project.account ? () => this.containerSignInRefusal(project.account!, { container: project.container, user: project.user || undefined }) : undefined,
+        ? (where: SignInContext) => this.switchRefusal(info.id, project.account ?? DEFAULT_ACCOUNT, this.signInRefusal(project.account ?? DEFAULT_ACCOUNT, where))
+        : project.account ? () => this.switchRefusal(info.id, project.account!, this.containerSignInRefusal(project.account!, { container: project.container, user: project.user || undefined })) : undefined,
       runner: this.runnerFor(project, info), store: this.store, publish: this.publish, model: info.requestedModel ?? undefined, defaultModel: defaultModelFor(project, info.role),
       // Read from the stored session on every start, resume and reattach, so it is kept as the model is (issue #202).
       effort: info.requestedEffort ?? undefined, defaultEffort: defaultEffortFor(project, info.role),
@@ -1398,8 +1414,154 @@ export class SessionManager {
       // A session from before lockdown existed has no record: it was launched with none.
       const launched = this.store.launchKey(s.id) ?? NO_LOCKDOWN_KEY;
       if (launched !== this.launchSettings(project, info.role).key) this.relaunching.add(s.id);
+      // Its project's account changed: it switches at its next quiet moment (issue #395). Chats are told by
+      // setAccountChoices, as a chat runs on the account it started with, which its settings don't say.
+      if (info.project !== CHATS && info.project !== HELPER) this.noteSwitch(info, project.account ?? null);
     }
     void this.relaunchWaiting();
+  }
+
+  // --- Account switches (issue #395) -------------------------------------------------------------
+
+  /**
+   * A running session should run on `to` (null: the computer's own login): it waits to switch, unless it is on it
+   * already. One that waits for, or failed, a switch to the same account is left as it is: a failed one is not
+   * tried again on its own (point 6), only when the account changes again or on Try again.
+   */
+  private noteSwitch(info: SessionInfo, to: string | null): void {
+    const now = info.accountSwitch ?? null;
+    if ((info.account ?? null) === to) {
+      if (now) this.setSwitch(info.id, null);
+      return;
+    }
+    if (now && now.to === to) return;
+    this.setSwitch(info.id, { to });
+  }
+
+  private setSwitch(id: string, value: AccountSwitch | null): void {
+    this.store.updateSession(id, { accountSwitch: value });
+    this.publish({ type: 'session', session: this.live.get(id)?.info ?? this.store.getSession(id)! });
+  }
+
+  /**
+   * What a waiting switch waits for, so the page says it truly (acceptance of #395): a turn that ended with background
+   * work or a wake-up left switches when that is done, and one with a repeating wake-up never does by itself.
+   */
+  private noteWaitsFor(info: SessionInfo, state: IdleState): void {
+    const sw = info.accountSwitch;
+    if (!sw || sw.failed) return;
+    const turn = (state.info.status !== 'idle' && state.info.status !== 'starting') || state.turnOpen || state.pendingPermissions || !info.claudeSessionId;
+    const waitsFor: NonNullable<AccountSwitch['waitsFor']> = turn ? 'turn'
+      : state.info.paused ? 'paused'
+      : state.shellRunning ? 'command'
+      : state.backgroundTasks || state.facts?.backgroundTasks ? 'background'
+      : state.facts?.crons ? (state.facts.repeating ? 'repeating' : 'wakeup') : 'turn';
+    // One left marked under way (Ledung stopped mid-switch) waits again, and says so.
+    if (sw.underWay || (sw.waitsFor ?? 'turn') !== waitsFor) this.setSwitch(info.id, waitsFor === 'turn' ? { to: sw.to } : { to: sw.to, waitsFor });
+  }
+
+  /** Runs a switch (or lockdown restart) of `id`, kept in `switching` until it is over. */
+  private async whileSwitching(id: string, work: () => Promise<void>): Promise<void> {
+    let over!: () => void;
+    this.switching.set(id, new Promise<void>((r) => { over = r; }));
+    try {
+      await work();
+    } finally {
+      this.switching.delete(id);
+      over();
+    }
+  }
+
+  /**
+   * A sign-in refusal while a session switches accounts (acceptance of #395): the banner at the top of the page says
+   * how to sign in, so the chat says only that it isn't signed in, and the long help shows once. The account's check
+   * is run first, so the banner is there; one that then doesn't show it keeps the help in the chat.
+   */
+  private async switchRefusal(id: string, name: string, found: Promise<{ refuse: string } | { warn: string } | null>): Promise<{ refuse: string } | { warn: string } | null> {
+    const r = await found;
+    if (!r || !('refuse' in r) || !this.switching.has(id)) return r;
+    await this.checkSignInOf(name).catch(() => undefined);
+    this.publishAccounts();
+    if (!this.signedOut().some((s) => s.account === name)) return r;
+    const who = name === DEFAULT_ACCOUNT ? "The computer's own login" : `The account "${name}"`;
+    return { refuse: `${who} is not signed in; the notice at the top of the page says how to sign in.` };
+  }
+
+  /** Whether this session waits to switch accounts (a failed switch doesn't wait). */
+  private switchDue(id: string): boolean {
+    const sw = this.store.getSession(id)?.accountSwitch;
+    return !!sw && !sw.failed;
+  }
+
+  /**
+   * Stops the session and resumes it on `to`, keeping its conversation, folder, model, profile, permission mode and
+   * secrets as any resume does (issue #395). A resume that fails there resumes it on the account it had, says so in
+   * its chat and keeps the failure on the session, so it isn't tried again on its own. "Now on …" is startResumed's.
+   */
+  private async switchAccount(id: string, session: Session, to: string | null, by: string | null): Promise<void> {
+    const from = this.store.getSession(id)?.account ?? null;
+    const reason = by
+      ? `Stopped by ${by} to switch to ${accountLabel(to)} now; its conversation is kept.`
+      : `Ledung restarted this session to switch to ${accountLabel(to)}; its conversation is kept.`;
+    // A prompt open now (only Switch now stops one) is withdrawn by the stop; the chat says which, so it isn't missed.
+    const prompts = this.store.pendingPermissions().filter((p) => p.sessionId === id);
+    // Marked before the stop, so the page never sees this "Stopping" as a plain Stop and keeps Send working.
+    this.setSwitch(id, { to, underWay: true });
+    await session.stop(reason, { restart: true });
+    this.live.delete(id);
+    for (const p of prompts) {
+      const text = `The open permission prompt (${p.toolName}: ${shortRequest(p.input)}) was dropped by the switch; ask again if it is still needed.`;
+      this.publish({ type: 'message', message: this.store.addMessage(id, 'event', { text }) });
+    }
+    let failed: string | null;
+    // A start that ended has said why in the chat already ("Could not start: …"); a resume that threw has not.
+    let said = false;
+    try {
+      const after = await this.resume(id, { account: to });
+      failed = after.status === 'ended' ? after.endReason ?? 'it could not start.' : null;
+      said = true;
+    } catch (e) {
+      failed = (e as Error).message;
+    }
+    if (failed === null) return;
+    console.error(`Account switch of ${id} to ${to ?? 'default'}: ${failed}`);
+    this.setSwitch(id, { to, failed });
+    const text = `Couldn't switch to ${accountLabel(to)}, so it stays on ${accountLabel(from)}${said ? '; why is above.' : `: ${failed}`}`;
+    this.publish({ type: 'message', message: this.store.addMessage(id, 'event', { text }) });
+    try {
+      await this.resume(id, { account: from });
+    } catch (e) {
+      // Then it has ended as any resume that fails does, with the reason in its chat.
+      console.error(`Resuming ${id} on ${from ?? 'default'} after a failed switch: ${(e as Error).message}`);
+    }
+  }
+
+  /**
+   * The session header's buttons for a switch (issue #395): "now" switches a waiting session at once, stopping
+   * what it is doing (the page asked first); "retry" lets a failed one switch again at its next quiet moment.
+   */
+  async accountSwitchAction(id: string, action: unknown): Promise<void> {
+    const info = this.store.getSession(id);
+    if (!info) throw new UserError('No such session.');
+    const sw = info.accountSwitch;
+    if (!sw) throw new UserError('This session is not waiting to switch accounts.');
+    if (action === 'retry') {
+      if (!sw.failed) return;
+      this.setSwitch(id, { to: sw.to });
+      void this.relaunchWaiting();
+      return;
+    }
+    if (action !== 'now') throw new UserError('Send action "now" or "retry".');
+    if (sw.failed) throw new UserError('The last switch failed; use Try again.');
+    const session = this.live.get(id);
+    if (!session || info.status === 'ended') throw new UserError('The session has ended; it resumes on the new account.');
+    if (!info.claudeSessionId) throw new UserError('The session has not started yet; try again once it has.');
+    if (this.switching.has(id)) return;
+    // A plain Stop under way would mark the restarted session ended (code review of #395, finding 4).
+    if (info.status === 'stopping') throw new UserError('The session is stopping; it resumes on the new account.');
+    this.relaunching.delete(id);
+    await this.whileSwitching(id, () => this.switchAccount(id, session, sw.to, this.config.userName));
+    this.dispatch();
   }
 
   /**
@@ -1409,9 +1571,11 @@ export class SessionManager {
    */
   async relaunchWaiting(): Promise<string[]> {
     const done: string[] = [];
-    for (const id of [...this.relaunching]) {
+    // With the sessions waiting to switch accounts (issue #395): the same quiet moment, and one restart does both.
+    const switches = [...this.live.keys()].filter((id) => this.switchDue(id));
+    for (const id of new Set([...this.relaunching, ...switches])) {
       // Another call may have taken it meanwhile (they overlap across awaits; review m1): never twice.
-      if (!this.relaunching.has(id)) continue;
+      if (this.switching.has(id) || (!this.relaunching.has(id) && !this.switchDue(id))) continue;
       const session = this.live.get(id);
       const info = this.store.getSession(id);
       if (!session || !info || info.status === 'ended') {
@@ -1419,17 +1583,29 @@ export class SessionManager {
         continue;
       }
       const state = session.idleState();
-      if (!state || state.info.status !== 'idle' || state.info.paused || state.turnOpen || state.pendingPermissions || state.backgroundTasks
-        || state.facts?.backgroundTasks || state.facts?.crons) continue;
+      // "starting" with no turn open is a resumed session not spoken to since (resumedState), as quiet as an idle one;
+      // one that has no Claude Code session id yet can't be resumed, so it waits for one.
+      // A running "!" command would be ended by the stop (code review of #395, finding 2); its end tries again.
+      if (!state || (state.info.status !== 'idle' && state.info.status !== 'starting') || state.info.paused || state.turnOpen || state.pendingPermissions
+        || state.shellRunning || state.backgroundTasks || state.facts?.backgroundTasks || state.facts?.crons || !info.claudeSessionId) {
+        if (state) this.noteWaitsFor(info, state);
+        continue;
+      }
       this.relaunching.delete(id);
-      if (!info.claudeSessionId) continue;
+      const sw = info.accountSwitch && !info.accountSwitch.failed ? info.accountSwitch : null;
       try {
-        await session.stop('Ledung restarted this session to apply lockdown settings; its conversation is kept.', { restart: true });
-        this.live.delete(id);
-        await this.resume(id);
+        await this.whileSwitching(id, async () => {
+          if (sw) {
+            await this.switchAccount(id, session, sw.to, null);
+          } else {
+            await session.stop('Ledung restarted this session to apply lockdown settings; its conversation is kept.', { restart: true });
+            this.live.delete(id);
+            await this.resume(id);
+          }
+        });
         done.push(id);
       } catch (e) {
-        console.error(`Lockdown restart of ${id}: ${(e as Error).message}`);
+        console.error(`${sw ? 'Account switch' : 'Lockdown restart'} of ${id}: ${(e as Error).message}`);
       }
     }
     if (done.length) this.dispatch();
@@ -1502,8 +1678,27 @@ export class SessionManager {
     return this.config.userName;
   }
 
+  /** What the page gets with every load: the open questions and the 50 most recently closed, whole. */
   questions(): QuestionInfo[] {
     return this.store.listQuestions();
+  }
+
+  /**
+   * Waiting for you history (issue #306), read when it opens (GET /api/question-history): per project the last 100
+   * answered, or every one of the last 30 days if that is more, light; and the sessions they name, for their names and
+   * projects, which a page load carries only for recent ones (issue #229).
+   */
+  questionHistory(now = Date.now()): { questions: QuestionInfo[]; sessions: SessionInfo[] } {
+    const questions = this.store.questionHistory(HISTORY_PER_PROJECT, now - HISTORY_DAYS * 24 * 60 * 60 * 1000);
+    const named = new Set(questions.flatMap((q) => [q.sessionId, q.addressedTo, q.answeredBy ?? '']));
+    return { questions, sessions: this.sessions().filter((s) => named.has(s.id)) };
+  }
+
+  /** One whole question for the page (GET /api/questions/:id): a light one from history, opened (issue #306). */
+  question(id: number): QuestionInfo {
+    const q = Number.isInteger(id) ? this.store.getQuestion(id) : undefined;
+    if (!q) throw new UserError('No such question.');
+    return q;
   }
 
   /**
@@ -1568,6 +1763,20 @@ export class SessionManager {
   // --- Projects (projects and accounts, P1) ------------------------------------------------------
 
   // --- Accounts (projects and accounts, P3) ------------------------------------------------------
+
+  /**
+   * The tools managers learn (issue #431), for a session on this computer: its user's servers go in the record, a
+   * manager's calls too, and a manager whose workflow turns learning on (`limit`) starts with only the learned ones.
+   */
+  private learnedToolsFor(project: ProjectConfig, info: SessionInfo, limit: boolean): SessionOptions['learnedTools'] {
+    if (project.runner !== 'local' || info.project === HELPER) return undefined;
+    const manager = info.role === 'manager' && info.project !== CHATS;
+    return {
+      noteInit: (servers) => this.managerTools.noteInit(servers),
+      noteCalls: manager ? (content) => this.managerTools.noteCalls(content) : undefined,
+      limit: manager && limit ? (installed) => this.managerTools.forManager(installed) : undefined,
+    };
+  }
 
   /**
    * The profiles a project's sessions can use (#298): its workflow's file, read now, under this computer's config.
@@ -1957,28 +2166,16 @@ export class SessionManager {
     if (!account) throw new UserError(`There is no account named "${config.account}".`);
   }
 
-  private static IDENTITY_KEY = 'default-account-identity';
-
-  /** Who a session of this account found itself logged in as. */
-  private noteIdentity(account: string, who: { email?: string; organization?: string; subscriptionType?: string }): void {
-    if (!who.email && !who.organization) return;
-    if (account === DEFAULT_ACCOUNT) {
-      this.store.setMeta(SessionManager.IDENTITY_KEY, JSON.stringify({ email: who.email ?? null, organization: who.organization ?? null, plan: who.subscriptionType ?? null, seenAt: Date.now() }));
-    } else {
-      this.accounts.setIdentity(account, who);
-    }
-    this.publishAccounts();
-  }
-
   accountsEvent(): Extract<import('../shared/protocol.ts').ServerEvent, { type: 'accounts' }> {
-    const raw = this.store.getMeta(SessionManager.IDENTITY_KEY);
     const inFile = this.config.claudeAccounts;
     const accounts = this.accounts.list().map((a) => this.accountView(inFile[a.name] ? { ...a, inConfigFile: true, whatItIsFor: inFile[a.name]!.whatItIsFor ?? null } : a));
-    const identity = raw ? JSON.parse(raw) : null;
-    const defaultKind = shownSignIn(this.signIns.get(DEFAULT_ACCOUNT));
+    // Only what the sign-in check says, never who a session found itself logged in as: Claude Code gives every
+    // account the computer's own login's email and organisation (issue #378).
+    const own = this.signIns.get(DEFAULT_ACCOUNT);
+    const defaultKind = shownSignIn(own);
     return {
       type: 'accounts', accounts,
-      defaultIdentity: defaultKind ? { email: null, organization: null, plan: null, seenAt: null, ...identity, signInKind: defaultKind } : identity,
+      defaultIdentity: defaultKind ? { signInKind: defaultKind, plan: own?.plan ?? null } : null,
       choices: this.accountChoices(), signedOut: this.signedOut(),
       claudeProblem: this.claudeProblem, claudeLooked: this.claudeProblem ? this.claudeLooked : [], configFileProblems: this.accountFileProblems,
     };
@@ -1988,7 +2185,7 @@ export class SessionManager {
   private accountView(a: AccountInfoView): AccountInfoView {
     const data = envSetting('DATA_DIR');
     return {
-      ...a, signInKind: shownSignIn(this.signIns.get(a.name)), loginCommand: signInCommand(a.configDir),
+      ...a, signInKind: shownSignIn(this.signIns.get(a.name)), plan: this.signIns.get(a.name)?.plan ?? null, loginCommand: signInCommand(a.configDir),
       tokenCommand: tokenCommand(a.name, { packaged: PACKAGED, appDir: appDir(), dataDir: data ? path.resolve(data) : undefined, platform: process.platform }),
     };
   }
@@ -2103,7 +2300,7 @@ export class SessionManager {
     const found = await Promise.all(places.map((p) => this.checkPlace(p)));
     const out = places.filter((_, i) => found[i]!.state === 'out');
     const state: SignIn['state'] = out.length ? 'out' : found.some((f) => f.state === 'unknown') ? 'unknown' : 'in';
-    const combined = { state, method: found.find((f) => f.method)?.method ?? null, kind: found.find((f) => f.kind)?.kind ?? null, detail: found.find((f) => f.detail)?.detail ?? null, checkedAt: Date.now() };
+    const combined = { state, method: found.find((f) => f.method)?.method ?? null, kind: found.find((f) => f.kind)?.kind ?? null, plan: found.find((f) => f.plan)?.plan ?? null, detail: found.find((f) => f.detail)?.detail ?? null, checkedAt: Date.now() };
     this.signIns.set(name, { ...combined, help: out.map((p) => this.placeHelp(name, p)).join(' ') });
     return combined;
   }
@@ -2196,9 +2393,22 @@ export class SessionManager {
       if (name && name !== DEFAULT_ACCOUNT && !this.accounts.get(name)) throw new UserError(`There is no account named "${name}".`);
       chosen.push([which, name === DEFAULT_ACCOUNT ? '' : name ?? '']);
     }
+    const before = this.accountChoices().chats;
     for (const [which, name] of chosen) this.store.setMeta(ACCOUNT_CHOICE_KEYS[which], name);
     this.publishAccounts();
-    return this.accountChoices();
+    const after = this.accountChoices();
+    // The running chats on the chats' account (or on their way to it) switch to the new one at their next quiet
+    // moment (issue #395); a chat whose account was picked in New chat keeps it, whichever it is.
+    if (after.chats !== before) {
+      for (const s of this.live.values()) {
+        const info = this.store.getSession(s.id);
+        if (!info || info.project !== CHATS || info.status === 'ended' || info.accountChosen) continue;
+        const heading = info.accountSwitch ? info.accountSwitch.to : info.account ?? null;
+        if (heading === before) this.noteSwitch(info, after.chats);
+      }
+      void this.relaunchWaiting();
+    }
+    return after;
   }
 
   private publishAccounts(): void {
@@ -2413,6 +2623,14 @@ export class SessionManager {
       } catch (e) {
         if (p.config.name !== name) this.projectStore.rename(p.config.name, name);
         throw e;
+      }
+    }
+    // The copies kept for its questions follow it, so their pages still show them (issue #306).
+    if (p.config.name !== name) {
+      try {
+        moveCopies(this.containerCopiesDir(), name, p.config.name);
+      } catch (e) {
+        console.error(`File copies of ${name}'s questions were not moved to ${p.config.name}: ${(e as Error).message}`);
       }
     }
     // "Record where this came from" stays dismissed under the new name (review of part d).
@@ -3047,6 +3265,8 @@ export class SessionManager {
       if (!parsed.success) throw new Error(`Not shown: the card is not valid (${parsed.error.issues.map((i) => `${i.path.join('.') || 'card'}: ${i.message}`).join('; ')}). Fix that, or reply without a card.`);
       const fake = cardLooksLikeApproval(parsed.data);
       if (fake) throw new Error(`Not shown: the card's "${fake}" reads as an approval, and approvals are Ledung's own cards. Reply without those words, or call the tool that needs the approval; Ledung asks.`);
+      const value = applyCardProblem(parsed.data);
+      if (value) throw new Error(`Not shown: the card is not valid (${value}). Fix that, or reply without a card.`);
       const sv = this.setupView();
       if (sv.phase === 'helper' && sv.current) throw new Error(`Not shown: a setup step is open ("${sv.current}"), and Ledung shows that step's own card under your reply. Reply again with the text only.`);
       card = parsed.data;
@@ -3345,6 +3565,8 @@ export class SessionManager {
       permissionMode: opts.permissionMode ?? project.permissionMode ?? 'auto', requestedModel: opts.model?.trim() || null, requestedEffort: effort, profile, workDir,
     });
     if (project.account) this.store.updateSession(info.id, { account: project.account });
+    // Picked in New chat, the computer's own login included: it keeps it when Settings' account for chats changes (#395).
+    if (opts.account !== undefined) this.store.updateSession(info.id, { accountChosen: true });
     this.publish({ type: 'session', session: info });
     const session = new Session({ info, ...this.sessionOptions(project, info) });
     this.noteLaunch(project, info);
@@ -3577,20 +3799,24 @@ ${firstMessage}`);
    * Starts an ended session again from its Claude Code session id. History stays on the same Ledung
    * session. One resume at a time per session: a second call gets the one under way.
    */
-  resume(id: string): Promise<SessionInfo> {
+  resume(id: string, opts: { account?: string | null } = {}): Promise<SessionInfo> {
     const under = this.resuming.get(id);
     if (under) return under;
-    const resuming = this.startResumed(id).finally(() => this.resuming.delete(id));
+    const resuming = this.startResumed(id, opts).finally(() => this.resuming.delete(id));
     this.resuming.set(id, resuming);
     return resuming;
   }
 
-  private async startResumed(id: string): Promise<SessionInfo> {
+  private async startResumed(id: string, opts: { account?: string | null } = {}): Promise<SessionInfo> {
     const info = this.store.getSession(id);
     if (!info) throw new UserError('No such session.');
     if (this.live.has(id) && info.status !== 'ended') throw new UserError('The session is still running.');
     if (!info.claudeSessionId) throw new UserError('This session never got far enough to be resumed.');
-    const project = this.configOf(info);
+    // An account switch's own (issue #395); a chat keeps the account it started with, unless it waits to switch:
+    // then it takes the new one now. A project's sessions get the project's account in any case.
+    const pending = info.accountSwitch && !info.accountSwitch.failed ? info.accountSwitch.to : undefined;
+    const account = opts.account !== undefined ? opts.account : info.project === CHATS ? pending : undefined;
+    const project = account === undefined ? this.configOf(info) : onAccount(this.configOf(info), account);
     // In the folder it started in: Claude Code finds a conversation by its working folder.
     this.checkWorkDir(project, info);
     // A stopped session's host stays on its pipe for a moment after Claude Code exits; a new host must
@@ -3608,6 +3834,12 @@ ${firstMessage}`);
     this.live.set(id, session);
     this.publish({ type: 'session', session: session.info });
     await session.start();
+    // On the account it waited to switch to (issue #395): the switch is done, and its chat says so.
+    const now = this.store.getSession(id)!;
+    if (now.accountSwitch && now.status !== 'ended' && (now.account ?? null) === now.accountSwitch.to) {
+      this.setSwitch(id, null);
+      this.publish({ type: 'message', message: this.store.addMessage(id, 'event', { text: `Now on ${accountLabel(now.account)}.` }) });
+    }
     // Hand over what waited for it (answers, messages). Claude Code no longer sends the empty result
     // on resume that used to trigger this (spike finding 7; idle stop live test).
     session.deliver();
@@ -3656,16 +3888,16 @@ ${firstMessage}`);
 
   /**
    * A PNG or JPEG from the session's project folder, read-only, for the file viewer; from its container for a
-   * container project. A copy Ledung kept for a question ("container:...") is read from the copies.
+   * container project. A copy Ledung kept for a question ("container:..." or "kept:...", issue #306) is read from the copies.
    */
   async readImage(sessionId: string, link: string, folder?: PaneFolderKey): Promise<ProjectImage> {
     if (link.startsWith(LINKED_FILE_PREFIX)) {
       const copy = this.readLinkedCopy(sessionId, link, ['png', 'jpeg']);
       return { path: copy.path, type: copy.kind === 'png' ? 'image/png' : 'image/jpeg', bytes: copy.bytes };
     }
-    if (link.startsWith(CONTAINER_FILE_PREFIX)) {
+    if (isCopyRef(link)) {
       const copy = this.readContainerCopy(sessionId, link, ['png', 'jpeg']);
-      return { path: copy.path, type: copy.kind === 'png' ? 'image/png' : 'image/jpeg', bytes: copy.bytes };
+      return { path: copy.path, type: copy.kind === 'webp' ? 'image/webp' : copy.kind === 'png' ? 'image/png' : 'image/jpeg', bytes: copy.bytes };
     }
     const { project, root } = this.paneRoot(sessionId, folder);
     if (project.runner === 'docker') return this.fromContainer(() => readContainerImage(this.containerAccess(project), root, link));
@@ -3861,7 +4093,7 @@ ${firstMessage}`);
   }
 
   /** A copy kept for one of the session's project's questions, by the name the question stores. */
-  private readContainerCopy(sessionId: string, ref: string, kinds: readonly ('png' | 'jpeg' | 'text')[]): { path: string; kind: 'png' | 'jpeg' | 'text'; bytes: Buffer } {
+  private readContainerCopy(sessionId: string, ref: string, kinds: readonly ('png' | 'jpeg' | 'text')[]): { path: string; kind: CopyKind; bytes: Buffer } {
     const info = this.store.getSession(sessionId);
     if (!info) throw new UserError('No such session.');
     try {
@@ -3872,26 +4104,27 @@ ${firstMessage}`);
   }
 
   /**
-   * ask_user's screenshots and a review's evidence from a container project: read from the container now, with the
-   * file viewer's rules and the attachment limits, and kept in Ledung, so the question's page shows them later with
-   * the container stopped too. Each comes back as the name the question stores; a local project's come back as given.
+   * ask_user's screenshots and a review's evidence, read now with the file viewer's rules and the attachment limits
+   * and kept in Ledung, so the question's page shows them later: a container's (issue #122) with the container
+   * stopped too, and since issue #306 every project's, once the worktree they came from is removed, and a file from a
+   * linked computer once its own copy there is pruned. Images are kept as WebP. Each comes back as the name the
+   * question stores. (Named for #122, which kept only a container's.)
    */
   private async keepContainerFiles(sessionId: string, files: { file: string; as: 'shot' | 'evidence' }[]): Promise<string[]> {
     const info = this.store.getSession(sessionId);
     if (!info) throw new UserError('No such session.');
     const project = this.configOf(info);
-    if (project.runner !== 'docker') return files.map((f) => f.file);
-    const access = this.containerAccess(project);
-    const root = info.workDir ?? project.pathInContainer;
+    const access = project.runner === 'docker' ? this.containerAccess(project) : null;
+    const root = project.runner === 'docker' ? info.workDir ?? project.pathInContainer : null;
     this.pruneContainerCopies(info.project);
     const kept: string[] = [];
     const count = { shot: 0, evidence: 0 };
     for (const f of files) {
       const n = ++count[f.as];
       try {
-        kept.push(await this.keepContainerFile(access, root, info.project, f));
+        kept.push(await this.keepContainerFile(sessionId, access && root !== null ? { access, root } : null, info.project, f));
       } catch (e) {
-        if (!(e instanceof FileError)) throw e;
+        if (!(e instanceof FileError) && !(e instanceof UserError)) throw e;
         // As ask's own checks say it (management.ts), so the session can fix it.
         throw new UserError(`${f.as === 'shot' ? 'Screenshot' : 'Evidence'} ${n} (${f.file}) can't be attached: ${e.message} Nothing was asked.`);
       }
@@ -3909,17 +4142,34 @@ ${firstMessage}`);
     if (now - (this.prunedCopies.get(project) ?? 0) < 60 * 60 * 1000) return;
     this.prunedCopies.set(project, now);
     try {
-      pruneCopies(this.containerCopiesDir(), project, this.store.containerCopyRefs(), now - 24 * 60 * 60 * 1000);
+      pruneCopies(this.containerCopiesDir(), project, this.store.keptCopyRefs(), now - 24 * 60 * 60 * 1000);
     } catch (e) {
-      console.error(`Container file copies of ${project}: ${(e as Error).message}`);
+      console.error(`File copies of ${project}'s questions: ${(e as Error).message}`);
     }
   }
 
-  private async keepContainerFile(access: ContainerAccess, root: string, project: string, f: { file: string; as: 'shot' | 'evidence' }): Promise<string> {
-    if (f.file.startsWith(BOARD_FILE_PREFIX) || f.file.startsWith(CONTAINER_FILE_PREFIX) || f.file.startsWith(LINKED_FILE_PREFIX)) return f.file;
+  /**
+   * One file kept for a question: a board attachment and a copy kept already as they are; a linked computer's copy
+   * and a local project's file read here and kept as "kept:"; a container's read in it and kept as "container:".
+   */
+  private async keepContainerFile(sessionId: string, box: { access: ContainerAccess; root: string } | null, project: string, f: { file: string; as: 'shot' | 'evidence' }): Promise<string> {
+    if (f.file.startsWith(BOARD_FILE_PREFIX) || isCopyRef(f.file)) return f.file;
+    const kinds: AttachmentKind[] = f.as === 'shot' ? ['png', 'jpeg'] : ['png', 'jpeg', 'text'];
+    if (f.file.startsWith(LINKED_FILE_PREFIX) || !box) {
+      const read: { path: string; kind: AttachmentKind; bytes: Buffer } = f.file.startsWith(LINKED_FILE_PREFIX) ? this.readLinkedCopy(sessionId, f.file, kinds)
+        : f.as === 'evidence' ? this.readFrom(sessionId, f.file, readEvidence)
+        : (({ path: p, type, bytes }) => ({ path: p, kind: type === 'image/png' ? 'png' as const : 'jpeg' as const, bytes }))(this.readImageHere(sessionId, f.file));
+      const kept = await this.keptBytes(read.bytes, read.kind, read.path);
+      // A linked computer's file keeps its mark on the question page, "linked: shot.png" (issue #158; Martin, 23:02,
+      // Ledung question #2148: "a — Keep the mark"): kept under that name, which shownFile shows as it is.
+      const name = f.file.startsWith(LINKED_FILE_PREFIX) ? `${LINKED_MARK}${read.path}` : read.path;
+      const ref = keepCopy(this.containerCopiesDir(), project, name, kept, KEPT_FILE_PREFIX);
+      return ref;
+    }
+    const { access, root } = box;
     if (f.as === 'shot') {
       const image = await readContainerImage(access, root, f.file, CONTAINER_IMAGE_MAX_BYTES);
-      return keepCopy(this.containerCopiesDir(), project, image.path, image.bytes);
+      return keepCopy(this.containerCopiesDir(), project, image.path, await this.keptBytes(image.bytes, image.type === 'image/png' ? 'png' : 'jpeg', image.path));
     }
     // Evidence: the kinds and limits of an attachment (src/board/attachments.ts), by the real file's name and first bytes;
     // a text file named as one is read only up to its own limit.
@@ -3928,7 +4178,21 @@ ${firstMessage}`);
     const kind = bytesKind(ev.bytes, ev.path);
     if (!kind) throw new FileError(/\.(png|jpe?g)$/i.test(ev.path) ? `${ev.path} is not really a ${/\.png$/i.test(ev.path) ? 'PNG' : 'JPEG'} image.` : `${ev.path} is not a text file.`);
     if (kind === 'text' && ev.bytes.length > EVIDENCE_TEXT_MAX_BYTES) throw new FileError(`${ev.path} is too large (${Math.round(ev.bytes.length / 1024)} KB; a text file is at most 512 KB).`);
-    return keepCopy(this.containerCopiesDir(), project, ev.path, ev.bytes);
+    return keepCopy(this.containerCopiesDir(), project, ev.path, await this.keptBytes(ev.bytes, kind, ev.path));
+  }
+
+  /**
+   * What is kept of a file (issue #306): a PNG or JPEG as WebP, text as it is. A conversion that fails keeps the image
+   * as it came, said in Ledung's log, so a question is never refused for it.
+   */
+  private async keptBytes(bytes: Buffer, kind: AttachmentKind, name: string): Promise<Buffer> {
+    if (kind === 'text') return bytes;
+    try {
+      return await toWebp(bytes, kind);
+    } catch (e) {
+      console.error(`Kept ${name} for a question as it came, not as WebP: ${(e as Error).message}`);
+      return bytes;
+    }
   }
 
   // --- The Files pane (issue #225, a test feature) --------------------------------------------------
@@ -4113,8 +4377,13 @@ ${firstMessage}`);
     this.liveSession(id).send(text, here, names);
   }
 
-  /** Resumes the session if it has ended (or isn't live); a resume already under way is waited for. */
+  /**
+   * Resumes the session if it has ended (or isn't live); a resume already under way is waited for, and so is an
+   * account switch (code review of #395, finding 1): what is sent then reaches the session on its new account.
+   */
   async resumeIfEnded(id: string): Promise<void> {
+    const w = this.switching.get(id);
+    if (w) await w;
     const info = this.store.getSession(id);
     if (!info) throw new UserError('No such session.');
     if (!this.resuming.has(id) && this.live.has(id) && info.status !== 'ended') return;
@@ -4250,7 +4519,10 @@ ${firstMessage}`);
     } catch (e) {
       throw new UserError((e as Error).message);
     }
-    started.catch((e) => console.error(`"!" command in ${id}: ${(e as Error).message}`));
+    // A switch or lockdown restart held back by the command may go now (code review of #395, finding 2).
+    started.catch((e) => console.error(`"!" command in ${id}: ${(e as Error).message}`)).finally(() => {
+      if (this.relaunching.has(id) || this.switchDue(id)) void this.relaunchWaiting();
+    });
   }
 
   /** Stop on a running "!" command. */
@@ -4357,6 +4629,66 @@ ${firstMessage}`);
     return attached;
   }
 
+  /**
+   * The projects' managers that were running when Ledung last stopped (#391; Martin, Ledung question #541: "a — Those
+   * that were running, start now"): those shutdown() wrote down, and, after a stop that never reached it (a crash, a
+   * reboot, a killed process), those the database still calls running that no host was reattached for. A manager
+   * stopped on purpose had ended by then, so it is in neither. Call it before markUnfinishedSessionsEnded. All of them
+   * are written back, crashed ones too, and the record is cleared only by resumeManagersAtStart, once the page listens:
+   * a start that fails in between (a port in use) leaves them for the next one (self-check finding 1).
+   */
+  managersRunningAtStop(attached: string[]): string[] {
+    let written: string[] = [];
+    try {
+      const raw: unknown = JSON.parse(this.store.getMeta(MANAGERS_AT_STOP_KEY) ?? '[]');
+      if (Array.isArray(raw)) written = raw.filter((id): id is string => typeof id === 'string');
+    } catch {
+      // A record this version can't read: only the database's own count.
+    }
+    const ids: string[] = [];
+    for (const project of this.projectStore.list()) {
+      const info = project.managerId ? this.store.getSession(project.managerId) : undefined;
+      if (!info || info.role !== 'manager' || attached.includes(info.id)) continue;
+      if (written.includes(info.id) || RUNNING_STATUSES.has(info.status)) ids.push(info.id);
+    }
+    this.store.setMeta(MANAGERS_AT_STOP_KEY, JSON.stringify(ids));
+    this.managersComingBack = new Set(ids);
+    return ids;
+  }
+
+  /**
+   * Resumes the managers managersRunningAtStop found, one after another (#391), as the page's Resume does; one that
+   * never got far enough to resume, or is running already, is left alone. A failure is said in its chat and the next
+   * one still comes back.
+   */
+  async resumeManagersAtStart(ids: string[]): Promise<void> {
+    this.store.setMeta(MANAGERS_AT_STOP_KEY, '[]');
+    try {
+      await this.resumeEach(ids);
+    } finally {
+      this.managersComingBack.clear();
+    }
+  }
+
+  private async resumeEach(ids: string[]): Promise<void> {
+    for (const id of ids) {
+      const info = this.store.getSession(id);
+      if (!info?.claudeSessionId || (this.live.has(id) && info.status !== 'ended')) continue;
+      let problem: string | null = null;
+      try {
+        const after = await this.resume(id);
+        if (after.status === 'ended') problem = after.endReason ?? 'it ended at once';
+      } catch (e) {
+        problem = (e as Error).message;
+      }
+      const text = problem
+        ? `It was running when Ledung stopped, but could not be resumed when Ledung started: ${problem}`
+        : 'Resumed when Ledung started: it was running when Ledung stopped.';
+      if (problem) console.log(`Manager "${info.title}": ${text}`);
+      this.publish({ type: 'message', message: this.store.addMessage(id, 'event', { text }) });
+    }
+  }
+
   /** Lets go of every live session without stopping them; used when Ledung restarts. */
   detachAll(): void {
     this.monitor.stop();
@@ -4369,6 +4701,10 @@ ${firstMessage}`);
 
   /** Stops every live session; used when Ledung is closed. Sessions can be resumed afterwards. */
   async shutdown(reason = 'Ledung was shut down. Resume to continue.'): Promise<void> {
+    // Written before any of them stops, so the next start resumes these and only these (#391). A manager stopped on
+    // purpose is no longer live, and one being stopped right now is 'stopping': neither is written.
+    const managers = [...this.live.values()].map((s) => s.info).filter((i) => i.role === 'manager' && RUNNING_STATUSES.has(i.status)).map((i) => i.id);
+    this.store.setMeta(MANAGERS_AT_STOP_KEY, JSON.stringify(managers));
     this.monitor.stop();
     this.away.stop();
     if (this.waitTimer) clearInterval(this.waitTimer);
@@ -4490,6 +4826,24 @@ function mcpLines(profile: Profile): string[] {
 
 /** A profile error with the workflow's profiles file problem after it, when that is why the profile is missing (#298). */
 const withWarning = (message: string, profiles: EffectiveProfiles) => (profiles.warning ? `${message} ${profiles.warning}` : message);
+
+/** An account as a session's chat names it (issue #395); null: the computer's own login. */
+function accountLabel(account: string | null): string {
+  return account ? `the account "${account}"` : "the computer's own login";
+}
+
+/** A permission request's input in one short line, for the chat (issue #395). */
+export function shortRequest(input: Record<string, unknown>): string {
+  const main = ['command', 'file_path', 'notebook_path', 'url', 'pattern', 'path', 'query'].map((k) => input[k]).find((v) => typeof v === 'string' && v.trim());
+  const text = (typeof main === 'string' ? main : JSON.stringify(input)).replace(/\s+/g, ' ').trim();
+  return text.length > 80 ? `${text.slice(0, 79)}…` : text;
+}
+
+/** These settings on another account (issue #395); null: the computer's own login. */
+function onAccount(project: ProjectConfig, account: string | null): ProjectConfig {
+  const { account: _, ...rest } = project;
+  return (account ? { ...rest, account } : rest) as ProjectConfig;
+}
 
 /** Where a project's sessions run, for its account's login folder. */
 function placeOf(project: ProjectConfig): AccountPlace {
