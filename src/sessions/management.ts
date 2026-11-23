@@ -91,9 +91,9 @@ export interface LinkedMessage {
 }
 
 // Limits between computers (docs/steps/manager-link.md, "Loops and floods"); messages on one computer have none.
+// No cap on wakes an hour: every message wakes its receiver, a burst within LINK_BURST_MS as one (issue #506).
 export const LINK_MAX_CHARS = 4000;
 export const LINK_SENDS_PER_HOUR = 20;
-export const LINK_WAKES_PER_HOUR = 6;
 export const LINK_BURST_MS = 5000;
 /** How long list_managers waits for each linked computer before calling it offline. */
 export const LINK_LIST_MS = 3000;
@@ -1141,13 +1141,11 @@ ${note}`);
   // --- managers on the person's linked computers (#245, docs/steps/manager-link.md step 2) -------
   // Trusted exactly as managers on this computer (Martin, 2026-10-20 08:32: "the connection is secure, we need to
   // trust in it"): the same marking with the computer's name added, the same lockdown, the same rule for an ended
-  // manager. Only the limits on waking are added, because two computers double the managers that can wake each other.
+  // manager. Only limits on sending and the burst merge are added, because two computers double the managers that can
+  // wake each other; the per-hour wake cap is gone (Martin, 2026-11-23, Ledung question #892, issue #506).
 
-  /** Sends per sending manager in the last hour, and wakes per (sender, receiver) pair, as times. */
+  /** Sends per sending manager in the last hour, as times. */
   private readonly linkSends = new Map<string, number[]>();
-  private readonly linkWakes = new Map<string, number[]>();
-  /** Pairs told this hour that they are paused for waking. */
-  private readonly linkPausedNoted = new Map<string, number>();
   /** Receivers with a merged wake on its way, and when their last wake from another computer was. */
   private readonly linkBurst = new Map<string, { at: number; timer: NodeJS.Timeout | null }>();
 
@@ -1353,7 +1351,7 @@ ${note}`);
     if (m.fromLocked) body += `\n\n(Ledung: its project is locked. You can answer this message once, with message_manager to ${plainTitle(m.fromId)} on computer "${link.name}"; it can't be reached otherwise.)`;
     else body += `\n\n(Answer with message_manager to ${plainTitle(m.fromId)}, computer "${link.name}".)`;
     this.store.addInbox(to.id, `manager:${link.id}/${m.fromId}`, body);
-    this.wakeFromComputer(sender, to.id);
+    this.wakeFromComputer(to.id);
     // Fetched once this call has answered, so the sender has its answer first (issue #159).
     if (remote.length) setImmediate(() => this.fetchStreams(link, to.id, remote));
     return `Sent to manager "${to.title}".`;
@@ -1467,24 +1465,13 @@ ${note}`);
     return { text: parts.join(''), remote };
   }
 
-  /** Wakes `toId` for a message from another computer, within the caps: merged bursts, and so many wakes an hour per pair. */
-  private wakeFromComputer(sender: string, toId: string): void {
-    const pair = `${sender}>${toId}`;
-    const wakes = this.recent(this.linkWakes, pair);
-    if (wakes.length >= LINK_WAKES_PER_HOUR) {
-      const noted = this.linkPausedNoted.get(pair);
-      if (noted === undefined || this.now() - noted >= HOUR_MS) {
-        this.linkPausedNoted.set(pair, this.now());
-        this.store.addInbox(toId, 'ledung', `Ledung: that manager on another computer has woken you ${LINK_WAKES_PER_HOUR} times this hour. Its messages still arrive, but wait for your next turn instead of waking you; tell it "no reply needed" or ask ${this.ctx.userName} if this goes on.`);
-      }
-      return;
-    }
+  /** Wakes `toId` for a message from another computer: every message, but a burst within LINK_BURST_MS as one wake. */
+  private wakeFromComputer(toId: string): void {
     const now = this.now();
     const burst = this.linkBurst.get(toId);
     if (burst && now - burst.at < LINK_BURST_MS) {
       // Messages close together become one wake: the one already on its way, or one when the burst ends.
       if (burst.timer) return;
-      wakes.push(now);
       burst.timer = setTimeout(() => {
         burst.timer = null;
         burst.at = this.now();
@@ -1493,7 +1480,6 @@ ${note}`);
       burst.timer.unref?.();
       return;
     }
-    wakes.push(now);
     this.linkBurst.set(toId, { at: now, timer: null });
     this.ctx.wake(toId);
   }

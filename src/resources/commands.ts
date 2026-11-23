@@ -12,8 +12,9 @@ const TRIVIAL = new Set([
 ]);
 
 /**
- * Light commands (docs/steps/resource-limits-2.md, "Light commands", R4; fixed in the code, open choice 6): never
- * refused and never learned as heavy. Read-only git, and all of `gh`, which waits on the network, not the PC.
+ * Light commands (docs/steps/resource-limits-2.md, "Light commands", R4): never learned as heavy, so their figures never
+ * reach an estimate or a notice. No longer a gate: no command is refused by its name (issue #500). Read-only git, and
+ * all of `gh`, which waits on the network, not the PC.
  */
 const LIGHT_GIT = new Set(['status', 'log', 'diff', 'show', 'branch', 'rev-parse', 'ls-files', 'blame', 'remote', 'fetch', 'worktree list', 'stash list']);
 
@@ -71,12 +72,11 @@ export function detaches(command: string): boolean {
 }
 
 /**
- * The kinds of command a shell call really runs, for resource limits' heavy-command check: as commandKinds, also
+ * The kinds of command a shell call really runs, for resource limits' learning (never a refusal, issue #500): as commandKinds, also
  * looking inside the usual wrappers (`bash -c "…"`, `sh -c`, `powershell -Command`, `cmd /c`, `nohup`, `time`, `env`,
  * `nice`, `exec`, PowerShell's `&`, a subshell's parentheses), so `nohup python train.py &` is `python train.py`.
- * Light kinds (isLightKind) are left out, so a call of only light commands has none. Still advisory (security review of
- * the resource limits, finding 13): a script file can hide anything, and what really runs is judged by the check of
- * each job's measured share.
+ * Light kinds (isLightKind) are left out, so a call of only light commands has none. A script file can hide anything
+ * (security review of the resource limits, finding 13), so what really runs is judged by each job's measured share.
  */
 export function heavyKinds(command: string): string[] {
   let c = command;

@@ -50,6 +50,8 @@ The first start creates the user data folder (`%APPDATA%\Ledung` on Windows, `~/
 
 **Sessions survive a restart.** Each session runs in a small **session host**, a separate process that owns Claude Code and keeps it running while Ledung restarts. If Ledung crashes and doesn't come back within 3 minutes, the hosts stop their sessions themselves. Host logs are in `<user data>/hosts/`.
 
+**Heavy work shares the PC.** With limits set in the Machine panel, sessions on this computer reserve before heavy work (a long build, a big test suite, training) and wait in line when the PC is full. Ledung never refuses a command by its name: it measures what each session actually runs. Work above its booking, or above a small allowance with none, for about a minute is slowed (lower priority, nothing killed). Its session is held until the work is back within its share, and told what it used and to reserve before it next time. The usage page lists what reserved jobs and heavy commands usually use.
+
 ## Claude Code and Anthropic's software
 
 Ledung runs Anthropic's Claude Agent SDK and Claude Code. They are installed from npm under [Anthropic's own terms](https://code.claude.com/docs/en/legal-and-compliance) and are not covered by Ledung's license (see [License](#license)). The SDK comes with Ledung's install.

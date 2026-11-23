@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { openDatabase } from '../src/store/database.ts';
 import { Store } from '../src/store/store.ts';
-import { LINK_BURST_MS, LINK_MAX_CHARS, LINK_SENDS_PER_HOUR, LINK_WAKES_PER_HOUR, Management, ManagementError, type LinkedMessage, type LinkedPort } from '../src/sessions/management.ts';
+import { LINK_BURST_MS, LINK_MAX_CHARS, LINK_SENDS_PER_HOUR, Management, ManagementError, type LinkedMessage, type LinkedPort } from '../src/sessions/management.ts';
 import { buildDelivery } from '../src/sessions/management.ts';
 import type { ProjectInfo } from '../src/shared/protocol.ts';
 
@@ -151,7 +151,7 @@ test('lockdown holds across computers as on one: a locked project can\'t be mess
   await assert.rejects(pc.m.messageComputerManager('pc-Bunker', 'Mac', 'mac-Ledung', 'hi'), /level B/);
 });
 
-test('waking across computers is capped: bursts become one wake, six an hour per pair, then quiet with one note', async (t) => {
+test('waking across computers: a burst becomes one wake, and every spaced message wakes, with no cap an hour', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const { mac, pc, clock } = pair([['Ledung', 'off'], ['Docs', 'off']]);
   // Three messages within the burst: one wake now, one when the burst ends.
@@ -161,26 +161,22 @@ test('waking across computers is capped: bursts become one wake, six an hour per
   assert.deepEqual(pc.woken, ['pc-WebInfra', 'pc-WebInfra']);
   assert.equal(inbox(pc, 'pc-WebInfra').length, 3, 'every message arrives');
 
-  // Spaced out: wakes until six in the hour for this pair.
-  for (let i = 0; i < 6; i++) {
+  // Spaced more than 5 s apart: each of 10 messages within the same hour from one sender wakes the receiver, past
+  // the 6 an hour the removed cap allowed (Martin, 2026-11-23, Ledung question #892, issue #506).
+  for (let i = 0; i < 10; i++) {
     clock.now += LINK_BURST_MS + 1;
     await mac.m.messageComputerManager('mac-Ledung', 'PC', 'pc-WebInfra', `spaced ${i}`);
   }
-  assert.equal(pc.woken.length, LINK_WAKES_PER_HOUR);
-  const notes = inbox(pc, 'pc-WebInfra').filter((i) => i.source === 'ledung');
-  assert.equal(notes.length, 1);
-  assert.match(notes[0]!.text, /has woken you 6 times this hour/);
-  clock.now += LINK_BURST_MS + 1;
-  await mac.m.messageComputerManager('mac-Ledung', 'PC', 'pc-WebInfra', 'one more');
-  assert.equal(inbox(pc, 'pc-WebInfra').filter((i) => i.source === 'ledung').length, 1, 'the note once an hour');
-  // Another manager on the Mac is another pair.
+  assert.equal(pc.woken.length, 2 + 10, 'every spaced message wakes');
+  // Exactly the 13 messages, so no note was added; and none from Ledung itself.
+  const items = inbox(pc, 'pc-WebInfra');
+  assert.equal(items.length, 3 + 10);
+  assert.match(items.at(-1)!.text, /spaced 9/);
+  assert.deepEqual(items.filter((i) => i.source === 'ledung'), [], 'no "has woken you" note');
+  // Another manager on the Mac wakes it as well.
   clock.now += LINK_BURST_MS + 1;
   await mac.m.messageComputerManager('mac-Docs', 'PC', 'pc-WebInfra', 'from Docs');
-  assert.equal(pc.woken.length, LINK_WAKES_PER_HOUR + 1);
-  // An hour later the pair wakes again.
-  clock.now += 3600_000;
-  await mac.m.messageComputerManager('mac-Ledung', 'PC', 'pc-WebInfra', 'next hour');
-  assert.equal(pc.woken.length, LINK_WAKES_PER_HOUR + 2);
+  assert.equal(pc.woken.length, 2 + 10 + 1);
 });
 
 test('a manager may send 20 messages an hour to other computers; a long one is refused by the sender, cut by the receiver', async () => {

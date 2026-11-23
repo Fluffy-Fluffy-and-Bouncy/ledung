@@ -41,11 +41,12 @@ import type { Store } from '../store/store.ts';
 import { lineOrder, mayStart, type LineEntry } from '../resources/line.ts';
 import { ResourceMonitor, type MonitorTarget } from '../resources/monitor.ts';
 import { ResourceBook, RESOURCE_SOURCE } from '../resources/book.ts';
+import { namesText, type JobActionResult, type JobReach } from '../shared/job-notes.ts';
 import { JobStore } from '../resources/jobs.ts';
-import { JobActions, jobTargetsNow } from '../resources/job-actions.ts';
+import { JobActions, jobProcessesNow, leftAloneNow, jobTargetsNow, provenNow } from '../resources/job-actions.ts';
 import { mainGpu } from '../platform/gpu.ts';
 import { actOn, type Target } from '../platform/process-control.ts';
-import { snapshotTree } from '../platform/process-tree.ts';
+import { commandsOf, listAll } from '../platform/process-tree.ts';
 import { machineSender } from '../shared/machine-shown.ts';
 import {
   CHATS,
@@ -509,7 +510,6 @@ export class SessionManager {
       },
       ended: (id, commands, waits) => {
         this.recordTurn(id, commands, waits);
-        this.book.turnEnded(id);
         this.dispatch();
         // A session waiting to take new lockdown settings may now be free (issue #109).
         if (this.relaunching.has(id) || this.switchDue(id)) setImmediate(() => void this.relaunchWaiting());
@@ -525,8 +525,8 @@ export class SessionManager {
         return { threads: os.cpus().length, gpus: names };
       },
       resourceHeld: (id: string) => this.book.isHeld(id),
-      commandCheck: (id: string, kinds: string[]) => this.book.commandRefusal(id, kinds),
-      callStarted: (id: string, callId: string, kinds: string[], background: boolean) => this.book.callStarted(id, callId, kinds, background),
+      callStarted: (id: string, callId: string, kinds: string[], background: boolean, detached?: boolean, command?: string) => this.book.callStarted(id, callId, kinds, background, detached, command),
+      passWaits: (id: string) => this.book.passWaits(id),
       callEnded: (id: string, callId: string) => this.book.callEnded(id, callId),
     } satisfies Partial<TurnGate>);
     this.jobs = new JobStore(store.database);
@@ -539,6 +539,7 @@ export class SessionManager {
         return {
           id, title: info.title, project: info.project, role: info.role, priority: info.priority, local: info.runner === 'local',
           busy: info.status === 'running' || info.status === 'waiting',
+          background: this.live.get(id)?.backgroundCount ?? 0, parentId: info.parentId,
         };
       },
       // A paused job that ends is resumed, never left frozen (security review of the resource limits, finding 10).
@@ -548,6 +549,13 @@ export class SessionManager {
         this.live.get(id)?.deliver();
       },
       wake: (id) => this.live.get(id)?.deliver(),
+      // The go's 10 minutes count from its delivery (resource limits round 2, "Waking").
+      undelivered: (id) => this.store.undeliveredInbox(id).some((i) => i.source === RESOURCE_SOURCE),
+      tellManager: (managerId, text) => {
+        if (this.store.getSession(managerId)?.status === 'ended') return;
+        this.store.addInbox(managerId, 'ledung', text);
+        this.live.get(managerId)?.deliver();
+      },
       // A limit set, a reservation, a go: always sent (#230's sender, without onlyIfChanged).
       changed: () => this.publishMachine(),
     });
@@ -1113,10 +1121,13 @@ export class SessionManager {
 
   /**
    * A job's processes to act on, found just now: the job's processes still under its session's host in a fresh list,
-   * plus what they started since the last sample (acceptance test, finding 5), with their start times, which Windows
-   * checks again on the handle it acts through (security review, finding 1).
+   * or detached ones the book took as the session's (acceptance test 3 of PR #476), plus what they started since the
+   * last sample (acceptance test, finding 5), with their start times, which Windows checks again on the handle it
+   * acts through (security review, finding 1). A detached process taken as the session's only by when it started is
+   * acted on only if its command line is the session's detaching call's (re-review of PR #476: an outside game whose
+   * launcher exited between two samples was stopped); the others stay counted and are left alone (`alone`, with their programs' `names`).
    */
-  private async freshJobTargets(id: string): Promise<{ sessionId: string; paused: boolean; targets: Target[] }> {
+  private async freshJobTargets(id: string): Promise<{ sessionId: string; what: string; paused: boolean; targets: Target[]; alone: number[]; names: string[]; gone: number[] }> {
     let job: ReturnType<ResourceBook['jobTargets']>;
     try {
       job = this.book.jobTargets(id);
@@ -1124,46 +1135,96 @@ export class SessionManager {
       throw new UserError((e as Error).message);
     }
     if (!job.host) throw new UserError("This job's session is not measured right now; try again in a few seconds.");
-    return { sessionId: job.sessionId, paused: job.paused, targets: jobTargetsNow(job.targets, await snapshotTree(job.host), job.host) };
+    const all = await listAll();
+    let proven: number[] = [];
+    if (job.guessed.length) {
+      const info = this.store.getSession(job.sessionId);
+      const project = info ? this.configOf(info) : null;
+      // Only local sessions are measured; a working folder that can't be checked against any folder fails the check.
+      const folders = info && project?.runner === 'local' ? [this.sessionFolder(info, project), project.path] : [];
+      try {
+        proven = await provenNow(job.guessed, all, commandsOf, folders, (folder, cwd) => isInside(cwd, [folder]));
+      } catch (e) {
+        // Refused, nothing disowned or acted on (third code review of PR #476).
+        throw new UserError((e as Error).message);
+      }
+      this.book.prove(id, proven);
+    }
+    const targets = jobTargetsNow(job.targets, jobProcessesNow(all, job.host, [...job.adopted, ...proven]), job.host);
+    const reached = new Set(targets.map((t) => t.pid));
+    const byPid = new Map(all.map((p) => [p.pid, p]));
+    const guessedOut = job.guessed.filter((g) => !proven.includes(g.pid)).map((g) => g.pid);
+    const { alone, gone } = leftAloneNow(guessedOut, all, reached, job.targets.map((t) => t.pid));
+    const known = [...new Set(alone.map((pid) => byPid.get(pid)?.name).filter((n): n is string => !!n))];
+    const names = known.length || !alone.length ? known : ['another program'];
+    return { sessionId: job.sessionId, what: job.what, paused: job.paused, targets, alone, names, gone };
+  }
+
+  /** What Stop would act on, for the page's confirm: only what it will end is counted (acceptance test 5 of PR #476). */
+  async jobReach(id: string): Promise<JobReach> {
+    const job = await this.freshJobTargets(id);
+    return { act: job.targets.length, others: job.alone.length, names: job.names };
+  }
+
+  /** "Ledung left game.exe alone: …", for the session's notice, when processes Ledung only guessed were the job's weren't touched. */
+  private leftAloneNote(job: { alone: number[]; names: string[] }, action: string): string {
+    if (!job.alone.length) return '';
+    const one = job.alone.length === 1;
+    return ` Ledung left ${namesText(job.names)} alone: it only guessed ${one ? 'that was' : 'those were'} your job's, from when ${one ? 'it' : 'they'} started (${one ? 'its' : 'their'} command isn't yours), so it didn't ${action} ${one ? 'it' : 'them'}.`;
   }
 
   /**
    * The person's Pause or Resume on a job's card: suspends or resumes its processes. Never automatic. One action
    * per job at a time, checked before anything is awaited (acceptance test, finding 1).
    */
-  pauseJob(id: string, paused: boolean): Promise<void> {
+  pauseJob(id: string, paused: boolean): Promise<JobActionResult> {
     return this.jobActions.run(id, async () => {
       const job = await this.freshJobTargets(id);
+      const verb = paused ? 'pause' : 'resume';
       // Windows counts suspends: a second Pause would need two Resumes.
       if (job.paused === paused) throw new UserError(paused ? 'This job is already paused.' : 'This job is not paused.');
+      if (!job.targets.length) throw new UserError(`Could not ${verb} "${job.what}": none of its own processes are running any more.${job.alone.length ? ` ${namesText(job.names)} ${job.names.length === 1 ? 'is' : 'are'} left alone: Ledung only guessed ${job.names.length === 1 ? 'it belongs' : 'they belong'} to the job, from when ${job.names.length === 1 ? 'it' : 'they'} started.` : ''}`);
       let done: number;
       try {
         done = (await actOn(job.targets, paused ? 'suspend' : 'resume')).done;
       } catch (e) {
-        throw new UserError(`Could not ${paused ? 'pause' : 'resume'} the job: ${(e as Error).message}`);
+        throw new UserError(`Could not ${verb} "${job.what}": ${(e as Error).message}`);
       }
-      if (!done) throw new UserError(`Could not ${paused ? 'pause' : 'resume'} the job: none of its processes could be reached.`);
+      if (!done) throw new UserError(`Could not ${verb} "${job.what}": its processes ended or Ledung wasn't allowed to reach them.`);
       this.book.setJobPaused(id, paused);
-      this.store.addInbox(job.sessionId, RESOURCE_SOURCE, `${this.config.userName} ${paused ? 'paused' : 'resumed'} your job (reservation ${id}) from its card${paused ? ': its processes are suspended until resumed; their memory stays taken' : ''}.`);
+      this.store.addInbox(job.sessionId, RESOURCE_SOURCE, `${this.config.userName} ${paused ? 'paused' : 'resumed'} your job (reservation ${id}) from its card${paused ? ': its processes are suspended until resumed; their memory stays taken' : ''}.${paused ? this.leftAloneNote(job, 'pause') : ''}`);
       this.live.get(job.sessionId)?.deliver();
+      return { done, leftAlone: paused ? job.names : [] };
     }).catch((e: Error) => {
       throw e instanceof UserError ? e : new UserError(e.message);
     });
   }
 
-  /** The person's Stop on a job's card, after a confirm in the page: ends its processes. */
-  stopJob(id: string): Promise<void> {
+  /**
+   * The person's Stop on a job's card, after a confirm in the page: ends its processes. What Ledung only guessed was
+   * the job's is left alone and taken off the job, so its card goes away (acceptance test 5 of PR #476).
+   */
+  stopJob(id: string): Promise<JobActionResult> {
     return this.jobActions.run(id, async () => {
       const job = await this.freshJobTargets(id);
-      let done: number;
-      try {
-        done = (await actOn(job.targets, 'end')).done;
-      } catch (e) {
-        throw new UserError(`Could not stop the job: ${(e as Error).message}`);
+      if (!job.targets.length && !job.alone.length) {
+        // Nothing to stop and nothing told: the same plain words as the page, never a second notice (acceptance test 6 of PR #476).
+        this.book.disown(id, [], job.gone);
+        throw new UserError(`"${job.what}" has no processes running any more: there is nothing to stop.`);
       }
-      if (!done) throw new UserError('Could not stop the job: none of its processes could be reached.');
-      this.store.addInbox(job.sessionId, RESOURCE_SOURCE, `${this.config.userName} stopped your job (reservation ${id}) from its card: ${done} of its processes were ended.`);
+      let done = 0;
+      if (job.targets.length) {
+        try {
+          done = (await actOn(job.targets, 'end')).done;
+        } catch (e) {
+          throw new UserError(`Could not stop "${job.what}": ${(e as Error).message}`);
+        }
+        if (!done) throw new UserError(`Could not stop "${job.what}": its processes ended or Ledung wasn't allowed to reach them.`);
+      }
+      this.book.disown(id, job.alone, [...job.targets.map((t) => t.pid), ...job.gone]);
+      this.store.addInbox(job.sessionId, RESOURCE_SOURCE, `${this.config.userName} stopped your job (reservation ${id}) from its card: ${done ? `${done} of its processes were ended` : 'none of its own processes were still running'}.${this.leftAloneNote(job, 'end')}`);
       this.live.get(job.sessionId)?.deliver();
+      return { done, leftAlone: job.names };
     }).catch((e: Error) => {
       throw e instanceof UserError ? e : new UserError(e.message);
     });
@@ -1179,10 +1240,6 @@ export class SessionManager {
 
   forgetJobKind(project: string, kind: string): void {
     this.jobs.forget(project, kind);
-  }
-
-  markCommand(project: string, command: string, never: boolean): void {
-    this.jobs.markNever(project, command, never);
   }
 
   private targets(): MonitorTarget[] {

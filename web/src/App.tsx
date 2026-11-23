@@ -1126,7 +1126,7 @@ const Sidebar = memo(function Sidebar(props: {
           data-drag={group ?? undefined}
           data-drag-id={group ? s.id : undefined}
         >
-          {rowStatus(dotShown, s).dot && <span className={`dot ${waitingToStart(props.machine, s) ? 'queued' : statusLook(s)}`} title={waitingToStart(props.machine, s) ? 'Waiting to start' : STATUS_LABEL[s.status]} />}
+          {rowStatus(dotShown, s).dot && <span className={`dot ${waitingToStart(props.machine, s) ? 'queued' : statusLook(s)}`} title={waitingToStart(props.machine, s) ? 'Waiting to start' : waitingForReservation(props.machine, s) && s.status === 'idle' ? 'Waiting for its reservation' : STATUS_LABEL[s.status]} />}
           <span className="session-text">
             <span className="session-title">{s.role === 'manager' && <span className="chip">Manager</span>} <Named colour={sessionColour(s, withChatsColour(props.projects, props.chats))}>{s.title}</Named></span>
             {shows.time && <span className="session-sub">{time}</span>}
@@ -1484,6 +1484,7 @@ export function SessionView(props: {
               : <><span className={`dot ${statusLook(session)}`} /> {STATUS_LABEL[session.status]}</>}
             {session.status === 'queued' && ledung.machine && ledung.machine.line.includes(session.id) ? `: number ${ledung.machine.line.indexOf(session.id) + 1} in line` : ''}
             {session.paused ? ' · Paused' : ''}
+            {waitingForReservation(ledung.machine, session) ? <span title={waitingForReservation(ledung.machine, session)!}> · Waiting for its reservation</span> : null}
             {session.priority !== 'normal' ? <> · <span className={`chip prio-${session.priority}`} title={session.priorityNote ?? undefined}>{PRIORITY_LABEL[session.priority]}</span></> : null}
             {ledung.machine?.sessions[session.id] && !ended ? ` · ${formatCores(ledung.machine.sessions[session.id]!.cores)} · ${formatBytes(ledung.machine.sessions[session.id]!.memBytes)}` : ''}
             {session.status === 'ended' && session.endReason ? ` · ${session.endReason}` : ''}
@@ -2246,6 +2247,12 @@ function RemoteControlLink({ rc }: { rc: RemoteControlInfo }) {
   if (!rc.url) return <span>Remote Control starting…</span>;
   const bridge = rc.bridge ? ` (bridge ${rc.bridge})` : '';
   return <a href={rc.url} target="_blank" rel="noreferrer noopener" title={`Remote Control on${bridge}: this manager in the Claude app or on claude.ai`}>Remote Control</a>;
+}
+
+/** Why the session's reservation waits in the resource line (resource limits round 2, "What is shown"); null: it doesn't. */
+function waitingForReservation(machine: MachineInfo | null, session: SessionInfo): string | null {
+  if (session.status === 'ended') return null;
+  return machine?.resources?.line.find((l) => l.kind === 'job' && l.sessionId === session.id)?.reason ?? null;
 }
 
 /** Why a new session hasn't started yet, when it waits in the resource line for memory; null otherwise. */

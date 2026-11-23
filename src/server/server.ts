@@ -10,6 +10,7 @@ import { type Duplex, duplexPair } from 'node:stream';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { appDir, PACKAGED, runningVersion } from '../platform/paths.ts';
+import { listenAddresses } from '../platform/port-claim.ts';
 import { readRepository, sourceOffer } from './source.ts';
 import type { SessionManager } from '../sessions/manager.ts';
 import { UserError } from '../sessions/manager.ts';
@@ -530,10 +531,8 @@ export class LedungServer {
 
   /** Listens on 127.0.0.1, and on the local network address if Ledung is opened to it. */
   async listen(): Promise<void> {
-    const bind = this.opts.lanBind;
-    // 0.0.0.0 already includes 127.0.0.1; a single network address needs a second listener.
-    const addresses = bind === '0.0.0.0' ? ['0.0.0.0'] : bind ? ['127.0.0.1', bind] : ['127.0.0.1'];
-    for (const address of addresses) {
+    // The same addresses main.ts claims before the start (#503).
+    for (const address of listenAddresses(this.opts.lanBind)) {
       const server = this.createServer();
       await new Promise<void>((resolve, reject) => {
         server.once('error', reject);
@@ -2382,25 +2381,19 @@ export class LedungServer {
       case 'POST jobs/:id/pause': {
         await this.requireSignedPage(req, url);
         const body = await readJson(req);
-        await manager.pauseJob(id, body.paused !== false);
-        return;
+        return await manager.pauseJob(id, body.paused !== false);
       }
       case 'POST jobs/:id/stop':
         await this.requireSignedPage(req, url);
-        await manager.stopJob(id);
-        return;
+        return await manager.stopJob(id);
+      case 'GET jobs/:id/reach':
+        return await manager.jobReach(id);
       case 'GET job-kinds':
         return { kinds: manager.jobKinds(), commands: manager.heavyCommands() };
       case 'POST job-kinds-forget': {
         await this.requirePage(req, url);
         const body = await readJson(req);
         manager.forgetJobKind(String(body.project ?? ''), String(body.kind ?? ''));
-        return;
-      }
-      case 'POST heavy-commands-mark': {
-        await this.requirePage(req, url);
-        const body = await readJson(req);
-        manager.markCommand(String(body.project ?? ''), String(body.command ?? ''), body.never !== false);
         return;
       }
       case 'POST sessions/:id/priority': {

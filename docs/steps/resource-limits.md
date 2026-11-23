@@ -169,6 +169,8 @@ A new table (a new entry in `MIGRATIONS`), one row per finished reservation: pro
 
 ## Recognising heavy commands
 
+**Replaced by issue #500 (Simon, 2026-11-23, "Go with B"):** no command is refused by its name any more; learned figures serve estimates and the over-share notice only. See [resource-limits-2.md](resource-limits-2.md#names-dont-refuse-any-more-issue-500). As first built:
+
 The `PreToolUse` hook (`src/sessions/session.ts`) already sees every Bash call. With this:
 
 - Ledung splits the command into kinds as step 6c does (`npm run build`, `python train.py`).

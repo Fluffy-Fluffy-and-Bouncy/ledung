@@ -37,7 +37,6 @@ export interface HeavyCommand {
   runs: number;
   /** Typical peak (90th percentile), generic dims. */
   peak: Amounts;
-  never: boolean;
   /** Where the figure comes from (R4): runs of reserved jobs and of unreserved stretches, and when the last ended. */
   reserved: number;
   unreserved: number;
@@ -50,9 +49,9 @@ export interface HeavyCommand {
 export const LEARN_AFTER = 3;
 /** How many of the latest runs a figure is learned from. */
 const LEARN_FROM = 20;
-/** Runs of a command over the allowance before it needs a reservation. */
+/** Runs of a command over the allowance before its figure is known (for estimates and the notice; never a refusal, #500). */
 export const HEAVY_AFTER = 2;
-/** A kind whose calls usually finish within this is never refused (resource limits round 2, R4: the 10-second rule). */
+/** Old records count for a kind only if its calls usually take longer than this (round 2, R4: the 10-second rule). */
 export const SHORT_MS = 10_000;
 /** How many of a kind's latest calls its usual duration is taken from (the median), and kept. */
 const CALLS_KEPT = 10;
@@ -158,12 +157,6 @@ export class JobStore {
     this.db.prepare('DELETE FROM job_runs WHERE project = ? AND kind = ?').run(project, kind);
   }
 
-  /** The person's mark: this command never needs a reservation (or does again). */
-  markNever(project: string, command: string, never: boolean): void {
-    if (never) this.db.prepare('INSERT INTO command_marks (project, command, never) VALUES (?, ?, 1) ON CONFLICT (project, command) DO UPDATE SET never = 1').run(project, command);
-    else this.db.prepare('DELETE FROM command_marks WHERE project = ? AND command = ?').run(project, command);
-  }
-
   /** A finished shell call (R4): how long it took, per kind; only the latest CALLS_KEPT per kind stay. */
   addCall(project: string, kind: string, durationMs: number, at: number): void {
     this.db.prepare('INSERT INTO command_calls (project, kind, duration_ms, at) VALUES (?, ?, ?, ?)').run(project, kind, Math.max(0, Math.round(durationMs)), at);
@@ -182,7 +175,8 @@ export class JobStore {
 
   /**
    * Commands known to be heavy: in at least HEAVY_AFTER recent runs (reserved or unreserved) that used more than the
-   * allowance. Those the person marked "never" are listed with `never`. Light commands are never heavy, and records
+   * allowance. A figure for the page and the over-share notice only: no command is refused by it (issue #500; the old
+   * "never needs a reservation" marks in command_marks are no longer read). Light commands are never heavy, and records
    * from before R4 count only for a kind whose calls usually take over 10 s, applied here when read, so old wrong
    * marks clear themselves.
    */
@@ -209,9 +203,8 @@ export class JobStore {
         by.set(key, e);
       }
     }
-    const marks = new Set((this.db.prepare('SELECT project, command FROM command_marks WHERE never = 1').all() as Record<string, unknown>[]).map((m) => `${m.project}\u0000${m.command}`));
     const out: HeavyCommand[] = [];
-    for (const [key, e] of by) {
+    for (const e of by.values()) {
       const usualMs = this.usualMs(e.project, e.command);
       // Records from before R4 took every call made during a job: they count only once its calls are seen to be long
       // (the 10-second rule). Records since R4 are a call's own busy processes, and stay evidence however quick its
@@ -224,7 +217,7 @@ export class JobStore {
       for (const d of dims) peak[d] = p90(runs.map((r) => r.peak[d] ?? 0));
       const unreserved = runs.filter((r) => r.unreserved).length;
       out.push({
-        project: e.project, command: e.command, runs: runs.length, peak, never: marks.has(key),
+        project: e.project, command: e.command, runs: runs.length, peak,
         reserved: runs.length - unreserved, unreserved, lastAt: Math.max(...runs.map((r) => r.at)), usualMs,
       });
     }

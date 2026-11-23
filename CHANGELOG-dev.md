@@ -9,6 +9,29 @@ together, are in [CHANGELOG.md](CHANGELOG.md). Online: https://projectledung.com
 ([docs/changes/README.md](docs/changes/README.md)); `npm run publish:dev` and `npm run publish:public` fold them in
 here under the version they publish, and push the result to main.
 
+## v5.1 — 2026-11-23 14:53 CET
+- Managers on linked computers now wake each other on every message, as managers on one computer do: the cap of 6 wakes an hour is gone; messages within 5 s of each other still wake once (#506)
+- A restart that finds Ledung's port still in use waits up to 30 s for it, instead of failing at once (#503)
+- A start that can't get the port leaves every session running and says so; the next start reconnects them (#503)
+- The log says what stopped or restarted Ledung (Stop Ledung, Restart, the tray icon, an installed update, a signal) (#503)
+- Resource limits: no command is refused by its name any more (`git status`, scripts and known heavy commands alike, for subagents too); reserving before heavy work stays, and what actually runs is judged as before. (#500)
+- Resource limits: a session whose work goes over without a booking is told what it used, the commands that were busy and what they usually use: "reserve before it next time". (#500)
+- Usage page: the "Never needs a reservation" list and button are gone; heavy commands are listed for information. (#500)
+- Resource limits: read-only git (`git status`, `log`, `diff`, …), all of `gh` and text tools like `cut` or `jq` never need a reservation. (#356)
+- Resource limits: a command is learned as heavy only if its own processes were busy, not a short script after a build or a status loop beside it. (#356)
+- Resource limits: shell words like `for` and `while` are never taken for commands. (#356)
+- Resource limits: marks learned before this release no longer refuse anything on their own; they count again once a command is seen to take over 10 seconds. (#356)
+- Resource limits: a refusal says what it was learned from (how many jobs or unreserved stretches, and when) and that the command can be marked "never needs a reservation" on the usage page. (#356)
+- Resource limits: a reservation is now a pass for the session and its subagents, kept until `release` or until the session's work is over (no turn, nothing in the background, nothing of it running), instead of ending when its first processes end. (#356)
+- Resource limits: a job quiet for 2 minutes (and within the memory it booked) is parked and holds no room (a build's leftover daemon no longer blocks the line); when its work starts again it is checked against the limits, and a known heavy command that doesn't fit is told to wait with its old place in line. (#356)
+- Resource limits: a session waiting for its reservation is never stopped as idle, a go's 10 minutes count from when it reaches the session, and the manager is told when a session has waited 30 minutes and again when it may go. (#356)
+- Resource limits: commands that free resources (stopping processes, a lock script's `release`, `npm run stop`, `docker compose down`, `gradle --stop`) always run, even while a session is held; release builds (`--release`, `-c Release`) are not among them. (#356)
+- Resource limits: a heavy job started detached (`… &`, `nohup`) counts as its session's and is learned, and Pause and Stop on its card reach it; a process Ledung took as the job's only by when it started is paused or stopped only if its command line is the session's detaching command, so another program is never touched. Stop's confirm counts only what it will end and names what it leaves alone, the page says the same after Pause or Stop, and a stopped job's card goes away instead of staying for a program it left alone; until then it says "Stopped by you" and can't be stopped twice. When Ledung can't check those processes just now, Pause, Resume and Stop say "try again" and do nothing, and a process once proven the session's never needs that check again. (#356)
+- Resource limits: "Waiting for room" says who holds it (jobs with what they booked and use, WSL, other programs); sessions see other sessions' jobs only as counts and figures. (#356)
+- Machine panel: job cards show ready, busy, parked and "resumed above the limits"; parked jobs fold under the others; the memory bar's tooltip names WSL's share, with a one-time hint on making WSL give its cache back; "park after" and "tell the manager after" sit with the other limit settings. (#356)
+- Session header: "Waiting for its reservation" while a session's reservation is in line. (#356)
+- Usage page: "Never needs a reservation" lets you add your own commands to the light list. (#356)
+
 ## v5 — 2026-11-23 00:31 CET
 The public release. Everything since v4: v4.1, v4.2, v4.3, v4.4, v4.5, v4.6, v4.7, v4.8, v4.9, v4.10, v4.11, v4.12, v4.13, v4.14.
 
