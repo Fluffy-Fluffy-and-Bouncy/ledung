@@ -2143,6 +2143,10 @@ button.link-button:hover:not(:disabled) { border: none; }
 .req-opinion { border-left: 3px solid var(--ok); padding-left: 0.6rem; }
 .req-opinion .prose { color: var(--muted); }
 .req-block .send button.on { outline: 2px solid var(--text); outline-offset: 2px; }
+/* A chosen Accepted keeps allow's colours; button.on would give it the dark user background (PR #504 review, point A). */
+.req-block button.allow.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+/* Send stays tappable while parts are open, so a tap can say what is left, but looks disabled (point D). */
+.req-rail button.primary[aria-disabled="true"], .req-bar button.primary[aria-disabled="true"] { opacity: 0.5; }
 .req-block button.deny.on { background: var(--danger); color: var(--accent-text); border-color: var(--danger); }
 .req-shots-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.8rem; }
 .req-shot-thumbs { display: flex; flex-wrap: wrap; gap: 0.35rem; }

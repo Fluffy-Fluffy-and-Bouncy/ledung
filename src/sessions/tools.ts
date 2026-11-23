@@ -576,9 +576,10 @@ export function ledungToolServer(h: ToolHandlers, describe?: DescribeTools): Mcp
       throw new Error(`At a review step the sign-off moves the run: decision "${moving[0]!.key}" gives its options outcomes, which only a question step takes. Leave out its outcomes. Nothing was asked.`);
     }
     // A sign-off moves only a review step; at a question step it would sit beside the deciding decision as a second
-    // verdict that moves nothing (code review of PR #504, finding 1).
+    // verdict that moves nothing (code review of PR #504, finding 1). The words don't name the step's kind: this runs
+    // before writeUp looks it up, and the call may be at either (code review round 2, point B).
     if (!args.review && args.sign_off) {
-      throw new Error('At a question step one decision moves the run; a sign-off goes with a review step. Leave out sign_off, or ask at the review step with review. Nothing was asked.');
+      throw new Error("sign_off without review can't move a run: at a review step give review (its sign-off moves the run); at a question step leave out sign_off (one decision moves the run). Nothing was asked.");
     }
     // Screenshots at a question step: the page judges them, so the options that move the run go in one decision (finding 2).
     if (!args.review && args.screenshots?.length && !args.decisions?.length) {

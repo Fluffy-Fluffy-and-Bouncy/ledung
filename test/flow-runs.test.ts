@@ -1512,7 +1512,7 @@ test('#502 at a question step a sign-off, or screenshots beside top-level option
   const moving = { key: 'next', title: 'Go on or fix again?', options: [{ key: 'a', text: '**Go on**', outcome: 'Go on' }, { key: 'b', text: '**Fix again**', outcome: 'Fix again' }] };
   const shot = { file: 'a.png', look_for: 'the total' };
   // Code review of PR #504, finding 1: a sign-off beside the deciding decision passed, and its "Accepted." then held the run.
-  assert.match((await askUser('manager-1', { ...base, sign_off: true, decisions: [moving] })).text, /^At a question step one decision moves the run; a sign-off goes with a review step\./);
+  assert.match((await askUser('manager-1', { ...base, sign_off: true, decisions: [moving] })).text, /^sign_off without review can't move a run: at a review step give review .*; at a question step leave out sign_off/);
   // Finding 2: screenshots beside top-level options were stored as a screenshot page, whose verdicts match no outcome.
   assert.match((await askUser('manager-1', { ...base, screenshots: [shot], options: moving.options })).text, /^With screenshots at a question step, give the outcome options in one decision/);
   assert.equal(store.listQuestions().length, 0, 'nothing stored');
@@ -1539,6 +1539,11 @@ test('#502 a review step may carry decisions and screenshots; its sign-off moves
   await e.answer(1, 'a — Go on');
   assert.equal(ports.runs.get('run-1')!.at, 'functional-review');
   const review = { run: 'run-1', block: 'functional-review', tier: 'Blocks a finished PR', title: 'Cart total', review: { solving: 'VAT twice.', done: 'Once now.' } };
+  // A sign-off without review at the review step: refused, in words that don't call it a question step (review round 2, B).
+  const bare = await askUser('manager-1', { run: 'run-1', block: 'functional-review', tier: 'Process', title: 'Cart total', sign_off: true });
+  assert.equal(bare.error, true);
+  assert.match(bare.text, /^sign_off without review can't move a run: at a review step give review/);
+  assert.doesNotMatch(bare.text, /At a question step/);
   const withOutcome = await askUser('manager-1', { ...review, decisions: [{ key: 'd1', title: 'Ship?', options: [{ key: 'a', text: 'A', outcome: 'Accepted' }, { key: 'b', text: 'B' }] }] });
   assert.match(withOutcome.text, /At a review step the sign-off moves the run/);
   const asked = await askUser('manager-1', {
