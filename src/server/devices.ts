@@ -10,7 +10,6 @@
 // phone. Browser rows count only locally and phone and computer rows only through the public name (byCookie's `where`).
 import crypto from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import { exercisedLine } from '../platform/exercised.ts';
 
 /** The device cookie. `__Host-` makes the browser keep it only for this exact name, over HTTPS, at Path=/. */
 export const DEVICE_COOKIE = '__Host-ledung_device';
@@ -95,6 +94,14 @@ type Row = Record<string, any>;
 
 const hash = (secret: string) => crypto.createHash('sha256').update(secret).digest('hex');
 
+/** Is `code` this pairing code, in either case (#194), compared in constant time. */
+function codeMatches(code: unknown, value: Buffer): boolean {
+  // ASCII letters and digits only: a character such as the Kelvin sign would lower-case into the alphabet.
+  if (typeof code !== 'string' || !/^[0-9a-z]+$/i.test(code)) return false;
+  const given = Buffer.from(code.toLowerCase());
+  return given.length === value.length && crypto.timingSafeEqual(given, value);
+}
+
 function toDevice(r: Row): Device {
   return {
     id: r.id, name: r.name, createdAt: Number(r.created_at), lastUsedAt: r.last_used_at == null ? null : Number(r.last_used_at),
@@ -132,8 +139,6 @@ function unseal(sealed: string, oldCookie: string): string | null {
   }
 }
 
-let exercised468 = false;
-
 export const deviceView = (d: Device): DeviceView => ({ id: d.id, name: d.name, createdAt: d.createdAt, lastUsedAt: d.lastUsedAt, passkey: !!d.credentialId, passkeyAt: d.passkeyAt, kind: d.kind, pairedVia: d.pairedVia });
 
 /** A device's name as the person typed it: trimmed, one line, short. */
@@ -158,6 +163,29 @@ export function browserName(userAgent: string | undefined): string {
     : /Mac OS X|Macintosh/.test(ua) ? 'macOS' : /Linux|X11/.test(ua) ? 'Linux' : null;
   return os ? `${browser} on ${os}` : browser;
 }
+
+type OpenCode = { value: Buffer; expiresAt: number; kind: DeviceKind; via: string | null; viaLink: string | null };
+
+/**
+ * The last pairing a code made (issue #466), kept in memory until that code would have expired: so a second press of
+ * the same link can say it was used and whether that pairing reached its browser, and the page after pairing can tell
+ * whether this browser kept its cookie. `check` is the one-time value the page after pairing is opened with; `seen`:
+ * the device's cookie has come back on some request since.
+ */
+export interface UsedPairing {
+  deviceId: string;
+  name: string;
+  at: number;
+  partitioned: boolean;
+  seen: boolean;
+  /** Removed since, in Settings or by Ledung, and not by the page after pairing (which leaves pairAgain open). */
+  removed: boolean;
+  /** Made by pairAgain: the earlier pairing with the same code, which never reached a browser. */
+  replaced: { name: string; at: number } | null;
+}
+
+/** The last pairing as kept: its code and the check value too; `dropped`: removed as its browser kept no cookie. */
+type LastPairing = OpenCode & Omit<UsedPairing, 'removed'> & { check: string; dropped: boolean };
 
 /** A linked computer as the devices see it: its link's id and the name it has here. */
 export interface LinkRef {
@@ -187,7 +215,8 @@ export function pairedLink<L extends LinkRef>(device: Pick<Device, 'kind' | 'pai
 export class Devices {
   private readonly db: DatabaseSync;
   private readonly now: () => number;
-  private code: { value: Buffer; expiresAt: number; kind: DeviceKind; via: string | null; viaLink: string | null } | null = null;
+  private code: OpenCode | null = null;
+  private used: LastPairing | null = null;
 
   constructor(db: DatabaseSync, now: () => number = Date.now) {
     this.db = db;
@@ -203,6 +232,8 @@ export class Devices {
     const code = Array.from({ length: PAIR_CODE_LENGTH }, () => PAIR_CODE_CHARS[crypto.randomInt(PAIR_CODE_CHARS.length)]).join('');
     const expiresAt = this.now() + PAIR_CODE_MS;
     this.code = { value: Buffer.from(code), expiresAt, kind, via: via?.name ?? null, viaLink: via?.link ?? null };
+    // The last used code stops too (self-check of #466, finding 1): it can no longer pair again in its device's place.
+    this.used = null;
     return { code, expiresAt, kind };
   }
 
@@ -212,6 +243,7 @@ export class Devices {
    */
   closeCodeUnlessLinked(links: ReadonlySet<string>): void {
     if (this.code?.viaLink && !links.has(this.code.viaLink)) this.code = null;
+    if (this.used?.viaLink && !links.has(this.used.viaLink)) this.used = null;
   }
 
   /** The linked computer the open code was made for (issue #273), while `code` is that code; null otherwise. */
@@ -221,25 +253,96 @@ export class Devices {
 
   /** True while `code` is the open, unexpired code; uses nothing up. */
   codeValid(code: unknown): boolean {
-    // ASCII letters and digits only: a character such as the Kelvin sign would lower-case into the alphabet.
-    if (typeof code !== 'string' || !/^[0-9a-z]+$/i.test(code) || !this.code) return false;
+    if (!this.code) return false;
     if (this.now() >= this.code.expiresAt) {
       this.code = null;
       return false;
     }
-    const given = Buffer.from(code.toLowerCase());
-    return given.length === this.code.value.length && crypto.timingSafeEqual(given, this.code.value);
+    return codeMatches(code, this.code.value);
   }
 
   /**
    * Pairs a device with the open code, which is then used up, as the kind the code was made for. `partitioned`: paired
-   * inside a frame (issue #241). Returns the device's cookie value, or null.
+   * inside a frame (issue #241). Returns the device's cookie value and the one-time value of the page after pairing
+   * (issue #466), or null.
    */
-  pair(code: unknown, name: unknown, partitioned = false): { device: Device; cookie: string } | null {
+  pair(code: unknown, name: unknown, partitioned = false): { device: Device; cookie: string; check: string } | null {
     if (!this.codeValid(code)) return null;
-    const { kind, via, viaLink } = this.code!;
+    const open = this.code!;
     this.code = null;
-    return this.add(kind, deviceName(name, kind === 'browser' ? 'Browser' : 'Phone'), partitioned, via, viaLink);
+    return this.pairWith(open, name, partitioned);
+  }
+
+  private pairWith(open: OpenCode, name: unknown, partitioned: boolean, replaced: UsedPairing | null = null): { device: Device; cookie: string; check: string } {
+    const added = this.add(open.kind, deviceName(name, open.kind === 'browser' ? 'Browser' : 'Phone'), partitioned, open.via, open.viaLink);
+    const check = crypto.randomBytes(16).toString('hex');
+    const { value, expiresAt, kind, via, viaLink } = open;
+    this.used = { value, expiresAt, kind, via, viaLink, check, deviceId: added.device.id, name: added.device.name, at: added.device.createdAt, partitioned, seen: false, dropped: false,
+      replaced: replaced ? { name: replaced.name, at: replaced.at } : null };
+    return { ...added, check };
+  }
+
+  /** The last pairing while its code would still be open, null after (issue #466). */
+  private liveUsed(): LastPairing | null {
+    if (this.used && this.now() >= this.used.expiresAt) this.used = null;
+    return this.used;
+  }
+
+  private view(used: LastPairing): UsedPairing {
+    return {
+      deviceId: used.deviceId, name: used.name, at: used.at, partitioned: used.partitioned, seen: used.seen, replaced: used.replaced,
+      removed: !used.dropped && !this.get(used.deviceId),
+    };
+  }
+
+  /** The last pairing when `code` is the code that made it, used up but not yet expired (issue #466); null otherwise. */
+  usedPairing(code: unknown): UsedPairing | null {
+    const used = this.liveUsed();
+    return used && codeMatches(code, used.value) ? this.view(used) : null;
+  }
+
+  /**
+   * The last pairing when `check` is the value its page after pairing was opened with (issue #466), with its code, so
+   * that page can offer to pair again with it; null otherwise.
+   */
+  pairingChecked(check: unknown): (UsedPairing & { code: string }) | null {
+    const used = this.liveUsed();
+    if (!used || typeof check !== 'string' || !/^[0-9a-f]{32}$/.test(check)) return null;
+    const given = Buffer.from(check);
+    if (!crypto.timingSafeEqual(given, Buffer.from(used.check))) return null;
+    return { ...this.view(used), code: used.value.toString() };
+  }
+
+  /** A device's cookie came back (issue #466): if it is the last pairing's, that pairing reached its browser. */
+  pairingSeen(deviceId: string): void {
+    if (this.used?.deviceId === deviceId) this.used.seen = true;
+  }
+
+  /**
+   * Pairs this browser with the last code again (issue #466), while that code would still be open and the device it
+   * made never came back with its cookie: the browser dropped it, or a second press of Pair cut the first one's answer
+   * off. That device is removed, since no browser holds it, and a new one is made, as the code would have. Holding the
+   * code gives no more than it did before its first use. Null when the code is not the last one, or its device was
+   * seen, or has been removed since.
+   */
+  pairAgain(code: unknown, name: unknown, partitioned = false): { device: Device; cookie: string; check: string; replaced: UsedPairing } | null {
+    const used = this.liveUsed();
+    if (!used || used.seen || !codeMatches(code, used.value)) return null;
+    // Removed in Settings meanwhile: that was the person's word, and the link stays used.
+    if (!used.dropped && !this.revoke(used.deviceId)) return null;
+    this.used = null;
+    const replaced = this.view(used);
+    return { ...this.pairWith(used, name, partitioned, replaced), replaced };
+  }
+
+  /**
+   * The page after pairing found its browser did not keep the cookie (issue #466): the device no browser holds is
+   * removed at once, rather than left in Settings, and the code may still pair this browser again (pairAgain).
+   */
+  dropUnseen(check: unknown): void {
+    if (!this.pairingChecked(check) || !this.used || this.used.seen || this.used.dropped) return;
+    this.revoke(this.used.deviceId);
+    this.used.dropped = true;
   }
 
   /**
@@ -400,12 +503,7 @@ export class Devices {
   private renewedAgain(device: Device, at: number): string | null {
     const r = this.db.prepare('SELECT new_cookie_sealed, old_cookie_until FROM devices WHERE id = ? AND revoked_at IS NULL').get(device.id) as Row | undefined;
     if (!r || r.new_cookie_sealed == null || device.presented === null || at <= Number(r.old_cookie_until)) return null;
-    const cookie = unseal(String(r.new_cookie_sealed), device.presented);
-    if (cookie !== null && !exercised468) {
-      exercised468 = true;
-      exercisedLine('EXERCISED #468 a renewed cookie whose answer looked lost was sent again, and the pairing kept');
-    }
-    return cookie;
+    return unseal(String(r.new_cookie_sealed), device.presented);
   }
 
   /** A computer logs on (after its passkey check): changes need no unlock until it logs off. */

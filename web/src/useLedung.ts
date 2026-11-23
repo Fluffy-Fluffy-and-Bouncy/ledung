@@ -11,6 +11,7 @@ import { api, connectionHello, openConnection, setReconnect } from './api.ts';
 import { OpenSession, viewFor, type OpenSessionView } from './openSession.ts';
 import { secretsChanged } from './secretLock.ts';
 import { pollWhileShown } from './pollShown.ts';
+import { retryConnection } from './reconnect.ts';
 import { withArchived, withNamed, withSession, type KnownSessions } from '../../src/shared/hello-sessions.ts';
 import { withHistory } from './waitingLists.ts';
 
@@ -116,9 +117,9 @@ export function useLedung(openSessionId: string | null) {
 
   useEffect(() => {
     let ws: WebSocket | null = null;
-    let retry = 500;
     let stopped = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Every 0.5 s while Ledung is away, and at once when the page is shown again (#488, reconnect.ts).
+    const retry = retryConnection(() => connect());
 
     const connect = () => {
       setConnection('connecting');
@@ -129,14 +130,13 @@ export function useLedung(openSessionId: string | null) {
       liveRef.current = mine;
       open.disconnected();
       ws.onopen = () => {
-        retry = 500;
         setConnection('open');
       };
       ws.onclose = () => {
         // A replaced connection's late close must not mark its successor as down (self-check of #231).
         if (liveRef.current === mine) open.disconnected();
         setConnection('closed');
-        if (!stopped) timer = setTimeout(connect, (retry = Math.min(retry * 2, 10000)));
+        if (!stopped) retry.closed();
       };
       ws.onmessage = (e) => {
         const event = JSON.parse(e.data) as ServerEvent;
@@ -288,18 +288,17 @@ export function useLedung(openSessionId: string | null) {
     // handlers, so its late close can't schedule a second connection, and replaced at once.
     setReconnect(() => {
       if (stopped) return;
-      clearTimeout(timer);
+      retry.cancel();
       if (ws) {
         ws.onopen = ws.onclose = ws.onmessage = null;
         ws.close();
       }
-      retry = 500;
       connect();
     });
     return () => {
       stopped = true;
       setReconnect(null);
-      clearTimeout(timer);
+      retry.stop();
       ws?.close();
     };
   }, [open]);

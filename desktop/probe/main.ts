@@ -26,6 +26,18 @@
 //                           As…, Copy Link Address, Copy, Paste and Select All do what they say, and the last two
 //                           spots get no menu; PROBE_SHOT=<file.png> also shows the real menu over the picture and
 //                           saves the screen (macOS)
+//   PROBE_PHASE=pictures    a Ledung runs, with PROBE_PROJECT a local project whose sessions run on Haiku (#451): the
+//                           real page's pictures, set up by the probe (a sent picture, a question with two
+//                           screenshots), right-clicked in the conversation and on Waiting for you; each picture in
+//                           sight gets Copy Image and Save Image As…, the menu opens, Copy Image copies; one with
+//                           something over it fails, naming it.
+//                           PROBE_CLICK=native uses the system's mouse (unlocked screen, window in front);
+//                           PROBE_MAIN=<dist/desktop/main.js> runs a package's built app instead of ../main.ts;
+//                           PROBE_SHOT_DIR saves the window per route. Runs on Windows too, as do "context" and
+//                           "framed"
+//   PROBE_PHASE=framed      a Ledung runs (#451): a picture in a frame of another site, as another computer's tab
+//                           shows its page, right-clicked with PROBE_CLICK=native (Electron's input call never
+//                           reaches such a frame); PROBE_FRAME_SAME=1 frames it from the page's own site, the control
 //   PROBE_PHASE=frames      a Ledung runs whose config lists the computer other.example.test (#468): the probe stands
 //                           in for that computer with an HTTPS server of its own on loopback, and shows its page in a
 //                           frame on Ledung's page, as a computer tab does; a form there answers 303 with a cookie, as
@@ -52,14 +64,15 @@
 //                           closed hides; the Dock and a second start show the most recently used; Quit ends the app
 //
 // Run from desktop/: `LEDUNG_CONFIG=… LEDUNG_DATA_DIR=… PROBE_PHASE=attach npx electron probe`. macOS and Linux
-// only for now: it reads command lines with `ps` (code review of PR #366, Minor 3).
-import { app, BrowserWindow, clipboard, dialog, Menu, nativeImage, shell, WebContentsView, type MenuItem, type NativeImage, type WebContents } from 'electron';
+// only for now, but for "context", "pictures" and "framed": it reads command lines with `ps` (code review of PR #366, Minor 3).
+import { app, BrowserWindow, clipboard, dialog, Menu, nativeImage, screen, shell, WebContentsView, type MenuItem, type NativeImage, type WebContents } from 'electron';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
 import https from 'node:https';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isToolCallsKey } from '../../web/src/sessionMenu.ts';
 import { answersSignIn, candidatePorts, configFiles, dataDir, DEFAULT_PORT } from '../attach.ts';
 import { ZOOM_STEP } from '../keys.ts';
@@ -71,8 +84,9 @@ const phase = process.env.PROBE_PHASE ?? 'attach';
 const port = candidatePorts(configFiles())[0];
 // Only a throwaway Ledung: without both settings the app would find the real one (self-check round 2, finding 1).
 // Checked before the app is loaded, since it attaches as soon as Electron is ready.
-const refused = process.platform === 'win32'
-  ? 'Windows has no ps to read command lines with; run this on macOS or Linux'
+// Windows only for the phases that read no command lines but signedIn's, which asks PowerShell there (#451).
+const refused = process.platform === 'win32' && !['context', 'pictures', 'framed'].includes(phase)
+  ? 'Windows has no ps to read command lines with; this phase runs on macOS or Linux (context, pictures and framed run on Windows too)'
   : !process.env.LEDUNG_CONFIG || !process.env.LEDUNG_DATA_DIR
     ? 'LEDUNG_CONFIG and LEDUNG_DATA_DIR must both name a throwaway Ledung'
     : port === undefined || port === DEFAULT_PORT ? `the config's port is ${port ?? 'unreadable'}; use a test port, never the real Ledung's`
@@ -115,6 +129,8 @@ function dockEdge(image: NativeImage): { corner: number; outside: number; inside
 }
 /** main.ts's icon path, read from the module once it is loaded. */
 let appIcon = '';
+/** main.ts's Copy Image, read from the module once it is loaded: "framed" calls it as the menu does (#451). */
+let appCopyImage: ((contents: WebContents, params: { x: number; y: number; srcURL: string; frame: Electron.WebFrameMain | null }) => Promise<void>) | null = null;
 const out = (event: string, data: unknown = {}) => console.log('PROBE ' + JSON.stringify({ phase, event, data }));
 /** A check the PR relies on: a failing one is printed and makes the run exit 1. */
 function expect(holds: boolean, what: string, seen?: unknown): void {
@@ -175,7 +191,9 @@ async function signedIn(w: BrowserWindow): Promise<string[]> {
   const ids = ((devices.body?.devices ?? []) as { id: string }[]).map((d) => d.id).sort();
   const cookies = await wc.session.cookies.get({ url: origin, name: 'ledung_auth' });
   const t = token();
-  const commandLines = execFileSync('ps', ['-axww', '-o', 'command='], { encoding: 'utf8', maxBuffer: 64 << 20 });
+  const commandLines = process.platform === 'win32'
+    ? execFileSync('powershell', ['-NoProfile', '-Command', 'Get-CimInstance Win32_Process | ForEach-Object CommandLine'], { encoding: 'utf8', maxBuffer: 64 << 20, windowsHide: true })
+    : execFileSync('ps', ['-axww', '-o', 'command='], { encoding: 'utf8', maxBuffer: 64 << 20 });
   const history = wc.navigationHistory.getAllEntries().map((e) => e.url);
   const sidebar = await page(w, `!!document.querySelector('nav, aside, .sidebar')`);
   const report = {
@@ -579,6 +597,364 @@ async function contextPhase(w: BrowserWindow): Promise<void> {
     Menu.prototype.popup = realPopup;
   }
 }
+
+/** The picture on the clipboard: Electron 45's clipboard is the W3C one, where it is an image/png entry. */
+async function clipboardPicture(): Promise<NativeImage> {
+  for (const item of await clipboard.read()) {
+    if (!item.types.includes('image/png')) continue;
+    const blob = await item.getType('image/png') as Blob;
+    return nativeImage.createFromBuffer(Buffer.from(await blob.arrayBuffer()));
+  }
+  return nativeImage.createEmpty();
+}
+
+/**
+ * A right-click at a point in the window's page (CSS pixels): by Electron's input call, or with `native` by the
+ * system's own mouse (Windows: user32; macOS: rclick.swift, run with swift). Electron's input call goes to the top
+ * page's own process only: a frame of another site, which runs in its own process (as another computer's tab does),
+ * never sees it (#451, the "framed" phase), so a click there needs `native`.
+ */
+function rightClickAt(w: BrowserWindow, x: number, y: number, native: boolean): void {
+  const wc = w.webContents;
+  const zoom = wc.getZoomFactor();
+  if (!native) {
+    const at = { x: Math.round(x * zoom), y: Math.round(y * zoom) };
+    wc.sendInputEvent({ type: 'mouseDown', ...at, button: 'right', clickCount: 1 });
+    wc.sendInputEvent({ type: 'mouseUp', ...at, button: 'right', clickCount: 1 });
+    return;
+  }
+  const b = w.getContentBounds();
+  const dip = { x: Math.round(b.x + x * zoom), y: Math.round(b.y + y * zoom) };
+  if (process.platform === 'win32') {
+    // Physical pixels of the window's own display, with the helper's thread per-monitor DPI aware (-4; the thread's
+    // setting holds whatever PowerShell's own manifest says), so a scaled or second display puts the pointer on the
+    // picture. Hidden, or its console window could take the click.
+    const p = screen.dipToScreenPoint(dip);
+    execFileSync('powershell', ['-NoProfile', '-Command', `Add-Type -Name M -Namespace P -MemberDefinition '[DllImport("user32.dll")] public static extern System.IntPtr SetThreadDpiAwarenessContext(System.IntPtr v); [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y); [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint d, System.UIntPtr e);'; [P.M]::SetThreadDpiAwarenessContext([System.IntPtr](-4)) | Out-Null; [P.M]::SetCursorPos(${p.x}, ${p.y}) | Out-Null; Start-Sleep -Milliseconds 100; [P.M]::mouse_event(8, 0, 0, 0, [System.UIntPtr]::Zero); Start-Sleep -Milliseconds 60; [P.M]::mouse_event(16, 0, 0, 0, [System.UIntPtr]::Zero)`], { windowsHide: true });
+  } else {
+    execFileSync('swift', [path.join(here, 'rclick.swift'), String(process.pid), String(dip.x), String(dip.y)]);
+  }
+}
+
+/**
+ * #451: a picture in a frame of another site, as another computer's tab shows that computer's page (`https://<its
+ * public name>`, a frame in a process of its own). A small picture page on localhost (another site than 127.0.0.1) is
+ * framed over Ledung's page, the page's frame rule widened for it in the probe only, and its picture right-clicked:
+ * Electron reports a picture, the menu has Copy Image and Save Image As… and opens, and Copy Image copies. Needs
+ * PROBE_CLICK=native (Electron's input call never reaches such a frame: the frame then sees no mouse event, printed as
+ * frameEvents); PROBE_FRAME_SAME=1 frames the picture from the page's own site instead, the control.
+ */
+async function framedPhase(w: BrowserWindow): Promise<void> {
+  // A picture page on another site (localhost, not 127.0.0.1), as another computer's tab shows its page in a frame.
+  const png = fs.readFileSync(path.join(clone, 'web', 'public', 'icon-512.png'));
+  const server = http.createServer((req, res) => {
+    if (req.url === '/p.png') {
+      res.writeHead(200, { 'Content-Type': 'image/png' });
+      res.end(png);
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end('<!doctype html><body style="margin:0;background:#222"><img id="pic" src="/p.png" width="240" height="240" style="margin:20px"></body>');
+  });
+  await new Promise<void>((r) => server.listen(0, 'localhost', () => r()));
+  const framePort = (server.address() as { port: number }).port;
+  const frameOrigin = `http://localhost:${framePort}`;
+  const wc = w.webContents;
+  // The page lets only the config's computers be framed; this one is let in as one of them would be. Widened in the
+  // page's own frame-src when it has one (a config with computers): a second frame-src would be ignored (code review
+  // of PR #452, Minor 1).
+  const widen = (csp: string) => (/(^|;)\s*frame-src\s/.test(csp)
+    ? csp.replace(/((?:^|;)\s*frame-src)\s/, `$1 ${frameOrigin} `)
+    : `${csp}; frame-src 'self' ${frameOrigin}`);
+  wc.session.webRequest.onHeadersReceived({ urls: [`${origin}/*`] }, (details, callback) => {
+    const headers = { ...details.responseHeaders };
+    for (const k of Object.keys(headers)) {
+      if (k.toLowerCase() === 'content-security-policy') headers[k] = headers[k]!.map(widen);
+    }
+    callback({ responseHeaders: headers });
+  });
+  wc.reload();
+  await sleep(4000);
+  const realPopup = Menu.prototype.popup;
+  const popped: { menu: Menu; shown: boolean }[] = [];
+  Menu.prototype.popup = function popup(this: Menu, options?: Electron.PopupOptions) {
+    const entry = { menu: this, shown: false };
+    popped.push(entry);
+    this.once('menu-will-show', () => {
+      entry.shown = true;
+    });
+    realPopup.call(this, options);
+  };
+  const reported: Electron.ContextMenuParams[] = [];
+  const listen = (_e: Electron.Event, p: Electron.ContextMenuParams) => reported.push(p);
+  wc.on('context-menu', listen);
+  const native = process.env.PROBE_CLICK === 'native';
+  w.show();
+  w.focus();
+  if (native) w.setAlwaysOnTop(true);
+  w.moveTop();
+  if (process.platform === 'darwin') app.focus({ steal: true });
+  try {
+    // PROBE_FRAME_SAME=1: a frame of the page's own site (same process), the control for how input reaches a frame.
+    const same = !!process.env.PROBE_FRAME_SAME;
+    await page(w, `(() => { const f = document.createElement('iframe'); f.id = '__pFrame';
+      ${same ? `f.srcdoc = '<body style="margin:0;background:#222"><img id="pic" src="/icon-512.png" width="240" height="240" style="margin:20px"></body>';` : `f.src = ${JSON.stringify(frameOrigin + '/')};`}
+      f.style.cssText = 'position:fixed;left:300px;top:150px;width:320px;height:320px;z-index:99999;border:0'; document.body.append(f); return 1; })()`);
+    await sleep(2500);
+    const frames = wc.mainFrame.framesInSubtree.map((f) => ({ url: f.url, pid: f.osProcessId, top: f.parent === null }));
+    const child = wc.mainFrame.framesInSubtree.find((f) => f.parent !== null);
+    await child?.executeJavaScript(`window.__ev = []; for (const t of ['mousedown', 'contextmenu']) addEventListener(t, (e) => __ev.push(t + ':' + e.target.tagName), true); 1`);
+    const onTop = await page(w, `(() => { const e = document.elementFromPoint(440, 290); return e ? e.tagName + '#' + e.id : null; })()`);
+    // The frame came up with its picture before anything is clicked: a frame that never loaded would fail the checks
+    // below for the probe's own reason, not the app's (test review of PR #452, Minor 1).
+    const loaded = await child?.executeJavaScript(`(() => { const i = document.getElementById('pic'); return !!i && i.complete && i.naturalWidth > 0; })()`).catch(() => false);
+    const top = wc.mainFrame;
+    out('framed-frames', { frames, same, onTop, loaded });
+    expect(!!child && child.url === (same ? 'about:srcdoc' : `${frameOrigin}/`), 'the frame loaded its page', child?.url ?? 'no frame');
+    expect(same || (!!child && child.osProcessId !== top.osProcessId), 'the frame of another site runs in a process of its own', frames);
+    expect(loaded === true, 'the frame\'s picture loaded', loaded);
+    expect(onTop === 'IFRAME#__pFrame', 'the frame is what lies under the click', onTop);
+    if (!child || loaded !== true) return;
+    const zoom = wc.getZoomFactor();
+    // The picture's middle: the frame at (300, 150), the picture 20 px in, 240 px wide.
+    const at = { x: Math.round((300 + 20 + 120) * zoom), y: Math.round((150 + 20 + 120) * zoom) };
+    /** The picture on the clipboard after `ms` at most, as its size; null for none. */
+    const clipboardSize = async (ms = 4000) => {
+      let copied = await clipboardPicture();
+      for (const end = Date.now() + ms; copied.isEmpty() && Date.now() < end;) {
+        await sleep(200);
+        copied = await clipboardPicture();
+      }
+      return copied.isEmpty() ? null : copied.getSize();
+    };
+    // The click and its menu: Electron's input call reaches only a frame of the page's own site, so the cross-site
+    // frame's click is checked with the system's mouse only.
+    if (native || same) {
+      rightClickAt(w, at.x / zoom, at.y / zoom, native);
+      for (let i = 0; i < 60 && !popped.at(-1)?.shown; i++) await sleep(50);
+      const p = reported[0];
+      const last = popped.at(-1);
+      const labels = last ? last.menu.items.map((i) => (i.type === 'separator' ? '-' : i.label)) : null;
+      out('framed-picture', { frameEvents: await child.executeJavaScript('window.__ev'), reported: p ? { mediaType: p.mediaType, hasImageContents: p.hasImageContents, srcURL: p.srcURL, frame: p.frame?.url ?? null } : null, menu: labels, shown: last?.shown ?? false });
+      expect(p?.mediaType === 'image', 'Electron reports the framed picture as a picture', p?.mediaType ?? 'no context-menu event');
+      expect(JSON.stringify(labels) === JSON.stringify(['Copy Image', 'Save Image As…']), 'the framed picture gets Copy Image and Save Image As…', labels);
+      expect(last?.shown === true, 'the menu opened over the framed picture', last?.shown);
+      if (last) {
+        last.menu.closePopup(w);
+        await sleep(300);
+        clipboard.clear();
+        last.menu.items.find((i) => i.label === 'Copy Image')?.click();
+        const size = await clipboardSize();
+        out('framed-copied', { size });
+        expect(size !== null && size.width === 512, 'Copy Image copied the framed picture at its own size', size);
+      }
+    } else {
+      out('framed-picture', { skipped: 'Electron\'s input call never reaches a frame of another site: PROBE_CLICK=native checks the click' });
+    }
+    // Copy Image itself, called as the menu calls it for this picture, with any click: the app's own function (#451).
+    expect(appCopyImage !== null, 'the app has its Copy Image for the probe (a package from before #451 has none)');
+    if (appCopyImage) {
+      const srcURL = same ? `${origin}/icon-512.png` : `${frameOrigin}/p.png`;
+      clipboard.clear();
+      await appCopyImage(wc, { x: at.x, y: at.y, srcURL, frame: child });
+      const size = await clipboardSize();
+      out('framed-copy-direct', { size });
+      expect(size !== null && size.width === 512 && size.height === 512, 'the app\'s Copy Image copies the framed picture at its own size', size);
+    }
+    // Why the app asks the frame: the top page's copy, all Electron offers, copies nothing from a frame of another
+    // site (tubal-cain's run on PR #452). Its positive branch is the same call on the same-site control.
+    clipboard.clear();
+    wc.copyImageAt(at.x, at.y);
+    const topCopy = await clipboardSize(same ? 4000 : 2000);
+    out('framed-copy-top-page', { size: topCopy, same });
+    if (same) expect(topCopy !== null && topCopy.width === 512, 'the top page\'s copy copies a picture in a frame of its own site', topCopy);
+    else expect(topCopy === null, 'the top page\'s copy copies nothing from a frame of another site', topCopy);
+  } finally {
+    Menu.prototype.popup = realPopup;
+    wc.off('context-menu', listen);
+    wc.session.webRequest.onHeadersReceived(null);
+    if (native) w.setAlwaysOnTop(false);
+    server.close();
+  }
+}
+
+/**
+ * #451: right-clicks the real page's pictures, as Martin did, not a picture the probe put in. Sets them up itself in the
+ * project PROBE_PROJECT names (its sessions on Haiku): two pictures in its folder, a session sent a picture, which is
+ * then asked to raise a question with both as screenshots. Then each of Ledung's own pictures (<img> from /api/) on the
+ * session's conversation (the sent one and the question's two thumbnails) and on Waiting for you (the big screenshot
+ * and the strip's two) gets Copy Image and Save Image As…, and the menu really opens; Copy Image on the first puts it
+ * on the clipboard. A picture inside a closed block is skipped; one with something else on top fails, naming it (an
+ * overlay is one of the issue's suspects). PROBE_CLICK=native clicks with the system's mouse (Windows: user32; macOS:
+ * desktop/probe/rclick.swift, run with swift; the screen must be unlocked), not Electron's input call; PROBE_SHOT_DIR
+ * saves the window per route. Prints what Electron reported for each picture.
+ */
+async function picturesPhase(w: BrowserWindow): Promise<void> {
+  const project = process.env.PROBE_PROJECT;
+  if (!project) {
+    expect(false, 'PROBE_PROJECT names a local project in the throwaway config');
+    return;
+  }
+  const wc = w.webContents;
+  const native = process.env.PROBE_CLICK === 'native';
+  if (native && process.platform === 'linux') {
+    expect(false, 'PROBE_CLICK=native runs on Windows and macOS only');
+    return;
+  }
+  const state = await api(w, 'state');
+  const entry = ((state.body?.projects ?? []) as { name: string; path?: string; model?: string }[]).find((p) => p.name === project);
+  if (!entry?.path) {
+    expect(false, 'the project is in the throwaway Ledung, with a folder', project);
+    return;
+  }
+  // Test sessions run on Haiku (repo CLAUDE.md).
+  if (!/haiku/i.test(entry.model ?? '')) {
+    expect(false, 'the project\'s sessions run on Haiku ("model": "haiku" in the throwaway config)', entry.model ?? 'none');
+    return;
+  }
+  fs.copyFileSync(path.join(clone, 'web', 'public', 'icon-512.png'), path.join(entry.path, 'probe-shot.png'));
+  fs.copyFileSync(path.join(clone, 'web', 'public', 'icon-256.png'), path.join(entry.path, 'probe-small.png'));
+  // Each step's answer is checked: a session that did not start says why now, not as a question that never came.
+  const setup = await page(w, `(async () => {
+    const send = async (route, body, type) => { const r = await fetch('/api/' + route, { method: 'POST', headers: { 'Content-Type': type ?? 'application/json' }, body: type ? body : JSON.stringify(body) });
+      const answer = await r.json().catch(() => ({})); if (!r.ok) throw new Error(route + ': ' + r.status + ' ' + (answer.error ?? '')); return answer; };
+    try {
+      const s = await send('sessions', { project: ${JSON.stringify(project)}, role: 'session' });
+      if (!s.id) return { error: 'no session id' };
+      const picture = await (await fetch('/icon-512.png')).blob();
+      const sent = await send('sessions/' + s.id + '/images', picture, 'image/png');
+      if (!sent.id) return { error: 'no picture id' };
+      await send('sessions/' + s.id + '/messages', { images: [sent.id], text: "Call the ask_user tool once, loading it with ToolSearch if you need to: question 'Do these look right?', tier the lowest one its description lists, screenshots [{file: 'probe-shot.png', look_for: 'the picture'}, {file: 'probe-small.png', look_for: 'the icon'}]. Nothing else, no other tools." });
+      return { id: s.id };
+    } catch (e) {
+      return { error: e.message };
+    }
+  })()`) as { id?: string; error?: string };
+  out('pictures-session', setup);
+  if (!setup.id) {
+    expect(false, 'the probe started a session and sent it a picture', setup.error);
+    return;
+  }
+  const session = setup.id;
+  let question: number | null = null;
+  const seconds = Number(process.env.PROBE_QUESTION_SECONDS ?? 120);
+  for (let i = 0; i < seconds && question === null; i++) {
+    await sleep(1000);
+    const qs = ((await api(w, 'state')).body?.questions ?? []) as { id: number; sessionId: string; status: string; shots?: unknown[] }[];
+    question = qs.find((q) => q.sessionId === session && q.status === 'open' && (q.shots?.length ?? 0) > 0)?.id ?? null;
+  }
+  expect(question !== null, `the session asked its question with screenshots within ${seconds} s`, session);
+  if (question === null) return;
+
+  const realPopup = Menu.prototype.popup;
+  /**
+   * Each menu the app asked to open, with how long after its popup() the system showed it and closed it (ms). The
+   * probe closes a menu only once it has shown, and waits for that before the next click: closing it a fixed 500 ms
+   * after popup() cancelled one Windows had not shown yet (tubal-cain's run on #451, try 1, "shown":false).
+   */
+  type Popped = { menu: Menu; shown: boolean; showMs: number | null; closeMs: number | null };
+  const popped: Popped[] = [];
+  Menu.prototype.popup = function popup(this: Menu, options?: Electron.PopupOptions) {
+    const calledAt = Date.now();
+    const entry: Popped = { menu: this, shown: false, showMs: null, closeMs: null };
+    popped.push(entry);
+    this.once('menu-will-show', () => {
+      entry.shown = true;
+      entry.showMs = Date.now() - calledAt;
+    });
+    this.once('menu-will-close', () => {
+      entry.closeMs = Date.now() - calledAt;
+    });
+    realPopup.call(this, options);
+  };
+  const MENU_WAIT_MS = Number(process.env.PROBE_MENU_WAIT_MS ?? 3000);
+  /** Waits until `done` holds or `ms` passed; true when it held. */
+  const until = async (done: () => boolean, ms: number) => {
+    for (const end = Date.now() + ms; !done() && Date.now() < end;) await sleep(25);
+    return done();
+  };
+  const reported: Electron.ContextMenuParams[] = [];
+  const listen = (_e: Electron.Event, p: Electron.ContextMenuParams) => reported.push(p);
+  wc.on('context-menu', listen);
+  w.show();
+  w.focus();
+  // A system click lands on whatever window is in front: Windows keeps the terminal the probe started from in front
+  // despite focus(), so the window stays on top while it clicks.
+  if (native) w.setAlwaysOnTop(true);
+  w.moveTop();
+  if (process.platform === 'darwin') app.focus({ steal: true });
+  const rightClick = (x: number, y: number) => rightClickAt(w, x, y, native);
+  let copiedOne = false;
+  /** Ledung's pictures each route should have in sight: the sent one and two thumbnails; the screenshot and two. */
+  const routes = [{ route: `#/s/${session}`, want: 3 }, { route: `#/waiting/q/${question}`, want: 3 }];
+  try {
+    for (const { route, want } of routes) {
+      await page(w, `location.hash = ${JSON.stringify(route)}; 1`);
+      await sleep(3000);
+      const count = await page(w, `document.querySelectorAll('img').length`) as number;
+      let checked = 0;
+      for (let n = 0; n < count; n++) {
+        // Scrolled into sight. Only Ledung's own pictures count; one in a closed block can't be clicked by anyone.
+        const img = await page(w, `(() => { const i = document.querySelectorAll('img')[${n}]; if (!i || !new URL(i.src).pathname.startsWith('/api/')) return null;
+          const src = i.src.replace(location.origin, '').slice(0, 70);
+          if (i.closest('details:not([open])')) return { src, hidden: 'in a closed block' };
+          i.scrollIntoView({ block: 'center' });
+          const r = i.getBoundingClientRect(); const x = r.left + r.width / 2, y = r.top + r.height / 2;
+          if (r.width === 0) return { src, hidden: 'no size (not loaded or not shown)' };
+          const top = document.elementFromPoint(x, y);
+          return { x, y, src, natural: [i.naturalWidth, i.naturalHeight], onTop: top === i ? null : top ? top.tagName.toLowerCase() + (top.className ? '.' + String(top.className).split(' ').join('.') : '') : 'nothing' }; })()`) as { x: number; y: number; src: string; hidden?: string; natural: [number, number]; onTop: string | null } | null;
+        if (!img) continue;
+        if (img.hidden) {
+          out('picture', { route, src: img.src, skipped: img.hidden });
+          continue;
+        }
+        checked++;
+        expect(img.onTop === null, `nothing lies over the picture on ${route} (${img.src})`, img.onTop);
+        reported.length = 0;
+        popped.length = 0;
+        rightClick(img.x, img.y);
+        // The menu shows when the system shows it: up to MENU_WAIT_MS, then closed, and gone before the next click.
+        await until(() => popped.length > 0 && (popped.at(-1)!.shown || popped.at(-1)!.closeMs !== null), MENU_WAIT_MS);
+        const p = reported[0];
+        const last = popped.at(-1);
+        if (last?.shown) {
+          last.menu.closePopup(w);
+          await until(() => last.closeMs !== null, 2000);
+        }
+        const labels = last ? last.menu.items.map((i) => (i.type === 'separator' ? '-' : i.label)) : null;
+        out('picture', { route, src: img.src, onTop: img.onTop, reported: p ? { mediaType: p.mediaType, hasImageContents: p.hasImageContents, srcURL: p.srcURL.replace(origin, '').slice(0, 70), linkURL: p.linkURL } : null, menu: labels, shown: last?.shown ?? false, showMs: last?.showMs ?? null, closeMs: last?.closeMs ?? null });
+        expect(p?.mediaType === 'image', `Electron reports a picture on ${route} (${img.src})`, p?.mediaType ?? 'no context-menu event');
+        expect(JSON.stringify(labels) === JSON.stringify(['Copy Image', 'Save Image As…']), `the picture gets Copy Image and Save Image As… on ${route}`, labels);
+        expect(last?.shown === true, `the menu opened on ${route} within ${MENU_WAIT_MS} ms`, last ? { showMs: last.showMs, closeMs: last.closeMs } : null);
+        if (!copiedOne && last) {
+          copiedOne = true;
+          clipboard.clear();
+          last.menu.items.find((i) => i.label === 'Copy Image')?.click();
+          let copied = await clipboardPicture();
+          for (let i = 0; i < 20 && copied.isEmpty(); i++) {
+            await sleep(200);
+            copied = await clipboardPicture();
+          }
+          const size = copied.isEmpty() ? null : copied.getSize();
+          out('picture-copied', { size, natural: img.natural });
+          expect(size !== null && size.width === img.natural[0] && size.height === img.natural[1], 'Copy Image put the picture, at its own size, on the clipboard', size);
+        }
+      }
+      out('pictures-checked', { route, checked, want });
+      expect(checked === want, `${want} of Ledung's pictures in sight on ${route}`, checked);
+      if (process.env.PROBE_SHOT_DIR) {
+        const file = path.join(process.env.PROBE_SHOT_DIR, `pictures-${route.startsWith('#/s/') ? 'conversation' : 'waiting'}.png`);
+        fs.writeFileSync(file, (await wc.capturePage()).toPNG());
+        out('pictures-shot', { file });
+      }
+    }
+  } finally {
+    Menu.prototype.popup = realPopup;
+    wc.off('context-menu', listen);
+    if (native) w.setAlwaysOnTop(false);
+  }
+}
+
 
 /** contextPhase's checks: `popped` collects the menus the app built, `shown.real` shows them for the screenshot. */
 async function contextChecks(w: BrowserWindow, popped: Menu[], shown: { real: boolean }): Promise<void> {
@@ -1388,6 +1764,14 @@ async function run(): Promise<void> {
       const w = await showing(`${origin}/`);
       await signedIn(w);
       await contextPhase(w);
+    } else if (phase === 'pictures') {
+      const w = await showing(`${origin}/`);
+      await signedIn(w);
+      await picturesPhase(w);
+    } else if (phase === 'framed') {
+      const w = await showing(`${origin}/`);
+      await signedIn(w);
+      await framedPhase(w);
     } else if (phase === 'notify') {
       const w = await showing(`${origin}/`);
       await signedIn(w);
@@ -1459,8 +1843,10 @@ if (refused) {
     app.commandLine.appendSwitch('ignore-certificate-errors');
   }
   // Not awaited: Electron holds its ready event until a top-level await in the entry module settles.
-  void import('../main.ts').then((m: { APP_ICON: string }) => {
+  void import(process.env.PROBE_MAIN ? pathToFileURL(process.env.PROBE_MAIN).href : '../main.ts').then((m: { APP_ICON: string; copyImage?: typeof appCopyImage }) => {
     appIcon = m.APP_ICON;
+    // A package built before #451's fix has none; "framed" then says so.
+    appCopyImage = m.copyImage ?? null;
     return app.whenReady();
   }).then(run);
 }

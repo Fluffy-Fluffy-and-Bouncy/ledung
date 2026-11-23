@@ -906,14 +906,15 @@ test('a restart for an update goes only when the `ledung` that made the app has 
   assert.equal(restartBrings('3.16.0', null), false);
 });
 
-test('`ledung --after-app=<pid> --app-only` never starts Ledung: it opens the app as it is, or says there is none (#455)', async () => {
-  // A config the core refuses at once, so the run without --app-only, which shows the probe finds a start, starts a
-  // Ledung that stops by itself: nothing is left running either way.
-  const run = async (name: string, args: string[]) => {
+test('`ledung --after-app=<pid> --app-only` starts Ledung when none runs, then opens the app; a running one is left as it is (#477)', async () => {
+  // Martin's try on Windows (#477, 2026-11-21): the app started from the Start menu after an npm update "opened this
+  // window without the server running". The start's restart now starts Ledung first when none runs, and still opens
+  // the app whatever comes of bringing it up to date: a clone has no made app, so here it says so and exits 1.
+  const run = async (name: string, args: string[], setup: (data: string, config: string) => void) => {
     const data = path.join(base, name);
     fs.mkdirSync(data, { recursive: true });
     const config = path.join(data, 'config.json');
-    fs.writeFileSync(config, '{ not json');
+    setup(data, config);
     const child = spawn(process.execPath, [path.join(appDir(), 'src', 'cli.ts'), ...args], {
       env: { ...process.env, LEDUNG_CONFIG: config, LEDUNG_DATA_DIR: data },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -926,15 +927,37 @@ test('`ledung --after-app=<pid> --app-only` never starts Ledung: it opens the ap
   };
   // A pid no process has: the wait for the app to quit ends at once.
   const gone = 2 ** 30;
-  // The restart an update makes (#408) starts Ledung when none runs: its log shows the start.
-  const plain = await run('after-app-plain-455', [`${AFTER_APP_ARG}=${gone}`, '--no-open']);
+  const refused = (_data: string, config: string) => fs.writeFileSync(config, '{ not json');
+
+  // The restart an update makes (#408) starts Ledung when none runs, as it did: its log shows the start.
+  const plain = await run('after-app-plain-455', [`${AFTER_APP_ARG}=${gone}`, '--no-open'], refused);
   assert.equal(fs.existsSync(plain.log), true, plain.out);
   assert.match(fs.readFileSync(plain.log, 'utf8'), /Ledung starting in the background/);
-  // The start's restart does not: no log, no start. A clone has no made app, so it says so and exits 1.
-  const only = await run('after-app-only-455', [`${AFTER_APP_ARG}=${gone}`, APP_ONLY_ARG]);
-  assert.equal(fs.existsSync(only.log), false, only.out);
-  assert.equal(only.code, 1, only.out);
-  assert.ok(only.out.includes(NO_APP), only.out);
+
+  // None running: a config the core refuses at once, so the Ledung it starts stops by itself and nothing is left
+  // running. Its log shows the background start, and the start comes before the app is looked for.
+  const notRunning = await run('after-app-only-477', [`${AFTER_APP_ARG}=${gone}`, APP_ONLY_ARG], refused);
+  assert.equal(fs.existsSync(notRunning.log), true, notRunning.out);
+  assert.match(fs.readFileSync(notRunning.log, 'utf8'), /Ledung starting in the background/);
+  const stopped = notRunning.out.indexOf('Ledung stopped while starting');
+  assert.ok(stopped >= 0 && stopped < notRunning.out.indexOf(NO_APP), notRunning.out);
+  assert.equal(notRunning.code, 1, notRunning.out);
+
+  // Already running (a stand-in that proves it holds this data folder's token): no second start, no log, and the app
+  // is opened as before.
+  const ledung = await standInLedung();
+  try {
+    const running = await run('after-app-only-running-477', [`${AFTER_APP_ARG}=${gone}`, APP_ONLY_ARG], (data, config) => {
+      fs.writeFileSync(config, JSON.stringify({ port: ledung.port }));
+      fs.writeFileSync(path.join(data, 'auth-token'), TOKEN_455);
+    });
+    assert.ok(running.out.includes(`Ledung is already running at http://127.0.0.1:${ledung.port}.`), running.out);
+    assert.equal(fs.existsSync(running.log), false, running.out);
+    assert.ok(running.out.includes(NO_APP), running.out);
+    assert.equal(running.code, 1, running.out);
+  } finally {
+    await ledung.close();
+  }
 });
 
 test("⌘R, Reload and Force Reload restart an app whose code is not the installed version's into it; up to date they reload the page (#455)", () => {
@@ -959,7 +982,11 @@ test("⌘R, Reload and Force Reload restart an app whose code is not the install
  * - `page-reload` and `page-reload-ignoring-cache` when the window's page reloads, and `done` when an action is over.
  * With STAND_IN_ACTION it goes on: a stand-in window attaches to the Ledung the config names, and once its page loads
  * the action runs: `reload` and `forceReload` click the View menu's item, `banner` sends the page's update message
- * with `now` (the banner's Restart window, #408).
+ * with `now` (the banner's Restart window, #408), `second` is a second start of the app (Electron's second-instance)
+ * while its window is hidden, as closing it leaves it (#479), `second-shown` the same with the window in sight, and `hidden-update` the page's update message without
+ * `now` while that window is hidden (#408's restart by itself). `activate` is the Mac's Dock click on the app (Electron's
+ * activate) after its launch moment with the window hidden, `activate-shown` the same in sight, and `activate-launch`
+ * the activate the Mac may send at launch itself, with no window in sight yet (#485).
  */
 const ELECTRON_STAND_IN = `
 const handlers = {};
@@ -982,8 +1009,14 @@ function act(w) {
     item.click(item, undefined);
   } else if (action === 'banner') {
     for (const fn of ipc['ledung-desktop:restart-for-update'] ?? []) fn({ sender: w.webContents, senderFrame: { parent: null, url: w.shown } }, true);
+  } else if (action === 'hidden-update') {
+    for (const fn of ipc['ledung-desktop:restart-for-update'] ?? []) fn({ sender: w.webContents, senderFrame: { parent: null, url: w.shown } }, false);
+  } else if (action === 'second' || action === 'second-shown') {
+    for (const fn of handlers['second-instance'] ?? []) fn({}, [], '');
+  } else if (action.startsWith('activate')) {
+    for (const fn of handlers['activate'] ?? []) fn({}, false);
   }
-  setTimeout(() => { event('done'); process.exit(0); }, 600);
+  setTimeout(() => { event('done'); process.exit(0); }, Number(process.env.STAND_IN_LINGER_MS || 600));
 }
 export class BrowserWindow {
   constructor() {
@@ -1001,7 +1034,9 @@ export class BrowserWindow {
   }
   static fromWebContents(c) { return made.find((w) => w.webContents === c) ?? null; }
   isDestroyed() { return false; }
-  isVisible() { return true; }
+  isVisible() { return !['second', 'hidden-update', 'activate', 'activate-launch'].includes(action); }
+  show() { event('show'); }
+  focus() {}
   isMinimized() { return false; }
   isFullScreen() { return false; }
   on() {}
@@ -1009,7 +1044,11 @@ export class BrowserWindow {
   loadURL(url) {
     // The page of the Ledung it attached to: the action runs once, then.
     this.shown = url;
-    if (action && !this.acted) { this.acted = true; setTimeout(() => act(this), 50); }
+    // A later load of the page: the app attached again after the action (a start, #490).
+    if (this.acted) event('page-load');
+    // A Dock click (activate) comes after the Mac's launch moment, 2 s after ready (#485); activate-launch within it.
+    const wait = action === 'activate' || action === 'activate-shown' ? 2100 : 50;
+    if (action && !this.acted) { this.acted = true; setTimeout(() => act(this), wait); }
     return Promise.resolve();
   }
 }
@@ -1017,7 +1056,9 @@ export const app = withRest({
   getVersion: () => process.env.STAND_IN_VERSION,
   on: (name, fn) => { (handlers[name] ??= []).push(fn); },
   whenReady: () => Promise.resolve(),
-  isReady: () => false,
+  // Ready for a second start or a Dock click, so its showWindow shows: the other actions keep the app as it was before
+  // #479's test.
+  isReady: () => action.startsWith('second') || action.startsWith('activate'),
   requestSingleInstanceLock: () => true,
   quit: () => {
     event('quit');
@@ -1077,10 +1118,11 @@ async function appHarness(name: string, ledungPort: number) {
   fs.writeFileSync(cli, `require('node:fs').writeFileSync(${JSON.stringify(ran)}, JSON.stringify(process.argv.slice(2)));\n`);
   fs.writeFileSync(path.join(appCode, MADE_CONFIG), JSON.stringify({ node: process.execPath, cli, env: { LEDUNG_DATA_DIR: data, LEDUNG_CONFIG: config } }));
   const note = path.join(data, 'desktop', '.start-update');
-  const start = async (own: string, installed: string, action = '') => {
+  /** `lingerMs`: how long the stand-in app stays after its action (600 ms unless a test waits for more, #490). */
+  const start = async (own: string, installed: string, action = '', lingerMs = 600) => {
     fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: 'ledung', version: installed }));
     fs.rmSync(ran, { force: true });
-    const env: NodeJS.ProcessEnv = { ...process.env, STAND_IN_VERSION: own, STAND_IN_ACTION: action };
+    const env: NodeJS.ProcessEnv = { ...process.env, STAND_IN_VERSION: own, STAND_IN_ACTION: action, STAND_IN_LINGER_MS: String(lingerMs) };
     delete env.LEDUNG_DATA_DIR;
     delete env.LEDUNG_CONFIG;
     const child = spawn(process.execPath, [path.join(appCode, 'main.js')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -1094,14 +1136,20 @@ async function appHarness(name: string, ledungPort: number) {
     const args = fs.existsSync(ran) ? (JSON.parse(fs.readFileSync(ran, 'utf8')) as string[]) : null;
     return { events, args, pid: child.pid, out };
   };
-  return { start, note };
+  return { start, note, ran, data };
 }
 
-/** A stand-in Ledung on a port of its own: it answers /running as Ledung does (desktop/attach.ts runningProof). */
-async function standInLedung(): Promise<{ port: number; close: () => Promise<void> }> {
+/**
+ * A stand-in Ledung on a port of its own: it answers /running as Ledung does (desktop/attach.ts runningProof). After
+ * `answers` proofs it answers no more, as a Ledung stopped meanwhile (#490), until `startedWhen` says it was started
+ * again.
+ */
+async function standInLedung(answers = Infinity, startedWhen: () => boolean = () => false): Promise<{ port: number; close: () => Promise<void> }> {
+  let given = 0;
   const server = http.createServer((req, res) => {
     const nonce = new URL(req.url!, 'http://x').searchParams.get('nonce');
-    if (!nonce) return void res.writeHead(404).end();
+    if (!nonce || (given >= answers && !startedWhen())) return void res.writeHead(404).end();
+    given++;
     const proof = crypto.createHmac('sha256', TOKEN_455).update(`ledung-running:${nonce}`).digest('hex');
     res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ proof }));
   });
@@ -1155,6 +1203,130 @@ test("the app's View → Reload and Force Reload (desktop/main.ts) restart an ou
       assert.deepEqual(current.events, ['window', pageEvent, 'done'], `${action}: ${current.out}`);
       assert.equal(current.args, null, `${action}: no restart command ran`);
     }
+  } finally {
+    await ledung.close();
+  }
+});
+
+test("a second start of an app running out of date with no window in sight (desktop/main.ts) restarts it into the installed version, shown, app only; in sight or up to date it only shows the window (#479)", async () => {
+  // Martin, 2026-11-21 18:09 (#477's play check): after an npm update a Start-menu start opened the app with its update
+  // banner to press. Closing the app's window hides it, so the old app was still running and the start only showed it.
+  const ledung = await standInLedung();
+  try {
+    const { start, note } = await appHarness('main-second-479', ledung.port);
+    const desktopDir = path.dirname(note);
+    const hiddenMarker = path.join(desktopDir, START_HIDDEN_FILE);
+    const restartLog = path.join(desktopDir, 'restart.log');
+
+    // Out of date (it opened on its own code: the start restart for 2.0.0 was just tried), its window hidden, and
+    // started again: it quits and runs its `ledung` in app-only mode, which starts Ledung when none runs (#477).
+    fs.mkdirSync(desktopDir, { recursive: true });
+    fs.writeFileSync(note, '2.0.0\n');
+    const old = await start('1.0.0', '2.0.0', 'second');
+    assert.ok(old.events.includes('quit'), old.out);
+    assert.ok(!old.events.includes('show'), `the old window is not shown: ${old.out}`);
+    assert.deepEqual(old.args, [`${AFTER_APP_ARG}=${old.pid}`, APP_ONLY_ARG], old.out);
+    // The person started it: it comes back shown, although its window was hidden when the restart began.
+    assert.equal(fs.existsSync(hiddenMarker), false, 'a restart for a start must not come back hidden');
+    // restart.log says when, which app and which restart.
+    const logged = fs.readFileSync(restartLog, 'utf8').trim().split('\n').at(-1) ?? '';
+    assert.match(logged, new RegExp(`^\\d{4}-\\d\\d-\\d\\dT\\S+Z restarting the app ${old.pid} \\(app only\\)$`), logged);
+
+    // The probe's positive branch: the same hidden window restarting by itself for an update (#408) does leave the
+    // marker, so its absence above is the start's doing, not a probe that finds nothing.
+    fs.writeFileSync(note, '2.0.0\n');
+    const hidden = await start('1.0.0', '2.0.0', 'hidden-update');
+    assert.deepEqual(hidden.args, [`${AFTER_APP_ARG}=${hidden.pid}`], hidden.out);
+    assert.equal(fs.existsSync(hiddenMarker), true, 'a hidden restart for an update comes back hidden');
+    fs.rmSync(hiddenMarker, { force: true });
+
+    // Out of date with its window in sight, in use: the start shows it and the page keeps its banner (Martin, #593:
+    // "ask when in front"), no restart.
+    fs.writeFileSync(note, '2.0.0\n');
+    const inUse = await start('1.0.0', '2.0.0', 'second-shown');
+    assert.deepEqual(inUse.events, ['window', 'show', 'done'], inUse.out);
+    assert.equal(inUse.args, null, 'no restart command ran');
+
+    // Up to date: a second start only shows the window, no restart.
+    const current = await start('2.0.0', '2.0.0', 'second');
+    assert.deepEqual(current.events, ['window', 'show', 'done'], current.out);
+    assert.equal(current.args, null, 'no restart command ran');
+  } finally {
+    await ledung.close();
+  }
+});
+
+test('a second start of an up-to-date app with no window in sight (desktop/main.ts) starts Ledung when none answers; a running one is left as it is (#490)', async () => {
+  // Martin, Ledung question #764 (2026-11-21 23:07): "a — Start Ledung". The window was closed (hidden), Ledung was
+  // stopped, and the app was started again from the Start menu: it showed a page with nothing behind it.
+  // Stopped: the stand-in answers the window's attach at the app's start, then no more until the made app's `ledung`
+  // has run, as a Ledung that the start brought up.
+  let ranFile = '';
+  const stopped = await standInLedung(1, () => ranFile !== '' && fs.existsSync(ranFile));
+  try {
+    const { start, ran, data } = await appHarness('main-second-stopped-490', stopped.port);
+    ranFile = ran;
+    // Time for the start and the look for Ledung after it, which polls every 0.5 s.
+    const run = await start('2.0.0', '2.0.0', 'second', 5000);
+    // The window comes forward, the made app's own `ledung` runs as Start Ledung runs it (no restart, no quit), and
+    // once that Ledung answers the window loads its page again.
+    assert.ok(run.events.includes('show'), run.out);
+    assert.ok(!run.events.includes('quit'), run.out);
+    assert.deepEqual(run.args, ['--no-open'], run.out);
+    assert.ok(run.events.indexOf('page-load') > run.events.indexOf('show'), run.out);
+  } finally {
+    await stopped.close();
+  }
+
+  // Running: the same second start only shows the window and starts nothing.
+  const running = await standInLedung();
+  try {
+    const { start, data } = await appHarness('main-second-running-490', running.port);
+    const run = await start('2.0.0', '2.0.0', 'second');
+    assert.deepEqual(run.events, ['window', 'show', 'done'], run.out);
+    assert.equal(run.args, null, 'no start command ran');
+  } finally {
+    await running.close();
+  }
+});
+
+test("a Dock click (activate) on an app running out of date with no window in sight (desktop/main.ts) restarts it into the installed version, shown, app only; at launch, in sight or up to date it only shows the window (#485)", async () => {
+  // #485, #479's Mac twin: on the Mac a Dock click, Finder or `ledung` opening the app reaches the running one as
+  // activate, not second-instance, and only showed the old window with its update banner.
+  const ledung = await standInLedung();
+  try {
+    const { start, note } = await appHarness('main-activate-485', ledung.port);
+    const desktopDir = path.dirname(note);
+    const hiddenMarker = path.join(desktopDir, START_HIDDEN_FILE);
+
+    // Out of date (it opened on its own code: the start restart for 2.0.0 was just tried), its window hidden, and
+    // clicked in the Dock after its launch: it quits and runs its `ledung` in app-only mode, and comes back shown.
+    fs.mkdirSync(desktopDir, { recursive: true });
+    fs.writeFileSync(note, '2.0.0\n');
+    const old = await start('1.0.0', '2.0.0', 'activate');
+    assert.ok(old.events.includes('quit'), old.out);
+    assert.ok(!old.events.includes('show'), `the old window is not shown: ${old.out}`);
+    assert.deepEqual(old.args, [`${AFTER_APP_ARG}=${old.pid}`, APP_ONLY_ARG], old.out);
+    assert.equal(fs.existsSync(hiddenMarker), false, 'a restart for a Dock click must not come back hidden');
+
+    // The same app at launch: the Mac's own activate of that launch, with no window in sight yet, must not restart it
+    // again, or an app that opened on its own code after a failed start restart would restart in a loop. It only shows
+    // the window. The case above is this probe's positive branch: the same app and click, after the launch, restarts.
+    fs.writeFileSync(note, '2.0.0\n');
+    const launch = await start('1.0.0', '2.0.0', 'activate-launch');
+    assert.deepEqual(launch.events, ['window', 'show', 'done'], launch.out);
+    assert.equal(launch.args, null, 'no restart command ran');
+
+    // Out of date with its window in sight, in use: the click shows it and the page keeps its banner (Martin, #593).
+    fs.writeFileSync(note, '2.0.0\n');
+    const inUse = await start('1.0.0', '2.0.0', 'activate-shown');
+    assert.deepEqual(inUse.events, ['window', 'show', 'done'], inUse.out);
+    assert.equal(inUse.args, null, 'no restart command ran');
+
+    // Up to date: a Dock click only shows the window, no restart.
+    const current = await start('2.0.0', '2.0.0', 'activate');
+    assert.deepEqual(current.events, ['window', 'show', 'done'], current.out);
+    assert.equal(current.args, null, 'no restart command ran');
   } finally {
     await ledung.close();
   }

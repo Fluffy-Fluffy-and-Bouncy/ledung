@@ -15,6 +15,11 @@ npm install   # once, and after a pull that changes package.json: downloads Elec
 npm start
 ```
 
+A recent npm runs no package's install script it has not been told to allow ("install-scripts" warnings), and
+Electron's install script is what downloads Electron, so after `npm install` or `npm ci` here
+`node_modules/electron/dist` may be missing and Electron says it failed to install correctly. Run its script once by
+hand: `node node_modules/electron/install.js` (seen with npm 12.2.2 on Windows and npm 11.20.0 on the Mac, #451).
+
 One window opens with your running Ledung's page, signed in. Nothing opens in the browser.
 
 - **It attaches to the Ledung that runs.** With none running the window says "Ledung is not running" and offers
@@ -146,13 +151,29 @@ What `npm install -g ledung` and `ledung` give (`src/platform/desktop-app.ts`, #
   version's code until something restarted it. Now, before any window, it compares its own version with the package
   where the `ledung` that made it is installed (the nearest `package.json` above that script). When they differ (a
   downgrade too) it quits and runs that command with `--after-app=<its pid> --app-only`: the update's restart, which
-  writes the installed version's code into the app (or makes it again for a new Electron) and opens it, but which
-  never starts Ledung itself, running or not. Should that fail, the command opens the app as it was. The app leaves
+  writes the installed version's code into the app (or makes it again for a new Electron) and opens it. A running
+  Ledung is left as it is; when none runs, that command first starts one in the background, with no browser, and
+  waits up to 15 seconds for it to answer (#477), so the window does not open with nothing behind it. Should bringing
+  the app up to date fail, the command opens the app as it was. The app leaves
   the version it restarted for in `desktop/.start-update`; a start that finds itself still out of date for that version
   within ten minutes runs its own code instead of restarting again, so a failure never becomes a loop, and the note
   goes once the app starts up to date. An app whose `ledung` is gone, or whose package can't be read (mid-update),
   runs what it has. An app made before this fix has no such check: it takes it the first time `ledung` or the tray's
   **Open Ledung** writes its code.
+- **Started while it still runs out of date** (#479; Martin, 2026-11-21: a Start-menu start after an update showed the
+  window with its update banner to press). Closing the app's last window only hides it, so the app keeps running
+  through `ledung stop` and an npm update, and a later start from the Start menu, a shortcut, a pin or `ledung`
+  reaches that running app instead of a fresh one, so the check above never runs. On Windows and Linux such a start
+  (Electron's second-instance) now restarts the app the same "app only" way when its code is not the installed
+  version's and no window is in sight (a minimised one counts as out of sight), and it comes back shown. A window in
+  sight is in use: the start shows it and its page keeps the update banner (Martin, question #593: "restart by itself
+  when hidden, ask when in front"). Up to date, the start shows the window as before, and when no window was in sight
+  and no Ledung answers (a `ledung stop` since), it starts Ledung as **Start Ledung** does: the window says it is
+  starting, then shows the page (#490; Martin, question #764: "a — Start Ledung"). On the Mac a Dock click, Finder,
+  Launchpad or `ledung` reaches the running app as activate instead, which now does the same restart (#485), except in the
+  first two seconds after the app is ready: the Mac may send an activate for the launch itself, and an app that opened
+  on its own code because its start restart just failed would otherwise restart again, in a loop. `desktop/restart.log`
+  gives each restart a line with its time, the app's process id and which restart it is (`app only` or `update`).
 - **Reload takes the update too** (#455; Martin, 2026-11-20: "when we press reload, why doesnt we reload with the new
   code?"). ⌘R/Ctrl+R, View → Reload and Force Reload reload the page, which comes from the running Ledung, but never
   the app's own code. While that code is not the installed version's (an update, or a downgrade) they restart the window into it instead, in
@@ -238,8 +259,40 @@ bar's view is not painted: the probe then reads the focus from inside the bar's 
 from its own page off screen, and says so). A fresh data folder shows Ledung's Welcome,
 which has no sidebar, so finish or leave the welcome in the page before the first run. Each check it makes prints
 `"event":"fail"` when it doesn't hold; the exit code is 0 only when all held, 1 otherwise, 2 when it refused to run.
-It refuses without both settings, on the default port, and on Windows (it reads command lines with `ps`; macOS and
-Linux only for now).
+It refuses without both settings, on the default port, and on Windows for every phase but `context`, `pictures`
+and `framed` (the others read command lines with `ps`).
+
+`framed` (a Ledung runs, #451) is the case of another computer's tab, whose page is a frame of another site in a
+process of its own: it frames a small picture page from `localhost` over the page at `127.0.0.1` (the page's frame
+rule widened for it, in the probe only) and checks that it loaded. Electron's input call never reaches such a frame,
+so the right-click and its menu are checked with `PROBE_CLICK=native` and an unlocked screen only;
+`PROBE_FRAME_SAME=1` frames the picture from the page's own site instead, where Electron's input call does reach it
+(the control). With any click it then runs the app's own Copy Image for the framed picture, as the menu does, and
+checks the clipboard holds it at its own size; and it shows why the app needs its own way there: Electron's
+`copyImageAt`, which works only on the window's top page, copies nothing from a frame of another site, while it does
+copy from the control's frame.
+
+`pictures` (a Ledung runs, #451) right-clicks the real page's pictures, not one the probe puts in: with
+`PROBE_PROJECT` naming a local project of the config whose sessions run on Haiku (`"model": "haiku"`), it copies two
+pictures into that project, starts a session, sends it a picture and has it ask a question with both as screenshots
+(up to `PROBE_QUESTION_SECONDS`, 120), then in the conversation and on Waiting for you checks that every picture in
+sight gets Copy Image and Save Image As…, that the menu really opens, and that Copy Image copies the first one.
+It checks only Ledung's own `<img>` pictures (from `/api/`), three on each page; one inside a closed block is
+skipped, and one with something else over it fails, naming what is on top. Each picture's line gives `showMs`, how long after the app asked
+the system showed the menu (it waits up to `PROBE_MENU_WAIT_MS`, 3000). It leaves the two pictures, the session and
+its open question in the throwaway. `PROBE_CLICK=native` clicks with the system's own mouse instead of Electron's
+input call (Windows through user32, the Mac through `probe/rclick.swift` run with `swift`): the screen must be
+unlocked, the window stays on top while it clicks, the pointer moves, and a person should leave the mouse alone for
+the minute it takes. Run it without `PROBE_CLICK` first: a failure only with `PROBE_CLICK=native` then points at real
+clicks. Native clicks run on Windows and macOS only. `PROBE_MAIN=<folder>/dist/desktop/main.js` runs an npm
+package's built app instead of `main.ts`, to check what was shipped; `PROBE_SHOT_DIR=<folder>` saves the window per
+page. On Windows, in PowerShell from `desktop\`:
+
+```powershell
+$env:LEDUNG_CONFIG="$PWD\..\.test\a\config.json"; $env:LEDUNG_DATA_DIR="$PWD\..\.test\a\data"
+$env:PROBE_PHASE="pictures"; $env:PROBE_PROJECT="pics"; npx electron probe
+$env:PROBE_CLICK="native"; npx electron probe
+```
 
 ## How it is built
 

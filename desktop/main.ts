@@ -7,7 +7,10 @@
 // check, sign-in cookie, Origin check and "no embedding" apply unchanged. Sign-in sets the cookie from this main
 // process (Mac spike 2026-11-17: GET /api/state 200 with no token in any URL); the token never goes into a URL or a
 // command line.
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, session, shell, WebContentsView, type BaseWindow, type ContextMenuParams, type Input, type IpcMainEvent, type NativeImage, type Session, type WebContents } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, session, shell, WebContentsView, type BaseWindow, type ContextMenuParams, type Input, type IpcMainEvent, type NativeImage, type Session, type WebContents, type WebFrameMain } from 'electron';
+// ClipboardItem through the namespace, not by name: the root tests bundle this file against an Electron stand-in with
+// a fixed list of exports (test/desktop-app.test.ts, #455), where a named import that isn't there stops the bundle.
+import * as electron from 'electron';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -277,6 +280,18 @@ async function start(): Promise<void> {
 }
 
 /**
+ * A second start reached the hidden app (#490): starts Ledung, as Start Ledung does, when none answers; a running one,
+ * a start or attach under way, or a quit is left alone.
+ */
+async function startIfStopped(): Promise<void> {
+  if (starting || attaching || quitting) return;
+  if ((await findRunning()).running) return;
+  // Looked again after the wait: a Start Ledung pressed meanwhile is the one start.
+  if (starting || attaching || quitting) return;
+  await start();
+}
+
+/**
  * What the page may use without asking: notifications (and push, which Electron asks as notifications) and writing to
  * the clipboard, the two the page uses, and only for Ledung's own address. Everything else (camera, microphone,
  * screen, location, reading the clipboard …) is refused: Electron would grant it silently where a browser asks the
@@ -352,7 +367,10 @@ function quit(): void {
 let updatePending = false;
 /** A quit that restarts the app once it is sure (will-quit): a page that asked "Leave this page?" may still keep it. */
 let restartOnQuit = false;
-/** That restart is the one at start or a reload's (#455): the `ledung` it runs opens the app only, never starting Ledung. */
+/**
+ * That restart is the one at start or a reload's (#455): the `ledung` it runs opens the app, and starts Ledung only when
+ * none runs (#477), never a second one.
+ */
 let restartAppOnly = false;
 
 /** Whether any window is in sight: shown and not minimised. */
@@ -369,8 +387,9 @@ let hiddenAtRestart = false;
  * Restarts the app to take the updated Ledung's code (#408): quits, and the `ledung` that made it opens it again. Not
  * when that command is gone (a Node upgraded or moved): quitting would leave nothing to open the app again, so it stays
  * on the old code with its banner, and starting `ledung` updates it (self-check finding 4).
+ * `shown`: the new app comes back with its window shown whatever this one shows, as a start asked for (#479).
  */
-function restartForUpdate(appOnly = false): boolean {
+function restartForUpdate(appOnly = false, shown = false): boolean {
   if (!made || restartOnQuit) return false;
   if (!restartCommand(made, process.pid)) {
     console.error('Ledung desktop: the ledung command that made this app is gone; start it again with ledung to update it.');
@@ -383,11 +402,21 @@ function restartForUpdate(appOnly = false): boolean {
     return false;
   }
   // Minimised counts as there: the Mac reports a minimised window as not visible (self-check round 2, finding 1).
-  hiddenAtRestart = !openWindows().some((w) => w.isVisible() || w.isMinimized());
+  hiddenAtRestart = !shown && !openWindows().some((w) => w.isVisible() || w.isMinimized());
   restartOnQuit = true;
   restartAppOnly = appOnly;
   quit();
   return true;
+}
+
+/**
+ * A start of the app reached this running one (#479, #485): with no window in sight and its code not the installed
+ * version's, it restarts into that version, shown, as a fresh start would; app only, so Ledung is started when none runs
+ * (#477). A window in sight is in use and keeps its banner: "restart by itself when hidden, ask when in front" (Martin,
+ * Ledung question #593). Whether it restarts.
+ */
+function restartForStart(): boolean {
+  return made !== null && !anyShown() && restartBrings(app.getVersion(), installedVersion(made.cli)) && restartForUpdate(true, true);
 }
 
 /** The update waits for the windows to be out of sight; called when one hides or is minimised. */
@@ -413,6 +442,8 @@ function startAfterQuit(): void {
     // No window was visible: the new app starts hidden too, so a restart the person did not ask for shows nothing.
     if (hiddenAtRestart) fs.writeFileSync(START_HIDDEN, '');
     out = fs.openSync(path.join(dir, 'restart.log'), 'a');
+    // When and which restart, so a line in this log can be tied to a start (#479: tubal-cain's log had none).
+    fs.writeSync(out, `${new Date().toISOString()} restarting the app ${process.pid} (${restartAppOnly ? 'app only' : 'update'})\n`);
   } catch (e) {
     console.error(`Ledung desktop: ${(e as Error).message}`);
   }
@@ -579,6 +610,61 @@ function findBarWindow(event: IpcMainEvent): BrowserWindow | null {
   return null;
 }
 
+/** Whether the frame runs in a process of its own: a page of another site in a frame, as another computer's tab is. */
+const ownProcess = (contents: WebContents, frame: WebFrameMain | null | undefined): frame is WebFrameMain =>
+  !!frame && !frame.isDestroyed() && frame !== contents.mainFrame && frame.osProcessId !== contents.mainFrame.osProcessId;
+
+let copiedFramed = false;
+
+/**
+ * An `EXERCISED #N` trace line (agent-workflow's EXERCISED line), as the core's src/platform/exercised.ts writes it:
+ * appended to exercised.log in the data folder, and printed when run from a clone, never by a made app. Not imported
+ * from there: its paths module would bring TypeScript file names into the package's bundle (test/package.test.ts).
+ */
+function exercised(line: string): void {
+  if (!made) console.log(line);
+  try {
+    fs.appendFileSync(path.join(dataDir(), 'exercised.log'), `${new Date().toISOString()} ${line}\n`);
+  } catch {
+    // A trace must not break the path it traces.
+  }
+}
+
+/**
+ * Copy Image. The window's own page, and frames in its process, by Electron's copyImageAt. Electron has that only for
+ * the window's top page, which sees just the frame element over a picture in a frame of another site (another
+ * computer's tab): it copied nothing there (tubal-cain's run on PR #452, #451). That frame draws its own picture at
+ * its full size instead, and the PNG goes on the clipboard; a picture the frame may not read (from yet another site)
+ * copies nothing, as before. Exported for the probe (desktop/probe, "framed").
+ */
+export async function copyImage(contents: WebContents, params: Pick<ContextMenuParams, 'x' | 'y' | 'srcURL' | 'frame'>): Promise<void> {
+  if (!ownProcess(contents, params.frame)) {
+    contents.copyImageAt(params.x, params.y);
+    return;
+  }
+  try {
+    const url = await params.frame.executeJavaScript(`(() => {
+      const want = ${JSON.stringify(params.srcURL)};
+      const i = [...document.images].find((im) => im.currentSrc === want || im.src === want);
+      if (!i || !i.complete || i.naturalWidth === 0) return null;
+      const c = document.createElement('canvas');
+      c.width = i.naturalWidth;
+      c.height = i.naturalHeight;
+      c.getContext('2d').drawImage(i, 0, 0);
+      try { return c.toDataURL('image/png'); } catch { return null; }
+    })()`) as string | null;
+    if (!url) return;
+    const png = nativeImage.createFromDataURL(url).toPNG();
+    await clipboard.write([new electron.ClipboardItem({ 'image/png': new Blob([png], { type: 'image/png' }) })]);
+    if (!copiedFramed) {
+      copiedFramed = true;
+      exercised('EXERCISED #451 Copy Image copied a picture from a frame of another site');
+    }
+  } catch (e) {
+    console.error(`Ledung desktop: Copy Image: ${(e as Error).message}`);
+  }
+}
+
 /**
  * The right-click menu (#447): the items desktop/context-menu.ts picks for what was clicked, acting on the page (or
  * the find bar) that was clicked. Copy Image copies the picture under the pointer, as a browser's does; Save Image As…
@@ -589,7 +675,7 @@ function showContextMenu(w: BrowserWindow, contents: WebContents, params: Contex
   const entries = contextItems(params);
   if (entries.length === 0 || w.isDestroyed()) return;
   const act: Record<ContextItem, () => void> = {
-    copyImage: () => contents.copyImageAt(params.x, params.y),
+    copyImage: () => void copyImage(contents, params),
     saveImage: () => contents.downloadURL(params.srcURL),
     // Electron 45's clipboard is the W3C one, a promise.
     copyLink: () => void clipboard.writeText(params.linkURL).catch((e: Error) => console.error(`Ledung desktop: ${e.message}`)),
@@ -615,7 +701,8 @@ function pageCommand(w: BrowserWindow, command: PageCommand): void {
   if (w.isDestroyed()) return;
   const page = w.webContents;
   // This app's own code is not the installed Ledung's (#455): a reload restarts the window into it instead of
-  // reloading the page alone. App only: a reload never starts Ledung. A restart that can't go reloads the page.
+  // reloading the page alone. App only: a running Ledung is left as it is, and one that is not running is started
+  // as at the app's start (#477). A restart that can't go reloads the page.
   if (made && reloadRestarts(command, app.getVersion(), installedVersion(made.cli)) && restartForUpdate(true)) return;
   if (command === 'reload') page.reload();
   else if (command === 'forceReload') page.reloadIgnoringCache();
@@ -813,8 +900,21 @@ if (shortcutFile) {
 } else if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  // A second start brings the most recently used window forward (#414).
-  app.on('second-instance', () => showWindow());
+  // A second start brings the most recently used window forward (#414). The app may still run an older version's code:
+  // closing its last window only hides it, so it outlives `ledung stop` and an npm update, and a start from the Start
+  // menu, a shortcut, a pin or `ledung` then reaches this one, never the check at a fresh start (#455); on Windows and
+  // Linux, while the Mac's arrives as activate (#485). Martin,
+  // 2026-11-21 (#479): such a start showed the old window with its update banner to press. With no window in sight
+  // it restarts the app into the installed version instead (restartForStart).
+  app.on('second-instance', () => {
+    const hidden = !anyShown();
+    if (restartForStart()) return;
+    showWindow();
+    // Up to date and hidden, the app outlived a `ledung stop` too (#490): the start starts Ledung, as the out-of-date
+    // restart does (#477), instead of showing a page with nothing behind it (Martin, Ledung question #764: "a — Start
+    // Ledung"). A window in sight keeps what it shows.
+    if (hidden) void startIfStopped();
+  });
   // A click on one of the page's notifications (#360) shows the window whose page showed it: the page then opens the
   // session it was about there.
   ipcMain.on(SHOW_WINDOW_MESSAGE, (event) => {
@@ -867,10 +967,28 @@ if (shortcutFile) {
     // Not there: a usual start.
   }
   let readyAt = 0;
+  /** How long after the app is ready an activate counts as the Mac's launch itself, not a person's click. */
+  const LAUNCH_MS = 2000;
+  let exercised485 = false;
   // A click on the app in the Dock (Mac), the windows hidden or not: the most recently used comes forward (#414). The
   // Mac may count the launch itself as one; a hidden restart ignores that first moment.
   app.on('activate', () => {
-    if (startedHidden && Date.now() - readyAt < 2000) return;
+    const atLaunch = readyAt === 0 || Date.now() - readyAt < LAUNCH_MS;
+    if (atLaunch) {
+      if (!startedHidden) showWindow();
+      return;
+    }
+    // The Mac's start that reached this running app (a Dock click, Finder, Launchpad, `ledung` opening it): restarts
+    // a hidden out-of-date app as a second start does on Windows (#485). Never at launch: an app that opened on its own
+    // code because the start restart for this version just failed (#455's once-per-version note) would restart again
+    // from that launch's own activate, a loop the note could no longer stop.
+    if (restartForStart()) {
+      if (!exercised485) {
+        exercised485 = true;
+        exercised('EXERCISED #485 activate began a restart of the hidden out-of-date app into the installed version');
+      }
+      return;
+    }
     showWindow();
   });
   // Started from a shortcut, a pin, Launchpad or Finder after an npm update (#455): this app still has the old version's

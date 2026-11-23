@@ -14,7 +14,7 @@ import {
   generateAuthenticationOptions, generateRegistrationOptions, verifyAuthenticationResponse, verifyRegistrationResponse,
   type AuthenticationResponseJSON, type PublicKeyCredentialCreationOptionsJSON, type PublicKeyCredentialRequestOptionsJSON, type RegistrationResponseJSON,
 } from '@simplewebauthn/server';
-import type { Device, Devices } from './devices.ts';
+import { COMPUTER_IDLE_MS, type Device, type Devices } from './devices.ts';
 
 export const CHALLENGE_MS = 2 * 60 * 1000;
 /** How long an enrol code works (issue #241): long enough to open the window and use Touch ID, short for a copy. */
@@ -36,6 +36,21 @@ export const PASSKEY_HEADER = 'x-ledung-passkey';
 export const VOUCH_HEADER = 'x-ledung-vouch';
 /** The refusal of a vouch for what still takes a passkey (choice 2a): the page then asks for the passkey itself. */
 export const PASSKEY_ONLY = 'This needs a passkey, or this computer\'s own screen: a trusted computer can\'t do it.';
+/**
+ * The set-up page's refusals that mean its link can set nothing up any more: the page (enrol.js, through
+ * enrolLinkDead in web/public/enrol-messages.js) then ends at once instead of offering a button (#481). Named so a
+ * test holds the page's match to these exact words.
+ */
+export const ENROL_LINK_GONE = 'This passkey link is not valid any more. Make a new one from the device that asked for it.';
+export const ALREADY_HAS_PASSKEY = 'This device already has its passkey.';
+export const PASSKEY_WINDOW_PASSED = 'A passkey can only be set up in the 10 minutes after pairing. Pair this device again from Settings on the computer.';
+/** What a sign link (#463) for logging the device on says it signs; the sign page words a log-on by it (#481). */
+export const SIGN_LOG_ON = 'Log this device on';
+/**
+ * What the sign page (#481) tells the person before they sign: whether it logs the device on, and for how long that
+ * lasts for its kind, from the rules themselves (a computer: until it logs out or goes unused; a phone: unlocked a while).
+ */
+export type SignTerms = { logOn: boolean; kind: Device['kind']; idleDays: number; unlockMinutes: number; linkMinutes: number };
 /** A sign link (#463) that is unknown, used or past its two minutes: what the browser and the app are told. */
 export const SIGN_LINK_GONE = 'This sign link is not valid any more: it was used, or its two minutes ran out. Make the change again in the app.';
 /** A sign link picked up by a device other than the one it was made for (#463). */
@@ -104,7 +119,7 @@ export class Passkeys {
   /** A new enrol code for this device, while it may still set up its passkey; any earlier one of it stops working. */
   enrolCode(device: Device): { code: string; expiresAt: number } {
     if (!this.devices.mayRegisterPasskey(device)) {
-      throw new PasskeyError(device.credentialId ? 'This device already has its passkey.' : 'A passkey can only be set up in the 10 minutes after pairing. Pair this device again from Settings on the computer.');
+      throw new PasskeyError(device.credentialId ? ALREADY_HAS_PASSKEY : PASSKEY_WINDOW_PASSED);
     }
     const at = this.now();
     for (const [c, e] of this.enrolCodes) if (e.deviceId === device.id || e.expiresAt <= at) this.enrolCodes.delete(c);
@@ -128,7 +143,7 @@ export class Passkeys {
 
   async registrationOptions(device: Device): Promise<PublicKeyCredentialCreationOptionsJSON> {
     if (!this.devices.mayRegisterPasskey(device)) {
-      throw new PasskeyError(device.credentialId ? 'This device already has its passkey.' : 'A passkey can only be set up in the 10 minutes after pairing. Pair this device again from Settings on the computer.');
+      throw new PasskeyError(device.credentialId ? ALREADY_HAS_PASSKEY : PASSKEY_WINDOW_PASSED);
     }
     const challenge = this.issue(device.id, 'register', '');
     return generateRegistrationOptions({
@@ -150,7 +165,7 @@ export class Passkeys {
     }).catch((e: Error) => { throw new PasskeyError(`The passkey was not accepted: ${e.message}`); });
     if (!verified.verified) throw new PasskeyError('The passkey was not accepted.');
     const { credential } = verified.registrationInfo;
-    if (!this.devices.setPasskey(device.id, credential.id, credential.publicKey, credential.counter)) throw new PasskeyError('This device already has its passkey.');
+    if (!this.devices.setPasskey(device.id, credential.id, credential.publicKey, credential.counter)) throw new PasskeyError(ALREADY_HAS_PASSKEY);
   }
 
   /** A challenge for one request by this device. */
@@ -234,7 +249,7 @@ export class Passkeys {
   }
 
   /** The sign page's options (#463): the passkey check for the code's challenge, the device's name and what it signs. */
-  async signOptions(code: unknown): Promise<{ options: PublicKeyCredentialRequestOptionsJSON; name: string; what: string }> {
+  async signOptions(code: unknown): Promise<{ options: PublicKeyCredentialRequestOptionsJSON; name: string; what: string; terms: SignTerms }> {
     const s = this.signEntry(code);
     const device = this.devices.get(s.deviceId);
     // Works once: after an answer, right or wrong, the link is done.
@@ -243,7 +258,11 @@ export class Passkeys {
       rpID: this.rpID, challenge: new Uint8Array(Buffer.from(s.challenge, 'base64url')), timeout: Math.max(0, s.expiresAt - this.now()),
       userVerification: 'required', allowCredentials: [{ id: device.credentialId }],
     });
-    return { options, name: device.name, what: s.what };
+    const terms: SignTerms = {
+      logOn: s.what === SIGN_LOG_ON, kind: device.kind, idleDays: Math.round(COMPUTER_IDLE_MS / 86_400_000),
+      unlockMinutes: Math.round(UNLOCK_MS / 60_000), linkMinutes: Math.round(CHALLENGE_MS / 60_000),
+    };
+    return { options, name: device.name, what: s.what, terms };
   }
 
   /**

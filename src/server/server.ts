@@ -16,8 +16,8 @@ import { UserError } from '../sessions/manager.ts';
 import type { Store } from '../store/store.ts';
 import { AWAY_DEFAULT, AWAY_KINDS, EFFORT_LEVELS, HELPER, type AwayKind, type PermissionDecision, type PermissionMode, type RemoteStatus, type ServerEvent, parseWatch } from '../shared/protocol.ts';
 import { browserCookieHeader, deviceCookieHeader, Guard, readCookies, securityHeaders } from './security.ts';
-import { browserName, DEVICE_COOKIE, type Device, type DeviceKind, deviceName, Devices, deviceView, LEGACY_BROWSER_NAME, PAIR_CODE_MS, pairedLink } from './devices.ts';
-import { actionOf, DEVICE_LOCKED, PASSKEY_HEADER, PASSKEY_NEEDED, PASSKEY_ONLY, PasskeyError, Passkeys, VOUCH_HEADER } from './passkeys.ts';
+import { browserName, DEVICE_COOKIE, type Device, type DeviceKind, deviceName, Devices, deviceView, LEGACY_BROWSER_NAME, PAIR_CODE_MS, pairedLink, PASSKEY_WINDOW_MS } from './devices.ts';
+import { actionOf, DEVICE_LOCKED, ENROL_LINK_GONE, PASSKEY_HEADER, PASSKEY_NEEDED, PASSKEY_ONLY, PasskeyError, Passkeys, SIGN_LOG_ON, VOUCH_HEADER } from './passkeys.ts';
 import { linkedPushItem, Push, PushError, type LinkedPushItem } from './push.ts';
 import type { UsageQueries } from '../usage/queries.ts';
 import { readRunningRelease, type Updater } from '../update/updater.ts';
@@ -92,20 +92,64 @@ const MAX_BODY = 1024 * 1024;
 const CHAT_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 /** A workflow's texts may have 4 MB together (src/sessions/flow-files.ts); JSON's escapes take some more (#311). */
 const FLOW_SAVE_MAX_BODY = 6 * 1024 * 1024;
+/**
+ * The head of Ledung's small pages (issue #481): the not-signed-in page and the pairing pages here, like sign.html
+ * and enrol.html, are always dark, in the main page's dark colours (web/public/small-page.css, served unsigned like
+ * pair.js). The color-scheme line keeps them dark even if the stylesheet doesn't load.
+ */
+const SMALL_PAGE_HEAD = '<meta name="viewport" content="width=device-width"><meta name="color-scheme" content="dark">'
+  + '<link rel="stylesheet" href="/small-page.css">';
 const NOT_PAIRED = 'This device is not paired with Ledung. Pair it from Settings → Phones in Ledung on the computer.';
 /**
  * On the not-paired page through the public name: the pairing code or link typed in. Inside a frame on another
  * computer's page (issue #241) there is no address bar to open the link in, and pairing there must happen in the frame.
  */
-const PAIR_CODE_FORM = '<form method="get" action="/pair"><p><label>Pairing code or link<br>'
-  + '<input name="code" autocomplete="off" autocapitalize="characters" spellcheck="false" style="font-size:1.1em;width:100%"></label></p>'
-  + '<p><button style="font-size:1.1em">Next</button></p></form>';
-const NO_PASSKEY_LOCKED = 'This device has no passkey, so it can only look from here; make changes on the computer.';
+const PAIR_CODE_FORM = '<form method="get" action="/pair"><p><label>Pairing code or link<br><span class="row">'
+  + '<input name="code" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="e.g. l5q4waqa24eqn3r0owsa">'
+  + '<button class="primary">Next</button></span></label></p></form>';
+/** The small pages' wording (issue #481), as Martin passed the mockups (Ledung question #751); minutes from the rules. */
+const PAGE_BRAND = (what = '') => `<p class="muted small">Ledung${what ? ` · ${what}` : ''}</p>`;
+const minutes = (ms: number) => Math.round(ms / 60_000);
+const NOT_PAIRED_PAGE = PAGE_BRAND() + '<h1>Pair this device first</h1><p>This phone or computer isn\'t paired with this Ledung yet.</p>'
+  + '<ol class="steps"><li>In Ledung on the computer, open <b>Settings → Phones</b> and make a pairing code.</li>'
+  + `<li>Type the code, or paste the link, here. It works once, for ${minutes(PAIR_CODE_MS)} minutes.</li></ol>`
+  + PAIR_CODE_FORM
+  + '<p class="muted small">Paired devices can look at once; to make changes they set up a passkey and log on.</p>';
+const NOT_SIGNED_IN_PAGE = PAGE_BRAND() + '<h1>Not signed in</h1><p>This browser has no sign-in for this Ledung.</p>'
+  + '<div class="facts"><h3>To get in</h3><ul><li>Open the link Ledung printed when it started: it carries the sign-in for this browser.</li>'
+  + '<li>Or use Ledung\'s desktop app, which signs itself in.</li></ul></div>';
+/** Under the Pair form: what pairing gives and what comes after. */
+const PAIR_AFTER = '<div class="facts"><h3>After pairing</h3><ul><li>This device can look at Ledung right away.</li>'
+  + `<li>To make changes, set up its passkey in Settings within ${minutes(PASSKEY_WINDOW_MS)} minutes, then log on.</li>`
+  + '<li>You can remove it any time in Settings → Phones on the computer.</li></ul></div>';
+/** After pairing (issue #466): what comes next, on the page that says this browser is paired. */
+const PAIRED_NEXT = '<p>Next, set up its passkey in Settings, so it can make changes and not only look.</p><p><a href="/#/settings">Go on to Settings</a></p>';
+
+/** Text for an HTML page: a device's name is typed by whoever pairs it. */
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+}
+
+/** How long before `now` something was, in words, for the pairing pages. */
+function minutesAgo(at: number, now: number): string {
+  const minutes = Math.floor((now - at) / 60_000);
+  return minutes < 1 ? 'a moment ago' : minutes === 1 ? 'a minute ago' : `${minutes} minutes ago`;
+}
+
 /**
- * The EXERCISED line of ledung#463 (a sign link's answer picked up), once per run (worker.md, "EXERCISED line"). Not
- * exercised463 above: that one is Project-Ledung#463's, another issue with the same number.
+ * A pairing link pressed again after it was used (issue #466): when, for which device, and whether that pairing
+ * worked: in this browser (`here`), in a browser that came back with it (`elsewhere`), or in none (`never`).
  */
-let exercisedSignLink = false;
+function pairUsedWords(used: { name: string; at: number }, now: number, outcome: 'here' | 'elsewhere' | 'never' | 'removed'): string {
+  const when = minutesAgo(used.at, now);
+  const first = `<p>This pairing link was already used, ${when}, to pair <b>${escapeHtml(used.name)}</b>.`;
+  if (outcome === 'here') return `<h2>Paired</h2>${first} That is this browser: it is paired.</p>`;
+  if (outcome === 'elsewhere') return `${first} That pairing worked, in the browser that used it; this one is not paired by it. To pair this one, make a new link in Settings → Phones in Ledung on the computer.</p>`;
+  if (outcome === 'removed') return `${first} That device has been removed since, so this link pairs nothing more. To pair this browser, make a new link in Settings → Phones in Ledung on the computer.</p>`;
+  return `${first} That pairing never reached a browser, so nothing is paired by it yet. Press the button to pair this browser instead.</p>`;
+}
+
+const NO_PASSKEY_LOCKED = 'This device has no passkey, so it can only look from here; make changes on the computer.';
 /** Through the public name, the only changes a locked device may send (requireUnlocked). */
 const OPEN_WHILE_LOCKED = new Set(['/api/device-unlock', '/api/passkey-challenge', '/api/passkey-options', '/api/passkey', '/api/device-logout', '/api/passkey-enrol-link', '/api/passkey-sign-answer']);
 /**
@@ -863,6 +907,8 @@ export class LedungServer {
       this.publicResponses.add(res);
       // A computer device's cookie is renewed daily, so a copy stops working within a day (question 5 on #245).
       const device = this.guard.deviceOf(req);
+      // The last pairing's cookie came back: it reached its browser (issue #466).
+      if (device) this.devices.pairingSeen(device.id);
       const renewed = device ? this.devices.renewCookie(device) : null;
       if (device && renewed) {
         res.setHeader('Set-Cookie', deviceCookieHeader(renewed, device.partitioned));
@@ -897,7 +943,7 @@ export class LedungServer {
       if (short && req.method !== 'GET') throw new HttpError(405, 'Method not allowed.');
       // The code, or the whole link pasted into the not-paired page's field: its last part.
       const given = short ? short[1]! : url.searchParams.get('code')?.trim().split('/').pop() ?? null;
-      await this.pair(req, given, res);
+      await this.pair(req, given, res, short ? null : url.searchParams.get('done'));
       return;
     }
 
@@ -912,7 +958,7 @@ export class LedungServer {
       const body = await readJson(req);
       const finish = url.pathname === '/enrol/finish';
       const device = passkeys.enrolDevice(body.code, finish);
-      if (!device) throw new HttpError(403, 'This passkey link is not valid any more. Make a new one from the device that asked for it.');
+      if (!device) throw new HttpError(403, ENROL_LINK_GONE);
       const result = finish
         ? await passkeyCall(async () => {
           await passkeys.register(device, body.response);
@@ -1483,39 +1529,93 @@ export class LedungServer {
    * POST to /pair uses the code up, sets the device cookie and goes to the page. The POST's Origin must be the
    * public page's.
    */
-  private async pair(req: IncomingMessage, code: string | null, res: ServerResponse): Promise<void> {
-    const page = (status: number, body: string) => {
+  private async pair(req: IncomingMessage, code: string | null, res: ServerResponse, check: string | null = null): Promise<void> {
+    const page = (status: number, body: string, head = '') => {
       // same-origin, not the usual no-referrer: under no-referrer a browser sends "Origin: null" on the form's
       // POST (a navigation), which the Origin check rightly refuses, and pairing would never work. Found taking
       // the round-2 screenshots of PR #164 in Chrome.
       res.writeHead(status, { ...this.headersFor(res), 'Content-Type': 'text/html; charset=utf-8', 'Referrer-Policy': 'same-origin' });
-      res.end(`<!doctype html><meta name="viewport" content="width=device-width"><title>Ledung</title><div style="font-family:sans-serif;max-width:30em;margin:2em auto">${body}</div>`);
+      res.end(`<!doctype html>${SMALL_PAGE_HEAD}${head}<title>Ledung</title><div style="max-width:30em;margin:2em auto">${body}</div>`);
     };
     const invalid = '<p>This pairing link is not valid any more. Make a new one in Settings → Phones in Ledung on the computer.</p>';
+    // The Pair form. pair.js (web/public) greys its button and says "Pairing…" once pressed (issue #466): through the
+    // relay the answer can take a while, and a second press then cut the first one's answer off, cookie and all.
+    const form = (formCode: string, name: string, button = 'Pair') => '<form method="post" action="/pair">'
+      + `<input type="hidden" name="code" value="${formCode}">`
+      + `<p><label>Name of this device<br><input name="name" value="${escapeHtml(name)}" maxlength="60" style="width:100%"></label></p>`
+      + `<p><button class="primary big">${button}</button></p><p id="pair-wait" hidden>Pairing… this can take a few seconds.</p></form>`
+      + '<script src="/pair.js"></script>';
+    const here = this.guard.deviceOf(req);
+    if (req.method === 'GET' && check !== null) return this.pairChecked(check, here, page, form);
     if (req.method === 'GET') {
       // codeValid matches the code Ledung made itself (letters and digits), so it is safe to put back in the form.
-      if (!this.devices.codeValid(code)) return page(403, invalid);
+      if (!this.devices.codeValid(code)) {
+        // A link used already (issue #466): say when, and whether that pairing reached its browser; looking changes nothing.
+        const used = this.devices.usedPairing(code);
+        if (!used) return page(403, invalid);
+        if (used.deviceId === here?.id) return page(200, pairUsedWords(used, this.opts.now?.() ?? Date.now(), 'here') + PAIRED_NEXT);
+        if (used.removed) return page(403, pairUsedWords(used, this.opts.now?.() ?? Date.now(), 'removed'));
+        if (used.seen) return page(403, pairUsedWords(used, this.opts.now?.() ?? Date.now(), 'elsewhere'));
+        return page(403, pairUsedWords(used, this.opts.now?.() ?? Date.now(), 'never') + form(code!, used.name, 'Pair this browser'));
+      }
       // A code a linked computer asked for (issue #273) pairs a browser on that computer: named after it at first.
       const via = this.devices.codeVia(code);
       const name = via ? `Browser on ${via}`.replace(/[^\p{L}\p{N} .'-]/gu, '').slice(0, 60) : 'Phone';
-      return page(200, '<h2>Pair this device with Ledung</h2><form method="post" action="/pair">'
-        + `<input type="hidden" name="code" value="${code}">`
-        + `<p><label>Name of this device<br><input name="name" value="${name}" maxlength="60" style="font-size:1.1em"></label></p>`
-        + '<p><button style="font-size:1.1em">Pair</button></p></form>');
+      return page(200, PAGE_BRAND('pairing') + '<h1>Pair this device with Ledung</h1><p>Give it a name you\'ll recognise in Settings → Phones.</p>'
+        + form(code!, name) + PAIR_AFTER);
     }
     if (req.method !== 'POST') throw new HttpError(405, 'Method not allowed.');
     if (!this.guard.originAllowed(req)) throw new HttpError(403, 'Requests must come from Ledung\'s own page.');
     if (!(req.headers['content-type'] ?? '').startsWith('application/x-www-form-urlencoded')) throw new HttpError(415, 'Send the form.');
-    const form = new URLSearchParams((await readBody(req)).toString('utf8'));
+    const posted = new URLSearchParams((await readBody(req)).toString('utf8'));
     // Paired inside a frame on another computer's page: a cookie the browser keeps for that frame (issue #241). Only
     // when some page may frame this one; the browser says where the form was posted from.
     const framed = req.headers['sec-fetch-dest'] === 'iframe' && this.frames.ancestors.length > 0;
-    const paired = this.devices.pair(form.get('code'), form.get('name'), framed);
-    if (!paired) return page(403, invalid);
+    let paired: { device: Device; cookie: string; check: string } | null = this.devices.pair(posted.get('code'), posted.get('name'), framed);
+    if (!paired) {
+      // A second press (issue #466). This browser holds the pairing already: say so. Its device came back elsewhere:
+      // say the link is used. Its device never came back (the first answer was cut off, or the cookie dropped): pair
+      // this browser in its place, which the code allowed anyway.
+      const used = this.devices.usedPairing(posted.get('code'));
+      if (!used) return page(403, invalid);
+      const now = this.opts.now?.() ?? Date.now();
+      if (used.deviceId === here?.id) return page(200, pairUsedWords(used, now, 'here') + PAIRED_NEXT);
+      paired = this.devices.pairAgain(posted.get('code'), posted.get('name'), framed);
+      if (!paired) return page(403, pairUsedWords(used, now, used.removed ? 'removed' : 'elsewhere'));
+      console.log(`Devices: "${used.name}" never came back with its pairing cookie; removed, and the same link paired "${paired.device.name}" in its place.`);
+    }
     if (paired.device.pairedVia !== null) this.linkPairingUsed(paired.device);
-    // Straight to Settings, where the passkey is set up in the minutes after pairing.
-    res.writeHead(303, { ...this.headersFor(res), 'Set-Cookie': deviceCookieHeader(paired.cookie, framed), Location: '/#/settings' });
+    // To the page that checks the cookie came back (issue #466): it says plainly whether this browser is paired, and
+    // goes on to Settings, where the passkey is set up in the minutes after pairing.
+    res.writeHead(303, { ...this.headersFor(res), 'Set-Cookie': deviceCookieHeader(paired.cookie, framed), Location: `/pair?done=${paired.check}` });
     res.end();
+  }
+
+  /**
+   * The page after pairing (issue #466), opened with the value only that answer carried. The device's cookie came back
+   * with it: paired, say so and go on to Settings. It didn't: the browser dropped the cookie (a frame whose browser
+   * keeps no cookies for it, say), so this browser is not paired; the device no browser holds is removed and the page
+   * offers to pair again, here or in a tab of its own.
+   */
+  private pairChecked(check: string, here: Device | null, page: (status: number, body: string, head?: string) => void, form: (code: string, name: string, button?: string) => string): void {
+    const done = this.devices.pairingChecked(check);
+    if (!done) return page(403, '<p>This page is not valid any more. If Ledung does not open, make a new pairing link in Settings → Phones in Ledung on the computer.</p>');
+    if (done.deviceId === here?.id) {
+      // A second press that paired in place of a first that never arrived says so (issue #466).
+      const before = done.replaced
+        ? `<p>This link had already paired <b>${escapeHtml(done.replaced.name)}</b> just before, but that pairing never reached a browser, so this browser was paired in its place.</p>`
+        : '';
+      return page(200, `<h2>Paired</h2><p>This browser is paired with Ledung as <b>${escapeHtml(done.name)}</b>.</p>${before}${PAIRED_NEXT}`, '<meta http-equiv="refresh" content="3;url=/#/settings">');
+    }
+    if (done.removed) return page(403, pairUsedWords(done, this.opts.now?.() ?? Date.now(), 'removed'));
+    if (done.seen) return page(403, `<p>This link paired <b>${escapeHtml(done.name)}</b>, but this browser did not send its pairing back just now. If Ledung does not open here, make a new pairing link in Settings → Phones in Ledung on the computer.</p>`);
+    this.devices.dropUnseen(check);
+    console.log(`Devices: "${done.name}" was paired${done.partitioned ? ' in a frame' : ''}, but its browser did not keep the cookie; removed.`);
+    const why = done.partitioned
+      ? 'This browser did not keep the pairing. Browsers can refuse cookies to a page shown inside another site\'s page (Safari does, and Chrome or Edge when third-party cookies are blocked). Allow cookies for this page, then press Pair again; or '
+        + `<a href="/p/${done.code}" target="_blank" rel="noopener">pair in a tab of its own</a> and use Ledung there.`
+      : 'This browser did not keep the pairing: check that it allows cookies for this page, then press Pair again.';
+    return page(403, `<h2>Not paired</h2><p>${why}</p>` + form(done.code, done.name, 'Pair again'));
   }
 
   /**
@@ -1919,7 +2019,7 @@ export class LedungServer {
         // challenge for exactly this request; the code goes in the fragment, so it reaches no log and no Referer.
         if (browser === true) {
           if (!this.pageKeyMatches(req, device.id)) throw new HttpError(403, 'Only Ledung\'s open page can do this.');
-          const what = pathname === '/api/device-unlock' ? 'Log this device on' : `${method.toUpperCase()} ${pathname}`;
+          const what = pathname === '/api/device-unlock' ? SIGN_LOG_ON : `${method.toUpperCase()} ${pathname}`;
           const { code, expiresAt } = await passkeyCall(async () => passkeys.signLink(device, action, what));
           return { url: `https://${this.publicName}/sign.html#${code}`, code, expiresAt };
         }
@@ -1934,10 +2034,6 @@ export class LedungServer {
         if (!this.pageKeyMatches(req, device.id)) throw new HttpError(403, 'Only Ledung\'s open page can do this.');
         const { code } = await readJson(req);
         const answer = await passkeyCall(async () => passkeys.signAnswer(device, code));
-        if (answer && !exercisedSignLink) {
-          exercisedSignLink = true;
-          exercisedLine('EXERCISED #463 the browser signed a request for the device that made the sign link');
-        }
         return { answer };
       }
       case 'GET sessions/:id/messages': {
@@ -2801,7 +2897,7 @@ export class LedungServer {
       // The page itself is only served to a signed-in browser; its assets are not secret.
       if (!signedIn) {
         res.writeHead(401, { ...this.headersFor(res), 'Content-Type': 'text/html; charset=utf-8' });
-        res.end(`<!doctype html><title>Ledung</title><div style="font-family:sans-serif;max-width:30em;margin:2em auto"><p>${remote ? NOT_PAIRED : 'Not signed in. Open Ledung through the link it prints when it starts.'}</p>${remote ? PAIR_CODE_FORM : ''}</div>`);
+        res.end(`<!doctype html>${SMALL_PAGE_HEAD}<title>Ledung</title><div style="max-width:30em;margin:2em auto">${remote ? NOT_PAIRED_PAGE : NOT_SIGNED_IN_PAGE}</div>`);
         return;
       }
       file = path.join(root, 'index.html');

@@ -9,6 +9,39 @@ together, are in [CHANGELOG.md](CHANGELOG.md). Online: https://projectledung.com
 ([docs/changes/README.md](docs/changes/README.md)); `npm run publish:dev` and `npm run publish:public` fold them in
 here under the version they publish, and push the result to main.
 
+## v5 — 2026-11-23 00:31 CET
+The public release. Everything since v4: v4.1, v4.2, v4.3, v4.4, v4.5, v4.6, v4.7, v4.8, v4.9, v4.10, v4.11, v4.12, v4.13, v4.14.
+
+## v4.14 — 2026-11-21 23:49 CET
+- Desktop app on Windows and Linux: starting it again while its window is closed and Ledung is stopped now starts Ledung and shows its page, instead of a page with nothing behind it (#490)
+- Mac: a Dock click, Finder or `ledung` on the desktop app left running hidden after an update now restarts it into the new version instead of showing its update banner (#485)
+
+## v4.13 — 2026-11-21 23:30 CET
+- The browser tab, the desktop app's window and taskbar entry, the installed app and the empty view now say "Ledung" instead of "Project Ledung" (#428)
+
+## v4.12 — 2026-11-21 22:24 CET
+- The passkey sign and set-up pages, the "Not signed in" / not-paired page and the pairing page are now dark, in the main page's dark colours, even in a browser set to light (#481)
+- The passkey sign page in the browser says what you are signing and for how long: a Mac logs on until you log it out or 14 days unused, a phone unlocks for 30 minutes, one change is signed once; with one clear Touch ID button (#481)
+- The passkey set-up, "Not signed in", not-paired and pairing pages say what to do next and the time limits that apply (#481)
+
+## v4.11 — 2026-11-21 22:18 CET
+- The page tries to reach Ledung again every half second while it is away, and at once when its window or tab is shown again, so the update banner comes within about a second of Ledung being back instead of after up to 10 seconds (#488)
+
+## v4.10 — 2026-11-21 20:38 CET
+- On Windows and Linux, the desktop app left running with its window closed takes an update when it is started again, instead of showing its window with a restart banner to press (#479)
+
+## v4.9 — 2026-11-21 13:41 CET
+- The desktop app opened from the Start menu, Dock or Finder after an update now starts Ledung in the background when none runs, instead of opening a window with nothing behind it (#477)
+
+## v4.8 — 2026-11-21 12:04 CET
+- Desktop app: Copy Image now works on pictures in another computer's tab; it used to copy nothing there (#451)
+
+## v4.7 — 2026-11-21 11:53 CET
+- Pairing: pressing Pair now leads to a page that says plainly whether this browser is paired, and what to do next (#466)
+- Pairing: the Pair button greys and says "Pairing…" while it works, so a slow first press no longer looks like nothing happened (#466)
+- Pairing: when a browser in another computer's frame drops the pairing cookie, the page says so and why, removes the unusable device and offers to pair again or in a tab of its own (#466)
+- Pairing: pressing a used pairing link again says when it was used and whether that pairing worked, and pairs this browser if the first never arrived (#466)
+
 ## v4.6 — 2026-11-20 16:10 CET
 - Pairing another computer's tab inside the Ledung app works with one press of Pair: the app no longer cancels the redirect back to that computer's page (#468, #466)
 - A tab or browser whose daily cookie renewal was cut off (a restart, a dropped connection) stays paired and gets the new cookie again, instead of being removed as a copy (#468)

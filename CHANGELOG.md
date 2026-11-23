@@ -12,6 +12,33 @@ changes `src/`, `web/` (not `web/dist/`) or `scripts/` without one, unless a com
 the result to main (issue #417). Before that, every change was listed by date: that history is below, under "Earlier,
 by date", as it was.
 
+## v5 — 2026-11-23 00:31 CET
+- Desktop app on Windows and Linux: starting it again while its window is closed and Ledung is stopped now starts Ledung and shows its page, instead of a page with nothing behind it (#490)
+- Mac: a Dock click, Finder or `ledung` on the desktop app left running hidden after an update now restarts it into the new version instead of showing its update banner (#485)
+- The browser tab, the desktop app's window and taskbar entry, the installed app and the empty view now say "Ledung" instead of "Project Ledung" (#428)
+- The passkey sign and set-up pages, the "Not signed in" / not-paired page and the pairing page are now dark, in the main page's dark colours, even in a browser set to light (#481)
+- The passkey sign page in the browser says what you are signing and for how long: a Mac logs on until you log it out or 14 days unused, a phone unlocks for 30 minutes, one change is signed once; with one clear Touch ID button (#481)
+- The passkey set-up, "Not signed in", not-paired and pairing pages say what to do next and the time limits that apply (#481)
+- The page tries to reach Ledung again every half second while it is away, and at once when its window or tab is shown again, so the update banner comes within about a second of Ledung being back instead of after up to 10 seconds (#488)
+- On Windows and Linux, the desktop app left running with its window closed takes an update when it is started again, instead of showing its window with a restart banner to press (#479)
+- The desktop app opened from the Start menu, Dock or Finder after an update now starts Ledung in the background when none runs, instead of opening a window with nothing behind it (#477)
+- Desktop app: Copy Image now works on pictures in another computer's tab; it used to copy nothing there (#451)
+- Pairing: pressing Pair now leads to a page that says plainly whether this browser is paired, and what to do next (#466)
+- Pairing: the Pair button greys and says "Pairing…" while it works, so a slow first press no longer looks like nothing happened (#466)
+- Pairing: when a browser in another computer's frame drops the pairing cookie, the page says so and why, removes the unusable device and offers to pair again or in a tab of its own (#466)
+- Pairing: pressing a used pairing link again says when it was used and whether that pairing worked, and pairs this browser if the first never arrived (#466)
+- Pairing another computer's tab inside the Ledung app works with one press of Pair: the app no longer cancels the redirect back to that computer's page (#468, #466)
+- A tab or browser whose daily cookie renewal was cut off (a restart, a dropped connection) stays paired and gets the new cookie again, instead of being removed as a copy (#468)
+- In Ledung's desktop app on a Mac, a change that needs your passkey now offers **Sign in the browser**: your browser opens a one-time link, shows what is signed and asks for Touch ID, and the app's change then goes through by itself (#463)
+- After a linked computer is unlinked (or its link lost) and linked again, its tab here paired through the old link counts for the new link's trust, instead of still asking for a passkey (#462)
+- Linked computers survive a crash right after a save: links.json is flushed to the disk and kept with a backup, which Ledung loads (and logs) when links.json can't be read (#460)
+- The config file, sign-ins, locked secrets, the relay link and its admin file, certificates, the usage key and session secret files are flushed to the disk before they replace the old file, so a crash can't leave them empty (#460)
+- The desktop app runs the installed Ledung's code however it is opened (Start menu, taskbar, Dock, Launchpad, Finder, "Open in the Ledung app"): after an update it brings itself up to date at start, before its window opens (#455)
+- An app whose own `ledung` has the same version as the app no longer restarts over and over when another install of Ledung runs (#455)
+- In the desktop app, Reload (⌘R or Ctrl+R, View → Reload, Force Reload) after an update restarts the app into the installed version instead of reloading only the page (#455)
+- Desktop app: New window in a linked computer's tab opens a new app window at your own start page, as in your own tab; needs this version on both computers (#454)
+- The desktop app on a Mac no longer waits forever for a Touch ID prompt that never comes: a passkey check there says in one line to make the change in your browser, and offers to open that page in it (#427)
+
 ## v4 — 2026-11-20 01:20 CET
 v3.1 to v3.9 came before the changelog per release: their changes are listed by date, under "Earlier, by date" below.
 - Desktop app: right-clicking gives a menu, as in a browser: Copy Image and Save Image As… on a picture (screenshots too), Copy Link Address on a link, Copy on selected text, and Cut, Copy, Paste and Select All in a text box (#447)
