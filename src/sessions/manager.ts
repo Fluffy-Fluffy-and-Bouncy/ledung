@@ -4,7 +4,7 @@ import type { DockerProjectConfig, LedungConfig, LocalProjectConfig, ProjectConf
 import { ProjectStore, type StoredProject } from '../projects/store.ts';
 import { AccountError, AccountStore, DEFAULT_ACCOUNT, SIGN_IN_ENV, type AccountPlace } from '../accounts/store.ts';
 import { removeSignIn } from '../accounts/signin-store.ts';
-import type { AccountChoices, AccountInfoView, AccountSwitch, AwayInfo, AwayKind, HeavyCommandInfo, JobKindInfo, LightCommandInfo, SignInProblem } from '../shared/protocol.ts';
+import type { AccountChoices, AccountInfoView, AccountSwitch, AwayInfo, AwayKind, HeavyCommandInfo, JobKindInfo, SignInProblem } from '../shared/protocol.ts';
 import { Away } from './away.ts';
 import { Orders } from './orders.ts';
 import { WaitingLines } from './waiting-lines.ts';
@@ -40,7 +40,6 @@ import type { Store } from '../store/store.ts';
 import { lineOrder, mayStart, type LineEntry } from '../resources/line.ts';
 import { ResourceMonitor, type MonitorTarget } from '../resources/monitor.ts';
 import { ResourceBook, RESOURCE_SOURCE } from '../resources/book.ts';
-import { commandKinds } from '../resources/commands.ts';
 import { namesText, type JobActionResult, type JobReach } from '../shared/job-notes.ts';
 import { JobStore } from '../resources/jobs.ts';
 import { JobActions, jobProcessesNow, leftAloneNow, jobTargetsNow, provenNow } from '../resources/job-actions.ts';
@@ -525,7 +524,6 @@ export class SessionManager {
         return { threads: os.cpus().length, gpus: names };
       },
       resourceHeld: (id: string) => this.book.isHeld(id),
-      commandCheck: (id: string, kinds: string[], opts?: { freeing?: boolean; subagent?: boolean }) => this.book.commandRefusal(id, kinds, opts),
       callStarted: (id: string, callId: string, kinds: string[], background: boolean, detached?: boolean, command?: string) => this.book.callStarted(id, callId, kinds, background, detached, command),
       passWaits: (id: string) => this.book.passWaits(id),
       callEnded: (id: string, callId: string) => this.book.callEnded(id, callId),
@@ -1241,24 +1239,6 @@ export class SessionManager {
 
   forgetJobKind(project: string, kind: string): void {
     this.jobs.forget(project, kind);
-  }
-
-  /** The person's additions to the light list (round 2): page only, never a session's. */
-  lightCommands(): LightCommandInfo[] {
-    return this.jobs.lightMarks();
-  }
-
-  /**
-   * The person's "never needs a reservation" mark, from a heavy command's row or typed in (round 2: the person extends
-   * the light list; sessions never can). A typed command is kept as the kind Ledung matches ("node x.mjs release" →
-   * "node x.mjs").
-   */
-  markCommand(project: string, command: string, never: boolean): void {
-    if (!this.projectStore.get(project)) throw new UserError('No such project.');
-    const typed = command.replace(/\s+/g, ' ').trim();
-    if (!typed || typed.length > 200) throw new UserError('Give a command.');
-    const kind = never && !this.jobs.heavyCommands(project).some((h) => h.command === typed) ? commandKinds(typed)[0] ?? typed.toLowerCase() : typed;
-    this.jobs.markNever(project, kind.slice(0, 60), never);
   }
 
   private targets(): MonitorTarget[] {

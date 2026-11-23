@@ -6,7 +6,7 @@ import { treeOf, type ProcInfo, type ProcessList } from '../platform/processes.t
 import { groupLoad, groupMem, mainGpu, type GpuReading } from '../platform/gpu.ts';
 import { lower, osPriority, restore, type PriorityControl, type Target } from '../platform/process-control.ts';
 import type { Priority, ResourceJobInfo, ResourceLineInfo, ResourcesInfo, SessionRole } from '../shared/protocol.ts';
-import { fromGeneric, normaliseKind, toGeneric, type JobStore } from './jobs.ts';
+import { fromGeneric, normaliseKind, toGeneric, type HeavyCommand, type JobStore } from './jobs.ts';
 import {
   addAmounts, ALLOWANCE, Averages, DEFAULT_SETTINGS, dimLabel, formatDim, GB, grantPass, isMemory, marginOf, NOT_OVER, notFitting, overStep, roomReason, unusedOf,
   type Amounts, type LimitSettings, type LineItem, type OverState, type Waiting,
@@ -650,61 +650,6 @@ export class ResourceBook {
     for (const pid of this.firstSeen.keys()) if (!list.has(pid)) this.firstSeen.delete(pid);
   }
 
-  /**
-   * The PreToolUse check (Recognising heavy commands): a known heavy command with no reservation going is refused
-   * with the reason; so is one while the session is held for a job over its share (open choice 1). Null: go on.
-   * Managers have no reserve tool, so they are never asked to use one (finding 4). It is advisory: a command can be
-   * wrapped past it; the check of what really runs is the boundary.
-   */
-  commandRefusal(sessionId: string, kinds: string[], opts: { freeing?: boolean; subagent?: boolean } = {}): string | null {
-    const s = this.ctx.session(sessionId);
-    if (!s?.local || s.role === 'manager' || !kinds.length) return null;
-    // A call that only frees resources (a lock's release, stopping its own processes) always runs: refusing it held
-    // a session in a deadlock (issue #356, 2026-11-19).
-    if (opts.freeing) return null;
-    const heavy = this.ctx.jobs.heavyCommands(s.project).filter((h) => !h.never && kinds.includes(h.command));
-    if (!heavy.length) return null;
-    const h = heavy[0]!;
-    // The command quoted is this session's own (the match is exact); the figures are numbers. No other session's
-    // words reach it (acceptance test, finding 15): where the figure comes from is counts and a date, never a job's name.
-    const own = kinds.find((k) => k === h.command)!;
-    const gpu = mainGpu(this.gpu);
-    const typical = Object.entries(fromGeneric(h.peak, gpu)).filter(([, v]) => v > 0).map(([d, v]) => `~${formatDim(d, v)} ${this.label(d)}`).join(' and ');
-    const from = [h.reserved ? `${h.reserved} reserved job${h.reserved === 1 ? '' : 's'}` : '', h.unreserved ? `${h.unreserved} stretch${h.unreserved === 1 ? '' : 'es'} of unreserved heavy work` : '']
-      .filter(Boolean).join(' and ');
-    const took = h.usualMs !== null ? `; its calls usually take ${Math.round(h.usualMs / 1000)} s` : '';
-    const source = `Ledung learned this from ${from} it ran in, the last on ${new Date(h.lastAt).toISOString().slice(0, 10)}${took}. If that is wrong, the person using Ledung can mark "${own}" as never needing a reservation on the usage page.`;
-    const toParent = opts.subagent ? " Your session's reservation is waiting for room. Stop here and tell your parent; Ledung will tell it when it may go." : '';
-    if (this.isHeld(sessionId)) {
-      return `Not now: a job of yours is over its share and your session is held, so Ledung refuses new heavy work. "${own}" usually uses ${typical}. Reduce or stop the running job first; commands that stop it or release a lock always run. ${source}`;
-    }
-    const pass = [...this.reservations.values()].find((r) => r.sessionId === sessionId);
-    if (pass && holdsRoom(pass)) return null;
-    if (pass?.state === 'parked') {
-      // Parked → busy is checked against the limits like a new start (round 2, open choice 2: refused at once if it
-      // doesn't fit, back in the line with its original time).
-      if (this.resumeFits(pass)) {
-        this.toReady(pass, true);
-        this.persist();
-        this.ctx.changed();
-        return null;
-      }
-      pass.state = 'waiting';
-      pass.parkedAt = null;
-      this.dispatch(pass.id);
-      this.persist();
-      this.ctx.changed();
-      if (holdsRoom(pass)) return null;
-      const place = this.placeOf(pass.id);
-      return `Wait: your reservation ${pass.id} "${pass.what}" was parked, and there is no room to resume it now. ${this.reasonOf(pass.id, { kind: 'session', id: sessionId })}${place ? ` (${ordinal(place)} in line)` : ''}. "${own}" usually uses ${typical}. Don't start it yet: do other work, and Ledung will tell you when you may go.${toParent}`;
-    }
-    if (pass?.state === 'waiting') {
-      const place = this.placeOf(pass.id);
-      return `Wait: your reservation ${pass.id} "${pass.what}" is waiting for room: ${this.reasonOf(pass.id, { kind: 'session', id: sessionId })}${place ? ` (${ordinal(place)} in line)` : ''}. "${own}" usually uses ${typical}; run it once Ledung says go.${toParent}`;
-    }
-    return `"${own}" usually uses ${typical}: call reserve first, then run it once Ledung says go. ${source}`;
-  }
-
   /** A parked pass's work may start again: what it holds back now fits under the limits beside everyone else's. */
   private resumeFits(r: Reservation): boolean {
     // A parked pass holds nothing, so unused() is everyone else's; what it uses now is already in the PC's total.
@@ -730,7 +675,10 @@ export class ResourceBook {
     r.wasActive = false;
   }
 
-  /** Held: a job of this session is over its share. No new turns from others, no new reservation, no known heavy command. */
+  /**
+   * Held: a job of this session is over its share. No new turns from others, no new reservation. No command is refused
+   * for it (issue #500): what runs is what is judged.
+   */
   isHeld(sessionId: string): boolean {
     if (this.unreserved.get(sessionId)?.over.over) return true;
     for (const r of this.reservations.values()) if (r.sessionId === sessionId && r.over.over) return true;
@@ -1104,9 +1052,9 @@ export class ResourceBook {
       // A ready pass's work starts when its processes are seen in two samples in a row, active in either (a job that
       // loads its memory at once and then waits on the disk is still work); a short call caught once, a git command,
       // isn't (finding 16). A parked pass needs two active samples in a row: a leftover daemon's one blip of CPU
-      // doesn't take its room back. So does a parked pass sent back into the line (a refused command): its processes
+      // doesn't take its room back. So does a parked pass sent back into the line (reserve asked again): its processes
       // are still claimed for it, so work it starts anyway must be judged here, or nothing would (code review of
-      // PR #476, finding 2).
+      // PR #476, finding 2). This is how a parked pass resumes: no command is refused or held by its name (issue #500).
       const idle = r.state === 'parked' || r.state === 'waiting';
       const starts = idle ? active && r.seenOnce && r.wasActive : list.length > 0 && r.seenOnce && (active || r.wasActive);
       r.seenOnce = list.length > 0;
@@ -1128,8 +1076,8 @@ export class ResourceBook {
         r.quietSince = null;
         changed = true;
       } else if (idle && starts) {
-        // Work started again without asking first (a command Ledung didn't know was heavy): checked like a new start;
-        // it can't be stopped, so above the limits it runs, judged against its share, and its card says so.
+        // Work started again: checked like a new start; nothing is stopped before it runs (issue #500), so above the
+        // limits it runs, judged against its share, and its card says so.
         r.resumedAbove = !this.resumeFits(r);
         r.state = 'busy';
         r.parkedAt = null;
@@ -1181,7 +1129,7 @@ export class ResourceBook {
       if (step.change === 'over') {
         r.told = true;
         const dims = r.over.dims.map((d) => `reserved ${formatDim(d, r.granted[d] ?? 0)} ${this.label(d)} and has averaged ${formatDim(d, avg[d] ?? 0)}`).join('; ');
-        this.ctx.tell(r.sessionId, `Your job "${r.what}" (reservation ${r.id}) ${dims} for over ${Math.round(this.settings.overSec)} s: over its share. Ledung has lowered its processes' priority and holds your session (no new turns from others, no new reservation, no known heavy command) until it is back within its share. Reduce it (fewer workers, a smaller batch) or stop it cleanly; commands that stop it or release a lock always run. Nothing is killed.`);
+        this.ctx.tell(r.sessionId, `Your job "${r.what}" (reservation ${r.id}) ${dims} for over ${Math.round(this.settings.overSec)} s: over its share. Ledung has lowered its processes' priority and holds your session (no new turns from others, no new reservation) until it is back within its share. Reduce it (fewer workers, a smaller batch) or stop it cleanly. Nothing is killed.`);
         changed = true;
       } else if (step.change === 'back') {
         this.restoreAll(r, r.sessionId);
@@ -1219,8 +1167,7 @@ export class ResourceBook {
       }
       if (step.change === 'over') {
         u0.told = true;
-        const dims = u0.over.dims.map((d) => `${formatDim(d, avg[d] ?? 0)} ${this.label(d)}`).join(' and ');
-        this.ctx.tell(sessionId, `Heavy work without a reservation: what your session runs has averaged ${dims} for over ${Math.round(this.settings.overSec)} s. Ledung has lowered its priority and holds your session (no new turns from others, no new reservation, no known heavy command) until it is back within the small allowance for unreserved work. Reduce it or stop it cleanly, and call reserve before heavy work next time. Nothing is killed.`);
+        this.ctx.tell(sessionId, this.unreservedNotice(s.project, u0, avg));
         changed = true;
       } else if (step.change === 'back') {
         this.endUnreserved(sessionId, u0);
@@ -1348,6 +1295,29 @@ export class ResourceBook {
       for (const [pid, l] of Object.entries(s.lowered)) all.push({ pid: Number(pid), was: l.was, started: l.started });
     }
     this.ctx.meta.set(LOWERED_KEY, JSON.stringify(all));
+  }
+
+  /**
+   * What a session is told when its unreserved work goes over (issue #500, point 3): what it used without a booking,
+   * and to reserve before it next time. The command kinds whose own processes were busy are its own words; a learned
+   * figure per kind is added (point 4: learned figures serve estimates and this notice, never a refusal).
+   */
+  private unreservedNotice(project: string, u: Unreserved, avg: Amounts): string {
+    const dims = u.over.dims.map((d) => `~${formatDim(d, avg[d] ?? 0)} ${this.label(d)}`).join(' and ');
+    const gpu = mainGpu(this.gpu);
+    let learned: HeavyCommand[] = [];
+    try {
+      learned = this.ctx.jobs.heavyCommands(project);
+    } catch (e) {
+      console.error(`Learned figures for a notice: ${(e as Error).message}`);
+    }
+    const kinds = u.commands.slice(0, 3).map((k) => {
+      const h = learned.find((x) => x.command === k);
+      const usual = h ? Object.entries(fromGeneric(h.peak, gpu)).filter(([, v]) => v > 0).map(([d, v]) => `~${formatDim(d, v)} ${this.label(d)}`).join(' and ') : '';
+      return usual ? `"${k}", which usually uses ${usual} (learned from ${h!.runs} runs)` : `"${k}"`;
+    });
+    const busy = kinds.length ? ` Busy: ${kinds.join('; ')}.` : '';
+    return `Heavy work without a reservation: what your session runs has used ${dims} for over ${Math.round(this.settings.overSec)} s without a booking: reserve before it next time.${busy} Ledung has lowered its priority and holds your session (no new turns from others, no new reservation) until it is back within the small allowance for unreserved work. Reduce it or stop it cleanly. Nothing is killed.`;
   }
 
   private endUnreserved(sessionId: string, u: Unreserved): void {

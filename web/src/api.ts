@@ -10,7 +10,7 @@ import type {
   SkillListView, SignInProblem,
   ShortcutAction, ShortcutsView, TrayView,
   CheckInAction, CheckInView,
-  HeavyCommandInfo, JobKindInfo, LightCommandInfo,
+  HeavyCommandInfo, JobKindInfo,
 } from '../../src/shared/protocol.ts';
 import type { ProjectColours } from '../../src/shared/name-colours.ts';
 import type { ComputerColour, ComputerInfo } from '../../src/shared/computers.ts';
@@ -463,9 +463,8 @@ export const api = {
   stopJob: (id: string) => call<JobActionResult>('POST', `/api/jobs/${encodeURIComponent(id)}/stop`, {}),
   /** What Stop would end, for its confirm (acceptance test 5 of PR #476). */
   jobReach: (id: string) => call<JobReach>('GET', `/api/jobs/${encodeURIComponent(id)}/reach`),
-  jobKinds: () => call<{ kinds: JobKindInfo[]; commands: HeavyCommandInfo[]; light?: LightCommandInfo[] }>('GET', '/api/job-kinds'),
+  jobKinds: () => call<{ kinds: JobKindInfo[]; commands: HeavyCommandInfo[] }>('GET', '/api/job-kinds'),
   forgetJobKind: (project: string, kind: string) => call('POST', '/api/job-kinds-forget', { project, kind }),
-  markCommand: (project: string, command: string, never: boolean) => call('POST', '/api/heavy-commands-mark', { project, command, never }),
   setUsageStop: (account: string, kind: string, percent: number | null) => call('POST', '/api/usage-stops', { account, kind, percent }),
   liftUsageStop: (account: string, kind: string) => call('POST', '/api/usage-lift', { account, kind }),
   away: (until: string, allow: AwayKind[]) => call<AwayInfo>('POST', '/api/away', { until, allow }),
