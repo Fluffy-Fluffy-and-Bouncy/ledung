@@ -10,6 +10,7 @@ import { type Duplex, duplexPair } from 'node:stream';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { appDir, PACKAGED, runningVersion } from '../platform/paths.ts';
+import { listenAddresses } from '../platform/port-claim.ts';
 import { readRepository, sourceOffer } from './source.ts';
 import type { SessionManager } from '../sessions/manager.ts';
 import { UserError } from '../sessions/manager.ts';
@@ -529,10 +530,8 @@ export class LedungServer {
 
   /** Listens on 127.0.0.1, and on the local network address if Ledung is opened to it. */
   async listen(): Promise<void> {
-    const bind = this.opts.lanBind;
-    // 0.0.0.0 already includes 127.0.0.1; a single network address needs a second listener.
-    const addresses = bind === '0.0.0.0' ? ['0.0.0.0'] : bind ? ['127.0.0.1', bind] : ['127.0.0.1'];
-    for (const address of addresses) {
+    // The same addresses main.ts claims before the start (#503).
+    for (const address of listenAddresses(this.opts.lanBind)) {
       const server = this.createServer();
       await new Promise<void>((resolve, reject) => {
         server.once('error', reject);
