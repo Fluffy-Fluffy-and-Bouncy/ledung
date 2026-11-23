@@ -56,6 +56,8 @@ export interface LinkedPort {
 let exercised159 = false;
 /** The EXERCISED line of issue #177, once per run. */
 let exercised177 = false;
+/** The EXERCISED line of issue #506, once per run. */
+let exercised506 = false;
 
 /**
  * Settings' page-only actions for managers (issue #263): the same calls Settings' routes make, set by the server.
@@ -1480,6 +1482,10 @@ ${note}`);
     }
     this.linkBurst.set(toId, { at: now, timer: null });
     this.ctx.wake(toId);
+    if (!exercised506) {
+      exercised506 = true;
+      exercisedLine('EXERCISED #506 a message from another computer woke its manager, with no per-hour wake cap');
+    }
   }
 
   // Other projects (issue #37). add_project, create_project, start_manager and stop_manager only run once
