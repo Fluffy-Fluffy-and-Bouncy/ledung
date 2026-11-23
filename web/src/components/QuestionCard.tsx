@@ -2,7 +2,8 @@
 // Shown in the chat and in the "Waiting for you" list; both stay in sync through the live connection.
 import { useState } from 'react';
 import { projectLabel, type QuestionInfo } from '../../../src/shared/protocol.ts';
-import { shownFile } from '../../../src/shared/questions.ts';
+import { deskQuestion, shownFile } from '../../../src/shared/questions.ts';
+import { isRequest, requestKinds } from '../../../src/shared/requests.ts';
 import { api } from '../api.ts';
 import { Markdown } from './Markdown.tsx';
 import { formatTime } from './MessageList.tsx';
@@ -46,9 +47,12 @@ export function QuestionCard(props: {
 
   // A question with screenshots is judged in Waiting for you's screenshot view (issue #60), a review on a page
   // of its own there (docs/steps/pr-review.md): the card shows its title and a way to open it.
-  const review = q.details?.review ? q.details : null;
+  // A request (issue #502) opens on its page in Waiting for you like a review: the card shows its title and parts.
+  const request = isRequest(q) ? requestKinds(q) : null;
+  const review = q.details?.review || request ? q.details : null;
   const shots = review ? null : shotCount(q);
-  const judgeText = review ? (q.status === 'open' ? 'Open the review' : 'Show the review') : q.status === 'open' ? 'Judge in the screenshot view' : 'Show the screenshots';
+  const judgeText = request ? (q.status === 'open' ? 'Open the request' : 'Show the request')
+    : review ? (q.status === 'open' ? 'Open the review' : 'Show the review') : q.status === 'open' ? 'Judge in the screenshot view' : 'Show the screenshots';
   // A button when the page can open it as a step into Waiting for you, so its Close comes back here (issue #61).
   const judge = (shots || review) && (props.onOpenInDesk
     ? <button className="small" onClick={props.onOpenInDesk}>{judgeText}</button>
@@ -74,11 +78,12 @@ export function QuestionCard(props: {
       {q.addressedTo !== 'user' && <span className="muted"> · to manager "{props.titleOf?.(q.addressedTo) ?? 'manager'}"</span>}
       {q.aboutQuestion !== null && <span className="muted"> · about #{q.aboutQuestion}</span>}
       {shots && <> <span className="chip shot-chip">{shots}</span></>}
-      {review && <> <span className="chip review-chip">Review</span></>}
+      {review && !request && <> <span className="chip review-chip">Review</span></>}
+      {request && <> <span className="chip review-chip">Request</span> <span className="chip">{request.join(' · ')}</span></>}
     </div>
   );
   const text = review
-    ? <div className="question-text"><strong>{review.title}</strong></div>
+    ? <div className="question-text"><strong>{review.title || deskQuestion(q).title}</strong></div>
     : <div className="question-text"><Markdown text={q.question} onOpenFile={props.onOpenFile} /></div>;
   const answeredBy =
     q.answeredBy === 'user'

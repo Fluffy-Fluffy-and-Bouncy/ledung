@@ -10,6 +10,7 @@ import { decideStep, OPEN_STATES, outcomeList, runLabel, startBlock, type FlowRu
 import { inFolder, sessionOf } from '../shared/flow-check.ts';
 import { exercisedLine } from '../platform/exercised.ts';
 import { ACCEPTED, CHANGES_NEEDED, optionAnswer, questionText, stepTier, type QuestionDetails, type QuestionOption, type QuestionRun } from '../shared/questions.ts';
+import { isRequest, movingAnswer } from '../shared/requests.ts';
 import type { RunStore } from './run-store.ts';
 
 /** A project's flows as they read now: by name ("main" for flow.json), and the folder they are in. */
@@ -1190,14 +1191,20 @@ export class FlowRuns {
         const flow = this.flowOf(flows, now);
         const block = flow.blocks.find((b) => b.id === now.at);
         if (!block) throw new FlowRunError(`it is at "${now.at}", which is no block of its flow any more.`);
-        const word = answerWord(block, answer, q.details?.run?.writeUp ? q.details.options ?? [] : undefined);
+        // A request's answer (issue #502) moves the run by its one moving block, read from the stored parts, so a long
+        // answer can't be misread (D6); an answer without parts is read from its text, as before.
+        const moving = movingAnswer(q);
+        const word = moving
+          ? answerWord(block, moving.answer, q.details?.run?.writeUp ? moving.options ?? [] : undefined)
+          : answerWord(block, answer, q.details?.run?.writeUp ? q.details.options ?? [] : undefined);
         if (!word) {
           this.p.runs.update(now.id, { question: null, state: 'running' }, this.now());
           this.p.changed(now.project);
           this.tellCoordinator(now, `Ledung: ${this.p.userName} answered "${block.title}" of ${runLabel(now)} (question #${q.id}) with an answer that is none of its outcomes: read it and report the outcome with flow_step. Its outcomes: ${outcomeList(flow, block, now.counts[block.id])}.\n\nThe answer:\n\n${answer}`);
           return;
         }
-        const note = answer.replace(/^(Accepted\.|Changes needed:)\s*/, '').trim();
+        // A request's whole answer goes on as the note: its other parts are information for the next step.
+        const note = isRequest(q) ? answer : answer.replace(/^(Accepted\.|Changes needed:)\s*/, '').trim();
         const moved = await this.applyStep(flows, flow, { ...now, question: null }, block, word, this.p.userName, note && endingKey(note) !== endingKey(word) ? note : undefined);
         this.tellCoordinator(now, `Ledung: ${this.p.userName} answered "${block.title}" of ${runLabel(now)} (question #${q.id}): ${answer}\n\n${moved}`);
       } catch (e) {

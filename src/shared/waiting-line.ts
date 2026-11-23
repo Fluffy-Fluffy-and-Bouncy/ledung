@@ -5,6 +5,7 @@
 // restart, Done looks like 7) and the page draws it from the live item when it has one. Plain text only (Done 5).
 import type { PermissionInfo, QuestionInfo } from './protocol.ts';
 import { ACCEPTED, CHANGES_NEEDED, deskQuestion } from './questions.ts';
+import { isRequest, requestModel } from './requests.ts';
 import { callLine } from './tool-call.ts';
 
 export type WaitingLineState = 'waiting' | 'accepted' | 'changes' | 'answered' | 'withdrawn' | 'allowed' | 'denied';
@@ -16,13 +17,15 @@ export interface WaitingLine {
   ref: string;
   /** The session that asked: a permission's Open shows Waiting for you on it. */
   sessionId: string;
-  label: 'Review' | 'Question' | 'Permission prompt';
+  label: 'Review' | 'Question' | 'Request' | 'Permission prompt';
   /** The question's number; null for a permission prompt, which has none. */
   number: number | null;
   title: string;
   state: WaitingLineState;
   /** The option picked, or the answer's first line, for an answered question. */
   answer: string | null;
+  /** A request's answered parts (issue #502), said after how it ended: "3 parts". Absent: one part. */
+  parts?: number;
   /** Who decided, by name. */
   by: string | null;
   at: number | null;
@@ -52,15 +55,24 @@ function whoName(by: string | null, userName: string, titleOf: (id: string) => s
 }
 
 export function questionLine(q: QuestionInfo, userName: string, titleOf: (id: string) => string | undefined): WaitingLine {
-  const review = !!q.details?.review;
+  const request = isRequest(q);
+  const review = !!q.details?.review && !request;
   const base = {
-    item: 'question' as const, ref: String(q.id), sessionId: q.sessionId, label: review ? 'Review' as const : 'Question' as const,
+    item: 'question' as const, ref: String(q.id), sessionId: q.sessionId, label: request ? 'Request' as const : review ? 'Review' as const : 'Question' as const,
     number: q.id, title: cut(deskQuestion(q).title, MAX_TITLE),
   };
   if (q.status === 'open') return { ...base, state: 'waiting', answer: null, by: null, at: null };
   if (q.status === 'withdrawn') return { ...base, state: 'withdrawn', answer: null, by: null, at: q.answeredAt };
   const answer = q.answer ?? '';
   const by = whoName(q.answeredBy, userName, titleOf);
+  if (request) {
+    // A request (issue #502): the sign-off if it has one, else "Answered 3 parts"; from the stored parts when there are.
+    const m = requestModel(q);
+    const many = m.parts > 1 ? { parts: m.parts } : {};
+    const verdict = q.answerParts?.signOff?.verdict ?? (m.signOff ? (answer.startsWith(ACCEPTED) || answer.includes(`Sign-off: ${ACCEPTED}`) ? 'accept' : answer.startsWith(CHANGES_NEEDED) || answer.includes(`Sign-off: ${CHANGES_NEEDED}`) ? 'changes' : null) : null);
+    if (verdict) return { ...base, state: verdict === 'accept' ? 'accepted' : 'changes', answer: null, ...many, by, at: q.answeredAt };
+    return { ...base, state: 'answered', answer: m.parts > 1 ? null : cut(answer.split('\n')[0] ?? '', MAX_ANSWER), ...many, by, at: q.answeredAt };
+  }
   if (review && answer.startsWith(ACCEPTED)) return { ...base, state: 'accepted', answer: null, by, at: q.answeredAt };
   if (review && answer.startsWith(CHANGES_NEEDED)) return { ...base, state: 'changes', answer: null, by, at: q.answeredAt };
   const option = deskQuestion(q).options.find((o) => answer === o.answer || answer.startsWith(`${o.answer}\n`));
@@ -87,7 +99,7 @@ export function permissionLine(p: PermissionInfo, userName: string, titleOf: (id
 
 /** Whether two lines say the same: an unchanged one is not stored or sent again. */
 export function sameLine(a: WaitingLine, b: WaitingLine): boolean {
-  return a.state === b.state && a.title === b.title && a.answer === b.answer && a.by === b.by && a.at === b.at;
+  return a.state === b.state && a.title === b.title && a.answer === b.answer && a.by === b.by && a.at === b.at && a.parts === b.parts;
 }
 
 /**
@@ -106,11 +118,12 @@ export function lineHead(l: WaitingLine): string {
 /** How it ended, without the time (the page adds it): "Accepted by Simon", "Answered by Simon: Merge". Null: waiting. */
 export function lineOutcome(l: WaitingLine): string | null {
   const by = l.by ? ` by ${l.by}` : '';
+  const parts = l.parts ? ` · ${l.parts} parts` : '';
   switch (l.state) {
     case 'waiting': return null;
-    case 'accepted': return `Accepted${by}`;
-    case 'changes': return `Changes needed${by}`;
-    case 'answered': return `Answered${by}${l.answer ? `: ${l.answer}` : ''}`;
+    case 'accepted': return `Accepted${by}${parts}`;
+    case 'changes': return `Changes needed${by}${parts}`;
+    case 'answered': return l.parts ? `Answered ${l.parts} parts${by}` : `Answered${by}${l.answer ? `: ${l.answer}` : ''}`;
     case 'allowed': return `Allowed${by}`;
     case 'denied': return `Denied${by}`;
     case 'withdrawn': return 'Withdrawn';

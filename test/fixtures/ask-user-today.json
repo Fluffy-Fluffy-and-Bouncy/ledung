@@ -1,0 +1,200 @@
+[
+  {
+    "question": "Merge now?",
+    "options": [
+      "Yes (recommended)",
+      "No"
+    ],
+    "details": {
+      "tier": "Process"
+    }
+  },
+  {
+    "question": "Plain, no options",
+    "options": null,
+    "details": {
+      "tier": "Process"
+    }
+  },
+  {
+    "question": "Which layout?",
+    "options": null,
+    "details": {
+      "issue": "Which layout?",
+      "tier": "Blocks a card from Ready"
+    }
+  },
+  {
+    "question": "**Layout**\n\nTwo ways to lay it out.\n\n**Evidence**\n\nChecked at 390 px.\n\n- a) **Stacked**: one column Cost: 1 h\n- b) **Side by side**\n\nManager: a. Reads on a phone.\n\nReviewer: b",
+    "options": [
+      "a — Stacked",
+      "b — Side by side"
+    ],
+    "details": {
+      "title": "Layout",
+      "issue": "Two ways to lay it out.",
+      "evidence": "Checked at 390 px.",
+      "options": [
+        {
+          "key": "a",
+          "text": "**Stacked**: one column",
+          "cost": "1 h"
+        },
+        {
+          "key": "b",
+          "text": "**Side by side**"
+        }
+      ],
+      "opinions": [
+        {
+          "who": "Manager",
+          "pick": "a",
+          "why": "Reads on a phone."
+        },
+        {
+          "who": "Reviewer",
+          "pick": "b"
+        }
+      ],
+      "tier": "Process",
+      "rank": 2,
+      "refs": [
+        "#502"
+      ]
+    }
+  },
+  {
+    "question": "My own words about it",
+    "options": [
+      "a — A",
+      "b — B"
+    ],
+    "details": {
+      "title": "T",
+      "issue": "I",
+      "options": [
+        {
+          "key": "a",
+          "text": "A"
+        },
+        {
+          "key": "b",
+          "text": "B"
+        }
+      ],
+      "recommended": "a",
+      "why": "because",
+      "reviewer": {
+        "who": "R",
+        "pick": "b",
+        "why": "other"
+      },
+      "tier": "Process"
+    }
+  },
+  {
+    "question": "**Shots**\n\nDo these look right?\n\n- a) **Ship**\n- b) **Fix**",
+    "options": [
+      "a — Ship",
+      "b — Fix"
+    ],
+    "details": {
+      "title": "Shots",
+      "issue": "Do these look right?",
+      "options": [
+        {
+          "key": "a",
+          "text": "**Ship**"
+        },
+        {
+          "key": "b",
+          "text": "**Fix**"
+        }
+      ],
+      "tier": "Blocks a finished PR"
+    }
+  },
+  {
+    "question": "**Only shots**\n\nLook",
+    "options": null,
+    "details": {
+      "title": "Only shots",
+      "issue": "Look",
+      "tier": "Process"
+    }
+  },
+  {
+    "question": "**Review: Review: shop**\n\n**What we were solving**\n\nThe cart was wrong.\n\n**What was done**\n\nFixed the VAT.\n\n**Notes**\n\nReviewer: fine.\n\n**Evidence**\n\n- The cart (`shots/cart.png`)\n\nAnswered \"Accepted.\" or \"Changes needed: …\" on the review page.",
+    "options": null,
+    "details": {
+      "title": "Review: shop",
+      "review": {
+        "solving": "The cart was wrong.",
+        "done": "Fixed the VAT.",
+        "notes": "Reviewer: fine.",
+        "evidence": [
+          {
+            "file": "shots/cart.png",
+            "caption": "The cart"
+          }
+        ]
+      },
+      "tier": "Blocks a finished PR",
+      "refs": [
+        "PR #12"
+      ]
+    }
+  },
+  {
+    "question": "**Review: Review, bare**\n\n**What we were solving**\n\nS\n\n**What was done**\n\nD\n\nAnswered \"Accepted.\" or \"Changes needed: …\" on the review page.",
+    "options": null,
+    "details": {
+      "title": "Review, bare",
+      "review": {
+        "solving": "S",
+        "done": "D"
+      },
+      "tier": "Process"
+    }
+  },
+  {
+    "question": "Allow this push?\n\n**Order for Ledung**: answering \"ok — Confirm order\" confirms an order that lets exactly this command run without a prompt:\n\n```\ngit push origin main\n```",
+    "options": [
+      "a — No",
+      "ok — Confirm order"
+    ],
+    "details": {
+      "options": [
+        {
+          "key": "a",
+          "text": "No"
+        },
+        {
+          "key": "ok",
+          "text": "**Confirm order**: Ledung's own option. It lets exactly the command shown run without a prompt; no other option does."
+        }
+      ],
+      "tier": "Process",
+      "orderCommand": {
+        "command": "git push origin main",
+        "match": "exact",
+        "confirm": "ok — Confirm order"
+      }
+    }
+  },
+  {
+    "question": "Allow this?\n\n**Order for Ledung**: answering \"Confirm order\" confirms an order that lets commands of this pattern (`*` is any text; one plain command only) run without a prompt:\n\n```\nnpm run *\n```",
+    "options": [
+      "Not now",
+      "Confirm order"
+    ],
+    "details": {
+      "tier": "Process",
+      "orderCommand": {
+        "command": "npm run *",
+        "match": "pattern",
+        "confirm": "Confirm order"
+      }
+    }
+  }
+]

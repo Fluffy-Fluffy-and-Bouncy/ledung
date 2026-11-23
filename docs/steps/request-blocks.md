@@ -1,6 +1,6 @@
-# One request page built from blocks — proposal
+# One request page built from blocks
 
-Nov 23, 2026 · Proposal for issue #502, not approved. Nothing is built.
+Nov 23, 2026 · Approved (Simon, 2026-11-23, #2262: "a — Approve, with all the recommended choices"); D7 means "Ask about this" (part E) is not in this round. Built in PR for issue #502: parts A–D; the old pages stay until Simon approves the preset screenshots (D2).
 
 **Done when:** a manager can send Simon one request that holds context, screenshots to judge, evidence files, two or more decisions and a sign-off; Waiting for you shows it as one entry ("3 to answer") that opens on one page; Simon answers it on the PC or the phone, a part at a time, and sends it once; the asker gets one readable message; and every question, review and screenshot question asked today, old or new, still opens and answers as it does now.
 

@@ -2,6 +2,7 @@
 
 import type { FlowRun } from './flow-run.ts';
 import type { QuestionDetails } from './questions.ts';
+import type { AnswerParts } from './requests.ts';
 import type { NameColour, ProjectColours } from './name-colours.ts';
 import type { ComputerInfo } from './computers.ts';
 import type { SkillChoices, SkillInfo } from './skills.ts';
@@ -713,6 +714,11 @@ export interface QuestionInfo {
   withdrawnReason: string | null;
   /** The structured fields the asker gave, for the question desk (issue #59); null for a plain question. */
   details: QuestionDetails | null;
+  /**
+   * The answer as data, part by part (issue #502), when the request page sent it: what a run reads to move. Absent or
+   * null for an answer given as text (older answers, the chat's card, a manager's).
+   */
+  answerParts?: AnswerParts | null;
   /**
    * The question `aboutQuestion` names, sent with this one so the page can show it whatever it has loaded
    * (issue #368); null when there is none or it is gone.

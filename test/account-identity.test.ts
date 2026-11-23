@@ -75,7 +75,7 @@ test('the update forgets the email and organisation sessions noted, for added ac
   db.prepare("INSERT INTO accounts (name, kind, config_dir, email, organization, plan, seen_at, created_at) VALUES ('private', 'folder', '/x', 'work@example.com', 'Work Org', 'max', 5, 1)").run();
   db.prepare("INSERT INTO meta (key, value) VALUES ('default-account-identity', '{\"email\":\"work@example.com\"}')").run();
   // Back to before #378's migration, and #395's, #402's, #468's and #356's after it.
-  db.exec(`DROP TABLE command_calls; ALTER TABLE job_runs DROP COLUMN by_call; ALTER TABLE devices DROP COLUMN new_cookie_sealed; ALTER TABLE flow_runs DROP COLUMN retired; ALTER TABLE sessions DROP COLUMN account_switch; ALTER TABLE sessions DROP COLUMN account_chosen; PRAGMA user_version = ${latest - 6}`);
+  db.exec(`DROP TABLE request_drafts; ALTER TABLE questions DROP COLUMN answer_parts; DROP TABLE command_calls; ALTER TABLE job_runs DROP COLUMN by_call; ALTER TABLE devices DROP COLUMN new_cookie_sealed; ALTER TABLE flow_runs DROP COLUMN retired; ALTER TABLE sessions DROP COLUMN account_switch; ALTER TABLE sessions DROP COLUMN account_chosen; PRAGMA user_version = ${latest - 7}`);
   db.close();
   const again = openDatabase(file);
   assert.deepEqual({ ...again.prepare("SELECT name, config_dir, email, organization, plan, seen_at FROM accounts").get() },

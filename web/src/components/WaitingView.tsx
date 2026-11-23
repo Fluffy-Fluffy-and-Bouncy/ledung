@@ -18,6 +18,8 @@ import { PermissionCard } from './PermissionCard.tsx';
 import { RefersTo } from './RefersTo.tsx';
 import { ReviewAnswer, ReviewEvidenceList, ReviewSections } from './ReviewView.tsx';
 import { ScreenshotView, shotCount } from './ScreenshotView.tsx';
+import { RequestPage, toAnswerChip } from './RequestPage.tsx';
+import { isRequest } from '../../../src/shared/requests.ts';
 import { usePlainTyping } from '../usePlainTyping.ts';
 import { Withdraw } from './Withdraw.tsx';
 import { RunLine } from './FlowRuns.tsx';
@@ -152,6 +154,9 @@ export function WaitingView(props: {
     };
     // A question with screenshots opens straight into the screenshot view (issue #60); sending leaves it for the
     // view it was opened from, not the next question (Martin, issue #92).
+    // A request (issue #502) opens on the request page. Today's three pages stay for the presets until Simon has approved
+    // side-by-side screenshots (D2); the switch below opens every preset on the request page too, for that comparison.
+    if (isRequest(current.q) || (requestPageForAll() && onRequestPage(current.q))) return <RequestPage key={current.q.id} ctx={ctx} item={current} list={list} onAnswered={after} />;
     if (current.v.review) return <ReviewPage key={current.q.id} ctx={ctx} item={current} list={list} onAnswered={after} />;
     if (current.q.shots) return <ShotPage key={current.q.id} ctx={ctx} item={current} list={list} onAnswered={props.onLeaveShots} />;
     return <QuestionPage key={current.q.id} ctx={ctx} item={current} list={list} onAnswered={after} />;
@@ -191,7 +196,7 @@ function useWholeQuestion(q: QuestionInfo | null): QuestionInfo | null {
   return whole;
 }
 
-interface DeskContext {
+export interface DeskContext {
   props: Parameters<typeof WaitingView>[0];
   nameOf: (sessionId: string) => string;
   titleOf: (sessionId: string) => string;
@@ -220,6 +225,24 @@ function useKeys(handler: (e: KeyboardEvent, inText: boolean) => void) {
     return () => document.removeEventListener('keydown', onKey);
   }, []);
 }
+
+/**
+ * The switch for D2's comparison (issue #502): with localStorage "ledung-request-page" set to "all", today's questions,
+ * reviews and screenshot questions open on the request page too. Off by default until Simon approves the screenshots.
+ */
+export const REQUEST_PAGE_KEY = 'ledung-request-page';
+function requestPageForAll(): boolean {
+  try {
+    return localStorage.getItem(REQUEST_PAGE_KEY) === 'all';
+  } catch {
+    return false;
+  }
+}
+/** Ledung's own questions carry permissions and keep their own cards (design section 1, "Still alone"). */
+const onRequestPage = (q: QuestionInfo) => {
+  const d = q.details;
+  return !(q.aboutRequest || d?.refusal || d?.order || d?.orderCommand || d?.flowProposal !== undefined);
+};
 
 const firstLine = (text: string) => text.trim().split('\n')[0] ?? '';
 const excerpt = (text: string) => text.replace(/\*\*|`|^#+\s*/gm, '').replace(/\s+/g, ' ').trim().slice(0, 180);
@@ -314,6 +337,7 @@ function Queue(p: {
             {!v.structured && <span className="chip">plain</span>}
             {v.review && <span className="chip review-chip">Review</span>}
             {q.shots && <span className="chip shot-chip">{shotCount(q)}</span>}
+            {toAnswerChip(q) && <span className="chip to-answer-chip">{toAnswerChip(q)}</span>}
           </span>
           {/* A review's excerpt is the first line of what we were solving (docs/steps/pr-review.md). */}
           <span className="excerpt">{isDone ? (q.status === 'answered' ? excerpt(q.answer ?? '') : q.withdrawnReason ?? '') : excerpt(v.review ? firstLine(v.review.solving) : v.issue)}</span>

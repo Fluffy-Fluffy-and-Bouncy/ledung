@@ -840,6 +840,16 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE job_runs ADD COLUMN by_call INTEGER NOT NULL DEFAULT 0;
   `,
+  // A request's answer as data (issue #502), beside the text the asker reads: what a run reads to move, part by part.
+  // And the person's draft of an open request (D4: kept in Ledung, so it follows them from the PC to the phone).
+  `
+  ALTER TABLE questions ADD COLUMN answer_parts TEXT;
+  CREATE TABLE request_drafts (
+    question_id INTEGER PRIMARY KEY REFERENCES questions(id) ON DELETE CASCADE,
+    data TEXT NOT NULL,
+    at INTEGER NOT NULL
+  );
+  `,
 ];
 
 export function databaseFile(dir = userDataDir()): string {

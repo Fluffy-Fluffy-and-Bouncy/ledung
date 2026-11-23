@@ -1,5 +1,6 @@
 // Calls to Ledung's API. The sign-in cookie goes along automatically.
 import type { Macro } from '../../src/shared/macros.ts';
+import type { AnswerParts } from '../../src/shared/requests.ts';
 import type {
   AwayInfo, AwayKind, BoardOwnersView, BoardPeopleView, BoardRepoChoicesView, BoardStatus, BoardThreadsView, BoardThreadView, ProjectBoardView,
   AccountChoices, AccountInfoView, ChatsInfo, ContainerInfoView, EffortLevel, FolderListingView, MachineInfo, McpServerInfo, ModelChoice, Overview, ProjectInfo, PermissionDecision, PermissionMode, Priority, ProjectFileView, TurnResource, TypicalCost, QuestionInfo, SessionInfo, SessionUsage, StoredMessage, UpdateView, UsageFilter, UsageReport, WorkflowCheckView,
@@ -377,6 +378,11 @@ export const api = {
   overview: () => call<Overview>('GET', '/api/overview'),
   answerQuestion: (id: number, answer: string) => call<QuestionInfo>('POST', `/api/questions/${id}/answer`, { answer }),
   withdrawQuestion: (id: number) => call('POST', `/api/questions/${id}/withdraw`, {}),
+  /** A request's answer as its parts (issue #502); Ledung writes the text the asker reads. */
+  answerRequest: (id: number, parts: AnswerParts) => call<QuestionInfo>('POST', `/api/questions/${id}/answer`, { parts }),
+  /** A request's draft, kept in Ledung so it follows the person between devices (issue #502, D4). */
+  requestDraft: (id: number) => call<{ data: unknown; at: number | null }>('GET', `/api/questions/${id}/draft`),
+  saveRequestDraft: (id: number, data: unknown) => call('POST', `/api/questions/${id}/draft`, { data }),
   /** One whole question: older Waiting for you history comes without what it refers to (issue #306). */
   question: (id: number) => call<QuestionInfo>('GET', `/api/questions/${id}`),
   /** Waiting for you history, light, and the sessions it names (issue #306): read when the view opens. */

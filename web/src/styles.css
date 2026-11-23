@@ -2126,3 +2126,52 @@ button.link-button:hover:not(:disabled) { border: none; }
    item marked as the one selected. */
 .desk-body .focus-line { padding: 0.45rem 0.7rem; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); }
 .desk-body .focus-first { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* One request page built from blocks (issue #502): the blocks in one column, a rail on the right that stays in view
+   while scrolling and holds the note and Send; on a phone the rail is a bar at the bottom, above the keyboard. */
+.req { display: grid; grid-template-columns: minmax(0, 820px) 260px; gap: 1rem; align-items: start; padding: 1rem 1rem 3rem; }
+.app.no-sidebar .req { justify-content: center; }
+.req-blocks { display: flex; flex-direction: column; gap: 0.75rem; min-width: 0; }
+.req-block { display: flex; flex-direction: column; gap: 0.5rem; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 0.75rem 0.9rem; min-width: 0; }
+.req-block .block { margin: 0; }
+.req-context { background: none; border: 0; padding: 0; }
+.req-head { margin: 0; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); display: flex; gap: 0.6rem; align-items: center; }
+.req-folded { flex-direction: row; align-items: center; gap: 0.6rem; padding: 0.5rem 0.9rem; }
+.req-folded .req-check { color: var(--ok); font-weight: 700; }
+.req-folded .req-folded-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.req-opinions { display: flex; flex-direction: column; gap: 0.35rem; font-size: 0.9em; }
+.req-opinion { border-left: 3px solid var(--ok); padding-left: 0.6rem; }
+.req-opinion .prose { color: var(--muted); }
+.req-block .send button.on { outline: 2px solid var(--text); outline-offset: 2px; }
+.req-block button.deny.on { background: var(--danger); color: var(--accent-text); border-color: var(--danger); }
+.req-shots-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.8rem; }
+.req-shot-thumbs { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.req-shot-thumbs .thumb { position: relative; width: 92px; padding: 0; border: 2px solid transparent; border-radius: 6px; background: none; }
+.req-shot-thumbs .thumb img { width: 100%; height: 58px; object-fit: cover; display: block; border-radius: 4px; }
+.req-shot-thumbs .thumb:focus-visible { border-color: var(--accent); }
+.to-answer-chip { border-color: var(--warn-border); color: var(--text); font-weight: 600; }
+.req-rail { position: sticky; top: 1rem; display: flex; flex-direction: column; gap: 0.5rem; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 0.75rem 0.9rem; }
+.req-rail .box { min-height: 4.5rem; }
+.req-parts { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.9em; }
+.req-parts li { color: var(--muted); }
+.req-parts li.done { color: var(--text); }
+.req-parts li button.link { text-align: left; color: inherit; }
+.req-parts li.done span[aria-hidden] { color: var(--ok); }
+.req-saved { font-size: 0.8em; }
+.req-rail .send { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.req-rail .status.error { margin: 0; }
+.req-bar, .req-phone-note { display: none; }
+/* The large view of the request's screenshots: today's screenshot view over the page; Esc comes back to the same place. */
+.req-large { position: fixed; inset: 0; z-index: 40; display: flex; flex-direction: column; background: var(--bg); }
+@media (max-width: 760px) {
+  .req { grid-template-columns: minmax(0, 1fr); padding: 0.75rem 0.6rem 2rem; }
+  .req-rail { display: none; }
+  .req-phone-note { display: flex; }
+  .req-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem 0.6rem; padding: 0.5rem 0.75rem calc(0.5rem + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--border); background: var(--panel); }
+  .req-bar .send-pick { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .req-bar .send-pick.muted { font-weight: 400; }
+  .req-bar .status { flex-basis: 100%; font-size: 0.85em; color: var(--danger); }
+  .req-shot-thumbs .thumb { width: 72px; }
+  .req-folded .req-folded-text { white-space: normal; }
+  .req-shot-thumbs .thumb img { height: 46px; }
+}

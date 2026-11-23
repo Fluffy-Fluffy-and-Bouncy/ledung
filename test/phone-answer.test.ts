@@ -96,7 +96,7 @@ test('no button withdraws a question on one tap: each goes through the Withdraw 
     }
   }
   const users = sources.filter((s) => s.text.includes('<Withdraw ')).map((s) => s.f).sort();
-  assert.deepEqual(users, ['QuestionCard.tsx', 'ReviewView.tsx', 'ScreenshotView.tsx', 'WaitingView.tsx']);
+  assert.deepEqual(users, ['QuestionCard.tsx', 'RequestPage.tsx', 'ReviewView.tsx', 'ScreenshotView.tsx', 'WaitingView.tsx']);
 });
 
 test('the Withdraw that asks first only withdraws from its second button, and the safe one takes the focus', () => {

@@ -21,6 +21,7 @@ import type { WorktreeHost } from '../src/sessions/run-worktrees.ts';
 import { RunStore, runNumber } from '../src/sessions/run-store.ts';
 import { ledungToolServer, type RunHandlers, type ToolHandlers } from '../src/sessions/tools.ts';
 import type { SessionInfo } from '../src/shared/protocol.ts';
+import { requestAnswer } from '../src/shared/requests.ts';
 
 const FIXTURE = path.join(import.meta.dirname, 'fixtures', 'flow-ledung');
 const project = parseProject({ name: 'shop', runner: 'local', path: FIXTURE });
@@ -1469,4 +1470,62 @@ test('#402: a flow that keeps or only stops its sessions has none archived when 
     assert.deepEqual(e.stopped, ['block-2'], tidy);
     assert.deepEqual(e.archived, [], tidy);
   }
+});
+
+test('#502 requests at run steps: exactly one block moves the run, by its stored part; the rest reaches the coordinator', async () => {
+  const e = await engine();
+  const { ports, store, told, askUser, runs } = e;
+  await toDecide(e);
+  const base = { run: 'run-1', block: 'decide', tier: 'Process', title: 'Cart total: on, and two follow-ups', issue: 'Three rounds; rounding still open.' };
+  const moving = { key: 'next', title: 'Go on or fix again?', options: [{ key: 'a', text: '**Go on**', outcome: 'Go on' }, { key: 'b', text: '**Fix again**', outcome: 'Fix again' }] };
+  const info = { key: 'rounding', title: 'File rounding apart?', options: [{ key: 'a', text: '**File it**' }, { key: 'b', text: '**Leave it**' }] };
+  // None, or two, decisions with outcomes: refused before anything is stored (D6).
+  assert.match((await askUser('manager-1', { ...base, decisions: [{ ...info, key: 'x' }, info] })).text, /At a question step one decision moves the run/);
+  assert.match((await askUser('manager-1', { ...base, decisions: [moving, { ...moving, key: 'again' }] })).text, /Only one decision may move the run, but "next" and "again"/);
+  assert.equal(store.listQuestions().length, 0);
+  const asked = await askUser('manager-1', { ...base, decisions: [info, moving] });
+  assert.equal(asked.error, false, asked.text);
+  assert.match(asked.text, /^Request #1, "Person decides" of run-1/);
+  const q = store.getQuestion(1)!;
+  assert.deepEqual(q.details!.decisions!.map((x) => x.key), ['rounding', 'next']);
+  // The moving decision's outcomes in the flow's own spelling, from the run's check.
+  assert.deepEqual(q.details!.decisions![1]!.options.map((o) => o.outcome), ['Go on', 'Fix again']);
+  // Simon answers on the request page: the run moves by "next", read from the parts, not the text.
+  const built = requestAnswer(q, { decisions: [{ key: 'rounding', pick: 'b' }, { key: 'next', pick: 'b' }], note: 'One more round.' }, 'Simon');
+  assert.ok('answer' in built);
+  store.answerQuestion(1, built.answer, 'user', null, false, built.parts);
+  await runs.onAnswered(store.getQuestion(1)!);
+  const run = ports.runs.get('run-1')!;
+  assert.equal(run.at, 'fix');
+  assert.equal(run.history.at(-1)!.word, 'Fix again');
+  // The whole answer goes on: the other decision and the note are the coordinator's to read.
+  assert.match(told.at(-1)!.text, /Decision rounding — File rounding apart\?: b — Leave it/);
+  assert.match(run.history.at(-1)!.note ?? '', /Simon's note: One more round\./);
+});
+
+test('#502 a review step may carry decisions and screenshots; its sign-off moves the run, a decision with outcomes is refused', async () => {
+  const e = await engine();
+  const { ports, store, askUser, runs } = e;
+  await toDecide(e);
+  // The decide step first, as a plain write-up.
+  await askUser('manager-1', { run: 'run-1', block: 'decide', tier: 'Process', title: 'On?', issue: 'i', options: [{ key: 'a', text: '**Go on**', outcome: 'Go on' }, { key: 'b', text: '**Fix again**', outcome: 'Fix again' }] });
+  await e.answer(1, 'a — Go on');
+  assert.equal(ports.runs.get('run-1')!.at, 'functional-review');
+  const review = { run: 'run-1', block: 'functional-review', tier: 'Blocks a finished PR', title: 'Cart total', review: { solving: 'VAT twice.', done: 'Once now.' } };
+  const withOutcome = await askUser('manager-1', { ...review, decisions: [{ key: 'd1', title: 'Ship?', options: [{ key: 'a', text: 'A', outcome: 'Accepted' }, { key: 'b', text: 'B' }] }] });
+  assert.match(withOutcome.text, /At a review step the sign-off moves the run/);
+  const asked = await askUser('manager-1', {
+    ...review, opinions: [{ who: 'Manager', why: 'Checked at 390 px.' }],
+    decisions: [{ key: 'd1', title: 'Release today?', options: [{ key: 'a', text: '**Today**' }, { key: 'b', text: '**Tomorrow**' }] }],
+    screenshots: [{ file: 'a.png', look_for: 'the total' }],
+  });
+  assert.equal(asked.error, false, asked.text);
+  const q = store.getQuestion(2)!;
+  // The test harness keeps no shots; the parts here are the sign-off and the decision.
+  const built = requestAnswer(q, { signOff: { verdict: 'accept' }, decisions: [{ key: 'd1', pick: 'b' }] }, 'Simon');
+  assert.ok('answer' in built, JSON.stringify(built));
+  assert.match(built.answer, /^Answer to request #2 "Cart total" \(2 parts\)\n\nSign-off: Accepted\.\nDecision d1 — Release today\?: b — Tomorrow$/);
+  store.answerQuestion(2, built.answer, 'user', null, false, built.parts);
+  await runs.onAnswered(store.getQuestion(2)!);
+  assert.equal(ports.runs.get('run-1')!.history.at(-1)!.word, 'Accepted');
 });

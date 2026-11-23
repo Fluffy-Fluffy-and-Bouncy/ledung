@@ -5,6 +5,7 @@
 import { CHATS, type PermissionInfo, type QuestionInfo, type SessionInfo } from '../shared/protocol.ts';
 import { deskCompare, deskQuestion, tierOf, tiersOf } from '../shared/questions.ts';
 import { permissionWaits, questionWaits, waitingFirst } from '../shared/waiting.ts';
+import { isRequest, requestKinds } from '../shared/requests.ts';
 import type { Store } from '../store/store.ts';
 import { span } from './elapsed.ts';
 
@@ -71,6 +72,7 @@ export function waitingForYou(i: WaitingInput): string {
     const v = deskQuestion(q);
     const d = q.details;
     const kind = d?.flowProposal !== undefined ? `workflow proposal ${d.flowProposal}`
+      : isRequest(q) ? `request (${requestKinds(q).join(', ')})`
       : d?.review ? 'review'
       : d?.refusal ? `${d.refusal.held ? 'held' : 'refused'} call (${d.refusal.toolName})`
       : d?.order ? (d.order.confirm ? 'order to confirm' : 'order: keep it?')

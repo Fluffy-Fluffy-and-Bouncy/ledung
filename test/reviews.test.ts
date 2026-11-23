@@ -81,11 +81,14 @@ test("a review without its context is refused, as is a field that is not a revie
   assert.match((await call(without('solving'))).text, /^A review needs review\.solving, so it never arrives without its context\. Nothing was asked\.$/);
   assert.match((await call({ ...REVIEW, review: { ...REVIEW.review, solving: '  ', done: '\n' } })).text, /needs review\.solving and review\.done/);
   assert.match((await call({ ...REVIEW, title: undefined })).text, /needs title/);
-  for (const extra of [{ options: ['Yes', 'No'] }, { opinions: [{ who: 'R' }] }, { evidence: 'checked' }, { question: 'q' }, { issue: 'i' }, { screenshots: [{ file: 'a.png', look_for: 'x' }] }, { about_request: 'req-12345678' }]) {
+  // Since #502 a review may also carry screenshots and opinions without a pick (it becomes a request); the rest stays refused.
+  for (const extra of [{ options: ['Yes', 'No'] }, { evidence: 'checked' }, { question: 'q' }, { issue: 'i' }, { about_request: 'req-12345678' }]) {
     const r = await call({ ...REVIEW, ...extra });
     assert.equal(r.isError, true, JSON.stringify(extra));
-    assert.match(r.text, new RegExp(`^A review takes title, review, tier, rank and refs, not ${Object.keys(extra)[0]}: `));
+    assert.match(r.text, new RegExp(`^A review takes title, review, tier, rank and refs \\(and, as a request, screenshots, decisions and opinions without a pick\\), not ${Object.keys(extra)[0]}: `));
   }
+  const picked = await call({ ...REVIEW, opinions: [{ who: 'R', pick: 'a' }] });
+  assert.match(picked.text, /^Opinions beside a review are views on the whole request and pick no option/);
   assert.equal(schema.safeParse({ ...REVIEW, review: { ...REVIEW.review, evidence: Array.from({ length: 11 }, () => REVIEW.review.evidence[0]) } }).success, false, 'at most 10 files');
   assert.equal(schema.safeParse({ ...REVIEW, review: { ...REVIEW.review, evidence: [{ file: 'a.png' }] } }).success, false, 'each with a caption');
   assert.equal(asked.length, 0, 'nothing was asked');

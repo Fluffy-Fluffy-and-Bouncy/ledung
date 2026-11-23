@@ -14,6 +14,7 @@ import type { NewProjectArgs, ProjectArgs } from './tools.ts';
 import { describeRule, ruleMatches, type GrantRule } from './grants.ts';
 import { oneLine } from '../shared/shots.ts';
 import { hasInput, inputLines, toolLabel } from '../shared/tool-call.ts';
+import { isRequest } from '../shared/requests.ts';
 import { checkTier, reviewAnswerProblem, tiersOf, type QuestionDetails, type ReviewEvidence } from '../shared/questions.ts';
 import { CONTEXT_SENTENCE } from '../shared/delivery.ts';
 import { contextSize } from '../shared/context-size.ts';
@@ -919,7 +920,8 @@ ${note}`);
   async answerQuestion(managerId: string, questionId: number, answer: string): Promise<string> {
     const q = this.openQuestionOfOwnSession(managerId, questionId);
     if (!answer.trim()) throw new ManagementError('The answer is empty.');
-    const form = q.details?.review ? reviewAnswerProblem(answer) : null;
+    // A request (issue #502) answered in words, not on its page: its text is the asker's to read; only a review alone keeps its form.
+    const form = q.details?.review && !isRequest(q) ? reviewAnswerProblem(answer) : null;
     if (form) throw new ManagementError(`Question #${q.id} is a review. ${form}`);
     this.store.answerQuestion(q.id, answer.trim(), managerId);
     this.ctx.publish({ type: 'question', question: this.store.getQuestion(q.id)! });
@@ -935,7 +937,7 @@ ${note}`);
       throw new ManagementError(`Question #${userQuestionId} has no answer from ${this.ctx.userName} yet.`);
     }
     const target = this.openQuestionOfOwnSession(managerId, toQuestionId);
-    const form = target.details?.review ? reviewAnswerProblem(source.answer) : null;
+    const form = target.details?.review && !isRequest(target) ? reviewAnswerProblem(source.answer) : null;
     if (form) throw new ManagementError(`Question #${target.id} is a review, and ${this.ctx.userName}'s answer to #${source.id} is not in a review's form. ${form}`);
     this.store.answerQuestion(target.id, source.answer, 'user', source.id);
     this.ctx.publish({ type: 'question', question: this.store.getQuestion(target.id)! });
