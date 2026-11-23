@@ -382,7 +382,9 @@ export const api = {
   answerRequest: (id: number, parts: AnswerParts) => call<QuestionInfo>('POST', `/api/questions/${id}/answer`, { parts }),
   /** A request's draft, kept in Ledung so it follows the person between devices (issue #502, D4). */
   requestDraft: (id: number) => call<{ data: unknown; at: number | null }>('GET', `/api/questions/${id}/draft`),
-  saveRequestDraft: (id: number, data: unknown) => call('POST', `/api/questions/${id}/draft`, { data }),
+  /** Kept only over `base`, the version read last; else `stale` with the newer one (acceptance round 2). */
+  saveRequestDraft: (id: number, data: unknown, base: number | null) =>
+    call<{ ok: true; at: number } | { ok: false; stale: true; data: unknown; at: number | null }>('POST', `/api/questions/${id}/draft`, { data, base }),
   /** One whole question: older Waiting for you history comes without what it refers to (issue #306). */
   question: (id: number) => call<QuestionInfo>('GET', `/api/questions/${id}`),
   /** Waiting for you history, light, and the sessions it names (issue #306): read when the view opens. */

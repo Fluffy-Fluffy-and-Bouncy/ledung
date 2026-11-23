@@ -2666,8 +2666,15 @@ export class LedungServer {
         const body = await readJson(req);
         const text = JSON.stringify(body.data ?? null);
         if (text.length > 200_000) throw new HttpError(413, 'The draft is too large.');
-        if (!store.saveRequestDraft(question.id, body.data ?? null)) throw new HttpError(409, 'This request is no longer open.');
-        return { ok: true };
+        // `base` is the version the page last read: a save over a newer one is refused with that one, which the page lays
+        // its own changes over, part by part (acceptance round 2). A page from an earlier release sends none.
+        const base = typeof body.base === 'number' || body.base === null ? body.base as number | null : undefined;
+        const at = store.saveRequestDraft(question.id, body.data ?? null, base);
+        if (at === false) throw new HttpError(409, 'This request is no longer open.');
+        if (at === 'stale') return { ok: false, stale: true, ...(store.requestDraft(question.id) ?? { data: null, at: null }) };
+        // Every open page of it reads the new version at once: only the number and time go out, never the draft.
+        this.broadcast({ type: 'requestDraft', questionId: question.id, at });
+        return { ok: true, at };
       }
       // Orders on record (issue #105): the person cancels one on the page. It only takes a permission away.
       case 'POST orders/:id/cancel':

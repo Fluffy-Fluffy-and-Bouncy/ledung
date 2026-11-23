@@ -1574,6 +1574,8 @@ export type ServerEvent =
   | { type: 'watching'; sessionId: string | null }
   | { type: 'permission'; permission: PermissionInfo }
   | { type: 'question'; question: QuestionInfo }
+  /** A request's draft was kept anew (issue #502, D4): its open pages read it. Never the draft itself. */
+  | { type: 'requestDraft'; questionId: number; at: number }
   | { type: 'limits'; limits: LimitInfo[] }
   | { type: 'usageStops'; usageStops: UsageStopInfo[] }
   | { type: 'macros'; macros: Macro[] }

@@ -863,13 +863,21 @@ export class Store {
     return r ? { data: JSON.parse(r.data), at: Number(r.at) } : null;
   }
 
-  /** Keeps the draft of an open request; false when the question is not open any more (nothing kept). */
-  saveRequestDraft(questionId: number, data: unknown, at = Date.now()): boolean {
+  /**
+   * Keeps the draft of an open request and returns its new version (its time, always later than the one it replaces);
+   * false when the question is not open any more (nothing kept). With `base`, the version the page read (null: none
+   * yet), it is kept only over that version, else 'stale' and nothing changes: a page left open on one device must
+   * never save its old copy over what another device did since (acceptance round 2).
+   */
+  saveRequestDraft(questionId: number, data: unknown, base?: number | null, now = Date.now()): number | false | 'stale' {
     const open = this.db.prepare(`SELECT 1 FROM questions WHERE id = ? AND status = 'open'`).get(questionId);
     if (!open) return false;
+    const prev = this.db.prepare('SELECT at FROM request_drafts WHERE question_id = ?').get(questionId) as { at: number } | undefined;
+    if (base !== undefined && (prev ? Number(prev.at) : null) !== base) return 'stale';
+    const at = prev ? Math.max(now, Number(prev.at) + 1) : now;
     this.db.prepare('INSERT INTO request_drafts (question_id, data, at) VALUES (?, ?, ?) ON CONFLICT(question_id) DO UPDATE SET data = excluded.data, at = excluded.at')
       .run(questionId, this.json(data), at);
-    return true;
+    return at;
   }
 
   dropRequestDraft(questionId: number): void {

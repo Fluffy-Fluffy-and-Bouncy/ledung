@@ -12,7 +12,7 @@ import { VERDICT_LABEL, VERDICTS } from '../../../src/shared/shots.ts';
 import { findTickets } from '../../../src/shared/tickets.ts';
 import { api } from '../api.ts';
 import { questionLabel } from '../nameTint.ts';
-import { draftParts, emptyRequestDraft, isEmptyDraft, mergeDrafts, nextOpen, openParts, readDraft, requestDrafts, type RequestDraft } from '../requestDraft.ts';
+import { draftParts, emptyRequestDraft, isEmptyDraft, nextOpen, onDraftChanged, openParts, readDraft, rebaseDraft, requestDrafts, sameDraft, type RequestDraft } from '../requestDraft.ts';
 import { emptyDraft as emptyShotDraft, type ShotDraft } from '../shotDrafts.ts';
 import { usePlainTyping } from '../usePlainTyping.ts';
 import type { Item } from '../waitingLists.ts';
@@ -53,15 +53,20 @@ export function RequestPage({ ctx, item, list, onAnswered }: { ctx: DeskContext;
   const m = useMemo(() => requestModel(q), [q.id, q.details, q.shots]);
   const kept = isRequest(q);
   const [draft, setDraftState] = useState<RequestDraft>(() => requestDrafts.get(q.id) ?? emptyRequestDraft());
-  const [savedAt, setSavedAt] = useState<number | null>(null);
+  // When the draft was last kept, and whether that was on another device (picked up here, acceptance round 2).
+  const [savedAt, setSavedAt] = useState<{ at: number; elsewhere: boolean } | null>(null);
   const [loaded, setLoaded] = useState(!kept || !open);
   // Why the draft kept in Ledung couldn't be read, and the try it is on: nothing is saved until a read succeeds, so a
   // refused or failed read never overwrites the draft (acceptance round 1 found it overwritten while "Draft saved" showed).
   const [readError, setReadError] = useState('');
   const [readTry, setReadTry] = useState(0);
-  const touched = useRef(false);
   const draftNow = useRef(draft);
   draftNow.current = draft;
+  // The version in Ledung this page last read or saved, and what it held; null until the first read succeeds.
+  const base = useRef<{ draft: RequestDraft; at: number | null } | null>(null);
+  // Reads and saves one at a time, in order, so a save always carries the version it was made over.
+  const chain = useRef<Promise<void>>(Promise.resolve());
+  const saveRef = useRef<() => void>(() => {});
   const [unfolded, setUnfolded] = useState<Record<string, boolean>>({});
   const [shotsAt, setShotsAt] = useState<number | null>(null);
   const [evidenceShown, setEvidenceShown] = useState<number | null>(null);
@@ -72,36 +77,72 @@ export function RequestPage({ ctx, item, list, onAnswered }: { ctx: DeskContext;
   const idx = list.findIndex((i) => i.q.id === q.id);
   const step = (d: number) => { const t = list[idx + d]; if (idx >= 0 && t) props.onOpenQuestion(t.q.id); };
 
-  const setDraft = (d: RequestDraft) => {
-    touched.current = true;
+  // A change is made on the draft this render showed; it goes onto the newest one, which another device's picks may
+  // have reached in between, so it never puts their old values back.
+  const setDraft = (changed: RequestDraft) => {
+    const d = rebaseDraft(draft, changed, draftNow.current);
+    draftNow.current = d;
     requestDrafts.set(q.id, d);
     setDraftState(d);
     setErr('');
   };
-  // The draft kept in Ledung (D4): read on opening. What the person already did here before it arrived stays on top of it.
+  // The draft kept in Ledung (D4). A newer version, read on opening, from another device's save or refused as stale,
+  // is laid under this page's own changes part by part (rebaseDraft): what was changed here since the last read stays,
+  // everything else is the newer version's. So a page left open never saves its old copy over another device's picks,
+  // and a save is kept only over the version it was made from (acceptance round 2).
   useEffect(() => {
     if (!kept || !open) return;
     let live = true;
-    api.requestDraft(q.id).then((r) => {
-      if (!live) return;
-      const d = readDraft(r.data);
-      if (d) {
-        const next = touched.current ? mergeDrafts(d, draftNow.current) : d;
-        requestDrafts.set(q.id, next);
-        setDraftState(next);
-        if (!touched.current) setSavedAt(r.at);
+    const queue = (op: () => Promise<void>) => { chain.current = chain.current.then(() => (live ? op() : undefined)).catch(() => {}); };
+    const take = (data: unknown, at: number | null, elsewhere: boolean) => {
+      const keptDraft = readDraft(data) ?? emptyRequestDraft();
+      const next = rebaseDraft(base.current?.draft ?? emptyRequestDraft(), draftNow.current, keptDraft);
+      base.current = { draft: keptDraft, at };
+      draftNow.current = next;
+      requestDrafts.set(q.id, next);
+      setDraftState(next);
+      if (at !== null) setSavedAt({ at, elsewhere });
+    };
+    const read = (elsewhere: boolean) => queue(async () => {
+      try {
+        const r = await api.requestDraft(q.id);
+        if (!live) return;
+        if (!base.current || r.at !== base.current.at) take(r.data, r.at, elsewhere && base.current !== null);
+        setReadError('');
+        setLoaded(true);
+      } catch (e) {
+        if (live && !base.current) setReadError(e instanceof Error ? e.message : String(e));
       }
-      setReadError('');
-      setLoaded(true);
-    }, (e: unknown) => { if (live) setReadError(e instanceof Error ? e.message : String(e)); });
-    return () => { live = false; };
+    });
+    saveRef.current = () => queue(async () => {
+      const b = base.current;
+      const d = draftNow.current;
+      if (!b || sameDraft(d, b.draft) || (isEmptyDraft(d) && isEmptyDraft(b.draft))) return;
+      try {
+        const r = await api.saveRequestDraft(q.id, d, b.at);
+        if (!live) return;
+        setReadError('');
+        if (r.ok) {
+          base.current = { draft: d, at: r.at };
+          setSavedAt({ at: r.at, elsewhere: false });
+        } else take(r.data, r.at, true); // changed elsewhere since: laid under, and the effect below saves the result
+      } catch (e) {
+        if (live) setReadError(e instanceof Error ? e.message : String(e));
+      }
+    });
+    base.current = null;
+    read(false);
+    // Another device kept a newer version: read it now. A missed notice (the connection was down) is made up for
+    // when the page is shown again.
+    const off = onDraftChanged((id, at) => { if (id === q.id && base.current && at !== base.current.at) read(true); });
+    const onShow = () => { if (document.visibilityState === 'visible' && base.current) read(true); };
+    document.addEventListener('visibilitychange', onShow);
+    return () => { live = false; off(); document.removeEventListener('visibilitychange', onShow); saveRef.current = () => {}; };
   }, [q.id, readTry]);
-  // Saved only once the kept draft was read, and never as an empty one, so it can't wipe what another device kept.
+  // Saved a moment after the last change, and only once the kept draft was read; a draft that says nothing new isn't.
   useEffect(() => {
-    if (!kept || !open || !loaded || !touched.current || isEmptyDraft(draft)) return;
-    const t = setTimeout(() => {
-      api.saveRequestDraft(q.id, draft).then(() => setSavedAt(Date.now()), (e: unknown) => setReadError(e instanceof Error ? e.message : String(e)));
-    }, SAVE_AFTER_MS);
+    if (!kept || !open || !loaded) return;
+    const t = setTimeout(() => saveRef.current(), SAVE_AFTER_MS);
     return () => clearTimeout(t);
   }, [draft, loaded]);
 
@@ -392,7 +433,7 @@ export function RequestPage({ ctx, item, list, onAnswered }: { ctx: DeskContext;
       {loaded ? "The draft couldn't be saved" : "The draft kept in Ledung couldn't be read, so nothing here is saved yet"}: {readError}{' '}
       {!loaded && <button type="button" className="link" onClick={() => { setReadError(''); setReadTry(readTry + 1); }}>Try again</button>}
     </div>
-  ) : kept && <div className="muted req-saved">{savedAt ? `Draft saved ${formatTime(savedAt)}` : loaded ? 'Draft kept as you go' : 'Reading the draft…'}</div>;
+  ) : kept && <div className="muted req-saved">{savedAt ? `${savedAt.elsewhere ? 'Draft updated from another device' : 'Draft saved'} ${formatTime(savedAt.at)}` : loaded ? 'Draft kept as you go' : 'Reading the draft…'}</div>;
   const rail: ReactNode = open && (
     <aside className="req-rail" aria-label="Your answer">
       <h4 className="req-head">Your answer</h4>

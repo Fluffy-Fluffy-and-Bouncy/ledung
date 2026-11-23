@@ -51,24 +51,59 @@ export function isEmptyDraft(d: RequestDraft): boolean {
     && !d.note.trim();
 }
 
+// A shot's verdict as it is compared: an empty one (nothing judged or written) is the same as none. A decision is
+// compared as it is: `{ other: '' }` is "Other" chosen, its box still empty.
+const judgedPart = (j: ShotJudgement | undefined) => (j && (j.verdict || j.note.trim()) ? j : undefined);
+const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+
 /**
- * The draft kept in Ledung under what the person already did on this page before it arrived: their own picks,
- * verdicts and words win part by part, and every other part comes from Ledung's, so neither is lost.
+ * Three drafts made one, part by part (a decision, a shot's verdict, the sign-off's verdict and note, the note):
+ * `base` is the version this page last read, `here` what the page holds now, `kept` the newer version in Ledung.
+ * A part this page changed since `base` is its own; every other part is Ledung's. So a page left open on the PC
+ * takes up the phone's picks without losing what was typed here, and never puts its old copy back over them
+ * (acceptance round 2). With an empty `base`, everything done here goes over the kept draft (round 1).
  */
-export function mergeDrafts(kept: RequestDraft, here: RequestDraft): RequestDraft {
-  const decisions = { ...kept.decisions };
-  for (const [k, a] of Object.entries(here.decisions)) if (a.pick !== undefined || a.other?.trim()) decisions[k] = a;
-  const judged = { ...kept.judged };
-  for (const [k, j] of Object.entries(here.judged)) if (j?.verdict || j?.note.trim()) judged[Number(k)] = j;
+export function rebaseDraft(base: RequestDraft, here: RequestDraft, kept: RequestDraft): RequestDraft {
+  const decisions: RequestDraft['decisions'] = {};
+  for (const k of new Set([...Object.keys(base.decisions), ...Object.keys(here.decisions), ...Object.keys(kept.decisions)])) {
+    const [b, h, n] = [base.decisions[k], here.decisions[k], kept.decisions[k]];
+    const v = same(b, h) ? n : h;
+    if (v) decisions[k] = v;
+  }
+  const judged: RequestDraft['judged'] = {};
+  for (const k of new Set([...Object.keys(base.judged), ...Object.keys(here.judged), ...Object.keys(kept.judged)].map(Number))) {
+    const [b, h, n] = [judgedPart(base.judged[k]), judgedPart(here.judged[k]), judgedPart(kept.judged[k])];
+    const v = same(b, h) ? n : h;
+    if (v) judged[k] = v;
+  }
+  const verdict = base.signOff.verdict === here.signOff.verdict ? kept.signOff.verdict : here.signOff.verdict;
   return {
     decisions,
-    signOff: {
-      ...(here.signOff.verdict ?? kept.signOff.verdict ? { verdict: here.signOff.verdict ?? kept.signOff.verdict } : {}),
-      note: here.signOff.note.trim() ? here.signOff.note : kept.signOff.note,
-    },
+    signOff: { ...(verdict ? { verdict } : {}), note: base.signOff.note === here.signOff.note ? kept.signOff.note : here.signOff.note },
     judged,
-    note: here.note.trim() ? here.note : kept.note,
+    note: base.note === here.note ? kept.note : here.note,
   };
+}
+
+/** Whether two drafts say the same: nothing in one that the other lacks, part by part. */
+export function sameDraft(a: RequestDraft, b: RequestDraft): boolean {
+  return same(canonical(a), canonical(b));
+}
+// The draft with its empty parts left out and its keys in order.
+const canonical = (d: RequestDraft) => {
+  const r = rebaseDraft(emptyRequestDraft(), emptyRequestDraft(), d);
+  const sort = <T>(o: Record<string, T>) => Object.fromEntries(Object.entries(o).sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0)));
+  return { ...r, decisions: sort(r.decisions), judged: sort(r.judged as Record<string, ShotJudgement>) };
+};
+
+/** A request's draft kept anew in Ledung, from the live connection: its open pages read it (acceptance round 2). */
+const draftListeners = new Set<(questionId: number, at: number) => void>();
+export function draftChanged(questionId: number, at: number): void {
+  for (const f of draftListeners) f(questionId, at);
+}
+export function onDraftChanged(f: (questionId: number, at: number) => void): () => void {
+  draftListeners.add(f);
+  return () => { draftListeners.delete(f); };
 }
 
 /** The draft as the parts the answer is built from (requestAnswer checks them). */

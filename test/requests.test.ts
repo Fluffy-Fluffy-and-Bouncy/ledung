@@ -17,7 +17,7 @@ import { waitingItems } from '../web/src/notify.ts';
 import type { QuestionInfo, QuestionShot } from '../src/shared/protocol.ts';
 import { TODAY_CALLS } from './fixtures/ask-user-today.calls.ts';
 import { waitingForYou } from '../src/sessions/waiting-tool.ts';
-import { draftParts, emptyRequestDraft, isEmptyDraft, mergeDrafts, nextOpen, openParts, readDraft } from '../web/src/requestDraft.ts';
+import { draftParts, emptyRequestDraft, isEmptyDraft, nextOpen, openParts, readDraft, rebaseDraft, sameDraft } from '../web/src/requestDraft.ts';
 
 /** ask_user as Claude Code calls it: the arguments checked against the tool's schema, then its handler. */
 function askUser() {
@@ -189,7 +189,7 @@ test('the parts and the draft are blanked like everything stored; a draft goes w
   const details: QuestionDetails = { title: 'T', signOff: true, decisions: [{ ...D1, issue: 'the hunter2 key' }, D2] };
   const q = store.createQuestion({ sessionId: 's', question: 'q', options: null, addressedTo: 'user', details });
   assert.equal(store.getQuestion(q.id)!.details!.decisions![0]!.issue, 'the •••• key');
-  assert.equal(store.saveRequestDraft(q.id, { note: 'token hunter2' }), true);
+  assert.equal(typeof store.saveRequestDraft(q.id, { note: 'token hunter2' }), 'number');
   assert.deepEqual(store.requestDraft(q.id)!.data, { note: 'token ••••' });
   const r = requestAnswer(store.getQuestion(q.id)!, { signOff: { verdict: 'changes', note: 'rotate hunter2' }, decisions: [{ key: 'layout', pick: 'a' }, { key: 'side-chat', other: 'hunter2 again' }] }, 'Simon');
   assert.ok('answer' in r);
@@ -279,11 +279,48 @@ test("a draft is never saved empty, and one picked here before Ledung's arrived 
     judged: { 0: { verdict: 'pass' as const, note: '' }, 1: { verdict: 'fail' as const, note: 'wraps' }, 2: { verdict: 'unsure' as const, note: '' } }, note: 'PC note',
   };
   const here = { ...emptyRequestDraft(), decisions: { release: { pick: 'b' } }, judged: { 2: { verdict: 'pass' as const, note: '' } } };
-  assert.deepEqual(mergeDrafts(kept, here), {
+  assert.deepEqual(rebaseDraft(emptyRequestDraft(), here, kept), {
     decisions: { rounding: { pick: 'a' }, release: { pick: 'b' } },
     signOff: { verdict: 'changes', note: 'wraps' },
     judged: { 0: { verdict: 'pass', note: '' }, 1: { verdict: 'fail', note: 'wraps' }, 2: { verdict: 'pass', note: '' } },
     note: 'PC note',
   });
-  assert.deepEqual(mergeDrafts(emptyRequestDraft(), emptyRequestDraft()), emptyRequestDraft());
+  assert.deepEqual(rebaseDraft(emptyRequestDraft(), emptyRequestDraft(), emptyRequestDraft()), emptyRequestDraft());
+});
+
+test('a page left open lays its own changes over the newer draft, part by part, and never puts its old copy back (acceptance round 2)', () => {
+  // The PC read this; the phone then picked "Today" for release and judged shot 0. On the PC, still open, the note was typed.
+  const read = { ...emptyRequestDraft(), decisions: { rounding: { pick: 'a' }, release: { pick: 'b' } }, judged: { 0: { verdict: 'fail' as const, note: '' } } };
+  const phone = { ...read, decisions: { rounding: { pick: 'a' }, release: { pick: 'a' } }, judged: { 0: { verdict: 'pass' as const, note: '' } } };
+  const pc = { ...read, note: 'ship it' };
+  const merged = rebaseDraft(read, pc, phone);
+  assert.deepEqual(merged.decisions, { rounding: { pick: 'a' }, release: { pick: 'a' } }, "the phone's Today stays");
+  assert.deepEqual(merged.judged, { 0: { verdict: 'pass', note: '' } });
+  assert.equal(merged.note, 'ship it', "and the PC's note");
+  // A part changed on both: this page's latest wins, as the person is looking at it.
+  assert.equal(rebaseDraft(read, { ...read, decisions: { ...read.decisions, release: { other: 'Friday' } } }, phone).decisions.release!.other, 'Friday');
+  // "Other" chosen with its box still empty is a change of its own; a part cleared here stays cleared.
+  assert.deepEqual(rebaseDraft(read, { ...read, decisions: { ...read.decisions, rounding: { other: '' } } }, read).decisions.rounding, { other: '' });
+  assert.deepEqual(rebaseDraft(read, { ...read, judged: {} }, phone).judged, {});
+  // The sign-off's verdict and note are parts of their own.
+  const signed = rebaseDraft({ ...read, signOff: { note: 'a' } }, { ...read, signOff: { verdict: 'accept', note: 'a' } }, { ...read, signOff: { note: 'b' } });
+  assert.deepEqual(signed.signOff, { verdict: 'accept', note: 'b' });
+  // Nothing changed here: the newer draft as it is.
+  assert.ok(sameDraft(rebaseDraft(read, read, phone), phone));
+  assert.ok(sameDraft({ ...phone, judged: { 0: phone.judged[0], 3: { verdict: null, note: '' } } }, phone), 'an empty verdict is none');
+  assert.ok(!sameDraft(pc, read));
+});
+
+test('a draft is kept only over the version it was made from; each version is later than the one before', () => {
+  const store = new Store(openDatabase(':memory:'));
+  store.createSession({ id: 's', project: 'p', runner: 'local', title: 'S', parentId: null, permissionMode: 'default' });
+  const q = store.createQuestion({ sessionId: 's', question: 'q', options: null, addressedTo: 'user', details: { title: 'T', decisions: [D1, D2] } });
+  const first = store.saveRequestDraft(q.id, { note: 'pc' }, null, 1000);
+  assert.equal(first, 1000);
+  assert.equal(store.saveRequestDraft(q.id, { note: 'phone' }, null, 1000), 'stale', 'none read, but one is kept');
+  const second = store.saveRequestDraft(q.id, { note: 'phone' }, 1000, 1000);
+  assert.equal(second, 1001, 'later, even in the same millisecond');
+  assert.equal(store.saveRequestDraft(q.id, { note: 'pc again' }, 1000), 'stale');
+  assert.deepEqual(store.requestDraft(q.id), { data: { note: 'phone' }, at: 1001 });
+  assert.equal(typeof store.saveRequestDraft(q.id, { note: 'old page' }), 'number', 'a page from an earlier release sends no version');
 });
