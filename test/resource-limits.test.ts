@@ -11,7 +11,7 @@ import { GpuTracker, type GpuReading, groupLoad, groupMem, mainGpu, parseDrmFdin
 import { parseWindowsLines, windowsBatchReader, type ProcInfo, type ProcessList } from '../src/platform/processes.ts';
 import { ResourceBook, LAPSE_MS, RESOURCE_SOURCE, type BookSample, type BookSession } from '../src/resources/book.ts';
 import { JobStore, fromGeneric, toGeneric } from '../src/resources/jobs.ts';
-import { detaches, freesResources, heavyKinds } from '../src/resources/commands.ts';
+import { detaches, heavyKinds } from '../src/resources/commands.ts';
 import { FRESH_FACTS, idleStopBlocker } from '../src/sessions/idle.ts';
 import { wslHintDue } from '../web/src/usage/machineFold.ts';
 import { LOWERED, type PriorityControl } from '../src/platform/process-control.ts';
@@ -374,7 +374,7 @@ test('a job over its share: priority lowered, session held and told; when back, 
   assert.match(r.told.at(-1)!.text, /over its share/);
   assert.match(r.told.at(-1)!.text, /Nothing is killed/);
   assert.equal(r.book.info().jobs[0]!.state, 'over');
-  // Held: no new reservation is granted, and a known heavy command is refused.
+  // Held: no new reservation is granted (no command is refused by its name, issue #500).
   assert.match(r.book.reserve('s1', { what: 'More', cpu: 1 }), /^Wait: Held/);
   // A process it starts while over is lowered too.
   r.tick({ s1: tree(proc(13, 11), proc(16, 13)) }, busy);
@@ -403,40 +403,35 @@ test('on macOS and Linux a lowered priority that cannot be raised again is shown
   assert.equal(r.book.info().jobs[0]!.loweredStays, true);
 });
 
-test('heavy work without a reservation is held and told to reserve next time; its commands then need a reservation', () => {
+test('a known heavy command runs without a reservation and is then judged by what it uses: held, and told what it used and its learned figure (issue #500)', () => {
   const r = rig();
   r.book.setSettings({ overSec: 5, averageSec: 5 });
-  for (let round = 0; round < 2; round++) {
+  for (let round = 0; round < 3; round++) {
     r.tick({ s1: tree() });
+    // Nothing stands between the call and its run: the book only follows it (no refusal by name exists).
     r.book.callStarted('s1', `train${round}`, ['python train.py'], false);
     const train = started(r, 30 + round, 11);
     for (let i = 0; i < 3; i++) r.tick({ s1: tree(train) }, { cpuOf: { [30 + round]: 6 } });
     r.book.callEnded('s1', `train${round}`);
-    assert.equal(r.book.isHeld('s1'), true);
-    assert.match(r.told.at(-1)!.text, /without a reservation/);
-    assert.match(r.told.at(-1)!.text, /call reserve before heavy work next time/);
+    assert.equal(r.book.isHeld('s1'), true, `round ${round}: held for what it used`);
+    assert.equal(r.priorities.get(30 + round), LOWERED, 'its priority lowered');
+    const notice = r.told.at(-1)!.text;
+    assert.match(notice, /^Heavy work without a reservation: what your session runs has used ~\S+ CPU for over 5 s without a booking: reserve before it next time\. Busy: "python train\.py"/);
+    assert.doesNotMatch(notice, /known heavy command/);
+    // From the third run on, it is a known heavy command: its learned figure is in the notice, never a refusal.
+    if (round === 2) assert.match(notice, /Busy: "python train\.py", which usually uses ~\S+ CPU and ~\S+ GB memory \(learned from 2 runs\)\. Ledung has lowered/);
+    else assert.match(notice, /Busy: "python train\.py"\. Ledung has lowered/);
     r.tick({ s1: tree() });
     r.tick({ s1: tree() });
     assert.equal(r.book.isHeld('s1'), false);
   }
-  const why = r.book.commandRefusal('s1', ['python train.py']);
-  assert.match(why ?? '', /call reserve first/);
-  // It says where the figure comes from, with no job's name (R4).
-  assert.match(why ?? '', /learned this from 2 stretches of unreserved heavy work it ran in, the last on \d{4}-\d\d-\d\d; its calls usually take 15 s/);
-  assert.match(why ?? '', /mark "python train\.py" as never needing a reservation/);
-  assert.equal(r.book.commandRefusal('s1', ['git status']), null);
-  // With a reservation going, it runs.
-  r.book.reserve('s1', { what: 'Train', cpu: 40 });
-  assert.equal(r.book.commandRefusal('s1', ['python train.py']), null);
-  // The person can say it never needs one.
-  r.book.release('s1');
-  r.jobs.markNever('p', 'python train.py', true);
-  assert.equal(r.book.commandRefusal('s1', ['python train.py']), null);
+  assert.deepEqual(r.jobs.heavyCommands('p').map((h) => [h.command, h.runs]), [['python train.py', 3]]);
+  assert.equal('commandRefusal' in r.book, false, 'no refusal by name');
 });
 
 // --- Light commands (docs/steps/resource-limits-2.md, R4) ------------------------------------------------------------
 
-test('light commands are never refused, even with old "heavy" marks and a pass waiting; nor is a script never seen to take long', () => {
+test('light commands are never learned as heavy, even with old "heavy" marks; nor is a script never seen to take long', () => {
   const r = rig();
   r.tick({ s1: tree(), s2: tree2() }, { cores: 3.2 });
   // Marks learned the old way (before the migration that adds by_call): every command of a heavy job got its peak.
@@ -448,11 +443,9 @@ test('light commands are never refused, even with old "heavy" marks and a pass w
   assert.match(r.book.reserve('s1', { what: 'Big', cpu: 45 }), /^Wait:/);
   for (const command of ['git status', 'gh issue view 12 --json title', 'git -C ../other status --short', 'git worktree list', 'cut -d: -f1 x | sort', 'for f in a b; do echo $f; done']) {
     assert.deepEqual(heavyKinds(command), [], command);
-    assert.equal(r.book.commandRefusal('s1', heavyKinds(command)), null, command);
   }
-  // An old mark alone refuses nothing (acceptance test round 1): a 3-second script runs at once, and nothing is listed.
-  assert.equal(r.book.commandRefusal('s1', heavyKinds('./check.sh --quick')), null);
-  assert.equal(r.book.commandRefusal('s1', ['npm run build']), null);
+  // An old mark alone makes nothing heavy (acceptance test round 1): nothing is listed.
+  assert.deepEqual(heavyKinds('./check.sh --quick'), ['check.sh']);
   assert.deepEqual(r.jobs.heavyCommands('p'), []);
   for (let i = 0; i < 3; i++) {
     r.book.callStarted('s2', `c${i}`, ['check.sh'], false);
@@ -460,25 +453,21 @@ test('light commands are never refused, even with old "heavy" marks and a pass w
     r.book.callEnded('s2', `c${i}`);
   }
   assert.equal(r.jobs.usualMs('p', 'check.sh'), 3000);
-  assert.equal(r.book.commandRefusal('s1', ['check.sh']), null);
-  // Once a kind is seen to take long, its old marks count again; the refusal says where the figure comes from.
+  assert.deepEqual(r.jobs.heavyCommands('p'), [], 'a 3-second script is not heavy');
+  // Once a kind is seen to take long, its old marks count again, with where the figure comes from.
   r.book.callStarted('s2', 'b', ['npm run build'], false);
   r.clock.now += 60_000;
   r.book.callEnded('s2', 'b');
-  // s1's pass waits, so it is told to wait (round 2); s2 has none, so it is told to reserve.
-  assert.match(r.book.commandRefusal('s1', ['npm run build']) ?? '', /^Wait: your reservation r1 "Big" is waiting for room/);
-  const why = r.book.commandRefusal('s2', ['npm run build']);
-  assert.match(why ?? '', /"npm run build" usually uses ~6\.0 GB memory: call reserve first/);
-  assert.match(why ?? '', /learned this from 2 reserved jobs it ran in, the last on 1970-01-01; its calls usually take 60 s\. If that is wrong/);
-  assert.doesNotMatch(why ?? '', /nightly build/, "no job's name reaches a session");
-  assert.deepEqual(r.jobs.heavyCommands('p').map((h) => h.command), ['npm run build']);
+  const h = r.jobs.heavyCommands('p');
+  assert.deepEqual(h.map((x) => x.command), ['npm run build']);
+  assert.deepEqual([h[0]!.peak.ram, h[0]!.reserved, h[0]!.unreserved, h[0]!.usualMs], [6 * GB, 2, 0, 60_000]);
   // Only the latest ten calls count.
   for (let i = 0; i < 12; i++) r.jobs.addCall('p', 'npm run build', i < 2 ? 1000 : 60_000, 10 + i);
   assert.equal(r.jobs.usualMs('p', 'npm run build'), 60_000);
   assert.equal((r.jobs as unknown as { db: { prepare(q: string): { get(): { n: number } } } }).db.prepare("SELECT COUNT(*) AS n FROM command_calls WHERE kind = 'npm run build'").get().n, 10);
   // Records learned the new way count without durations.
   for (const at of [3, 4]) r.jobs.add({ project: 'p', kind: 'train', commands: ['python train.py'], asked: {}, peak: { ram: 4 * GB }, mean: {}, durationMs: 1, over: false, undeclared: false, endedAt: at });
-  assert.match(r.book.commandRefusal('s2', ['python train.py']) ?? '', /call reserve first/);
+  assert.ok(r.jobs.heavyCommands('p').some((x) => x.command === 'python train.py'));
 });
 
 test('quick calls never cancel what a command was measured to use; a call that detaches keeps no duration', () => {
@@ -486,13 +475,13 @@ test('quick calls never cancel what a command was measured to use; a call that d
   r.tick({ s1: tree(), s2: tree2() });
   // Learned the new way: a call's own processes were busy in two runs.
   for (const at of [1, 2]) r.jobs.add({ project: 'p', kind: 'train', commands: ['python train.py'], asked: {}, peak: { ram: 4 * GB }, mean: {}, durationMs: 1, over: false, undeclared: true, endedAt: at });
-  assert.match(r.book.commandRefusal('s1', ['python train.py']) ?? '', /call reserve first/);
-  // One quick call (code review of PR #400, round 2): it is still refused.
+  assert.deepEqual(r.jobs.heavyCommands('p').map((h) => h.command), ['python train.py']);
+  // One quick call (code review of PR #400, round 2): it is still known heavy.
   r.book.callStarted('s2', 'q', ['python train.py'], false);
   r.clock.now += 200;
   r.book.callEnded('s2', 'q');
   assert.equal(r.jobs.usualMs('p', 'python train.py'), 200);
-  assert.match(r.book.commandRefusal('s1', ['python train.py']) ?? '', /call reserve first/);
+  assert.deepEqual(r.jobs.heavyCommands('p').map((h) => h.command), ['python train.py']);
   // Nor do ten of them.
   for (let i = 0; i < 10; i++) r.jobs.addCall('p', 'python train.py', 200, 10 + i);
   assert.deepEqual(r.jobs.heavyCommands('p').map((h) => h.command), ['python train.py']);
@@ -730,15 +719,13 @@ test("sessions and managers never see another session's job name or title in a r
   assert.throws(() => r.book.reserve('s1', { what: 'x', ram_gb: 1e300 }), /more than this PC/);
 });
 
-test('managers are never told to reserve, nor held for their own work: they have no reserve tool', () => {
+test('managers are never held for their own work: they have no reserve tool', () => {
   const r = rig();
   r.sessions.set('mgr', { id: 'mgr', title: 'M', project: 'p', role: 'manager', priority: 'normal', local: true, busy: false });
   r.book.setSettings({ overSec: 5, averageSec: 5 });
   for (let i = 0; i < 3; i++) r.tick({ mgr: tree(proc(40, 11)) }, { cpuOf: { 40: 10 } });
   assert.equal(r.book.isHeld('mgr'), false);
-  for (const at of [1, 2]) r.jobs.add({ project: 'p', kind: 'x', commands: ['npm run check'], asked: {}, peak: { cpu: 60 }, mean: {}, durationMs: 1, over: false, undeclared: false, endedAt: at });
-  assert.equal(r.book.commandRefusal('mgr', ['npm run check']), null);
-  assert.match(r.book.commandRefusal('s1', ['npm run check']) ?? '', /reserve first/);
+  assert.equal(r.told.filter((t) => t.id === 'mgr').length, 0, 'never told to reserve');
 });
 
 test("a session's own MCP servers within its footprint are not heavy work; a heavy process started before a small reservation still is", () => {
@@ -1086,14 +1073,13 @@ test("a background subagent's job runs under the session's pass after the main t
   const job = proc(16, 11, 1 * GB);
   for (let i = 0; i < 3; i++) r.tick({ s1: tree(job) }, { cpuOf: { 16: 4 } });
   assert.equal(r.book.info().jobs[0]!.state, 'busy');
-  assert.equal(r.book.commandRefusal('s1', ['npm test']), null);
   s1.background = 0;
   r.tick({ s1: tree() });
   assert.equal(r.book.info().jobs.length, 0, 'over: no turn, nothing in the background, nothing running');
   assert.equal(r.jobs.kinds()[0]!.kind, 'tests', 'what it used is recorded');
 });
 
-test('a parked pass whose known heavy command starts again: it goes if it fits; if not, it is refused and back in line with its original time (open choice 2)', () => {
+test('a parked pass whose work starts again goes back to busy if it fits; asked again with no room, it waits in line (issue #500: no command is refused)', () => {
   const r = rig();
   addSession(r, 's3', { title: 'Three' });
   for (const id of ['s1', 's2']) r.sessions.get(id)!.busy = true;
@@ -1103,32 +1089,27 @@ test('a parked pass whose known heavy command starts again: it goes if it fits; 
   r.tick({ s1: tree(), s2: tree2(), s3: tree3() }, pc);
   r.book.setLimit('ram', 30);
   r.book.reserve('s1', { what: 'Build', ram_gb: 8 });
-  const first = r.book.info().jobs[0]!.goAt;
   const job = proc(13, 11, 1 * GB);
   for (let i = 0; i < 3; i++) r.tick({ s1: tree(job), s2: tree2(), s3: tree3() }, { ...pc, cpuOf: { 13: 4 } });
   for (let i = 0; i < 8; i++) r.tick({ s1: tree(), s2: tree2(), s3: tree3() }, pc);
   assert.equal(r.book.info().jobs[0]!.state, 'parked');
-  // It fits: the command runs, and the pass holds its room again.
-  assert.equal(r.book.commandRefusal('s1', ['npm run build']), null);
-  assert.equal(r.book.info().jobs[0]!.state, 'ready');
-  assert.equal(r.book.info().reserved.ram, 8 * GB);
-  // The go not used: 10 minutes on it parks again.
-  r.clock.now += LAPSE_MS;
-  r.tick({ s1: tree(), s2: tree2(), s3: tree3() }, pc);
+  // The known heavy command runs again with nothing asked: its work is seen, and it fits, so the pass is busy again.
+  r.book.callStarted('s1', 'b2', ['npm run build'], false);
+  for (let i = 0; i < 2; i++) r.tick({ s1: tree(job), s2: tree2(), s3: tree3() }, { ...pc, cpuOf: { 13: 4 } });
+  let card = r.book.info().jobs[0]!;
+  assert.equal(card.state, 'busy');
+  assert.equal(card.resumedAbove, false);
+  for (let i = 0; i < 8; i++) r.tick({ s1: tree(), s2: tree2(), s3: tree3() }, pc);
+  assert.equal(r.book.info().jobs[0]!.state, 'parked');
   // Now someone else takes the room, and a later reservation waits.
   assert.match(r.book.reserve('s2', { what: 'Train', ram_gb: 15 }), /^Go:/);
   r.clock.now += 1000;
   assert.match(r.book.reserve('s3', { what: 'Other', ram_gb: 8 }), /^Wait:/);
-  assert.equal(r.book.info().jobs.find((j) => j.sessionId === 's1')!.state, 'parked');
-  const why = r.book.commandRefusal('s1', ['npm run build'], { subagent: true }) ?? '';
-  assert.match(why, /^Wait: your reservation r1 "Build" was parked, and there is no room to resume it now/);
-  assert.match(why, /Stop here and tell your parent/);
-  const line = r.book.info().line;
-  assert.equal(line[0]!.id, 'r1', 'first among equals: it keeps its original time');
-  assert.ok(line[0]!.since < first + 1, 'its original time');
+  card = r.book.info().jobs.find((j) => j.sessionId === 's1')!;
+  assert.equal(card.state, 'parked');
+  // Asked again: back into the line, told to wait (a subagent is told to stop and tell its parent).
+  assert.match(r.book.reserve('s1', { what: 'Build', ram_gb: 8 }), /^Wait: .*A subagent told this stops and tells its parent/);
   assert.equal(r.book.passWaits('s1'), 'waiting');
-  // Still waiting: a second try is told to wait, not to reserve.
-  assert.match(r.book.commandRefusal('s1', ['npm run build']) ?? '', /^Wait: your reservation r1 "Build" is waiting for room/);
 });
 
 test('work under a parked pass that starts without asking and does not fit runs, judged against its share, and its card says so', () => {
@@ -1164,7 +1145,7 @@ test('heavy work under a parked pass sent back into the line is still judged aga
   for (let i = 0; i < 8; i++) r.tick({ s1: tree(), s2: tree2() }, pc);
   assert.equal(r.book.info().jobs[0]!.state, 'parked');
   assert.match(r.book.reserve('s2', { what: 'Train', ram_gb: 15 }), /^Go:/);
-  assert.match(r.book.commandRefusal('s1', ['npm run build']) ?? '', /^Wait: your reservation r1 "Build" was parked/);
+  assert.match(r.book.reserve('s1', { what: 'Build', ram_gb: 8 }), /^Wait:/);
   assert.equal(r.book.passWaits('s1'), 'waiting');
   // An unknown command runs anyway: 12 GB and 8 cores for 3 minutes.
   const big = started(r, 50, 11, 12 * GB);
@@ -1176,7 +1157,7 @@ test('heavy work under a parked pass sent back into the line is still judged aga
   assert.equal(r.book.info().line.length, 0, 'out of the line: its work started');
 });
 
-/** A parked pass (8 GB booked) refused and sent back into the line, as in the finding-2 test above. */
+/** A parked pass (8 GB booked) asked again and sent back into the line, as in the finding-2 test above. */
 function backInLine() {
   const r = rig();
   r.sessions.get('s1')!.busy = true;
@@ -1191,7 +1172,7 @@ function backInLine() {
   for (let i = 0; i < 8; i++) r.tick({ s1: tree(), s2: tree2() }, pc);
   assert.equal(r.book.info().jobs[0]!.state, 'parked');
   assert.match(r.book.reserve('s2', { what: 'Train', ram_gb: 15 }), /^Go:/);
-  assert.match(r.book.commandRefusal('s1', ['npm run build']) ?? '', /^Wait: your reservation r1 "Build" was parked/);
+  assert.match(r.book.reserve('s1', { what: 'Build', ram_gb: 8 }), /^Wait:/);
   assert.equal(r.book.passWaits('s1'), 'waiting');
   return r;
 }
@@ -1255,37 +1236,11 @@ test('a paused job whose pass went back into the line is resumed when a new rese
   assert.equal(r.book.info().jobs[0]!.state, 'parked');
   r.book.setJobPaused('r1', true);
   r.book.reserve('s2', { what: 'Train', ram_gb: 15 });
-  assert.match(r.book.commandRefusal('s1', ['npm run build']) ?? '', /^Wait:/);
+  assert.match(r.book.reserve('s1', { what: 'Build', ram_gb: 8 }), /^Wait:/);
   r.book.reserve('s1', { what: 'Tests', ram_gb: 4 });
   assert.deepEqual(r.resumed, [13]);
   assert.ok(!r.book.info().jobs.some((j) => j.id === 'r1'));
   assert.equal(rows(r).length, 3, 'r1 recorded beside the two seeded runs');
-});
-
-test('a call that only frees resources always runs, even while the session is held (issue #356, 2026-11-19)', () => {
-  for (const c of ['node scripts/emulator-lock.mjs release', 'taskkill /PID 1234 /F', 'npm run stop', './gradlew --stop', 'docker compose down', 'adb emu kill', './stop-emulator.sh']) {
-    assert.equal(freesResources(c), true, c);
-  }
-  for (const c of ['npm run build', 'python train.py --kill-after 10', 'node emulator-lock.mjs release && npm run build', 'git status', 'node emulator.mjs start']) {
-    assert.equal(freesResources(c), false, c);
-  }
-  // Release builds and a stray word are not freeing: only the command's own subcommand counts (code review of PR #476, finding 1).
-  for (const c of ['cargo build --release', 'dotnet build -c Release', 'cmake --build . --config Release', 'flutter build apk --release', 'python train.py --epochs 50 stop',
-    'node burn.mjs release', 'node scripts/build.mjs --out dist/release', 'npm run release', 'npm run build -- --stop-on-error', 'gradle assembleRelease']) {
-    assert.equal(freesResources(c), false, c);
-  }
-  for (const c of ['docker stop db', 'npm run emulator:stop', 'node release-lock.mjs', 'python scripts/unlock.py', 'pkill -f train.py', 'node emulator-lock.mjs unlock']) {
-    assert.equal(freesResources(c), true, c);
-  }
-  const r = rig();
-  r.book.setSettings({ overSec: 5, averageSec: 5 });
-  for (const at of [1, 2]) r.jobs.add({ project: 'p', kind: '(unreserved)', commands: ['node scripts/emulator-lock.mjs'], asked: {}, peak: { ram: 4 * GB }, mean: {}, durationMs: 1, over: true, undeclared: true, endedAt: at });
-  for (let i = 0; i < 3; i++) r.tick({ s1: tree(proc(40, 11, 3 * GB)) }, { cpuOf: { 40: 10 } });
-  assert.equal(r.book.isHeld('s1'), true);
-  const kinds = heavyKinds('node scripts/emulator-lock.mjs release');
-  assert.deepEqual(kinds, ['node scripts/emulator-lock.mjs']);
-  assert.match(r.book.commandRefusal('s1', kinds) ?? '', /^Not now: .*commands that stop it or release a lock always run/);
-  assert.equal(r.book.commandRefusal('s1', kinds, { freeing: true }), null);
 });
 
 test("the go's 10 minutes count from when it reaches the session; until then it holds its room and its session isn't idle-stopped (R3)", () => {

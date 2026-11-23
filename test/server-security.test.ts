@@ -1186,17 +1186,19 @@ test('resource limits, their settings, Start now and acting on a job need the li
   assert.equal((await change('/api/jobs/r1/pause', { paused: true })).status, 403);
   assert.equal((await change('/api/jobs/r1/stop', {})).status, 403);
   assert.equal((await change('/api/job-kinds-forget', { project: 'p', kind: 'k' })).status, 403);
-  assert.equal((await change('/api/heavy-commands-mark', { project: 'p', command: 'c', never: true })).status, 403);
   const noCookie = await request({ method: 'POST', path: '/api/resource-limits', headers: { origin: ORIGIN, 'content-type': 'application/json' }, body: '{"dim":"cpu","value":50}' });
   assert.equal(noCookie.status, 401);
   const page = await livePage();
   const bad = await change('/api/resource-limits', { dim: 'cpu', value: 500 }, { 'x-ledung-page': page.key });
   const unknown = await change('/api/resource-limits', { dim: 'disk', value: 50 }, { 'x-ledung-page': page.key });
   const noJob = await change('/api/jobs/r999/stop', {}, { 'x-ledung-page': page.key });
+  // No command is refused by its name (issue #500), so the page's "never needs a reservation" mark is gone, even for the page.
+  const mark = await change('/api/heavy-commands-mark', { project: 'p', command: 'c', never: true }, { 'x-ledung-page': page.key });
   const set = await change('/api/resource-limits', { dim: 'cpu', value: null }, { 'x-ledung-page': page.key });
   page.close();
   assert.equal(bad.status, 400);
   assert.match(errorOf(bad), /1 to 100/);
+  assert.equal(mark.status, 404);
   assert.equal(unknown.status, 400);
   assert.match(errorOf(unknown), /Unknown resource/);
   assert.equal(noJob.status, 400);

@@ -971,18 +971,12 @@ export interface JobKindInfo {
   lastAt: number;
 }
 
+/** A command kind learned as heavy: for estimates and the over-share notice only, never a refusal (issue #500). */
 export interface HeavyCommandInfo {
   project: string;
   command: string;
   runs: number;
   peak: ResourceAmounts;
-  never: boolean;
-}
-
-/** A command the person marked as never needing a reservation (the light list's page-only extension, round 2). */
-export interface LightCommandInfo {
-  project: string;
-  command: string;
 }
 
 /** What one turn used (step 6c). */

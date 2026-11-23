@@ -2389,17 +2389,11 @@ export class LedungServer {
       case 'GET jobs/:id/reach':
         return await manager.jobReach(id);
       case 'GET job-kinds':
-        return { kinds: manager.jobKinds(), commands: manager.heavyCommands(), light: manager.lightCommands() };
+        return { kinds: manager.jobKinds(), commands: manager.heavyCommands() };
       case 'POST job-kinds-forget': {
         await this.requirePage(req, url);
         const body = await readJson(req);
         manager.forgetJobKind(String(body.project ?? ''), String(body.kind ?? ''));
-        return;
-      }
-      case 'POST heavy-commands-mark': {
-        await this.requirePage(req, url);
-        const body = await readJson(req);
-        manager.markCommand(String(body.project ?? ''), String(body.command ?? ''), body.never !== false);
         return;
       }
       case 'POST sessions/:id/priority': {
