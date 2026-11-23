@@ -2653,14 +2653,16 @@ export class LedungServer {
         const answerParts = body.parts && typeof body.parts === 'object' && !Array.isArray(body.parts) ? body.parts as AnswerParts : null;
         return manager.answerQuestion(Number(id), String(body.answer ?? ''), !this.guard.isPublic(req), answerParts);
       }
-      // A request's draft (issue #502, D4): kept in Ledung so it follows the person between devices. Read and written
-      // under the same rules as answering, and only for a request, which never carries a permission (design section 8).
+      // A request's draft (issue #502, D4): kept in Ledung so it follows the person between devices, and only for a
+      // request, which never carries a permission (design section 8). Read like the questions it belongs to, with the
+      // sign-in cookie (the page sends its key only on changes: acceptance round 1 found the read refused); written under
+      // the same rules as answering.
       case 'GET questions/:id/draft':
       case 'POST questions/:id/draft': {
         const question = store.getQuestion(Number(id));
         if (!question || !isRequest(question)) throw new HttpError(404, 'No such request.');
-        this.requirePageForManager(req, question.sessionId);
         if (method === 'GET') return store.requestDraft(question.id) ?? { data: null, at: null };
+        this.requirePageForManager(req, question.sessionId);
         const body = await readJson(req);
         const text = JSON.stringify(body.data ?? null);
         if (text.length > 200_000) throw new HttpError(413, 'The draft is too large.');

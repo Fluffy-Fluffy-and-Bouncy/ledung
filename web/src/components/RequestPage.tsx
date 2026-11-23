@@ -12,7 +12,7 @@ import { VERDICT_LABEL, VERDICTS } from '../../../src/shared/shots.ts';
 import { findTickets } from '../../../src/shared/tickets.ts';
 import { api } from '../api.ts';
 import { questionLabel } from '../nameTint.ts';
-import { draftParts, emptyRequestDraft, nextOpen, openParts, readDraft, requestDrafts, type RequestDraft } from '../requestDraft.ts';
+import { draftParts, emptyRequestDraft, isEmptyDraft, mergeDrafts, nextOpen, openParts, readDraft, requestDrafts, type RequestDraft } from '../requestDraft.ts';
 import { emptyDraft as emptyShotDraft, type ShotDraft } from '../shotDrafts.ts';
 import { usePlainTyping } from '../usePlainTyping.ts';
 import type { Item } from '../waitingLists.ts';
@@ -55,7 +55,13 @@ export function RequestPage({ ctx, item, list, onAnswered }: { ctx: DeskContext;
   const [draft, setDraftState] = useState<RequestDraft>(() => requestDrafts.get(q.id) ?? emptyRequestDraft());
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [loaded, setLoaded] = useState(!kept || !open);
+  // Why the draft kept in Ledung couldn't be read, and the try it is on: nothing is saved until a read succeeds, so a
+  // refused or failed read never overwrites the draft (acceptance round 1 found it overwritten while "Draft saved" showed).
+  const [readError, setReadError] = useState('');
+  const [readTry, setReadTry] = useState(0);
   const touched = useRef(false);
+  const draftNow = useRef(draft);
+  draftNow.current = draft;
   const [unfolded, setUnfolded] = useState<Record<string, boolean>>({});
   const [shotsAt, setShotsAt] = useState<number | null>(null);
   const [evidenceShown, setEvidenceShown] = useState<number | null>(null);
@@ -72,21 +78,30 @@ export function RequestPage({ ctx, item, list, onAnswered }: { ctx: DeskContext;
     setDraftState(d);
     setErr('');
   };
-  // The draft kept in Ledung (D4): read once on opening, unless the person already started here.
+  // The draft kept in Ledung (D4): read on opening. What the person already did here before it arrived stays on top of it.
   useEffect(() => {
     if (!kept || !open) return;
     let live = true;
     api.requestDraft(q.id).then((r) => {
       if (!live) return;
       const d = readDraft(r.data);
-      if (d && !touched.current) { requestDrafts.set(q.id, d); setDraftState(d); setSavedAt(r.at); }
+      if (d) {
+        const next = touched.current ? mergeDrafts(d, draftNow.current) : d;
+        requestDrafts.set(q.id, next);
+        setDraftState(next);
+        if (!touched.current) setSavedAt(r.at);
+      }
+      setReadError('');
       setLoaded(true);
-    }, () => live && setLoaded(true));
+    }, (e: unknown) => { if (live) setReadError(e instanceof Error ? e.message : String(e)); });
     return () => { live = false; };
-  }, [q.id]);
+  }, [q.id, readTry]);
+  // Saved only once the kept draft was read, and never as an empty one, so it can't wipe what another device kept.
   useEffect(() => {
-    if (!kept || !open || !loaded || !touched.current) return;
-    const t = setTimeout(() => { api.saveRequestDraft(q.id, draft).then(() => setSavedAt(Date.now()), () => {}); }, SAVE_AFTER_MS);
+    if (!kept || !open || !loaded || !touched.current || isEmptyDraft(draft)) return;
+    const t = setTimeout(() => {
+      api.saveRequestDraft(q.id, draft).then(() => setSavedAt(Date.now()), (e: unknown) => setReadError(e instanceof Error ? e.message : String(e)));
+    }, SAVE_AFTER_MS);
     return () => clearTimeout(t);
   }, [draft, loaded]);
 
@@ -372,6 +387,12 @@ export function RequestPage({ ctx, item, list, onAnswered }: { ctx: DeskContext;
   const noteBox = (
     <textarea {...typing} className="box" aria-label="Note to the asker" placeholder="Anything to go with the answer" value={draft.note} onChange={(e) => setDraft({ ...draft, note: e.target.value })} />
   );
+  const draftStatus: ReactNode = kept && open && readError ? (
+    <div className="error req-saved" role="alert">
+      {loaded ? "The draft couldn't be saved" : "The draft kept in Ledung couldn't be read, so nothing here is saved yet"}: {readError}{' '}
+      {!loaded && <button type="button" className="link" onClick={() => { setReadError(''); setReadTry(readTry + 1); }}>Try again</button>}
+    </div>
+  ) : kept && <div className="muted req-saved">{savedAt ? `Draft saved ${formatTime(savedAt)}` : loaded ? 'Draft kept as you go' : 'Reading the draft…'}</div>;
   const rail: ReactNode = open && (
     <aside className="req-rail" aria-label="Your answer">
       <h4 className="req-head">Your answer</h4>
@@ -394,7 +415,7 @@ export function RequestPage({ ctx, item, list, onAnswered }: { ctx: DeskContext;
       </ul>
       <label className="lbl" htmlFor={`req-note-${q.id}`}>Note to the asker</label>
       <textarea {...typing} id={`req-note-${q.id}`} ref={noteRef} className="box" placeholder="Optional" value={draft.note} onChange={(e) => setDraft({ ...draft, note: e.target.value })} />
-      {kept && <div className="muted req-saved">{savedAt ? `Draft saved ${formatTime(savedAt)}` : loaded ? 'Draft kept as you go' : 'Reading the draft…'}</div>}
+      {draftStatus}
       <div className="send">
         {sendButton()}
         {left.length > 0 && <span className="muted">needs {left.length} more</span>}
@@ -424,6 +445,8 @@ export function RequestPage({ ctx, item, list, onAnswered }: { ctx: DeskContext;
             {doneBlock}
             {/* On a phone the note opens from the bar; on a wide screen it is in the rail. */}
             {open && noteOpen && <section className="req-block req-phone-note"><label className="lbl">Note to the asker</label>{noteBox}</section>}
+            {/* The rail's draft line and Withdraw, which a phone hides with the rail (acceptance round 1: Withdraw out of reach at 390 px). */}
+            {open && <div className="req-phone-only">{draftStatus}<Withdraw busy={busy} onWithdraw={() => void withdraw()} /></div>}
             <div className="keys">
               {open && <span><kbd>Alt</kbd>+<kbd>↓</kbd><kbd>↑</kbd> next / previous open part</span>}
               {open && <span>In a decision <kbd>1</kbd>–<kbd>9</kbd> pick</span>}

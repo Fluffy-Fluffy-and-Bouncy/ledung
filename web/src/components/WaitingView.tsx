@@ -241,6 +241,8 @@ function requestPageForAll(): boolean {
 /** Ledung's own questions carry permissions and keep their own cards (design section 1, "Still alone"). */
 const onRequestPage = (q: QuestionInfo) => {
   const d = q.details;
+  // One answered on today's pages has no parts to show its picks and verdicts from, so it stays there (acceptance round 1, point 8).
+  if (q.status === 'answered' && !q.answerParts) return false;
   return !(q.aboutRequest || d?.refusal || d?.order || d?.orderCommand || d?.flowProposal !== undefined);
 };
 

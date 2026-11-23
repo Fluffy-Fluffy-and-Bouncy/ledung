@@ -65,7 +65,7 @@ export function QuestionCard(props: {
 
   const head = (
     <div className="card-head">
-      <strong>Question #{q.id}</strong>
+      <strong>{request ? 'Request' : 'Question'} #{q.id}</strong>
       {props.from && <> · from <strong>{props.from}</strong></>}
       {props.session && (
         <>

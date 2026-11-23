@@ -17,7 +17,7 @@ import { waitingItems } from '../web/src/notify.ts';
 import type { QuestionInfo, QuestionShot } from '../src/shared/protocol.ts';
 import { TODAY_CALLS } from './fixtures/ask-user-today.calls.ts';
 import { waitingForYou } from '../src/sessions/waiting-tool.ts';
-import { draftParts, emptyRequestDraft, nextOpen, openParts, readDraft } from '../web/src/requestDraft.ts';
+import { draftParts, emptyRequestDraft, isEmptyDraft, mergeDrafts, nextOpen, openParts, readDraft } from '../web/src/requestDraft.ts';
 
 /** ask_user as Claude Code calls it: the arguments checked against the tool's schema, then its handler. */
 function askUser() {
@@ -265,4 +265,25 @@ test("waiting_for_you names a request's kind and parts; a review stays a review"
   const out = waitingForYou({ store, managerId: 'mgr', userName: 'Simon', tiers: () => ['Process'], request: () => '' });
   assert.match(out, /#1 "Request page": request \(review, 2 decisions, 3 screenshots\); asked by you/);
   assert.match(out, /#2 "Cart fix": review; asked by you/);
+});
+
+test("a draft is never saved empty, and one picked here before Ledung's arrived is laid over it, part by part (acceptance round 1)", () => {
+  assert.ok(isEmptyDraft(emptyRequestDraft()));
+  assert.ok(isEmptyDraft({ ...emptyRequestDraft(), note: '  ', decisions: { a: {} }, judged: { 0: { verdict: null, note: ' ' } } }));
+  assert.ok(!isEmptyDraft({ ...emptyRequestDraft(), decisions: { a: { pick: 'b' } } }));
+  assert.ok(!isEmptyDraft({ ...emptyRequestDraft(), judged: { 1: { verdict: 'fail', note: '' } } }));
+  assert.ok(!isEmptyDraft({ ...emptyRequestDraft(), signOff: { note: 'x' } }));
+  // Kept on the PC: decision 1 and three verdicts. On the phone, before that arrived: decision 2.
+  const kept = {
+    decisions: { rounding: { pick: 'a' } }, signOff: { verdict: 'changes' as const, note: 'wraps' },
+    judged: { 0: { verdict: 'pass' as const, note: '' }, 1: { verdict: 'fail' as const, note: 'wraps' }, 2: { verdict: 'unsure' as const, note: '' } }, note: 'PC note',
+  };
+  const here = { ...emptyRequestDraft(), decisions: { release: { pick: 'b' } }, judged: { 2: { verdict: 'pass' as const, note: '' } } };
+  assert.deepEqual(mergeDrafts(kept, here), {
+    decisions: { rounding: { pick: 'a' }, release: { pick: 'b' } },
+    signOff: { verdict: 'changes', note: 'wraps' },
+    judged: { 0: { verdict: 'pass', note: '' }, 1: { verdict: 'fail', note: 'wraps' }, 2: { verdict: 'pass', note: '' } },
+    note: 'PC note',
+  });
+  assert.deepEqual(mergeDrafts(emptyRequestDraft(), emptyRequestDraft()), emptyRequestDraft());
 });

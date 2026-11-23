@@ -734,8 +734,15 @@ export function ledungToolServer(h: ToolHandlers, describe?: DescribeTools): Mcp
         if (args.about_request && !args.review) {
           return safely(() => {
             if (args.order_command) throw new Error('order_command goes with a question of your own, not with about_request. Nothing was asked.');
+            // Ledung writes this question itself, so a request's parts can't go with it (#502): refused, never dropped silently.
+            if (args.decisions !== undefined || args.sign_off !== undefined) {
+              throw new Error('decisions and sign_off go with a request of your own, not with about_request, which Ledung writes itself. Nothing was asked.');
+            }
             const q = h.ask(args.question ?? args.issue ?? '', null, args.about_question ?? null, args.about_request, { tier: args.tier, rank: args.rank, refs: args.refs });
-            return `Question #${q.id} about request ${args.about_request} is recorded and has gone to ${h.asksWhom}. Ledung applies the answer to the request itself and tells you. End your turn now.`;
+            // Accepted before #502 and still accepted, but the reply now says what Ledung's own text leaves out.
+            const left = [args.screenshots?.length ? 'screenshots' : '', args.sources?.length ? 'sources' : ''].filter(Boolean);
+            const leftOut = left.length ? ` Its ${left.join(' and ')} were left out: a question about a request shows only the request and your note.` : '';
+            return `Question #${q.id} about request ${args.about_request} is recorded and has gone to ${h.asksWhom}.${leftOut} Ledung applies the answer to the request itself and tells you. End your turn now.`;
           });
         }
         return safely(async () => {

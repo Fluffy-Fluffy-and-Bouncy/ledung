@@ -2160,13 +2160,14 @@ button.link-button:hover:not(:disabled) { border: none; }
 .req-saved { font-size: 0.8em; }
 .req-rail .send { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
 .req-rail .status.error { margin: 0; }
-.req-bar, .req-phone-note { display: none; }
+.req-bar, .req-phone-note, .req-phone-only { display: none; }
 /* The large view of the request's screenshots: today's screenshot view over the page; Esc comes back to the same place. */
 .req-large { position: fixed; inset: 0; z-index: 40; display: flex; flex-direction: column; background: var(--bg); }
 @media (max-width: 760px) {
   .req { grid-template-columns: minmax(0, 1fr); padding: 0.75rem 0.6rem 2rem; }
   .req-rail { display: none; }
   .req-phone-note { display: flex; }
+  .req-phone-only { display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; }
   .req-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem 0.6rem; padding: 0.5rem 0.75rem calc(0.5rem + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--border); background: var(--panel); }
   .req-bar .send-pick { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .req-bar .send-pick.muted { font-weight: 400; }

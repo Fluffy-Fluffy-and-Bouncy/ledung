@@ -71,6 +71,7 @@ let keepQuestion = 0;
 let confirmQuestion = 0;
 let orderCommandQuestion = 0;
 let managerQuestion = 0;
+let managerRequest = 0;
 let paneStore: Store;
 /** The folders Settings' Open folder was asked to show (issue #414); nothing is opened for real. */
 const openedFolders: string[] = [];
@@ -153,6 +154,11 @@ before(async () => {
   const mq = store.createQuestion({ sessionId: 'm1', question: 'merge #1?', options: null, addressedTo: 'user' });
   store.withdrawQuestion(mq.id, 'test');
   managerQuestion = mq.id;
+  // An open request it asked (issue #502): its draft is read with the cookie, written from the open page.
+  managerRequest = store.createQuestion({
+    sessionId: 'm1', question: 'two things', options: null, addressedTo: 'user',
+    details: { title: 'Two things', decisions: [{ key: 'a', title: 'A?', options: [{ key: 'a', text: 'Yes' }, { key: 'b', text: 'No' }] }, { key: 'b', title: 'B?', options: [{ key: 'a', text: 'Yes' }, { key: 'b', text: 'No' }] }] },
+  }).id;
   // A session with its own folder inside the project (start_session's cwd, decision of 2026-10-14).
   fs.mkdirSync(path.join(projectRoot, 'wt'));
   fs.writeFileSync(path.join(projectRoot, 'wt', 'b.png'), fs.readFileSync(path.join(projectRoot, 'a.png')));
@@ -1258,6 +1264,29 @@ test("words that reach a manager as the user's own need the live page", async ()
   } finally {
     page.close();
   }
+});
+
+// A request's draft (issue #502, D4; acceptance round 1): the page sends its key only on changes, so the read needs
+// only the sign-in, as reading the question does; the write is the person's own words to a manager, so it needs the page.
+test("a manager's request: its draft is read with the cookie and written only from the live page", async () => {
+  const draft = `/api/questions/${managerRequest}/draft`;
+  assert.equal((await request({ path: draft })).status, 401, 'no cookie');
+  const empty = await request({ path: draft, headers: { cookie: COOKIE } });
+  assert.equal(empty.status, 200, empty.body);
+  assert.deepEqual(JSON.parse(empty.body), { data: null, at: null });
+  const data = { decisions: { a: { pick: 'b' } }, signOff: { note: '' }, judged: {}, note: '' };
+  const refused = await change(draft, { data });
+  assert.equal(refused.status, 403);
+  assert.match(errorOf(refused), /open page/);
+  const page = await livePage();
+  try {
+    assert.equal((await change(draft, { data }, { 'x-ledung-page': page.key })).status, 200);
+  } finally {
+    page.close();
+  }
+  const back = await request({ path: draft, headers: { cookie: COOKIE } });
+  assert.deepEqual(JSON.parse(back.body).data, data, 'read back on another device, which sends no page key');
+  assert.equal((await request({ path: `/api/questions/${managerQuestion}/draft`, headers: { cookie: COOKIE } })).status, 404, 'not a request');
 });
 
 // The Ledung Helper (docs/steps/ledung-helper.md, code review finding 1): its routes need the sign-in and the page's

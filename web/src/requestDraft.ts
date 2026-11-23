@@ -43,6 +43,34 @@ export function readDraft(data: unknown): RequestDraft | null {
   };
 }
 
+/** Nothing picked, judged or written: a draft that must never replace one kept in Ledung (acceptance round 1). */
+export function isEmptyDraft(d: RequestDraft): boolean {
+  return !Object.values(d.decisions).some((a) => a.pick !== undefined || a.other?.trim())
+    && !d.signOff.verdict && !d.signOff.note.trim()
+    && !Object.values(d.judged).some((j) => j?.verdict || j?.note.trim())
+    && !d.note.trim();
+}
+
+/**
+ * The draft kept in Ledung under what the person already did on this page before it arrived: their own picks,
+ * verdicts and words win part by part, and every other part comes from Ledung's, so neither is lost.
+ */
+export function mergeDrafts(kept: RequestDraft, here: RequestDraft): RequestDraft {
+  const decisions = { ...kept.decisions };
+  for (const [k, a] of Object.entries(here.decisions)) if (a.pick !== undefined || a.other?.trim()) decisions[k] = a;
+  const judged = { ...kept.judged };
+  for (const [k, j] of Object.entries(here.judged)) if (j?.verdict || j?.note.trim()) judged[Number(k)] = j;
+  return {
+    decisions,
+    signOff: {
+      ...(here.signOff.verdict ?? kept.signOff.verdict ? { verdict: here.signOff.verdict ?? kept.signOff.verdict } : {}),
+      note: here.signOff.note.trim() ? here.signOff.note : kept.signOff.note,
+    },
+    judged,
+    note: here.note.trim() ? here.note : kept.note,
+  };
+}
+
 /** The draft as the parts the answer is built from (requestAnswer checks them). */
 export function draftParts(m: RequestModel, d: RequestDraft): AnswerParts {
   const parts: AnswerParts = {};
