@@ -524,10 +524,9 @@ export class SessionManager {
         return { threads: os.cpus().length, gpus: names };
       },
       resourceHeld: (id: string) => this.book.isHeld(id),
-      commandCheck: (id: string, kinds: string[]) => {
-        this.book.noteCommands(id, kinds);
-        return this.book.commandRefusal(id, kinds);
-      },
+      commandCheck: (id: string, kinds: string[]) => this.book.commandRefusal(id, kinds),
+      callStarted: (id: string, callId: string, kinds: string[], background: boolean) => this.book.callStarted(id, callId, kinds, background),
+      callEnded: (id: string, callId: string) => this.book.callEnded(id, callId),
     } satisfies Partial<TurnGate>);
     this.jobs = new JobStore(store.database);
     this.book = new ResourceBook({

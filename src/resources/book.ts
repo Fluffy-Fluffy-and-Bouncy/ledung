@@ -134,7 +134,28 @@ interface Unreserved {
   told: boolean;
   peak: Amounts;
   since: number | null;
+  /** Kinds of the calls whose own processes were busy while it was above the allowance (R4). */
+  commands: string[];
 }
+
+/** A shell call under way (R4): its kinds, when it began, whether it runs in the background, when it ended. */
+interface Call {
+  kinds: string[];
+  at: number;
+  background: boolean;
+  ended: number | null;
+}
+
+/**
+ * How long a call is remembered, to tell whose processes are whose: a background call is never seen to end, and a
+ * process a call left running (`cmd &`) outlives it.
+ */
+const CALL_KEPT_MS = 6 * 3600_000;
+/** A process belongs to the call begun last before it started; this much leeway for the clocks' rounding. */
+const START_LEEWAY_MS = 250;
+
+/** Work above the small allowance in one sample: what makes a call's processes busy (R4). */
+const busyNow = (u: Amounts) => Object.entries(u).some(([dim, v]) => v > (isMemory(dim) ? ALLOWANCE.bytes : ALLOWANCE.percent));
 
 interface SessionWaiter {
   sessionId: string;
@@ -185,8 +206,10 @@ export class ResourceBook {
   private readonly unreserved = new Map<string, Unreserved>();
   private readonly waiters = new Map<string, SessionWaiter>();
   private readonly averages = new Averages();
-  /** Command kinds of long or background calls per session, for an unreserved stretch's record. */
-  private readonly recent = new Map<string, { at: number; kind: string }[]>();
+  /** Shell calls per session, by tool call id: a job learns only the kinds whose own processes were busy (R4). */
+  private readonly calls = new Map<string, Map<string, Call>>();
+  /** When a session's process was first seen, where the system gives no start time (macOS, Linux). */
+  private readonly firstSeen = new Map<number, number>();
   /** New sessions being watched for their footprint: when they started, their peak memory. */
   private readonly footprints = new Map<string, { at: number; peak: number }>();
   /** Priorities lowered before a restart of Ledung, put back at the first sample (finding 12). */
@@ -430,18 +453,79 @@ export class ResourceBook {
   }
 
   /**
-   * The command kinds of a call that ran long or in the background (session.ts): only those can be the heavy work,
-   * so `git status` between two builds never becomes "heavy" (security review, finding 7).
+   * A shell call starts (session.ts), with its kinds (light ones already left out). A job learns a kind only if the
+   * call's own processes were busy in one of its samples (R4, busyCalls): a `git status` between two builds, or a
+   * background loop started before the build, never gets the build's peak (security review, finding 7).
    */
-  noteCommands(sessionId: string, kinds: string[]): void {
+  callStarted(sessionId: string, callId: string, kinds: string[], background: boolean): void {
     if (!kinds.length) return;
-    const at = this.now();
-    const list = (this.recent.get(sessionId) ?? []).filter((c) => c.at > at - 15 * 60_000);
-    for (const kind of kinds) list.push({ at, kind });
-    this.recent.set(sessionId, list.slice(-100));
-    for (const r of this.reservations.values()) {
-      if (r.sessionId === sessionId && r.state === 'going') for (const k of kinds) if (!r.commands.includes(k) && r.commands.length < 40) r.commands.push(k);
+    const calls = this.calls.get(sessionId) ?? new Map<string, Call>();
+    calls.set(callId, { kinds, at: this.now(), background, ended: null });
+    if (calls.size > 100) calls.delete(calls.keys().next().value!);
+    this.calls.set(sessionId, calls);
+  }
+
+  /** A shell call ended: how long it took is kept per kind, for the 10-second rule (R4). */
+  callEnded(sessionId: string, callId: string): void {
+    const call = this.calls.get(sessionId)?.get(callId);
+    if (!call || call.background || call.ended !== null) return;
+    call.ended = this.now();
+    const s = this.ctx.session(sessionId);
+    if (!s?.local) return;
+    try {
+      for (const k of call.kinds) this.ctx.jobs.addCall(s.project, k, call.ended - call.at, call.ended);
+    } catch (e) {
+      console.error(`Recording a call's duration: ${(e as Error).message}`);
     }
+  }
+
+  /**
+   * The kinds of the calls whose own processes are busy in this sample (R4; acceptance test round 1). Each process
+   * belongs to the call begun last before its top process (the call's shell, a child of Claude Code) started, and a
+   * call counts only if its processes in `pids` are together above the small allowance now. So a short script after
+   * a build, or a background loop begun beside it, never gets the build's peak: their own processes are never busy.
+   * `work` is the session's whole work tree (workOf), so a job's process is traced to its shell even if the shell is
+   * older than the job.
+   */
+  private busyCalls(sessionId: string, work: ProcInfo[], pids: number[], usage: (pids: number[]) => Amounts, at: number): string[] {
+    const calls = [...(this.calls.get(sessionId)?.values() ?? [])];
+    if (!calls.length || !pids.length) return [];
+    const byPid = new Map(work.map((p) => [p.pid, p]));
+    const groups = new Map<number, number[]>();
+    for (const pid of pids) {
+      let top = byPid.get(pid);
+      if (!top) continue;
+      for (let hops = 0; hops < 64; hops++) {
+        const parent = byPid.get(top.ppid);
+        if (!parent || parent.pid === top.pid) break;
+        top = parent;
+      }
+      const group = groups.get(top.pid);
+      if (group) group.push(pid);
+      else groups.set(top.pid, [pid]);
+    }
+    const out: string[] = [];
+    for (const [top, members] of groups) {
+      if (!busyNow(usage(members))) continue;
+      // Windows gives a start time; elsewhere the sample it was first seen in, which may be a little late.
+      const started = byPid.get(top)?.started ?? this.firstSeen.get(top) ?? at;
+      let owner: Call | null = null;
+      for (const c of calls) if (c.at <= started + START_LEEWAY_MS && (!owner || c.at > owner.at)) owner = c;
+      if (owner) out.push(...owner.kinds);
+    }
+    return out;
+  }
+
+  /** Old calls are forgotten, and so are the processes no longer running. */
+  private pruneCalls(at: number, list: ProcessList): void {
+    for (const [sessionId, calls] of this.calls) {
+      if (!this.ctx.session(sessionId)) {
+        this.calls.delete(sessionId);
+        continue;
+      }
+      for (const [id, c] of calls) if (at - c.at > CALL_KEPT_MS) calls.delete(id);
+    }
+    for (const pid of this.firstSeen.keys()) if (!list.has(pid)) this.firstSeen.delete(pid);
   }
 
   /**
@@ -457,16 +541,20 @@ export class ResourceBook {
     if (!heavy.length) return null;
     const h = heavy[0]!;
     // The command quoted is this session's own (the match is exact); the figures are numbers. No other session's
-    // words reach it (acceptance test, finding 15).
+    // words reach it (acceptance test, finding 15): where the figure comes from is counts and a date, never a job's name.
     const own = kinds.find((k) => k === h.command)!;
     const gpu = mainGpu(this.gpu);
     const typical = Object.entries(fromGeneric(h.peak, gpu)).filter(([, v]) => v > 0).map(([d, v]) => `~${formatDim(d, v)} ${this.label(d)}`).join(' and ');
+    const from = [h.reserved ? `${h.reserved} reserved job${h.reserved === 1 ? '' : 's'}` : '', h.unreserved ? `${h.unreserved} stretch${h.unreserved === 1 ? '' : 'es'} of unreserved heavy work` : '']
+      .filter(Boolean).join(' and ');
+    const took = h.usualMs !== null ? `; its calls usually take ${Math.round(h.usualMs / 1000)} s` : '';
+    const source = `Ledung learned this from ${from} it ran in, the last on ${new Date(h.lastAt).toISOString().slice(0, 10)}${took}. If that is wrong, the person using Ledung can mark "${own}" as never needing a reservation on the usage page.`;
     if (this.isHeld(sessionId)) {
-      return `Not now: a job of yours is over its share and your session is held, so Ledung refuses new heavy work. "${own}" usually uses ${typical}. Reduce or stop the running job first.`;
+      return `Not now: a job of yours is over its share and your session is held, so Ledung refuses new heavy work. "${own}" usually uses ${typical}. Reduce or stop the running job first. ${source}`;
     }
     const going = [...this.reservations.values()].some((r) => r.sessionId === sessionId && r.state === 'going');
     if (going) return null;
-    return `This usually uses ${typical} ("${own}", seen ${h.runs} times). Call reserve first, then run it once Ledung says go.`;
+    return `"${own}" usually uses ${typical}: call reserve first, then run it once Ledung says go. ${source}`;
   }
 
   /** Held: a job of this session is over its share. No new turns from others, no new reservation, no known heavy command. */
@@ -625,6 +713,7 @@ export class ResourceBook {
     this.lastHosts = x.hosts;
     this.restorePending();
     this.sampled = true;
+    for (const tree of x.trees.values()) for (const p of tree) if (p.started === undefined && !this.firstSeen.has(p.pid)) this.firstSeen.set(p.pid, at);
     // The PC's totals.
     this.averages.add('pc|cpu', at, (x.cores / this.threads) * 100);
     this.averages.add('pc|ram', at, x.memUsed);
@@ -718,6 +807,8 @@ export class ResourceBook {
         changed = true;
         continue;
       }
+      // The calls whose own processes in the job are busy now are the job's (R4).
+      for (const k of this.busyCalls(r.sessionId, workOf(r.sessionId), list, usage, at)) if (!r.commands.includes(k) && r.commands.length < 40) r.commands.push(k);
       const u = usage(list);
       for (const [dim, v] of Object.entries(u)) this.averages.add(`r:${r.id}|${dim}`, at, v);
       const avg = this.usingOf(r);
@@ -754,7 +845,7 @@ export class ResourceBook {
     for (const [sessionId, tree] of x.trees) {
       const s = this.ctx.session(sessionId);
       if (!s?.local || s.role === 'manager') continue;
-      const u0 = this.unreserved.get(sessionId) ?? { over: NOT_OVER, lowered: {}, loweredStays: false, told: false, peak: {}, since: null };
+      const u0 = this.unreserved.get(sessionId) ?? { over: NOT_OVER, lowered: {}, loweredStays: false, told: false, peak: {}, since: null, commands: [] };
       const jobs = jobPidsOf.get(sessionId) ?? new Set<number>();
       const host = x.hosts.get(sessionId);
       const counted = tree.filter((p) => p.pid !== host && !jobs.has(p.pid)).map((p) => p.pid);
@@ -766,6 +857,9 @@ export class ResourceBook {
       if (u0.over.since !== null) {
         u0.since ??= u0.over.since;
         for (const [dim, v] of Object.entries(avg)) u0.peak[dim] = Math.max(u0.peak[dim] ?? 0, v);
+        // The calls whose own processes are busy now are the stretch's (R4), not every call made while it lasts.
+        const own = workOf(sessionId).filter((p) => !jobs.has(p.pid));
+        for (const k of this.busyCalls(sessionId, own, own.map((p) => p.pid), usage, at)) if (!u0.commands.includes(k) && u0.commands.length < 40) u0.commands.push(k);
       }
       if (u0.over.over) {
         const ok = actable(sessionId);
@@ -782,6 +876,7 @@ export class ResourceBook {
       } else if (!u0.over.over && u0.over.since === null) {
         u0.peak = {};
         u0.since = null;
+        u0.commands = [];
       }
       this.unreserved.set(sessionId, u0);
     }
@@ -812,6 +907,7 @@ export class ResourceBook {
       }
     }
     for (const id of [...this.waiters.keys()]) if (!this.ctx.session(id)) this.waiters.delete(id);
+    this.pruneCalls(at, x.list);
     this.dispatch();
     if (changed) this.persist();
   }
@@ -890,11 +986,11 @@ export class ResourceBook {
     if (s && Object.keys(u.peak).length) {
       const since = u.since ?? at;
       const gpu = mainGpu(this.gpu);
-      const commands = [...new Set((this.recent.get(sessionId) ?? []).filter((c) => c.at >= since - 5 * 60_000).map((c) => c.kind))];
-      this.ctx.jobs.add({ project: s.project, kind: '(unreserved)', commands, asked: {}, peak: toGeneric(u.peak, gpu), mean: toGeneric(u.peak, gpu), durationMs: at - since, over: true, undeclared: true, endedAt: at });
+      this.ctx.jobs.add({ project: s.project, kind: '(unreserved)', commands: u.commands, asked: {}, peak: toGeneric(u.peak, gpu), mean: toGeneric(u.peak, gpu), durationMs: at - since, over: true, undeclared: true, endedAt: at });
     }
     u.peak = {};
     u.since = null;
+    u.commands = [];
     u.over = NOT_OVER;
     // Whatever waited behind the hold goes now (finding 12).
     this.ctx.wake(sessionId);
