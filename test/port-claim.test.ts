@@ -222,6 +222,20 @@ process.exit(fs.readFileSync(${JSON.stringify(seen)}, 'utf8').trim().split('\\n'
   assert.deepEqual(fs.readFileSync(seen, 'utf8').trim().split('\n').map((l) => JSON.parse(l)), ['', '1']);
 });
 
+// The log says what stopped or restarted Ledung, so a "Stopping sessions" line can be traced (#503). The core's start
+// can't be run up to an installed update here, so this reads its wiring: every stop or restart names its own reason,
+// and the updater's restart is not logged as the Restart button (code review of PR #505).
+test('each way Ledung stops or restarts gives the log its own reason, an installed update included', () => {
+  const source = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'main.ts'), 'utf8');
+  const reasons = [...source.matchAll(/shutdown\((?:true|false), '([^']+)'\)/g)].map((m) => m[1]);
+  assert.deepEqual([...reasons].sort(), [
+    'Exit in the tray icon', 'Restart Ledung', 'Restart in the tray icon', 'Stop Ledung in the page, or ledung stop', 'update installed',
+  ]);
+  const updater = source.slice(source.indexOf('new Updater({'), source.indexOf('});', source.indexOf('new Updater({')));
+  assert.match(updater, /onRestart: canRestart \? \(\) => void shutdown\(true, 'update installed'\) : undefined/);
+  assert.doesNotMatch(updater, /onRestart,/, 'not the Restart button\'s');
+});
+
 function stopQuietly(pipe: string, secret: string | undefined): Promise<void> {
   return new Promise((resolve) => {
     const s = net.connect(pipe);

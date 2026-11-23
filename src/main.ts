@@ -238,7 +238,10 @@ async function main(): Promise<void> {
     connect: config.remote?.linkVia ? connectVia(config.remote.linkVia) : connectPublic,
   });
   const updater = new Updater({
-    appDir: appDir(), dataDir: userDataDir(), configPath: configPath(), onRestart, npmVersion: PACKAGED ? runningVersion() : undefined,
+    // Its own reason in the log: an installed update restarts Ledung without anyone pressing Restart (#503).
+    appDir: appDir(), dataDir: userDataDir(), configPath: configPath(),
+    onRestart: canRestart ? () => void shutdown(true, 'update installed') : undefined,
+    npmVersion: PACKAGED ? runningVersion() : undefined,
     // The update channel (#461) is this computer's, like its shortcuts.
     meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) },
   });
