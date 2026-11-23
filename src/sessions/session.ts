@@ -36,7 +36,7 @@ import { helperToolServer, type HelperHandlers } from './helper-tools.ts';
 import { helperInstructions, helperSkillAllowed } from './helper.ts';
 import { CONTEXT_TOOLS, instructions, LEDUNG_SERVER, LEDUNG_TOOLS, ledungToolServer, MCP_LIMIT_ENV, mcpLimitFor, BASICS_TOOLS, LEDUNG_SETTING_TOOLS, SETTINGS_CHANGE_RULE, SETTINGS_CHANGE_TOOLS, SETTINGS_TOOLS, USAGE_PUBLISH_TOOLS, USER_APPROVED_TOOLS, type BoardHandlers, type ManagerHandlers, type ProposeHandlers, type RunHandlers, type ToolHandlers } from './tools.ts';
 import type { Boards } from '../board/boards.ts';
-import { commandKinds, detaches, heavyKinds } from '../resources/commands.ts';
+import { commandKinds, detaches, freesResources, heavyKinds } from '../resources/commands.ts';
 import { RESOURCE_SOURCE, type ReserveArgs } from '../resources/book.ts';
 import { FRESH_FACTS, pauseReason, type IdleState } from './idle.ts';
 import { skillsFromFiles, skillsOff, withSkillsOff, type SkillChoices } from './skills.ts';
@@ -152,9 +152,11 @@ export interface TurnGate {
   /** A job of this session is over its share: no new turn from others, no new reservation (open choice 1). */
   resourceHeld?(id: string): boolean;
   /** The command kinds a Bash call runs; the reason to refuse it (a known heavy command with no reservation), or null. */
-  commandCheck?(id: string, kinds: string[]): string | null;
+  commandCheck?(id: string, kinds: string[], opts?: { freeing?: boolean; subagent?: boolean }): string | null;
   /** A shell call with these kinds starts and ends: for learning what is heavy and how long a kind takes (R4). */
-  callStarted?(id: string, callId: string, kinds: string[], background: boolean): void;
+  callStarted?(id: string, callId: string, kinds: string[], background: boolean, detached?: boolean, command?: string): void;
+  /** The session's reservation waits in line or has its go unused (round 2): it is never stopped for being idle. */
+  passWaits?(id: string): 'waiting' | 'ready' | null;
   callEnded?(id: string, callId: string): void;
 }
 
@@ -1389,12 +1391,17 @@ export class Session {
           // Resource limits: a known heavy command needs a reservation, and none while held (docs/steps/resource-limits.md).
           if (SHELL_TOOLS.includes(toolName) && this.gate.commandCheck) {
             const input = (i.tool_input ?? {}) as { command?: unknown; run_in_background?: unknown };
-            const kinds = heavyKinds(String(input.command ?? ''));
-            const why = this.gate.commandCheck(this.id, kinds);
+            const command = String(input.command ?? '');
+            const kinds = heavyKinds(command);
+            // A call that only frees resources always runs (issue #356, 2026-11-19); a subagent is told to go back to
+            // its parent when the session's pass waits (round 2, "Subagents").
+            const why = this.gate.commandCheck(this.id, kinds, { freeing: freesResources(command), subagent: !!(i as { agent_id?: unknown }).agent_id });
             if (why) return { hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'deny' as const, permissionDecisionReason: why } };
             // A job learns a kind only from calls under way while it is busy (R4, finding 7): the book follows each call.
-            // A call that detaches (`python train.py &`) is followed like a background one: its quick return is no duration.
-            if (kinds.length && toolUseId) this.gate.callStarted?.(this.id, toolUseId, kinds, input.run_in_background === true || toolName === 'Monitor' || detaches(String(input.command ?? '')));
+            // A call that detaches (`python train.py &`) is followed like a background one: its quick return is no duration,
+            // and what it starts is taken as the session's even if its parent is gone before a sample sees it (round 2).
+            const detached = detaches(command);
+            if (kinds.length && toolUseId) this.gate.callStarted?.(this.id, toolUseId, kinds, input.run_in_background === true || toolName === 'Monitor' || detached, detached, command);
           }
           // Compacting or clearing is for the main session only, never a subagent (decided 2026-10-13).
           if (CONTEXT_TOOLS.includes(toolName) && (input as { agent_id?: string }).agent_id) {
@@ -2589,6 +2596,11 @@ export class Session {
     return after;
   }
 
+  /** Background subagents and commands under way, not ambient ones (a pass lasts while any runs, resource limits round 2). */
+  get backgroundCount(): number {
+    return this.backgroundTasks;
+  }
+
   /** What the idle check needs to know about this session now. */
   idleState(): IdleState | null {
     const info = this.store.getSession(this.id);
@@ -2598,6 +2610,7 @@ export class Session {
       openQuestions: this.store.openQuestionCount(this.id),
       waitingDeliveries: this.store.heldMessages(this.id).length + this.store.undeliveredAnswers(this.id).length + this.store.undeliveredInbox(this.id).length,
       backgroundTasks: this.allBackgroundTasks, facts: this.store.idleFacts(this.id), lastActivity: this.lastActivity,
+      reservation: this.gate.passWaits?.(this.id) ?? null,
       shellRunning: this.shellRun !== null,
     };
   }

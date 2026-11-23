@@ -10,9 +10,28 @@ export function waitingOpen(line: { since: number }[], now: number): boolean {
   return line.some((w) => now - w.since > WAIT_OPEN_MS);
 }
 
-/** A job over its share needs the person, so its full card stays open; a going or paused job is one line. */
-export function jobOpen(job: { state: 'going' | 'over' | 'paused' }): boolean {
+/** A job over its share needs the person, so its full card stays open; any other job is one line. */
+export function jobOpen(job: { state: string }): boolean {
   return job.state === 'over';
+}
+
+/**
+ * Busy, ready, over and paused jobs first; parked ones apart, folded under them, so a few leftover daemons don't
+ * crowd the panel on a phone (resource limits round 2, "What is shown").
+ */
+export function splitParked<T extends { state: string }>(jobs: T[]): { active: T[]; parked: T[] } {
+  return { active: jobs.filter((j) => j.state !== 'parked'), parked: jobs.filter((j) => j.state === 'parked') };
+}
+
+/** A pass's state in words for its card (round 2): ready, busy, parked, resumed above the limits. */
+export function passStateText(job: { state: string; deliveredAt: number | null; goAt: number; quietSince: number | null; parkedAt: number | null; resumedAbove: boolean }, now: number, mins: (ms: number) => string): string {
+  if (job.state === 'ready') return job.deliveredAt === null ? 'Ready: the go is on its way to the session; holds its room' : `Ready: go given ${mins(now - job.deliveredAt)} ago, work not started; holds its room`;
+  if (job.state === 'parked') return `Parked: quiet${job.parkedAt ? ` for ${mins(now - job.parkedAt)}` : ''}, holds no room`;
+  if (job.state === 'busy') {
+    const quiet = job.quietSince !== null ? `; quiet for ${mins(now - job.quietSince)}` : '';
+    return `${job.resumedAbove ? 'Busy, resumed above the limits' : 'Busy'}${quiet}`;
+  }
+  return job.state;
 }
 
 /**
@@ -28,4 +47,13 @@ export function jobUse(job: { granted: Record<string, number>; using: Record<str
     if (u > g) over = true;
   }
   return { share, over };
+}
+
+/**
+ * The WSL hint (resource limits round 2, problem 5) is due when WSL holds more than a quarter of the memory limit, or
+ * of all memory with no limit set.
+ */
+export function wslHintDue(r: { wsl?: number | null; limits: Record<string, number> }, memTotal: number): boolean {
+  const base = r.limits.ram ?? memTotal;
+  return !!r.wsl && base > 0 && r.wsl > base / 4;
 }

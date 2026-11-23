@@ -94,3 +94,63 @@ export function heavyKinds(command: string): string[] {
   for (let round = 0; round < 3; round++) c = c.replace(wrapper, '$1');
   return [...new Set([...commandKinds(c), ...commandKinds(command)].filter((k) => /^[\w.]/.test(k) && !/^(bash|sh|zsh|cmd|powershell|pwsh|nohup|time|env|nice|exec)$/.test(k) && !isLightKind(k)))];
 }
+
+/**
+ * Subcommands that end or free work (`npm run stop`, `docker compose down`, `adb emu kill`). Not `release`: it is
+ * a build as often as not (`npm run release`, `cargo release`); it counts only for a lock (below).
+ */
+const FREEING_WORDS = new Set(['unlock', 'stop', 'kill', 'shutdown', 'terminate', 'quit', 'down']);
+/** Commands that only end processes. */
+const FREEING_FIRST = new Set(['kill', 'taskkill', 'tskill', 'pkill', 'killall', 'stop-process', 'stop-job']);
+/** Interpreters whose first argument is the script that runs. */
+const INTERPRETERS = new Set(['node', 'python', 'python3', 'py', 'deno', 'bun', 'bash', 'sh', 'zsh', 'pwsh', 'powershell', 'ruby', 'perl']);
+
+const baseName = (w: string) => w.replace(/^.*[\\/]/, '').toLowerCase();
+/** A script's name says it frees (`stop-emulator.sh`, `release_lock.py`): a freeing word, or `release` with `lock`. */
+function freeingName(file: string): boolean {
+  const tokens = baseName(file).replace(/\.[^.]*$/, '').split(/[-_.:]/);
+  return tokens.some((t) => FREEING_WORDS.has(t)) || (tokens.includes('release') && tokens.some((t) => /lock$/.test(t)));
+}
+
+/**
+ * One part of a shell command (between `&&`, `;`, `|`) frees resources: it ends processes or releases a lock. Only
+ * the command's own words count, never a flag's value or another path (code review of PR #476, finding 1:
+ * `cargo build --release`, `dotnet build -c Release`, `node build.mjs --out dist/release` are builds):
+ * - a command that only ends processes (`taskkill`, `kill`);
+ * - the exact flag `--stop` (`gradle --stop`);
+ * - the script being run, by its name (`./stop-emulator.sh`, `node release-lock.mjs`);
+ * - a script's first argument: a freeing word, or `release`/`unlock` for a lock script (`emulator-lock.mjs release`);
+ * - otherwise the first two words after the command that aren't flags (`npm run stop`, `docker compose down`).
+ */
+function freeingPart(part: string): boolean {
+  const words = (part.trim().match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map((w) => w.replace(/^["']|["']$/g, '')).filter((w) => w && !/^[A-Z_][A-Z0-9_]*=/.test(w));
+  while (words.length && /^(nohup|time|exec|env|sudo)$/.test(words[0]!)) words.shift();
+  if (!words.length) return false;
+  const first = baseName(words[0]!).replace(/\.(exe|cmd|bat)$/i, '');
+  if (FREEING_FIRST.has(first)) return true;
+  if (words.includes('--stop')) return true;
+  const rest = words.slice(1);
+  if (INTERPRETERS.has(first)) {
+    const at = rest.findIndex((w) => !w.startsWith('-'));
+    const script = rest[at];
+    if (script && /[./\\]/.test(script)) {
+      if (freeingName(script)) return true;
+      const arg = rest[at + 1]?.toLowerCase();
+      if (!arg) return false;
+      return FREEING_WORDS.has(arg) || ((arg === 'release' || arg === 'unlock') && /lock/.test(baseName(script)));
+    }
+  }
+  // A script run directly (`./stop-emulator.sh`).
+  if (/[./\\]/.test(words[0]!) && freeingName(words[0]!)) return true;
+  return rest.filter((w) => !w.startsWith('-')).slice(0, 2).some((w) => w.toLowerCase().split(':').some((t) => FREEING_WORDS.has(t)));
+}
+
+/**
+ * Every heavy part of a shell call frees resources (issue #356, 2026-11-19: a session held for an emulator over its
+ * share was refused `emulator-lock.mjs release`, the one command that would end the load, and deadlocked). Such a
+ * call is never refused, held or not. Advisory like every refusal here: what runs is still measured and judged.
+ */
+export function freesResources(command: string): boolean {
+  const heavyParts = command.split(/&&|\|\||;|\||\n/).filter((p) => heavyKinds(p).length > 0);
+  return heavyParts.length > 0 && heavyParts.every(freeingPart);
+}

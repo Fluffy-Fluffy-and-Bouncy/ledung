@@ -164,6 +164,12 @@ export class JobStore {
     else this.db.prepare('DELETE FROM command_marks WHERE project = ? AND command = ?').run(project, command);
   }
 
+  /** The person's "never needs a reservation" marks: the page's own additions to the light list (round 2). */
+  lightMarks(): { project: string; command: string }[] {
+    return (this.db.prepare('SELECT project, command FROM command_marks WHERE never = 1 ORDER BY project, command LIMIT 500').all() as Record<string, unknown>[])
+      .map((m) => ({ project: String(m.project), command: String(m.command) }));
+  }
+
   /** A finished shell call (R4): how long it took, per kind; only the latest CALLS_KEPT per kind stay. */
   addCall(project: string, kind: string, durationMs: number, at: number): void {
     this.db.prepare('INSERT INTO command_calls (project, kind, duration_ms, at) VALUES (?, ?, ?, ?)').run(project, kind, Math.max(0, Math.round(durationMs)), at);

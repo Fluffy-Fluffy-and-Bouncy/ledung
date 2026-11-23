@@ -1,5 +1,6 @@
 // Calls to Ledung's API. The sign-in cookie goes along automatically.
 import type { Macro } from '../../src/shared/macros.ts';
+import type { JobActionResult, JobReach } from '../../src/shared/job-notes.ts';
 import type {
   AwayInfo, AwayKind, BoardOwnersView, BoardPeopleView, BoardRepoChoicesView, BoardStatus, BoardThreadsView, BoardThreadView, ProjectBoardView,
   AccountChoices, AccountInfoView, ChatsInfo, ContainerInfoView, EffortLevel, FolderListingView, MachineInfo, McpServerInfo, ModelChoice, Overview, ProjectInfo, PermissionDecision, PermissionMode, Priority, ProjectFileView, TurnResource, TypicalCost, QuestionInfo, SessionInfo, SessionUsage, StoredMessage, UpdateView, UsageFilter, UsageReport, WorkflowCheckView,
@@ -9,7 +10,7 @@ import type {
   SkillListView, SignInProblem,
   ShortcutAction, ShortcutsView, TrayView,
   CheckInAction, CheckInView,
-  HeavyCommandInfo, JobKindInfo,
+  HeavyCommandInfo, JobKindInfo, LightCommandInfo,
 } from '../../src/shared/protocol.ts';
 import type { ProjectColours } from '../../src/shared/name-colours.ts';
 import type { ComputerColour, ComputerInfo } from '../../src/shared/computers.ts';
@@ -456,11 +457,13 @@ export const api = {
   setLimit: (limit: number) => call('POST', '/api/limit', { limit }),
   // Resource limits (docs/steps/resource-limits.md).
   setResourceLimit: (dim: string, value: number | null) => call('POST', '/api/resource-limits', { dim, value }),
-  setResourceSettings: (settings: { averageSec?: number; marginPoints?: number; overSec?: number }) => call('POST', '/api/resource-settings', settings),
+  setResourceSettings: (settings: { averageSec?: number; marginPoints?: number; overSec?: number; parkSec?: number; tellManagerMin?: number }) => call('POST', '/api/resource-settings', settings),
   resourceStartNow: (id: string) => call('POST', `/api/resource-line/${encodeURIComponent(id)}/start-now`, {}),
-  pauseJob: (id: string, paused: boolean) => call('POST', `/api/jobs/${encodeURIComponent(id)}/pause`, { paused }),
-  stopJob: (id: string) => call('POST', `/api/jobs/${encodeURIComponent(id)}/stop`, {}),
-  jobKinds: () => call<{ kinds: JobKindInfo[]; commands: HeavyCommandInfo[] }>('GET', '/api/job-kinds'),
+  pauseJob: (id: string, paused: boolean) => call<JobActionResult>('POST', `/api/jobs/${encodeURIComponent(id)}/pause`, { paused }),
+  stopJob: (id: string) => call<JobActionResult>('POST', `/api/jobs/${encodeURIComponent(id)}/stop`, {}),
+  /** What Stop would end, for its confirm (acceptance test 5 of PR #476). */
+  jobReach: (id: string) => call<JobReach>('GET', `/api/jobs/${encodeURIComponent(id)}/reach`),
+  jobKinds: () => call<{ kinds: JobKindInfo[]; commands: HeavyCommandInfo[]; light?: LightCommandInfo[] }>('GET', '/api/job-kinds'),
   forgetJobKind: (project: string, kind: string) => call('POST', '/api/job-kinds-forget', { project, kind }),
   markCommand: (project: string, command: string, never: boolean) => call('POST', '/api/heavy-commands-mark', { project, command, never }),
   setUsageStop: (account: string, kind: string, percent: number | null) => call('POST', '/api/usage-stops', { account, kind, percent }),

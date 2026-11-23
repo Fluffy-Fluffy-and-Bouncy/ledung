@@ -1,9 +1,24 @@
+import { treeFrom } from '../platform/process-tree.ts';
+
 // One action at a time on a job's processes (acceptance test of PR #261, finding 1): two Pauses at once (a
 // double-click, or the phone and the PC together) both passed the "already paused?" check before either set it, so
 // Windows' suspend count went to 2 and one Resume left the job frozen for good. The guard is checked and set before
 // the action's first await, and every action (Pause, Resume, Stop) waits its turn by being refused.
 
 export const JOB_BUSY = 'Another action on this job is still under way: wait for it to finish, then try again.';
+
+/**
+ * What a Stop or Pause leaves alone, from a fresh list: the job's processes the failed guesses reach that still run,
+ * and the job's processes that are gone. A gone one is never "another program" left alone (its command line can't be
+ * read, so it fails the check): a second Stop on a paused job counted what the first had just ended as an unnamed
+ * other program and told the session again (acceptance test 6 of PR #476). Gone ones are only dropped from the job.
+ */
+export function leftAloneNow(guessedOut: number[], fresh: FreshProcess[], reached: Set<number>, jobPids: number[]): { alone: number[]; gone: number[] } {
+  const alive = new Set(fresh.map((p) => p.pid));
+  const job = new Set(jobPids);
+  const alone = [...new Set([...guessedOut, ...guessedOut.flatMap((pid) => treeFrom(fresh, pid).map((p) => p.pid))])].filter((pid) => !reached.has(pid) && alive.has(pid) && job.has(pid));
+  return { alone, gone: jobPids.filter((pid) => !alive.has(pid)) };
+}
 
 export class JobActions {
   private readonly busy = new Set<string>();
@@ -40,6 +55,89 @@ export interface FreshProcess {
 export function fileTimeMs(started: string): number | null {
   if (!/^\d+$/.test(started) || started === '0') return null;
   return Number(BigInt(started) / 10000n - 11644473600000n);
+}
+
+/**
+ * The part of a fresh list of every process that a job's action looks at: its session's host with everything under
+ * it, and each detached process of the job whose parent is gone (adopted by the book) with everything under that.
+ * A `nohup` job's shell has exited, so it is under no host (acceptance test 3 of PR #476).
+ */
+export function jobProcessesNow(all: FreshProcess[], host: number, adopted: number[]): FreshProcess[] {
+  const out = new Map<number, FreshProcess>();
+  for (const root of [host, ...adopted]) for (const p of treeFrom(all, root)) out.set(p.pid, p);
+  return [...out.values()];
+}
+
+/** A command line's words, quotes taken off; `split`: a shell's operators (`&`, `;`, `>`) also end a word outside quotes. */
+function words(command: string, split = false): string[] {
+  return [...command.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)].flatMap((m) => m[1] ?? m[2] ?? (split ? (m[3] ?? '').split(/[;&|()<>]+/) : [m[3] ?? ''])).filter(Boolean);
+}
+
+/** A word as compared: lower case, a path down to its last part, a program without .exe, .cmd or .bat. */
+function bare(word: string): string {
+  return (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(exe|cmd|bat)$/, '');
+}
+
+/**
+ * Whether a process's command line is what a detaching call ran (re-review of PR #476): its program and each of its
+ * arguments are words of the call (a path compared by its last part, so `python train.py &` matches
+ * `C:\Python\python.exe train.py`). A program the call never named (an app another launcher started) never matches.
+ */
+export function commandIsCalls(processCommand: string, callCommand: string): boolean {
+  const [program, ...args] = words(processCommand).map(bare);
+  if (!program) return false;
+  const call = new Set(words(callCommand, true).map(bare));
+  return call.has(program) && args.every((a) => call.has(a));
+}
+
+/**
+ * Which detached processes Ledung took as a session's only by when they started may be acted on: the same process
+ * (start time as in the fresh list), its command one of the session's detaching calls', and its working folder inside
+ * one of the session's folders where that can be read. Counting on a timing guess is fine; pausing or ending an
+ * outside program on one is not (re-review of PR #476: a game whose launcher exited between two samples).
+ */
+export function provenByCommand(
+  guessed: { pid: number; commands: string[] }[],
+  fresh: FreshProcess[],
+  found: { pid: number; started: string; command: string; cwd: string | null }[],
+  folders: string[],
+  inside: (folder: string, cwd: string) => boolean,
+): number[] {
+  const out: number[] = [];
+  for (const g of guessed) {
+    const now = fresh.find((p) => p.pid === g.pid);
+    const c = found.find((f) => f.pid === g.pid);
+    if (!now || !c || c.started !== now.started) continue;
+    if (!g.commands.some((call) => commandIsCalls(c.command, call))) continue;
+    if (c.cwd !== null && !folders.some((f) => inside(f, c.cwd!))) continue;
+    out.push(g.pid);
+  }
+  return out;
+}
+
+export const CHECK_FAILED = "Couldn't check the job's processes just now; try again.";
+
+/**
+ * provenByCommand on command lines read just now (`read`: commandsOf). When they can't be read the action is refused
+ * (CHECK_FAILED) instead of going on as if every guessed process had failed the check: a paused job's Stop then
+ * disowned its own suspended process and left it frozen with no card (third code review of PR #476).
+ */
+export async function provenNow(
+  guessed: { pid: number; commands: string[] }[],
+  fresh: FreshProcess[],
+  read: (pids: number[]) => Promise<{ pid: number; started: string; command: string; cwd: string | null }[]>,
+  folders: string[],
+  inside: (folder: string, cwd: string) => boolean,
+): Promise<number[]> {
+  if (!guessed.length) return [];
+  let found: Awaited<ReturnType<typeof read>>;
+  try {
+    found = await read(guessed.map((g) => g.pid));
+  } catch (e) {
+    console.error(`Reading a detached job's command lines: ${(e as Error).message}`);
+    throw new Error(CHECK_FAILED);
+  }
+  return provenByCommand(guessed, fresh, found, folders, inside);
 }
 
 /**
