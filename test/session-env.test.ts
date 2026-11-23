@@ -67,12 +67,13 @@ test('a core started on Electron stops at once, before it opens the database (#3
     assert.match(lines[0] ?? '', /^Ledung runs on Node\.js, not on Electron's binary \(Electron 39\.0\.0\)/);
     assert.equal(electron.database, false, 'no database was opened');
 
-    // The same start on Node gets past the check: it opens the database, then stops at the taken port.
+    // The same start on Node gets past the check, and stops at the taken port, which it claims before it opens the
+    // database (#503).
     const node = run('node', []);
     assert.equal(node.status, 1, node.stderr);
     assert.match(node.stderr, /Port \d+ is in use/);
     assert.doesNotMatch(node.stderr, /Electron/);
-    assert.equal(node.database, true, 'the database probe finds one when the core gets that far');
+    assert.equal(node.database, false, 'a start that cannot have the port opens no database');
   } finally {
     busy.close();
     fs.rmSync(base, { recursive: true, force: true });

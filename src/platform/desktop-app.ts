@@ -483,7 +483,7 @@ export async function openMadeApp(o: { dataDir: string; off: boolean; packaged?:
   const paths = madeApp(o.dataDir, platform);
   if (!paths) return NO_APP;
   // The running Ledung's own settings stay with it: the app's Start Ledung would otherwise pass them on (#456, #408).
-  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !['LEDUNG_LAUNCHER', 'LEDUNG_LOG_FILE'].includes(name.toUpperCase())));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !['LEDUNG_LAUNCHER', 'LEDUNG_LOG_FILE', 'LEDUNG_RESTARTED'].includes(name.toUpperCase())));
   return (o.open ?? ((p) => openApp(p, platform, env)))(paths);
 }
 

@@ -155,7 +155,8 @@ for (;;) {
       // In the background this command has no console, and Windows would give Ledung a window of its own (#456).
       windowsHide: true,
       // LEDUNG_LAUNCHER tells Ledung that exiting with RESTART_CODE will start it again.
-      env: { ...process.env, LEDUNG_LAUNCHER: '1' },
+      // LEDUNG_RESTARTED: a restart, which waits for the Ledung before it to free the port (#503).
+      env: { ...process.env, LEDUNG_LAUNCHER: '1', LEDUNG_RESTARTED: restarted ? '1' : '' },
     });
     child.on('exit', (c) => resolve(c ?? 1));
     child.on('error', (e) => { console.error(e.message); resolve(1); });

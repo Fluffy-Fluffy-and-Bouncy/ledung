@@ -46,9 +46,16 @@ import { Secrets } from './secrets/secrets.ts';
 import { osGuard, Vault } from './secrets/vault.ts';
 import { localSecretsDir } from './secrets/runtime.ts';
 import { runtimeRefusal } from './platform/runtime.ts';
+import { claimPort, listenAddresses, RESTART_PORT_WAIT_MS } from './platform/port-claim.ts';
 
 /** Exit code that asks the launcher to start Ledung again (see scripts/release.ts, and src/cli.ts for the npm package). */
 const RESTART_CODE = 75;
+
+/** A start that could not have the port (#503): it touched no session, and says so. */
+function portInUse(port: number, waited: string): string {
+  return `Port ${port} is in use${waited}. Is Ledung already running? Otherwise set another "port" in ${configPath()}.\n`
+    + 'This Ledung did not start. No session was stopped: they keep running, and the Ledung that starts next reconnects them.';
+}
 
 async function main(): Promise<void> {
   // Never on Electron's binary: its hosts would need ELECTRON_RUN_AS_NODE, which sessions must not inherit (#361).
@@ -73,6 +80,19 @@ async function main(): Promise<void> {
   if (startPath) exercisedLine(`EXERCISED #464 started with the ${startPath === 'login' ? "login shell's" : 'fallback'} PATH`);
   // The relay this Ledung is on: the config's "remote" block, else what Join with a code saved (issue #237).
   const remote = config.remote ?? savedRemote(remoteDir());
+  // The port first (#503): a start that can't have it leaves the database and every session host as they are, so the
+  // sessions keep running and the Ledung that has the port, or the next start, keeps or reconnects them. A restart
+  // waits for the Ledung before it to let go of the port; a first start finds out at once.
+  const lanBind = config.lan === true ? '0.0.0.0' : config.lan || undefined;
+  const restarted = envSetting('RESTARTED') === '1';
+  const claim = await claimPort({
+    port: config.port, addresses: listenAddresses(lanBind), waitMs: restarted ? RESTART_PORT_WAIT_MS : 0,
+    log: (line) => console.log(line),
+  });
+  if (!claim) {
+    console.error(portInUse(config.port, restarted ? ` after waiting ${RESTART_PORT_WAIT_MS / 1000} s` : ''));
+    process.exit(1);
+  }
   // No database yet: the first start, for a release and the npm package alike (issue #332).
   if (!fs.existsSync(databaseFile())) console.log(ANTHROPIC_NOTICE);
   const db = openDatabase();
@@ -122,7 +142,8 @@ async function main(): Promise<void> {
   void manager.checkSignIns();
 
   let shuttingDown = false;
-  const shutdown = async (restart: boolean) => {
+  // why: what asked for it, in the log, so a stop can always be traced to its cause (#503).
+  const shutdown = async (restart: boolean, why: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
     // The icon goes first: it would only offer what is now stopping (#347).
@@ -132,12 +153,12 @@ async function main(): Promise<void> {
     checkIn.stop();
     watcher?.stop();
     if (restart) {
-      console.log('Restarting; sessions keep running and reconnect after the restart...');
+      console.log(`Restarting (${why}); sessions keep running and reconnect after the restart...`);
       // A running "!" command doesn't survive the restart (issue #212); its block says so.
       await manager.endShells();
       manager.detachAll();
     } else {
-      console.log('Stopping sessions...');
+      console.log(`Stopping sessions (${why})...`);
       await manager.shutdown();
     }
     link?.stop();
@@ -149,7 +170,7 @@ async function main(): Promise<void> {
   // Restarting needs the launcher, which starts Ledung again; without it, Ledung would just exit.
   const canRestart = envSetting('LAUNCHER') === '1';
   const lan = lanNames(config.lan);
-  const onRestart = canRestart ? () => void shutdown(true) : undefined;
+  const onRestart = canRestart ? () => void shutdown(true, 'Restart Ledung') : undefined;
   const loginUrl = `http://127.0.0.1:${config.port}/login?token=${loadOrCreateToken()}`;
   // The desktop app (#409), read at each ask: the config's switch, and whether the app is made here, change while this
   // runs. The page's "Open in the Ledung app" opens a made one; the tray's Open makes it first when needed.
@@ -180,9 +201,9 @@ async function main(): Promise<void> {
     counts: () => ({ working: manager.workingCount(), waiting: waitingCount(manager.questions(), store.pendingPermissions()) }),
     // The app, made first when needed, as `ledung` opens it; the page in the browser without it (#409).
     onOpen: () => void openFromTray(),
-    onRestart: () => void shutdown(true),
+    onRestart: () => void shutdown(true, 'Restart in the tray icon'),
     // Exit is Stop Ledung (choice C); the tray asks first when sessions are working.
-    onExit: () => void shutdown(false),
+    onExit: () => void shutdown(false, 'Exit in the tray icon'),
     log: (line) => console.log(line),
   });
   const traySwitch = new TraySwitch({
@@ -217,7 +238,10 @@ async function main(): Promise<void> {
     connect: config.remote?.linkVia ? connectVia(config.remote.linkVia) : connectPublic,
   });
   const updater = new Updater({
-    appDir: appDir(), dataDir: userDataDir(), configPath: configPath(), onRestart, npmVersion: PACKAGED ? runningVersion() : undefined,
+    // Its own reason in the log: an installed update restarts Ledung without anyone pressing Restart (#503).
+    appDir: appDir(), dataDir: userDataDir(), configPath: configPath(),
+    onRestart: canRestart ? () => void shutdown(true, 'update installed') : undefined,
+    npmVersion: PACKAGED ? runningVersion() : undefined,
     // The update channel (#461) is this computer's, like its shortcuts.
     meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) },
   });
@@ -230,7 +254,7 @@ async function main(): Promise<void> {
     port: config.port, token: loadOrCreateToken(), store, manager,
     onRestart,
     // Stop Ledung in Settings and `ledung stop` (issue #456): the same stop as Ctrl+C in its window.
-    onStop: () => void shutdown(false),
+    onStop: () => void shutdown(false, 'Stop Ledung in the page, or ledung stop'),
     // Made only when asked, in the first-run question or Settings (issue #415).
     shortcuts: new Shortcuts({ launch: launchTarget(), iconDir: userDataDir(), icons: iconFiles(), meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) } }),
     updater,
@@ -242,7 +266,7 @@ async function main(): Promise<void> {
     checkIn,
     tray: traySwitch,
     lanNames: lan,
-    lanBind: config.lan === true ? '0.0.0.0' : config.lan || undefined,
+    lanBind,
     lanOpen: !config.lanSignIn,
     usage: new UsageQueries(db),
     relayAdmin,
@@ -257,12 +281,15 @@ async function main(): Promise<void> {
   link = new RemoteLink({ server, dir: remoteDir(), configured: config.remote, joinAcme: config.relayJoin });
   server.attachRemote(link);
 
+  // The claim lets go only now, and the server listens straight after: another start would have to take the port in
+  // that moment. If one does, the sessions are let go, never stopped (#503).
+  await claim.release();
   try {
     await server.listen();
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'EADDRINUSE') {
       manager.detachAll();
-      throw new Error(`Port ${config.port} is in use. Is Ledung already running? Otherwise set another "port" in ${configPath()}.`);
+      throw new Error(portInUse(config.port, ''));
     }
     throw e;
   }
@@ -323,7 +350,7 @@ async function main(): Promise<void> {
   if (!process.argv.includes('--no-open')) openBrowser(loginUrl);
 
   // Ctrl+C, and closing the console window (SIGHUP on Windows), close Ledung and stop its sessions.
-  for (const signal of ['SIGINT', 'SIGTERM', 'SIGBREAK', 'SIGHUP'] as const) process.on(signal, () => void shutdown(false));
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGBREAK', 'SIGHUP'] as const) process.on(signal, () => void shutdown(false, signal));
 }
 
 main().catch((e) => {
