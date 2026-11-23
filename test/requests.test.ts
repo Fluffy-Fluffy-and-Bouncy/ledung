@@ -116,6 +116,18 @@ function stored(details: QuestionDetails | null, extra: Partial<QuestionInfo> = 
 }
 const shot = (path: string, group = 'Request page'): QuestionShot => ({ path, group, lookFor: 'x', doneWhen: null, facts: [], opinions: [] });
 
+test('parts of the wrong shape get a plain refusal, not a server error (code review of PR #504, finding 3)', () => {
+  const q = stored({ title: 'R', review: { solving: 's', done: 'd' }, signOff: true, decisions: [{ key: 'd1', title: 'T', options: [{ key: 'a', text: 'A' }] }] });
+  for (const parts of [null, [], { decisions: 'x' }, { note: 5 }, { decisions: [{ key: 1 }] }, { decisions: [{ key: 'd1', pick: 2 }] }, { decisions: [null] },
+    { signOff: 'yes' }, { signOff: { verdict: 'maybe' } }, { signOff: { verdict: 'accept', note: {} } }, { shots: {} }, { shots: [{ verdict: 3 }] }]) {
+    const r = requestAnswer(q, parts as unknown as AnswerParts, 'Simon');
+    assert.ok('problem' in r, JSON.stringify(parts));
+    assert.match(r.problem, /^The answer is malformed: /, JSON.stringify(parts));
+  }
+  // The page's own shapes still pass: a shot left unjudged is null.
+  assert.ok('answer' in requestAnswer(q, { signOff: { verdict: 'accept' }, decisions: [{ key: 'd1', pick: 'a' }], shots: [{ verdict: null }] }, 'Simon'));
+});
+
 test("a preset's answer is byte-for-byte what its page sends today", () => {
   const ok = (r: ReturnType<typeof requestAnswer>) => { assert.ok('answer' in r, JSON.stringify(r)); return r.answer; };
   // A structured question: "a — Label", with "Note: …" after it, or the typed words (QuestionPage).

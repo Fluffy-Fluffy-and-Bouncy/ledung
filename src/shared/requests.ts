@@ -128,6 +128,36 @@ export function leftToAnswer(m: RequestModel, parts: AnswerParts | null | undefi
   return m.decisions.filter((x) => !done(x)).length + (m.signOff && !signOffDone ? 1 : 0);
 }
 
+/**
+ * What is wrong with the parts as sent, or null: they come from the page as JSON, so a caller could send any shape, and a
+ * wrong one gets a plain refusal rather than a server error (code review of PR #504, finding 3).
+ */
+export function answerPartsProblem(parts: unknown): string | null {
+  const bad = 'The answer is malformed';
+  const isObject = (x: unknown): x is Record<string, unknown> => !!x && typeof x === 'object' && !Array.isArray(x);
+  const optString = (x: unknown) => x === undefined || typeof x === 'string';
+  if (!isObject(parts)) return `${bad}: its parts are not an object.`;
+  if (!optString(parts.note)) return `${bad}: the note is not text.`;
+  if (parts.decisions !== undefined) {
+    if (!Array.isArray(parts.decisions)) return `${bad}: the decisions are not a list.`;
+    for (const x of parts.decisions) {
+      if (!isObject(x) || typeof x.key !== 'string' || !optString(x.pick) || !optString(x.other)) return `${bad}: a decision's answer is not a key with a pick or text.`;
+    }
+  }
+  if (parts.signOff !== undefined) {
+    const s = parts.signOff;
+    if (!isObject(s) || (s.verdict !== 'accept' && s.verdict !== 'changes') || !optString(s.note)) return `${bad}: the sign-off is not Accepted or Changes needed with a note.`;
+  }
+  if (parts.shots !== undefined) {
+    if (!Array.isArray(parts.shots)) return `${bad}: the screenshot verdicts are not a list.`;
+    for (const x of parts.shots) {
+      if (x === null) continue;
+      if (!isObject(x) || !(x.verdict === undefined || x.verdict === null || typeof x.verdict === 'string') || !optString(x.note)) return `${bad}: a screenshot's verdict is not a verdict with a note.`;
+    }
+  }
+  return null;
+}
+
 /** Simon's own text kept with its line breaks, each later line indented so it stays inside its part. */
 const kept = (text: string) => text.trim().split('\n').map((l, i) => (i ? `  ${l}` : l)).join('\n');
 
@@ -138,6 +168,8 @@ const kept = (text: string) => text.trim().split('\n').map((l, i) => (i ? `  ${l
  * label, a file name) is put on one line, so it can't add lines the person never gave.
  */
 export function requestAnswer(q: Asked, parts: AnswerParts, userName: string): { answer: string; parts: AnswerParts } | { problem: string } {
+  const malformed = answerPartsProblem(parts);
+  if (malformed) return { problem: malformed };
   const m = requestModel(q);
   const note = parts.note?.trim() ?? '';
   // D3: every decision and the sign-off before Send; "Other" with typed text is always there for "not sure yet".
@@ -208,7 +240,9 @@ export function movingAnswer(q: Pick<QuestionInfo, 'details' | 'answerParts'>): 
   const p = q.answerParts;
   const d = q.details;
   if (!p || !d) return null;
-  if ((d.review || d.signOff) && p.signOff) {
+  // Only a review step is moved by the sign-off; at a question step the decision with outcomes moves it, even beside a
+  // sign-off asked before the step refused one (code review of PR #504, finding 1).
+  if (d.review && p.signOff) {
     return { answer: p.signOff.verdict === 'accept' ? ACCEPTED : `${CHANGES_NEEDED} ${p.signOff.note ?? ''}`.trim() };
   }
   const moving = (d.decisions ?? []).find((x) => x.options.some((o) => o.outcome !== undefined));

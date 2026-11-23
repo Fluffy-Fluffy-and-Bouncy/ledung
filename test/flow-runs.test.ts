@@ -21,7 +21,8 @@ import type { WorktreeHost } from '../src/sessions/run-worktrees.ts';
 import { RunStore, runNumber } from '../src/sessions/run-store.ts';
 import { ledungToolServer, type RunHandlers, type ToolHandlers } from '../src/sessions/tools.ts';
 import type { SessionInfo } from '../src/shared/protocol.ts';
-import { requestAnswer } from '../src/shared/requests.ts';
+import { movingAnswer, requestAnswer } from '../src/shared/requests.ts';
+import { optionAnswer } from '../src/shared/questions.ts';
 
 const FIXTURE = path.join(import.meta.dirname, 'fixtures', 'flow-ledung');
 const project = parseProject({ name: 'shop', runner: 'local', path: FIXTURE });
@@ -1501,6 +1502,32 @@ test('#502 requests at run steps: exactly one block moves the run, by its stored
   // The whole answer goes on: the other decision and the note are the coordinator's to read.
   assert.match(told.at(-1)!.text, /Decision rounding — File rounding apart\?: b — Leave it/);
   assert.match(run.history.at(-1)!.note ?? '', /Simon's note: One more round\./);
+});
+
+test('#502 at a question step a sign-off, or screenshots beside top-level options, is refused; screenshots beside one deciding decision move the run by it', async () => {
+  const e = await engine();
+  const { ports, store, askUser, runs } = e;
+  await toDecide(e);
+  const base = { run: 'run-1', block: 'decide', tier: 'Process', title: 'Cart total', issue: 'Round three.' };
+  const moving = { key: 'next', title: 'Go on or fix again?', options: [{ key: 'a', text: '**Go on**', outcome: 'Go on' }, { key: 'b', text: '**Fix again**', outcome: 'Fix again' }] };
+  const shot = { file: 'a.png', look_for: 'the total' };
+  // Code review of PR #504, finding 1: a sign-off beside the deciding decision passed, and its "Accepted." then held the run.
+  assert.match((await askUser('manager-1', { ...base, sign_off: true, decisions: [moving] })).text, /^At a question step one decision moves the run; a sign-off goes with a review step\./);
+  // Finding 2: screenshots beside top-level options were stored as a screenshot page, whose verdicts match no outcome.
+  assert.match((await askUser('manager-1', { ...base, screenshots: [shot], options: moving.options })).text, /^With screenshots at a question step, give the outcome options in one decision/);
+  assert.equal(store.listQuestions().length, 0, 'nothing stored');
+  const asked = await askUser('manager-1', { ...base, screenshots: [shot], decisions: [moving] });
+  assert.equal(asked.error, false, asked.text);
+  const q = store.getQuestion(1)!;
+  const built = requestAnswer(q, { decisions: [{ key: 'next', pick: 'b' }] }, 'Simon');
+  assert.ok('answer' in built, JSON.stringify(built));
+  store.answerQuestion(1, built.answer, 'user', null, false, built.parts);
+  await runs.onAnswered(store.getQuestion(1)!);
+  assert.equal(ports.runs.get('run-1')!.at, 'fix');
+  assert.equal(ports.runs.get('run-1')!.history.at(-1)!.word, 'Fix again');
+  // One stored before the refusal (or written by hand) with both: the decision moves it, never the sign-off's verdict.
+  assert.deepEqual(movingAnswer({ details: { ...q.details!, signOff: true }, answerParts: { signOff: { verdict: 'accept' }, decisions: [{ key: 'next', pick: 'b' }] } }),
+    { answer: optionAnswer(moving.options[1]!), options: q.details!.decisions![0]!.options });
 });
 
 test('#502 a review step may carry decisions and screenshots; its sign-off moves the run, a decision with outcomes is refused', async () => {

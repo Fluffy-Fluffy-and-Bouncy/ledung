@@ -575,6 +575,15 @@ export function ledungToolServer(h: ToolHandlers, describe?: DescribeTools): Mcp
     if (args.review && moving.length) {
       throw new Error(`At a review step the sign-off moves the run: decision "${moving[0]!.key}" gives its options outcomes, which only a question step takes. Leave out its outcomes. Nothing was asked.`);
     }
+    // A sign-off moves only a review step; at a question step it would sit beside the deciding decision as a second
+    // verdict that moves nothing (code review of PR #504, finding 1).
+    if (!args.review && args.sign_off) {
+      throw new Error('At a question step one decision moves the run; a sign-off goes with a review step. Leave out sign_off, or ask at the review step with review. Nothing was asked.');
+    }
+    // Screenshots at a question step: the page judges them, so the options that move the run go in one decision (finding 2).
+    if (!args.review && args.screenshots?.length && !args.decisions?.length) {
+      throw new Error('With screenshots at a question step, give the outcome options in one decision (decisions), not as options at the top. Nothing was asked.');
+    }
     if (!args.review && args.decisions?.length && moving.length !== 1) {
       throw new Error(moving.length
         ? `Only one decision may move the run, but ${moving.map((x) => `"${x.key}"`).join(' and ')} give their options outcomes. Keep the outcomes on one; the others are information for the coordinator. Nothing was asked.`
