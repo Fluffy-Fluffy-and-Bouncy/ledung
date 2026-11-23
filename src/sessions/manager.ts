@@ -43,7 +43,7 @@ import { ResourceBook, RESOURCE_SOURCE } from '../resources/book.ts';
 import { commandKinds } from '../resources/commands.ts';
 import { namesText, type JobActionResult, type JobReach } from '../shared/job-notes.ts';
 import { JobStore } from '../resources/jobs.ts';
-import { JobActions, jobProcessesNow, leftAloneNow, jobTargetsNow, provenByCommand } from '../resources/job-actions.ts';
+import { JobActions, jobProcessesNow, leftAloneNow, jobTargetsNow, provenNow } from '../resources/job-actions.ts';
 import { mainGpu } from '../platform/gpu.ts';
 import { actOn, type Target } from '../platform/process-control.ts';
 import { commandsOf, listAll } from '../platform/process-tree.ts';
@@ -1144,10 +1144,12 @@ export class SessionManager {
       // Only local sessions are measured; a working folder that can't be checked against any folder fails the check.
       const folders = info && project?.runner === 'local' ? [this.sessionFolder(info, project), project.path] : [];
       try {
-        proven = provenByCommand(job.guessed, all, await commandsOf(job.guessed.map((g) => g.pid)), folders, (folder, cwd) => isInside(cwd, [folder]));
+        proven = await provenNow(job.guessed, all, commandsOf, folders, (folder, cwd) => isInside(cwd, [folder]));
       } catch (e) {
-        console.error(`Reading a detached job's command lines: ${(e as Error).message}`);
+        // Refused, nothing disowned or acted on (third code review of PR #476).
+        throw new UserError((e as Error).message);
       }
+      this.book.prove(id, proven);
     }
     const targets = jobTargetsNow(job.targets, jobProcessesNow(all, job.host, [...job.adopted, ...proven]), job.host);
     const reached = new Set(targets.map((t) => t.pid));

@@ -115,6 +115,31 @@ export function provenByCommand(
   return out;
 }
 
+export const CHECK_FAILED = "Couldn't check the job's processes just now; try again.";
+
+/**
+ * provenByCommand on command lines read just now (`read`: commandsOf). When they can't be read the action is refused
+ * (CHECK_FAILED) instead of going on as if every guessed process had failed the check: a paused job's Stop then
+ * disowned its own suspended process and left it frozen with no card (third code review of PR #476).
+ */
+export async function provenNow(
+  guessed: { pid: number; commands: string[] }[],
+  fresh: FreshProcess[],
+  read: (pids: number[]) => Promise<{ pid: number; started: string; command: string; cwd: string | null }[]>,
+  folders: string[],
+  inside: (folder: string, cwd: string) => boolean,
+): Promise<number[]> {
+  if (!guessed.length) return [];
+  let found: Awaited<ReturnType<typeof read>>;
+  try {
+    found = await read(guessed.map((g) => g.pid));
+  } catch (e) {
+    console.error(`Reading a detached job's command lines: ${(e as Error).message}`);
+    throw new Error(CHECK_FAILED);
+  }
+  return provenByCommand(guessed, fresh, found, folders, inside);
+}
+
 /**
  * The processes to act on for a job, from a list taken just now of its session's host and everything under it
  * (finding 5): the job's processes that are still the same process (start time, where the platform gives one),

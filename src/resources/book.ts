@@ -1422,6 +1422,20 @@ export class ResourceBook {
   }
 
   /**
+   * Detached processes whose command line was just proven the session's: remembered as seen, so a paused job's Resume
+   * or Stop never depends on reading command lines again (third code review of PR #476). Only while the same process:
+   * withAdopted drops an entry whose start time changes.
+   */
+  prove(id: string, pids: number[]): void {
+    const r = this.reservations.get(id);
+    const kept = r ? this.adopted.get(r.sessionId) : undefined;
+    for (const pid of pids) {
+      const a = kept?.get(pid);
+      if (a) a.seen = true;
+    }
+  }
+
+  /**
    * After the person's Stop: the processes it left alone (taken by timing alone, their command not the session's) are
    * no longer the job's, so its card goes away once the session's own work is over (acceptance test 5 of PR #476).
    * What Stop ended or found gone leaves the card at once and the job is no longer paused, so the card doesn't say

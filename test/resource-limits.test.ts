@@ -16,7 +16,7 @@ import { FRESH_FACTS, idleStopBlocker } from '../src/sessions/idle.ts';
 import { wslHintDue } from '../web/src/usage/machineFold.ts';
 import { LOWERED, type PriorityControl } from '../src/platform/process-control.ts';
 import { dragMax, dragStep, dragText, dragValue, limitShare, limitText, limitUnits, overFor, parseLimitInput, stepDrag, valueShare } from '../web/src/usage/resourceLimits.ts';
-import { commandIsCalls, fileTimeMs, JOB_BUSY, JobActions, jobProcessesNow, leftAloneNow, jobTargetsNow, provenByCommand, type FreshProcess } from '../src/resources/job-actions.ts';
+import { CHECK_FAILED, commandIsCalls, fileTimeMs, provenNow, JOB_BUSY, JobActions, jobProcessesNow, leftAloneNow, jobTargetsNow, provenByCommand, type FreshProcess } from '../src/resources/job-actions.ts';
 import { jobActionNote, namesText, stopConfirmText } from '../src/shared/job-notes.ts';
 import { hostStill } from '../src/resources/monitor.ts';
 
@@ -1493,6 +1493,50 @@ test('a paused job stopped twice: the first Stop ends its own and leaves the gam
   assert.deepEqual(r.book.jobTargets(id).targets, []);
   // Even if the ended daemon were still on the job, a gone process is never an unnamed "another program".
   assert.deepEqual(leftAloneNow([77], fresh([game]), new Set(), [77]), { alone: [], gone: [77] });
+});
+
+test("command lines that can't be read refuse the action, nothing disowned; a process once proven never needs them again (third code review of PR #476)", async () => {
+  const r = rig();
+  r.sessions.get('s1')!.busy = true;
+  r.tick({ s1: tree() });
+  r.book.reserve('s1', { what: 'Train', cpu: 30, ram_gb: 4 });
+  r.book.callStarted('s1', 'd1', ['python train.py'], true, true, 'nohup python train.py &');
+  const trainer = { pid: 77, ppid: 999, cpuSeconds: 0, memBytes: 3 * GB, started: r.clock.now + 1000, name: 'python.exe' };
+  for (let i = 1; i <= 3; i++) r.tick({ s1: tree() }, { outside: [{ ...trainer, cpuSeconds: i * 20 }] });
+  const id = r.book.info().jobs[0]!.id;
+  const ft = (ms: number) => String((BigInt(ms) + 11644473600000n) * 10000n);
+  const all: FreshProcess[] = [{ pid: 77, ppid: 999, started: ft(trainer.started), name: 'python.exe' }];
+  const line = { pid: 77, started: ft(trainer.started), command: 'python train.py', cwd: null };
+  let reads = 0;
+  const broken = async () => {
+    reads++;
+    throw new Error('CIM timed out');
+  };
+  const quiet = console.error;
+  console.error = () => {};
+  try {
+    // Paused, then Stop while reading command lines fails: refused with the plain words, not "only guessed".
+    r.book.setJobPaused(id, true);
+    await assert.rejects(provenNow(r.book.jobTargets(id).guessed, all, broken, [], () => false), { message: CHECK_FAILED });
+    assert.equal(reads, 1);
+  } finally {
+    console.error = quiet;
+  }
+  // Nothing disowned: still the job's, still paused, still a guess.
+  const job = r.book.info().jobs[0]!;
+  assert.equal(job.processes, 1);
+  assert.equal(job.state, 'paused');
+  assert.deepEqual(r.book.jobTargets(id).guessed.map((g) => g.pid), [77]);
+  // Once proven, remembered as seen: Resume and Stop never read command lines for it again, across samples.
+  const proven = await provenNow(r.book.jobTargets(id).guessed, all, async () => [line], [], () => false);
+  assert.deepEqual(proven, [77]);
+  r.book.prove(id, proven);
+  r.tick({ s1: tree() }, { outside: [{ ...trainer, cpuSeconds: 80 }] });
+  const t = r.book.jobTargets(id);
+  assert.deepEqual(t.adopted, [77]);
+  assert.deepEqual(t.guessed, []);
+  assert.deepEqual(await provenNow(t.guessed, all, broken, [], () => false), []);
+  assert.equal(reads, 1, 'no guessed process left, so nothing is read');
 });
 
 test("after Stop, an outside program it left alone is off the job for good, so the stopped job's card goes away (acceptance test 5 of PR #476)", () => {
