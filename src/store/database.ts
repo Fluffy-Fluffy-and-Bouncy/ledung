@@ -3,6 +3,7 @@
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { userDataDir } from '../platform/paths.ts';
+import { toBlocks } from '../shared/blocks.ts';
 
 // Daily usage totals (migration 38, issue #362): what a call adds to its day's row, and takes away from it.
 const DAILY_COLUMNS = ['at', 'account', 'machine', 'model', 'project', 'role', 'trigger', 'input', 'cache_write', 'cache_read', 'output', 'thinking', 'cost', 'subagent'];
@@ -23,7 +24,35 @@ const dailyTake = (r: string) => `
   WHERE ${dailyKey(r)};
   DELETE FROM usage_daily WHERE ${dailyKey(r)} AND calls <= 0;`;
 
-const MIGRATIONS: string[] = [
+/**
+ * Every question stored before #509 rewritten in blocks (Simon, 2026-11-24, Ledung question #2340 "a"): its details only,
+ * by toBlocks, so its answer, its text and its option labels stay byte-for-byte as they were, and Ledung's own
+ * permission-carrying questions are left as they are. It runs inside the migration's transaction, so a start stopped
+ * half-way leaves nothing changed and the next start runs it again. A row whose details can't be read is left alone.
+ */
+function questionsInBlocks(db: DatabaseSync): void {
+  const read = db.prepare('SELECT id, question, options, details, about_request FROM questions WHERE id > ? ORDER BY id LIMIT 500');
+  const write = db.prepare('UPDATE questions SET details = ? WHERE id = ?');
+  for (let last = 0; ;) {
+    const rows = read.all(last) as { id: number; question: string; options: string | null; details: string | null; about_request: string | null }[];
+    if (!rows.length) return;
+    for (const r of rows) {
+      last = Number(r.id);
+      let details;
+      try {
+        details = toBlocks({ question: r.question, options: r.options ? JSON.parse(r.options) : null, details: r.details ? JSON.parse(r.details) : null, aboutRequest: r.about_request });
+      } catch {
+        continue;
+      }
+      if (details) write.run(JSON.stringify(details), last);
+    }
+  }
+}
+
+/** A migration: SQL, or a step that needs code (it runs in the same transaction). */
+type Migration = string | ((db: DatabaseSync) => void);
+
+const MIGRATIONS: Migration[] = [
   // 1: sessions, messages and permission requests.
   `
   CREATE TABLE sessions (
@@ -850,6 +879,8 @@ const MIGRATIONS: string[] = [
     at INTEGER NOT NULL
   );
   `,
+  // Every stored question in one shape, its blocks (issue #509): see questionsInBlocks above.
+  questionsInBlocks,
 ];
 
 export function databaseFile(dir = userDataDir()): string {
@@ -862,7 +893,13 @@ export function openDatabase(file = databaseFile()): DatabaseSync {
   // needs no VACUUM. An older one is switched at a start (compactAtStart, src/store/trim.ts).
   if (db.prepare('SELECT 1 FROM sqlite_master LIMIT 1').get() === undefined) db.exec('PRAGMA auto_vacuum = INCREMENTAL;');
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
-  migrate(db);
+  try {
+    migrate(db);
+  } catch (e) {
+    // Rolled back (migrate): closed too, so the file isn't held open by a start that can't go on.
+    db.close();
+    throw e;
+  }
   return db;
 }
 
@@ -871,7 +908,9 @@ function migrate(db: DatabaseSync): void {
   for (let v = current; v < MIGRATIONS.length; v++) {
     db.exec('BEGIN');
     try {
-      db.exec(MIGRATIONS[v]!);
+      const m = MIGRATIONS[v]!;
+      if (typeof m === 'string') db.exec(m);
+      else m(db);
       db.exec(`PRAGMA user_version = ${v + 1}`);
       db.exec('COMMIT');
     } catch (e) {

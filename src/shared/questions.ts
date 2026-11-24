@@ -11,6 +11,12 @@ export interface QuestionOption {
   cost?: string;
   /** At a run's person step (#291): the block's outcome word this option's answer leads to. */
   outcome?: string;
+  /**
+   * A plain question's option label (ask_user's string options), set by Ledung when it stores the question (#509), never
+   * by an asker: picking it answers exactly this, the label as offered, "(recommended)" and all. Its text is the label
+   * as shown, whole. Absent: the answer is optionAnswer's "a — Label".
+   */
+  answer?: string;
 }
 
 /**
@@ -53,7 +59,10 @@ export function stepTier(projectTiers: readonly string[], ask: 'question' | 'rev
   return ask === 'review' ? first : projectTiers[1] ?? first;
 }
 
-/** One view on a question: who gave it, the option it picks (none: no pick among the options) and why. */
+/**
+ * One view on a question: who gave it, the option it picks (none: no pick among the options) and why. `who` empty is the
+ * asker itself (the page names it): its pick as an older question gave it, as `recommended` or a "(recommended)" label (#509).
+ */
 export interface Opinion {
   who: string;
   pick?: string;
@@ -155,15 +164,22 @@ export function reviewAnswerProblem(answer: string): string | null {
   return `A review is answered "${ACCEPTED}", optionally with a note after it, or "${CHANGES_NEEDED}" followed by what needs changing.`;
 }
 
-/** The structured fields of a question; every one is optional. */
+/**
+ * The structured fields of a question; every one is optional. Stored, a question has one shape, its blocks (#509): the
+ * context (title, issue, evidence, refs; a review's sections), its decisions and a sign-off. An ordinary question is
+ * one decision with the key "" (the question's own: it has no key of its own); a request has keyed decisions.
+ * `options`, `recommended`, `why` and `reviewer`, and `opinions` outside a review or sign-off, are what ask_user takes:
+ * Ledung turns them into that decision when it stores the question (toBlocks, src/shared/blocks.ts). Only Ledung's own
+ * permission-carrying questions keep them as asked (keepsItsShape).
+ */
 export interface QuestionDetails {
   title?: string;
   issue?: string;
   evidence?: string;
   options?: QuestionOption[];
-  /** Any number of views, in the order the asker gives them (issue #96). */
+  /** Any number of views, in the order the asker gives them (issue #96). Stored beside a review or sign-off only. */
   opinions?: Opinion[];
-  /** The older fixed pair, still read from questions stored before #96 and from askers not yet moved to opinions. */
+  /** The older fixed pair, as askers may still give it; stored only in a permission-carrying question (#509). */
   recommended?: string;
   why?: string;
   reviewer?: { pick?: string; who?: string; why?: string };
@@ -181,6 +197,8 @@ export interface QuestionDetails {
   decisions?: Decision[];
   /** A request asks for Accepted / Changes needed without a review's sections (issue #502); a review implies it. */
   signOff?: boolean;
+  /** Asked with text and option labels only, no structured fields (#509): the page marks it "plain", as it always has. */
+  plain?: boolean;
   /** A person block of a run asked it (workflow part 3b): the answer moves the run; shown with the question. */
   run?: QuestionRun;
   /** A manager's proposed workflow change (part 3e), by its number: the review page shows it before and after. */
@@ -310,7 +328,34 @@ export function splitOption(text: string): { label: string; detail: string } {
 
 /** The answer a structured option gives, and its button in the chat: "a — Merge as one PR". */
 export function optionAnswer(o: QuestionOption): string {
-  return `${o.key} — ${plain(splitOption(o.text).label)}`;
+  return o.answer ?? `${o.key} — ${plain(splitOption(o.text).label)}`;
+}
+
+/** A stored option as the desk shows it: a plain label whole (#509), else its bold start as the label. */
+export function deskOption(o: QuestionOption): DeskOption {
+  return o.answer !== undefined
+    ? { key: o.key, label: o.text, detail: '', cost: o.cost ?? '', answer: o.answer }
+    : { key: o.key, ...splitOption(o.text), cost: o.cost ?? '', answer: optionAnswer(o) };
+}
+
+/** Stored opinions as the desk shows them; an empty `who` is the asker (#509). */
+export function decisionOpinions(opinions: readonly Opinion[] | undefined): DeskOpinion[] {
+  return (opinions ?? []).map((o) => ({ who: o.who || null, pick: o.pick ?? null, why: o.why ?? '' }));
+}
+
+/**
+ * Ledung's own questions that carry permissions keep the shape they were asked in (#509, point 2): a permission question
+ * (about_request), a refused or held call, an order, an order command and a workflow proposal. They have their own
+ * pages, and their answers allow things, so they are never rewritten.
+ */
+export function keepsItsShape(q: { details: QuestionDetails | null; aboutRequest?: string | null }): boolean {
+  const d = q.details;
+  return !!q.aboutRequest || !!d?.refusal || !!d?.order || !!d?.orderCommand || d?.flowProposal !== undefined;
+}
+
+/** The question's own decision (key ""): an ordinary question's options and opinions (#509). */
+export function ownDecision(d: Pick<QuestionDetails, 'decisions'> | null | undefined): Decision | undefined {
+  return d?.decisions?.find((x) => x.key === '');
 }
 
 /** Checks the fields ask_user got; the message is what the asker reads. */
@@ -373,8 +418,35 @@ export function questionText(question: string | undefined, d: QuestionDetails): 
   return parts.join('\n\n');
 }
 
-/** A question as the desk shows it. A plain one degrades: its text is The issue, a "(recommended)" option the asker's pick. */
-export function deskQuestion(q: { question: string; options: string[] | null; details: QuestionDetails | null }): DeskQuestion {
+type Stored = { question: string; options: string[] | null; details: QuestionDetails | null; aboutRequest?: string | null };
+
+/**
+ * A question as the desk shows it, read from its blocks (#509): the context as stored, and the options and opinions of
+ * its own decision. Ledung's own permission-carrying questions keep their shape and are read as asked (legacyDesk).
+ */
+export function deskQuestion(q: Stored): DeskQuestion {
+  if (keepsItsShape(q)) return legacyDesk(q);
+  const d = q.details ?? {};
+  const own = ownDecision(d);
+  return {
+    structured: !d.plain,
+    title: d.title || titleFrom(d.review?.solving ?? q.question),
+    issue: d.review ? '' : d.issue ?? '',
+    evidence: d.evidence ?? '',
+    options: (own?.options ?? []).map(deskOption),
+    opinions: decisionOpinions(own?.opinions),
+    tier: d.tier ?? null,
+    rank: d.rank ?? null,
+    refs: d.refs ?? [],
+    review: d.review ?? null,
+  };
+}
+
+/**
+ * A question read from the fields as asked: what Ledung's own permission-carrying questions keep, and what toBlocks
+ * writes down as blocks (#509). A plain one degrades: its text is The issue, a "(recommended)" option the asker's pick.
+ */
+export function legacyDesk(q: Stored): DeskQuestion {
   const d = q.details;
   if (d?.review) {
     return {
@@ -388,9 +460,7 @@ export function deskQuestion(q: { question: string; options: string[] | null; de
       title: d.title || titleFrom(d.issue || q.question),
       issue: [d.issue, ownText(q.question, d)].filter(Boolean).join('\n\n') || (d.title ? '' : q.question),
       evidence: d.evidence ?? '',
-      options: d.options?.length
-        ? d.options.map((o) => ({ key: o.key, ...splitOption(o.text), cost: o.cost ?? '', answer: optionAnswer(o) }))
-        : plainOptions(q.options).options,
+      options: d.options?.length ? d.options.map(deskOption) : plainOptions(q.options).options,
       opinions: deskOpinions(d, d.options?.length ? null : plainOptions(q.options).recommended),
       tier: d.tier ?? null,
       rank: d.rank ?? null,
@@ -411,7 +481,7 @@ export function deskQuestion(q: { question: string; options: string[] | null; de
  * A title or an issue beside it must not hide it: the chat shows it, and the desk showed only the
  * title and buttons (issue #294).
  */
-function ownText(question: string, d: QuestionDetails): string {
+export function ownText(question: string, d: QuestionDetails): string {
   const q = question.trim();
   // An exact match, not a prefix: askers often open their own text with the bold title (review of PR #295).
   if (!q || q === d.issue?.trim() || q === d.title?.trim() || q === questionText(undefined, d).trim()) return '';

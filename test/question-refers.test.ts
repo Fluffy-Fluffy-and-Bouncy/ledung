@@ -61,7 +61,7 @@ test("a manager's question comes with the original it is about, even when that o
   assert.ok(!list.some((q) => q.id === original.id), 'the original is outside the recent window');
   const sent = list.find((q) => q.id === asked.id)!;
   assert.deepEqual(sent.original, {
-    id: original.id, sessionId: 'w', askedAt: original.askedAt, question: 'VAT per rate?', options: null, details, status: 'answered',
+    id: original.id, sessionId: 'w', askedAt: original.askedAt, question: 'VAT per rate?', options: null, details: original.details, status: 'answered',
   });
   assert.deepEqual(store.getQuestion(asked.id)!.original, sent.original, 'a single question as published carries it too');
   // Ledung's own reads on every manager Bash call leave it out (review of PR #373, finding 3): asserted on a question

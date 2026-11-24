@@ -5,7 +5,7 @@
 // so every asker, manager and workflow that reads answers today keeps working.
 import type { QuestionInfo, QuestionShot, ShotVerdict } from './protocol.ts';
 import {
-  ACCEPTED, CHANGES_NEEDED, deskOpinions, deskQuestion, optionAnswer, reviewAnswer, splitOption,
+  ACCEPTED, CHANGES_NEEDED, decisionOpinions, deskOption, deskQuestion, optionAnswer, ownDecision, reviewAnswer,
   type Decision, type DeskOpinion, type DeskOption, type QuestionDetails, type QuestionOption,
 } from './questions.ts';
 import { oneLine, shotAnswer, VERDICTS } from './shots.ts';
@@ -69,17 +69,19 @@ type Asked = Pick<QuestionInfo, 'id' | 'question' | 'options' | 'details' | 'sho
  */
 export function isRequest(q: Pick<QuestionInfo, 'details' | 'shots'>): boolean {
   const d = q.details;
-  return !!(d?.decisions?.length || d?.signOff || (d?.review && q.shots?.length));
+  return !!(keyedDecisions(d).length || d?.signOff || (d?.review && q.shots?.length));
 }
 
-const deskOptions = (options: QuestionOption[]): DeskOption[] =>
-  options.map((o) => ({ key: o.key, ...splitOption(o.text), cost: o.cost ?? '', answer: optionAnswer(o) }));
+/** A request's own decisions, each with its key; an ordinary question's one decision (key "") is not among them (#509). */
+export function keyedDecisions(d: Pick<QuestionDetails, 'decisions'> | null | undefined): Decision[] {
+  return (d?.decisions ?? []).filter((x) => x.key !== '');
+}
 
 /** A request's decision as the page shows it. */
 export function requestDecision(x: Decision): RequestDecision {
   return {
-    key: x.key, title: x.title, issue: x.issue ?? '', options: deskOptions(x.options),
-    opinions: deskOpinions({ opinions: x.opinions }, null), moves: x.options.some((o) => o.outcome !== undefined),
+    key: x.key, title: x.title, issue: x.issue ?? '', options: x.options.map(deskOption),
+    opinions: decisionOpinions(x.opinions), moves: x.options.some((o) => o.outcome !== undefined),
   };
 }
 
@@ -92,7 +94,7 @@ export function requestModel(q: Asked): RequestModel {
   const d = q.details;
   const shots = q.shots?.length ?? 0;
   if (isRequest(q)) {
-    const decisions = (d!.decisions ?? []).map(requestDecision);
+    const decisions = keyedDecisions(d).map(requestDecision);
     const signOff = !!(d!.review || d!.signOff);
     return { preset: 'request', decisions, signOff, shots, parts: decisions.length + (signOff ? 1 : 0) + (shots ? 1 : 0) };
   }
@@ -101,7 +103,7 @@ export function requestModel(q: Asked): RequestModel {
   const v = deskQuestion(q);
   const one: RequestDecision = {
     key: '', title: v.title, issue: '', options: v.options, opinions: v.opinions,
-    moves: !!d?.run?.writeUp && (d.options ?? []).some((o) => o.outcome !== undefined),
+    moves: !!d?.run?.writeUp && (ownDecision(d)?.options ?? []).some((o) => o.outcome !== undefined),
   };
   return { preset: 'question', decisions: [one], signOff: false, shots: 0, parts: 1 };
 }
@@ -245,7 +247,8 @@ export function movingAnswer(q: Pick<QuestionInfo, 'details' | 'answerParts'>): 
   if (d.review && p.signOff) {
     return { answer: p.signOff.verdict === 'accept' ? ACCEPTED : `${CHANGES_NEEDED} ${p.signOff.note ?? ''}`.trim() };
   }
-  const moving = (d.decisions ?? []).find((x) => x.options.some((o) => o.outcome !== undefined));
+  // A question's own decision moves its run by the answer's text, as it always has (#509): only a request's are read here.
+  const moving = movingDecisions(d)[0];
   if (!moving) return null;
   const a = p.decisions?.find((x) => x.key === moving.key);
   const option = a?.pick !== undefined ? moving.options.find((o) => o.key === a.pick) : undefined;
@@ -254,5 +257,5 @@ export function movingAnswer(q: Pick<QuestionInfo, 'details' | 'answerParts'>): 
 
 /** The decisions of a stored question that carry outcomes; a run's question step needs exactly one (D6). */
 export function movingDecisions(d: Pick<QuestionDetails, 'decisions'>): Decision[] {
-  return (d.decisions ?? []).filter((x) => x.options.some((o) => o.outcome !== undefined));
+  return keyedDecisions(d).filter((x) => x.options.some((o) => o.outcome !== undefined));
 }

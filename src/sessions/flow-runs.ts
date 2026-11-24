@@ -9,7 +9,7 @@ import { makeWorktree, removeWorktree, type WorktreeHost } from './run-worktrees
 import { decideStep, OPEN_STATES, outcomeList, runLabel, startBlock, type FlowRun, type RunBranch, type RunFork, type RunStep } from '../shared/flow-run.ts';
 import { inFolder, sessionOf } from '../shared/flow-check.ts';
 import { exercisedLine } from '../platform/exercised.ts';
-import { ACCEPTED, CHANGES_NEEDED, optionAnswer, questionText, stepTier, type QuestionDetails, type QuestionOption, type QuestionRun } from '../shared/questions.ts';
+import { ACCEPTED, CHANGES_NEEDED, optionAnswer, ownDecision, questionText, stepTier, type QuestionDetails, type QuestionOption, type QuestionRun } from '../shared/questions.ts';
 import { isRequest, movingAnswer } from '../shared/requests.ts';
 import type { RunStore } from './run-store.ts';
 
@@ -1196,7 +1196,7 @@ export class FlowRuns {
         const moving = movingAnswer(q);
         const word = moving
           ? answerWord(block, moving.answer, q.details?.run?.writeUp ? moving.options ?? [] : undefined)
-          : answerWord(block, answer, q.details?.run?.writeUp ? q.details.options ?? [] : undefined);
+          : answerWord(block, answer, q.details?.run?.writeUp ? ownDecision(q.details)?.options ?? [] : undefined);
         if (!word) {
           this.p.runs.update(now.id, { question: null, state: 'running' }, this.now());
           this.p.changed(now.project);

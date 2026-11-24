@@ -237,7 +237,7 @@ test("an earlier question is attached with its answer; another manager's questio
   assert.deepEqual(sources[0], {
     kind: 'question', named: `#${fromWorker.id}`,
     question: {
-      id: fromWorker.id, sessionId: 'w', askedAt: fromWorker.askedAt, question: 'VAT per rate?', options: null, details, status: 'answered',
+      id: fromWorker.id, sessionId: 'w', askedAt: fromWorker.askedAt, question: 'VAT per rate?', options: null, details: fromWorker.details, status: 'answered',
       answer: 'a — per rate everywhere', answeredAt: answered.answeredAt, answeredBy: 'user',
     },
   });

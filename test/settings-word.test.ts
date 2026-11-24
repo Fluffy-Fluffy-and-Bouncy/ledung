@@ -16,6 +16,7 @@ import { matchSensitive } from '../src/sessions/sensitive.ts';
 import { namesAction, SETTINGS_RULE, settingsAction, wordsFor, type Word } from '../src/sessions/word.ts';
 import type { SettingsPort } from '../src/sessions/management.ts';
 import { deskQuestion, type QuestionDetails } from '../src/shared/questions.ts';
+import { inBlocks } from '../src/shared/blocks.ts';
 import { refuseRealSignInStores } from './signin-stores.ts';
 
 process.env.LEDUNG_DATA_DIR ??= fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-settings-word-data-'));
@@ -151,7 +152,7 @@ test('words count only when every part of them is a known instruction or filler'
 // The options are built as the desk builds them from what ask_user stored.
 type Opt = { key: string; text: string; cost?: string };
 const question = (options: Opt[], extra: Partial<QuestionDetails> = {}) =>
-  ({ options: deskQuestion({ question: extra.title ?? 'Which?', options: null, details: { title: extra.title ?? 'Which?', issue: 'x', options, ...extra } }).options });
+  ({ options: deskQuestion(inBlocks({ question: extra.title ?? 'Which?', options: null, details: { title: extra.title ?? 'Which?', issue: 'x', options, ...extra } })).options });
 const answered = (text: string, a: ReturnType<typeof question>, action: Parameters<typeof wordsFor>[0] = 'relay_admin_key', input: Record<string, unknown> = {}) =>
   wordsFor(action, input, [{ key: 'q1', text, ask: a }]).length === 1;
 
@@ -192,7 +193,7 @@ test("an answer counts only as exactly one option whose whole text is the call; 
   assert.ok(!answered('a — Invite a computer for Anna', invite, 'invite_computer', { owner: 'Bob' }), 'Anna is not Bob');
   assert.ok(answered('a — Set the relay to wss://b.example.org', question([{ key: 'a', text: 'Set the relay to wss://b.example.org' }, { key: 'b', text: 'Keep a.example.org' }]), 'relay_address', { relay: 'wss://b.example.org' }));
   // A plain question's options, as a button press sends them.
-  const plain = { options: deskQuestion({ question: 'Which?', options: ['Make a new admin key (recommended)', 'Keep the old one'], details: null }).options };
+  const plain = { options: deskQuestion(inBlocks({ question: 'Which?', options: ['Make a new admin key (recommended)', 'Keep the old one'], details: null })).options };
   assert.ok(answered('Make a new admin key (recommended)', plain));
   assert.ok(!answered('yes', plain));
 });
