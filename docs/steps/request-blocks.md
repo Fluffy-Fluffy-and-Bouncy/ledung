@@ -177,7 +177,7 @@ On the phone, the bottom bar sits above the on-screen keyboard (the page already
 
 ### 6. Old questions and reviews
 
-Nothing stored changes. The shared function maps each kind onto blocks:
+Since issue #509 (Simon, 2026-11-24, question #2340) the mapping below is done once, not on every open: a question is stored in blocks when it is asked, and one database update converted every question stored before (`src/shared/blocks.ts`, migration 64). An ordinary question's options and opinions are its own decision, with the key "" (a plain label keeps its exact answer, "(recommended)" and all); answers, question texts and the chat's labels were not touched, and Ledung's own permission-carrying questions keep their shape. As designed, the shared function maps each kind onto blocks:
 
 | Stored | Blocks |
 |---|---|

@@ -317,7 +317,7 @@ export interface DeskQuestion {
   review: ReviewDetails | null;
 }
 
-export const RECOMMENDED = /\s*\(recommended\)\s*$/i;
+const RECOMMENDED = /\s*\(recommended\)\s*$/i;
 const plain = (s: string) => s.replace(/\*\*|`/g, '');
 
 /** An option's text → its bold start as the label and the rest as detail, as on the Desk. */
