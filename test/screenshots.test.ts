@@ -146,6 +146,11 @@ test('the verdicts become the answer: a count, one line per shot in the order at
     'Retake the checkout without the widget.',
   ].join('\n'));
   assert.equal(shotAnswer([shots[0]!], { 0: { verdict: 'unsure', note: 'A note without a verdict' } }), 'Screenshot verdicts: Unsure 1\n- #198 Cart · shots/cart.png: Unsure — A note without a verdict');
+  // A kept copy is named by the file the asker gave, not its "kept:<hash>/" path; a linked computer's mark stays
+  // (code review of PR #504, round 2, point C).
+  const kept = [s(`kept:${'a'.repeat(32)}/shots/cart.png`, '#198 Cart'), s(`kept:${'b'.repeat(32)}/linked:${'c'.repeat(16)}/shot.png`, '#198 Cart')];
+  assert.equal(shotAnswer(kept, { 0: { verdict: 'pass', note: '' }, 1: { verdict: 'fail', note: '' } }),
+    'Screenshot verdicts: Pass 1 · Fail 1\n- #198 Cart · shots/cart.png: Pass\n- #198 Cart · linked: shot.png: Fail');
 });
 
 test("ask_user through a session's own tools: a bad screenshot stores nothing, good ones are stored with the question (review of PR #63)", async () => {

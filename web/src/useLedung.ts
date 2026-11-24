@@ -10,6 +10,7 @@ import type { ComputerInfo } from '../../src/shared/computers.ts';
 import { api, connectionHello, openConnection, setReconnect } from './api.ts';
 import { OpenSession, viewFor, type OpenSessionView } from './openSession.ts';
 import { secretsChanged } from './secretLock.ts';
+import { draftChanged } from './requestDraft.ts';
 import { pollWhileShown } from './pollShown.ts';
 import { retryConnection } from './reconnect.ts';
 import { withArchived, withNamed, withSession, type KnownSessions } from '../../src/shared/hello-sessions.ts';
@@ -270,6 +271,9 @@ export function useLedung(openSessionId: string | null) {
             break;
           case 'question':
             setQuestions((q) => ({ ...q, [event.question.id]: event.question }));
+            break;
+          case 'requestDraft':
+            draftChanged(event.questionId, event.at);
             break;
           case 'permission':
             setPermissions((p) => ({ ...p, [event.permission.id]: event.permission }));

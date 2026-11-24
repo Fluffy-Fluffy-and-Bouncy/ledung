@@ -71,6 +71,15 @@ export interface ReviewEvidence {
   kind?: 'image' | 'text';
 }
 
+/** One decision of a request (issue #502): its own title, short issue, options (with outcomes at a run step) and opinions. */
+export interface Decision {
+  key: string;
+  title: string;
+  issue?: string;
+  options: QuestionOption[];
+  opinions?: Opinion[];
+}
+
 /** A review: a person's functional sign-off on a finished change, in fixed sections (docs/steps/pr-review.md). */
 export interface ReviewDetails {
   solving: string;
@@ -165,6 +174,13 @@ export interface QuestionDetails {
   refs?: string[];
   /** A review instead of a question (docs/steps/pr-review.md): its sections, shown on a page of their own. */
   review?: ReviewDetails;
+  /**
+   * A request's decisions (issue #502, docs/steps/request-blocks.md): one or more questions on one page, each answered.
+   * With them the top-level options and opinions are not given: they belong inside a decision.
+   */
+  decisions?: Decision[];
+  /** A request asks for Accepted / Changes needed without a review's sections (issue #502); a review implies it. */
+  signOff?: boolean;
   /** A person block of a run asked it (workflow part 3b): the answer moves the run; shown with the question. */
   run?: QuestionRun;
   /** A manager's proposed workflow change (part 3e), by its number: the review page shows it before and after. */
@@ -321,18 +337,35 @@ export function hasDetails(d: QuestionDetails): boolean {
 export function questionText(question: string | undefined, d: QuestionDetails): string {
   if (question?.trim()) return question;
   const parts: string[] = [];
+  // A request (issue #502): its decisions and sign-off follow the context, so the chat and the manager read every part.
+  const requestTail = () => {
+    for (const x of d.decisions ?? []) {
+      parts.push(`**Decision ${x.key}: ${x.title}**${x.issue ? `\n\n${x.issue}` : ''}`);
+      parts.push(x.options.map((o) => `- ${o.key}) ${o.text}${o.cost ? ` Cost: ${o.cost}` : ''}`).join('\n'));
+      for (const o of x.opinions ?? []) parts.push(`${o.who}: ${o.pick ?? 'no pick among the options'}${o.why ? `. ${o.why}` : ''}`);
+    }
+    if (!d.review && !d.signOff) return;
+    for (const o of d.opinions ?? []) parts.push(`${o.who}: ${o.why ?? ''}`);
+    parts.push(d.decisions?.length
+      ? `Answered on the request page: each decision, and "${ACCEPTED}" or "${CHANGES_NEEDED} …" as the sign-off.`
+      : `Answered "${ACCEPTED}" or "${CHANGES_NEEDED} …" on the review page.`);
+  };
   if (d.review) {
     const r = d.review;
     if (d.title) parts.push(`**Review: ${d.title}**`);
     parts.push(`**What we were solving**\n\n${r.solving}`, `**What was done**\n\n${r.done}`);
     if (r.notes) parts.push(`**Notes**\n\n${r.notes}`);
     if (r.evidence?.length) parts.push(`**Evidence**\n\n${r.evidence.map((e) => `- ${e.caption} (\`${shownFile(e.file).replace(/`/g, "'")}\`)`).join('\n')}`);
-    parts.push(`Answered "${ACCEPTED}" or "${CHANGES_NEEDED} …" on the review page.`);
+    requestTail();
     return parts.join('\n\n');
   }
   if (d.title) parts.push(`**${d.title}**`);
   if (d.issue) parts.push(d.issue);
   if (d.evidence) parts.push(`**Evidence**\n\n${d.evidence}`);
+  if (d.decisions?.length || d.signOff) {
+    requestTail();
+    return parts.join('\n\n');
+  }
   if (d.options?.length) parts.push(d.options.map((o) => `- ${o.key}) ${o.text}${o.cost ? ` Cost: ${o.cost}` : ''}`).join('\n'));
   if (d.recommended) parts.push(`Recommended: ${d.recommended}${d.why ? `. ${d.why}` : ''}`);
   if (d.reviewer) parts.push(`${d.reviewer.who || 'Reviewer'}: ${d.reviewer.pick ?? 'no pick among the options'}${d.reviewer.why ? `. ${d.reviewer.why}` : ''}`);
@@ -389,7 +422,7 @@ function ownText(question: string, d: QuestionDetails): string {
  * The opinions in the order the desk splits the border: the older pair first as it was shown (the
  * reviewer's on the left, the asker's on the right), then the list (issue #96).
  */
-function deskOpinions(d: QuestionDetails, plainPick: string | null): DeskOpinion[] {
+export function deskOpinions(d: Pick<QuestionDetails, 'reviewer' | 'recommended' | 'why' | 'opinions'>, plainPick: string | null): DeskOpinion[] {
   const out: DeskOpinion[] = [];
   if (d.reviewer) out.push({ who: d.reviewer.who || 'Reviewer', pick: d.reviewer.pick ?? null, why: d.reviewer.why ?? '' });
   const askerPick = d.recommended ?? plainPick;

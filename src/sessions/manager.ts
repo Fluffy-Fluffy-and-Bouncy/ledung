@@ -25,6 +25,7 @@ import { AIRGAP_PROFILE, isLocked, levelProblem, lockdownOf, opensUp, othersSett
 import { LATER_SUGGESTIONS, withLaterBatch, withSuggestions } from '../shared/sensitive-suggestions.ts';
 import { isNameColour, parseNameColour } from '../shared/name-colours.ts';
 import { ACCEPTED, HISTORY_DAYS, HISTORY_PER_PROJECT, ledungTier, LINKED_MARK, questionText, reviewAnswerProblem, tiersOf, type QuestionDetails } from '../shared/questions.ts';
+import { isRequest, requestAnswer, type AnswerParts } from '../shared/requests.ts';
 import {
   BrowseError, createProjectFolder, defaultProjectsFolder, defaultRoots, isInside, listContainer, listContainers, listLocal,
   type ContainerInfo, type FolderListing,
@@ -1762,11 +1763,21 @@ export class SessionManager {
    * The user's answer to a question; it reaches the session as soon as the session is free. `here`: given on
    * this computer, not through the public name, so it can name a manager's Settings action (issue #263).
    */
-  async answerQuestion(id: number, answer: string, here = false): Promise<QuestionInfo> {
+  async answerQuestion(id: number, answer: string, here = false, parts?: AnswerParts | null): Promise<QuestionInfo> {
+    const asked = this.store.getQuestion(id);
+    let stored: AnswerParts | null = null;
+    if (parts) {
+      // The request page sends the parts (issue #502); Ledung writes the answer text from them, so a preset's is today's.
+      if (!asked) throw new UserError('No such question.');
+      const built = requestAnswer(asked, parts, this.config.userName);
+      if ('problem' in built) throw new UserError(built.problem);
+      answer = built.answer;
+      stored = built.parts;
+    }
     if (!answer.trim()) throw new UserError('The answer is empty.');
-    const form = this.store.getQuestion(id)?.details?.review ? reviewAnswerProblem(answer) : null;
+    const form = !stored && asked?.details?.review && !isRequest(asked) ? reviewAnswerProblem(answer) : null;
     if (form) throw new UserError(form);
-    if (!this.store.answerQuestion(id, answer.trim(), 'user', null, here)) throw new UserError('This question is no longer open.');
+    if (!this.store.answerQuestion(id, answer.trim(), 'user', null, here, stored)) throw new UserError('This question is no longer open.');
     const q = this.store.getQuestion(id)!;
     this.publish({ type: 'question', question: q });
     this.recordAllowAlways(q);

@@ -7,9 +7,10 @@ import { z } from 'zod';
 import { EFFORT_LEVELS, PERMISSION_MODES, type AttachedSource, type PermissionMode, type QuestionInfo, type SessionRole } from '../shared/protocol.ts';
 import { failedSourcesNote, MAX_SOURCES, type SourceInput } from './sources.ts';
 import {
-  ACCEPTED, CHANGES_NEEDED, detailsProblem, hasDetails, MAX_REVIEW_EVIDENCE, optionAnswer, questionText, splitOption, type OrderCommandDetails, type Opinion, type QuestionDetails, type QuestionOption, type QuestionRun, type ReviewDetails,
+  ACCEPTED, CHANGES_NEEDED, detailsProblem, hasDetails, MAX_REVIEW_EVIDENCE, optionAnswer, questionText, splitOption, type Decision, type OrderCommandDetails, type Opinion, type QuestionDetails, type QuestionOption, type QuestionRun, type ReviewDetails,
 } from '../shared/questions.ts';
 import type { ShotInput } from './management.ts';
+import { DECISION_KEY, isRequest, MAX_DECISIONS, MAX_REQUEST_FILES, movingDecisions, requestKinds } from '../shared/requests.ts';
 import { commandProblem, type OrderSpec } from './orders.ts';
 import { CONFIRM, CONFIRM_KEY } from '../shared/orders.ts';
 import { SETTINGS_ACTIONS } from './word.ts';
@@ -284,6 +285,10 @@ export interface AskArgs {
   tier?: string; rank?: number; refs?: string[];
   screenshots?: ShotInput[];
   review?: { solving?: string; done?: string; notes?: string; evidence?: { file: string; caption: string }[] };
+  /** A request's decisions (issue #502): several questions on one page, each answered. */
+  decisions?: { key: string; title: string; issue?: string; options: QuestionOption[]; opinions?: Opinion[] }[];
+  /** A request asks for Accepted / Changes needed (issue #502); a review implies it. */
+  sign_off?: boolean;
   about_question?: number;
   about_request?: string;
   sources?: SourceInput[];
@@ -324,15 +329,57 @@ function orderCommandText(c: OrderCommandDetails): string {
   return `**Order for Ledung**: answering "${c.confirm}" confirms an order that lets ${c.match === 'exact' ? 'exactly this command' : 'commands of this pattern (`*` is any text; one plain command only)'} run without a prompt:\n\n${fence}\n${c.command}\n${fence}`;
 }
 
-/** What a review doesn't take besides its own sections: opinions and checks go in its notes, files in its evidence (docs/steps/pr-review.md). */
-const NOT_IN_A_REVIEW: (keyof AskArgs)[] = ['question', 'options', 'issue', 'evidence', 'opinions', 'recommended', 'why', 'reviewer', 'screenshots', 'about_request', 'order_command'];
+/**
+ * What a review doesn't take besides its own sections: checks go in its notes, files in its evidence (docs/steps/pr-review.md).
+ * Since #502 a review may carry screenshots to judge, decisions and opinions on the sign-off: it becomes a request.
+ */
+const NOT_IN_A_REVIEW: (keyof AskArgs)[] = ['question', 'options', 'issue', 'evidence', 'recommended', 'why', 'reviewer', 'about_request', 'order_command'];
+/** What a request with decisions doesn't take at the top: they belong inside a decision (issue #502). */
+const NOT_WITH_DECISIONS: (keyof AskArgs)[] = ['options', 'recommended', 'why', 'reviewer', 'about_request', 'order_command'];
+
+/** A request's parts checked (issue #502): decisions, a sign-off, the files' limit. Throws what to do instead. */
+function requestParts(a: AskArgs): { decisions?: Decision[]; opinions?: Opinion[] } {
+  const signs = !!(a.review || a.sign_off);
+  const shots = a.screenshots?.length ?? 0;
+  const files = shots + (a.review?.evidence?.length ?? 0);
+  if (files > MAX_REQUEST_FILES) throw new Error(`A request holds at most ${MAX_REQUEST_FILES} files, screenshots and evidence files together; this has ${files}. Split it into two requests. Nothing was asked.`);
+  // Opinions on the whole request sit above the sign-off's buttons; they pick nothing (design, "What it does").
+  if (signs && a.opinions?.some((o) => o.pick !== undefined)) {
+    throw new Error(`Opinions beside a ${a.review ? 'review' : 'sign-off'} are views on the whole request and pick no option: leave out pick, or put the opinion inside the decision it picks for. Nothing was asked.`);
+  }
+  if (a.sign_off && !a.review) {
+    const extra = (['options', 'recommended', 'why', 'reviewer', 'about_request', 'order_command'] as const).filter((k) => a[k] !== undefined);
+    if (extra.length) throw new Error(`A sign-off takes no ${extra.join(', ')}: put any question beside it in decisions. Nothing was asked.`);
+    if (!a.title?.trim() && !a.issue?.trim()) throw new Error('A sign-off needs title or issue, so it never arrives without its context. Nothing was asked.');
+  }
+  if (!a.decisions?.length) return { opinions: signs && a.opinions?.length ? a.opinions : undefined };
+  const extra: string[] = NOT_WITH_DECISIONS.filter((k) => a[k] !== undefined);
+  if (!signs && a.opinions !== undefined) extra.push('opinions');
+  if (extra.length) throw new Error(`With decisions, give ${extra.join(', ')} inside each decision instead (its options and opinions), not at the top. Nothing was asked.`);
+  if (a.decisions.length > MAX_DECISIONS) throw new Error(`A request holds at most ${MAX_DECISIONS} decisions; this has ${a.decisions.length}. Split it into two requests. Nothing was asked.`);
+  if (a.decisions.length === 1 && !signs && !shots) {
+    throw new Error('One decision alone is an ordinary question: give its options, opinions and title at the top. decisions is for two or more, or for one beside a review, a sign-off or screenshots. Nothing was asked.');
+  }
+  if (!a.title?.trim() && !a.issue?.trim() && !a.review) throw new Error('A request with decisions needs title or issue: what the request as a whole is about. Nothing was asked.');
+  const keys = a.decisions.map((x) => x.key);
+  if (new Set(keys).size !== keys.length) throw new Error('Each decision needs its own key. Nothing was asked.');
+  const decisions = a.decisions.map((x): Decision => {
+    if (!DECISION_KEY.test(x.key)) throw new Error(`Decision key "${x.key}" is not a short key: lower-case letters, digits and "-", e.g. "d1" or "layout". Nothing was asked.`);
+    if (!x.title?.trim()) throw new Error(`Decision "${x.key}" needs a title. Nothing was asked.`);
+    if (!Array.isArray(x.options) || x.options.length < 2) throw new Error(`Decision "${x.key}" needs at least two options. Nothing was asked.`);
+    const problem = detailsProblem({ options: x.options, opinions: x.opinions });
+    if (problem) throw new Error(`Decision "${x.key}": ${problem} Nothing was asked.`);
+    return { key: x.key, title: x.title.trim(), ...(x.issue?.trim() ? { issue: x.issue.trim() } : {}), options: x.options, ...(x.opinions?.length ? { opinions: x.opinions } : {}) };
+  });
+  return { decisions, opinions: signs && a.opinions?.length ? a.opinions : undefined };
+}
 
 /** A review's fields, checked: its sections can't be missing, so a review never arrives without its context. */
 function reviewDetails(a: AskArgs): QuestionDetails {
   const r = a.review!;
   const extra = NOT_IN_A_REVIEW.filter((k) => a[k] !== undefined);
   if (extra.length) {
-    throw new Error(`A review takes title, review, tier, rank and refs, not ${extra.join(', ')}: opinions and what was checked go in review.notes, files in review.evidence. Nothing was asked.`);
+    throw new Error(`A review takes title, review, tier, rank and refs (and, as a request, screenshots, decisions and opinions without a pick), not ${extra.join(', ')}: what was checked goes in review.notes, files in review.evidence, questions in decisions. Nothing was asked.`);
   }
   const missing = [!a.title?.trim() && 'title', !r.solving?.trim() && 'review.solving', !r.done?.trim() && 'review.done'].filter(Boolean);
   if (missing.length) throw new Error(`A review needs ${missing.join(' and ')}, so it never arrives without its context. Nothing was asked.`);
@@ -340,7 +387,8 @@ function reviewDetails(a: AskArgs): QuestionDetails {
   const review: ReviewDetails = {
     solving: r.solving!.trim(), done: r.done!.trim(), ...(r.notes?.trim() ? { notes: r.notes.trim() } : {}), ...(evidence.length ? { evidence } : {}),
   };
-  const details: QuestionDetails = { title: a.title!.trim(), review, tier: a.tier, rank: a.rank, refs: a.refs };
+  const { decisions, opinions } = requestParts(a);
+  const details: QuestionDetails = { title: a.title!.trim(), review, decisions, opinions, tier: a.tier, rank: a.rank, refs: a.refs };
   for (const k of Object.keys(details) as (keyof QuestionDetails)[]) if (details[k] === undefined) delete details[k];
   return details;
 }
@@ -355,6 +403,18 @@ export function askedQuestion(a: AskArgs): { question: string; options: string[]
     const details = reviewDetails(a);
     return { question: questionText(undefined, details), options: null, details };
   }
+  // A request (issue #502): decisions, or a sign-off of its own. A call without them never gets here, so it comes out as before.
+  if (a.decisions?.length || a.sign_off) {
+    const { decisions, opinions } = requestParts(a);
+    const details: QuestionDetails = {
+      title: a.title?.trim() || undefined, issue: a.issue, evidence: a.evidence, decisions, signOff: a.sign_off || undefined, opinions,
+      tier: a.tier, rank: a.rank, refs: a.refs,
+    };
+    for (const k of Object.keys(details) as (keyof QuestionDetails)[]) if (details[k] === undefined) delete details[k];
+    return { question: questionText(a.question, details), options: null, details };
+  }
+  // Screenshots beside top-level options stay today's screenshot question (its options shown, the verdicts the answer).
+  requestParts(a);
   const given = a.options?.length && typeof a.options[0] !== 'string' ? a.options as QuestionOption[] : undefined;
   const order = a.order_command ? orderCommandDetails(a, given) : undefined;
   const objects = order ? order.objects : given;
@@ -507,21 +567,50 @@ export function ledungToolServer(h: ToolHandlers, describe?: DescribeTools): Mcp
   const askStep = async (args: AskArgs): Promise<string> => {
     if (!step) throw new Error('Your project follows no workflow here, so ask_user takes no run. Nothing was asked.');
     if (!args.run?.trim() || !args.block?.trim()) throw new Error('Give both run and block: the run and the person block it waits at, as Ledung named them. Nothing was asked.');
-    const extra = (['about_question', 'about_request', 'order_command', 'screenshots'] as const).filter((k) => args[k] !== undefined);
+    const extra = (['about_question', 'about_request', 'order_command'] as const).filter((k) => args[k] !== undefined);
     if (extra.length) throw new Error(`A run's person step is asked without ${extra.join(', ')}. Nothing was asked.`);
-    const checked = await step.writeUp({ run: args.run.trim(), block: args.block.trim(), review: !!args.review, options: args.options });
+    // Exactly one block moves the run (D6, issue #502): the sign-off at a review step, else the one decision whose options
+    // carry outcomes. Everything else on the page reaches the coordinator with the answer, as information.
+    const moving = args.decisions?.length ? movingDecisions(args as { decisions: Decision[] }) : [];
+    if (args.review && moving.length) {
+      throw new Error(`At a review step the sign-off moves the run: decision "${moving[0]!.key}" gives its options outcomes, which only a question step takes. Leave out its outcomes. Nothing was asked.`);
+    }
+    // A sign-off moves only a review step; at a question step it would sit beside the deciding decision as a second
+    // verdict that moves nothing (code review of PR #504, finding 1). The words don't name the step's kind: this runs
+    // before writeUp looks it up, and the call may be at either (code review round 2, point B).
+    if (!args.review && args.sign_off) {
+      throw new Error("sign_off without review can't move a run: at a review step give review (its sign-off moves the run); at a question step leave out sign_off (one decision moves the run). Nothing was asked.");
+    }
+    // Screenshots at a question step: the page judges them, so the options that move the run go in one decision (finding 2).
+    if (!args.review && args.screenshots?.length && !args.decisions?.length) {
+      throw new Error('With screenshots at a question step, give the outcome options in one decision (decisions), not as options at the top. Nothing was asked.');
+    }
+    if (!args.review && args.decisions?.length && moving.length !== 1) {
+      throw new Error(moving.length
+        ? `Only one decision may move the run, but ${moving.map((x) => `"${x.key}"`).join(' and ')} give their options outcomes. Keep the outcomes on one; the others are information for the coordinator. Nothing was asked.`
+        : 'At a question step one decision moves the run: give the options of exactly one decision their outcomes. Nothing was asked.');
+    }
+    const checked = await step.writeUp({ run: args.run.trim(), block: args.block.trim(), review: !!args.review, options: moving[0]?.options ?? args.options });
+    const decisions = moving.length
+      ? args.decisions!.map((x) => (x.key === moving[0]!.key ? { ...x, options: checked.options as QuestionOption[] } : x))
+      : args.decisions;
     // The step says the tier (#351): a review and a question are not all "Blocks a finished PR", whatever is given.
-    const asked = askedQuestion({ ...args, tier: checked.tier, options: checked.options as AskArgs['options'] });
+    const asked = askedQuestion({ ...args, tier: checked.tier, ...(moving.length ? { decisions } : { options: checked.options as AskArgs['options'] }) });
     const details: QuestionDetails = { ...asked.details, run: checked.tag };
     const evidence = details.review?.evidence ?? [];
-    if (h.keepFiles && evidence.length) {
-      const kept = await h.keepFiles(evidence.map((e) => ({ file: e.file, as: 'evidence' as const })));
+    let shots = args.screenshots;
+    if (h.keepFiles && (evidence.length || shots?.length)) {
+      const kept = await h.keepFiles([
+        ...evidence.map((e) => ({ file: e.file, as: 'evidence' as const })),
+        ...(shots ?? []).map((s) => ({ file: s.file.trim().replace(/\\/g, '/'), as: 'shot' as const })),
+      ]);
       evidence.forEach((e, i) => { e.file = kept[i]!; });
+      shots = shots?.map((s, i) => ({ ...s, file: kept[evidence.length + i]! }));
     }
     const sources = args.sources?.length && h.attach ? await h.attach(args.sources) : null;
-    const q = h.ask(asked.question, asked.options, null, null, details, undefined, sources);
+    const q = h.ask(asked.question, asked.options, null, null, details, shots, sources);
     step.asked(q);
-    const kind = details.review ? 'Review' : 'Question';
+    const kind = details.decisions?.length || details.signOff || (details.review && q.shots?.length) ? 'Request' : details.review ? 'Review' : 'Question';
     return `${kind} #${q.id}, "${checked.tag.blockTitle}" of ${checked.tag.run}, is recorded and has gone to ${who}.${failedSourcesNote(q.sources)} ` +
       `${who}'s answer moves the run by itself, and you are told where it went; don't report it with flow_step. End your turn now; don't wait or poll.`;
   };
@@ -535,7 +624,8 @@ export function ledungToolServer(h: ToolHandlers, describe?: DescribeTools): Mcp
         `${who}'s Waiting for you shows them as a question page, groups questions by tier and orders them by rank. ` +
         `Every question must be self-contained: fill issue with the context someone needs who has not followed your work, and evidence with what you checked, not just a bare question; it is read without the conversation, often later or on a phone. With issue you may leave out question. ` +
         `When it points at something said elsewhere (a session's report, a PR or review comment, an earlier question), attach it with sources: Ledung fetches it itself and shows it word for word on the question page, so you need not copy it into issue or evidence; a summary or "the 12 points in the attached report" is enough. ` +
-        `To have ${who} sign off a finished change (does it solve the problem, does it look right), give review instead: what we were solving, what was done, notes and evidence files.` +
+        `To have ${who} sign off a finished change (does it solve the problem, does it look right), give review instead: what we were solving, what was done, notes and evidence files. ` +
+        `Parts combine into one request on one page: a review or sign_off, screenshots and several decisions.` +
         (stepAsk ? ` At a run's person step, give run and block, and each option the outcome it leads to (a review step: review); ${who}'s answer then moves the run.` : ''),
       {
         question: z.string().min(1).optional().describe('The question in Markdown. Self-contained: what you are working on, what needs deciding, your recommendation. May be left out when issue is given.'),
@@ -594,8 +684,24 @@ export function ledungToolServer(h: ToolHandlers, describe?: DescribeTools): Mcp
           })).min(1).max(MAX_REVIEW_EVIDENCE).optional().describe('Files that demonstrate the change, images up to 5 MB, text up to 512 KB; each is checked when you ask. No verdict per file.'),
         }).optional().describe(
           `Ask for a review instead of a question: ${who}'s functional sign-off on a finished change, shown on a page of its own. Give title, review and tier (normally "Blocks a finished PR"), and refs; ` +
-            `no question, issue, evidence, options, opinions or screenshots. The answer is "Accepted." with an optional note, or "Changes needed:" with what to change.`,
+            `no question, issue, evidence or options. The answer is "Accepted." with an optional note, or "Changes needed:" with what to change. ` +
+            `It may also carry screenshots to judge, decisions, and opinions without a pick (views on the whole change); it is then answered as one request.`,
         ),
+        decisions: z.array(z.object({
+          key: z.string().min(1).max(20).describe('A short key, e.g. "d1" or "layout".'),
+          title: z.string().min(1).max(200).describe('The decision in one line.'),
+          issue: z.string().min(1).optional().describe('What needs deciding and why, short, in Markdown; the request\'s issue holds the shared context.'),
+          options: z.array(stepAsk ? OPTION_OBJECT : OPTION_OBJECT.omit({ outcome: true }) as unknown as typeof OPTION_OBJECT).min(2).max(8),
+          opinions: z.array(z.object({
+            who: z.string().min(1).max(80),
+            pick: z.string().min(1).optional(),
+            why: z.string().min(1).optional(),
+          })).max(20).optional().describe('Views on this decision; pick is one of its option keys.'),
+        })).min(1).max(6).optional().describe(
+          `Several questions on one page, each answered (a request): 2–6, or 1 beside review, sign_off or screenshots. With decisions, options and opinions go inside each decision, not at the top. ` +
+          `${who} answers them all at once; the answer lists each decision's pick on its own line.` + (stepAsk ? ' At a question step, exactly one decision gives its options outcomes: that one moves the run.' : ''),
+        ),
+        sign_off: z.boolean().optional().describe(`Ask for Accepted / Changes needed on the whole request, without a review's sections (give title or issue). A review implies it.`),
         sources: z.array(z.union([
           z.object({
             reply: z.string().min(1).describe('Your own session or one of your sessions, by title or id.'),
@@ -631,14 +737,22 @@ export function ledungToolServer(h: ToolHandlers, describe?: DescribeTools): Mcp
       },
       async (args: AskArgs) => {
         if (args.run !== undefined || args.block !== undefined) return safely(() => askStep(args));
-        if (Array.isArray(args.options) && args.options.some((o) => typeof o !== 'string' && o.outcome !== undefined)) {
+        const outcomes = (os: unknown) => Array.isArray(os) && os.some((o) => typeof o !== 'string' && (o as QuestionOption).outcome !== undefined);
+        if (outcomes(args.options) || args.decisions?.some((x) => outcomes(x.options))) {
           return safely(() => { throw new Error("An option's outcome goes with run and block, at a run's person step. Nothing was asked."); });
         }
         if (args.about_request && !args.review) {
           return safely(() => {
             if (args.order_command) throw new Error('order_command goes with a question of your own, not with about_request. Nothing was asked.');
+            // Ledung writes this question itself, so a request's parts can't go with it (#502): refused, never dropped silently.
+            if (args.decisions !== undefined || args.sign_off !== undefined) {
+              throw new Error('decisions and sign_off go with a request of your own, not with about_request, which Ledung writes itself. Nothing was asked.');
+            }
             const q = h.ask(args.question ?? args.issue ?? '', null, args.about_question ?? null, args.about_request, { tier: args.tier, rank: args.rank, refs: args.refs });
-            return `Question #${q.id} about request ${args.about_request} is recorded and has gone to ${h.asksWhom}. Ledung applies the answer to the request itself and tells you. End your turn now.`;
+            // Accepted before #502 and still accepted, but the reply now says what Ledung's own text leaves out.
+            const left = [args.screenshots?.length ? 'screenshots' : '', args.sources?.length ? 'sources' : ''].filter(Boolean);
+            const leftOut = left.length ? ` Its ${left.join(' and ')} were left out: a question about a request shows only the request and your note.` : '';
+            return `Question #${q.id} about request ${args.about_request} is recorded and has gone to ${h.asksWhom}.${leftOut} Ledung applies the answer to the request itself and tells you. End your turn now.`;
           });
         }
         return safely(async () => {
@@ -656,6 +770,10 @@ export function ledungToolServer(h: ToolHandlers, describe?: DescribeTools): Mcp
           const sources = args.sources?.length && h.attach ? await h.attach(args.sources) : null;
           const q = h.ask(asked.question, asked.options, args.about_question ?? null, null, asked.details, shots, sources);
           const unattached = failedSourcesNote(q.sources);
+          if (q.details && isRequest(q)) {
+            return `Request #${q.id} (${requestKinds(q).join(', ')}) is recorded and has gone to ${h.asksWhom}.${unattached} ` +
+              `It is answered on one page, every part at once; the answer arrives as one message, part by part. End your turn now; don't wait or poll.`;
+          }
           if (asked.details?.review) {
             const n = q.details?.review?.evidence?.length ?? 0;
             return `Review #${q.id}${n ? ` with ${n} evidence file${n === 1 ? '' : 's'}` : ''} is recorded and has gone to ${h.asksWhom}.${unattached} ` +

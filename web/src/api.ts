@@ -1,5 +1,6 @@
 // Calls to Ledung's API. The sign-in cookie goes along automatically.
 import type { Macro } from '../../src/shared/macros.ts';
+import type { AnswerParts } from '../../src/shared/requests.ts';
 import type { JobActionResult, JobReach } from '../../src/shared/job-notes.ts';
 import type {
   AwayInfo, AwayKind, BoardOwnersView, BoardPeopleView, BoardRepoChoicesView, BoardStatus, BoardThreadsView, BoardThreadView, ProjectBoardView,
@@ -378,6 +379,13 @@ export const api = {
   overview: () => call<Overview>('GET', '/api/overview'),
   answerQuestion: (id: number, answer: string) => call<QuestionInfo>('POST', `/api/questions/${id}/answer`, { answer }),
   withdrawQuestion: (id: number) => call('POST', `/api/questions/${id}/withdraw`, {}),
+  /** A request's answer as its parts (issue #502); Ledung writes the text the asker reads. */
+  answerRequest: (id: number, parts: AnswerParts) => call<QuestionInfo>('POST', `/api/questions/${id}/answer`, { parts }),
+  /** A request's draft, kept in Ledung so it follows the person between devices (issue #502, D4). */
+  requestDraft: (id: number) => call<{ data: unknown; at: number | null }>('GET', `/api/questions/${id}/draft`),
+  /** Kept only over `base`, the version read last; else `stale` with the newer one (acceptance round 2). */
+  saveRequestDraft: (id: number, data: unknown, base: number | null) =>
+    call<{ ok: true; at: number } | { ok: false; stale: true; data: unknown; at: number | null }>('POST', `/api/questions/${id}/draft`, { data, base }),
   /** One whole question: older Waiting for you history comes without what it refers to (issue #306). */
   question: (id: number) => call<QuestionInfo>('GET', `/api/questions/${id}`),
   /** Waiting for you history, light, and the sessions it names (issue #306): read when the view opens. */

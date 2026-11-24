@@ -54,8 +54,10 @@ const touch = () => mediaBodies('(pointer: coarse)').join('\n');
 
 test('every Waiting for you page carries the class the touch-screen sizes hang on', () => {
   const view = read('web/src/components/WaitingView.tsx');
-  // The queue, the question, review and screenshot pages and the not-found page: five roots, none without it.
-  assert.equal(view.match(/className="waiting-view desk-view"/g)?.length, 5);
+  // The queue, the question and review pages Ledung's own questions keep, and the not-found page: four roots, none
+  // without it (the screenshot page went in #502, D2). The request page carries it too.
+  assert.equal(view.match(/className="waiting-view desk-view"/g)?.length, 4);
+  assert.match(read('web/src/components/RequestPage.tsx'), /className="waiting-view desk-view request-view"/);
   assert.equal(view.match(/className="waiting-view"/g), null);
 });
 
@@ -88,8 +90,8 @@ test('text written out for a touch screen is hidden with a mouse and shown on a 
   assert.equal(valueFor(touch(), '.touch-only', 'display'), 'revert');
   const view = read('web/src/components/WaitingView.tsx');
   // The tags on an option's border cut long names short: "Picked by" names them in full, on a touch screen only
-  // when the tags are drawn, always when they are not.
-  assert.match(view, /<span className=\{`picked-by\$\{split \? ' touch-only' : ''\}`\}><b>Picked by<\/b>/);
+  // when the tags are drawn, always when they are not. The desk's options are one component since #502.
+  assert.match(read('web/src/components/OptionsDesk.tsx'), /<span className=\{`picked-by\$\{split \? ' touch-only' : ''\}`\}><b>Picked by<\/b>/);
   // What the "plain question" chip's tooltip says.
   assert.match(view, /<span className="muted touch-only">· asked with text and option labels only<\/span>/);
 });

@@ -22,6 +22,7 @@ import type { AwayRecord } from '../sessions/away.ts';
 import { isAskUser, quietTexts, type TurnEntry } from '../shared/quiet-reply.ts';
 import { elevates, raisesUac } from '../shared/elevation.ts';
 import { COPY_REFS, lightQuestion, type QuestionDetails } from '../shared/questions.ts';
+import type { AnswerParts } from '../shared/requests.ts';
 import type { OrderInfo, OrderStatus } from '../shared/orders.ts';
 import type { WaitingLine } from '../shared/waiting-line.ts';
 import { trimForStorage } from './trim.ts';
@@ -130,6 +131,7 @@ function toQuestion(r: Row): QuestionInfo {
     forwardedFrom: r.forwarded_from == null ? null : Number(r.forwarded_from),
     aboutRequest: r.about_request ?? null,
     details: r.details ? JSON.parse(r.details) : null,
+    ...(r.answer_parts ? { answerParts: JSON.parse(r.answer_parts) } : {}),
     shots: r.shots ? JSON.parse(r.shots) : null,
     original: null,
     earlier: r.earlier ? JSON.parse(r.earlier) : null,
@@ -845,11 +847,41 @@ export class Store {
    * verbatim by a manager. `here`: the user answered on this computer, not through the public name (issue #263).
    * Returns false if the question was no longer open.
    */
-  answerQuestion(id: number, answer: string, by: string, forwardedFrom: number | null = null, here = false): boolean {
+  answerQuestion(id: number, answer: string, by: string, forwardedFrom: number | null = null, here = false, parts: AnswerParts | null = null): boolean {
     const r = this.db
-      .prepare(`UPDATE questions SET status = 'answered', answer = ?, answered_at = ?, answered_by = ?, forwarded_from = ?, answered_here = ? WHERE id = ? AND status = 'open'`)
-      .run(this.blank.text(answer), Date.now(), by, forwardedFrom, here ? 1 : 0, id);
+      .prepare(`UPDATE questions SET status = 'answered', answer = ?, answered_at = ?, answered_by = ?, forwarded_from = ?, answered_here = ?, answer_parts = ? WHERE id = ? AND status = 'open'`)
+      .run(this.blank.text(answer), Date.now(), by, forwardedFrom, here ? 1 : 0, parts ? this.json(parts) : null, id);
+    if (Number(r.changes) === 1) this.dropRequestDraft(id);
     return Number(r.changes) === 1;
+  }
+
+  // --- Request drafts (issue #502, D4) ------------------------------------------------------------------------
+
+  /** The person's draft of an open request, as the page left it; blanked like everything stored. Null: none. */
+  requestDraft(questionId: number): { data: unknown; at: number } | null {
+    const r = this.db.prepare('SELECT data, at FROM request_drafts WHERE question_id = ?').get(questionId) as { data: string; at: number } | undefined;
+    return r ? { data: JSON.parse(r.data), at: Number(r.at) } : null;
+  }
+
+  /**
+   * Keeps the draft of an open request and returns its new version (its time, always later than the one it replaces);
+   * false when the question is not open any more (nothing kept). With `base`, the version the page read (null: none
+   * yet), it is kept only over that version, else 'stale' and nothing changes: a page left open on one device must
+   * never save its old copy over what another device did since (acceptance round 2).
+   */
+  saveRequestDraft(questionId: number, data: unknown, base?: number | null, now = Date.now()): number | false | 'stale' {
+    const open = this.db.prepare(`SELECT 1 FROM questions WHERE id = ? AND status = 'open'`).get(questionId);
+    if (!open) return false;
+    const prev = this.db.prepare('SELECT at FROM request_drafts WHERE question_id = ?').get(questionId) as { at: number } | undefined;
+    if (base !== undefined && (prev ? Number(prev.at) : null) !== base) return 'stale';
+    const at = prev ? Math.max(now, Number(prev.at) + 1) : now;
+    this.db.prepare('INSERT INTO request_drafts (question_id, data, at) VALUES (?, ?, ?) ON CONFLICT(question_id) DO UPDATE SET data = excluded.data, at = excluded.at')
+      .run(questionId, this.json(data), at);
+    return at;
+  }
+
+  dropRequestDraft(questionId: number): void {
+    this.db.prepare('DELETE FROM request_drafts WHERE question_id = ?').run(questionId);
   }
 
   // --- Allow always (issue #225) -------------------------------------------------------------------------------
@@ -910,6 +942,7 @@ export class Store {
     const r = this.db
       .prepare(`UPDATE questions SET status = 'withdrawn', withdrawn_reason = ?, answered_at = ? WHERE id = ? AND status = 'open'`)
       .run(reason, Date.now(), id);
+    if (Number(r.changes) === 1) this.dropRequestDraft(id);
     return Number(r.changes) === 1;
   }
 

@@ -2096,7 +2096,8 @@ export class Session {
       details = { ...details, review: { ...review, evidence: this.management.reviewEvidence(this.id, review.evidence) } };
       question = questionText(undefined, details);
     }
-    const shots = aboutRequest || review ? null : this.management.screenshots(this.id, shotInput, aboutQuestion);
+    // A review keeps its screenshots: since #502 the two make one request (acceptance round 1 found them dropped here).
+    const shots = aboutRequest ? null : this.management.screenshots(this.id, shotInput, aboutQuestion);
     // What it had just before asking, kept with the question so "the points above" stay on its page (issue #368);
     // left out when it attached what it points at (issue #369), unless none of that could be fetched.
     const attached = !!sources?.some((s) => !('error' in s));

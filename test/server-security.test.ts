@@ -71,6 +71,7 @@ let keepQuestion = 0;
 let confirmQuestion = 0;
 let orderCommandQuestion = 0;
 let managerQuestion = 0;
+let managerRequest = 0;
 let paneStore: Store;
 /** The folders Settings' Open folder was asked to show (issue #414); nothing is opened for real. */
 const openedFolders: string[] = [];
@@ -153,6 +154,11 @@ before(async () => {
   const mq = store.createQuestion({ sessionId: 'm1', question: 'merge #1?', options: null, addressedTo: 'user' });
   store.withdrawQuestion(mq.id, 'test');
   managerQuestion = mq.id;
+  // An open request it asked (issue #502): its draft is read with the cookie, written from the open page.
+  managerRequest = store.createQuestion({
+    sessionId: 'm1', question: 'two things', options: null, addressedTo: 'user',
+    details: { title: 'Two things', decisions: [{ key: 'a', title: 'A?', options: [{ key: 'a', text: 'Yes' }, { key: 'b', text: 'No' }] }, { key: 'b', title: 'B?', options: [{ key: 'a', text: 'Yes' }, { key: 'b', text: 'No' }] }] },
+  }).id;
   // A session with its own folder inside the project (start_session's cwd, decision of 2026-10-14).
   fs.mkdirSync(path.join(projectRoot, 'wt'));
   fs.writeFileSync(path.join(projectRoot, 'wt', 'b.png'), fs.readFileSync(path.join(projectRoot, 'a.png')));
@@ -1259,6 +1265,75 @@ test("words that reach a manager as the user's own need the live page", async ()
     }
   } finally {
     page.close();
+  }
+});
+
+// A request's draft (issue #502, D4; acceptance round 1): the page sends its key only on changes, so the read needs
+// only the sign-in, as reading the question does; the write is the person's own words to a manager, so it needs the page.
+test("a manager's request: its draft is read with the cookie and written only from the live page", async () => {
+  const draft = `/api/questions/${managerRequest}/draft`;
+  assert.equal((await request({ path: draft })).status, 401, 'no cookie');
+  const empty = await request({ path: draft, headers: { cookie: COOKIE } });
+  assert.equal(empty.status, 200, empty.body);
+  assert.deepEqual(JSON.parse(empty.body), { data: null, at: null });
+  const data = { decisions: { a: { pick: 'b' } }, signOff: { note: '' }, judged: {}, note: '' };
+  const refused = await change(draft, { data });
+  assert.equal(refused.status, 403);
+  assert.match(errorOf(refused), /open page/);
+  const page = await livePage();
+  try {
+    assert.equal((await change(draft, { data }, { 'x-ledung-page': page.key })).status, 200);
+  } finally {
+    page.close();
+  }
+  const back = await request({ path: draft, headers: { cookie: COOKIE } });
+  assert.deepEqual(JSON.parse(back.body).data, data, 'read back on another device, which sends no page key');
+  assert.equal((await request({ path: `/api/questions/${managerQuestion}/draft`, headers: { cookie: COOKIE } })).status, 404, 'not a request');
+});
+
+// Two pages of one request open at once, the PC's and the phone's (issue #502, D4; acceptance round 2: the PC's page
+// left open saved its old copy over the phone's pick). A save is kept only over the version it was made from; one made
+// over an older version is refused with the newer one, and each kept version is told to every open page, number and time
+// only.
+test("a request's draft open on two devices: a stale save is refused with the newer version, and open pages are told", async () => {
+  const draft = `/api/questions/${managerRequest}/draft`;
+  const open = (): Promise<{ key: string; events: { type: string }[]; close(): void }> => new Promise((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`, { headers: { cookie: COOKIE, origin: ORIGIN } });
+    const events: { type: string }[] = [];
+    ws.on('message', (data) => {
+      const e = JSON.parse(String(data));
+      if (e.type === 'hello') resolve({ key: e.pageKey, events, close: () => ws.close() });
+      else events.push(e);
+    });
+    ws.on('error', reject);
+  });
+  const [pc, phone] = [await open(), await open()];
+  try {
+    const read = JSON.parse((await request({ path: draft, headers: { cookie: COOKIE } })).body) as { data: unknown; at: number | null };
+    const pcCopy = { decisions: { release: { pick: 'b' } }, signOff: { note: '' }, judged: {}, note: '' };
+    const saved = await change(draft, { data: pcCopy, base: read.at }, { 'x-ledung-page': pc.key });
+    const first = JSON.parse(saved.body) as { ok: boolean; at: number };
+    assert.equal(first.ok, true, saved.body);
+    // The phone read that version and picks "Today".
+    const phoneCopy = { ...pcCopy, decisions: { release: { pick: 'a' } } };
+    const second = JSON.parse((await change(draft, { data: phoneCopy, base: first.at }, { 'x-ledung-page': phone.key })).body) as { ok: boolean; at: number };
+    assert.equal(second.ok, true);
+    assert.ok(second.at > first.at, 'a later version');
+    // The PC's page, still on the first version, types a note: refused, with the phone's version to lay it over.
+    const stale = await change(draft, { data: { ...pcCopy, note: 'ship it' }, base: first.at }, { 'x-ledung-page': pc.key });
+    assert.equal(stale.status, 200);
+    assert.deepEqual(JSON.parse(stale.body), { ok: false, stale: true, data: phoneCopy, at: second.at });
+    assert.deepEqual(JSON.parse((await request({ path: draft, headers: { cookie: COOKIE } })).body).data, phoneCopy, "the phone's pick stays");
+    // A save that says no version was read is stale too once one is kept.
+    assert.equal(JSON.parse((await change(draft, { data: pcCopy, base: null }, { 'x-ledung-page': pc.key })).body).stale, true);
+    await new Promise((r) => setTimeout(r, 100));
+    for (const page of [pc, phone]) {
+      const told = page.events.filter((e) => e.type === 'requestDraft');
+      assert.deepEqual(told, [{ type: 'requestDraft', questionId: managerRequest, at: first.at }, { type: 'requestDraft', questionId: managerRequest, at: second.at }], 'each kept version, to every page, never the draft');
+    }
+  } finally {
+    pc.close();
+    phone.close();
   }
 });
 

@@ -28,6 +28,7 @@ import { capTurnCores, typicalCosts } from '../resources/typical.ts';
 import { BoardError } from '../board/types.ts';
 import type { ProjectConfig } from '../config.ts';
 import type { DesktopAppInfo, Overview, Priority, UsageFilter, UsagePeriod } from '../shared/protocol.ts';
+import { isRequest, type AnswerParts } from '../shared/requests.ts';
 import type { SecretLifetime } from '../shared/secrets.ts';
 import { levelProblem, NO_LOCKDOWN } from '../projects/lockdown.ts';
 import { CertificateFiles } from './tunnel-tls.ts';
@@ -2641,7 +2642,32 @@ export class LedungServer {
         if ((about && store.getPermission(about)?.sensitive) || question?.details?.refusal || question?.details?.order || question?.details?.orderCommand) await this.requirePage(req, url);
         else this.requirePageForManager(req, question?.sessionId);
         const body = await readJson(req);
-        return manager.answerQuestion(Number(id), String(body.answer ?? ''), !this.guard.isPublic(req));
+        // A request page's answer comes as its parts (issue #502); Ledung writes the text from them.
+        const answerParts = body.parts && typeof body.parts === 'object' && !Array.isArray(body.parts) ? body.parts as AnswerParts : null;
+        return manager.answerQuestion(Number(id), String(body.answer ?? ''), !this.guard.isPublic(req), answerParts);
+      }
+      // A request's draft (issue #502, D4): kept in Ledung so it follows the person between devices, and only for a
+      // request, which never carries a permission (design section 8). Read like the questions it belongs to, with the
+      // sign-in cookie (the page sends its key only on changes: acceptance round 1 found the read refused); written under
+      // the same rules as answering.
+      case 'GET questions/:id/draft':
+      case 'POST questions/:id/draft': {
+        const question = store.getQuestion(Number(id));
+        if (!question || !isRequest(question)) throw new HttpError(404, 'No such request.');
+        if (method === 'GET') return store.requestDraft(question.id) ?? { data: null, at: null };
+        this.requirePageForManager(req, question.sessionId);
+        const body = await readJson(req);
+        const text = JSON.stringify(body.data ?? null);
+        if (text.length > 200_000) throw new HttpError(413, 'The draft is too large.');
+        // `base` is the version the page last read: a save over a newer one is refused with that one, which the page lays
+        // its own changes over, part by part (acceptance round 2). A page from an earlier release sends none.
+        const base = typeof body.base === 'number' || body.base === null ? body.base as number | null : undefined;
+        const at = store.saveRequestDraft(question.id, body.data ?? null, base);
+        if (at === false) throw new HttpError(409, 'This request is no longer open.');
+        if (at === 'stale') return { ok: false, stale: true, ...(store.requestDraft(question.id) ?? { data: null, at: null }) };
+        // Every open page of it reads the new version at once: only the number and time go out, never the draft.
+        this.broadcast({ type: 'requestDraft', questionId: question.id, at });
+        return { ok: true, at };
       }
       // Orders on record (issue #105): the person cancels one on the page. It only takes a permission away.
       case 'POST orders/:id/cancel':
