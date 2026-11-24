@@ -89,7 +89,7 @@ test("ask_user without a tier, or with one not in its project's list, is refused
 
   const ok = await ask.call({ question: 'Ship it?', tier: 'housekeeping ' });
   assert.equal(ok.isError, undefined);
-  assert.deepEqual(store.listQuestions()[0]!.details, { tier: 'Housekeeping' }, "stored as the project spells it");
+  assert.equal(store.listQuestions()[0]!.details!.tier, 'Housekeeping', "stored as the project spells it");
 });
 
 test("a project's own list is the one that counts: the five are refused there", async () => {
@@ -114,7 +114,8 @@ test("a manager's questions need one too: its own, one about a session's questio
   assert.throws(() => mgr.ask('Allow?', null, null, 'no-such-request'), /Every question needs a tier/);
   assert.equal(store.listQuestions().length, 1, 'only the session question set up above');
   const q = mgr.ask('Forwarded', null, asked.id, null, { tier: 'Blocks a finished PR', rank: 2 });
-  assert.deepEqual(store.getQuestion(q.id)!.details, { tier: 'Blocks a finished PR', rank: 2 });
+  const stored = store.getQuestion(q.id)!.details!;
+  assert.deepEqual([stored.tier, stored.rank], ['Blocks a finished PR', 2]);
 });
 
 test("a manager's ask_user about a permission request is stored with its tier, and refused without one", async () => {

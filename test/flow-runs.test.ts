@@ -521,9 +521,12 @@ test('#291/#351 write-up: Ledung hands the step to the manager, which asks it as
   assert.equal(q.sessionId, 'manager-1');
   assert.equal(q.details!.issue, write.issue);
   assert.equal(q.details!.evidence, write.evidence);
-  assert.deepEqual(q.details!.opinions, write.opinions);
+  // Stored in blocks (#509): the options and opinions are the question's own decision's.
+  assert.equal(q.details!.options, undefined);
+  assert.deepEqual(q.details!.decisions!.map((x) => x.key), ['']);
+  assert.deepEqual(q.details!.decisions![0]!.opinions, write.opinions);
   // Each outcome in the flow's own spelling; the brief (process text, present in the reply above) nowhere on the question.
-  assert.deepEqual(q.details!.options!.map((o) => [o.key, o.outcome]), [['a', 'Go on'], ['b', 'Fix again']]);
+  assert.deepEqual(q.details!.decisions![0]!.options.map((o) => [o.key, o.outcome]), [['a', 'Go on'], ['b', 'Fix again']]);
   assert.doesNotMatch(JSON.stringify(q), /Two review rounds ended without a pass/);
   assert.deepEqual(q.details!.run, { run: 'run-1', block: 'decide', runTitle: 'Fix the cart total', blockTitle: 'Person decides', flow: 'main', writeUp: true });
   assert.equal(ports.runs.get('run-1')!.question, 1);

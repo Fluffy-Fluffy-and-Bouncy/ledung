@@ -22,6 +22,7 @@ import type { AwayRecord } from '../sessions/away.ts';
 import { isAskUser, quietTexts, type TurnEntry } from '../shared/quiet-reply.ts';
 import { elevates, raisesUac } from '../shared/elevation.ts';
 import { COPY_REFS, lightQuestion, type QuestionDetails } from '../shared/questions.ts';
+import { toBlocks } from '../shared/blocks.ts';
 import type { AnswerParts } from '../shared/requests.ts';
 import type { OrderInfo, OrderStatus } from '../shared/orders.ts';
 import type { WaitingLine } from '../shared/waiting-line.ts';
@@ -694,10 +695,12 @@ export class Store {
     sessionId: string; question: string; options: string[] | null; addressedTo: string; aboutQuestion?: number | null; aboutRequest?: string | null;
     details?: QuestionDetails | null; shots?: QuestionShot[] | null; earlier?: ConversationLine[] | null; sources?: AttachedSource[] | null;
   }): QuestionInfo {
+    // Stored in blocks, whatever fields it was asked with (#509): one shape for the page, the line, runs and tools.
+    const details = toBlocks({ question: q.question, options: q.options, details: q.details ?? null, aboutRequest: q.aboutRequest }) ?? q.details;
     const r = this.db
       .prepare('INSERT INTO questions (session_id, asked_at, question, options, addressed_to, status, about_question, about_request, details, shots, earlier, sources) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *')
       .get(q.sessionId, Date.now(), this.blank.text(q.question), q.options ? this.json(q.options) : null, q.addressedTo, 'open', q.aboutQuestion ?? null, q.aboutRequest ?? null,
-        q.details ? this.json(q.details) : null, q.shots?.length ? this.json(q.shots) : null, q.earlier ? this.json(q.earlier) : null,
+        details ? this.json(details) : null, q.shots?.length ? this.json(q.shots) : null, q.earlier ? this.json(q.earlier) : null,
         q.sources?.length ? this.json(q.sources) : null);
     return this.withOriginal(toQuestion(r!));
   }

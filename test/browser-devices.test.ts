@@ -143,7 +143,7 @@ test('a browser signed in before the update stays signed in through it: its #476
   before.close();
 
   const { store, request, list } = await serve(file);
-  assert.equal((store.database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 63);
+  assert.equal((store.database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 64);
   const rows = store.database.prepare('SELECT * FROM devices').all() as { cookie_hash: string; kind: string; name: string; revoked_at: number | null }[];
   assert.deepEqual(rows.map((r) => r.cookie_hash).sort(), [sha(kept), sha(other)].sort(), 'each sign-in is a row with the same hash; the two non-sign-ins are dropped');
   assert.ok(rows.every((r) => r.kind === 'browser' && r.revoked_at === null && r.name === 'Browser signed in before the update'));

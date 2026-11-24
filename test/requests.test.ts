@@ -16,6 +16,7 @@ import { lineOutcome, questionLine } from '../src/shared/waiting-line.ts';
 import { waitingItems } from '../web/src/notify.ts';
 import type { QuestionInfo, QuestionShot } from '../src/shared/protocol.ts';
 import { TODAY_CALLS } from './fixtures/ask-user-today.calls.ts';
+import { inBlocks } from '../src/shared/blocks.ts';
 import { waitingForYou } from '../src/sessions/waiting-tool.ts';
 import { draftParts, emptyRequestDraft, isEmptyDraft, nextOpen, openParts, readDraft, rebaseDraft, sameDraft } from '../web/src/requestDraft.ts';
 
@@ -108,11 +109,12 @@ test('bad mixes are refused, saying what to do instead', async () => {
 });
 
 /** A stored question as the page gets it. */
+/** A question as Ledung stores it: in blocks (#509), whatever fields it was asked with. */
 function stored(details: QuestionDetails | null, extra: Partial<QuestionInfo> = {}): QuestionInfo {
-  return {
+  return inBlocks({
     id: 2104, sessionId: 's', askedAt: 1, question: 'q', options: null, addressedTo: 'user', status: 'open', answer: null, answeredAt: null,
     answeredBy: null, aboutQuestion: null, forwardedFrom: null, aboutRequest: null, shots: null, deliveredAt: null, withdrawnReason: null, details, ...extra,
-  };
+  });
 }
 const shot = (path: string, group = 'Request page'): QuestionShot => ({ path, group, lookFor: 'x', doneWhen: null, facts: [], opinions: [] });
 
