@@ -2141,9 +2141,6 @@ button.link-button:hover:not(:disabled) { border: none; }
 .req-block .block { margin: 0; }
 .req-context { background: none; border: 0; padding: 0; }
 .req-head { margin: 0; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); display: flex; gap: 0.6rem; align-items: center; }
-.req-folded { flex-direction: row; align-items: center; gap: 0.6rem; padding: 0.5rem 0.9rem; }
-.req-folded .req-check { color: var(--ok); font-weight: 700; }
-.req-folded .req-folded-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .req-opinions { display: flex; flex-direction: column; gap: 0.35rem; font-size: 0.9em; }
 .req-opinion { border-left: 3px solid var(--ok); padding-left: 0.6rem; }
 .req-opinion .prose { color: var(--muted); }
@@ -2182,6 +2179,11 @@ button.link-button:hover:not(:disabled) { border: none; }
   .req-bar .send-pick.muted { font-weight: 400; }
   .req-bar .status { flex-basis: 100%; font-size: 0.85em; color: var(--danger); }
   .req-shot-thumbs .thumb { width: 72px; }
-  .req-folded .req-folded-text { white-space: normal; }
   .req-shot-thumbs .thumb img { height: 46px; }
 }
+/* Decisions stack as the question desk's options (Simon, 2026-11-24): no card of their own, a rule between them. */
+.req-decision { display: flex; flex-direction: column; gap: 0.7rem; min-width: 0; }
+.req-decision + .req-decision { border-top: 1px solid var(--border); padding-top: 0.9rem; }
+.req-decision .opts-block { margin-top: 0; }
+.req-decision .opts-block > h4 { font-size: 0.95rem; text-transform: none; letter-spacing: 0; color: var(--text); }
+.req-decision.req-question .opts-block > h4 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }

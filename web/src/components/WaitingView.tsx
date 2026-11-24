@@ -5,7 +5,7 @@
 // take the same path as the chat's question card.
 import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { CHATS, projectLabel, type ChatsInfo, type LinkPairingInfo, type NewComputerInfo, type PermissionInfo, type ProjectInfo, type QuestionInfo, type SessionInfo } from '../../../src/shared/protocol.ts';
-import { disagree, MAX_BORDER_PARTS, mergeTiers, type DeskOpinion } from '../../../src/shared/questions.ts';
+import { disagree, mergeTiers } from '../../../src/shared/questions.ts';
 import { findTickets } from '../../../src/shared/tickets.ts';
 import { api } from '../api.ts';
 import { conversationOf } from '../conversation.ts';
@@ -17,7 +17,8 @@ import { formatTime } from './MessageList.tsx';
 import { PermissionCard } from './PermissionCard.tsx';
 import { RefersTo } from './RefersTo.tsx';
 import { ReviewAnswer, ReviewEvidenceList, ReviewSections } from './ReviewView.tsx';
-import { ScreenshotView, shotCount } from './ScreenshotView.tsx';
+import { shotCount } from './ScreenshotView.tsx';
+import { OptionsDesk } from './OptionsDesk.tsx';
 import { RequestPage, toAnswerChip } from './RequestPage.tsx';
 import { isRequest } from '../../../src/shared/requests.ts';
 import { usePlainTyping } from '../usePlainTyping.ts';
@@ -152,14 +153,15 @@ export function WaitingView(props: {
       const next = rest[Math.max(0, list.findIndex((i) => i.q.id === id))] ?? forYou.find((i) => i.q.id !== id);
       props.onOpenQuestion(next ? next.q.id : null);
     };
-    // A question with screenshots opens straight into the screenshot view (issue #60); sending leaves it for the
-    // view it was opened from, not the next question (Martin, issue #92).
-    // A request (issue #502) opens on the request page. Today's three pages stay for the presets until Simon has approved
-    // side-by-side screenshots (D2); the switch below opens every preset on the request page too, for that comparison.
-    if (isRequest(current.q) || (requestPageForAll() && onRequestPage(current.q))) return <RequestPage key={current.q.id} ctx={ctx} item={current} list={list} onAnswered={after} />;
-    if (current.v.review) return <ReviewPage key={current.q.id} ctx={ctx} item={current} list={list} onAnswered={after} />;
-    if (current.q.shots) return <ShotPage key={current.q.id} ctx={ctx} item={current} list={list} onAnswered={props.onLeaveShots} />;
-    return <QuestionPage key={current.q.id} ctx={ctx} item={current} list={list} onAnswered={after} />;
+    // One page for every question, review and request (issue #502, D2: Simon approved it on 2026-11-24 after trying
+    // the preview). Ledung's own questions carry permissions and keep their own cards (design section 1, "Still
+    // alone"): a permission question, an order, a refused call, and a proposed workflow change with its diagrams.
+    const d = current.q.details;
+    if (current.q.aboutRequest || d?.refusal || d?.order || d?.orderCommand) return <QuestionPage key={current.q.id} ctx={ctx} item={current} list={list} onAnswered={after} />;
+    if (d?.flowProposal !== undefined && !isRequest(current.q)) return <ReviewPage key={current.q.id} ctx={ctx} item={current} list={list} onAnswered={after} />;
+    // Sending a screenshot question leaves it for the view it was opened from, not the next question (Martin, issue #92).
+    const shotsOnly = !!current.q.shots && !isRequest(current.q);
+    return <RequestPage key={current.q.id} ctx={ctx} item={current} list={list} onAnswered={shotsOnly ? () => props.onLeaveShots() : after} />;
   }
 
   return (
@@ -225,26 +227,6 @@ function useKeys(handler: (e: KeyboardEvent, inText: boolean) => void) {
     return () => document.removeEventListener('keydown', onKey);
   }, []);
 }
-
-/**
- * The switch for D2's comparison (issue #502): with localStorage "ledung-request-page" set to "all", today's questions,
- * reviews and screenshot questions open on the request page too. Off by default until Simon approves the screenshots.
- */
-export const REQUEST_PAGE_KEY = 'ledung-request-page';
-function requestPageForAll(): boolean {
-  try {
-    return localStorage.getItem(REQUEST_PAGE_KEY) === 'all';
-  } catch {
-    return false;
-  }
-}
-/** Ledung's own questions carry permissions and keep their own cards (design section 1, "Still alone"). */
-const onRequestPage = (q: QuestionInfo) => {
-  const d = q.details;
-  // One answered on today's pages has no parts to show its picks and verdicts from, so it stays there (acceptance round 1, point 8).
-  if (q.status === 'answered' && !q.answerParts) return false;
-  return !(q.aboutRequest || d?.refusal || d?.order || d?.orderCommand || d?.flowProposal !== undefined);
-};
 
 const firstLine = (text: string) => text.trim().split('\n')[0] ?? '';
 const excerpt = (text: string) => text.replace(/\*\*|`|^#+\s*/gm, '').replace(/\s+/g, ' ').trim().slice(0, 180);
@@ -451,7 +433,8 @@ function Queue(p: {
 }
 
 /**
- * A review (docs/steps/pr-review.md): the desk's header, then its sections top to bottom, its evidence, and
+ * A proposed workflow change, as a review with its flows' diagrams (part 3e); every other review is on the request
+ * page (issue #502). A review (docs/steps/pr-review.md): the desk's header, then its sections top to bottom, its evidence, and
  * Accept or Changes needed. A screenshot open large takes the keys until it closes, back on the review.
  */
 function ReviewPage({ ctx, item, list, onAnswered }: { ctx: DeskContext; item: Item; list: Item[]; onAnswered: (id: number) => void }) {
@@ -560,64 +543,6 @@ function ReviewPage({ ctx, item, list, onAnswered }: { ctx: DeskContext; item: I
   );
 }
 
-/** A question with screenshots: the desk's header, then the screenshot view. */
-function ShotPage({ ctx, item, list, onAnswered }: { ctx: DeskContext; item: Item; list: Item[]; onAnswered: () => void }) {
-  const { props, nameOf, titleOf, header } = ctx;
-  const { q, v, project } = item;
-  const idx = list.findIndex((i) => i.q.id === q.id);
-  const step = (d: number) => { const t = list[idx + d]; if (idx >= 0 && t) props.onOpenQuestion(t.q.id); };
-  const posText = q.status === 'open'
-    ? q.addressedTo === 'user' ? `${idx + 1} of ${list.length} waiting` : `Manager "${titleOf(q.addressedTo)}" is handling it`
-    : q.status === 'answered' ? 'Answered' : 'Withdrawn';
-  return (
-    <div className="waiting-view desk-view">
-      {header(posText, (
-        <div className="qbar">
-          <button onClick={() => props.onOpenQuestion(null)}>← Queue</button>
-          <button disabled={idx <= 0} aria-label="Previous question" title="Previous question" onClick={() => step(-1)}>←</button>
-          <button disabled={idx < 0 || idx >= list.length - 1} aria-label="Next question" title="Next question" onClick={() => step(1)}>→</button>
-        </div>
-      ), q)}
-      <ScreenshotView
-        question={{ ...q, shots: q.shots! }}
-        title={v.title}
-        issue={v.issue}
-        evidence={v.evidence}
-        options={v.options}
-        opinions={v.opinions.map((o) => ({ ...o, who: o.who ?? nameOf(q.sessionId) }))}
-        userName={props.userName}
-        session={{ title: nameOf(q.sessionId), project, onOpen: () => props.onOpenSession(q.sessionId) }}
-        onClose={() => props.onOpenQuestion(null)}
-        onDone={onAnswered}
-        onToggleSidebar={props.onToggleSidebar}
-        onGoToConversation={() => props.onGoToConversation(q.id)}
-        withdrawnIds={props.questions.filter((o) => o.status === 'withdrawn').map((o) => o.id)}
-        refersTo={<RefersTo q={q} userName={props.userName} nameOf={nameOf} tintOf={ctx.tintOf} onOpenConversation={(s, id) => props.onGoToConversation(id, s)} onOpenMessage={props.onGoToMessage} onOpenQuestion={(id) => props.questions.some((x) => x.id === id) ? () => props.onOpenQuestion(id) : null} />}
-      />
-    </div>
-  );
-}
-
-/** What the pick marks on the options mean, for the opinions this question has. */
-function Legend({ opinions, whoOf }: { opinions: DeskOpinion[]; whoOf: (o: DeskOpinion) => string }) {
-  const n = opinions.length;
-  if (!n) return null;
-  if (n === 1) return <div className="legend"><span>Green border: {whoOf(opinions[0]!)}'s pick</span></div>;
-  if (n > MAX_BORDER_PARTS) return <div className="legend"><span>{n} opinions: each option says who picked it</span></div>;
-  return (
-    <div className="legend">
-      <span>Green border in {n} parts, one per opinion, left to right:</span>
-      {opinions.map((o, i) => <span key={i}><PartKey i={i} n={n} />{whoOf(o)}</span>)}
-      <span>Whole border: they all agree</span>
-    </div>
-  );
-}
-
-/** A small border split in `n`, part `i` lit: which part of an option's border is this opinion's. */
-const PartKey = ({ i, n }: { i: number; n: number }) => (
-  <span className="part-key" aria-hidden="true">{Array.from({ length: n }, (_, j) => <i key={j} className={j === i ? 'on' : ''} />)}</span>
-);
-
 function QuestionPage({ ctx, item, list, onAnswered }: { ctx: DeskContext; item: Item; list: Item[]; onAnswered: (id: number) => void }) {
   const typing = usePlainTyping();
   const { props, nameOf, titleOf, tintOf, settingsOf, header } = ctx;
@@ -628,21 +553,18 @@ function QuestionPage({ ctx, item, list, onAnswered }: { ctx: DeskContext; item:
   const [note, setNote] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
-  const otherRef = useRef<HTMLTextAreaElement>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
   const idx = list.findIndex((i) => i.q.id === q.id);
   const otherKey = v.options.length + 1;
   // A question about a permission request is decided by its exact answer, so no note goes with it (issue #51).
   const takesNote = !q.aboutRequest;
 
-  useEffect(() => { if (sel === 'other') otherRef.current?.focus(); }, [sel]);
-
   const step = (d: number) => { const t = list[idx + d]; if (idx >= 0 && t) props.onOpenQuestion(t.q.id); };
   const pick = (key: string) => { setSel(key); setErr(''); };
   const send = async () => {
     if (!open || busy) return;
     if (!sel) return setErr('Pick an option first.');
-    if (sel === 'other' && !other.trim()) { setErr('Write your answer in the box first.'); otherRef.current?.focus(); return; }
+    if (sel === 'other' && !other.trim()) { setErr('Write your answer in the box first.'); document.querySelector<HTMLElement>('.opts-block textarea')?.focus(); return; }
     const chosen = sel === 'other' ? other.trim() : v.options.find((o) => o.key === sel)!.answer;
     const answer = takesNote && note.trim() ? `${chosen}\n\nNote: ${note.trim()}` : chosen;
     setBusy(true);
@@ -704,11 +626,6 @@ function QuestionPage({ ctx, item, list, onAnswered }: { ctx: DeskContext; item:
     ? q.addressedTo === 'user' ? `${idx + 1} of ${list.length} waiting` : `Manager "${titleOf(q.addressedTo)}" is handling it`
     : q.status === 'answered' ? 'Answered' : 'Withdrawn';
   const mdText = (text: string) => <Markdown text={text} sessionId={q.sessionId} />;
-  const ops = v.opinions;
-  // Up to five opinions split each option's border, one part each; more are named in writing (issue #96).
-  const split = ops.length <= MAX_BORDER_PARTS;
-  const whoOf = (o: DeskOpinion) => o.who ?? asker;
-  const part = (i: number) => ({ '--i': i, '--n': ops.length }) as CSSProperties;
 
   return (
     <div className="waiting-view desk-view">
@@ -770,68 +687,22 @@ function QuestionPage({ ctx, item, list, onAnswered }: { ctx: DeskContext; item:
             <section className="block"><h4>Withdrawn</h4><div className="answered-box withdrawn"><div className="muted">Withdrawn{q.withdrawnReason ? `: ${q.withdrawnReason}` : ''}</div></div></section>
           )}
 
-          {(v.options.length > 0 || open) && (
-            <section className="block opts-block">
-              <h4>Options</h4>
-              {v.options.length > 0 && <Legend opinions={ops} whoOf={whoOf} />}
-              <div className="opts" role="radiogroup" aria-label="Options">
-                {v.options.map((o, i) => {
-                  const on = open ? sel === o.key : chosenKey === o.key;
-                  return (
-                    <button key={o.key} className={`opt${on ? ' on' : ''}`} role="radio" aria-checked={on} disabled={!open} onClick={() => pick(o.key)}>
-                      <span className="k">{i + 1}</span>
-                      <span className="lab">{v.structured && <span className="letter">{o.key}</span>}{o.label.replace(/\*\*/g, '')}</span>
-                      {o.detail && <span className="det prose">{mdText(o.detail)}</span>}
-                      {o.cost && <span className="cost muted"><b>Cost</b> · {o.cost}</span>}
-                      {split && ops.map((op, j) => op.pick === o.key && (
-                        <Fragment key={j}>
-                          <span className={`edge${j === 0 ? ' first' : ''}${j === ops.length - 1 ? ' last' : ''}`} style={part(j)} />
-                          <span className="tag who" style={part(j)} title={whoOf(op)}>{whoOf(op)}</span>
-                        </Fragment>
-                      ))}
-                      {/* The tags on the border cut long names short, the full name in a tooltip a phone can't open (#176). */}
-                      {ops.some((op) => op.pick === o.key) && (
-                        <span className={`picked-by${split ? ' touch-only' : ''}`}><b>Picked by</b> {ops.filter((op) => op.pick === o.key).map(whoOf).join(', ')}</span>
-                      )}
-                      {!open && on && <span className="tag answer">Answer</span>}
-                    </button>
-                  );
-                })}
-                {open && (
-                  <button className={`opt${sel === 'other' ? ' on' : ''}`} role="radio" aria-checked={sel === 'other'} onClick={() => pick('other')}>
-                    <span className="k">{otherKey}</span>
-                    <span className="lab">Other answer</span>
-                    <span className="det">{q.aboutRequest ? 'Deny it, saying why in your own words.' : 'Say it in your own words.'}</span>
-                  </button>
-                )}
-              </div>
-              {open && sel === 'other' && (
-                <textarea {...typing} ref={otherRef} className="box" placeholder="Your answer, in your own words" value={other} onChange={(e) => setOther(e.target.value)} />
-              )}
-            </section>
-          )}
-
-          {(v.structured || ops.length > 0) && (
-            <section className="block">
-              <h4>Opinions{disagree(ops) && <span className="split">They disagree</span>}</h4>
-              {ops.length ? (
-                <div className="recs">
-                  {ops.map((op, j) => (
-                    <div key={j}>
-                      <div className="rec-label muted">
-                        {split && ops.length > 1 && <PartKey i={j} n={ops.length} />}
-                        {whoOf(op)}{op.who === null && ' (asker)'}
-                      </div>
-                      <div className={`rec${op.pick ? '' : ' empty'}`}>
-                        <div className="pick">{op.pick ? pickLabel(op.pick) : 'No pick among the options'}</div>
-                        <div className="prose">{op.why ? mdText(op.why) : <span className="none">{v.structured ? 'No reason given.' : 'Marked "(recommended)"; a plain question gives no reason.'}</span>}</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : <div className="rec empty"><div className="none">No opinions given.</div></div>}
-            </section>
-          )}
+          <OptionsDesk
+            heading="Options"
+            options={v.options}
+            opinions={v.opinions}
+            structured={v.structured}
+            asker={asker}
+            open={open}
+            selected={sel}
+            chosen={chosenKey}
+            onPick={pick}
+            other={other}
+            onOther={setOther}
+            otherHint={q.aboutRequest ? 'Deny it, saying why in your own words.' : 'Say it in your own words.'}
+            opinionsWhenNone={v.structured}
+            md={mdText}
+          />
 
           {open && (
             <section className="block note-block">

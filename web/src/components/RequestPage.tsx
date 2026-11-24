@@ -1,12 +1,12 @@
 // One request page built from blocks (issue #502, docs/steps/request-blocks.md; Simon approved the design 2026-11-23,
-// question #2262). Blocks in a fixed order (D1): Context, Evidence, Decisions, Sign-off. Answered parts fold to one line
-// with a Change link, so what is left stays in view; a rail on the right (a bar at the bottom on a phone) says what is
-// still open and holds the note and Send. Everything is sent at once (D3: every decision and the sign-off first); the
+// question #2262). Blocks in a fixed order (D1): Context, Evidence, Decisions, Sign-off. Each decision is the question
+// desk's options, stacked (Simon, 2026-11-24); a rail on the right (a bar at the bottom on a phone) says what is still
+// open and holds the note, Send and Withdraw. Since D2 (2026-11-24) every question, review and screenshot question opens
+// here, not only requests. Everything is sent at once (D3: every decision and the sign-off first); the
 // draft is kept in Ledung as the person goes (D4). Everything a session wrote is shown as text or through Markdown,
 // never as HTML (design section 8).
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { projectLabel, type QuestionInfo } from '../../../src/shared/protocol.ts';
-import { disagree, type DeskOpinion } from '../../../src/shared/questions.ts';
 import { isRequest, requestKinds, requestModel, type RequestDecision } from '../../../src/shared/requests.ts';
 import { VERDICT_LABEL, VERDICTS } from '../../../src/shared/shots.ts';
 import { findTickets } from '../../../src/shared/tickets.ts';
@@ -18,6 +18,7 @@ import { usePlainTyping } from '../usePlainTyping.ts';
 import type { Item } from '../waitingLists.ts';
 import { RunLine } from './FlowRuns.tsx';
 import { Markdown } from './Markdown.tsx';
+import { OptionsDesk } from './OptionsDesk.tsx';
 import { formatTime } from './MessageList.tsx';
 import { imageUrl } from './ProjectImage.tsx';
 import { RefersTo } from './RefersTo.tsx';
@@ -67,7 +68,6 @@ export function RequestPage({ ctx, item, list, onAnswered }: { ctx: DeskContext;
   // Reads and saves one at a time, in order, so a save always carries the version it was made over.
   const chain = useRef<Promise<void>>(Promise.resolve());
   const saveRef = useRef<() => void>(() => {});
-  const [unfolded, setUnfolded] = useState<Record<string, boolean>>({});
   const [shotsAt, setShotsAt] = useState<number | null>(null);
   const [evidenceShown, setEvidenceShown] = useState<number | null>(null);
   const [noteOpen, setNoteOpen] = useState(false);
@@ -150,10 +150,7 @@ export function RequestPage({ ctx, item, list, onAnswered }: { ctx: DeskContext;
   const order = [...m.decisions.map((x) => partId(x.key)), ...(m.signOff ? ['sign-off'] : [])];
   const judged = Object.values(draft.judged).filter((j) => j?.verdict).length;
 
-  const pick = (key: string, option: string) => {
-    setDraft({ ...draft, decisions: { ...draft.decisions, [key]: { pick: option } } });
-    setUnfolded({ ...unfolded, [key]: false });
-  };
+  const pick = (key: string, option: string) => setDraft({ ...draft, decisions: { ...draft.decisions, [key]: { pick: option } } });
   const setOther = (key: string, other: string) => setDraft({ ...draft, decisions: { ...draft.decisions, [key]: { other } } });
   const setSignOff = (s: RequestDraft['signOff']) => setDraft({ ...draft, signOff: s });
 
@@ -190,7 +187,6 @@ export function RequestPage({ ctx, item, list, onAnswered }: { ctx: DeskContext;
   /** Scrolls to a part and puts the focus in it: its first button, or its box. */
   const jump = (id: string | null) => {
     if (!id) return;
-    if (id.startsWith('d:')) setUnfolded((u) => ({ ...u, [id.slice(2)]: true }));
     setTimeout(() => {
       const el = document.querySelector<HTMLElement>(`[data-part="${CSS.escape(id)}"]`);
       el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
@@ -317,66 +313,48 @@ export function RequestPage({ ctx, item, list, onAnswered }: { ctx: DeskContext;
               );
             })}
           </div>
-          <span className="muted">{verdictCount(open ? draft.judged : sentJudged) || (open ? 'Not judged yet: open one to judge' : 'No verdicts sent')}</span>
+          <span className="muted">{verdictCount(open ? draft.judged : sentJudged) || (open ? 'Not judged yet: open one to judge' : sent ? 'No verdicts sent' : 'The verdicts are in the answer below')}</span>
           <button className="small" onClick={() => setShotsAt(0)}>{open ? 'Judge the screenshots' : 'Show the screenshots'}</button>
         </div>
       )}
     </section>
   );
 
+  // Each decision is drawn as the question desk's options (Simon, 2026-11-24: "the decisions should use the same
+  // layout, and be able to stack multiple of them"): the opinion borders and their legend, Cost, Other answer, and its
+  // own Opinions underneath. Its title stands where the desk says "Options"; decisions stack one under the other.
   const decisionBlock = (x: RequestDecision, n: number) => {
     const a = open ? draft.decisions[x.key] : sent?.decisions?.find((d) => d.key === x.key);
-    const picked = a?.pick !== undefined ? x.options.find((o) => o.key === a.pick) : undefined;
-    const folded = (!open && (picked || a?.other)) || (open && picked && !unfolded[x.key]);
-    const label = picked ? `${picked.key} — ${picked.label.replace(/\*\*/g, '')}` : a?.other ? `Other: ${a.other}` : '';
-    const heading = m.preset === 'question' ? 'Options' : `Decision ${n + 1} · ${x.title}`;
-    if (folded) {
-      return (
-        <section key={x.key} className="req-block req-folded" data-part={partId(x.key)}>
-          <span className="req-check" aria-hidden="true">✓</span>
-          <span className="req-folded-text"><b>{heading}</b> — {label}</span>
-          {open && <button className="link" onClick={() => jump(partId(x.key))} aria-label={`Change decision ${n + 1}`}>Change</button>}
-        </section>
-      );
-    }
-    const whoOf = (o: DeskOpinion) => o.who ?? asker;
-    const otherKey = x.options.length + 1;
-    const otherOn = open && a?.pick === undefined && a?.other !== undefined;
+    const selected = a?.pick !== undefined ? a.pick : a?.other !== undefined ? 'other' : null;
+    // Answered without parts (in words, or before #502): the option whose answer it was, as the desk found it.
+    const chosen = !open && !sent && m.preset === 'question' && q.answer !== null
+      ? x.options.find((o) => q.answer === o.answer || q.answer!.startsWith(`${o.answer}
+
+Note: `))?.key ?? null
+      : a?.pick ?? null;
+    const heading = m.preset === 'question' ? 'Options' : m.decisions.length > 1 ? `${n + 1} · ${x.title}` : x.title;
     return (
-      <section key={x.key} className="req-block" data-part={partId(x.key)}>
-        <h4 className="req-head">{heading}{disagree(x.opinions) && <span className="split">They disagree</span>}</h4>
-        {m.preset !== 'question' && x.issue && <div className="issue prose">{md(x.issue)}</div>}
-        <div className="opts" role="radiogroup" aria-label={x.title}>
-          {x.options.map((o, i) => {
-            const on = picked?.key === o.key;
-            const by = x.opinions.filter((op) => op.pick === o.key).map(whoOf);
-            return (
-              <button key={o.key} className={`opt${on ? ' on' : ''}`} role="radio" aria-checked={on} disabled={!open} onClick={() => pick(x.key, o.key)}>
-                <span className="k">{i + 1}</span>
-                <span className="lab"><span className="letter">{o.key}</span>{o.label.replace(/\*\*/g, '')}</span>
-                {o.detail && <span className="det prose">{md(o.detail)}</span>}
-                {o.cost && <span className="cost muted"><b>Cost</b> · {o.cost}</span>}
-                {by.length > 0 && <span className="picked-by"><b>Picked by</b> {by.join(', ')}</span>}
-              </button>
-            );
-          })}
-          {open && (
-            <button className={`opt${otherOn ? ' on' : ''}`} role="radio" aria-checked={otherOn} onClick={() => setOther(x.key, a?.other ?? '')}>
-              <span className="k">{otherKey}</span>
-              <span className="lab">Other answer</span>
-              <span className="det">Say it in your own words, or "not sure yet".</span>
-            </button>
-          )}
-        </div>
-        {otherOn && <textarea {...typing} className="box" aria-label={`Your answer to ${x.title}`} placeholder="Your answer, in your own words" value={a?.other ?? ''} onChange={(e) => setOther(x.key, e.target.value)} />}
-        {x.opinions.some((o) => o.why) && (
-          <div className="req-opinions">
-            {x.opinions.map((o, j) => (
-              <div key={j} className="req-opinion"><b>{whoOf(o)}</b>{o.pick ? <> · {o.pick}</> : null}{o.why ? <div className="prose">{md(o.why)}</div> : null}</div>
-            ))}
-          </div>
-        )}
-      </section>
+      <div key={x.key} className={`req-decision${m.preset === 'question' ? ' req-question' : ''}`} data-part={partId(x.key)}>
+        <OptionsDesk
+          heading={heading}
+          intro={m.preset !== 'question' && x.issue ? <div className="issue prose">{md(x.issue)}</div> : undefined}
+          options={x.options}
+          opinions={x.opinions}
+          structured={m.preset !== 'question' || v.structured}
+          asker={asker}
+          open={open}
+          selected={selected}
+          chosen={chosen}
+          onPick={(key) => key === 'other' ? setOther(x.key, a?.other ?? '') : pick(x.key, key)}
+          other={a?.other ?? ''}
+          onOther={(text) => setOther(x.key, text)}
+          otherHint={m.preset === 'question' ? 'Say it in your own words.' : 'Say it in your own words, or "not sure yet".'}
+          opinionsWhenNone={m.preset === 'question' && v.structured}
+          md={md}
+          ariaLabel={x.title}
+        />
+        {!open && a?.other && <div className="answered-box"><div><strong>Other answer:</strong> {a.other}</div></div>}
+      </div>
     );
   };
 
@@ -423,7 +401,7 @@ export function RequestPage({ ctx, item, list, onAnswered }: { ctx: DeskContext;
   );
 
   const sendButton = (cls = '') => (
-    <button className={`primary${cls}`} disabled={busy} aria-disabled={left.length > 0} onClick={() => void send()}>Send</button>
+    <button className={`primary${cls}`} disabled={busy} aria-disabled={left.length > 0} onClick={() => void send()}>Send answer</button>
   );
   const noteBox = (
     <textarea {...typing} className="box" aria-label="Note to the asker" placeholder="Anything to go with the answer" value={draft.note} onChange={(e) => setDraft({ ...draft, note: e.target.value })} />
