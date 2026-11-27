@@ -121,6 +121,19 @@ export interface SignatureLaunch {
   off: boolean;
   texts: SignatureTexts;
   values: Omit<FillInValues, 'model'>;
+  /** Whether its outside posts are recorded (the project's Record outside posts); none: on. */
+  record?: boolean;
+}
+
+/**
+ * The stand-in gh's texts for a session (issue #513 part 2), filled in: new issues, issue comments, PR comments and
+ * reviews; and the PR text, only to tell whether a PR got its line. Off: all empty.
+ */
+export function standInTexts(launch: SignatureLaunch, model: string): { newIssue: string; issueComment: string; prComment: string; pr: string } {
+  if (launch.off) return { newIssue: '', issueComment: '', prComment: '', pr: '' };
+  const values = { ...launch.values, model };
+  const fill = (p: SignaturePlace) => fillSignature(launch.texts[p], values);
+  return { newIssue: fill('newIssue'), issueComment: fill('issueComment'), prComment: fill('prComment'), pr: fill('pr') };
 }
 
 /**

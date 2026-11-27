@@ -37,13 +37,15 @@ test('the tests see a temp data folder and config of their own, never the caller
 });`);
     assert.equal(r.status, 0, r.stdout + r.stderr);
     const { seen, marker } = JSON.parse(fs.readFileSync(path.join(base, 'seen.json'), 'utf8')) as { seen: Record<string, string>; marker: string };
-    assert.deepEqual(Object.keys(seen).sort(), ['LEDUNG_CONFIG', 'LEDUNG_DATA_DIR'], 'LEDUNG_LAUNCHER is dropped');
+    assert.deepEqual(Object.keys(seen).sort(), ['LEDUNG_CONFIG', 'LEDUNG_DATA_DIR', 'LEDUNG_GH_STAND_IN_DIR'], 'LEDUNG_LAUNCHER is dropped');
     assert.equal(fs.existsSync(path.join(base, 'real-data', 'marker')), false, 'nothing reached the caller\'s data folder');
     const own = path.dirname(seen.LEDUNG_DATA_DIR!);
     assert.equal(marker, path.join(own, 'data', 'marker'), 'the default data folder is the throwaway one');
     assert.equal(path.dirname(own), path.resolve(os.tmpdir()), 'in a folder of its own in the temp folder');
     assert.equal(seen.LEDUNG_DATA_DIR, path.join(own, 'data'));
     assert.equal(seen.LEDUNG_CONFIG, path.join(own, 'config.json'));
+    // The stand-in gh's files for the sessions tests start (issue #513).
+    assert.equal(seen.LEDUNG_GH_STAND_IN_DIR, path.join(own, 'gh'));
     assert.equal(fs.existsSync(own), false, 'removed after the run');
   } finally {
     removeTemp(base);

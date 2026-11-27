@@ -22,6 +22,7 @@ import { openDatabase } from '../src/store/database.ts';
 import { Store } from '../src/store/store.ts';
 import { changedFields, emptySettings, settingsOf, toApi } from '../web/src/projects/projectSettings.ts';
 import { removeTemp } from './temp.ts';
+import { pathKey, standInRoot } from '../src/gh/install.ts';
 
 const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-signature-')));
 // The home and data folders are the test's own, so no real host record or AppData is ever read.
@@ -244,9 +245,9 @@ test("a session's signature is its project's as saved now, with the person's nam
   const { manager, store } = ledung();
   store.createSession({ id: 'w1', project: 'shop', runner: 'local', title: 'Worker', parentId: null, permissionMode: 'default', role: 'session' });
   const launch = (manager as unknown as { signatureLaunch(id: string): Promise<SignatureLaunch> }).signatureLaunch.bind(manager);
-  assert.deepEqual(await launch('w1'), { off: false, texts: LEDUNG_DEFAULT_SIGNATURE, values: { user: 'Simon', project: 'shop', run: '', workflow: '' } });
-  manager.updateProject('shop', { name: 'shop', runner: 'local', path: base, signature: { off: true } } as ProjectConfig);
-  assert.deepEqual(await launch('w1'), { off: true, texts: emptyTexts(), values: { user: 'Simon', project: 'shop', run: '', workflow: '' } });
+  assert.deepEqual(await launch('w1'), { off: false, texts: LEDUNG_DEFAULT_SIGNATURE, values: { user: 'Simon', project: 'shop', run: '', workflow: '' }, record: true });
+  manager.updateProject('shop', { name: 'shop', runner: 'local', path: base, signature: { off: true }, recordPosts: false } as ProjectConfig);
+  assert.deepEqual(await launch('w1'), { off: true, texts: emptyTexts(), values: { user: 'Simon', project: 'shop', run: '', workflow: '' }, record: false });
 });
 
 test('an unknown fill-in is refused under the name the page gives its place, not an internal key', () => {
@@ -286,4 +287,36 @@ test("renaming a project and changing its signature in one save reaches its runn
   assert.equal(store.getSession('w1')!.project, 'store');
   assert.deepEqual(flags, [{ attribution: { pr: '— via Ledung for Simon in store', commit: 'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>' } }]);
   (manager as unknown as { live: Map<string, unknown> }).live.delete('w1');
+});
+
+// Part 2: the stand-in gh on a local session's PATH (test/gh-stand-in.test.ts covers the stand-in itself).
+test("a project's local session starts with the stand-in gh first on PATH; without a signature, or nothing to do, it doesn't", async () => {
+  const key = pathKey(process.env);
+  const before = process.env[key];
+  const bin = path.join(base, 'gh-bin');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, process.platform === 'win32' ? 'gh.exe' : 'gh'), '');
+  process.env[key] = `${bin}${path.delimiter}${before ?? ''}`;
+  try {
+    const pathOf = (launched: Record<string, unknown>[]) => (launched[0]!.env as Record<string, string>)[key] ?? '';
+    const root = standInRoot(process.env.LEDUNG_DATA_DIR!);
+    const signed = await running({ launch: () => launchOf({ values: { user: 'Simon', project: 'p', run: 'run-9', workflow: 'Dev' } }), model: 'claude-haiku-5-5' });
+    const first = pathOf(signed.launched).split(path.delimiter)[0]!;
+    assert.equal(path.dirname(first), root);
+    const file = JSON.parse(fs.readFileSync(path.join(first, 'session.json'), 'utf8'));
+    assert.deepEqual(file, { texts: { newIssue: '— via Ledung for Simon', issueComment: '', prComment: '', pr: '— via Ledung for Simon' }, record: true, run: 'run-9', real: [path.join(bin, process.platform === 'win32' ? 'gh.exe' : 'gh')] });
+    // A changed signature reaches its file at once.
+    signed.s['signature' as never] = (async () => launchOf({ texts: { ...LEDUNG_DEFAULT_SIGNATURE, issueComment: 'via {project}' } })) as never;
+    await signed.s.refreshSignature();
+    assert.equal(JSON.parse(fs.readFileSync(path.join(first, 'session.json'), 'utf8')).texts.issueComment, 'via p');
+    const chat = await running({ launch: () => launchOf(), signature: false });
+    assert.ok(!pathOf(chat.launched).includes(root), 'chats and the Helper: the real gh');
+    const quiet = await running({ launch: () => launchOf({ off: true, texts: emptyTexts(), record: false }) });
+    assert.ok(!pathOf(quiet.launched).includes(root), 'Off and not recording: nothing for it to do');
+    const recordedOnly = await running({ launch: () => launchOf({ off: true, texts: emptyTexts() }) });
+    assert.ok(pathOf(recordedOnly.launched).startsWith(root), 'Off but recording: still there');
+  } finally {
+    process.env[key] = before;
+    removeTemp(standInRoot(process.env.LEDUNG_DATA_DIR!));
+  }
 });

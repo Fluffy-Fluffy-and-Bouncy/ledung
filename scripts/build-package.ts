@@ -27,8 +27,8 @@ import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import { appDir } from '../src/platform/paths.ts';
 
-/** dist/<name>.js for each entry; src/platform/paths.ts, src/cli.ts and src/platform/node-warnings.ts find the host, main and preload by these names; preload sits next to main. */
-export const ENTRIES = { main: 'src/main.ts', host: 'src/host/host.ts', cli: 'src/cli.ts', preload: 'src/preload.ts' } as const;
+/** dist/<name>.js for each entry; src/platform/paths.ts, src/cli.ts and src/platform/node-warnings.ts find the host, main, preload and gh-stand-in by these names; preload sits next to main. */
+export const ENTRIES = { main: 'src/main.ts', host: 'src/host/host.ts', cli: 'src/cli.ts', preload: 'src/preload.ts', 'gh-stand-in': 'src/gh/stand-in.ts' } as const;
 
 /** The desktop app's files next to its bundled main.js in dist/desktop/ (#407): what desktop/main.ts loads from its own folder. */
 export const DESKTOP_FILES: Record<string, string> = {

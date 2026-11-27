@@ -1439,6 +1439,7 @@ export class SessionManager {
       off: config.signature?.off === true,
       texts: signatureTexts(config.signature),
       values: { user: this.config.userName, project: config.name, run: run?.run ?? '', workflow: run?.workflow ?? '' },
+      record: config.recordPosts !== false,
     };
   }
 

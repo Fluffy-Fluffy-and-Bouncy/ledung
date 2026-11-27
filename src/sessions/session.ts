@@ -50,7 +50,9 @@ import { RemoteControl } from './remote-control.ts';
 import { McpError, mcpServers, mcpToolDescriptions, reconnectMcp } from './mcp.ts';
 import { mcpParts } from '../shared/tool-call.ts';
 import { boundarySettings, withBoundary } from './boundary.ts';
-import { attributionSetting, modelDisplayName, type SignatureLaunch } from '../shared/signature.ts';
+import { attributionSetting, modelDisplayName, standInTexts, type SignatureLaunch } from '../shared/signature.ts';
+import { installStandIn, updateStandIn, withStandIn } from '../gh/install.ts';
+import type { StandInSession } from '../gh/stand-in.ts';
 import { airgapEnvironment, airgapSettings, airgapTempFolder, makeAirgapTempFolder, othersSettings, versionProblem, withAirgapSettings, withOthersSettings } from '../projects/lockdown.ts';
 import { userDataDir } from '../platform/paths.ts';
 import { startShell, SHELL_TIMEOUT_MS, type ShellKind, type ShellRun } from '../runners/shell-run.ts';
@@ -475,6 +477,8 @@ export class Session {
   private readonly signature: (() => Promise<SignatureLaunch>) | null;
   /** The model name its signature was last filled in with (issue #513): a new one in Claude Code's init refills it. */
   private signatureModel: string | null = null;
+  /** It started with the stand-in gh on PATH (issue #513 part 2), so a changed signature rewrites its file. */
+  private ghStandIn = false;
   private readonly airgap: NonNullable<SessionOptions['airgap']> | null;
   /** Level B on this computer: the session's own temp folder, made at each start (lockdown.ts). */
   private airgapTmp: string | null = null;
@@ -1346,7 +1350,8 @@ export class Session {
       this.airgap && airgapSettings({ network: this.airgap.network, folders: [this.runner.cwd, ...this.airgap.folders], sandbox: this.airgap.sandbox, tmp }),
     );
     // The project's signature in place of Claude Code's lines (issue #513), over the person's own `attribution`.
-    const attribution = await this.attribution();
+    const signed = await this.signatureNow();
+    const attribution = signed?.attribution;
     return {
       ...profile,
       settings: (attribution === undefined ? settings : { ...settings, attribution }) as Options['settings'],
@@ -1357,7 +1362,7 @@ export class Session {
       // None: left out, and Claude Code takes its own default as before.
       ...(this.askedEffort() ? { effort: this.askedEffort() } : {}),
       // Level B keeps only what Claude Code and a shell need of Ledung's environment (issue #109).
-      env: { ...claudeEnvironment(this.airgap ? airgapEnvironment(process.env, tmp) : process.env, this.account?.env, this.helper ? helperInstructions(this.userName) : instructions(tools)), ...launched?.env },
+      env: this.withGhStandIn({ ...claudeEnvironment(this.airgap ? airgapEnvironment(process.env, tmp) : process.env, this.account?.env, this.helper ? helperInstructions(this.userName) : instructions(tools)), ...launched?.env }, signed?.standIn),
       resume: this.attachTo ? undefined : this.resume,
       // Always explicit: without it a session may pick a mode from its settings (spike finding 1).
       permissionMode: this.store.getSession(this.id)!.permissionMode,
@@ -2503,11 +2508,11 @@ export class Session {
   }
 
   /**
-   * Claude Code's `attribution` for this session from its project's signature (issue #513), {model} filled with the
-   * model it runs: Claude Code's init names it; before that, the one asked for. undefined: no signature here (chats,
-   * the Helper), or it couldn't be read, and Claude Code's own lines stay.
+   * Claude Code's `attribution` for this session from its project's signature (issue #513), and the stand-in gh's
+   * file (part 2), {model} filled with the model it runs: Claude Code's init names it; before that, the one asked
+   * for. undefined: no signature here (chats, the Helper), or it couldn't be read, and Claude Code's own lines stay.
    */
-  private async attribution(): Promise<false | { commit: string; pr: string } | undefined> {
+  private async signatureNow(): Promise<{ attribution: false | { commit: string; pr: string }; standIn: Omit<StandInSession, 'real'> } | undefined> {
     if (!this.signature) return undefined;
     try {
       const launch = await this.signature();
@@ -2515,10 +2520,33 @@ export class Session {
       const name = modelDisplayName(this.q ? ran ?? this.model : this.model ?? this.defaultModel ?? ran);
       const setting = attributionSetting(launch, name);
       this.signatureModel = name;
-      return setting;
+      const standIn = { texts: standInTexts(launch, name), record: launch.record !== false, run: launch.values.run || null };
+      return { attribution: setting, standIn };
     } catch (e) {
       console.error(`Signature for session ${this.id}: ${(e as Error).message}`);
       return undefined;
+    }
+  }
+
+  /**
+   * The environment with the stand-in gh first on PATH (issue #513 part 2): local sessions of a project (not chats,
+   * the Helper, containers, or Level B's sandbox, whose reach to a temp folder isn't Ledung's to assume). Left out
+   * when the project neither records nor signs on GitHub, or there is no real gh; a failure to write it, too: the
+   * session then simply has the real gh.
+   */
+  private withGhStandIn(env: Record<string, string>, standIn: Omit<StandInSession, 'real'> | undefined): Record<string, string> {
+    this.ghStandIn = false;
+    if (!standIn || this.airgap || this.store.getSession(this.id)!.runner !== 'local') return env;
+    const t = standIn.texts;
+    if (!standIn.record && !t.newIssue && !t.issueComment && !t.prComment) return env;
+    try {
+      const dir = installStandIn({ dataDir: userDataDir(), sessionId: this.id, env, session: standIn });
+      if (!dir) return env;
+      this.ghStandIn = true;
+      return withStandIn(env, dir);
+    } catch (e) {
+      console.error(`Stand-in gh for session ${this.id} not written: ${(e as Error).message}`);
+      return env;
     }
   }
 
@@ -2528,10 +2556,18 @@ export class Session {
    */
   async refreshSignature(): Promise<void> {
     if (!this.q || !this.signature || this.stopping) return;
-    const attribution = await this.attribution();
-    if (attribution === undefined || !this.q) return;
+    const signed = await this.signatureNow();
+    if (signed === undefined || !this.q) return;
+    // The stand-in gh reads its file at each call: the new texts apply from the next one.
+    if (this.ghStandIn) {
+      try {
+        updateStandIn(userDataDir(), this.id, signed.standIn);
+      } catch (e) {
+        console.error(`Stand-in gh for session ${this.id} not updated: ${(e as Error).message}`);
+      }
+    }
     try {
-      await this.q.applyFlagSettings({ attribution });
+      await this.q.applyFlagSettings({ attribution: signed.attribution });
     } catch (e) {
       console.error(`Signature for session ${this.id} not updated: ${(e as Error).message}`);
     }
