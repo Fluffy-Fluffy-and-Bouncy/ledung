@@ -210,7 +210,6 @@ export function resumedState(info: SessionInfo): {
 let exercised425 = false;
 let exercised96 = false;
 let exercised160 = false;
-let exercised515 = false;
 
 /** How long the sidebar's read of which projects have a flow waits for one project (a container's docker exec). */
 const WORKFLOWS_READ_MS = 5000;
@@ -3929,10 +3928,6 @@ ${firstMessage}`);
     if (info.role === 'manager' && !this.replacedManager(info)) throw new UserError("A project's current manager can't be archived.");
     if (info.status !== 'ended') throw new UserError('Only an ended session can be archived. Stop it first.');
     if (info.archivedAt) return info;
-    if (info.role === 'manager' && !exercised515) {
-      exercised515 = true;
-      exercisedLine('EXERCISED #515 an ended manager its project replaced was archived');
-    }
     this.setArchived(id, Date.now(), `Archived by ${by}.`);
     // Its secrets for this session go with it, but those kept until removed (issue #468).
     void this.secrets?.endSession(id).catch((e) => console.error(`Secrets of ${id}: ${(e as Error).message}`));
