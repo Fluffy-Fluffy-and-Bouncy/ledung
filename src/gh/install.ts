@@ -36,7 +36,8 @@ export function pathKey(env: Record<string, string | undefined>): string {
 
 /**
  * The real gh on an environment's PATH, by full path, never one in the stand-in's own folder (so it can't call
- * itself). On Windows only a gh.exe: Node can't start a .cmd or .bat without a shell, which would re-read the
+ * itself) nor in any other Ledung's (a test Ledung started inside a session inherits that session's PATH: review of
+ * PR #519, finding 5). On Windows only a gh.exe: Node can't start a .cmd or .bat without a shell, which would re-read the
  * arguments. null: not installed, and no stand-in is put in.
  */
 export function findRealGh(env: Record<string, string | undefined>, root: string, platform: NodeJS.Platform = process.platform, exists: (p: string) => boolean = isFile): string | null {
@@ -46,7 +47,7 @@ export function findRealGh(env: Record<string, string | undefined>, root: string
   for (const dir of (env[pathKey(env)] ?? '').split(sep)) {
     if (!dir.trim()) continue;
     const full = p.resolve(dir.replace(/^"(.*)"$/, '$1'));
-    if (full.toLowerCase().startsWith(own)) continue;
+    if (full.toLowerCase().startsWith(own) || full.split(/[\\/]/).some((part) => part.startsWith('ledung-gh-'))) continue;
     const candidate = p.join(full, platform === 'win32' ? 'gh.exe' : 'gh');
     if (exists(candidate)) return candidate;
   }

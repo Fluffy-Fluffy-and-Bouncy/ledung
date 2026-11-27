@@ -2690,8 +2690,9 @@ export class SessionManager {
       this.publishProjects();
       // Locked, unlocked or a locked project's folders changed: sessions whose launch settings that changes restart (issue #109).
       this.relaunchChanged();
-      // Its running sessions get a changed signature at once (issue #513): Claude Code takes it mid-session.
-      if (!sameSignature(before?.signature, p.config.signature)) {
+      // Its running sessions get a changed signature or recording switch at once (issue #513): Claude Code takes the
+      // signature mid-session, and the stand-in gh reads both from its file at each call.
+      if (!sameSignature(before?.signature, p.config.signature) || (before?.recordPosts !== false) !== (p.config.recordPosts !== false)) {
         for (const s of this.live.values()) if (s.info.project === p.config.name) void s.refreshSignature();
       }
       return this.projectInfo(p);

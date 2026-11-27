@@ -63,6 +63,26 @@ test('gh api writes: an explicit method, or fields without one; a GraphQL mutati
   assert.equal(apiCall(['repos/o/r/issues', '-X', 'GET', '-f', 'state=open']), null, 'GET with fields is a read');
 });
 
+test('a GraphQL mutation is seen in a -F query=@file, an --input file or stdin; a query is not a write', () => {
+  const files: Record<string, string> = { 'm.graphql': 'mutation { addComment(input: {}) { clientMutationId } }', 'q.graphql': '{ viewer { login } }', 'm.json': '{"query":"mutation{closeIssue(input:{}){clientMutationId}}"}', 'q.json': '{"query":"{ viewer { login } }","variables":{"note":"mutation"}}' };
+  let stdinReads = 0;
+  const read = (stdin: string) => ({ file: (p: string) => files[p] ?? null, stdin: () => { stdinReads++; return stdin; } });
+  const r = read('');
+  assert.equal(apiCall(['graphql', '-F', 'query=@m.graphql'], r)?.api?.path, 'graphql');
+  assert.equal(apiCall(['graphql', '--field=query=@m.graphql'], r)?.api?.path, 'graphql');
+  assert.equal(apiCall(['graphql', '--input', 'm.json'], r)?.api?.path, 'graphql');
+  assert.equal(apiCall(['graphql', '-F', 'query=@q.graphql'], r), null);
+  assert.equal(apiCall(['graphql', '--input', 'q.json'], r), null, 'only the query counts, not its variables');
+  assert.equal(apiCall(['graphql', '-f', 'query=@m.graphql'], r), null, '-f sends "@m.graphql" as written');
+  assert.equal(apiCall(['graphql', '--input', 'missing.json'], r), null);
+  assert.equal(apiCall(['graphql', '--input', '-'], read(files['m.json']!))?.api?.path, 'graphql');
+  assert.equal(apiCall(['graphql', '-F', 'query=@-'], read(files['m.graphql']!))?.api?.path, 'graphql');
+  assert.equal(apiCall(['graphql', '--input', 'm.json']), null, 'without a reader only the arguments are read');
+  stdinReads = 0;
+  apiCall(['repos/o/r/issues', '--input', '-'], r);
+  assert.equal(stdinReads, 0, 'stdin is read only for graphql');
+});
+
 test('the body comes from --body, --body-file or stdin, in every spelling; two sources or none: none', () => {
   const at = (args: string[]) => { const b = bodySource(args); return b && [b.kind, b.value, b.start, b.count]; };
   assert.deepEqual(at(['issue', 'comment', '1', '--body', 'hi']), ['text', 'hi', 3, 2]);
@@ -106,6 +126,9 @@ test("the real gh is found on PATH by full path, never in the stand-in's own fol
   assert.equal(findRealGh(env, root, 'win32', (p) => there.has(p)), 'C:\\Program Files\\GitHub CLI\\gh.exe');
   assert.equal(findRealGh({ PATH: '/tmp/ledung-gh-ab/s1:/opt/homebrew/bin:/usr/bin' }, '/tmp/ledung-gh-ab', 'darwin', (p) => p === '/opt/homebrew/bin/gh' || p === '/tmp/ledung-gh-ab/s1/gh'), '/opt/homebrew/bin/gh');
   assert.equal(findRealGh({ PATH: '/usr/bin' }, '/tmp/x', 'linux', () => false), null);
+  // Another Ledung's stand-in (a test Ledung started inside a session) is never taken for the real gh.
+  assert.equal(findRealGh({ PATH: '/tmp/ledung-gh-outer/s9:/usr/local/bin' }, '/tmp/ledung-gh-inner', 'darwin', (p) => p === '/tmp/ledung-gh-outer/s9/gh' || p === '/usr/local/bin/gh'), '/usr/local/bin/gh');
+  assert.equal(findRealGh({ Path: 'C:\\T\\ledung-gh-outer\\s9;C:\\gh' }, 'C:\\T\\ledung-gh-inner', 'win32', (p) => p.endsWith('gh.exe')), 'C:\\gh\\gh.exe');
 });
 
 test("the stand-in's folder goes first on PATH, under the name the environment already uses", () => {
@@ -275,6 +298,24 @@ test('gh api writes are recorded by method and path, never signed; reads not rec
   assert.deepEqual(got(gh(s.dir, write).stdout).args, write);
   gh(s.dir, ['api', 'repos/o/r/pulls', '--jq', '.[].number']);
   assert.deepEqual(s.journal().map((l) => [l.kind, l.api, l.url, l.signed]), [['api', { method: 'POST', path: 'repos/o/r/issues/1/comments' }, null, false]]);
+});
+
+test('a GraphQL mutation from stdin is recorded, and gh gets the same stdin; with recording off stdin is not read', { skip: noSh }, () => {
+  const s = standIn();
+  const input = '{"query":"mutation { addComment(input: {subjectId: \\"x\\", body: \\"hi\\"}) { clientMutationId } }"}';
+  assert.equal(got(gh(s.dir, ['api', 'graphql', '--input', '-'], { input, env: { FAKE_STDIN: '1' } }).stdout).stdin, input);
+  gh(s.dir, ['api', 'graphql', '--input', '-'], { input: '{"query":"{ viewer { login } }"}', env: { FAKE_STDIN: '1' } });
+  assert.deepEqual(s.journal().map((l) => [l.kind, l.api]), [['api', { method: 'POST', path: 'graphql' }]]);
+  const off = standIn({ record: false });
+  assert.equal(got(gh(off.dir, ['api', 'graphql', '--input', '-'], { input, env: { FAKE_STDIN: '1' } }).stdout).stdin, input);
+  assert.deepEqual(off.journal(), []);
+});
+
+test("a real gh's exit code 197 doesn't make the shell run gh again", { skip: noSh }, () => {
+  const s = standIn();
+  const r = gh(s.dir, ['issue', 'comment', '9', '-b', 'x'], { env: { FAKE_EXIT: '197' } });
+  assert.equal(r.status, 1);
+  assert.equal(r.stdout.split('\n').filter((l) => l.startsWith('{')).length, 1, 'gh ran once');
 });
 
 test('every other call: the same output, stderr and exit code as the real gh, and not recorded', { skip: noSh }, () => {

@@ -241,6 +241,25 @@ test("a signature that names a sensitive path or holds a token is refused on sav
   assert.equal(saved.recordPosts, true);
 });
 
+test("switching Record outside posts reaches the project's running sessions at once; other settings don't", () => {
+  const { manager } = ledung();
+  const refreshed: string[] = [];
+  const live = (manager as unknown as { live: Map<string, unknown> }).live;
+  live.set('w1', { id: 'w1', info: { project: 'shop' }, refreshSignature: async () => { refreshed.push('w1'); } });
+  live.set('o1', { id: 'o1', info: { project: 'other' }, refreshSignature: async () => { refreshed.push('o1'); } });
+  try {
+    const save = (more: Partial<ProjectConfig>) => manager.updateProject('shop', { name: 'shop', runner: 'local', path: base, ...more } as ProjectConfig);
+    save({ recordPosts: false });
+    assert.deepEqual(refreshed, ['w1']);
+    save({ recordPosts: false, model: 'claude-haiku-5-5' } as Partial<ProjectConfig>);
+    assert.deepEqual(refreshed, ['w1'], 'nothing the stand-in reads changed');
+    save({});
+    assert.deepEqual(refreshed, ['w1', 'w1'], 'on again (on is the default)');
+  } finally {
+    live.clear();
+  }
+});
+
 test("a session's signature is its project's as saved now, with the person's name and no run outside one", async () => {
   const { manager, store } = ledung();
   store.createSession({ id: 'w1', project: 'shop', runner: 'local', title: 'Worker', parentId: null, permissionMode: 'default', role: 'session' });

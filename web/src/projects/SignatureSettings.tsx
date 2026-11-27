@@ -88,7 +88,7 @@ export function SignatureSettings({ value, onChange, userName, project }: { valu
       <p className="muted small-note">
         Fill-ins: <code>{'{user}'}</code> <code>{'{project}'}</code> <code>{'{run}'}</code> <code>{'{workflow}'}</code> <code>{'{model}'}</code>. A line whose fill-ins are empty (outside a run, {'{run}'} and {'{workflow}'}) is left out.
         <br />If a repo or your employer asks for AI involvement to be stated, keep a line that says so.
-        <br />Issues, comments and other trackers get their texts in a later update; PR descriptions and commits get theirs now.
+        <br />Other trackers get their text in a later update; GitHub's PR descriptions, commits, new issues, comments and reviews get theirs now.
       </p>
       {!off && (
         <>
@@ -102,7 +102,7 @@ export function SignatureSettings({ value, onChange, userName, project }: { valu
       <h4>Outbox</h4>
       <label className="toggle">
         <input type="checkbox" checked={value.recordPosts} onChange={(e) => onChange({ ...value, recordPosts: e.target.checked })} />
-        {' '}<span><span className="field-name">Record outside posts</span> <span className="muted">(separate from the signature: posts are recorded even when the signature is off. Kept 30 days, on this computer; recording starts with the Outbox update)</span></span>
+        {' '}<span><span className="field-name">Record outside posts</span> <span className="muted">(separate from the signature: posts are recorded even when the signature is off. Kept 30 days, on this computer; the Outbox that lists them is coming)</span></span>
       </label>
     </div>
   );

@@ -91,10 +91,19 @@ function hasFlag(args: readonly string[], names: readonly string[], review = fal
   return false;
 }
 
-/** What a gh call is: recorded or not, and signed where. Reads only the arguments. */
-export function classify(args: readonly string[]): Call | null {
+/**
+ * Where `gh api graphql` may find its query besides the arguments: a file, or stdin (read once, then handed to gh).
+ * Without one, only a query given in the arguments is seen.
+ */
+export interface QueryReader {
+  file(p: string): string | null;
+  stdin(): string;
+}
+
+/** What a gh call is: recorded or not, and signed where. Reads only the arguments, and a GraphQL query's file or stdin. */
+export function classify(args: readonly string[], read?: QueryReader): Call | null {
   const top = args[0];
-  if (top === 'api') return apiCall(args.slice(1));
+  if (top === 'api') return apiCall(args.slice(1), read);
   if (top !== 'issue' && top !== 'pr') return null;
   const { sub, rest } = subcommand(args);
   const repo = repoOf(args);
@@ -118,11 +127,17 @@ export function classify(args: readonly string[]): Call | null {
   return null;
 }
 
-/** `gh api` that writes: an explicit POST, PATCH, PUT or DELETE, or fields without a method (gh then posts). */
-export function apiCall(args: readonly string[]): Call | null {
+/**
+ * `gh api` that writes: an explicit POST, PATCH, PUT or DELETE, or fields without a method (gh then posts). For
+ * `graphql`, a mutation: in a query= field, a -F query=@file (or @-), or an --input file or stdin (review of PR #519,
+ * finding 4), read through `read`.
+ */
+export function apiCall(args: readonly string[], read?: QueryReader): Call | null {
   let method: string | null = null;
   let fields = false;
-  let mutation = false;
+  // Where the query is: given as text, or to be read from a file ("-" is stdin), only when the endpoint is graphql.
+  const queries: string[] = [];
+  const queryFiles: string[] = [];
   let endpoint: string | null = null;
   let repo: string | null = null;
   const valued = new Set(['-X', '--method', '-f', '--raw-field', '-F', '--field', '--input', '-H', '--header', '-q', '--jq', '-t', '--template', '--hostname', '--cache', '-p', '--preview']);
@@ -135,15 +150,35 @@ export function apiCall(args: readonly string[]): Call | null {
     if (name === '-X' || name === '--method') method = (value ?? '').toUpperCase();
     if (['-f', '--raw-field', '-F', '--field', '--input'].includes(name)) {
       fields = true;
-      if (/^query=/.test(value ?? '') && /\bmutation\b/.test(value ?? '')) mutation = true;
+      const v = value ?? '';
+      if (name === '--input') queryFiles.push(v);
+      else if (v.startsWith('query=')) {
+        // Only -F/--field reads a value from @file; -f/--raw-field sends it as written.
+        if ((name === '-F' || name === '--field') && v.startsWith('query=@')) queryFiles.push(v.slice('query=@'.length));
+        else queries.push(v.slice('query='.length));
+      }
     }
     if (name === '-R' || name === '--repo') repo = value;
   }
   if (!endpoint) return null;
   const effective = method ?? (fields ? 'POST' : 'GET');
+  const mutation = endpoint === 'graphql' && [...queries, ...queryFiles.map((f) => queryIn(f, read))].some((q) => /\bmutation\b/.test(q));
   // A GraphQL query is a POST too; only a mutation writes.
   const writes = endpoint === 'graphql' ? mutation || (method !== null && method !== 'POST' && method !== 'GET') : ['POST', 'PATCH', 'PUT', 'DELETE'].includes(effective);
   return writes ? { kind: 'api', place: null, repo, api: { method: effective, path: endpoint } } : null;
+}
+
+/** A query file's text, or an --input body's query (JSON with a "query"); "" when it can't be read. */
+function queryIn(file: string, read: QueryReader | undefined): string {
+  if (!read) return '';
+  const text = (file === '-' ? read.stdin() : read.file(file)) ?? '';
+  try {
+    const q = (JSON.parse(text) as { query?: unknown }).query;
+    if (typeof q === 'string') return q;
+  } catch {
+    // Not JSON: a -F query=@file's plain query.
+  }
+  return text;
 }
 
 /** Where a call's body comes from: one --body or --body-file, at these argument positions. */
@@ -231,8 +266,10 @@ interface Plan {
 
 /** Everything the stand-in decides before the real gh runs; throws on anything unexpected (the caller passes through). */
 function planCall(args: string[], session: StandInSession, readStdin: () => Buffer): Plan {
-  const call = classify(args);
-  const plain: Plan = { args, stdin: 'inherit', call: session.record ? call : null, signed: false };
+  // A GraphQL query in a file or on stdin is read only to record it: not when recording is off.
+  let readQuery: Buffer | null = null;
+  const call = classify(args, session.record ? { file: readText, stdin: () => (readQuery = readStdin()).toString('utf8') } : undefined);
+  const plain: Plan = { args, stdin: readQuery ?? 'inherit', call: session.record ? call : null, signed: false };
   if (!call) return plain;
   const review = call.kind === 'pr-review';
   if (call.kind === 'pr') {
@@ -360,5 +397,6 @@ export async function main(sessionFile: string, args: string[]): Promise<number>
       // Recording never changes the answer.
     }
   }
-  return code;
+  // 197 would make the shell run gh a second time (review of PR #519, finding 6): gh doesn't use it, but never post twice.
+  return code === PASS_TO_SHELL ? 1 : code;
 }

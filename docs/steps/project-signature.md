@@ -154,6 +154,12 @@ Ledung's existing hook gets one more step for `mcp__*` tools of servers that are
 
 **Where it is kept:** locally, in Ledung's database (a new `MIGRATIONS` entry), filled from the journals, the hook's record and the board. It is **kept 30 days**, then trimmed, and sent nowhere. At 1280 px it is a table. At 390 px each entry is a card of two lines: the kind and the link, cut off with "…", then project · run · time · session · signed. Where it lives is open choice 5. The board's held posts are also called an outbox in the code (PR #131), but the page never shows that word, so the name is free.
 
+**For part 4, from the review of PR #519 (part 2):**
+
+- **Failed calls are in the journal.** The stand-in writes a line for every recorded call with gh's exit code, since a non-zero exit doesn't prove nothing went out. The Outbox leaves out lines with `exit` other than 0: a usage error or a refused review isn't a post.
+- **The journals are in the system temp folder** (`<tmp>/ledung-gh-<tag>/<session>/journal.jsonl`), and nothing prunes them yet. The system's own cleaners (macOS's `/var/folders` sweep, Windows Storage Sense) may delete one before it is read. Part 4 reads them into the database promptly (at least when a session ends and at Ledung's start), then removes the session's folder once its session has ended; the 30 days are counted in the database.
+- **A session can write to its own journal.** Its lines are untrusted: shown as plain text, and only `https://github.com/…` addresses are made links.
+
 ## What is shown
 
 Mock-ups, static, dark mode, made-up projects (`project-signature/settings-mock.html`, `project-signature/outbox-mock.html`):
