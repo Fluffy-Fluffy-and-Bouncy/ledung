@@ -92,6 +92,10 @@ test('#515: archive_session by the project\'s current manager archives an old on
   t.mgr('now', 'gen', 'idle', { current: true });
   t.mgr('elsewhere', 'other', 'idle', { current: true });
   t.mgr('other-old', 'other', 'ended');
+  // The current manager finds the old one's id in list_sessions; another project's manager doesn't see it there.
+  assert.match(t.management.listSessions('now'), /Old managers of gen, replaced by you[^\n]*\n- "Manager: gen" \(old\): /);
+  assert.doesNotMatch(t.management.listSessions('elsewhere'), /\(old\)/);
+  assert.match(t.management.listSessions('elsewhere'), /\(other-old\)/, 'its own project\'s old one, though');
   // Another project's manager can't reach it, and the current manager can't archive another project's old one.
   assert.throws(() => t.management.archiveSession('elsewhere', 'old'), /not one you started/);
   assert.throws(() => t.management.archiveSession('now', 'other-old'), /not one you started/);
@@ -99,6 +103,7 @@ test('#515: archive_session by the project\'s current manager archives an old on
   assert.match(t.management.archiveSession('now', 'old'), /^Archived "Manager: gen"/);
   assert.ok(t.store.getSession('old')!.archivedAt);
   assert.ok(t.events.includes('old: Archived by manager "Manager: gen".'));
+  assert.doesNotMatch(t.management.listSessions('now'), /Old managers/, 'archived: no longer listed');
   // The current manager itself, ended: not its own session, and refused all the same.
   t.store.updateSession('now', { status: 'ended' });
   assert.throws(() => t.management.archiveSession('now', 'now'), /not one you started/);

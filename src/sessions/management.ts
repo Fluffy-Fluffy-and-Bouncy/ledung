@@ -660,8 +660,24 @@ export class Management {
     return this.ctx.orders.done(managerId, id);
   }
 
-  /** Archived sessions are left out, with their count, so the list stays short. */
+  /**
+   * Archived sessions are left out, with their count, so the list stays short. Old managers of its own project, not
+   * archived, are named last, so archive_session can find them (issue #515).
+   */
   listSessions(managerId: string): string {
+    const listed = this.listOwnSessions(managerId);
+    const me = this.store.getSession(managerId);
+    const project = me && this.ctx.projects().find((p) => p.name === me.project);
+    const old = project?.managerId === managerId
+      ? this.store.listSessions().filter((s) => s.role === 'manager' && s.project === project.name && s.id !== managerId && !s.archivedAt)
+      : [];
+    if (!old.length) return listed;
+    const now = Date.now();
+    return `${listed}\nOld managers of ${project!.name}, replaced by you (archive_session archives one once ended):\n` +
+      old.map((s) => `- "${s.title}" (${s.id}): ${stateFor(s, now)}`).join('\n');
+  }
+
+  private listOwnSessions(managerId: string): string {
     const all = this.store.childSessions(managerId);
     if (!all.length) {
       const me = this.store.getSession(managerId);
