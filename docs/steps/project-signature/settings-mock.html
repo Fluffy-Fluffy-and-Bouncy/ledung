@@ -1,0 +1,66 @@
+<!doctype html>
+<!-- Mock-up for docs/steps/project-signature.md (issue #513): Project settings → Signature. Static, not wired to anything. Colours from web/src/styles.css, dark. -->
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root { color-scheme: dark; --bg:#16181d; --panel:#1d2026; --panel-2:#252932; --text:#e3e6eb; --muted:#9aa1ad; --border:#333844; --accent:#7aa2f7; --accent-text:#10131a; --code-bg:#14161b; --warn-bg:#3a2f17; --warn-border:#a37a1f; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui, "Segoe UI", sans-serif; }
+.wrap { max-width:860px; margin:0 auto; padding:1.2rem 1.4rem; }
+h1 { font-size:1.25rem; margin:0 0 .2rem; }
+h2 { font-size:1rem; margin:1.2rem 0 .4rem; }
+.sub { color:var(--muted); margin:0 0 1rem; }
+.presets { display:flex; flex-wrap:wrap; gap:.4rem; margin-bottom:.4rem; }
+.preset { border:1px solid var(--border); background:var(--panel); border-radius:6px; padding:.35rem .8rem; color:var(--muted); }
+.preset.on { background:var(--accent); color:var(--accent-text); border-color:var(--accent); font-weight:600; }
+.preset.dim { border-style:dashed; }
+.hint { color:var(--muted); font-size:.85rem; margin:0 0 .8rem; }
+.place { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:.6rem .75rem; margin-bottom:.5rem; display:grid; grid-template-columns:12rem 1fr; gap:.3rem .8rem; align-items:start; }
+.place label { font-weight:600; padding-top:.3rem; }
+.place .why { grid-column:1; color:var(--muted); font-size:.8rem; }
+textarea, select { width:100%; background:var(--code-bg); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:.35rem .5rem; font:13px/1.4 ui-monospace, Consolas, monospace; resize:vertical; }
+textarea::placeholder { color:var(--muted); font-family:system-ui, sans-serif; }
+.opts { grid-column:2; color:var(--muted); font-size:.85rem; display:flex; gap:1rem; flex-wrap:wrap; }
+.preview { background:var(--code-bg); border:1px solid var(--border); border-radius:6px; padding:.5rem .7rem; font:13px/1.5 ui-monospace, Consolas, monospace; white-space:pre-wrap; color:var(--muted); }
+.preview b { color:var(--text); font-weight:400; }
+table { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+th, td { text-align:left; padding:.45rem .7rem; border-bottom:1px solid var(--border); }
+th { color:var(--muted); font-weight:600; font-size:.8rem; background:var(--panel-2); }
+tr:last-child td { border-bottom:0; }
+.wait { background:var(--warn-bg); border:1px solid var(--warn-border); border-radius:4px; padding:.05rem .4rem; font-size:.8rem; }
+@media (max-width: 640px) {
+  .wrap { padding:.8rem; }
+  .place { grid-template-columns:1fr; }
+  .place .why, .opts { grid-column:1; }
+}
+</style></head><body><div class="wrap">
+<h1>shop · Signature</h1>
+<p class="sub">A line added to what sessions post in your name, so readers can see it came through Ledung.</p>
+
+<div class="presets"><span class="preset">Claude Code standard</span><span class="preset">Ledung standard</span><span class="preset">None</span><span class="preset on">Custom</span></div>
+<p class="hint">Custom: you changed the issue text of Ledung standard. Picking a preset replaces your texts.</p>
+
+<div class="place"><label>PR descriptions</label><textarea rows="1">— via Ledung for {user}</textarea><span class="why">Replaces Claude Code's line</span></div>
+<div class="place"><label>Commits</label><textarea rows="2">Via: Ledung for {user}
+Ledung-Run: {run}</textarea><span class="why">Replaces Claude's co-author trailer</span></div>
+<div class="place"><label>New issues</label><textarea rows="1">— filed via Ledung for {user} ({project})</textarea><div class="opts"><span>☑ Public repos only</span></div></div>
+<div class="place"><label>Issue comments</label><textarea rows="1" placeholder="Empty: off"></textarea></div>
+<div class="place"><label>PR comments and reviews</label><textarea rows="1" placeholder="Empty: off"></textarea></div>
+<div class="place"><label>Other trackers</label><textarea rows="1">— via Ledung</textarea></div>
+<p class="hint">Fill-ins: {user} {project} {run} {workflow}. A line whose fill-ins are empty (outside a run) is left out.</p>
+
+<h2>Preview, for a run</h2>
+<div class="preview">New issue in example/shop (public), run-42:
+<b>…the issue text
+— filed via Ledung for Simon (shop)</b>
+
+Commit:
+<b>Via: Ledung for Simon
+Ledung-Run: run-42</b></div>
+
+<h2>Tracker tools</h2>
+<table><thead><tr><th>Tool</th><th>Field signed</th></tr></thead><tbody>
+<tr><td>Linear: create_comment</td><td><span class="wait">Which field?</span></td></tr>
+<tr><td>Linear: create_issue</td><td>description</td></tr>
+</tbody></table>
+<p class="hint">Asked once per tool. With Other trackers empty, nothing is asked or signed.</p>
+</div></body></html>
