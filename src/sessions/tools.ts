@@ -898,7 +898,7 @@ export function ledungToolServer(h: ToolHandlers, describe?: DescribeTools): Mcp
         ),
         order: orderSchema.optional(),
       }, async (a) => safely(() => m.startSession({ task: a.task, title: a.title, permissionMode: a.permission_mode, model: a.model, effort: a.effort, profile: a.profile, cwd: a.cwd, order: orderSpec(a.order) }))) as never,
-      tool('list_sessions', 'List the sessions you started: status and how long they have been in it, and open questions.', {}, async () => safely(() => m.listSessions())) as never,
+      tool('list_sessions', 'List the sessions you started: status and how long they have been in it, and open questions; also the old managers of your own project you replaced, not yet archived.', {}, async () => safely(() => m.listSessions())) as never,
       tool('read_session', "Read the recent messages of one of your sessions.", {
         id,
         last: z.number().int().positive().max(100).optional().describe('How many of the latest entries (default 20).'),
@@ -922,7 +922,7 @@ export function ledungToolServer(h: ToolHandlers, describe?: DescribeTools): Mcp
         instructions: z.string().optional().describe(`Optional extra instructions for the summary: one line, at most 200 characters. The project's CLAUDE.md "Compact Instructions" apply anyway.`),
         then: z.string().min(1).optional().describe('Delivered after the compact, e.g. "Continue with issue 12." It says so if the compact failed.'),
       }, async (a) => safely(() => m.compactSession(a.id, a.instructions, a.then))) as never,
-      tool('archive_session', 'Archive one of your sessions once it has ended: it leaves the sidebar and list_sessions, nothing is deleted. Archive a session when its work is done and reported and you no longer need to follow it; stop it first if it still runs. send_message to an archived session resumes and unarchives it.', { id }, async (a) => safely(() => m.archiveSession(a.id))) as never,
+      tool('archive_session', 'Archive one of your sessions once it has ended: it leaves the sidebar and list_sessions, nothing is deleted. Archive a session when its work is done and reported and you no longer need to follow it; stop it first if it still runs. send_message to an archived session resumes and unarchives it. An ended old manager of your own project (list_sessions names them) can be archived the same way.', { id }, async (a) => safely(() => m.archiveSession(a.id))) as never,
       tool('answer_question', `Answer a question from one of your sessions yourself, under your standing grant. It is marked as your decision, not ${who}'s.`, {
         question: z.number().int().positive(),
         answer: z.string().min(1),

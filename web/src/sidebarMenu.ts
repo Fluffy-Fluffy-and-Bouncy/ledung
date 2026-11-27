@@ -9,10 +9,14 @@ export type SessionAction =
 /** newProject: with the Ledung Helper (docs/steps/ledung-helper.md), on every project's heading. */
 export type GroupAction = 'newSession' | 'newChat' | 'newProject' | 'account' | 'settings' | 'workflow' | 'collapseAll' | 'expandAll';
 
-type Shown = Pick<SessionInfo, 'role' | 'status' | 'paused' | 'claudeSessionId' | 'archivedAt' | 'compacting' | 'clearDue'>;
+type Shown = Pick<SessionInfo, 'role' | 'status' | 'paused' | 'claudeSessionId' | 'archivedAt' | 'compacting' | 'clearDue'> & {
+  /** A manager its project no longer uses, as another is its manager now (issue #515): it can be archived once ended. */
+  replaced?: boolean;
+};
 
 /**
- * What a session's, chat's or manager's row offers. A manager is the same minus Archive (it can't be archived), plus
+ * What a session's, chat's or manager's row offers. A manager is the same minus Archive (its project's current
+ * manager can't be archived; an ended one a newer manager replaced can, issue #515), plus
  * its project's workflow when there is one. Priority is a session's only: a manager never waits in line (manager.ts,
  * mayStart), as in its ⚙ menu.
  */
@@ -35,7 +39,18 @@ export function sessionActions(s: Shown, hasWorkflow: boolean): SessionAction[] 
     // Ended: archived at once, as nothing is deleted; running: stopped first, asked first.
     // Not while starting: a stop then may come before Claude Code is up and leave it unended (review finding 6).
     ...(s.role === 'session' && !s.archivedAt ? (ended ? ['archive' as const] : live && s.status !== 'starting' ? ['stopArchive' as const] : []) : []),
+    // A replaced manager only once ended, no Stop and archive: stopping a manager stays its own step.
+    ...(s.role === 'manager' && s.replaced && ended && !s.archivedAt ? ['archive' as const] : []),
   ];
+}
+
+/**
+ * Whether a manager is one its project replaced (issue #515): the project names another as its manager. One whose
+ * project the page doesn't know is not, as the server sees it.
+ */
+export function isReplacedManager(s: Pick<SessionInfo, 'id' | 'role' | 'project'>, projects: Pick<ProjectInfo, 'name' | 'managerId'>[]): boolean {
+  const current = projects.find((p) => p.name === s.project)?.managerId;
+  return s.role === 'manager' && !!current && current !== s.id;
 }
 
 /**

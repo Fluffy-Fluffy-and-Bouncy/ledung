@@ -8,7 +8,11 @@ import { HELPER, type SessionInfo } from '../../src/shared/protocol.ts';
 export type MenuControl = 'away' | 'permissions' | 'priority' | 'toolCalls' | 'usage' | 'pause' | 'stop' | 'version';
 export type HeaderControl = 'startNow' | 'clear' | 'compacting' | 'resume' | 'archive';
 
-type Shown = Pick<SessionInfo, 'role' | 'status' | 'clearDue' | 'compacting' | 'claudeSessionId' | 'claudeVersion'> & { project?: string };
+type Shown = Pick<SessionInfo, 'role' | 'status' | 'clearDue' | 'compacting' | 'claudeSessionId' | 'claudeVersion'> & {
+  project?: string;
+  /** A manager its project replaced with another (issue #515): Archive, like a session's, once ended. */
+  replaced?: boolean;
+};
 
 /** Which controls a session's ⚙ menu holds and which stay in its header, in the order they are shown. */
 export function sessionControls(s: Shown): { menu: MenuControl[]; header: HeaderControl[] } {
@@ -31,7 +35,7 @@ export function sessionControls(s: Shown): { menu: MenuControl[]; header: Header
     ...(s.clearDue != null && !ended ? ['clear' as const] : []),
     ...(s.compacting && !ended ? ['compacting' as const] : []),
     ...(ended && s.claudeSessionId ? ['resume' as const] : []),
-    ...(ended && s.role === 'session' ? ['archive' as const] : []),
+    ...(ended && (s.role === 'session' || (s.role === 'manager' && s.replaced)) ? ['archive' as const] : []),
   ];
   return { menu, header };
 }
