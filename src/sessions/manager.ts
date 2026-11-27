@@ -3742,9 +3742,10 @@ export class SessionManager {
     }
     // A manager that never got going is replaced; a name the user gave it carries over (issue #223).
     let managerName: string | undefined;
+    let existing: SessionInfo | undefined;
     if (role === 'manager') {
       const current = this.projectStore.get(project.name)?.managerId;
-      const existing = current ? this.store.getSession(current) : undefined;
+      existing = current ? this.store.getSession(current) : undefined;
       if (existing && existing.claudeSessionId) {
         throw new UserError(`The project "${project.name}" already has a manager. Open it, or write to it to start it again.`);
       }
@@ -3762,6 +3763,8 @@ export class SessionManager {
     if (role === 'manager') {
       this.projectStore.setManager(project.name, info.id);
       this.publishProjects();
+      // The one it replaced never got going (issue #514): out of the sidebar by itself once ended (issue #515).
+      if (existing && this.store.getSession(existing.id)?.status === 'ended' && !existing.archivedAt) this.archive(existing.id, 'Ledung (a new manager replaced it)');
     }
     const session = new Session({ info, ...this.sessionOptions(project, info) });
     this.noteLaunch(project, info);
@@ -3916,18 +3919,28 @@ ${firstMessage}`);
 
   /**
    * Takes an ended session out of the sidebar; nothing about it is deleted. Simon may archive any ended
-   * session, a manager only its own (checked in Management). A project's manager is never archived.
+   * session, a manager only its own (checked in Management). A project's current manager is never archived; an
+   * ended one it no longer uses, which a newer manager replaced, is (issue #515).
    */
   archive(id: string, by = this.config.userName): SessionInfo {
     const info = this.store.getSession(id);
     if (!info) throw new UserError('No such session.');
-    if (info.role === 'manager') throw new UserError("A project's manager can't be archived.");
+    if (info.role === 'manager' && !this.replacedManager(info)) throw new UserError("A project's current manager can't be archived.");
     if (info.status !== 'ended') throw new UserError('Only an ended session can be archived. Stop it first.');
     if (info.archivedAt) return info;
     this.setArchived(id, Date.now(), `Archived by ${by}.`);
     // Its secrets for this session go with it, but those kept until removed (issue #468).
     void this.secrets?.endSession(id).catch((e) => console.error(`Secrets of ${id}: ${(e as Error).message}`));
     return this.store.getSession(id)!;
+  }
+
+  /**
+   * A manager its project no longer uses (issue #515): the project names another as its manager. One whose project
+   * Ledung no longer knows stays as it was, unarchivable, since nothing says it was replaced.
+   */
+  private replacedManager(info: SessionInfo): boolean {
+    const current = this.projectStore.get(info.project)?.managerId;
+    return info.role === 'manager' && !!current && current !== info.id;
   }
 
   unarchive(id: string, by = this.config.userName): SessionInfo {

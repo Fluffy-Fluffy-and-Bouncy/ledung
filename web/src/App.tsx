@@ -38,7 +38,7 @@ import { Named, sessionColour } from './components/ProjectName.tsx';
 import { NameEditor } from './components/NameEditor.tsx';
 import { siblingOrder } from './sidebarOrder.ts';
 import { useSidebarDrag } from './sidebarDrag.ts';
-import { EFFORT_LABEL, effortChoices, effortShown, groupActions, modelChoices, opensMenu, projectEffort, sessionActions } from './sidebarMenu.ts';
+import { EFFORT_LABEL, effortChoices, effortShown, groupActions, isReplacedManager, modelChoices, opensMenu, projectEffort, sessionActions } from './sidebarMenu.ts';
 import { RowMenu, type MenuEntry } from './components/RowMenu.tsx';
 import { copyText } from './components/Markdown.tsx';
 import { settingsOf, toApi } from './projects/projectSettings.ts';
@@ -933,7 +933,7 @@ const Sidebar = memo(function Sidebar(props: {
     const projectDefault = (s.role === 'manager' && project?.managerModel) || project?.model;
     const entries: MenuEntry[] = [];
     const act = (label: string, onPick: () => void, more: { hint?: string; ask?: { question: string; yes: string } } = {}) => entries.push({ kind: 'item', label, onPick, ...more });
-    for (const a of sessionActions(s, !!project && !!props.workflows[s.project])) {
+    for (const a of sessionActions({ ...s, replaced: isReplacedManager(s, props.projects) }, !!project && !!props.workflows[s.project])) {
       if (a === 'model') {
         // One row, "Model ▸ Haiku", opening the choices (Simon, 2026-11-08).
         const choices = modelChoices(s.requestedModel);
@@ -1385,7 +1385,7 @@ export function SessionView(props: {
     setFlowPane((v) => !v);
   };
   const ended = session.status === 'ended';
-  const controls = sessionControls(session);
+  const controls = sessionControls({ ...session, replaced: isReplacedManager(session, ledung.projects) });
   const lock = frameLevel(ledung.projects.find((p) => p.name === session.project));
   // The effort it runs with, beside its model (issue #202).
   const effort = effortShown(session, projectEffort(ledung.projects.find((p) => p.name === session.project), session.role));

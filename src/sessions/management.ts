@@ -586,6 +586,14 @@ export class Management {
     this.store.addInbox(q.sessionId, 'ledung', `Ledung: ${this.ctx.userName}'s answer to question #${q.id} decided request ${p.id} from "${this.title(p.sessionId)}": ${outcome}.`);
   }
 
+  /** Another manager of the project `managerId` now manages: one it replaced (issue #515). */
+  private formerManager(managerId: string, id: string): SessionInfo | undefined {
+    const s = this.store.getSession(id);
+    if (!s || s.role !== 'manager' || s.id === managerId) return undefined;
+    const project = this.ctx.projects().find((p) => p.name === s.project);
+    return project?.managerId === managerId ? s : undefined;
+  }
+
   private ownSession(managerId: string, id: string): SessionInfo {
     const s = this.store.getSession(id);
     if (!s || s.parentId !== managerId) throw new ManagementError(`Session ${id} is not one you started. Use list_sessions to see yours.`);
@@ -674,9 +682,12 @@ export class Management {
     return lines.join('\n');
   }
 
-  /** Only the manager's own sessions, and only once ended (idle stop and archive). */
+  /**
+   * Only the manager's own sessions, and only once ended (idle stop and archive); also an old manager of its own
+   * project, which it replaced (issue #515). Its project's current manager stays refused (SessionManager.archive).
+   */
   archiveSession(managerId: string, id: string): string {
-    const s = this.ownSession(managerId, id);
+    const s = this.formerManager(managerId, id) ?? this.ownSession(managerId, id);
     if (s.archivedAt) return `"${s.title}" is already archived.`;
     if (s.status !== 'ended') throw new ManagementError(`"${s.title}" is still ${s.status}. Stop it first (stop_session), then archive it.`);
     this.ctx.archiveSession(id, `manager "${this.title(managerId)}"`);
