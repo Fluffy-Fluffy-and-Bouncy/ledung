@@ -673,7 +673,7 @@ export class Management {
       : [];
     if (!old.length) return listed;
     const now = Date.now();
-    return `${listed}\nOld managers of ${project!.name}, replaced by you (archive_session archives one once ended):\n` +
+    return `${listed}\nOld managers of ${project!.name} (archive_session archives one once ended):\n` +
       old.map((s) => `- "${s.title}" (${s.id}): ${stateFor(s, now)}`).join('\n');
   }
 

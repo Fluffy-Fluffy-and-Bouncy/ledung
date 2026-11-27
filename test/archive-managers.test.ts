@@ -93,7 +93,7 @@ test('#515: archive_session by the project\'s current manager archives an old on
   t.mgr('elsewhere', 'other', 'idle', { current: true });
   t.mgr('other-old', 'other', 'ended');
   // The current manager finds the old one's id in list_sessions; another project's manager doesn't see it there.
-  assert.match(t.management.listSessions('now'), /Old managers of gen, replaced by you[^\n]*\n- "Manager: gen" \(old\): /);
+  assert.match(t.management.listSessions('now'), /Old managers of gen \(archive_session[^\n]*\n- "Manager: gen" \(old\): /);
   assert.doesNotMatch(t.management.listSessions('elsewhere'), /\(old\)/);
   assert.match(t.management.listSessions('elsewhere'), /\(other-old\)/, 'its own project\'s old one, though');
   // Another project's manager can't reach it, and the current manager can't archive another project's old one.
