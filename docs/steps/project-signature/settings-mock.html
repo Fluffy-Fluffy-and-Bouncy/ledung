@@ -31,30 +31,32 @@ tr:last-child td { border-bottom:0; }
   .wrap { padding:.8rem; }
   .place { grid-template-columns:1fr; }
   .place .why, .opts { grid-column:1; }
+  textarea { min-height:4.4em; }
+  textarea[rows="1"] { min-height:0; }
 }
 </style></head><body><div class="wrap">
 <h1>shop · Signature</h1>
 <p class="sub">A line added to what sessions post in your name, so readers can see it came through Ledung.</p>
 
 <div class="presets"><span class="preset">Claude Code standard</span><span class="preset">Ledung standard</span><span class="preset">None</span><span class="preset on">Custom</span></div>
-<p class="hint">Custom: you changed the issue text of Ledung standard. Picking a preset replaces your texts.</p>
+<p class="hint">Custom: Ledung standard with a text added for Other trackers. Picking a preset replaces your texts. An empty text adds nothing there.</p>
 
 <div class="place"><label>PR descriptions</label><textarea rows="1">— via Ledung for {user}</textarea><span class="why">Replaces Claude Code's line</span></div>
-<div class="place"><label>Commits</label><textarea rows="2">Via: Ledung for {user}
-Ledung-Run: {run}</textarea><span class="why">Replaces Claude's co-author trailer</span></div>
-<div class="place"><label>New issues</label><textarea rows="1">— filed via Ledung for {user} ({project})</textarea><div class="opts"><span>☑ Public repos only</span></div></div>
-<div class="place"><label>Issue comments</label><textarea rows="1" placeholder="Empty: off"></textarea></div>
-<div class="place"><label>PR comments and reviews</label><textarea rows="1" placeholder="Empty: off"></textarea></div>
+<div class="place"><label>Commits</label><textarea rows="3">Co-Authored-By: {model} &lt;noreply@anthropic.com&gt;
+Ledung-Run: {run}</textarea><span class="why">Replaces Claude Code's trailer</span></div>
+<div class="place"><label>New issues</label><textarea rows="1">— via Ledung for {user}</textarea></div>
+<div class="place"><label>Issue comments</label><textarea rows="1" placeholder="Empty: nothing added"></textarea></div>
+<div class="place"><label>PR comments and reviews</label><textarea rows="1" placeholder="Empty: nothing added"></textarea></div>
 <div class="place"><label>Other trackers</label><textarea rows="1">— via Ledung</textarea></div>
-<p class="hint">Fill-ins: {user} {project} {run} {workflow}. A line whose fill-ins are empty (outside a run) is left out.</p>
+<p class="hint">Fill-ins: {user} {project} {run} {workflow} {model}. A line whose fill-ins are empty (outside a run) is left out.<br>If a repo or your employer asks for AI involvement to be stated, keep a line that says so.</p>
 
-<h2>Preview, for a run</h2>
-<div class="preview">New issue in example/shop (public), run-42:
-<b>…the issue text
-— filed via Ledung for Simon (shop)</b>
+<h2>Preview, in run-42</h2>
+<div class="preview">PR description:
+<b>…the description
+— via Ledung for Simon</b>
 
 Commit:
-<b>Via: Ledung for Simon
+<b>Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;
 Ledung-Run: run-42</b></div>
 
 <h2>Tracker tools</h2>
