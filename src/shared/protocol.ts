@@ -1,5 +1,6 @@
 // Types shared by the core and the page. Only types here: the page imports this file too.
 
+import type { SignatureSetting } from './signature.ts';
 import type { FlowRun } from './flow-run.ts';
 import type { QuestionDetails } from './questions.ts';
 import type { AnswerParts } from './requests.ts';
@@ -427,6 +428,10 @@ export interface ProjectInfo {
   lockdown: { level: 'off' | 'A' | 'B'; board: boolean; remoteControl: boolean; network?: string[]; dockerNetwork?: string | null };
   /** Commands the person allowed always after the classifier refused them (issue #225), newest first. */
   allowedCalls?: AllowedCall[];
+  /** Its signature as saved (issue #513); null: Ledung's default. */
+  signature?: SignatureSetting | null;
+  /** Its sessions' outside posts are recorded for the Outbox (issue #513); on unless switched off. */
+  recordPosts?: boolean;
 }
 
 /**

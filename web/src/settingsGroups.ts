@@ -212,6 +212,13 @@ export const PROJECT_GROUPS: SettingsGroup[] = [
       { label: 'Question tiers', about: "The order of its questions in Waiting for you", keywords: ['questions', 'waiting', 'priority', 'order'] },
     ],
   },
+  {
+    id: 'signature', label: 'Signature', part: 'ledung',
+    settings: [
+      { label: 'Signature', about: 'The line added to what its sessions post in your name: PRs, commits, issues, comments', keywords: ['attribution', 'co-authored', 'commit', 'pull request', 'trailer', 'via ledung', 'generated with claude code'] },
+      { label: 'Record outside posts', about: "A list of what its sessions post outside, for Ledung's Outbox", keywords: ['outbox', 'record', 'posts', 'log'] },
+    ],
+  },
   { id: 'board', label: 'Message board', part: 'ledung', settings: [{ label: 'Use the board in this project', about: 'Its manager posts to and reads the message board', keywords: ['board', 'posts', 'messages'] }] },
   { id: 'remove', label: 'Remove project', part: 'info', settings: [{ label: 'Remove project', about: 'Takes it off the list and stops its sessions; the folder is not touched', keywords: ['delete', 'remove'] }] },
 ];

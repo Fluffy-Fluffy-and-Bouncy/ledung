@@ -337,6 +337,14 @@ export class FlowRuns {
   }
 
   /** The project's runs for the page, the latest changed first: the open ones and the latest others. */
+  /** A run's name and its flow's title, for a signature's {run} and {workflow} (issue #513); null: no such run. */
+  async signatureFillIns(runId: string): Promise<{ run: string; workflow: string } | null> {
+    const run = this.p.runs.get(runId);
+    if (!run) return null;
+    const flows = await this.p.flows(run.project).catch(() => null);
+    return { run: run.id, workflow: flows?.titles.get(run.flow) ?? run.flow };
+  }
+
   list(project: string): FlowRun[] {
     return this.p.runs.forPage(project);
   }

@@ -20,7 +20,7 @@ const project = (over: Partial<ProjectInfo> = {}): ProjectInfo => ({
 
 test("the project tab's side menu is mockup E's, in the issue's order", () => {
   assert.deepEqual(PROJECT_GROUPS.map((g) => g.label), [
-    'General', 'What always goes to you', "Manager's powers", 'Skills & profiles', 'Look', 'Workflow', 'Tickets & questions', 'Message board', 'Remove project',
+    'General', 'What always goes to you', "Manager's powers", 'Skills & profiles', 'Look', 'Workflow', 'Tickets & questions', 'Signature', 'Message board', 'Remove project',
   ]);
   assert.deepEqual(CHATS_GROUPS.map((g) => g.label), ['General', 'What always goes to you', 'Look']);
 });

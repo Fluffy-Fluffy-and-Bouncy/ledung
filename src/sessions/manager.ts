@@ -102,7 +102,8 @@ import { outgoingFinding } from '../board/outgoing.ts';
 import { LinkedFileError, LinkedFiles, LINKED_FILE_PREFIX, parseFileMeta, type ByteTotals } from '../remote/linked-files.ts';
 import { LinkedOutbox, type StreamOffer } from '../remote/linked-outbox.ts';
 import { linkOutgoing, zipProblem, type OutgoingStream } from '../remote/stream-kinds.ts';
-import { sensitiveInText } from '../board/address.ts';
+import { sensitiveInText, tokenLike } from '../board/address.ts';
+import { PLACE_LABELS, SIGNATURE_PLACES, sameSignature, signatureTexts, type SignatureLaunch } from '../shared/signature.ts';
 import type { RepoDirectory } from '../board/repos.ts';
 import { BoardStore } from '../board/store.ts';
 import { BoardError, type BoardBackend } from '../board/types.ts';
@@ -1420,6 +1421,24 @@ export class SessionManager {
         pathPatterns: [...this.config.sensitive.pathPatterns, ...project.sensitive.pathPatterns],
         mcpTools: [...this.config.sensitive.mcpTools, ...project.sensitive.mcpTools],
       },
+      // The project's signature in place of Claude Code's lines (issue #513); chats and the Helper keep Claude Code's.
+      signature: info.project === CHATS || helper ? null : () => this.signatureLaunch(info.id),
+    };
+  }
+
+  /**
+   * What a session's signature is worked out from (issue #513): its project's texts as saved now (read at each call,
+   * so a change and a rename are seen), the person's name, and the run and flow it works in; outside a run, none.
+   */
+  private async signatureLaunch(sessionId: string): Promise<SignatureLaunch> {
+    const info = this.store.getSession(sessionId);
+    const config = info ? this.projectStore.get(info.project)?.config : undefined;
+    if (!info || !config) throw new Error('its project is gone');
+    const run = info.runBlock ? await this.flowRuns.signatureFillIns(info.runBlock.run) : null;
+    return {
+      off: config.signature?.off === true,
+      texts: signatureTexts(config.signature),
+      values: { user: this.config.userName, project: config.name, run: run?.run ?? '', workflow: run?.workflow ?? '' },
     };
   }
 
@@ -2657,11 +2676,16 @@ export class SessionManager {
   /** New settings for a project. Running sessions keep theirs; new and resumed ones get the new ones. */
   updateProject(name: string, config: ProjectConfig): ProjectInfo {
     this.checkSettings(name, config);
+    const before = this.projectStore.get(name)?.config;
     try {
       const p = this.projectStore.update(name, config);
       this.publishProjects();
       // Locked, unlocked or a locked project's folders changed: sessions whose launch settings that changes restart (issue #109).
       this.relaunchChanged();
+      // Its running sessions get a changed signature at once (issue #513): Claude Code takes it mid-session.
+      if (!sameSignature(before?.signature, p.config.signature)) {
+        for (const s of this.live.values()) if (s.info.project === p.config.name) void s.refreshSignature();
+      }
       return this.projectInfo(p);
     } catch (e) {
       throw new UserError((e as Error).message);
@@ -2737,6 +2761,24 @@ export class SessionManager {
     }
     this.checkWorkflow(full, current.config);
     this.checkLockdownOf(full);
+    this.checkSignature(full);
+  }
+
+  /**
+   * A signature's texts against the sensitive patterns (the config's and the project's being saved) and for anything
+   * token-like, as a board post is checked (issue #513): a signature goes out on every post, so it is refused on save.
+   */
+  private checkSignature(config: ProjectConfig): void {
+    const rules = {
+      commandPatterns: [...this.config.sensitive.commandPatterns, ...(config.sensitive?.commandPatterns ?? [])],
+      pathPatterns: [...this.config.sensitive.pathPatterns, ...(config.sensitive?.pathPatterns ?? [])],
+    };
+    for (const place of SIGNATURE_PLACES) {
+      const text = config.signature?.texts?.[place];
+      if (!text) continue;
+      const found = sensitiveInText(text, rules) ?? tokenLike(text);
+      if (found) throw new UserError(`The signature for "${PLACE_LABELS[place]}" can't be saved: ${found}.`);
+    }
   }
 
   /** A project's name colours (issue #83), set from its manager's ⚙ menu; only palette colours. */
@@ -4858,6 +4900,8 @@ function projectInfo(p: StoredProject): ProjectInfo {
     colours: p.colours,
     lockdown: lockdownOf(c),
     skills: c.skills ?? {},
+    signature: c.signature ?? null,
+    recordPosts: c.recordPosts !== false,
   };
 }
 
