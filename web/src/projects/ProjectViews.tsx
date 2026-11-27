@@ -16,6 +16,7 @@ import { frameLevel } from '../lockdownFrame.ts';
 import { usePlainTyping } from '../usePlainTyping.ts';
 import { SkillPicker, skillCounts, useSkillList } from '../components/SkillPicker.tsx';
 import { NameColourPickers } from '../components/ProjectName.tsx';
+import { SignatureSettings } from './SignatureSettings.tsx';
 import { InheritLine, SaveBar, SettingsSplit, useNarrow } from '../components/SettingsFrame.tsx';
 import { NARROW_QUERY } from '../sidebarSize.ts';
 import { PROJECT_GROUPS, tabGroupOf, tabGroupView, tabView } from '../settingsGroups.ts';
@@ -742,13 +743,15 @@ export function AddProjectView({ run, onAdded, accounts, defaultAccount, profile
  * What is typed is kept while moving between the tab's groups. "What always goes to you" is a group of its own, and the
  * name colours, moved here from the manager's ⚙, still save at once.
  */
-export function ProjectSettingsView({ view, project, projects, run, onOpen, onRemoved, onRenamed, onWorkflow, accounts, profiles, board, lockdownB }: {
+export function ProjectSettingsView({ view, project, projects, run, onOpen, onRemoved, onRenamed, onWorkflow, accounts, profiles, board, lockdownB, userName }: {
   view: string; board: BoardStatus | null; project: ProjectInfo; projects: ProjectInfo[]; run: Run; onOpen: (view: string) => void; onRemoved: () => void;
   /** After a rename: the view to open, the same group under the new name. */
   onRenamed: (view: string) => void;
   /** Opens the project's workflow page, its drawn process (issue #310). */
   onWorkflow: () => void;
   accounts: AccountInfoView[]; profiles: string[]; lockdownB: string | null;
+  /** The person's name, for the signature's preview (issue #513). */
+  userName: string;
 }) {
   const narrow = useNarrow(NARROW_QUERY);
   const group = tabGroupOf(tabView(view) ?? { project: project.name, group: null }, narrow);
@@ -783,6 +786,7 @@ export function ProjectSettingsView({ view, project, projects, run, onOpen, onRe
     safety: String(settings.commandPatterns.length + settings.pathPatterns.length),
     powers: settings.lockdownLevel === 'off' ? '' : `lockdown ${settings.lockdownLevel}`,
     board: boardEdit.saved.enabled ? '' : 'off',
+    signature: edited.saved.signatureOff ? 'off' : '',
   };
   // The board first, under the name it is saved under now; then the project, which a new name goes with in one
   // request (issue #116): refused, nothing changes and the tab keeps what was typed; saved, it moves to the new name.
@@ -807,9 +811,15 @@ export function ProjectSettingsView({ view, project, projects, run, onOpen, onRe
   });
   const discard = () => { edited.discard(); boardEdit.discard(); };
   const blocked = (boardCount ? boardBlocked(boardEdit.value) : null) ?? (settings.name.trim() ? null : 'The project needs a name.');
+  // A changed signature reaches running sessions at once (issue #513), unlike the other settings.
+  const signing = changed.some((k) => k === 'signature' || k === 'signatureOff');
   const note = renaming
-    ? 'saving renames the project; its sessions, manager and questions stay with it, and its folder is not moved'
-    : 'running sessions keep theirs; new and resumed ones get these';
+    ? `saving renames the project; its sessions, manager and questions stay with it, and its folder is not moved${signing ? '; the signature reaches running sessions at once' : ''}`
+    : signing
+      ? changed.every((k) => FIELD_GROUP[k] === 'signature') && !boardCount
+        ? 'the signature reaches running sessions at once'
+        : 'the signature reaches running sessions at once; for the rest, running sessions keep theirs and new and resumed ones get these'
+      : 'running sessions keep theirs; new and resumed ones get these';
   return (
     <SettingsSplit groups={PROJECT_GROUPS} current={group} words={words} marked={marked} narrow={narrow}
       onOpen={(g) => onOpen(g === null ? `ps:${project.name}` : tabGroupView(project.name, g))}
@@ -883,6 +893,12 @@ export function ProjectSettingsView({ view, project, projects, run, onOpen, onRe
             <TicketFields {...f} />
             <TiersField {...f} />
           </div>
+        </section>
+      )}
+      {group === 'signature' && (
+        <section>
+          <h3>Signature</h3>
+          <SignatureSettings value={settings} onChange={f.onChange} userName={userName} project={project.name} />
         </section>
       )}
       {group === 'board' && (

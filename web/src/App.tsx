@@ -489,7 +489,7 @@ export function App() {
       <ChatsSettingsView view={openId!} chats={ledung.chats} run={run} onOpen={open} />
     ) : settingsProject ? () => (
       // Keyed by the project, not the group, so what is typed stays while moving between the tab's groups.
-      <ProjectSettingsView key={settingsProject.name} view={openId!} board={ledung.board} projects={ledung.projects} project={settingsProject} run={run} accounts={ledung.accounts} profiles={settingsProject.profileNames ?? ledung.profiles} lockdownB={ledung.lockdownB} onOpen={open} onRemoved={() => open(null)} onRenamed={reopen} onWorkflow={() => open(`wf:${settingsProject.name}`)} />
+      <ProjectSettingsView key={settingsProject.name} view={openId!} board={ledung.board} projects={ledung.projects} project={settingsProject} run={run} accounts={ledung.accounts} profiles={settingsProject.profileNames ?? ledung.profiles} lockdownB={ledung.lockdownB} userName={ledung.userName} onOpen={open} onRemoved={() => open(null)} onRenamed={reopen} onWorkflow={() => open(`wf:${settingsProject.name}`)} />
     ) : null;
 
   // The limits strip follows the selected project's account and keeps the last one over views with no project.

@@ -2187,3 +2187,23 @@ button.link-button:hover:not(:disabled) { border: none; }
 .req-decision .opts-block { margin-top: 0; }
 .req-decision .opts-block > h4 { font-size: 0.95rem; text-transform: none; letter-spacing: 0; color: var(--text); }
 .req-decision.req-question .opts-block > h4 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+
+/* A project's Signature group (issue #513): a text per place, the label beside it, stacked on a narrow screen. */
+.signature { display: flex; flex-direction: column; gap: 0.5rem; max-width: 52rem; }
+.signature p { margin: 0; }
+.signature h4 { margin: 0.8rem 0 0.1rem; font-size: 0.95em; }
+.signature .small-note { font-size: 0.85em; }
+.signature-top { display: flex; align-items: center; gap: 0.7rem; flex-wrap: wrap; }
+.signature-switch { margin-left: auto; }
+.signature-state { font-size: 0.85em; padding: 0.1rem 0.7rem; }
+.signature-place { display: grid; grid-template-columns: 13rem 1fr; gap: 0.3rem 0.8rem; align-items: start; padding: 0.5rem 0.7rem; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
+.signature-place label { display: flex; flex-direction: column; padding-top: 0.3rem; }
+.signature-place label .muted { font-size: 0.8em; }
+.signature-place > div { display: flex; flex-direction: column; gap: 0.2rem; min-width: 0; }
+.signature-place textarea { width: 100%; box-sizing: border-box; font: 13px/1.4 ui-monospace, Consolas, monospace; padding: 0.35rem 0.5rem; resize: vertical; }
+.signature-place.off { opacity: 0.55; }
+.signature-preview { white-space: pre-wrap; padding: 0.5rem 0.7rem; border: 1px solid var(--border); border-radius: 6px; background: var(--code-bg, var(--panel)); font-size: 13px; overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .signature-place { grid-template-columns: 1fr; }
+  .signature-place label { padding-top: 0; }
+}

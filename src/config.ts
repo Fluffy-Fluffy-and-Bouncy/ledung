@@ -12,6 +12,7 @@ import { SkillChoicesSetting } from './sessions/skills.ts';
 import { LockdownSetting } from './projects/lockdown.ts';
 import { COMPUTER_COLOURS, COMPUTER_NAME_MAX, type ComputerColour } from './shared/computers.ts';
 import { USAGE_REPO } from './shared/published-usage.ts';
+import { PLACE_LABELS, SIGNATURE_MAX, SIGNATURE_PLACES, unknownFillIn, type SignaturePlace } from './shared/signature.ts';
 import { ACCOUNT_NAME, canonicalContainerFolder, DEFAULT_ACCOUNT, sameFolder, sharedLoginFolders } from './accounts/store.ts';
 
 /** Patterns that make a request sensitive (always to the user), on top of the built-in ones. */
@@ -32,6 +33,26 @@ const Effort = z.enum(EFFORT_LEVELS as [EffortLevel, ...EffortLevel[]]);
 
 /** Ticket ids to find in a session's title, branch and pull request, shown as links (step 5c). */
 const TicketsSetting = z.object({ pattern: z.string().min(1), url: z.string().min(1) }).optional();
+
+/**
+ * A place's signature text (issue #513): only the five fill-ins, so nothing private can be put in one. The message
+ * names the place as the page does ("Issue comments: …"), and parseProject shows it without the internal path.
+ */
+const signatureText = (place: SignaturePlace) => z.string().max(SIGNATURE_MAX).superRefine((t, ctx) => {
+  const unknown = unknownFillIn(t);
+  if (unknown) ctx.addIssue({ code: 'custom', message: `${PLACE_LABELS[place]}: ${unknown} is not a fill-in; use {user}, {project}, {run}, {workflow} or {model}.`, params: { plain: true } });
+});
+
+/**
+ * The project's signature (issue #513, docs/steps/project-signature.md): none, Ledung's default; `off`, no line
+ * anywhere, Claude Code's included; or a text per place, a place left out keeping its default. Projects without
+ * it follow later changes to the default (Simon, 2026-11-27: "I want it to go to Ledung's standard").
+ */
+const SignatureSetting = z.object({
+  $comment: z.string().optional(),
+  off: z.boolean().optional(),
+  texts: z.object(Object.fromEntries(SIGNATURE_PLACES.map((p) => [p, signatureText(p).optional()])) as Record<SignaturePlace, z.ZodOptional<ReturnType<typeof signatureText>>>).optional(),
+}).optional();
 
 /**
  * A written process projects' sessions follow (issue #21): a folder with a manager's file and a
@@ -291,6 +312,9 @@ const LocalProject = z.object({
   skills: SkillChoicesSetting.optional(),
   /** Lockdown (issue #109): walled off from other projects' agents; none: off. */
   lockdown: LockdownSetting,
+  signature: SignatureSetting,
+  /** Its sessions' outside posts are recorded for the Outbox (issue #513), whatever the signature; none: on. */
+  recordPosts: z.boolean().optional(),
 });
 
 const DockerProject = z.object({
@@ -331,6 +355,8 @@ const DockerProject = z.object({
   profiles: RoleProfilesSetting.optional(),
   skills: SkillChoicesSetting.optional(),
   lockdown: LockdownSetting,
+  signature: SignatureSetting,
+  recordPosts: z.boolean().optional(),
 });
 
 const Project = z.discriminatedUnion('runner', [LocalProject, DockerProject]);
@@ -509,7 +535,8 @@ export function parseConfig(raw: unknown): LedungConfig {
 export function parseProject(raw: unknown): ProjectConfig {
   const result = Project.safeParse(raw);
   if (!result.success) {
-    throw new Error(result.error.issues.map((i) => `${i.path.join('.') || 'project'}: ${i.message}`).join('; '));
+    // A message that names its own place (a signature text's) is shown as it is, not after its internal path.
+    throw new Error(result.error.issues.map((i) => (i.code === 'custom' && (i as { params?: { plain?: boolean } }).params?.plain ? i.message : `${i.path.join('.') || 'project'}: ${i.message}`)).join('; '));
   }
   validateSensitive(result.data.sensitive);
   return result.data;

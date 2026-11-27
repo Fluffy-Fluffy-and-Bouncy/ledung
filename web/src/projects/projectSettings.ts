@@ -4,6 +4,7 @@ import type { EffortLevel, PermissionMode, ProjectInfo, ProfilesView } from '../
 import { withSuggestions } from '../../../src/shared/sensitive-suggestions.ts';
 import { DEFAULT_TIERS } from '../../../src/shared/questions.ts';
 import type { SkillChoices } from '../../../src/shared/skills.ts';
+import { LEDUNG_DEFAULT_SIGNATURE, signatureSettingOf, signatureTexts, type SignatureTexts } from '../../../src/shared/signature.ts';
 
 /** The settings every project has, as the form edits them. */
 export interface Settings {
@@ -60,11 +61,18 @@ export interface Settings {
   lockdownNetwork: string;
   /** Level B, container project: the Docker network marked as its island network. */
   lockdownDockerNetwork: string;
+  /** Its signature switched off (issue #513): no line anywhere, every text empty. */
+  signatureOff: boolean;
+  /** Its signature's text per place; Ledung's default until edited. */
+  signature: SignatureTexts;
+  /** Its sessions' outside posts are recorded for the Outbox (issue #513); on by default. */
+  recordPosts: boolean;
 }
 
 export const emptySettings = (name = ''): Settings => ({
   name, account: '', model: '', managerModel: '', effort: '', managerEffort: '', permissionMode: '', managerGrant: '', projectToolsUnasked: false, projectSettingsTools: false, publishUsageName: false, usageRepo: '', managerProfile: '', sessionProfile: '', skills: {}, ...withSuggestions({ commandPatterns: [], pathPatterns: [] }), devShipCommand: '', ticketPattern: '', ticketUrl: '', questionTiers: DEFAULT_TIERS.join('\n'), extraFolders: '', workflowUse: null, workflowName: '', workflowConfig: '', followFlow: true, worktreeSetup: '',
   lockdownLevel: 'off', lockdownBoard: false, lockdownRemoteControl: false, lockdownNetwork: '', lockdownDockerNetwork: '',
+  signatureOff: false, signature: { ...LEDUNG_DEFAULT_SIGNATURE }, recordPosts: true,
 });
 
 export function settingsOf(p: ProjectInfo): Settings {
@@ -86,6 +94,7 @@ export function settingsOf(p: ProjectInfo): Settings {
     worktreeSetup: p.worktreeSetup ?? '',
     lockdownLevel: p.lockdown.level, lockdownBoard: p.lockdown.board, lockdownRemoteControl: p.lockdown.remoteControl,
     lockdownNetwork: (p.lockdown.network ?? []).join('\n'), lockdownDockerNetwork: p.lockdown.dockerNetwork ?? '',
+    signatureOff: p.signature?.off === true, signature: signatureTexts(p.signature), recordPosts: p.recordPosts !== false,
   };
 }
 
@@ -135,8 +144,17 @@ export function toApi(s: Settings, keep: ProjectInfo | null): Record<string, unk
         },
       }
       : {}),
+    // Left out while it is Ledung's default, so the project follows the default (issue #513).
+    ...withSignature(s),
+    // Stored only when switched off: on is the default.
+    ...(s.recordPosts ? {} : { recordPosts: false }),
   };
 }
+
+const withSignature = (s: Settings) => {
+  const signature = signatureSettingOf(s.signatureOff, s.signature);
+  return signature ? { signature } : {};
+};
 
 /** Whether any role has a choice of its own; none: the project follows Settings (#300). */
 export const hasSkillChoices = (c: SkillChoices) => Object.values(c).some((r) => r && (r.newSkills || r.on?.length || r.off?.length));
@@ -167,6 +185,7 @@ export const FIELD_GROUP: Record<keyof Settings, string> = {
   skills: 'skills', managerProfile: 'skills', sessionProfile: 'skills',
   workflowUse: 'workflow', workflowName: 'workflow', workflowConfig: 'workflow', followFlow: 'workflow', worktreeSetup: 'workflow',
   ticketPattern: 'tickets', ticketUrl: 'tickets', questionTiers: 'tickets',
+  signatureOff: 'signature', signature: 'signature', recordPosts: 'signature',
 };
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);

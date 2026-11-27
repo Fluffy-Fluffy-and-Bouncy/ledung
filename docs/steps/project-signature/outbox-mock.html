@@ -1,0 +1,61 @@
+<!doctype html>
+<!-- Mock-up for docs/steps/project-signature.md (issue #513): static, not wired to anything. Colours from web/src/styles.css, dark. -->
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root { color-scheme: dark; --bg:#16181d; --panel:#1d2026; --panel-2:#252932; --text:#e3e6eb; --muted:#9aa1ad; --border:#333844; --accent:#7aa2f7; --ok:#81c995; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui, "Segoe UI", sans-serif; }
+.wrap { max-width:1180px; margin:0 auto; padding:1.2rem 1.4rem; }
+h1 { font-size:1.25rem; margin:0 0 .2rem; }
+.sub { color:var(--muted); margin:0 0 1rem; }
+.filters { display:flex; flex-wrap:wrap; gap:.5rem; margin-bottom:1rem; }
+.chip { border:1px solid var(--border); background:var(--panel); border-radius:999px; padding:.25rem .75rem; color:var(--muted); }
+.chip.on { color:var(--text); border-color:var(--accent); }
+table { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+th, td { text-align:left; padding:.55rem .75rem; border-bottom:1px solid var(--border); vertical-align:top; }
+th { color:var(--muted); font-weight:600; font-size:.8rem; background:var(--panel-2); }
+tr:last-child td { border-bottom:0; }
+a { color:var(--accent); text-decoration:none; }
+.kind { display:inline-block; white-space:nowrap; flex:none; font-size:.75rem; font-weight:600; padding:.05rem .45rem; border-radius:4px; background:var(--panel-2); color:var(--muted); }
+.muted { color:var(--muted); }
+.ok { color:var(--ok); }
+.cards { display:none; }
+@media (max-width: 640px) {
+  .wrap { padding:.8rem; }
+  table { display:none; }
+  .cards { display:block; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:.6rem .75rem; margin-bottom:.5rem; }
+  .card .l1 { display:flex; gap:.5rem; align-items:baseline; }
+  .card .l1 a { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+  .card .l2 { color:var(--muted); font-size:.85rem; margin-top:.15rem; }
+}
+.cant { color:var(--muted); font-size:.85rem; margin:-.6rem 0 .9rem; }
+code { font:12px ui-monospace, Consolas, monospace; }
+</style></head><body><div class="wrap">
+<h1>Outbox</h1>
+<p class="sub">Everything sessions posted outside Ledung, signed or not, newest first. Kept 30 days, on this PC.</p>
+<p class="cant">Not recorded: <code>gh</code> from PowerShell or cmd, sessions in containers (for now), and posts made with curl or your own scripts.</p>
+<div class="filters"><span class="chip on">All projects</span><span class="chip">shop</span><span class="chip">docs-site</span><span class="chip on">All runs</span><span class="chip">run-42</span><span class="chip">Not in a run</span></div>
+<table>
+<thead><tr><th>When</th><th>What</th><th>Post</th><th>Signed</th><th>Project</th><th>Run</th><th>Session</th></tr></thead>
+<tbody>
+<tr><td>16:58</td><td><span class="kind">Board post</span></td><td><a href="#">Board · run-42 · "Review done, 2 findings"</a></td><td><span class="muted">—</span></td><td>shop</td><td><a href="#">run-42</a></td><td><a href="#">Review</a></td></tr>
+<tr><td>16:41</td><td><span class="kind">PR review</span></td><td><a href="#">example/shop PR #88 · review comment</a></td><td><span class="ok">signed</span></td><td>shop</td><td><a href="#">run-42</a></td><td><a href="#">Review</a></td></tr>
+<tr><td>16:20</td><td><span class="kind">PR edit</span></td><td><a href="#">example/shop PR #88 · description edited</a></td><td><span class="muted">—</span></td><td>shop</td><td><a href="#">run-42</a></td><td><a href="#">Build</a></td></tr>
+<tr><td>16:12</td><td><span class="kind">PR</span></td><td><a href="#">example/shop PR #88 · Cart shows VAT per rate</a></td><td><span class="ok">signed</span></td><td>shop</td><td><a href="#">run-42</a></td><td><a href="#">Build</a></td></tr>
+<tr><td>15:30</td><td><span class="kind">Linear comment</span></td><td><a href="#">SHOP-214 · comment</a></td><td><span class="muted">—</span></td><td>shop</td><td><a href="#">run-42</a></td><td><a href="#">Design</a></td></tr>
+<tr><td>14:05</td><td><span class="kind">Issue</span></td><td><a href="#">example/docs-site #17 · Broken link on the install page</a></td><td><span class="muted">—</span></td><td>docs-site</td><td><span class="muted">—</span></td><td><a href="#">Docs check</a></td></tr>
+<tr><td>13:40</td><td><span class="kind">API write</span></td><td><a href="#">POST repos/example/docs-site/labels</a></td><td><span class="muted">—</span></td><td>docs-site</td><td><span class="muted">—</span></td><td><a href="#">Docs check</a></td></tr>
+<tr><td>Yesterday</td><td><span class="kind">Issue comment</span></td><td><a href="#">example/shop #80 · comment</a></td><td><span class="muted">—</span></td><td>shop</td><td><span class="muted">—</span></td><td><a href="#">Triage</a></td></tr>
+</tbody></table>
+<div class="cards">
+<div class="card"><div class="l1"><span class="kind">Board post</span><a href="#">Board · run-42 · "Review done, 2 findings"</a></div><div class="l2">shop · <a href="#">run-42</a> · 16:58 · Review</div></div>
+<div class="card"><div class="l1"><span class="kind">PR review</span><a href="#">example/shop PR #88 · review comment</a></div><div class="l2">shop · <a href="#">run-42</a> · 16:41 · Review · <span class="ok">signed</span></div></div>
+<div class="card"><div class="l1"><span class="kind">PR edit</span><a href="#">example/shop PR #88 · description edited</a></div><div class="l2">shop · <a href="#">run-42</a> · 16:20 · Build</div></div>
+<div class="card"><div class="l1"><span class="kind">PR</span><a href="#">example/shop PR #88 · Cart shows VAT per rate</a></div><div class="l2">shop · <a href="#">run-42</a> · 16:12 · Build · <span class="ok">signed</span></div></div>
+<div class="card"><div class="l1"><span class="kind">Linear comment</span><a href="#">SHOP-214 · comment</a></div><div class="l2">shop · <a href="#">run-42</a> · 15:30 · Design</div></div>
+<div class="card"><div class="l1"><span class="kind">Issue</span><a href="#">example/docs-site #17 · Broken link on the install page</a></div><div class="l2">docs-site · not in a run · 14:05 · Docs check</div></div>
+<div class="card"><div class="l1"><span class="kind">API write</span><a href="#">POST repos/example/docs-site/labels</a></div><div class="l2">docs-site · not in a run · 13:40 · Docs check</div></div>
+<div class="card"><div class="l1"><span class="kind">Issue comment</span><a href="#">example/shop #80 · comment</a></div><div class="l2">shop · not in a run · yesterday · Triage</div></div>
+</div>
+</div></body></html>

@@ -50,6 +50,7 @@ import { RemoteControl } from './remote-control.ts';
 import { McpError, mcpServers, mcpToolDescriptions, reconnectMcp } from './mcp.ts';
 import { mcpParts } from '../shared/tool-call.ts';
 import { boundarySettings, withBoundary } from './boundary.ts';
+import { attributionSetting, modelDisplayName, type SignatureLaunch } from '../shared/signature.ts';
 import { airgapEnvironment, airgapSettings, airgapTempFolder, makeAirgapTempFolder, othersSettings, versionProblem, withAirgapSettings, withOthersSettings } from '../projects/lockdown.ts';
 import { userDataDir } from '../platform/paths.ts';
 import { startShell, SHELL_TIMEOUT_MS, type ShellKind, type ShellRun } from '../runners/shell-run.ts';
@@ -319,6 +320,11 @@ export interface SessionOptions {
   secrets?: SessionSecrets | null;
   /** The person's images sent with their messages (issue #128); none: messages carry no images. */
   images?: ChatImages | null;
+  /**
+   * Its project's signature (issue #513), read at each start and when it changes; null or none: Claude Code's own
+   * lines, as before (chats, the Ledung Helper).
+   */
+  signature?: (() => Promise<SignatureLaunch>) | null;
 }
 
 /** The environment for Claude Code: Ledung's, with the project's account login instead of any other,
@@ -466,6 +472,9 @@ export class Session {
   private readonly openQuery: typeof query;
   private readonly board: Boards | null;
   private readonly lockdown: ReturnType<typeof othersSettings>;
+  private readonly signature: (() => Promise<SignatureLaunch>) | null;
+  /** The model name its signature was last filled in with (issue #513): a new one in Claude Code's init refills it. */
+  private signatureModel: string | null = null;
   private readonly airgap: NonNullable<SessionOptions['airgap']> | null;
   /** Level B on this computer: the session's own temp folder, made at each start (lockdown.ts). */
   private airgapTmp: string | null = null;
@@ -547,6 +556,7 @@ export class Session {
     this.board = opts.board ?? null;
     this.pullRequests = opts.pullRequests ?? null;
     this.lockdown = opts.lockdown ?? null;
+    this.signature = opts.signature ?? null;
     this.airgap = opts.airgap ?? null;
     this.remote = opts.remoteControl
       ? new RemoteControl(opts.remoteControl, () => this.publish({ type: 'session', session: this.info }), (text) => this.record('event', { text }))
@@ -1329,14 +1339,17 @@ export class Session {
     // Its locked secrets (issue #468), written for this launch; a reattached process already has its env file.
     const launched = this.secrets && !this.attachTo ? await this.secrets.launch(tmp) : null;
     this.launchSecrets = launched?.secrets;
+    // And another project's locked folders, while one is (issue #109); none locked: unchanged. Level B's
+    // airgap last, so nothing before it keeps a way out.
+    const settings = withAirgapSettings(
+      withOthersSettings(withBoundary(profile.settings as Record<string, unknown> | undefined, boundary), this.lockdown),
+      this.airgap && airgapSettings({ network: this.airgap.network, folders: [this.runner.cwd, ...this.airgap.folders], sandbox: this.airgap.sandbox, tmp }),
+    );
+    // The project's signature in place of Claude Code's lines (issue #513), over the person's own `attribution`.
+    const attribution = await this.attribution();
     return {
       ...profile,
-      // And another project's locked folders, while one is (issue #109); none locked: unchanged. Level B's
-      // airgap last, so nothing before it keeps a way out.
-      settings: withAirgapSettings(
-        withOthersSettings(withBoundary(profile.settings as Record<string, unknown> | undefined, boundary), this.lockdown),
-        this.airgap && airgapSettings({ network: this.airgap.network, folders: [this.runner.cwd, ...this.airgap.folders], sandbox: this.airgap.sandbox, tmp }),
-      ) as Options['settings'],
+      settings: (attribution === undefined ? settings : { ...settings, attribution }) as Options['settings'],
       cwd: this.runner.cwd,
       // Claude Code's own option beats the settings file's model, so the project's default is left out when the file names one.
       model: this.model ?? (this.fileSettings?.model === undefined ? this.defaultModel : undefined),
@@ -1693,6 +1706,8 @@ export class Session {
     if (m.type === 'system' && m.subtype === 'init') {
       this.noteTools(() => this.learnedTools?.noteInit?.(m.mcp_servers));
       this.update({ claudeSessionId: m.session_id, model: m.model, claudeVersion: m.claude_code_version, cwd: m.cwd });
+      // The model Claude Code runs is known now (an alias or none at the start), or was switched: {model} refilled.
+      if (this.signature && modelDisplayName(m.model) !== this.signatureModel) void this.refreshSignature();
     }
     if (m.type === 'system' && m.subtype === 'background_tasks_changed') {
       this.backgroundTasks = m.tasks.filter((t) => !t.ambient).length;
@@ -2485,6 +2500,41 @@ export class Session {
     await this.q.setPermissionMode(mode);
     this.record('event', { text: `Permission mode set to ${PERMISSION_MODE_LABELS[mode]} by ${by === 'user' ? this.userName : by}.` });
     this.update({ permissionMode: mode });
+  }
+
+  /**
+   * Claude Code's `attribution` for this session from its project's signature (issue #513), {model} filled with the
+   * model it runs: Claude Code's init names it; before that, the one asked for. undefined: no signature here (chats,
+   * the Helper), or it couldn't be read, and Claude Code's own lines stay.
+   */
+  private async attribution(): Promise<false | { commit: string; pr: string } | undefined> {
+    if (!this.signature) return undefined;
+    try {
+      const launch = await this.signature();
+      const ran = this.store.getSession(this.id)?.model ?? undefined;
+      const name = modelDisplayName(this.q ? ran ?? this.model : this.model ?? this.defaultModel ?? ran);
+      const setting = attributionSetting(launch, name);
+      this.signatureModel = name;
+      return setting;
+    } catch (e) {
+      console.error(`Signature for session ${this.id}: ${(e as Error).message}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * The signature again, into the running Claude Code (issue #513): its project's texts changed, or {model} did.
+   * applyFlagSettings merges top-level keys, so only `attribution` changes (sdk.d.ts); checked live 2026-11-27.
+   */
+  async refreshSignature(): Promise<void> {
+    if (!this.q || !this.signature || this.stopping) return;
+    const attribution = await this.attribution();
+    if (attribution === undefined || !this.q) return;
+    try {
+      await this.q.applyFlagSettings({ attribution });
+    } catch (e) {
+      console.error(`Signature for session ${this.id} not updated: ${(e as Error).message}`);
+    }
   }
 
   /**
