@@ -81,6 +81,8 @@ Claude Code adds its own attribution from two settings: `attribution.pr` (the "ð
 
 **Commits:** what happens to the `Co-Authored-By` trailer is open choice 6. Whatever is chosen, a session in a run with the commits switch on also gets `Ledung-Run: run-179` added through `attribution.commit`. Outside a run, or with the switch off, commits are as Claude Code makes them. No git hooks are installed in anyone's repository.
 
+**The stand-in `gh` and other trackers are unchanged by this.** Claude Code adds its line only to PR descriptions and commits. Issues, comments, reviews and tracker posts carry no Claude line, so there is nothing to replace there; Ledung's signature is simply added as described above.
+
 Not checked yet, so done in part 3 before anything else: that the SDK's `settings` option really wins over a user's own `attribution` for that session, and that an empty `attribution.pr` gives no line rather than Claude's default.
 
 ### The living PR summary
@@ -160,7 +162,7 @@ About 5 hours of session time in all, in five PRs. Each part also waits for code
    - **(a) A sidebar entry next to runs, as in the mock-up (recommended):** one place across projects, with filters.
    - (b) A tab in each project's settings.
 6. **The `Co-Authored-By: Claude` trailer on commits.**
-   - **(a) Keep it (recommended):** it is git's record of who wrote the change, which GitHub shows as a co-author, not a courtesy line. Ledung adds `Ledung-Run: run-179` under it in a run. Simon's "override" is about the signature line, and a commit has none.
+   - **(a) Keep the trailer, drop Claude's text line (recommended):** the `Co-Authored-By` trailer says honestly, and in a form tools can read, that Claude wrote the code; GitHub shows it as a co-author. It is a record, not a courtesy line. Any "ðŸ¤– Generated with Claude Code" text line that `attribution.commit` would add goes, as on PRs. Ledung adds `Ledung-Run: run-179` under the trailer in a run.
    - (b) Replace it with Ledung's own trailer (`Ledung-Run`, or `Via: Ledung` outside a run): one Ledung line, the same rule as PRs, but the commit no longer says Claude co-wrote it.
    - (c) Drop it: only `Ledung-Run` in a run, nothing outside one.
 7. **When a project switches the signature off (for PR descriptions, or all places).**
