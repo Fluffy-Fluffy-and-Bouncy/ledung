@@ -1,6 +1,6 @@
 # A project signature, with a living PR summary — proposal
 
-Nov 26, 2026 · Proposal for issue #513 (run-179). Not approved yet; nothing is built.
+Nov 26, 2026, revised Nov 27 (Ledung's signature replaces Claude Code's line) · Proposal for issue #513 (run-179). Not approved yet; nothing is built.
 
 **Done when:** the seven "Done looks like" points of #513 hold: a signature per project with a switch per place; `gh` issue/PR create, comment and review get it from every body source on Windows and Mac; every other `gh` call is unchanged; another server's write tool gets it after one question per tool and project; a run's PR carries a summary that follows the run; an Outbox lists what went out; and never a second signature, one on a read-only call, a private detail in one, or a broken `gh`.
 
@@ -29,7 +29,7 @@ In the project's settings, a **Signature** section:
 - **Text**, prefilled with Ledung's default `— via Ledung for {user}`. Fill-ins: `{user}` (Ledung's user name), `{project}` (the project's name), `{run}` (`run-179`), `{workflow}` (the flow's name), `{steps}` (the run's steps so far, by block title, with ✓ or "skipped"). Outside a run, the run fill-ins are empty and a line left empty by them is dropped.
 - **Switches** for where it goes: new issues · issue comments · PR descriptions · PR comments and reviews · commits · other trackers. With all off, nothing is added anywhere, not even the marker (point 1).
 - **Defaults, as the manager suggested:** on for **PR descriptions and new issues in public repos**, and off everywhere else: private repos, comments and reviews, commits, and other trackers (which are mostly work tools). Ledung reads a repo's visibility once (`gh repo view --json visibility`, through the session's runner) and keeps it. If the visibility can't be read, the repo counts as private. A project can switch any place on or off by hand, which overrides the default.
-- **Claude's own line is kept by default.** Claude Code's "🤖 Generated with Claude Code" (its `attribution.pr` setting) and co-author line stay as the person's Claude Code settings have them. Ledung's signature is a second line under it and doesn't count it as a signature. A project that wants only one turns Claude's off in Claude Code's own settings, not through Ledung.
+- **Ledung's signature replaces Claude's line** (Simon, 2026-11-27, question #2434: "We should override Claude Code's signature."). Where the PR-descriptions switch is on, Claude Code's "🤖 Generated with Claude Code" line (its `attribution.pr` setting) is replaced by the project's signature, so a PR carries one line, Ledung's. See "Claude Code's lines" below for how, for commits (open choice 6) and for a switch that is off (open choice 7).
 - **Where the settings live: the project's settings, not the workflow.** Whether and how a project signs is about the repo and who reads it, and it applies to work outside a run too. A workflow only adds what it knows, through the fill-ins `{run}`, `{workflow}` and `{steps}`, and the PR summary. Saved like the other project settings, in the project's part of the config, so a work project's text can stay in `ledung.config.local.json`. Changing it affects new posts only.
 
 Only these fill-ins exist. Session titles, folder paths, account names and anything else private can't be put in a signature, because there is no fill-in for them (point 7). The text is checked against the project's sensitive patterns on save, as board posts are.
@@ -67,9 +67,21 @@ Ledung's existing `PreToolUse` hook gets one more step for `mcp__*` tools of ser
 - **Fitting into the hook chain:** the signed input is worked out first. Every `allow` the chain returns afterwards (grants, rules, away mode) carries it as `updatedInput`, and an "ask" carries it too, so the person approves the signed text. A refusal stays a refusal. Never adding a signature to a call that Ledung or the person would refuse keeps point 7.
 - A `PostToolUse` step writes the same journal line, with any URL found in the result.
 
-### Commits
+### Claude Code's lines
 
-When the commits switch is on, Ledung passes Claude Code's own `attribution.commit` setting through the SDK's `settings` option. It keeps whatever the person's settings already say (or Claude Code's default co-author line) and adds `Ledung-Run: run-179` for a session that is in a run. Outside a run, nothing is added to commits. No git hooks are installed in anyone's repository. Claude Code's `attribution.pr` line is left as it is. It is Claude's line, not Ledung's, and the marker check doesn't treat it as a signature.
+Claude Code adds its own attribution from two settings: `attribution.pr` (the "🤖 Generated with Claude Code" line at the end of a PR description) and `attribution.commit` (the `Co-Authored-By: Claude …` trailer). Claude writes both itself, as text it is told to add, so a stand-in can't take them out reliably afterwards. Ledung sets them instead, per session, through the SDK's `settings` option, which ranks above the person's own Claude Code settings for that session only. Their own settings file is never changed, and sessions outside Ledung keep Claude's lines.
+
+**PR descriptions, switch on:**
+
+- **Outside a run:** `attribution.pr` is set to the project's filled-in signature with its marker (`— via Ledung for Simon` and `<!-- ledung -->`). Claude then ends a PR description with Ledung's line in place of its own, also where the stand-in doesn't reach (PowerShell, a container). Where the stand-in does reach, it finds the marker and adds nothing, so there is still one line.
+- **In a run:** `attribution.pr` is set to empty, which Claude Code reads as "no line". The run's PR gets its signature from the living summary (below), so a PR made in a run carries one signature, inside the summary.
+- The switch follows the project's repo (its visibility, read once). A PR into another repo gets the stand-in's own check of that repo; the session-wide setting can't vary per repo, which is acceptable for a courtesy line.
+
+**PR descriptions, switch off:** Ledung leaves `attribution.pr` alone, so Claude's line comes back as the person's settings have it (open choice 7). With the default places, that is what private repos get.
+
+**Commits:** what happens to the `Co-Authored-By` trailer is open choice 6. Whatever is chosen, a session in a run with the commits switch on also gets `Ledung-Run: run-179` added through `attribution.commit`. Outside a run, or with the switch off, commits are as Claude Code makes them. No git hooks are installed in anyone's repository.
+
+Not checked yet, so done in part 3 before anything else: that the SDK's `settings` option really wins over a user's own `attribution` for that session, and that an empty `attribution.pr` gives no line rather than Claude's default.
 
 ### The living PR summary
 
@@ -85,7 +97,7 @@ For a run whose branch has a PR (Ledung already finds it through `pr-poll.ts`), 
 - It is built only from the run's record: the step history, block titles and outcome words, and who reported each step ("Approved by Simon" comes from a person block's answer). A step the run went past without running shows "skipped" (point 5).
 - **Who updates it: Ledung itself, not a session.** No session spends turns or plan use on it, and it can't be forgotten. When a step is reported (`flow_step`, or a person's answer at a person block), the run code queues an update for the run's PR. If there is no PR yet, the update happens when the PR poll first finds one for the run's branch. The update goes through the project's runner, as the PR poll does, so it uses the project's own `gh` sign-in (the container's, for a container project): `gh api` GET the body, replace only what lies between the markers (or append the section if there is none yet), PATCH.
 - At most one update a minute per PR (step reports that come close together are merged), charged to the GitHub budget like the PR poll. Text outside the markers is never touched, so a hand edit stays. If someone removed the markers, Ledung stops updating that PR and says so on the run. A PR that is merged or closed gets one last update when the run ends, then no more.
-- The PR's own signature is folded into the summary, so a PR made in a run carries one signature, not two. The stand-in sees the run in its session file and leaves the body to the summary.
+- The PR's own signature is folded into the summary, so a PR made in a run carries one signature, not two, and no Claude line (`attribution.pr` is empty in a run). The stand-in sees the run in its session file and leaves the body to the summary.
 - It is governed by the PR-descriptions switch.
 
 ### The Outbox
@@ -113,6 +125,7 @@ Mock-up (static, dark mode, made-up projects; `project-signature/outbox-mock.htm
 - The signature can only contain the five fill-ins and the person's own text, which is checked against the sensitive patterns. No private details can leak through it (point 7).
 - The hook change never turns an ask into an allow or skips a refusal (check 1). The person sees the signed text.
 - A PR description is edited only between Ledung's own markers, through the project's own `gh` sign-in.
+- Claude's lines are replaced only for Ledung's own sessions, through the SDK's per-session settings. The person's Claude Code settings files are never written.
 
 
 ## Parts
@@ -123,7 +136,7 @@ Each part is its own PR, reviewed and approved on its own. Part 1 comes first, b
 |---|---|---|---|---|
 | 1 | **Settings and the stand-in `gh`** (local sessions): the Signature settings with defaults by repo visibility, the stand-in on `PATH`, signing the five commands from all three body sources, the marker and its check, a silent fallback, the journal. | Tests cover each command and body source, pass-through (same output and exit code) and the fallback. A throwaway Ledung on Windows signs a real issue, comment and PR in a throwaway public repo from Git Bash, and leaves a private one's unsigned. One run on a Mac. Points 1, 2, 3, and 7 for `gh`. | ≈ 90 min | medium: one build session plus review |
 | 2 | **Other trackers:** picking out write tools, the one-time field question, the hook step and how it fits the chain, the repeat check without a marker, the journal line. | The check-1 tracker server, under a throwaway Ledung, asks once and signs every later call. A read-only tool is never touched. A refused call stays refused. A repeated call isn't signed twice. Point 4. | 60–90 min | medium |
-| 3 | **Commits:** `attribution.commit` with `Ledung-Run`. | A commit made in a run carries the trailer and the person's own attribution text. Outside a run, or with the switch off, commits are unchanged. | ≈ 20 min | small |
+| 3 | **Claude Code's lines:** `attribution.pr` replaced by the signature (empty in a run), `attribution.commit` as open choice 6 decides, plus `Ledung-Run`. | First the two checks under "Claude Code's lines". Then: a throwaway session's PR outside a run ends with Ledung's line and marker and no Claude line; in a run, only the summary's. With the switch off, Claude's line is back. A commit in a run carries `Ledung-Run` and the trailer as chosen. The person's own settings file is unchanged. | ≈ 30 min | small |
 | 4 | **Living PR summary**, updated by Ledung. | A throwaway run's PR shows the summary and updates after each step. A skipped step shows as skipped. A hand edit outside the markers stays. Removed markers stop the updates, and the run says so. Point 5. | ≈ 60 min | small to medium (Haiku test sessions) |
 | 5 | **Outbox:** database entry, list, filters, the page at both widths. | It lists parts 1–2's posts with links, per project and run, and works at 1280 and 390 px (dark-mode screenshots beside this mock-up). Point 6. | ≈ 60 min | medium (page and screenshots) |
 
@@ -146,3 +159,10 @@ About 5 hours of session time in all, in five PRs. Each part also waits for code
 5. **Where the Outbox lives.**
    - **(a) A sidebar entry next to runs, as in the mock-up (recommended):** one place across projects, with filters.
    - (b) A tab in each project's settings.
+6. **The `Co-Authored-By: Claude` trailer on commits.**
+   - **(a) Keep it (recommended):** it is git's record of who wrote the change, which GitHub shows as a co-author, not a courtesy line. Ledung adds `Ledung-Run: run-179` under it in a run. Simon's "override" is about the signature line, and a commit has none.
+   - (b) Replace it with Ledung's own trailer (`Ledung-Run`, or `Via: Ledung` outside a run): one Ledung line, the same rule as PRs, but the commit no longer says Claude co-wrote it.
+   - (c) Drop it: only `Ledung-Run` in a run, nothing outside one.
+7. **When a project switches the signature off (for PR descriptions, or all places).**
+   - **(a) Claude's line comes back (recommended):** Ledung overrides Claude's line only when it puts its own in its place. Off means Ledung steps aside and the person's Claude Code settings apply, as in a session outside Ledung. Private repos, off by default, get Claude's line.
+   - (b) Nothing: Ledung keeps `attribution.pr` empty, so an off switch means no line at all. A project wanting Claude's line would need a third setting.
