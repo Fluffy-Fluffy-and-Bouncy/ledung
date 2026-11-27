@@ -811,9 +811,15 @@ export function ProjectSettingsView({ view, project, projects, run, onOpen, onRe
   });
   const discard = () => { edited.discard(); boardEdit.discard(); };
   const blocked = (boardCount ? boardBlocked(boardEdit.value) : null) ?? (settings.name.trim() ? null : 'The project needs a name.');
+  // A changed signature reaches running sessions at once (issue #513), unlike the other settings.
+  const signing = changed.some((k) => k === 'signature' || k === 'signatureOff');
   const note = renaming
-    ? 'saving renames the project; its sessions, manager and questions stay with it, and its folder is not moved'
-    : 'running sessions keep theirs; new and resumed ones get these';
+    ? `saving renames the project; its sessions, manager and questions stay with it, and its folder is not moved${signing ? '; the signature reaches running sessions at once' : ''}`
+    : signing
+      ? changed.every((k) => FIELD_GROUP[k] === 'signature') && !boardCount
+        ? 'the signature reaches running sessions at once'
+        : 'the signature reaches running sessions at once; for the rest, running sessions keep theirs and new and resumed ones get these'
+      : 'running sessions keep theirs; new and resumed ones get these';
   return (
     <SettingsSplit groups={PROJECT_GROUPS} current={group} words={words} marked={marked} narrow={narrow}
       onOpen={(g) => onOpen(g === null ? `ps:${project.name}` : tabGroupView(project.name, g))}

@@ -1,6 +1,6 @@
 // A project's Signature group (issue #513, docs/steps/project-signature.md): a text per place, Ledung's default or
 // Edited with Restore default, a small Off that empties every box, a preview, and the Outbox's own recording switch.
-import { useState } from 'react';
+import { useLayoutEffect, useRef, useState, type TextareaHTMLAttributes } from 'react';
 import {
   LEDUNG_DEFAULT_SIGNATURE, PLACE_LABELS, SIGNATURE_MAX, SIGNATURE_PLACES, emptyTexts, fillSignature, sameTexts, unknownFillIn, type SignaturePlace,
 } from '../../../src/shared/signature.ts';
@@ -17,8 +17,29 @@ const PLACE_NOTES: Partial<Record<SignaturePlace, string>> = {
 /** The sample the preview fills in, so a run's fill-ins show. */
 const SAMPLE_RUN = { run: 'run-42', workflow: 'Development', model: 'Claude Opus 5.5' };
 
-export function SignatureSettings({ value, onChange, userName, project }: { value: Settings; onChange: (s: Settings) => void; userName: string; project: string }) {
+/**
+ * A box as tall as its text, wrapped lines included, so a long line isn't cut off on a phone (review of #518, finding 1).
+ * Set from scrollHeight on each change and on resize rather than CSS field-sizing, which iPhone Safari may lack.
+ */
+function GrowingBox(props: TextareaHTMLAttributes<HTMLTextAreaElement> & { value: string }) {
   const typing = usePlainTyping();
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const box = ref.current;
+    if (!box) return;
+    const fit = () => {
+      box.style.height = 'auto';
+      const border = box.offsetHeight - box.clientHeight;
+      box.style.height = `${box.scrollHeight + border}px`;
+    };
+    fit();
+    window.addEventListener('resize', fit);
+    return () => window.removeEventListener('resize', fit);
+  }, [props.value]);
+  return <textarea ref={ref} rows={1} {...typing} {...props} />;
+}
+
+export function SignatureSettings({ value, onChange, userName, project }: { value: Settings; onChange: (s: Settings) => void; userName: string; project: string }) {
   const [confirming, setConfirming] = useState(false);
   const off = value.signatureOff;
   const edited = !off && !sameTexts(value.signature, LEDUNG_DEFAULT_SIGNATURE);
@@ -56,7 +77,7 @@ export function SignatureSettings({ value, onChange, userName, project }: { valu
           <div key={place} className={`signature-place${off ? ' off' : ''}`}>
             <label htmlFor={id}><span className="field-name">{PLACE_LABELS[place]}</span>{PLACE_NOTES[place] && <span className="muted"> {PLACE_NOTES[place]}</span>}</label>
             <div>
-              <textarea id={id} {...typing} className="mono" rows={value.signature[place].includes('\n') ? 3 : 1} maxLength={SIGNATURE_MAX}
+              <GrowingBox id={id} className="mono" maxLength={SIGNATURE_MAX}
                 value={value.signature[place]} disabled={off} placeholder={off ? '' : 'Empty: nothing added'}
                 onChange={(e) => setText(place, e.target.value)} />
               {unknown && <span className="error small-note">{unknown} is not a fill-in.</span>}

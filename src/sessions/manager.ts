@@ -2662,6 +2662,8 @@ export class SessionManager {
     this.checkProfiles(config);
     this.checkWorkflow(config, undefined);
     this.checkLockdownOf(config);
+    // A signature sent with a new project is checked as on a save (review of #518, finding 6).
+    this.checkSignature(config);
     try {
       const p = this.projectStore.add(withSuggestedSensitive(config));
       this.publishProjects();
@@ -2673,7 +2675,10 @@ export class SessionManager {
     }
   }
 
-  /** New settings for a project. Running sessions keep theirs; new and resumed ones get the new ones. */
+  /**
+   * New settings for a project. Running sessions keep theirs and new and resumed ones get the new ones, except the
+   * signature, which reaches its running sessions at once (issue #513).
+   */
   updateProject(name: string, config: ProjectConfig): ProjectInfo {
     this.checkSettings(name, config);
     const before = this.projectStore.get(name)?.config;

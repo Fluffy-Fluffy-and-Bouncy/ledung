@@ -248,3 +248,40 @@ test("a session's signature is its project's as saved now, with the person's nam
   manager.updateProject('shop', { name: 'shop', runner: 'local', path: base, signature: { off: true } } as ProjectConfig);
   assert.deepEqual(await launch('w1'), { off: true, texts: emptyTexts(), values: { user: 'Simon', project: 'shop', run: '', workflow: '' } });
 });
+
+test('an unknown fill-in is refused under the name the page gives its place, not an internal key', () => {
+  const p = { name: 'shop', runner: 'local', path: base, signature: { texts: { issueComment: '— {session}' } } };
+  assert.throws(() => parseProject(p), (e: Error) => {
+    assert.equal(e.message, 'Issue comments: {session} is not a fill-in; use {user}, {project}, {run}, {workflow} or {model}.');
+    return true;
+  });
+});
+
+test('a project added with a signature that holds a token or names a sensitive path is refused, and not stored', () => {
+  const { manager } = ledung();
+  const config = (texts: Record<string, string>) => ({ name: 'new', runner: 'local', path: base, signature: { texts } }) as ProjectConfig;
+  assert.throws(() => manager.addProject(config({ pr: 'see deploy.secret' })), /"PR descriptions" can't be saved: "deploy\.secret" matches the sensitive path pattern/);
+  assert.throws(() => manager.addProject(config({ commit: `Token: ghp_${'a1B2'.repeat(9)}` })), /"Commits" can't be saved: a GitHub token/);
+  assert.equal(manager.projects().some((p) => p.name === 'new'), false);
+  assert.deepEqual(manager.addProject(config({ pr: '— via Ledung for {user}, {project}' })).signature, { texts: { pr: '— via Ledung for {user}, {project}' } });
+});
+
+test("renaming a project and changing its signature in one save reaches its running session at once, under the new name", async () => {
+  const { manager, store } = ledung();
+  store.createSession({ id: 'w1', project: 'shop', runner: 'local', title: 'Worker', parentId: null, permissionMode: 'default', role: 'session' });
+  const launch = (manager as unknown as { signatureLaunch(id: string): Promise<SignatureLaunch> }).signatureLaunch.bind(manager);
+  // A running session as the manager sees it: its project read from the store, and the attribution a refresh would send.
+  const flags: unknown[] = [];
+  const live = {
+    id: 'w1',
+    detach: () => {},
+    get info() { return store.getSession('w1')!; },
+    refreshSignature: async () => { flags.push({ attribution: attributionSetting(await launch('w1'), 'Claude Opus 5.5') }); },
+  };
+  (manager as unknown as { live: Map<string, unknown> }).live.set('w1', live);
+  manager.renameProject('shop', 'store', { name: 'store', runner: 'local', path: base, signature: { texts: { pr: '— via Ledung for {user} in {project}' } } } as ProjectConfig);
+  await settle();
+  assert.equal(store.getSession('w1')!.project, 'store');
+  assert.deepEqual(flags, [{ attribution: { pr: '— via Ledung for Simon in store', commit: 'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>' } }]);
+  (manager as unknown as { live: Map<string, unknown> }).live.delete('w1');
+});
