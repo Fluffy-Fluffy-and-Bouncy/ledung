@@ -9,6 +9,17 @@ together, are in [CHANGELOG.md](CHANGELOG.md). Online: https://projectledung.com
 ([docs/changes/README.md](docs/changes/README.md)); `npm run publish:dev` and `npm run publish:public` fold them in
 here under the version they publish, and push the result to main.
 
+## v5.2 — 2026-11-27 13:52 CET
+- A project's old, ended managers that a newer manager replaced can now be archived, from the sidebar menu, the session header or by the project's manager with archive_session, whose list_sessions now names them; the current manager still can't be (#515)
+- A manager that never got going is archived by itself when a fresh one replaces it (#515)
+- Every question is now stored the same way as a request: questions asked before are converted once when Ledung starts after the update, and open, answer and move runs exactly as before; answers already given are not changed, and Ledung's own permission questions are left as they were (#509)
+- A question can hold several parts on one page: context, screenshots to judge, evidence files, several decisions and a sign-off, answered together and sent once (#502)
+- A review may now come with screenshots to judge and follow-up decisions, on the same page (#502)
+- Your answers on a request page are kept as you go, so you can start on the phone and finish at the PC; a request open on both shows the other device's answers as they are given (#502)
+- A request is one entry in Waiting for you with a "3 to answer" chip, one notification, and one line in the manager's chat (#502)
+- At a workflow's person step, a request moves the run by its sign-off or its one decision with outcomes; the rest goes to the coordinator (#502)
+- Every question, review and screenshot question in Waiting for you now opens on the same page, with Send answer and Withdraw on the right (at the bottom on a phone); a request's decisions look like a question's options, with who-picked-what borders, costs and opinions, stacked one under the other (#502)
+
 ## v5.1 — 2026-11-23 14:53 CET
 - Managers on linked computers now wake each other on every message, as managers on one computer do: the cap of 6 wakes an hour is gone; messages within 5 s of each other still wake once (#506)
 - A restart that finds Ledung's port still in use waits up to 30 s for it, instead of failing at once (#503)
