@@ -262,6 +262,8 @@ test('a project added with a signature that holds a token or names a sensitive p
   const config = (texts: Record<string, string>) => ({ name: 'new', runner: 'local', path: base, signature: { texts } }) as ProjectConfig;
   assert.throws(() => manager.addProject(config({ pr: 'see deploy.secret' })), /"PR descriptions" can't be saved: "deploy\.secret" matches the sensitive path pattern/);
   assert.throws(() => manager.addProject(config({ commit: `Token: ghp_${'a1B2'.repeat(9)}` })), /"Commits" can't be saved: a GitHub token/);
+  // A pattern only a new project's suggested list has, not the config's (acceptance round 2 of #513).
+  assert.throws(() => manager.addProject(config({ issueComment: 'see credentials.txt' })), /"Issue comments" can't be saved: "credentials\.txt" matches the sensitive path pattern/);
   assert.equal(manager.projects().some((p) => p.name === 'new'), false);
   assert.deepEqual(manager.addProject(config({ pr: '— via Ledung for {user}, {project}' })).signature, { texts: { pr: '— via Ledung for {user}, {project}' } });
 });

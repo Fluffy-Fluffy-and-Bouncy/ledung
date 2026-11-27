@@ -2662,10 +2662,12 @@ export class SessionManager {
     this.checkProfiles(config);
     this.checkWorkflow(config, undefined);
     this.checkLockdownOf(config);
-    // A signature sent with a new project is checked as on a save (review of #518, finding 6).
-    this.checkSignature(config);
+    // A signature sent with a new project is checked as on a save (review of #518, finding 6), against the patterns
+    // it will be stored with, the suggested ones included (acceptance round 2 of #513).
+    const stored = withSuggestedSensitive(config);
+    this.checkSignature(stored);
     try {
-      const p = this.projectStore.add(withSuggestedSensitive(config));
+      const p = this.projectStore.add(stored);
       this.publishProjects();
       // Locked from the start: the other sessions take its folders' denial (issue #109).
       if (isLocked(p.config)) this.relaunchChanged();
