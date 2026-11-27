@@ -1,6 +1,7 @@
 // Screenshots attached to a question (issue #60): the words for verdicts, and the answer the verdicts
 // become. Shared by the page, which sends the answer, and the tests.
 import type { QuestionShot, ShotVerdict } from './protocol.ts';
+import { shownFile } from './questions.ts';
 
 export const VERDICTS: ShotVerdict[] = ['pass', 'fail', 'unsure'];
 
@@ -23,7 +24,8 @@ export interface ShotJudgement {
 
 /**
  * The answer to a question with screenshots: a count line, one line per shot in the order they were
- * attached (its verdict, then its note), then the note to the asker. A shot left unjudged says so.
+ * attached (its verdict, then its note), then the note to the asker. A shot left unjudged says so. A shot is named by
+ * the file the asker gave, not its kept copy's "kept:<hash>/" path (issue #306; code review of PR #504, round 2).
  */
 export function shotAnswer(shots: QuestionShot[], judged: Record<number, ShotJudgement | undefined>, note = ''): string {
   const verdictOf = (i: number) => judged[i]?.verdict ?? null;
@@ -35,7 +37,7 @@ export function shotAnswer(shots: QuestionShot[], judged: Record<number, ShotJud
   const lines = shots.map((s, i) => {
     const v = verdictOf(i);
     const n = oneLine(judged[i]?.note ?? '');
-    return `- ${oneLine(s.group)} · ${oneLine(s.path)}: ${v ? VERDICT_LABEL[v] : 'no verdict'}${n ? ` — ${n}` : ''}`;
+    return `- ${oneLine(s.group)} · ${oneLine(shownFile(s.path))}: ${v ? VERDICT_LABEL[v] : 'no verdict'}${n ? ` — ${n}` : ''}`;
   });
   const extra = note.trim();
   return [`Screenshot verdicts: ${counts.join(' · ')}`, ...lines, ...(extra ? ['', extra] : [])].join('\n');

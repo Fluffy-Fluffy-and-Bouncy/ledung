@@ -2,6 +2,7 @@
 
 import type { FlowRun } from './flow-run.ts';
 import type { QuestionDetails } from './questions.ts';
+import type { AnswerParts } from './requests.ts';
 import type { NameColour, ProjectColours } from './name-colours.ts';
 import type { ComputerInfo } from './computers.ts';
 import type { SkillChoices, SkillInfo } from './skills.ts';
@@ -213,6 +214,30 @@ export interface SessionInfo {
   uac?: boolean;
   /** The run and block of the project's flow it was started or continued for (workflow part 3); null or left out: none. */
   runBlock?: RunBlock | null;
+  /**
+   * Its project's or chats' account changed while it ran (issue #395): it switches to `to` at its next quiet moment
+   * (turn ended, nothing in the background, no prompt open), or at once on Switch now. `failed`: the last switch to
+   * `to` didn't work and it stayed on its account; it isn't tried again on its own. Null or left out: none.
+   */
+  accountSwitch?: AccountSwitch | null;
+  /** A chat whose account was picked in New chat (issue #395): it keeps it when Settings' account for chats changes. */
+  accountChosen?: boolean;
+}
+
+/** A session's account switch (issue #395); `to` null: the computer's own login. */
+export interface AccountSwitch {
+  to: string | null;
+  failed?: string;
+  /**
+   * What a waiting switch waits for, as last checked: the turn (a turn under way, a prompt open; left out: the same),
+   * background work, a one-off wake-up, or a repeating wake-up, which never leaves a quiet moment: only Switch now.
+   */
+  waitsFor?: 'turn' | 'paused' | 'command' | 'background' | 'wakeup' | 'repeating';
+  /**
+   * The switch is happening now: the session stops to resume on `to`. A message sent meanwhile waits for it and is
+   * delivered on the new account, so the page keeps Send working (acceptance round 3 of #395).
+   */
+  underWay?: boolean;
 }
 
 /**
@@ -456,7 +481,16 @@ export interface AccountChoices {
   newProjects: string | null;
 }
 
-/** A Claude account as the page sees it: a login folder; Ledung keeps no token (issue #342). */
+/**
+ * The computer's own login as the page sees it: only what its sign-in check says. No email or organisation: Claude
+ * Code reports the computer's login for every account, so Ledung shows none (issue #378).
+ */
+export interface DefaultAccountView {
+  signInKind: ShownSignIn | null;
+  plan: string | null;
+}
+
+/** A Claude account as the page sees it: a login folder; Ledung keeps no token (issue #342) and shows no email (#378). */
 export interface AccountInfoView {
   name: string;
   kind: 'folder';
@@ -464,11 +498,6 @@ export interface AccountInfoView {
   configDir: string;
   /** Its login folder in containers, null for the default (~/.ledung-accounts/<name>). */
   containerDir: string | null;
-  /** Who a session last found itself logged in as. */
-  email: string | null;
-  organization: string | null;
-  plan: string | null;
-  seenAt: number | null;
   createdAt: number;
   /** Listed under "claudeAccounts" in the config file (issue #425): removed in the page, it comes back at the next start. */
   inConfigFile?: boolean;
@@ -476,6 +505,8 @@ export interface AccountInfoView {
   whatItIsFor?: string | null;
   /** How it is signed in, from the last check (issue #85); null or left out: not known yet, or not signed in. */
   signInKind?: ShownSignIn | null;
+  /** Its plan as its own sign-in says (Claude Code's `auth status`), from the last check; null: not said or not signed in. */
+  plan?: string | null;
   /** The command that starts Claude Code on its sign-in folder here, for /login. */
   loginCommand?: string;
   /** The command that puts a long-lived token into its sign-in here, run in the user's own terminal (issue #85). */
@@ -529,6 +560,8 @@ export interface SignInInfo {
   method: string | null;
   /** What that means for the person (issue #85); null or left out: can't be told. */
   kind?: SignInKind | null;
+  /** The plan its own sign-in names (subscriptionType); null or left out: none said. */
+  plan?: string | null;
   /** Why the check could not run, for unknown. */
   detail: string | null;
   checkedAt: number;
@@ -561,7 +594,8 @@ export interface StoredMessage {
   at: number;
   /** card: a card in the Ledung Helper's chat (src/shared/helper-cards.ts). */
   /** reply: the Ledung Helper's one message of a turn, with its card (src/sessions/helper-tools.ts, reply). */
-  kind: 'user' | 'sdk' | 'permission' | 'decision' | 'event' | 'question' | 'shell' | 'card' | 'reply';
+  /** waiting: a "Waiting for you" line in a manager's chat (issue #350, src/shared/waiting-line.ts). */
+  kind: 'user' | 'sdk' | 'permission' | 'decision' | 'event' | 'question' | 'shell' | 'card' | 'reply' | 'waiting';
   data: any;
 }
 
@@ -681,6 +715,11 @@ export interface QuestionInfo {
   /** The structured fields the asker gave, for the question desk (issue #59); null for a plain question. */
   details: QuestionDetails | null;
   /**
+   * The answer as data, part by part (issue #502), when the request page sent it: what a run reads to move. Absent or
+   * null for an answer given as text (older answers, the chat's card, a manager's).
+   */
+  answerParts?: AnswerParts | null;
+  /**
    * The question `aboutQuestion` names, sent with this one so the page can show it whatever it has loaded
    * (issue #368); null when there is none or it is gone.
    */
@@ -692,6 +731,11 @@ export interface QuestionInfo {
   earlier?: ConversationLine[] | null;
   /** What the asker attached with ask_user's sources (issue #369), in its order, fetched and kept when it asked. Null: none. */
   sources?: AttachedSource[] | null;
+  /**
+   * Sent without `original`, `earlier` and `sources` (older Waiting for you history, issue #306): the page asks for the
+   * whole question (GET /api/questions/:id) when it is opened.
+   */
+  light?: boolean;
 }
 
 /**
@@ -856,7 +900,7 @@ export type ResourceAmounts = Record<string, number>;
 export interface ResourcesInfo {
   /** The limits set, by resource; a resource left out has none. */
   limits: ResourceAmounts;
-  settings: { averageSec: number; marginPoints: number; overSec: number };
+  settings: { averageSec: number; marginPoints: number; overSec: number; parkSec: number; tellManagerMin: number };
   threads: number;
   memTotal: number;
   /** The PC's moving averages, by resource. */
@@ -870,6 +914,8 @@ export interface ResourcesInfo {
   jobs: ResourceJobInfo[];
   /** Sessions over the allowance with no reservation. */
   unreserved: { sessionId: string; using: ResourceAmounts; overSince: number | null; overDims: string[]; lowered: boolean }[];
+  /** Memory WSL's virtual machine holds (Windows counts it all as used, Linux's file cache included); null: none. */
+  wsl?: number | null;
 }
 
 export interface ResourceLineInfo {
@@ -896,7 +942,18 @@ export interface ResourceJobInfo {
   /** Its moving averages. */
   using: ResourceAmounts;
   learnedRuns: number;
-  state: 'going' | 'over' | 'paused';
+  /**
+   * A pass (docs/steps/resource-limits-2.md): ready (the go given, the work not started, holding all of it), busy,
+   * parked (quiet: holds no room), over its share, or paused by the person.
+   */
+  state: 'ready' | 'busy' | 'parked' | 'over' | 'paused';
+  /** When the go reached the session; null: not yet. */
+  deliveredAt: number | null;
+  /** Busy and quiet since; null: not quiet. */
+  quietSince: number | null;
+  parkedAt: number | null;
+  /** Its work resumed while parked without room under the limits. */
+  resumedAbove: boolean;
   overSince: number | null;
   overDims: string[];
   lowered: boolean;
@@ -920,12 +977,12 @@ export interface JobKindInfo {
   lastAt: number;
 }
 
+/** A command kind learned as heavy: for estimates and the over-share notice only, never a refusal (issue #500). */
 export interface HeavyCommandInfo {
   project: string;
   command: string;
   runs: number;
   peak: ResourceAmounts;
-  never: boolean;
 }
 
 /** What one turn used (step 6c). */
@@ -1147,6 +1204,14 @@ export interface UpdateStepView {
 /** Where a shortcut that starts Ledung goes (issue #415): the Desktop and Start menu on Windows, Applications on macOS. */
 export type ShortcutPlaceId = 'desktop' | 'start-menu' | 'applications';
 
+/** The desktop app made on this computer, as the page is told it (#408). */
+export interface DesktopAppInfo {
+  /** The app runs an older Ledung's code than the running one: its window restarts to update. */
+  stale: boolean;
+  /** Why the browser opened instead of the app, the last time it did; null when the app opened since. */
+  notice: string | null;
+}
+
 export interface ShortcutPlace {
   id: ShortcutPlaceId;
   label: string;
@@ -1156,6 +1221,12 @@ export interface ShortcutPlace {
 }
 
 /** The first-run question and Settings → Shortcuts (GET /api/shortcuts, issue #415). */
+/** Settings' switch for Ledung's tray icon (issue #347); `kind` null where this system has none (Linux, for now). */
+export interface TrayView {
+  kind: 'windows' | 'mac' | null;
+  on: boolean;
+}
+
 export interface ShortcutsView {
   kind: 'windows' | 'mac' | 'other';
   /** False where Ledung makes no shortcuts (Linux); `reason` says so. */
@@ -1164,6 +1235,11 @@ export interface ShortcutsView {
   /** The first-run question has been answered, Yes or No; it is not asked again. */
   asked: boolean;
   places: ShortcutPlace[];
+  /**
+   * Windows: the desktop app's own Start-menu entry, "Ledung app" (#587), which `ledung` writes when it makes the app.
+   * Listed apart from the places: Add never makes it, Remove takes it away (code review of PR #411, round 2).
+   */
+  appEntry?: { label: string; file: string; present: boolean } | null;
   /** Start Ledung when I sign in (issue #456): off until switched on. */
   signIn: SignInStartView;
   /** The log a background Ledung writes (#456); `active` when this Ledung's output goes there. */
@@ -1241,7 +1317,7 @@ export interface UpdateView {
     /** New changes on main: first-parent commits, one per merged pull request. */
     behind: number;
     upToDate: boolean;
-    /** The CHANGELOG bullets added since, in the file's order (newest first). */
+    /** The changelog bullets added since (the changelogs and docs/changes/), each once, in the diff's order. */
     changes: string[];
   } | null;
   checkError: string | null;
@@ -1319,8 +1395,12 @@ export interface LinkPairingInfo {
   id: string;
   /** The linked computer's name here. */
   computer: string;
+  /** The link's id (issue #412: the card goes with the link); left out on a card kept before. */
+  link?: string;
   /** When it asked for the code. */
   at: number;
+  /** When the code stops working, and the card goes if nobody paired (issue #412); left out on a card kept before. */
+  expiresAt?: number;
   /** The device that paired with the code; null while nobody has (the code lives 10 minutes). */
   device: { id: string; name: string } | null;
 }
@@ -1469,6 +1549,14 @@ export type ServerEvent =
       newComputers?: NewComputerInfo[];
       /** Pairings linked computers asked for (issue #273); local pages only, left out through the public name. */
       linkPairings?: LinkPairingInfo[];
+      /** The desktop app made on this computer (#408); left out: none, or not the npm package. */
+      desktopApp?: DesktopAppInfo;
+      /**
+       * The desktop app is made on this computer, "desktopApp" is not false and this page is on this computer's own
+       * screen: a browser here offers "Open in the Ledung app" (#409). Left out otherwise, and for a page from another
+       * computer on the network or through the public name.
+       */
+      desktopAppHere?: true;
       /** The chats' settings (issue #211). */
       chats?: ChatsInfo;
       /** The Ledung Helper and the setup (docs/steps/ledung-helper.md). */
@@ -1499,6 +1587,8 @@ export type ServerEvent =
   | { type: 'watching'; sessionId: string | null }
   | { type: 'permission'; permission: PermissionInfo }
   | { type: 'question'; question: QuestionInfo }
+  /** A request's draft was kept anew (issue #502, D4): its open pages read it. Never the draft itself. */
+  | { type: 'requestDraft'; questionId: number; at: number }
   | { type: 'limits'; limits: LimitInfo[] }
   | { type: 'usageStops'; usageStops: UsageStopInfo[] }
   | { type: 'macros'; macros: Macro[] }
@@ -1513,7 +1603,7 @@ export type ServerEvent =
   | { type: 'linkPairings'; pairings: LinkPairingInfo[] }
   | { type: 'projects'; projects: ProjectInfo[] }
   | {
-      type: 'accounts'; accounts: AccountInfoView[]; defaultIdentity: Omit<AccountInfoView, 'name' | 'kind' | 'configDir' | 'createdAt'> | null; choices: AccountChoices;
+      type: 'accounts'; accounts: AccountInfoView[]; defaultIdentity: DefaultAccountView | null; choices: AccountChoices;
       /** The accounts in use that Claude Code is not signed in for (issue #333); empty or left out: none. */
       signedOut?: SignInProblem[];
       /** Claude Code missing or too old on this computer (issue #341), with how to fix it; null or left out: none. */

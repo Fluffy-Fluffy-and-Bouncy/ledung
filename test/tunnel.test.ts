@@ -298,3 +298,61 @@ test('Settings words the tunnel state: off, connecting, connected, reconnecting 
   assert.deepEqual(remoteLine({ state: 'connected', publicName: PUBLIC, error: null }), { label: 'Remote: connected', detail: `Through the relay as ${PUBLIC}.` });
   assert.deepEqual(remoteLine({ state: 'reconnecting', publicName: PUBLIC, error: 'The relay answered 502.' }), { label: 'Remote: reconnecting', detail: 'The relay answered 502.' });
 });
+
+// Issue #330, Done 3: the relay passes the bytes on as they are, so a compressed answer reaches the phone whole.
+test('a compressed API answer comes through the relay intact (issue #330)', T, async () => {
+  const zlib = await import('node:zlib');
+  const port2 = await freePort();
+  const store = new Store(openDatabase(':memory:'));
+  const manager = refuseRealSignInStores(new SessionManager(parseConfig({ port: port2 }), store, () => {}));
+  const webRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-web-'));
+  fs.writeFileSync(path.join(webRoot, 'index.html'), '<!doctype html><title>Ledung</title>');
+  const withName = new LedungServer({ port: port2, token: TOKEN, store, manager, webRoot, publicName: PUBLIC });
+  await withName.listen();
+  cleanup.push(() => withName.close());
+  store.createSession({ id: 'long', project: 'p', runner: 'local', title: 'long chat', parentId: null, permissionMode: 'default', role: 'session' });
+  for (let i = 0; i < 300; i++) {
+    store.addMessage('long', 'sdk', { type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'text', text: `Reply ${i}: words that come back again and again.` }] } });
+  }
+  const { relay, port } = await startRelay();
+  cleanup.push(() => relay.close());
+  const t = new Tunnel({ relay: `ws://127.0.0.1:${port}`, name: 'pc', secret: SECRET, publicName: PUBLIC, connect: () => withName.tunnelConnection(), minDelayMs: 50, maxDelayMs: 100 });
+  cleanup.push(() => t.stop());
+  t.start();
+  await until(() => t.status().state === 'connected');
+  const { code } = withName.devices.newPairCode();
+  const paired = withName.devices.pair(code, 'Phone')!;
+
+  // Phone → relay → tunnel → server, bytes kept as bytes.
+  const viaRelay = (encoding: string | null) => new Promise<{ head: string; body: Buffer }>((resolve, reject) => {
+    const socket = net.connect(port, '127.0.0.1', () => socket.write(`GET /api/sessions/long/messages?limit=500 HTTP/1.1\r\nHost: ${PUBLIC}\r\nCookie: __Host-ledung_device=${paired.cookie}\r\n${encoding ? `Accept-Encoding: ${encoding}\r\n` : ''}Connection: close\r\n\r\n`));
+    const parts: Buffer[] = [];
+    socket.on('data', (c: Buffer) => parts.push(c));
+    socket.on('close', () => {
+      const all = Buffer.concat(parts);
+      const end = all.indexOf('\r\n\r\n');
+      resolve({ head: all.subarray(0, end).toString('latin1'), body: all.subarray(end + 4) });
+    });
+    socket.on('error', reject);
+  });
+  const plain = await viaRelay(null);
+  assert.match(plain.head, /^HTTP\/1\.1 200/, plain.head);
+  assert.doesNotMatch(plain.head, /content-encoding/i);
+  const packed = await viaRelay('gzip, deflate, br');
+  assert.match(packed.head, /^HTTP\/1\.1 200/, packed.head);
+  assert.match(packed.head, /\r\ncontent-encoding: br\r\n/i);
+  assert.equal(Number(/\r\ncontent-length: (\d+)/i.exec(packed.head)![1]), packed.body.length);
+  assert.ok(packed.body.length < plain.body.length / 4, `${packed.body.length} of ${plain.body.length}`);
+  // The plain answer has no length and comes chunked: its JSON is the chunks joined.
+  const chunks: Buffer[] = [];
+  for (let at = 0; ;) {
+    const line = plain.body.indexOf('\r\n', at);
+    const size = parseInt(plain.body.subarray(at, line).toString(), 16);
+    if (!size) break;
+    chunks.push(plain.body.subarray(line + 2, line + 2 + size));
+    at = line + 2 + size + 2;
+  }
+  const json = Buffer.concat(chunks).toString();
+  assert.equal(JSON.parse(json).length, 300);
+  assert.equal(zlib.brotliDecompressSync(packed.body).toString(), json, 'the same answer');
+});

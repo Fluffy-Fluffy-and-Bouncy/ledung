@@ -10,12 +10,15 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { WorkflowFiles } from '../config.ts';
 import type { ProfileSource } from '../shared/protocol.ts';
+import { LEARN_MANAGER_TOOLS_DEFAULT } from './manager-tools.ts';
 import { ProfilePatchSetting, ProfileSetting, RoleProfilesSetting, validateProfiles, withoutComments, type Profile, type ProfilePatch, type RoleProfiles } from './profiles.ts';
 
 const WorkflowProfilesFile = z.preprocess(withoutComments, z.object({
   version: z.literal(1, { message: 'version must be 1' }),
   defaultProfiles: RoleProfilesSetting.optional(),
   pluginsOff: z.array(z.string().min(1)).default([]),
+  /** Whether managers start with only the tools managers on their computer used (issue #431); left out: the default. */
+  learnManagerTools: z.boolean().optional(),
   profiles: z.preprocess(withoutComments, z.record(z.string(), ProfilePatchSetting)),
 }));
 
@@ -47,7 +50,7 @@ function settingsKeyProblem(profiles: Record<string, ProfilePatch>): string | nu
 
 /** A workflow's profiles file as read: its contents, or what is wrong with it. */
 export type WorkflowProfilesRead =
-  | { file: string; profiles: Record<string, ProfilePatch>; defaultProfiles: RoleProfiles; pluginsOff: string[]; problem: null }
+  | { file: string; profiles: Record<string, ProfilePatch>; defaultProfiles: RoleProfiles; pluginsOff: string[]; learnManagerTools?: boolean; problem: null }
   | { file: string; problem: string };
 
 /** The file a workflow names, as a full path; null when it names none. */
@@ -68,7 +71,7 @@ export function parseWorkflowProfiles(file: string, text: string | null): Workfl
   if (!result.success) {
     return { file, problem: `The workflow's profiles file ${file} has problems: ${result.error.issues.map((i) => `${i.path.join('.') || '(top level)'}: ${i.message}`).join('; ')}` };
   }
-  const { profiles, pluginsOff } = result.data;
+  const { profiles, pluginsOff, learnManagerTools } = result.data;
   const defaultProfiles = result.data.defaultProfiles ?? {};
   const key = settingsKeyProblem(profiles);
   if (key) return { file, problem: `The workflow's profiles file ${file} has problems: ${key}` };
@@ -78,7 +81,7 @@ export function parseWorkflowProfiles(file: string, text: string | null): Workfl
   } catch (e) {
     return { file, problem: `The workflow's profiles file ${file} has problems: ${(e as Error).message}` };
   }
-  return { file, profiles, defaultProfiles, pluginsOff, problem: null };
+  return { file, profiles, defaultProfiles, pluginsOff, ...(learnManagerTools === undefined ? {} : { learnManagerTools }), problem: null };
 }
 
 /** Reads a workflow's profiles file; null when the workflow names none. */
@@ -101,6 +104,8 @@ export interface EffectiveProfiles {
   sources: Record<string, ProfileSource>;
   defaults: RoleProfiles;
   pluginsOff: string[];
+  /** Whether managers start with only the learned tools (issue #431): the workflow's word, else the default. */
+  learnManagerTools: boolean;
   warning: string | null;
 }
 
@@ -128,6 +133,7 @@ export function effectiveProfiles(
     sources,
     defaults: { ...ok?.defaultProfiles, ...defined(computer.defaultProfiles) },
     pluginsOff: [...new Set([...(ok?.pluginsOff ?? []), ...computer.pluginsOff])],
+    learnManagerTools: ok?.learnManagerTools ?? LEARN_MANAGER_TOOLS_DEFAULT,
     warning: workflow?.problem ? `${workflow.problem.replace(/\.?$/, '.')} Sessions use this computer's own profiles until it is fixed.` : null,
   };
 }

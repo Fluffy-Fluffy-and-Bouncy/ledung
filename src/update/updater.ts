@@ -60,6 +60,10 @@ export interface UpdaterOptions {
   /** npm view ledung dist-tags --json and npm install -g ledung@<version>; tests replace them so npm is not asked. */
   distTags?: Command;
   npmInstall?: (spec: string) => Command;
+  /** npm root -g, asked only when an install did not reach the folder Ledung runs from (#435); tests replace it. */
+  npmRoot?: Command;
+  /** Where the update's steps are logged: ledung.log in the background (#435); console.log by default. */
+  log?: (line: string) => void;
 }
 
 /** What the page says about updating an npm-installed Ledung on the Public channel (#105). */
@@ -70,6 +74,11 @@ export const NPM_DEV_REASON = 'Ledung was installed from npm, so updates come fr
 /** The package an npm install updates. */
 const PACKAGE = 'ledung';
 const CHANNEL_KEY = 'update-channel';
+/**
+ * The version an npm update restarted into, kept over the restart (#435): the restarted Ledung compares it with the
+ * version it runs, so an update that did not take says so on the page instead of leaving the old version unnoticed.
+ */
+const EXPECTED_KEY = 'update-expected';
 /** The EXERCISED line of issue #461, once per run. */
 let devCheckTraced = false;
 
@@ -90,6 +99,7 @@ const NPM_RELEASE: Command = { cmd: npm, args: ['run', 'release'], shell: proces
 // ledung@<a version npm reported>, checked to be one before it is used.
 const NPM_DIST_TAGS: Command = { cmd: npm, args: ['view', PACKAGE, 'dist-tags', '--json'], shell: process.platform === 'win32' };
 const npmGlobalInstall = (spec: string): Command => ({ cmd: npm, args: ['install', '-g', spec, '--no-audit', '--no-fund'], shell: process.platform === 'win32', limitMs: INSTALL_LIMIT_MS });
+const NPM_ROOT: Command = { cmd: npm, args: ['root', '-g'], shell: process.platform === 'win32' };
 
 export class Updater {
   private readonly opts: UpdaterOptions;
@@ -104,6 +114,32 @@ export class Updater {
 
   constructor(opts: UpdaterOptions) {
     this.opts = opts;
+    this.checkRestartedInto();
+  }
+
+  private log(line: string): void {
+    (this.opts.log ?? console.log)(line);
+  }
+
+  /**
+   * After an npm update's restart (#435): the version the update installed should be the one running now. When it is
+   * not, the page says so where the update was started, and the log keeps it. Read once, then forgotten.
+   */
+  private checkRestartedInto(): void {
+    const running = this.opts.npmVersion;
+    const kept = this.opts.meta?.get(EXPECTED_KEY);
+    if (!running || !kept || !this.opts.meta) return;
+    this.opts.meta.set(EXPECTED_KEY, '');
+    let expected: string | null = null;
+    try {
+      const v = (JSON.parse(kept) as { version?: unknown }).version;
+      expected = typeof v === 'string' ? v : null;
+    } catch {
+      // A value that is not ours: nothing to compare.
+    }
+    if (!expected || expected === running) return;
+    this.refused = `The update to ${displayVersion(expected)} did not take: Ledung restarted and still runs ${displayVersion(running)}, from ${this.opts.appDir}. Update again, or run npm install -g ${PACKAGE}@${expected} and press Restart Ledung.`;
+    this.log(`Update: ${this.refused}`);
   }
 
   /** The release to update from; never one for an npm install, whatever current.json says. */
@@ -182,14 +218,13 @@ export class Updater {
   private async distTags(): Promise<Record<string, string>> {
     const r = await this.run(this.opts.distTags ?? NPM_DIST_TAGS, this.opts.dataDir);
     if (r.timedOut || r.code !== 0) throw new Error(`npm view ${PACKAGE} dist-tags failed:\n${r.tail}`);
+    let tags: Record<string, string> | null = null;
     try {
-      const tags = JSON.parse(r.out) as unknown;
-      if (tags && typeof tags === 'object') {
-        return Object.fromEntries(Object.entries(tags).filter((e): e is [string, string] => typeof e[1] === 'string'));
-      }
+      tags = readDistTags(JSON.parse(r.out));
     } catch {
       // Falls through to the error below.
     }
+    if (tags) return tags;
     throw new Error(`npm view ${PACKAGE} dist-tags did not answer with its tags:\n${r.tail}`);
   }
 
@@ -221,9 +256,11 @@ export class Updater {
     const step = (i: number, state: UpdateStepView['state'], output?: string, label?: string) => {
       this.steps = this.steps.map((s, j) => (j === i ? { ...s, state, output, label: label ?? s.label } : s));
     };
+    // Every way it stops goes to the log too (#435): the page's steps live only until the next restart.
     const refuse = (i: number, reason: string, output?: string) => {
       step(i, 'failed', output);
       this.refused = `${reason} The running Ledung was not changed.`;
+      this.log(`Update: ${this.refused}${output ? `\n${output}` : ''}`);
     };
 
     step(0, 'running');
@@ -245,10 +282,21 @@ export class Updater {
     const result = await this.run(command, this.opts.dataDir);
     if (result.timedOut) return refuse(1, `npm install -g ${spec} did not finish within ${Math.round((command.limitMs ?? GIT_LIMIT_MS) / 60_000)} minutes and was stopped.`, result.tail);
     if (result.code !== 0) return refuse(1, `npm install -g ${spec} failed (exit code ${result.code}).`, result.tail);
+    // npm's exit code alone is not proof (#435): it may have installed into another global folder than the one this
+    // Ledung runs from, and the restart would then bring back the old version. The package.json here must say it.
+    const found = str(readJson(path.join(this.opts.appDir, 'package.json'))?.version) ?? null;
+    if (found !== offered) {
+      const root = await this.run(this.opts.npmRoot ?? NPM_ROOT, this.opts.dataDir);
+      const where = root.code === 0 && root.out.trim() ? `npm installs global packages into ${root.out.trim()}. ` : '';
+      const output = [result.tail, `npm root -g: ${root.out.trim() || root.tail}`].filter(Boolean).join('\n');
+      return refuse(1, `npm install -g ${spec} ended without an error, but the Ledung in ${this.opts.appDir} is still ${found ? displayVersion(found) : 'unreadable'}, so a restart would not run ${displayVersion(offered)}. ${where}`.trimEnd(), output);
+    }
+    this.log(`Update: npm install -g ${spec} installed ${offered} into ${this.opts.appDir}; restarting.`);
     step(1, 'done', result.tail);
 
     step(2, 'running');
     this.restarting = true;
+    this.opts.meta?.set(EXPECTED_KEY, JSON.stringify({ version: offered, from: installed, at: new Date().toISOString() }));
     // As for a git update: answer the page's next poll first, then restart into the installed files.
     setTimeout(() => this.opts.onRestart?.(), 1500);
   }
@@ -281,14 +329,23 @@ export class Updater {
     const base = known ? running.commit! : 'HEAD';
     // First-parent commits on main: one per merged pull request, which is what a person calls a change.
     const behind = Number((await this.git(src, ['rev-list', '--count', '--first-parent', `${base}..origin/${BRANCH}`])).trim()) || 0;
-    const diff = await this.git(src, ['diff', `${base}`, `origin/${BRANCH}`, '--', 'CHANGELOG.md']);
+    // Since #417 a merged PR's bullets wait in docs/changes/ until a publish folds them into the changelogs, and the
+    // fold repeats them there (a public release repeats its dev builds' too): every place a bullet appears is read and
+    // each bullet is listed once.
+    const places = ['CHANGELOG.md', 'CHANGELOG-dev.md', 'docs/changes/', ':(exclude)docs/changes/README.md'];
+    const diff = await this.git(src, ['diff', `${base}`, `origin/${BRANCH}`, '--', ...places]);
+    // A bullet already somewhere at the running commit is a change it already has, moved by a publish since: not new
+    // (self-check of PR #423). git grep exits 1 when nothing matches.
+    const had = await this.run({ cmd: 'git', args: ['grep', '-h', '-e', '^- ', base, '--', ...places] }, src);
+    if (had.code > 1) throw new Error(`git grep failed:\n${had.tail}`);
+    const old = new Set(changelogAdded(had.out.split(/\r?\n/).map((l) => `+${l}`).join('\n')));
     return {
       checkedAt: new Date().toISOString(),
       latest,
       commitKnown: !!known,
       behind,
       upToDate: !!known && behind === 0,
-      changes: changelogAdded(diff).slice(0, MAX_CHANGES),
+      changes: [...new Set(changelogAdded(diff))].filter((c) => !old.has(c)).slice(0, MAX_CHANGES),
     };
   }
 
@@ -420,12 +477,30 @@ export class Updater {
           finish({ code: -1, out, tail: tail(all), timedOut: true });
         });
       }, command.limitMs ?? GIT_LIMIT_MS);
-      child.stdout.on('data', (d: Buffer) => { out += d; all += d; });
-      child.stderr.on('data', (d: Buffer) => { all += d; });
+      // Decoded as a stream, so a character split across two chunks ("—" in a changelog line) stays whole: the
+      // check compares whole changelog lines (self-check of PR #423, round 3).
+      child.stdout.setEncoding('utf8');
+      child.stderr.setEncoding('utf8');
+      child.stdout.on('data', (d: string) => { out += d; all += d; });
+      child.stderr.on('data', (d: string) => { all += d; });
       child.on('error', (e) => finish({ code: -1, out, tail: e.message }));
       child.on('close', (code) => finish({ code: code ?? -1, out, tail: tail(all) }));
     });
   }
+}
+
+/**
+ * The tags in npm's answer to `npm view ledung dist-tags --json`, or null when it is not one. npm 12 answers with an
+ * array holding the tags object, older npm with the object itself (#382); any other array is not an answer.
+ */
+export function readDistTags(answer: unknown): Record<string, string> | null {
+  let tags = answer;
+  if (Array.isArray(answer)) {
+    if (answer.length !== 1 || !answer[0] || typeof answer[0] !== 'object' || Array.isArray(answer[0])) return null;
+    tags = answer[0];
+  }
+  if (!tags || typeof tags !== 'object') return null;
+  return Object.fromEntries(Object.entries(tags).filter((e): e is [string, string] => typeof e[1] === 'string'));
 }
 
 /** The changelog bullets a diff adds, without the leading "- ". */

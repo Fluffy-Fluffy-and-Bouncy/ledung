@@ -11,10 +11,13 @@ import { GpuTracker, type GpuReading, groupLoad, groupMem, mainGpu, parseDrmFdin
 import { parseWindowsLines, windowsBatchReader, type ProcInfo, type ProcessList } from '../src/platform/processes.ts';
 import { ResourceBook, LAPSE_MS, RESOURCE_SOURCE, type BookSample, type BookSession } from '../src/resources/book.ts';
 import { JobStore, fromGeneric, toGeneric } from '../src/resources/jobs.ts';
-import { heavyKinds } from '../src/resources/commands.ts';
+import { detaches, heavyKinds } from '../src/resources/commands.ts';
+import { FRESH_FACTS, idleStopBlocker } from '../src/sessions/idle.ts';
+import { wslHintDue } from '../web/src/usage/machineFold.ts';
 import { LOWERED, type PriorityControl } from '../src/platform/process-control.ts';
 import { dragMax, dragStep, dragText, dragValue, limitShare, limitText, limitUnits, overFor, parseLimitInput, stepDrag, valueShare } from '../web/src/usage/resourceLimits.ts';
-import { fileTimeMs, JOB_BUSY, JobActions, jobTargetsNow, type FreshProcess } from '../src/resources/job-actions.ts';
+import { CHECK_FAILED, commandIsCalls, fileTimeMs, provenNow, JOB_BUSY, JobActions, jobProcessesNow, leftAloneNow, jobTargetsNow, provenByCommand, type FreshProcess } from '../src/resources/job-actions.ts';
+import { jobActionNote, namesText, stopConfirmText } from '../src/shared/job-notes.ts';
 import { hostStill } from '../src/resources/monitor.ts';
 
 // --- Decisions ------------------------------------------------------------------------------------------------------
@@ -187,9 +190,14 @@ interface Rig {
   clock: { now: number };
   jobs: JobStore;
   sessions: Map<string, BookSession>;
-  tick(trees: Record<string, ProcInfo[]>, opts?: { cpuOf?: Record<number, number>; memUsed?: number; cores?: number; gpu?: GpuReading }): void;
+  /** `outside`: processes in the PC's list but in no session's tree (other programs, orphans, WSL). */
+  tick(trees: Record<string, ProcInfo[]>, opts?: { cpuOf?: Record<number, number>; memUsed?: number; cores?: number; gpu?: GpuReading; outside?: ProcInfo[] }): void;
   resumed: number[];
   meta: Map<string, string>;
+  /** Sessions whose resource notice waits to be delivered (round 2: the go's clock starts at delivery). */
+  undelivered: Set<string>;
+  /** What managers were told. */
+  managers: { id: string; text: string }[];
 }
 
 function rig(opts: { unix?: boolean } = {}): Rig {
@@ -210,6 +218,8 @@ function rig(opts: { unix?: boolean } = {}): Rig {
   };
   const clock = { now: 1_000_000 };
   const resumed: number[] = [];
+  const undelivered = new Set<string>();
+  const managers: { id: string; text: string }[] = [];
   const sessions = new Map<string, BookSession>([
     ['s1', { id: 's1', title: 'One', project: 'p', role: 'session', priority: 'normal', local: true, busy: false }],
     ['s2', { id: 's2', title: 'Two', project: 'p', role: 'session', priority: 'normal', local: true, busy: false }],
@@ -223,6 +233,8 @@ function rig(opts: { unix?: boolean } = {}): Rig {
     wake: (id) => void woken.push(id),
     changed: () => {},
     resume: (targets) => void resumed.push(...targets.map((t) => t.pid)),
+    undelivered: (id) => undelivered.has(id),
+    tellManager: (id, text) => void managers.push({ id, text }),
     control,
     now: () => clock.now,
   });
@@ -243,17 +255,22 @@ function rig(opts: { unix?: boolean } = {}): Rig {
       treeMap.set(sid, withCpu);
       hosts.set(sid, withCpu[0]!.pid);
     }
+    for (const p of o.outside ?? []) list.set(p.pid, p);
     const sample: BookSample = { at: clock.now, threads: 16, cores: o.cores ?? 1, memUsed: o.memUsed ?? 10 * GB, memTotal: 64 * GB, list, prev, dt: 5, trees: treeMap, hosts, gpu: o.gpu ?? null };
     book.sample(sample);
     prev = list;
   };
-  return { book, told, woken, priorities, clock, jobs, sessions, tick, meta, resumed };
+  return { book, told, woken, priorities, clock, jobs, sessions, tick, meta, resumed, undelivered, managers };
 }
 
 const proc = (pid: number, ppid: number, mem = 100 * 1024 ** 2): ProcInfo => ({ pid, ppid, cpuSeconds: 0, memBytes: mem, started: pid * 10 });
 /** A session's tree: its host (10), Claude Code (11), and what it started. */
 const tree = (...work: ProcInfo[]) => [proc(10, 1), proc(11, 10, 300 * 1024 ** 2), ...work];
 const tree2 = (...work: ProcInfo[]) => [proc(20, 1), proc(21, 20, 300 * 1024 ** 2), ...work];
+/** A process a call started just now, as Windows gives its start time. */
+const started = (r: Rig, pid: number, ppid: number, mem = 100 * 1024 ** 2): ProcInfo => ({ ...proc(pid, ppid, mem), started: r.clock.now + 40 });
+const rows = (r: Rig) => (r.jobs as unknown as { db: { prepare(q: string): { all(): { commands: string; undeclared: number }[] } } }).db
+  .prepare('SELECT commands, undeclared FROM job_runs ORDER BY id').all().map((x) => ({ commands: JSON.parse(x.commands) as string[], unreserved: x.undeclared === 1 }));
 
 test('reserve: go at once when it fits; wait with a reason when not; a raised limit lets it go at once and the session is told', () => {
   const r = rig();
@@ -262,7 +279,7 @@ test('reserve: go at once when it fits; wait with a reason when not; a raised li
   const go = r.book.reserve('s1', { what: 'Build', cpu: 25 });
   assert.match(go, /^Go: reservation r1 "Build", 25% CPU/);
   const wait = r.book.reserve('s2', { what: 'Train', cpu: 40 });
-  assert.match(wait, /^Wait: Waiting for CPU room: needs ~40%, 5% left under the 50% limit \(1st in line\)/);
+  assert.match(wait, /^Wait: Waiting for CPU room: needs ~40%, 5% left under the 50% limit; held by 1 other job \(25% booked, 0% used\), other programs 20% \(1st in line\)/);
   assert.match(wait, /Don't start it yet/);
   const line = r.book.info().line;
   assert.equal(line.length, 1);
@@ -302,29 +319,43 @@ test('a job is the processes started after the go; released when they end, and r
   assert.equal(kinds[0]!.kind, 'build');
 });
 
-test('at the end of a turn a going reservation with no job running is released; one with a background job is kept', () => {
+test("a pass ends when the session's work is over: no turn, nothing in the background, no process of it running", () => {
   const r = rig();
+  const s1 = r.sessions.get('s1')!;
+  const s2 = r.sessions.get('s2')!;
+  s1.busy = true;
   r.tick({ s1: tree() });
   r.book.reserve('s1', { what: 'Bg', cpu: 10 });
   r.tick({ s1: tree(proc(15, 11)) });
-  r.book.turnEnded('s1');
+  s1.busy = false;
   r.tick({ s1: tree(proc(15, 11)) });
   assert.equal(r.book.info().jobs.length, 1, 'kept while its process runs');
-  r.tick({ s1: tree(proc(15, 11)), s2: tree2() });
+  r.tick({ s1: tree() });
+  assert.equal(r.book.info().jobs.length, 0, 'ended with its process, the turn over');
+  s2.busy = true;
+  r.tick({ s2: tree2() });
   r.book.reserve('s2', { what: 'Nothing', cpu: 10 });
-  r.book.turnEnded('s2');
-  r.tick({ s1: tree(proc(15, 11)), s2: tree2() });
-  assert.equal(r.book.info().jobs.filter((j) => j.sessionId === 's2').length, 0, 'released: nothing ran');
+  r.tick({ s2: tree2() });
+  assert.equal(r.book.info().jobs.length, 1, 'kept while the turn that reserved goes on');
+  s2.busy = false;
+  r.tick({ s2: tree2() });
+  assert.equal(r.book.info().jobs.length, 0, 'released: nothing ran');
 });
 
-test('a go not used within 10 minutes lapses, and the session is told', () => {
+test('a go not used within 10 minutes of reaching the session parks the pass, and the session is told', () => {
   const r = rig();
+  r.sessions.get('s1')!.busy = true;
   r.tick({ s1: tree() });
   r.book.reserve('s1', { what: 'Later', cpu: 10 });
+  assert.equal(r.book.info().reserved.cpu, 10);
   r.clock.now += LAPSE_MS;
   r.tick({ s1: tree() });
-  assert.equal(r.book.info().jobs.length, 0);
-  assert.match(r.told.at(-1)!.text, /lapsed/);
+  assert.equal(r.book.info().jobs[0]!.state, 'parked');
+  assert.equal(r.book.info().reserved.cpu ?? 0, 0, 'parked: holds no room');
+  assert.match(r.told.at(-1)!.text, /parked: no work started within 10 minutes/);
+  r.sessions.get('s1')!.busy = false;
+  r.tick({ s1: tree() });
+  assert.equal(r.book.info().jobs.length, 0, 'the turn ended with nothing running: the pass ends');
 });
 
 test('a job over its share: priority lowered, session held and told; when back, priority restored and hold lifted; nothing killed', () => {
@@ -343,7 +374,7 @@ test('a job over its share: priority lowered, session held and told; when back, 
   assert.match(r.told.at(-1)!.text, /over its share/);
   assert.match(r.told.at(-1)!.text, /Nothing is killed/);
   assert.equal(r.book.info().jobs[0]!.state, 'over');
-  // Held: no new reservation is granted, and a known heavy command is refused.
+  // Held: no new reservation is granted (no command is refused by its name, issue #500).
   assert.match(r.book.reserve('s1', { what: 'More', cpu: 1 }), /^Wait: Held/);
   // A process it starts while over is lowered too.
   r.tick({ s1: tree(proc(13, 11), proc(16, 13)) }, busy);
@@ -372,30 +403,189 @@ test('on macOS and Linux a lowered priority that cannot be raised again is shown
   assert.equal(r.book.info().jobs[0]!.loweredStays, true);
 });
 
-test('heavy work without a reservation is held and told to reserve next time; its commands then need a reservation', () => {
+test('a known heavy command runs without a reservation and is then judged by what it uses: held, and told what it used and its learned figure (issue #500)', () => {
   const r = rig();
   r.book.setSettings({ overSec: 5, averageSec: 5 });
-  for (let round = 0; round < 2; round++) {
+  for (let round = 0; round < 3; round++) {
     r.tick({ s1: tree() });
-    r.book.noteCommands('s1', ['python train.py']);
-    for (let i = 0; i < 3; i++) r.tick({ s1: tree(proc(30 + round, 11)) }, { cpuOf: { [30 + round]: 6 } });
-    assert.equal(r.book.isHeld('s1'), true);
-    assert.match(r.told.at(-1)!.text, /without a reservation/);
-    assert.match(r.told.at(-1)!.text, /call reserve before heavy work next time/);
+    // Nothing stands between the call and its run: the book only follows it (no refusal by name exists).
+    r.book.callStarted('s1', `train${round}`, ['python train.py'], false);
+    const train = started(r, 30 + round, 11);
+    for (let i = 0; i < 3; i++) r.tick({ s1: tree(train) }, { cpuOf: { [30 + round]: 6 } });
+    r.book.callEnded('s1', `train${round}`);
+    assert.equal(r.book.isHeld('s1'), true, `round ${round}: held for what it used`);
+    assert.equal(r.priorities.get(30 + round), LOWERED, 'its priority lowered');
+    const notice = r.told.at(-1)!.text;
+    assert.match(notice, /^Heavy work without a reservation: what your session runs has used ~\S+ CPU for over 5 s without a booking: reserve before it next time\. Busy: "python train\.py"/);
+    assert.doesNotMatch(notice, /known heavy command/);
+    // From the third run on, it is a known heavy command: its learned figure is in the notice, never a refusal.
+    if (round === 2) assert.match(notice, /Busy: "python train\.py", which usually uses ~\S+ CPU and ~\S+ GB memory \(learned from 2 runs\)\. Ledung has lowered/);
+    else assert.match(notice, /Busy: "python train\.py"\. Ledung has lowered/);
     r.tick({ s1: tree() });
     r.tick({ s1: tree() });
     assert.equal(r.book.isHeld('s1'), false);
   }
-  const why = r.book.commandRefusal('s1', ['python train.py']);
-  assert.match(why ?? '', /Call reserve first/);
-  assert.equal(r.book.commandRefusal('s1', ['git status']), null);
-  // With a reservation going, it runs.
-  r.book.reserve('s1', { what: 'Train', cpu: 40 });
-  assert.equal(r.book.commandRefusal('s1', ['python train.py']), null);
-  // The person can say it never needs one.
-  r.book.release('s1');
-  r.jobs.markNever('p', 'python train.py', true);
-  assert.equal(r.book.commandRefusal('s1', ['python train.py']), null);
+  assert.deepEqual(r.jobs.heavyCommands('p').map((h) => [h.command, h.runs]), [['python train.py', 3]]);
+  assert.equal('commandRefusal' in r.book, false, 'no refusal by name');
+});
+
+// --- Light commands (docs/steps/resource-limits-2.md, R4) ------------------------------------------------------------
+
+test('light commands are never learned as heavy, even with old "heavy" marks; nor is a script never seen to take long', () => {
+  const r = rig();
+  r.tick({ s1: tree(), s2: tree2() }, { cores: 3.2 });
+  // Marks learned the old way (before the migration that adds by_call): every command of a heavy job got its peak.
+  const old = ['git status', 'gh issue', 'git worktree list', 'cut', 'check.sh', 'npm run build', 'for', 'const'];
+  const db = (r.jobs as unknown as { db: { prepare(q: string): { run(...a: unknown[]): void } } }).db;
+  for (const at of [1, 2]) db.prepare("INSERT INTO job_runs (project, kind, commands, asked, peak, mean, duration_ms, over, undeclared, ended_at, by_call) VALUES ('p', 'nightly build', ?, '{}', ?, '{}', 1, 0, 0, ?, 0)").run(JSON.stringify(old), JSON.stringify({ ram: 6 * GB }), at);
+  // A pass waits.
+  r.book.setLimit('cpu', 50);
+  assert.match(r.book.reserve('s1', { what: 'Big', cpu: 45 }), /^Wait:/);
+  for (const command of ['git status', 'gh issue view 12 --json title', 'git -C ../other status --short', 'git worktree list', 'cut -d: -f1 x | sort', 'for f in a b; do echo $f; done']) {
+    assert.deepEqual(heavyKinds(command), [], command);
+  }
+  // An old mark alone makes nothing heavy (acceptance test round 1): nothing is listed.
+  assert.deepEqual(heavyKinds('./check.sh --quick'), ['check.sh']);
+  assert.deepEqual(r.jobs.heavyCommands('p'), []);
+  for (let i = 0; i < 3; i++) {
+    r.book.callStarted('s2', `c${i}`, ['check.sh'], false);
+    r.clock.now += 3000;
+    r.book.callEnded('s2', `c${i}`);
+  }
+  assert.equal(r.jobs.usualMs('p', 'check.sh'), 3000);
+  assert.deepEqual(r.jobs.heavyCommands('p'), [], 'a 3-second script is not heavy');
+  // Once a kind is seen to take long, its old marks count again, with where the figure comes from.
+  r.book.callStarted('s2', 'b', ['npm run build'], false);
+  r.clock.now += 60_000;
+  r.book.callEnded('s2', 'b');
+  const h = r.jobs.heavyCommands('p');
+  assert.deepEqual(h.map((x) => x.command), ['npm run build']);
+  assert.deepEqual([h[0]!.peak.ram, h[0]!.reserved, h[0]!.unreserved, h[0]!.usualMs], [6 * GB, 2, 0, 60_000]);
+  // Only the latest ten calls count.
+  for (let i = 0; i < 12; i++) r.jobs.addCall('p', 'npm run build', i < 2 ? 1000 : 60_000, 10 + i);
+  assert.equal(r.jobs.usualMs('p', 'npm run build'), 60_000);
+  assert.equal((r.jobs as unknown as { db: { prepare(q: string): { get(): { n: number } } } }).db.prepare("SELECT COUNT(*) AS n FROM command_calls WHERE kind = 'npm run build'").get().n, 10);
+  // Records learned the new way count without durations.
+  for (const at of [3, 4]) r.jobs.add({ project: 'p', kind: 'train', commands: ['python train.py'], asked: {}, peak: { ram: 4 * GB }, mean: {}, durationMs: 1, over: false, undeclared: false, endedAt: at });
+  assert.ok(r.jobs.heavyCommands('p').some((x) => x.command === 'python train.py'));
+});
+
+test('quick calls never cancel what a command was measured to use; a call that detaches keeps no duration', () => {
+  const r = rig();
+  r.tick({ s1: tree(), s2: tree2() });
+  // Learned the new way: a call's own processes were busy in two runs.
+  for (const at of [1, 2]) r.jobs.add({ project: 'p', kind: 'train', commands: ['python train.py'], asked: {}, peak: { ram: 4 * GB }, mean: {}, durationMs: 1, over: false, undeclared: true, endedAt: at });
+  assert.deepEqual(r.jobs.heavyCommands('p').map((h) => h.command), ['python train.py']);
+  // One quick call (code review of PR #400, round 2): it is still known heavy.
+  r.book.callStarted('s2', 'q', ['python train.py'], false);
+  r.clock.now += 200;
+  r.book.callEnded('s2', 'q');
+  assert.equal(r.jobs.usualMs('p', 'python train.py'), 200);
+  assert.deepEqual(r.jobs.heavyCommands('p').map((h) => h.command), ['python train.py']);
+  // Nor do ten of them.
+  for (let i = 0; i < 10; i++) r.jobs.addCall('p', 'python train.py', 200, 10 + i);
+  assert.deepEqual(r.jobs.heavyCommands('p').map((h) => h.command), ['python train.py']);
+  // A call that detaches is followed like a background one, so its quick return is never kept.
+  for (const command of ['python train.py &', 'nohup python train.py > log 2>&1 &', 'setsid python train.py', 'python train.py & disown', 'start /b python train.py', 'cmd /c start python train.py', 'Start-Process python train.py', 'python a.py & python b.py']) {
+    assert.equal(detaches(command), true, command);
+  }
+  for (const command of ['python train.py', 'npm start', 'make && make test', 'npm run build 2>&1 | tee log', 'npm test &> out', '& "C:/x/train.exe" --fast', 'cd a; & ./run.ps1']) {
+    assert.equal(detaches(command), false, command);
+  }
+  r.book.callStarted('s2', 'd', ['make'], detaches('make &'));
+  r.clock.now += 100;
+  r.book.callEnded('s2', 'd');
+  assert.equal(r.jobs.usualMs('p', 'make'), null);
+});
+
+test('git, file-reading words and shell syntax are light; real work is not', () => {
+  assert.deepEqual(heavyKinds('git status && npm run build'), ['npm run build']);
+  assert.deepEqual(heavyKinds('git stash'), ['git stash']);
+  assert.deepEqual(heavyKinds('git stash list'), []);
+  assert.deepEqual(heavyKinds('git -C repo commit -m x'), ['git commit']);
+  assert.deepEqual(heavyKinds('gh pr checks 12 --watch'), []);
+  assert.deepEqual(heavyKinds('tr a b < f | jq .x | tee out'), []);
+  assert.deepEqual(heavyKinds('for f in *.ts; do npm test; done'), ['npm test']);
+  assert.deepEqual(heavyKinds('while true; do sleep 1; done'), []);
+  assert.deepEqual(heavyKinds('if make; then echo ok; fi'), ['make']);
+  assert.deepEqual(heavyKinds('const a = 1;\nlet b = 2;'), []);
+});
+
+test('a job learns only the calls whose own processes are busy: not a short script after the build, nor a loop beside it', () => {
+  const r = rig();
+  r.tick({ s1: tree() });
+  // A status loop in the background, begun before the reservation; it starts a small poll every round.
+  r.book.callStarted('s1', 'loop', ['loop.sh'], true);
+  const loop = started(r, 50, 11, 5 * 1024 ** 2);
+  r.tick({ s1: tree(loop) });
+  let pid = 100;
+  const poll = () => started(r, pid++, 50, 40 * 1024 ** 2);
+  for (let round = 0; round < 2; round++) {
+    r.book.reserve('s1', { what: 'Build', ram_gb: 6 });
+    // A 6-second script before the build, caught by a sample inside the job.
+    r.book.callStarted('s1', `pre${round}`, ['check.sh'], false);
+    const pre = started(r, 80 + round, 11, 5 * 1024 ** 2);
+    r.tick({ s1: tree(loop, poll(), pre, { ...pre, pid: pre.pid + 200, ppid: pre.pid }) });
+    r.book.callEnded('s1', `pre${round}`);
+    r.book.callStarted('s1', `build${round}`, ['npm run build'], false);
+    const build = started(r, 60 + round, 11, 6 * GB);
+    for (let i = 0; i < 3; i++) r.tick({ s1: tree(loop, poll(), build) }, { cpuOf: { [build.pid]: 1 } });
+    r.book.callEnded('s1', `build${round}`);
+    // The same script after the build, still in the job.
+    r.book.callStarted('s1', `post${round}`, ['check.sh'], false);
+    const post = started(r, 90 + round, 11, 5 * 1024 ** 2);
+    r.tick({ s1: tree(loop, poll(), post) });
+    r.book.callEnded('s1', `post${round}`);
+    r.tick({ s1: tree(loop) });
+    r.tick({ s1: tree(loop) });
+    assert.equal(r.book.info().jobs.length, 0, 'the job ended with its processes');
+  }
+  assert.deepEqual(rows(r).map((x) => x.commands), [['npm run build'], ['npm run build']]);
+  assert.deepEqual(r.jobs.heavyCommands('p').map((h) => h.command), ['npm run build']);
+  // A background build begun after the go is the job's, though it is never seen to end.
+  r.book.reserve('s1', { what: 'Build', ram_gb: 6 });
+  r.book.callStarted('s1', 'bg', ['python train.py'], true);
+  const bg = started(r, 70, 11, 6 * GB);
+  for (let i = 0; i < 3; i++) r.tick({ s1: tree(loop, bg) });
+  r.tick({ s1: tree(loop) });
+  assert.deepEqual(rows(r).at(-1)!.commands, ['python train.py']);
+});
+
+test('heavy work without a reservation learns only its own call: not a loop begun 10 s before it, nor a script after it', () => {
+  const r = rig();
+  r.book.setSettings({ overSec: 5, averageSec: 15 });
+  r.tick({ s1: tree() });
+  r.book.callStarted('s1', 'loop', ['loop.sh'], true);
+  const loop = started(r, 50, 11, 5 * 1024 ** 2);
+  r.tick({ s1: tree(loop) });
+  r.tick({ s1: tree(loop, started(r, 51, 50, 40 * 1024 ** 2)) });
+  r.book.callStarted('s1', 'build', ['node build.mjs'], false);
+  const build = started(r, 60, 11, 4 * GB);
+  for (let i = 0; i < 4; i++) r.tick({ s1: tree(loop, build) }, { cpuOf: { 60: 1 } });
+  assert.equal(r.book.isHeld('s1'), true);
+  r.book.callEnded('s1', 'build');
+  // The average lags: the stretch lasts while a short script runs after the build.
+  r.book.callStarted('s1', 'post', ['check.sh'], false);
+  const post = started(r, 70, 11, 5 * 1024 ** 2);
+  r.tick({ s1: tree(loop, post) });
+  r.book.callEnded('s1', 'post');
+  for (let i = 0; i < 6; i++) r.tick({ s1: tree(loop) });
+  assert.equal(r.book.isHeld('s1'), false);
+  assert.deepEqual(rows(r), [{ commands: ['node build.mjs'], unreserved: true }]);
+});
+
+test('on macOS and Linux (no start times) a process belongs to the call begun last before the sample it was first seen in', () => {
+  const r = rig();
+  const bare = (pid: number, ppid: number, mem: number): ProcInfo => ({ pid, ppid, cpuSeconds: 0, memBytes: mem });
+  r.tick({ s1: tree() });
+  r.book.callStarted('s1', 'loop', ['loop.sh'], true);
+  r.tick({ s1: tree(bare(50, 11, 5 * 1024 ** 2)) });
+  r.book.reserve('s1', { what: 'Build', ram_gb: 6 });
+  r.book.callStarted('s1', 'build', ['make'], false);
+  for (let i = 0; i < 3; i++) r.tick({ s1: tree(bare(50, 11, 5 * 1024 ** 2), bare(60, 11, 6 * GB)) });
+  r.book.callEnded('s1', 'build');
+  r.tick({ s1: tree(bare(50, 11, 5 * 1024 ** 2)) });
+  assert.deepEqual(rows(r).map((x) => x.commands), [['make']]);
 });
 
 test('after three runs the learned figure replaces the guess, and the answer says so', () => {
@@ -529,15 +719,13 @@ test("sessions and managers never see another session's job name or title in a r
   assert.throws(() => r.book.reserve('s1', { what: 'x', ram_gb: 1e300 }), /more than this PC/);
 });
 
-test('managers are never told to reserve, nor held for their own work: they have no reserve tool', () => {
+test('managers are never held for their own work: they have no reserve tool', () => {
   const r = rig();
   r.sessions.set('mgr', { id: 'mgr', title: 'M', project: 'p', role: 'manager', priority: 'normal', local: true, busy: false });
   r.book.setSettings({ overSec: 5, averageSec: 5 });
   for (let i = 0; i < 3; i++) r.tick({ mgr: tree(proc(40, 11)) }, { cpuOf: { 40: 10 } });
   assert.equal(r.book.isHeld('mgr'), false);
-  for (const at of [1, 2]) r.jobs.add({ project: 'p', kind: 'x', commands: ['npm run check'], asked: {}, peak: { cpu: 60 }, mean: {}, durationMs: 1, over: false, undeclared: false, endedAt: at });
-  assert.equal(r.book.commandRefusal('mgr', ['npm run check']), null);
-  assert.match(r.book.commandRefusal('s1', ['npm run check']) ?? '', /reserve first/);
+  assert.equal(r.told.filter((t) => t.id === 'mgr').length, 0, 'never told to reserve');
 });
 
 test("a session's own MCP servers within its footprint are not heavy work; a heavy process started before a small reservation still is", () => {
@@ -611,7 +799,7 @@ test('heavy commands are found inside the usual wrappers', () => {
   assert.deepEqual(heavyKinds('(npm run build)'), ['npm run build']);
   assert.deepEqual(heavyKinds('env CUDA=1 python train.py'), ['python train.py']);
   assert.deepEqual(heavyKinds('cmd /c npm run build'), ['npm run build']);
-  assert.deepEqual(heavyKinds('git status'), ['git status']);
+  assert.deepEqual(heavyKinds('git status'), [], 'light (R4)');
 });
 
 test("Claude Code's own console host on Windows is never a job, so a reservation still ends with its job", () => {
@@ -674,6 +862,7 @@ test("Pause and Stop act on the job's processes now: what they started since the
 
 test("no go before the session's processes are known, not even with Start now (finding 6)", () => {
   const r = rig();
+  r.sessions.get('s1')!.busy = true;
   const answer = r.book.reserve('s1', { what: 'Early', cpu: 10 });
   assert.match(answer, /^Wait: Waiting for its session's processes to be measured/);
   r.book.startNow('r1');
@@ -798,4 +987,593 @@ test('a failed GPU read is no baseline: the next read is not a whole lifetime in
   assert.equal(first.adapters[0]!.load, 0, 'the first real read is the baseline');
   const r = t.update(parseWindowsGpu(row(9e9 + 5e6)), 10000);
   assert.equal(Math.round(r.adapters[0]!.load), 10);
+});
+
+// --- Round 2 (docs/steps/resource-limits-2.md): the pass, subagents, waking, who holds the room, WSL ------------------
+
+const MB = 1024 ** 2;
+const tree3 = (...work: ProcInfo[]) => [proc(30, 1), proc(31, 30, 300 * MB), ...work];
+const addSession = (r: Rig, id: string, extra: Partial<BookSession> = {}) => r.sessions.set(id, { id, title: id, project: 'p', role: 'session', priority: 'normal', local: true, busy: true, ...extra });
+
+test('a pass parks after 2 minutes quiet and its booking leaves the bar; work under it again needs no new reserve (R1)', () => {
+  const r = rig();
+  r.sessions.get('s1')!.busy = true;
+  r.tick({ s1: tree() });
+  r.book.setLimit('ram', 30);
+  assert.match(r.book.reserve('s1', { what: 'Build', ram_gb: 8, cpu: 20 }), /pass for your session and its subagents/);
+  const build = proc(13, 11, 4 * GB);
+  r.tick({ s1: tree(build) }, { cpuOf: { 13: 3 } });
+  assert.equal(r.book.info().jobs[0]!.state, 'ready', 'one active sample is not yet work');
+  r.tick({ s1: tree(build) }, { cpuOf: { 13: 3 } });
+  assert.equal(r.book.info().jobs[0]!.state, 'busy');
+  assert.ok((r.book.info().reserved.ram ?? 0) > 3 * GB, 'busy: holds booked minus used');
+  // The build is done; the compiler server it left idles, using almost nothing.
+  const daemon = proc(14, 13, 200 * MB);
+  let ticks = 0;
+  while (r.book.info().jobs[0]!.state === 'busy' && ticks < 40) {
+    r.tick({ s1: tree(daemon) });
+    ticks++;
+  }
+  assert.equal(r.book.info().jobs[0]!.state, 'parked');
+  assert.ok(ticks >= 24 && ticks <= 26, `parked after about 2 minutes quiet (${ticks} samples)`);
+  assert.equal(r.book.info().reserved.ram ?? 0, 0, 'parked: its booking leaves the bar');
+  assert.equal(r.book.info().jobs.length, 1, 'kept: the session is still in its turn and the daemon runs');
+  // A second run under the same pass, without a new reserve: busy again, and it fits.
+  const again = proc(15, 11, 3 * GB);
+  r.tick({ s1: tree(daemon, again) }, { cpuOf: { 15: 3 } });
+  r.tick({ s1: tree(daemon, again) }, { cpuOf: { 15: 3 } });
+  const job = r.book.info().jobs[0]!;
+  assert.equal(job.state, 'busy');
+  assert.equal(job.resumedAbove, false);
+  assert.equal(r.book.info().jobs.length, 1, 'one pass');
+});
+
+test('the 2026-11-15 case: two finished builds with leftover idle processes no longer hold the room; the third goes within about 2 minutes', () => {
+  const r = rig();
+  addSession(r, 's3', { title: 'Three' });
+  for (const id of ['s1', 's2']) r.sessions.get(id)!.busy = true;
+  const pc = { memUsed: 6 * GB };
+  r.tick({ s1: tree(), s2: tree2(), s3: tree3() }, pc);
+  r.book.setLimit('ram', 30);
+  assert.match(r.book.reserve('s1', { what: 'Build A', ram_gb: 12 }), /^Go:/);
+  assert.match(r.book.reserve('s2', { what: 'Build B', ram_gb: 12 }), /^Go:/);
+  assert.match(r.book.reserve('s3', { what: 'Build C', ram_gb: 10 }), /^Wait:/);
+  const a = proc(13, 11, 2 * GB);
+  const b = proc(23, 21, 2 * GB);
+  for (let i = 0; i < 4; i++) r.tick({ s1: tree(a), s2: tree2(b), s3: tree3() }, { ...pc, cpuOf: { 13: 4, 23: 4 } });
+  assert.deepEqual(r.book.info().jobs.map((j) => j.state), ['busy', 'busy']);
+  assert.equal(r.book.info().line.length, 1);
+  // Both finish; each leaves a daemon behind (a compiler server, a watcher).
+  const finished = r.clock.now;
+  const da = proc(14, 11, 150 * MB);
+  const db = proc(24, 21, 150 * MB);
+  while (r.book.info().line.length && r.clock.now - finished < 10 * 60_000) r.tick({ s1: tree(da), s2: tree2(db), s3: tree3() }, pc);
+  const waited = r.clock.now - finished;
+  assert.equal(r.book.info().line.length, 0, 'the third has its go');
+  assert.ok(waited <= 130_000, `within about 2 minutes (${waited / 1000} s)`);
+  assert.match(r.told.find((t) => t.id === 's3')!.text, /^You may go: reservation r3 "Build C"/);
+  assert.deepEqual(r.book.info().jobs.filter((j) => j.sessionId !== 's3').map((j) => j.state), ['parked', 'parked']);
+});
+
+test("a background subagent's job runs under the session's pass after the main turn has ended; the pass ends when it is over (R1, R2)", () => {
+  const r = rig();
+  const s1 = r.sessions.get('s1')!;
+  s1.busy = true;
+  r.tick({ s1: tree() });
+  r.book.reserve('s1', { what: 'Tests', cpu: 30 });
+  // The main turn ends with a tester subagent in the background, which hasn't started its job yet.
+  s1.busy = false;
+  s1.background = 1;
+  r.tick({ s1: tree() });
+  assert.equal(r.book.info().jobs.length, 1, 'kept: a background subagent runs');
+  // A subagent's reserve acts on the same pass: one pass, the extra added.
+  assert.match(r.book.reserve('s1', { what: 'Tests', cpu: 10 }), /^Go:/);
+  assert.equal(r.book.info().jobs.length, 1);
+  assert.equal(r.book.info().jobs[0]!.granted.cpu, 40);
+  const job = proc(16, 11, 1 * GB);
+  for (let i = 0; i < 3; i++) r.tick({ s1: tree(job) }, { cpuOf: { 16: 4 } });
+  assert.equal(r.book.info().jobs[0]!.state, 'busy');
+  s1.background = 0;
+  r.tick({ s1: tree() });
+  assert.equal(r.book.info().jobs.length, 0, 'over: no turn, nothing in the background, nothing running');
+  assert.equal(r.jobs.kinds()[0]!.kind, 'tests', 'what it used is recorded');
+});
+
+test('a parked pass whose work starts again goes back to busy if it fits; asked again with no room, it waits in line (issue #500: no command is refused)', () => {
+  const r = rig();
+  addSession(r, 's3', { title: 'Three' });
+  for (const id of ['s1', 's2']) r.sessions.get(id)!.busy = true;
+  r.book.setSettings({ parkSec: 30 });
+  for (const at of [1, 2]) r.jobs.add({ project: 'p', kind: 'build', commands: ['npm run build'], asked: {}, peak: { ram: 6 * GB }, mean: {}, durationMs: 60_000, over: false, undeclared: false, endedAt: at });
+  const pc = { memUsed: 10 * GB };
+  r.tick({ s1: tree(), s2: tree2(), s3: tree3() }, pc);
+  r.book.setLimit('ram', 30);
+  r.book.reserve('s1', { what: 'Build', ram_gb: 8 });
+  const job = proc(13, 11, 1 * GB);
+  for (let i = 0; i < 3; i++) r.tick({ s1: tree(job), s2: tree2(), s3: tree3() }, { ...pc, cpuOf: { 13: 4 } });
+  for (let i = 0; i < 8; i++) r.tick({ s1: tree(), s2: tree2(), s3: tree3() }, pc);
+  assert.equal(r.book.info().jobs[0]!.state, 'parked');
+  // The known heavy command runs again with nothing asked: its work is seen, and it fits, so the pass is busy again.
+  r.book.callStarted('s1', 'b2', ['npm run build'], false);
+  for (let i = 0; i < 2; i++) r.tick({ s1: tree(job), s2: tree2(), s3: tree3() }, { ...pc, cpuOf: { 13: 4 } });
+  let card = r.book.info().jobs[0]!;
+  assert.equal(card.state, 'busy');
+  assert.equal(card.resumedAbove, false);
+  for (let i = 0; i < 8; i++) r.tick({ s1: tree(), s2: tree2(), s3: tree3() }, pc);
+  assert.equal(r.book.info().jobs[0]!.state, 'parked');
+  // Now someone else takes the room, and a later reservation waits.
+  assert.match(r.book.reserve('s2', { what: 'Train', ram_gb: 15 }), /^Go:/);
+  r.clock.now += 1000;
+  assert.match(r.book.reserve('s3', { what: 'Other', ram_gb: 8 }), /^Wait:/);
+  card = r.book.info().jobs.find((j) => j.sessionId === 's1')!;
+  assert.equal(card.state, 'parked');
+  // Asked again: back into the line, told to wait (a subagent is told to stop and tell its parent).
+  assert.match(r.book.reserve('s1', { what: 'Build', ram_gb: 8 }), /^Wait: .*A subagent told this stops and tells its parent/);
+  assert.equal(r.book.passWaits('s1'), 'waiting');
+});
+
+test('work under a parked pass that starts without asking and does not fit runs, judged against its share, and its card says so', () => {
+  const r = rig();
+  r.sessions.get('s1')!.busy = true;
+  r.sessions.get('s2')!.busy = true;
+  r.book.setSettings({ parkSec: 30 });
+  const pc = { memUsed: 10 * GB };
+  r.tick({ s1: tree(), s2: tree2() }, pc);
+  r.book.setLimit('ram', 30);
+  r.book.reserve('s1', { what: 'Build', ram_gb: 8 });
+  for (let i = 0; i < 3; i++) r.tick({ s1: tree(proc(13, 11)), s2: tree2() }, { ...pc, cpuOf: { 13: 4 } });
+  for (let i = 0; i < 8; i++) r.tick({ s1: tree(proc(13, 11)), s2: tree2() }, pc);
+  assert.equal(r.book.info().jobs[0]!.state, 'parked');
+  r.book.reserve('s2', { what: 'Train', ram_gb: 15 });
+  for (let i = 0; i < 2; i++) r.tick({ s1: tree(proc(13, 11)), s2: tree2() }, { ...pc, cpuOf: { 13: 4 } });
+  const card = r.book.info().jobs.find((j) => j.sessionId === 's1')!;
+  assert.equal(card.state, 'busy');
+  assert.equal(card.resumedAbove, true);
+});
+
+test('heavy work under a parked pass sent back into the line is still judged against its share (code review of PR #476, finding 2)', () => {
+  const r = rig();
+  r.sessions.get('s1')!.busy = true;
+  r.sessions.get('s2')!.busy = true;
+  r.book.setSettings({ parkSec: 30, overSec: 10, averageSec: 5 });
+  for (const at of [1, 2]) r.jobs.add({ project: 'p', kind: 'build', commands: ['npm run build'], asked: {}, peak: { ram: 6 * GB }, mean: {}, durationMs: 60_000, over: false, undeclared: false, endedAt: at });
+  const pc = { memUsed: 10 * GB };
+  r.tick({ s1: tree(), s2: tree2() }, pc);
+  r.book.setLimit('ram', 30);
+  r.book.reserve('s1', { what: 'Build', ram_gb: 8 });
+  for (let i = 0; i < 3; i++) r.tick({ s1: tree(proc(13, 11)), s2: tree2() }, { ...pc, cpuOf: { 13: 4 } });
+  for (let i = 0; i < 8; i++) r.tick({ s1: tree(), s2: tree2() }, pc);
+  assert.equal(r.book.info().jobs[0]!.state, 'parked');
+  assert.match(r.book.reserve('s2', { what: 'Train', ram_gb: 15 }), /^Go:/);
+  assert.match(r.book.reserve('s1', { what: 'Build', ram_gb: 8 }), /^Wait:/);
+  assert.equal(r.book.passWaits('s1'), 'waiting');
+  // An unknown command runs anyway: 12 GB and 8 cores for 3 minutes.
+  const big = started(r, 50, 11, 12 * GB);
+  for (let i = 0; i < 36; i++) r.tick({ s1: tree(big), s2: tree2() }, { memUsed: 22 * GB, cpuOf: { 50: 8 } });
+  const card = r.book.info().jobs.find((j) => j.sessionId === 's1')!;
+  assert.equal(card.state, 'over');
+  assert.equal(card.resumedAbove, true);
+  assert.equal(r.book.isHeld('s1'), true);
+  assert.equal(r.book.info().line.length, 0, 'out of the line: its work started');
+});
+
+/** A parked pass (8 GB booked) asked again and sent back into the line, as in the finding-2 test above. */
+function backInLine() {
+  const r = rig();
+  r.sessions.get('s1')!.busy = true;
+  r.sessions.get('s2')!.busy = true;
+  r.book.setSettings({ parkSec: 30, overSec: 10, averageSec: 5 });
+  for (const at of [1, 2]) r.jobs.add({ project: 'p', kind: 'build', commands: ['npm run build'], asked: {}, peak: { ram: 6 * GB }, mean: {}, durationMs: 60_000, over: false, undeclared: false, endedAt: at });
+  const pc = { memUsed: 10 * GB };
+  r.tick({ s1: tree(), s2: tree2() }, pc);
+  r.book.setLimit('ram', 30);
+  r.book.reserve('s1', { what: 'Build', ram_gb: 8 });
+  for (let i = 0; i < 3; i++) r.tick({ s1: tree(proc(13, 11)), s2: tree2() }, { ...pc, cpuOf: { 13: 4 } });
+  for (let i = 0; i < 8; i++) r.tick({ s1: tree(), s2: tree2() }, pc);
+  assert.equal(r.book.info().jobs[0]!.state, 'parked');
+  assert.match(r.book.reserve('s2', { what: 'Train', ram_gb: 15 }), /^Go:/);
+  assert.match(r.book.reserve('s1', { what: 'Build', ram_gb: 8 }), /^Wait:/);
+  assert.equal(r.book.passWaits('s1'), 'waiting');
+  return r;
+}
+
+test('memory taken at once above the booking, then one thread, under a pass back in the line is judged (acceptance test 2 of PR #476, F2)', () => {
+  const r = backInLine();
+  // 10 GB at once against 8 GB booked, then one thread of 16 (3 points, under the CPU allowance), for 3 minutes.
+  const hog = started(r, 50, 11, 10 * GB);
+  for (let i = 0; i < 36; i++) r.tick({ s1: tree(hog), s2: tree2() }, { memUsed: 20 * GB, cpuOf: { 50: 0.5 } });
+  const card = r.book.info().jobs.find((j) => j.sessionId === 's1')!;
+  assert.equal(card.state, 'over');
+  assert.equal(card.resumedAbove, true);
+  assert.equal(r.book.isHeld('s1'), true);
+  assert.equal(r.book.info().line.length, 0, 'out of the line: its work started');
+});
+
+test('memory growing under a pass back in the line is still caught, from under its booking to above it (acceptance test 2 of PR #476, F2)', () => {
+  const r = backInLine();
+  const job = started(r, 50, 11);
+  for (let i = 0; i < 36; i++) {
+    const mem = Math.min(2 * GB + i * 512 * MB, 12 * GB);
+    r.tick({ s1: tree({ ...job, memBytes: mem }), s2: tree2() }, { memUsed: 10 * GB + mem, cpuOf: { 50: 0.5 } });
+    if (i === 3) assert.equal(r.book.info().jobs.find((j) => j.sessionId === 's1')!.state, 'busy', 'growing is work: out of the line');
+  }
+  assert.equal(r.book.info().jobs.find((j) => j.sessionId === 's1')!.state, 'over');
+  assert.equal(r.book.isHeld('s1'), true);
+});
+
+test('a pass back in the line claims none of its processes: work that is never active twice in a row is judged as unreserved (acceptance test 2 of PR #476, F2)', () => {
+  const r = backInLine();
+  r.book.setSettings({ averageSec: 30 });
+  // Bursts of 6 cores every other sample: never two active samples in a row, 19 points on average.
+  const job = started(r, 50, 11, 1 * GB);
+  for (let i = 0; i < 12; i++) r.tick({ s1: tree(job), s2: tree2() }, { memUsed: 11 * GB, cpuOf: { 50: i % 2 ? 0 : 6 } });
+  assert.equal(r.book.passWaits('s1'), 'waiting', 'still in line');
+  assert.equal(r.book.info().unreserved.length, 1, 'judged as the session\'s unreserved work');
+  assert.equal(r.book.isHeld('s1'), true);
+});
+
+test('a leftover daemon under a pass back in the line, within what it had booked, holds no one (acceptance test 2 of PR #476, F2)', () => {
+  const r = backInLine();
+  const daemon = proc(14, 11, 3 * GB);
+  for (let i = 0; i < 12; i++) r.tick({ s1: tree(daemon), s2: tree2() }, { memUsed: 13 * GB });
+  assert.equal(r.book.passWaits('s1'), 'waiting');
+  assert.equal(r.book.info().unreserved.length, 0);
+  assert.equal(r.book.isHeld('s1'), false);
+});
+
+test('a paused job whose pass went back into the line is resumed when a new reservation replaces it (code review of PR #476, finding 3)', () => {
+  const r = rig();
+  r.sessions.get('s1')!.busy = true;
+  r.sessions.get('s2')!.busy = true;
+  r.book.setSettings({ parkSec: 30 });
+  for (const at of [1, 2]) r.jobs.add({ project: 'p', kind: 'build', commands: ['npm run build'], asked: {}, peak: { ram: 6 * GB }, mean: {}, durationMs: 60_000, over: false, undeclared: false, endedAt: at });
+  const pc = { memUsed: 10 * GB };
+  r.tick({ s1: tree(), s2: tree2() }, pc);
+  r.book.setLimit('ram', 30);
+  r.book.reserve('s1', { what: 'Build', ram_gb: 8 });
+  for (let i = 0; i < 3; i++) r.tick({ s1: tree(proc(13, 11)), s2: tree2() }, { ...pc, cpuOf: { 13: 4 } });
+  for (let i = 0; i < 8; i++) r.tick({ s1: tree(proc(13, 11)), s2: tree2() }, pc);
+  assert.equal(r.book.info().jobs[0]!.state, 'parked');
+  r.book.setJobPaused('r1', true);
+  r.book.reserve('s2', { what: 'Train', ram_gb: 15 });
+  assert.match(r.book.reserve('s1', { what: 'Build', ram_gb: 8 }), /^Wait:/);
+  r.book.reserve('s1', { what: 'Tests', ram_gb: 4 });
+  assert.deepEqual(r.resumed, [13]);
+  assert.ok(!r.book.info().jobs.some((j) => j.id === 'r1'));
+  assert.equal(rows(r).length, 3, 'r1 recorded beside the two seeded runs');
+});
+
+test("the go's 10 minutes count from when it reaches the session; until then it holds its room and its session isn't idle-stopped (R3)", () => {
+  const r = rig();
+  const s1 = r.sessions.get('s1')!;
+  r.tick({ s1: tree(), s2: tree2() }, { cores: 3.2 });
+  r.book.setLimit('cpu', 30);
+  assert.match(r.book.reserve('s1', { what: 'Train', cpu: 20 }), /^Wait:/);
+  assert.equal(r.book.passWaits('s1'), 'waiting');
+  const idle = { info: { role: 'session' as const, status: 'idle' as const, paused: false }, turnOpen: false, pendingPermissions: 0, openQuestions: 0, waitingDeliveries: 0, backgroundTasks: 0, facts: FRESH_FACTS, lastActivity: 0 };
+  assert.equal(idleStopBlocker({ ...idle, reservation: r.book.passWaits('s1') }, 10 * 3600_000, 3600_000), 'waiting for its reservation');
+  // The go is given while the working line is full: it waits in the session's inbox.
+  r.undelivered.add('s1');
+  r.book.setLimit('cpu', 90);
+  assert.match(r.told.at(-1)!.text, /^You may go/);
+  for (let i = 0; i < 15 * 12; i++) r.tick({ s1: tree(), s2: tree2() });
+  const job = r.book.info().jobs[0]!;
+  assert.equal(job.state, 'ready', 'not lapsed: the go has not reached it');
+  assert.equal(job.deliveredAt, null);
+  assert.equal(r.book.info().reserved.cpu, 20, 'the room is promised to it');
+  assert.equal(r.book.passWaits('s1'), 'ready');
+  assert.equal(idleStopBlocker({ ...idle, reservation: r.book.passWaits('s1') }, 10 * 3600_000, 3600_000), 'waiting for its reservation');
+  // It reaches the session (a turn starts with it); 10 minutes from then it parks.
+  r.undelivered.delete('s1');
+  s1.busy = true;
+  r.tick({ s1: tree(), s2: tree2() });
+  const reached = r.book.info().jobs[0]!.deliveredAt!;
+  assert.equal(reached, r.clock.now);
+  r.clock.now += LAPSE_MS - 10_000;
+  r.tick({ s1: tree(), s2: tree2() });
+  assert.equal(r.book.info().jobs[0]!.state, 'ready');
+  r.clock.now += 10_000;
+  r.tick({ s1: tree(), s2: tree2() });
+  assert.equal(r.book.info().jobs[0]!.state, 'parked');
+  assert.equal(r.book.passWaits('s1'), null, 'parked: idle stop may end it');
+  assert.equal(idleStopBlocker({ ...idle, reservation: null }, 10 * 3600_000, 3600_000), null);
+});
+
+test('the manager is told once when its session has waited 30 minutes, with who holds the room but no other session\'s words, and again at the go (R3, R6)', () => {
+  const r = rig();
+  r.sessions.get('s1')!.parentId = 'boss';
+  r.sessions.get('s2')!.busy = true;
+  r.sessions.get('s2')!.parentId = 'someone-else';
+  const pc = { memUsed: 8 * GB };
+  r.tick({ s1: tree(), s2: tree2() }, pc);
+  r.book.setLimit('ram', 20);
+  r.book.reserve('s2', { what: 'Secret plan', ram_gb: 10 });
+  assert.match(r.book.reserve('s1', { what: 'Fix tests', ram_gb: 6 }), /^Wait:/);
+  for (let i = 0; i < 6; i++) r.tick({ s1: tree(), s2: tree2(proc(23, 21, 2 * GB)) }, { ...pc, cpuOf: { 23: 4 } });
+  assert.equal(r.managers.length, 0);
+  r.clock.now += 30 * 60_000;
+  r.tick({ s1: tree(), s2: tree2(proc(23, 21, 2 * GB)) }, { ...pc, cpuOf: { 23: 4 } });
+  r.tick({ s1: tree(), s2: tree2(proc(23, 21, 2 * GB)) }, { ...pc, cpuOf: { 23: 4 } });
+  assert.equal(r.managers.length, 1, 'once');
+  assert.equal(r.managers[0]!.id, 'boss');
+  assert.match(r.managers[0]!.text, /^Your session "One" has waited \d+ min for its reservation "Fix tests": Waiting for memory room: .*; held by 1 other job \(10 GB booked, 2\.0 GB used\)/);
+  assert.doesNotMatch(r.managers[0]!.text, /Secret plan|Two/);
+  r.book.release('s2');
+  assert.match(r.managers.at(-1)!.text, /^Your session "One" may go now/);
+});
+
+test("who holds the room: named on the page; for sessions other jobs only as counts and figures; WSL and other programs by name (R5, R6)", () => {
+  const r = rig();
+  r.sessions.get('s2')!.busy = true;
+  const wsl = { pid: 900, ppid: 4, cpuSeconds: 0, memBytes: 6 * GB, started: 1, name: 'vmmemWSL' };
+  const chrome = [{ pid: 901, ppid: 4, cpuSeconds: 0, memBytes: 1 * GB, started: 1, name: 'chrome.exe' }, { pid: 902, ppid: 901, cpuSeconds: 0, memBytes: 1.5 * GB, started: 2, name: 'chrome.exe' }];
+  const pc = { memUsed: 13 * GB, outside: [wsl, ...chrome] };
+  r.tick({ s1: tree(), s2: tree2() }, pc);
+  assert.equal(r.book.info().wsl, 6 * GB);
+  r.book.setLimit('ram', 20);
+  r.book.reserve('s2', { what: 'Secret plan', ram_gb: 3 });
+  for (let i = 0; i < 3; i++) r.tick({ s1: tree(), s2: tree2(proc(23, 21, 1 * GB)) }, { ...pc, cpuOf: { 23: 4 } });
+  const answer = r.book.reserve('s1', { what: 'Mine', ram_gb: 6 });
+  assert.match(answer, /^Wait: Waiting for memory room: .*; held by WSL 6\.0 GB, other programs .*, 1 other job \(3\.0 GB booked, 1\.0 GB used\)/);
+  assert.doesNotMatch(answer, /Secret plan|Two|chrome/);
+  const line = r.book.info().line[0]!;
+  assert.match(line.reason, /"Secret plan" \(Two: 3\.0 GB booked, 1\.0 GB used\)/);
+  assert.match(line.reason, /other programs [\d.]+ GB \(most: chrome\.exe 2\.5 GB\)/);
+  assert.doesNotMatch(line.reasonForSessions, /Secret plan|Two|chrome/);
+  // Without WSL: nothing about it.
+  const r2 = rig();
+  r2.tick({ s1: tree() });
+  assert.equal(r2.book.info().wsl, null);
+  assert.equal(wslHintDue({ wsl: 6 * GB, limits: { ram: 20 * GB } }, 64 * GB), true);
+  assert.equal(wslHintDue({ wsl: 6 * GB, limits: {} }, 64 * GB), false);
+  assert.equal(wslHintDue({ wsl: null, limits: { ram: 1 * GB } }, 64 * GB), false);
+});
+
+test('a heavy job started detached is taken as its session\'s, so its pass counts and learns it and Pause and Stop on its card reach it; two sessions detaching at once claim nothing', () => {
+  const r = rig();
+  r.sessions.get('s1')!.busy = true;
+  r.tick({ s1: tree() });
+  r.book.reserve('s1', { what: 'Train', cpu: 30, ram_gb: 4 });
+  r.book.callStarted('s1', 'd1', ['python train.py'], true, true, 'nohup python train.py > train.log 2>&1 &');
+  // Its shell ended before any sample: the trainer's parent id names a process that is gone.
+  const started77 = r.clock.now + 1000;
+  for (let i = 1; i <= 3; i++) r.tick({ s1: tree() }, { outside: [{ pid: 77, ppid: 999, cpuSeconds: i * 20, memBytes: 3 * GB, started: started77 }] });
+  const job = r.book.info().jobs[0]!;
+  assert.equal(job.processes, 1);
+  assert.equal(job.state, 'busy');
+  // Pause and Stop on its card reach it, though it is under no host (acceptance test 3 of PR #476): its parent was
+  // never seen, so it was taken by timing alone, and the action checks its command line against the detaching call's
+  // (re-review of PR #476); the fresh list is looked at from it as well, so what it started since is reached too.
+  const targets = r.book.jobTargets(job.id);
+  assert.deepEqual(targets.adopted, []);
+  assert.deepEqual(targets.guessed, [{ pid: 77, commands: ['nohup python train.py > train.log 2>&1 &'] }]);
+  const ft = (ms: number) => String((BigInt(ms) + 11644473600000n) * 10000n);
+  const all: FreshProcess[] = [
+    { pid: 10, ppid: 1, started: ft(1000), name: 'node.exe' },
+    { pid: 11, ppid: 10, started: ft(2000), name: 'claude.exe' },
+    { pid: 77, ppid: 999, started: ft(started77), name: 'python.exe' },
+    { pid: 78, ppid: 77, started: ft(started77 + 500), name: 'python.exe' },
+    { pid: 500, ppid: 4, started: ft(500), name: 'other.exe' },
+  ];
+  const lines = [{ pid: 77, started: ft(started77), command: '"C:\\Python312\\python.exe" train.py', cwd: null }];
+  const proven = provenByCommand(targets.guessed, all, lines, [], () => false);
+  assert.deepEqual(proven, [77]);
+  const now = jobTargetsNow(targets.targets, jobProcessesNow(all, targets.host!, proven), targets.host!);
+  assert.deepEqual(now.map((t) => t.pid).sort(), [77, 78]);
+  // Without the adopted roots (as before acceptance test 3's fix) nothing was reached.
+  assert.deepEqual(jobTargetsNow(targets.targets, jobProcessesNow(all, targets.host!, []), targets.host!), []);
+  // Another process at that pid now (a reused id), or one whose working folder is outside the session's: left alone.
+  assert.deepEqual(provenByCommand(targets.guessed, all, [{ ...lines[0]!, started: ft(started77 + 9) }], [], () => false), []);
+  assert.deepEqual(provenByCommand(targets.guessed, all, [{ ...lines[0]!, cwd: '/home/me/elsewhere' }], ['/home/me/project'], (f, c) => c.startsWith(f)), []);
+  assert.deepEqual(provenByCommand(targets.guessed, all, [{ ...lines[0]!, cwd: '/home/me/project/sub' }], ['/home/me/project'], (f, c) => c.startsWith(f)), [77]);
+  r.sessions.get('s1')!.busy = false;
+  r.tick({ s1: tree() });
+  assert.equal(r.book.info().jobs.length, 0);
+  assert.deepEqual(rows(r).at(-1)!.commands, ['python train.py']);
+  // Two sessions detach at the same moment: whose the orphan is can't be told.
+  const r2 = rig();
+  r2.sessions.get('s1')!.busy = true;
+  r2.tick({ s1: tree(), s2: tree2() });
+  r2.book.reserve('s1', { what: 'A', cpu: 30 });
+  r2.book.callStarted('s1', 'a', ['python a.py'], true, true);
+  r2.book.callStarted('s2', 'b', ['python b.py'], true, true);
+  const at = r2.clock.now + 500;
+  for (let i = 1; i <= 3; i++) r2.tick({ s1: tree(), s2: tree2() }, { outside: [{ pid: 78, ppid: 998, cpuSeconds: i * 20, memBytes: 3 * GB, started: at }] });
+  assert.equal(r2.book.info().jobs[0]!.processes, 0);
+});
+
+test("an outside program taken by timing alone is counted but Pause and Stop never touch it; one seen under the host is the session's (re-review of PR #476)", () => {
+  const r = rig();
+  r.sessions.get('s1')!.busy = true;
+  r.tick({ s1: tree() });
+  r.book.reserve('s1', { what: 'Daemon', cpu: 30, ram_gb: 4 });
+  r.book.callStarted('s1', 'd1', ['node daemon.mjs'], true, true, 'nohup node daemon.mjs &');
+  // The person starts a game: its launcher exits between two samples, so the game's parent is never seen, and it
+  // starts within the detaching call's window.
+  const game = { pid: 88, ppid: 990, cpuSeconds: 0, memBytes: 3 * GB, started: r.clock.now + 2000, name: 'game.exe' };
+  for (let i = 1; i <= 3; i++) r.tick({ s1: tree() }, { outside: [{ ...game, cpuSeconds: i * 20 }] });
+  const job = r.book.info().jobs[0]!;
+  assert.equal(job.processes, 1, 'counted: a timing guess is fine for counting');
+  const targets = r.book.jobTargets(job.id);
+  assert.deepEqual(targets.adopted, []);
+  assert.deepEqual(targets.guessed.map((g) => g.pid), [88]);
+  const ft = (ms: number) => String((BigInt(ms) + 11644473600000n) * 10000n);
+  const all: FreshProcess[] = [
+    { pid: 10, ppid: 1, started: ft(100), name: 'node.exe' },
+    { pid: 11, ppid: 10, started: ft(110), name: 'claude.exe' },
+    { pid: 88, ppid: 990, started: ft(game.started), name: 'game.exe' },
+    { pid: 89, ppid: 88, started: ft(game.started + 100), name: 'game-helper.exe' },
+  ];
+  // Stop never touches it: its command is not the session's call.
+  const proven = provenByCommand(targets.guessed, all, [{ pid: 88, started: ft(game.started), command: '"C:\\Games\\Game\\game.exe" --launcher-token abc', cwd: null }], [], () => false);
+  assert.deepEqual(proven, []);
+  assert.deepEqual(jobTargetsNow(targets.targets, jobProcessesNow(all, targets.host!, [...targets.adopted, ...proven]), targets.host!), []);
+  // A detached job whose shell a sample saw under the host is proven the session's, without its command.
+  const r2 = rig();
+  r2.sessions.get('s1')!.busy = true;
+  r2.tick({ s1: tree() });
+  r2.book.reserve('s1', { what: 'Train', cpu: 30, ram_gb: 4 });
+  r2.book.callStarted('s1', 'd2', ['python train.py'], true, true, 'python train.py &');
+  const shell = proc(40, 11);
+  const trainer = { pid: 41, ppid: 40, cpuSeconds: 0, memBytes: 3 * GB, started: r2.clock.now + 500 };
+  r2.tick({ s1: tree(shell, trainer) });
+  for (let i = 1; i <= 2; i++) r2.tick({ s1: tree() }, { outside: [{ ...trainer, cpuSeconds: i * 20 }] });
+  const t2 = r2.book.jobTargets(r2.book.info().jobs[0]!.id);
+  assert.deepEqual(t2.adopted, [41]);
+  assert.deepEqual(t2.guessed, []);
+});
+
+test('a paused job stopped twice: the first Stop ends its own and leaves the game, the second finds nothing to stop and no unnamed "another program" (acceptance test 6 of PR #476)', () => {
+  const r = rig();
+  r.sessions.get('s1')!.busy = true;
+  r.tick({ s1: tree() });
+  r.book.reserve('s1', { what: 'Daemon', cpu: 30, ram_gb: 3 });
+  r.book.callStarted('s1', 'd1', ['node daemon.mjs'], true, true, 'nohup node daemon.mjs &');
+  const daemon = { pid: 77, ppid: 990, cpuSeconds: 0, memBytes: GB, started: r.clock.now + 1000, name: 'node.exe' };
+  const game = { pid: 88, ppid: 990, cpuSeconds: 0, memBytes: 2 * GB, started: r.clock.now + 2000, name: 'game.exe' };
+  for (let i = 1; i <= 3; i++) r.tick({ s1: tree() }, { outside: [{ ...daemon, cpuSeconds: i * 20 }, { ...game, cpuSeconds: i * 20 }] });
+  const id = r.book.info().jobs[0]!.id;
+  assert.equal(r.book.info().jobs[0]!.processes, 2);
+  r.book.setJobPaused(id, true);
+  assert.equal(r.book.info().jobs[0]!.state, 'paused');
+  const fresh = (list: typeof daemon[]) => list.map((p) => ({ pid: p.pid, ppid: p.ppid, started: String(p.started), name: p.name }));
+  // First Stop: the daemon's command is the session's (proven, reached), the game's isn't (left alone).
+  const first = leftAloneNow([88], fresh([daemon, game]), new Set([77]), r.book.jobTargets(id).targets.map((t) => t.pid));
+  assert.deepEqual(first, { alone: [88], gone: [] });
+  r.book.disown(id, first.alone, [77, ...first.gone]);
+  const after = r.book.info().jobs[0]!;
+  assert.equal(after.processes, 0, 'what Stop ended and left alone is off the card at once, before the next sample');
+  assert.notEqual(after.state, 'paused', 'no longer "Paused by you" with Stop active');
+  // Second Stop before the next sample: nothing of its own is left, so nothing to act on and nothing left alone.
+  assert.deepEqual(r.book.jobTargets(id).targets, []);
+  // Even if the ended daemon were still on the job, a gone process is never an unnamed "another program".
+  assert.deepEqual(leftAloneNow([77], fresh([game]), new Set(), [77]), { alone: [], gone: [77] });
+});
+
+test("command lines that can't be read refuse the action, nothing disowned; a process once proven never needs them again (third code review of PR #476)", async () => {
+  const r = rig();
+  r.sessions.get('s1')!.busy = true;
+  r.tick({ s1: tree() });
+  r.book.reserve('s1', { what: 'Train', cpu: 30, ram_gb: 4 });
+  r.book.callStarted('s1', 'd1', ['python train.py'], true, true, 'nohup python train.py &');
+  const trainer = { pid: 77, ppid: 999, cpuSeconds: 0, memBytes: 3 * GB, started: r.clock.now + 1000, name: 'python.exe' };
+  for (let i = 1; i <= 3; i++) r.tick({ s1: tree() }, { outside: [{ ...trainer, cpuSeconds: i * 20 }] });
+  const id = r.book.info().jobs[0]!.id;
+  const ft = (ms: number) => String((BigInt(ms) + 11644473600000n) * 10000n);
+  const all: FreshProcess[] = [{ pid: 77, ppid: 999, started: ft(trainer.started), name: 'python.exe' }];
+  const line = { pid: 77, started: ft(trainer.started), command: 'python train.py', cwd: null };
+  let reads = 0;
+  const broken = async () => {
+    reads++;
+    throw new Error('CIM timed out');
+  };
+  const quiet = console.error;
+  console.error = () => {};
+  try {
+    // Paused, then Stop while reading command lines fails: refused with the plain words, not "only guessed".
+    r.book.setJobPaused(id, true);
+    await assert.rejects(provenNow(r.book.jobTargets(id).guessed, all, broken, [], () => false), { message: CHECK_FAILED });
+    assert.equal(reads, 1);
+  } finally {
+    console.error = quiet;
+  }
+  // Nothing disowned: still the job's, still paused, still a guess.
+  const job = r.book.info().jobs[0]!;
+  assert.equal(job.processes, 1);
+  assert.equal(job.state, 'paused');
+  assert.deepEqual(r.book.jobTargets(id).guessed.map((g) => g.pid), [77]);
+  // Once proven, remembered as seen: Resume and Stop never read command lines for it again, across samples.
+  const proven = await provenNow(r.book.jobTargets(id).guessed, all, async () => [line], [], () => false);
+  assert.deepEqual(proven, [77]);
+  r.book.prove(id, proven);
+  r.tick({ s1: tree() }, { outside: [{ ...trainer, cpuSeconds: 80 }] });
+  const t = r.book.jobTargets(id);
+  assert.deepEqual(t.adopted, [77]);
+  assert.deepEqual(t.guessed, []);
+  assert.deepEqual(await provenNow(t.guessed, all, broken, [], () => false), []);
+  assert.equal(reads, 1, 'no guessed process left, so nothing is read');
+});
+
+test("after Stop, an outside program it left alone is off the job for good, so the stopped job's card goes away (acceptance test 5 of PR #476)", () => {
+  const r = rig();
+  r.sessions.get('s1')!.busy = true;
+  r.tick({ s1: tree() });
+  r.book.reserve('s1', { what: 'Daemon', cpu: 30, ram_gb: 3 });
+  r.book.callStarted('s1', 'd1', ['node daemon.mjs'], true, true, 'nohup node daemon.mjs &');
+  const game = { pid: 88, ppid: 990, cpuSeconds: 0, memBytes: 2 * GB, started: r.clock.now + 2000, name: 'game.exe' };
+  for (let i = 1; i <= 3; i++) r.tick({ s1: tree() }, { outside: [{ ...game, cpuSeconds: i * 20 }] });
+  const job = r.book.info().jobs[0]!;
+  assert.equal(job.processes, 1);
+  r.book.disown(job.id, [88]);
+  assert.equal(r.book.info().jobs[0]!.processes, 0, 'off the card at once');
+  // The game runs on: never taken again while it is the same process, and the pass ends with the session's work.
+  r.sessions.get('s1')!.busy = false;
+  for (let i = 4; i <= 6; i++) r.tick({ s1: tree() }, { outside: [{ ...game, cpuSeconds: i * 20 }] });
+  assert.equal(r.book.info().jobs.length, 0, 'the card goes away');
+  // A later process that reuses the id is judged afresh.
+  r.sessions.get('s1')!.busy = true;
+  r.tick({ s1: tree() });
+  r.book.reserve('s1', { what: 'Daemon 2', cpu: 30, ram_gb: 3 });
+  r.book.callStarted('s1', 'd2', ['node daemon.mjs'], true, true, 'nohup node daemon.mjs &');
+  const again = { ...game, started: r.clock.now + 1000 };
+  for (let i = 1; i <= 3; i++) r.tick({ s1: tree() }, { outside: [{ ...again, cpuSeconds: i * 20 }] });
+  assert.equal(r.book.info().jobs[0]!.processes, 1);
+});
+
+test('the Stop confirm counts only what it will end and names what it leaves alone; the note after says the same (acceptance test 5 of PR #476)', () => {
+  assert.equal(stopConfirmText('build W1', { act: 2, others: 0, names: [] }), 'Stop "build W1"? Its 2 processes will be ended, and the session told.');
+  assert.equal(stopConfirmText('build W1', { act: 2, others: 2, names: ['game.exe', 'conhost.exe'] }),
+    'Stop "build W1"? Its 2 processes will be ended, and the session told. 2 others Ledung only guessed belong to it (game.exe and conhost.exe) are left alone and taken off the job; Stop never ends them.');
+  assert.equal(stopConfirmText('build W1', { act: 0, others: 1, names: ['game.exe'] }),
+    'Stop "build W1"? None of its own processes are still running; the session will be told. 1 other Ledung only guessed belongs to it (game.exe) is left alone and taken off the job; Stop never ends it.');
+  assert.equal(jobActionNote('stop', 'build W1', { done: 2, leftAlone: ['game.exe', 'conhost.exe'] }),
+    'Stopped "build W1": 2 processes ended. Left alone: game.exe and conhost.exe. Ledung only guessed they belong to the job, from when they started, so it doesn\'t end them; no longer counted as the job\'s.');
+  assert.equal(jobActionNote('stop', 'build W1', { done: 1, leftAlone: [] }), 'Stopped "build W1": 1 process ended.');
+  assert.equal(jobActionNote('pause', 'build W1', { done: 2, leftAlone: ['game.exe'] }),
+    'Paused "build W1". Left alone: game.exe. Ledung only guessed it belongs to the job, from when it started, so it doesn\'t pause it.');
+  assert.equal(jobActionNote('pause', 'build W1', { done: 2, leftAlone: [] }), null);
+  assert.equal(jobActionNote('resume', 'build W1', { done: 2, leftAlone: [] }), null);
+  assert.equal(namesText(['a.exe', 'b.exe', 'c.exe']), 'a.exe, b.exe and c.exe');
+});
+
+test('a process command line is a detaching call\'s only if its program and each argument are words of the call', () => {
+  assert.equal(commandIsCalls('"C:\\Program Files\\nodejs\\node.exe" daemon.mjs', 'nohup node daemon.mjs > out.log 2>&1 &'), true);
+  assert.equal(commandIsCalls('/usr/bin/python3 /home/me/p/train.py --epochs 3', 'cd /home/me/p && nohup python3 train.py --epochs 3 &'), true);
+  assert.equal(commandIsCalls('python.exe train.py', 'start /b python train.py'), true);
+  assert.equal(commandIsCalls('"C:\\Games\\game.exe"', 'nohup node daemon.mjs &'), false);
+  assert.equal(commandIsCalls('node other.mjs', 'nohup node daemon.mjs &'), false);
+  assert.equal(commandIsCalls('node daemon.mjs --inspect', 'nohup node daemon.mjs &'), false);
+  assert.equal(commandIsCalls('', 'nohup node daemon.mjs &'), false);
+  // A quoted argument stays one word, operators inside it included (tried on Windows' real command line).
+  assert.equal(commandIsCalls('"C:\\Program Files\\nodejs\\node.exe" -e "setTimeout(()=>{}, 20000)" daemon.mjs', 'nohup node -e "setTimeout(()=>{}, 20000)" daemon.mjs&'), true);
+});
+
+test("a program another program started is never taken as a detaching session's, however close in time (code review of PR #476, finding 4)", () => {
+  const r = rig();
+  r.book.setSettings({ overSec: 5, averageSec: 5 });
+  const launcher = { pid: 4242, ppid: 4, cpuSeconds: 0, memBytes: 50 * 1024 ** 2, started: 5, name: 'launcher.exe' };
+  r.tick({ s1: tree() }, { outside: [launcher] });
+  r.book.callStarted('s1', 'd', ['python train.py'], true, true);
+  // 8 s later the launcher starts a game and exits: the game's parent was never in s1's tree.
+  r.clock.now += 3000;
+  const game = { pid: 5000, ppid: 4242, cpuSeconds: 0, memBytes: 6 * GB, started: r.clock.now + 5000, name: 'game.exe' };
+  r.tick({ s1: tree() }, { outside: [launcher, game] });
+  for (let i = 1; i <= 6; i++) r.tick({ s1: tree() }, { outside: [{ ...game, cpuSeconds: i * 40 }] });
+  assert.equal(r.book.info().unreserved.length, 0);
+  assert.equal(r.book.isHeld('s1'), false);
+});
+
+test('a reservation kept by a Ledung before passes loads as a pass: busy once it had a job, else ready', () => {
+  const r = rig();
+  r.tick({ s1: tree() });
+  r.book.reserve('s1', { what: 'Build', cpu: 20 });
+  const kept = JSON.parse(r.meta.get('resource-reservations')!) as Record<string, unknown>[];
+  for (const [hadJob, want] of [[true, 'busy'], [false, 'ready']] as const) {
+    const old = kept.map((k) => ({ ...k, state: 'going', hadJob, deliveredAt: undefined, quietSince: undefined, refMem: undefined, parkedAt: undefined, resumedAbove: undefined, managerTold: undefined }));
+    const again = new ResourceBook({
+      meta: { get: (k) => (k === 'resource-reservations' ? JSON.stringify(old) : null), set: () => {} }, jobs: r.jobs, session: (id) => r.sessions.get(id) ?? null,
+      tell: () => {}, wake: () => {}, changed: () => {},
+    });
+    assert.equal(again.info().jobs[0]!.state, want);
+  }
 });

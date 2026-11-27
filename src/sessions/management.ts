@@ -13,6 +13,8 @@ import { parseProject, type ProjectConfig, type WorkflowConfig } from '../config
 import type { NewProjectArgs, ProjectArgs } from './tools.ts';
 import { describeRule, ruleMatches, type GrantRule } from './grants.ts';
 import { oneLine } from '../shared/shots.ts';
+import { hasInput, inputLines, toolLabel } from '../shared/tool-call.ts';
+import { isRequest } from '../shared/requests.ts';
 import { checkTier, reviewAnswerProblem, tiersOf, type QuestionDetails, type ReviewEvidence } from '../shared/questions.ts';
 import { CONTEXT_SENTENCE } from '../shared/delivery.ts';
 import { contextSize } from '../shared/context-size.ts';
@@ -34,6 +36,7 @@ import { refusalAnswerText, refusalOf } from './refusals.ts';
 import { keepAnswerText, orderPreamble, orderRecorded, type Orders, type OrderSpec } from './orders.ts';
 import type { OrderInfo } from '../shared/orders.ts';
 import { formatWorkHistory, workHistory } from '../usage/work-history.ts';
+import { waitingForYou } from './waiting-tool.ts';
 
 /** What managers need of the linked computers (#245): who they are, and one call to one of them. */
 export interface LinkedPort {
@@ -67,6 +70,8 @@ export interface SettingsPort {
   invite(owner: string, name?: string): Promise<RelayInviteInfo & { code: string }>;
   linkCode(): { code: string; expiresAt: number };
   link(code: string, name?: string): Promise<LinkedComputer>;
+  /** Settings' Unlink button (issue #346): the link goes here and the other computer is told; null: no such link. */
+  unlink(id: string): LinkedComputer | null;
   /** The linked computers, and why linking is not possible here (null: it is). */
   links(): { problem: string | null; links: LinkedComputer[] };
   computers(): ComputerInfo[];
@@ -86,9 +91,9 @@ export interface LinkedMessage {
 }
 
 // Limits between computers (docs/steps/manager-link.md, "Loops and floods"); messages on one computer have none.
+// No cap on wakes an hour: every message wakes its receiver, a burst within LINK_BURST_MS as one (issue #506).
 export const LINK_MAX_CHARS = 4000;
 export const LINK_SENDS_PER_HOUR = 20;
-export const LINK_WAKES_PER_HOUR = 6;
 export const LINK_BURST_MS = 5000;
 /** How long list_managers waits for each linked computer before calling it offline. */
 export const LINK_LIST_MS = 3000;
@@ -183,8 +188,8 @@ export interface ManagementContext {
    */
   evidenceFile?(sessionId: string, file: string): { file: string; kind: 'image' | 'text' };
   /**
-   * A container project's screenshots and evidence, read from its container and kept in Ledung (issue #122): the names
-   * the question stores, in order; a local project's as given. Left out in tests of other parts: as given.
+   * A project's screenshots and evidence, read now and kept in Ledung (a container's since issue #122, every project's
+   * since #306), images as WebP: the names the question stores, in order. Left out in tests of other parts: as given.
    */
   keepContainerFiles?(sessionId: string, files: { file: string; as: 'shot' | 'evidence' }[]): Promise<string[]>;
   /** Orders on record (issue #105); left out where none are kept (tests of other parts): an order is then refused. */
@@ -246,7 +251,10 @@ export function plainTitle(title: string): string {
  */
 export function requestText(p: Pick<PermissionInfo, 'toolName' | 'input'> & { sensitive?: string | null }, limit = 4000): string {
   const bash = p.toolName === 'Bash';
-  let body = bash ? String(p.input.command ?? '') : JSON.stringify(p.input, null, 2);
+  // Not bare JSON, and no `{}` for a tool without input (issue #399): the tool in plain words, its input as lines.
+  const name = toolLabel(p.toolName) === p.toolName ? p.toolName : `${toolLabel(p.toolName)} (${p.toolName})`;
+  if (!bash && !hasInput(p.input)) return `Tool ${name}, without input.`;
+  let body = bash ? String(p.input.command ?? '') : inputLines(p.input);
   let cut = '';
   if (!bash && !p.sensitive && body.length > limit) {
     cut = `\n\n(${body.length - limit} more characters not shown; the whole request is in the session's chat.)`;
@@ -254,7 +262,7 @@ export function requestText(p: Pick<PermissionInfo, 'toolName' | 'input'> & { se
   }
   const longest = Math.max(0, ...(body.match(/`+/g) ?? []).map((r) => r.length));
   const fence = '`'.repeat(Math.max(3, longest + 1));
-  return `${bash ? 'Command' : `Tool ${p.toolName}`}:\n\n${fence}\n${body}\n${fence}${cut}`;
+  return `${bash ? 'Command' : `Tool ${name}`}:\n\n${fence}\n${body}\n${fence}${cut}`;
 }
 
 const short = (text: string, n: number) => (text.length > n ? `${text.slice(0, n)}…` : text);
@@ -537,7 +545,7 @@ export class Management {
     });
   }
 
-  /** ask_user's container files, kept before they are checked (keepContainerFiles). */
+  /** ask_user's files, kept before they are checked (keepContainerFiles; every project's since issue #306). */
   keepFiles(sessionId: string, files: { file: string; as: 'shot' | 'evidence' }[]): Promise<string[]> {
     return this.ctx.keepContainerFiles ? this.ctx.keepContainerFiles(sessionId, files) : Promise.resolve(files.map((f) => f.file));
   }
@@ -576,6 +584,14 @@ export class Management {
       ? `it was no longer waiting (${this.store.getPermission(p.id)?.status ?? 'gone'}), so nothing was changed`
       : decision.behavior === 'allow' ? 'it is allowed, once' : 'it is denied, with the answer as the reason';
     this.store.addInbox(q.sessionId, 'ledung', `Ledung: ${this.ctx.userName}'s answer to question #${q.id} decided request ${p.id} from "${this.title(p.sessionId)}": ${outcome}.`);
+  }
+
+  /** Another manager of the project `managerId` now manages: one it replaced (issue #515). */
+  private formerManager(managerId: string, id: string): SessionInfo | undefined {
+    const s = this.store.getSession(id);
+    if (!s || s.role !== 'manager' || s.id === managerId) return undefined;
+    const project = this.ctx.projects().find((p) => p.name === s.project);
+    return project?.managerId === managerId ? s : undefined;
   }
 
   private ownSession(managerId: string, id: string): SessionInfo {
@@ -644,8 +660,24 @@ export class Management {
     return this.ctx.orders.done(managerId, id);
   }
 
-  /** Archived sessions are left out, with their count, so the list stays short. */
+  /**
+   * Archived sessions are left out, with their count, so the list stays short. Old managers of its own project, not
+   * archived, are named last, so archive_session can find them (issue #515).
+   */
   listSessions(managerId: string): string {
+    const listed = this.listOwnSessions(managerId);
+    const me = this.store.getSession(managerId);
+    const project = me && this.ctx.projects().find((p) => p.name === me.project);
+    const old = project?.managerId === managerId
+      ? this.store.listSessions().filter((s) => s.role === 'manager' && s.project === project.name && s.id !== managerId && !s.archivedAt)
+      : [];
+    if (!old.length) return listed;
+    const now = Date.now();
+    return `${listed}\nOld managers of ${project!.name} (archive_session archives one once ended):\n` +
+      old.map((s) => `- "${s.title}" (${s.id}): ${stateFor(s, now)}`).join('\n');
+  }
+
+  private listOwnSessions(managerId: string): string {
     const all = this.store.childSessions(managerId);
     if (!all.length) {
       const me = this.store.getSession(managerId);
@@ -666,9 +698,12 @@ export class Management {
     return lines.join('\n');
   }
 
-  /** Only the manager's own sessions, and only once ended (idle stop and archive). */
+  /**
+   * Only the manager's own sessions, and only once ended (idle stop and archive); also an old manager of its own
+   * project, which it replaced (issue #515). Its project's current manager stays refused (SessionManager.archive).
+   */
   archiveSession(managerId: string, id: string): string {
-    const s = this.ownSession(managerId, id);
+    const s = this.formerManager(managerId, id) ?? this.ownSession(managerId, id);
     if (s.archivedAt) return `"${s.title}" is already archived.`;
     if (s.status !== 'ended') throw new ManagementError(`"${s.title}" is still ${s.status}. Stop it first (stop_session), then archive it.`);
     this.ctx.archiveSession(id, `manager "${this.title(managerId)}"`);
@@ -912,7 +947,8 @@ ${note}`);
   async answerQuestion(managerId: string, questionId: number, answer: string): Promise<string> {
     const q = this.openQuestionOfOwnSession(managerId, questionId);
     if (!answer.trim()) throw new ManagementError('The answer is empty.');
-    const form = q.details?.review ? reviewAnswerProblem(answer) : null;
+    // A request (issue #502) answered in words, not on its page: its text is the asker's to read; only a review alone keeps its form.
+    const form = q.details?.review && !isRequest(q) ? reviewAnswerProblem(answer) : null;
     if (form) throw new ManagementError(`Question #${q.id} is a review. ${form}`);
     this.store.answerQuestion(q.id, answer.trim(), managerId);
     this.ctx.publish({ type: 'question', question: this.store.getQuestion(q.id)! });
@@ -928,7 +964,7 @@ ${note}`);
       throw new ManagementError(`Question #${userQuestionId} has no answer from ${this.ctx.userName} yet.`);
     }
     const target = this.openQuestionOfOwnSession(managerId, toQuestionId);
-    const form = target.details?.review ? reviewAnswerProblem(source.answer) : null;
+    const form = target.details?.review && !isRequest(target) ? reviewAnswerProblem(source.answer) : null;
     if (form) throw new ManagementError(`Question #${target.id} is a review, and ${this.ctx.userName}'s answer to #${source.id} is not in a review's form. ${form}`);
     this.store.answerQuestion(target.id, source.answer, 'user', source.id);
     this.ctx.publish({ type: 'question', question: this.store.getQuestion(target.id)! });
@@ -974,6 +1010,15 @@ ${note}`);
   workHistory(managerId: string, days?: number, limit?: number): string {
     const project = this.store.getSession(managerId)!.project;
     return formatWorkHistory(workHistory(this.store.database, project, { days }), limit ?? 10);
+  }
+
+  /** waiting_for_you (issue #338): the manager's own project only, whatever its lockdown; reads, changes nothing. */
+  waitingForYou(managerId: string, answeredHours?: number): string {
+    return waitingForYou({
+      store: this.store, managerId, userName: this.ctx.userName, answeredHours,
+      tiers: (project) => this.ctx.projects().find((p) => p.name === project)?.questionTiers,
+      request: (p) => requestText(p),
+    });
   }
 
   /** normal or high on the manager's own judgement; critical only on the user's answer to one of its questions. */
@@ -1123,13 +1168,11 @@ ${note}`);
   // --- managers on the person's linked computers (#245, docs/steps/manager-link.md step 2) -------
   // Trusted exactly as managers on this computer (Martin, 2026-10-20 08:32: "the connection is secure, we need to
   // trust in it"): the same marking with the computer's name added, the same lockdown, the same rule for an ended
-  // manager. Only the limits on waking are added, because two computers double the managers that can wake each other.
+  // manager. Only limits on sending and the burst merge are added, because two computers double the managers that can
+  // wake each other; the per-hour wake cap is gone (Martin, 2026-11-23, Ledung question #892, issue #506).
 
-  /** Sends per sending manager in the last hour, and wakes per (sender, receiver) pair, as times. */
+  /** Sends per sending manager in the last hour, as times. */
   private readonly linkSends = new Map<string, number[]>();
-  private readonly linkWakes = new Map<string, number[]>();
-  /** Pairs told this hour that they are paused for waking. */
-  private readonly linkPausedNoted = new Map<string, number>();
   /** Receivers with a merged wake on its way, and when their last wake from another computer was. */
   private readonly linkBurst = new Map<string, { at: number; timer: NodeJS.Timeout | null }>();
 
@@ -1335,7 +1378,7 @@ ${note}`);
     if (m.fromLocked) body += `\n\n(Ledung: its project is locked. You can answer this message once, with message_manager to ${plainTitle(m.fromId)} on computer "${link.name}"; it can't be reached otherwise.)`;
     else body += `\n\n(Answer with message_manager to ${plainTitle(m.fromId)}, computer "${link.name}".)`;
     this.store.addInbox(to.id, `manager:${link.id}/${m.fromId}`, body);
-    this.wakeFromComputer(sender, to.id);
+    this.wakeFromComputer(to.id);
     // Fetched once this call has answered, so the sender has its answer first (issue #159).
     if (remote.length) setImmediate(() => this.fetchStreams(link, to.id, remote));
     return `Sent to manager "${to.title}".`;
@@ -1449,24 +1492,13 @@ ${note}`);
     return { text: parts.join(''), remote };
   }
 
-  /** Wakes `toId` for a message from another computer, within the caps: merged bursts, and so many wakes an hour per pair. */
-  private wakeFromComputer(sender: string, toId: string): void {
-    const pair = `${sender}>${toId}`;
-    const wakes = this.recent(this.linkWakes, pair);
-    if (wakes.length >= LINK_WAKES_PER_HOUR) {
-      const noted = this.linkPausedNoted.get(pair);
-      if (noted === undefined || this.now() - noted >= HOUR_MS) {
-        this.linkPausedNoted.set(pair, this.now());
-        this.store.addInbox(toId, 'ledung', `Ledung: that manager on another computer has woken you ${LINK_WAKES_PER_HOUR} times this hour. Its messages still arrive, but wait for your next turn instead of waking you; tell it "no reply needed" or ask ${this.ctx.userName} if this goes on.`);
-      }
-      return;
-    }
+  /** Wakes `toId` for a message from another computer: every message, but a burst within LINK_BURST_MS as one wake. */
+  private wakeFromComputer(toId: string): void {
     const now = this.now();
     const burst = this.linkBurst.get(toId);
     if (burst && now - burst.at < LINK_BURST_MS) {
       // Messages close together become one wake: the one already on its way, or one when the burst ends.
       if (burst.timer) return;
-      wakes.push(now);
       burst.timer = setTimeout(() => {
         burst.timer = null;
         burst.at = this.now();
@@ -1475,7 +1507,6 @@ ${note}`);
       burst.timer.unref?.();
       return;
     }
-    wakes.push(now);
     this.linkBurst.set(toId, { at: now, timer: null });
     this.ctx.wake(toId);
   }
@@ -1539,6 +1570,24 @@ ${note}`);
   async linkComputer(managerId: string, code: string, name?: string): Promise<string> {
     const linked = await this.settingsPort(managerId).link(code, name);
     return `Linked with "${linked.name}" (${linked.publicName}).`;
+  }
+
+  /**
+   * unlink_computer (issue #346): a linked computer by its name or public name, as settings_status lists them, unlinked
+   * as Settings' Unlink button does. A name two links share is refused, so the public name says which.
+   */
+  unlinkComputer(managerId: string, computer: string): string {
+    const port = this.settingsPort(managerId);
+    const { links } = port.links();
+    const wanted = computer.trim().toLowerCase();
+    const byPublicName = links.filter((l) => l.publicName.toLowerCase() === wanted);
+    const hits = byPublicName.length ? byPublicName : links.filter((l) => l.name.toLowerCase() === wanted);
+    const listed = links.length ? links.map((l) => `"${l.name}" (${l.publicName})`).join(', ') : 'none';
+    if (hits.length > 1) throw new ManagementError(`${hits.length} linked computers are called "${computer.trim()}": give the public name of the one to unlink (${hits.map((l) => l.publicName).join(', ')}).`);
+    if (!hits.length) throw new ManagementError(`No linked computer is called "${computer.trim()}". Linked computers: ${listed}.`);
+    const gone = port.unlink(hits[0]!.id);
+    if (!gone) throw new ManagementError(`"${computer.trim()}" is no longer linked.`);
+    return `Unlinked "${gone.name}" (${gone.publicName}) here; that computer is told to drop its side too. To link it again: link_code on one computer, link_computer with that code on the other.`;
   }
 
   async inviteComputer(managerId: string, owner: string, name?: string): Promise<string> {
@@ -2096,7 +2145,19 @@ export interface Delivery {
   userText: string;
   /** Everything else, attached as context (not the user's words). Empty when there is none. */
   context: string;
+  /**
+   * The context without Ledung's workflow process text (FLOW_SOURCE items), when it had any: what a question's
+   * "Earlier in the conversation" may quote (#351 acceptance, round 1). Absent when it is the whole context.
+   */
+  quotable?: string;
 }
+
+/**
+ * The inbox source of what a workflow run tells a session (#351 acceptance, round 1): a coordinator's hand-off at a
+ * person step, with its brief "for you, not for" the person, and a worker's step. Process text for the session, so
+ * it is never quoted to the person in a question's "Earlier in the conversation".
+ */
+export const FLOW_SOURCE = 'ledung:flow';
 
 /**
  * How waiting answers and inbox messages reach a session (step 4, findings in
@@ -2109,7 +2170,7 @@ export interface Delivery {
 export function buildDelivery(
   userName: string,
   answers: QuestionInfo[],
-  inbox: { text: string }[],
+  inbox: { text: string; source?: string }[],
   titleOf: (id: string) => string,
   orderOf: (id: number) => OrderInfo | undefined = () => undefined,
 ): Delivery {
@@ -2139,10 +2200,16 @@ export function buildDelivery(
       );
     }
   }
-  for (const item of inbox) context.push(item.text);
+  const quotable = [...context];
+  for (const item of inbox) {
+    context.push(item.text);
+    if (item.source !== FLOW_SOURCE) quotable.push(item.text);
+  }
   // Anything besides the user's own answers: the fixed sentence points to it.
   if (inbox.length || answers.some((q) => q.answeredBy !== 'user')) userParts.push(CONTEXT_SENTENCE(userName));
-  return { userText: userParts.join('\n\n'), context: context.join('\n\n---\n\n') };
+  const joined = context.join('\n\n---\n\n');
+  const shown = quotable.join('\n\n---\n\n');
+  return { userText: userParts.join('\n\n'), context: joined, ...(shown !== joined ? { quotable: shown } : {}) };
 }
 
 interface UsagePublishInput { enabled?: boolean; repo: string | null; allAccounts?: boolean; accounts?: Record<string, boolean> }

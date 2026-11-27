@@ -1,5 +1,6 @@
 // What reserved jobs really used, by kind, and the commands Ledung knows are heavy (docs/steps/resource-limits.md,
-// "Learning" and "Recognising heavy commands"): on the usage page, with Forget and "never needs a reservation".
+// "Learning"): on the usage page, with Forget. No command is refused by its name (issue #500), so there is no
+// "never needs a reservation" mark any more: the heavy commands are information only.
 import { useEffect, useState } from 'react';
 import { projectLabel, type HeavyCommandInfo, type JobKindInfo } from '../../../src/shared/protocol.ts';
 import { formatDim } from '../../../src/resources/limits.ts';
@@ -47,26 +48,21 @@ export function ReservedJobs() {
           </table>
         </div>
       )}
-      <h3>Commands that need a reservation</h3>
-      <p className="muted">Commands seen at least twice using more than unreserved work may. A session that runs one without a reservation is told to reserve first.</p>
+      <h3>Heavy commands</h3>
+      <p className="muted">Commands seen at least twice using more than unreserved work may, with what they usually use. Ledung never refuses a command by its name: what a session runs is measured, and heavy work without a reservation is slowed, its session held until it is back within the allowance, and told to reserve before it next time.</p>
       {!data ? null : !data.commands.length ? <p className="muted">None yet.</p> : (
         <div className="table-scroll">
           <table className="plain">
             <thead>
-              <tr><th>Project</th><th>Command</th><th className="num">Seen</th><th>Usually uses</th><th /></tr>
+              <tr><th>Project</th><th>Command</th><th className="num">Seen</th><th>Usually uses</th></tr>
             </thead>
             <tbody>
               {data.commands.map((c) => (
-                <tr key={`${c.project} ${c.command}`} className={c.never ? 'muted' : ''}>
+                <tr key={`${c.project} ${c.command}`}>
                   <td>{projectLabel(c.project)}</td>
                   <td className="mono">{c.command}</td>
                   <td className="num">{c.runs}</td>
                   <td>{amounts(c.peak)}</td>
-                  <td>
-                    <button className="small" onClick={() => act(() => api.markCommand(c.project, c.command, !c.never))}>
-                      {c.never ? 'Needs one again' : 'Never needs one'}
-                    </button>
-                  </td>
                 </tr>
               ))}
             </tbody>

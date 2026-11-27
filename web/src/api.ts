@@ -1,5 +1,7 @@
 // Calls to Ledung's API. The sign-in cookie goes along automatically.
 import type { Macro } from '../../src/shared/macros.ts';
+import type { AnswerParts } from '../../src/shared/requests.ts';
+import type { JobActionResult, JobReach } from '../../src/shared/job-notes.ts';
 import type {
   AwayInfo, AwayKind, BoardOwnersView, BoardPeopleView, BoardRepoChoicesView, BoardStatus, BoardThreadsView, BoardThreadView, ProjectBoardView,
   AccountChoices, AccountInfoView, ChatsInfo, ContainerInfoView, EffortLevel, FolderListingView, MachineInfo, McpServerInfo, ModelChoice, Overview, ProjectInfo, PermissionDecision, PermissionMode, Priority, ProjectFileView, TurnResource, TypicalCost, QuestionInfo, SessionInfo, SessionUsage, StoredMessage, UpdateView, UsageFilter, UsageReport, WorkflowCheckView,
@@ -7,7 +9,7 @@ import type {
   ClaudeCodeView,
   ProfilesView,
   SkillListView, SignInProblem,
-  ShortcutAction, ShortcutsView,
+  ShortcutAction, ShortcutsView, TrayView,
   CheckInAction, CheckInView,
   HeavyCommandInfo, JobKindInfo,
 } from '../../src/shared/protocol.ts';
@@ -16,7 +18,7 @@ import type { ComputerColour, ComputerInfo } from '../../src/shared/computers.ts
 import type { PaneFolderKey, PaneFolders, SessionChanges, TreeListing } from '../../src/shared/files-pane.ts';
 import type { LineComment } from '../../src/shared/line-comments.ts';
 import type { FlowFileWrite, FlowView } from '../../src/shared/flow.ts';
-import type { FlowRun, StepQuestions, StepQuestionsView } from '../../src/shared/flow-run.ts';
+import type { FlowRun } from '../../src/shared/flow-run.ts';
 import type { FlowProposal } from '../../src/shared/flow-proposal.ts';
 import type { SkillChoices } from '../../src/shared/skills.ts';
 import type { SecretInfo, SecretLifetime } from '../../src/shared/secrets.ts';
@@ -28,13 +30,32 @@ export type ClaudeCheck = { problem: string | null; looked: string[]; signIn: 'i
 export const PASSKEY_NEEDED = 'This needs your passkey.';
 /** The words for a device that has to unlock first (src/server/passkeys.ts). */
 export const DEVICE_LOCKED = 'This device is locked: unlock it with its passkey to make changes from here.';
+/** The refusal of a trusted computer's vouch for what still takes a passkey (src/server/passkeys.ts, issue #313). */
+export const PASSKEY_ONLY = 'This needs a passkey, or this computer\'s own screen: a trusted computer can\'t do it.';
+
+/**
+ * In a frame of a computer that trusts the screen around it (issue #313): asks that page to vouch for a challenge
+ * (web/src/vouch.ts), set by main.tsx in a frame; null on a top-level page, where no screen around it can vouch.
+ */
+let vouchCall: ((challenge: string) => Promise<void>) | null = null;
+export const setVouchCall = (call: ((challenge: string) => Promise<void>) | null) => {
+  vouchCall = call;
+};
 /** How Ledung's refusal of a change without a live page's key begins (src/server/server.ts, requireOpenPage). */
 export const OPEN_PAGE_ONLY = "Only Ledung's open page can do this";
 /** The page was opened through the public name (always HTTPS); locally it is plain http. */
 const remotePage = (): boolean => (globalThis as { location?: { protocol: string } }).location?.protocol === 'https:';
 
 /** The browser's passkey calls (web/src/passkey.ts), set by main.tsx; kept out of here so tests and the core type check need no DOM. */
-export type PasskeyCalls = { sign(options: { challenge: string }): Promise<string>; create(options: { challenge: string }): Promise<unknown> };
+export type PasskeyCalls = {
+  sign(options: { challenge: string }): Promise<string>;
+  create(options: { challenge: string }): Promise<unknown>;
+  /**
+   * Set where no passkey prompt can come (the desktop app on a Mac, #427): each request is signed in the default
+   * browser instead, through a one-time sign link (#463), and `sign` is not called.
+   */
+  inBrowser?: true;
+};
 let passkeys: PasskeyCalls | null = null;
 export const setPasskeyCalls = (calls: PasskeyCalls | null) => {
   passkeys = calls;
@@ -51,7 +72,14 @@ export const PASSKEY_CANCELLED = 'The passkey check was cancelled.';
  * didn't go through, its reason and a retry. Resolves true to go on (Continue, Try again). Set by the page's
  * passkey dialog; without one (tests, a page with no dialog) the prompt comes straight away, as before.
  */
-export type PasskeyStep = { kind: 'unlock' | 'sign'; failed?: string };
+export type PasskeyStep = {
+  kind: 'unlock' | 'sign'; failed?: string;
+  /**
+   * Signed in the default browser (#463): the one-time link to open there, and the browser's answer arriving. The
+   * dialog opens the link on its button, then waits, and closes by itself (true) once `signed` settles.
+   */
+  browser?: { url: string; signed: Promise<string> };
+};
 export type PasskeyPrompter = (step: PasskeyStep) => Promise<boolean>;
 let prompter: PasskeyPrompter | null = null;
 export const setPasskeyPrompter = (p: PasskeyPrompter | null) => {
@@ -63,10 +91,28 @@ export const resetPasskeyExplained = () => {
   signExplained = false;
 };
 
+/**
+ * The header that proves this request: a trusted computer's frame gets a challenge for the screen around it to vouch
+ * for, with no passkey prompt (issue #313); otherwise one passkey signature, explained first and retried while the
+ * person asks to. `passkey`: the passkey itself, after a refusal for what a vouch doesn't cover.
+ */
+async function proofFor(method: string, path: string, text: string, passkey = false): Promise<[string, string]> {
+  if (!passkey && vouchCall) {
+    const offer = await call<{ vouch?: string; challenge?: string }>('POST', '/api/passkey-challenge', { method, path, body: text });
+    if (typeof offer.vouch === 'string') {
+      await vouchCall(offer.vouch);
+      return ['X-Ledung-Vouch', offer.vouch];
+    }
+  }
+  return ['X-Ledung-Passkey', await signFor(method, path, text, passkey)];
+}
+
 /** One passkey signature for exactly this request, explained first and retried while the person asks to. */
-async function signFor(method: string, path: string, text: string): Promise<string> {
+async function signFor(method: string, path: string, text: string, passkey = false): Promise<string> {
   // The unlock's notice also says the signature that may follow, so that one goes straight on (#179).
   const kind = path === '/api/device-unlock' ? 'unlock' : 'sign';
+  // No prompt would come here and the request would hang (#427): the default browser signs it instead (#463).
+  if (passkeys?.inBrowser) return signInBrowser(method, path, text, kind);
   if (prompter && (kind === 'unlock' || !signExplained)) {
     if (!(await prompter({ kind }))) throw new Error(PASSKEY_CANCELLED);
     // Only once read and accepted: after a Cancel the next signature is explained again (#184 review).
@@ -74,9 +120,44 @@ async function signFor(method: string, path: string, text: string): Promise<stri
   }
   for (;;) {
     // A fresh challenge each try: the last one may have run out while the phone's prompt was open.
-    const options = await call<{ challenge: string }>('POST', '/api/passkey-challenge', { method, path, body: text });
+    const options = await call<{ challenge: string }>('POST', '/api/passkey-challenge', { method, path, body: text, ...(passkey ? { passkey: true } : {}) });
     try {
       return await passkeyCalls().sign(options);
+    } catch (e) {
+      const failed = e instanceof Error ? e.message : String(e);
+      if (!prompter || !(await prompter({ kind, failed }))) throw e;
+    }
+  }
+}
+
+/** How often the app asks whether the browser has signed (#463); a field so tests need not wait. */
+export const signPoll = { ms: 1000 };
+
+/**
+ * One signature for exactly this request, made in the default browser (#463): Ledung makes a one-time sign link for a
+ * challenge for it, the dialog opens the link, the browser signs it with Touch ID, and this page picks the answer up
+ * and sends the request with it, with no further click. Retried with a new link while the person asks to.
+ */
+async function signInBrowser(method: string, path: string, text: string, kind: PasskeyStep['kind']): Promise<string> {
+  for (;;) {
+    const link = await call<{ url: string; code: string; expiresAt: number }>('POST', '/api/passkey-challenge', { method, path, body: text, browser: true });
+    let stopped = false;
+    const signed = (async () => {
+      for (;;) {
+        await new Promise((r) => setTimeout(r, signPoll.ms));
+        if (stopped) throw new Error(PASSKEY_CANCELLED);
+        const { answer } = await call<{ answer: string | null }>('POST', '/api/passkey-sign-answer', { code: link.code });
+        if (answer) return answer;
+      }
+    })();
+    signed.catch(() => {}); // read below, or dropped after a Cancel
+    // Without a dialog (tests, a page with none) it only waits: something else opens the link.
+    if (prompter && !(await prompter({ kind, browser: { url: link.url, signed } }))) {
+      stopped = true;
+      throw new Error(PASSKEY_CANCELLED);
+    }
+    try {
+      return await signed;
     } catch (e) {
       const failed = e instanceof Error ? e.message : String(e);
       if (!prompter || !(await prompter({ kind, failed }))) throw e;
@@ -87,7 +168,13 @@ async function signFor(method: string, path: string, text: string): Promise<stri
 /** A paired device as Settings lists it (issue #160). */
 /** Bytes of files sent to and received from a linked computer (issue #158): counted only, never a limit. */
 export type LinkBytes = { today: { sent: number; received: number }; month: { sent: number; received: number } };
-export type LinkedComputerInfo = { id: string; name: string; publicName: string; linkedAt: number; lastUsedAt: number | null; files?: LinkBytes };
+export type LinkedComputerInfo = {
+  id: string; name: string; publicName: string; linkedAt: number; lastUsedAt: number | null; files?: LinkBytes;
+  /** This computer trusts its own screen (issue #313): since when, and where that was set. */
+  trustedAt?: number; trustedFrom?: 'here' | 'phone';
+  /** It trusts this computer's own screen (issue #313). */
+  trustsUs?: boolean;
+};
 export type DeviceInfo ={ id: string; name: string; createdAt: number; lastUsedAt: number | null; passkey: boolean; passkeyAt: number | null; kind: 'phone' | 'computer' | 'browser'; pairedVia?: string | null };
 
 /** The live connection's key (#104): Ledung decides nothing sensitive without it. Null while there is no connection. */
@@ -149,10 +236,10 @@ const errorOf = async (res: Response): Promise<string | undefined> => ((await re
 async function call<T>(method: string, path: string, body?: unknown, raw?: Blob): Promise<T> {
   // The exact text sent, once: through the public name a passkey signs its hash (#160).
   const text = raw || body === undefined ? undefined : JSON.stringify(body);
-  const send = (key: string | null, passkey?: string) => {
+  const send = (key: string | null, proof?: [string, string]) => {
     const headers: Record<string, string> = raw ? { 'Content-Type': raw.type } : text === undefined ? {} : { 'Content-Type': 'application/json' };
     if (key) headers['X-Ledung-Page'] = key;
-    if (passkey) headers['X-Ledung-Passkey'] = passkey;
+    if (proof) headers[proof[0]] = proof[1];
     return fetch(path, { method, credentials: 'same-origin', headers, body: raw ?? text });
   };
   const change = method !== 'GET';
@@ -182,7 +269,11 @@ async function call<T>(method: string, path: string, body?: unknown, raw?: Blob)
   }
   if (change && remotePage() && res.status === 403) {
     if ((await refusal()) === PASSKEY_NEEDED) {
-      res = await send(key, await signFor(method, path, text ?? ''));
+      res = await send(key, await proofFor(method, path, text ?? ''));
+    }
+    // A trusted computer's vouch doesn't cover this one (issue #313): the passkey itself, where the device has one.
+    if ((await refusal()) === PASSKEY_ONLY) {
+      res = await send(key, await proofFor(method, path, text ?? '', true));
     }
   }
   const data = await res.json().catch(() => ({}));
@@ -196,6 +287,9 @@ export const api = {
   /** The messages after `afterId`, oldest first, at most 500: what a reconnecting page missed. */
   messagesAfter: (sessionId: string, afterId: number) =>
     call<StoredMessage[]>('GET', `/api/sessions/${sessionId}/messages?limit=500&after=${afterId}`),
+  /** The chat's "Waiting for you" lines from message `fromId` on, as Ledung has them now (#350). */
+  waitingLines: (sessionId: string, fromId: number) =>
+    call<StoredMessage[]>('GET', `/api/sessions/${sessionId}/messages?kind=waiting&from=${fromId}`),
   /** Every archived session: the live connection's hello carries only the recent ones (issue #229). */
   archivedSessions: () => call<SessionInfo[]>('GET', '/api/archived-sessions'),
   start: (project: string, profile?: string) => call<SessionInfo>('POST', '/api/sessions', { project, role: 'session', ...(profile ? { profile } : {}) }),
@@ -220,6 +314,9 @@ export const api = {
   send: (sessionId: string, text: string, images?: string[]) => call('POST', `/api/sessions/${sessionId}/messages`, images?.length ? { text, images } : { text }),
   /** An image for the next message, scaled down already (issue #128); its name goes with send. */
   uploadImage: (sessionId: string, image: Blob) => call<{ id: string }>('POST', `/api/sessions/${sessionId}/images`, undefined, image),
+  /** A dropped file Ledung can't attach as an image (issue #339): saved in the session's folder; its path goes in the box. */
+  uploadDrop: (sessionId: string, file: Blob, name: string) =>
+    call<{ path: string }>('POST', `/api/sessions/${sessionId}/drops?name=${encodeURIComponent(name)}`, undefined, new Blob([file], { type: 'application/octet-stream' })),
   /** A "!" command (issue #212): whether it is refused here, and the sensitive rule it matches, before it runs. */
   shellCheck: (sessionId: string, command: string) =>
     call<{ rule: string | null; refused: string | null }>('GET', `/api/sessions/${sessionId}/shell-check?command=${encodeURIComponent(command)}`),
@@ -245,6 +342,10 @@ export const api = {
   stopLedung: () => call('POST', '/api/stop', {}),
   /** The first-run question and Settings → Shortcuts (issue #415). */
   shortcuts: () => call<ShortcutsView>('GET', '/api/shortcuts'),
+  tray: () => call<TrayView>('GET', '/api/tray'),
+  setTray: (on: boolean) => call<TrayView>('POST', '/api/tray', { on }),
+  /** "Open in the Ledung app" in a browser on this computer (#409): opens the made desktop app there. */
+  openDesktopApp: () => call('POST', '/api/open-desktop-app', {}),
   shortcutsAct: (action: ShortcutAction) => call<ShortcutsView>('POST', '/api/shortcuts', { action }),
   /** The anonymous daily check-in's notice and switch (#220). */
   checkIn: () => call<CheckInView>('GET', '/api/checkin'),
@@ -278,6 +379,17 @@ export const api = {
   overview: () => call<Overview>('GET', '/api/overview'),
   answerQuestion: (id: number, answer: string) => call<QuestionInfo>('POST', `/api/questions/${id}/answer`, { answer }),
   withdrawQuestion: (id: number) => call('POST', `/api/questions/${id}/withdraw`, {}),
+  /** A request's answer as its parts (issue #502); Ledung writes the text the asker reads. */
+  answerRequest: (id: number, parts: AnswerParts) => call<QuestionInfo>('POST', `/api/questions/${id}/answer`, { parts }),
+  /** A request's draft, kept in Ledung so it follows the person between devices (issue #502, D4). */
+  requestDraft: (id: number) => call<{ data: unknown; at: number | null }>('GET', `/api/questions/${id}/draft`),
+  /** Kept only over `base`, the version read last; else `stale` with the newer one (acceptance round 2). */
+  saveRequestDraft: (id: number, data: unknown, base: number | null) =>
+    call<{ ok: true; at: number } | { ok: false; stale: true; data: unknown; at: number | null }>('POST', `/api/questions/${id}/draft`, { data, base }),
+  /** One whole question: older Waiting for you history comes without what it refers to (issue #306). */
+  question: (id: number) => call<QuestionInfo>('GET', `/api/questions/${id}`),
+  /** Waiting for you history, light, and the sessions it names (issue #306): read when the view opens. */
+  questionHistory: () => call<{ questions: QuestionInfo[]; sessions: SessionInfo[] }>('GET', '/api/question-history'),
   /** A review's n-th evidence file, when it is text (docs/steps/pr-review.md). */
   evidenceText: (id: number, n: number) => call<{ file: string; content: string }>('GET', `/api/questions/${id}/evidence/${n}`),
   /** `folder`: which of the session's folders the Files pane means (issue #225); left out, as a chat link resolves. */
@@ -353,18 +465,14 @@ export const api = {
   setLimit: (limit: number) => call('POST', '/api/limit', { limit }),
   // Resource limits (docs/steps/resource-limits.md).
   setResourceLimit: (dim: string, value: number | null) => call('POST', '/api/resource-limits', { dim, value }),
-  // Settings → Questions at a workflow step (#291).
-  stepQuestions: () => call<StepQuestionsView>('GET', '/api/step-questions'),
-  setStepQuestions: (choice: StepQuestions) => call<StepQuestionsView>('POST', '/api/step-questions', { choice }),
-  /** Skip in the first-run picker (#293): the default stays and it is not asked again. */
-  skipStepQuestions: () => call<StepQuestionsView>('POST', '/api/step-questions-skip', {}),
-  setResourceSettings: (settings: { averageSec?: number; marginPoints?: number; overSec?: number }) => call('POST', '/api/resource-settings', settings),
+  setResourceSettings: (settings: { averageSec?: number; marginPoints?: number; overSec?: number; parkSec?: number; tellManagerMin?: number }) => call('POST', '/api/resource-settings', settings),
   resourceStartNow: (id: string) => call('POST', `/api/resource-line/${encodeURIComponent(id)}/start-now`, {}),
-  pauseJob: (id: string, paused: boolean) => call('POST', `/api/jobs/${encodeURIComponent(id)}/pause`, { paused }),
-  stopJob: (id: string) => call('POST', `/api/jobs/${encodeURIComponent(id)}/stop`, {}),
+  pauseJob: (id: string, paused: boolean) => call<JobActionResult>('POST', `/api/jobs/${encodeURIComponent(id)}/pause`, { paused }),
+  stopJob: (id: string) => call<JobActionResult>('POST', `/api/jobs/${encodeURIComponent(id)}/stop`, {}),
+  /** What Stop would end, for its confirm (acceptance test 5 of PR #476). */
+  jobReach: (id: string) => call<JobReach>('GET', `/api/jobs/${encodeURIComponent(id)}/reach`),
   jobKinds: () => call<{ kinds: JobKindInfo[]; commands: HeavyCommandInfo[] }>('GET', '/api/job-kinds'),
   forgetJobKind: (project: string, kind: string) => call('POST', '/api/job-kinds-forget', { project, kind }),
-  markCommand: (project: string, command: string, never: boolean) => call('POST', '/api/heavy-commands-mark', { project, command, never }),
   setUsageStop: (account: string, kind: string, percent: number | null) => call('POST', '/api/usage-stops', { account, kind, percent }),
   liftUsageStop: (account: string, kind: string) => call('POST', '/api/usage-lift', { account, kind }),
   away: (until: string, allow: AwayKind[]) => call<AwayInfo>('POST', '/api/away', { until, allow }),
@@ -378,6 +486,7 @@ export const api = {
   setPaused: (sessionId: string, paused: boolean) => call('POST', `/api/sessions/${sessionId}/pause`, { paused }),
   cancelClear: (sessionId: string) => call('POST', `/api/sessions/${sessionId}/cancel-clear`, {}),
   startNow: (sessionId: string) => call('POST', `/api/sessions/${sessionId}/start-now`, {}),
+  accountSwitch: (sessionId: string, action: 'now' | 'retry') => call('POST', `/api/sessions/${sessionId}/account-switch`, { action }),
   turns: (sessionId: string) => call<TurnResource[]>('GET', `/api/sessions/${sessionId}/turns`),
   board: () => call<BoardStatus>('GET', '/api/board'),
   boardThreads: () => call<BoardThreadsView>('GET', '/api/board-threads'),
@@ -400,12 +509,20 @@ export const api = {
   typicalCosts: (days = 30) => call<TypicalCost[]>('GET', `/api/typical-costs?days=${days}`),
   // Linked computers (issue #245): linked and unlinked on this computer only.
   links: () => call<{ publicName: string | null; problem: string | null; links: LinkedComputerInfo[] }>('GET', '/api/links'),
+  /** Each link's name and trust only (issue #313): what a phone sees, to trust a computer's screen from there. */
+  linkTrust: () => call<{ links: Pick<LinkedComputerInfo, 'id' | 'name' | 'trustedAt' | 'trustedFrom' | 'trustsUs'>[] }>('GET', '/api/link-trust'),
+  /** Trusts a linked computer's own screen, or stops (issue #313): here, or from a phone with its passkey. */
+  trustLink: (id: string, on: boolean) => call<LinkedComputerInfo>('POST', `/api/links/${encodeURIComponent(id)}/trust`, { on }),
+  /** This computer's own screen vouches for a challenge its frame of that linked computer was given (issue #313). */
+  linkVouch: (id: string, challenge: string) => call<{ ok: true }>('POST', '/api/link-vouch', { id, challenge }),
   linkCode: () => call<{ code: string; expiresAt: number }>('POST', '/api/links-code', {}),
   joinLink: (code: string, name: string) => call<LinkedComputerInfo>('POST', '/api/links-join', { code, name }),
   unlink: (id: string) => call('POST', `/api/links/${encodeURIComponent(id)}/remove`, {}),
   /** Pair through the link (issue #273): a linked computer's pairing code for its frame here; this computer's page only. */
   linkDevicePair: (id: string) => call<{ url: string; expiresAt: number }>('POST', '/api/link-device-pair', { id }),
   dismissLinkPairing: (id: string) => call('POST', `/api/link-pairings/${encodeURIComponent(id)}/dismiss`, {}),
+  /** The card's Remove device (issue #412): the device it names goes, and the card with it; through the public name too. */
+  removeLinkPairingDevice: (id: string) => call('POST', `/api/link-pairings/${encodeURIComponent(id)}/remove-device`, {}),
   // Paired devices (issue #160): managed on this computer; a device sees only itself.
   // `here`: the browser asking (Project-Ledung#482), so Settings can mark it.
   devices: () => call<{ publicName: string | null; devices: DeviceInfo[]; here: string | null }>('GET', '/api/devices'),

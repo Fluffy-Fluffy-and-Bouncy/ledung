@@ -2,6 +2,7 @@
 // the page's question desk shows any question, structured or plain. Modelled on the Master Question Desk.
 // Every question has a tier from its project's list, which starts as the five below (issue #96).
 import type { OrderQuestionDetails } from './orders.ts';
+import type { QuestionInfo } from './protocol.ts';
 
 /** An option of a structured question: its key ("a"), its text in Markdown (a **bold** start is its label), its cost. */
 export interface QuestionOption {
@@ -10,6 +11,12 @@ export interface QuestionOption {
   cost?: string;
   /** At a run's person step (#291): the block's outcome word this option's answer leads to. */
   outcome?: string;
+  /**
+   * A plain question's option label (ask_user's string options), set by Ledung when it stores the question (#509), never
+   * by an asker: picking it answers exactly this, the label as offered, "(recommended)" and all. Its text is the label
+   * as shown, whole. Absent: the answer is optionAnswer's "a — Label".
+   */
+  answer?: string;
 }
 
 /**
@@ -40,7 +47,22 @@ export function ledungTier(projectTiers: readonly string[]): string {
   return projectTiers.includes('Process') ? 'Process' : projectTiers[0] ?? DEFAULT_TIERS[2]!;
 }
 
-/** One view on a question: who gave it, the option it picks (none: no pick among the options) and why. */
+/**
+ * The tier of a workflow person step's question (#351, Simon 2026-11-17, question #2032): the block's own when it names
+ * one of the project's tiers; else a review goes under the first tier (in the five, "Blocks a finished PR") and a
+ * question under the second ("Blocks a card from Ready": the run's work waits on it, but nothing finished does).
+ */
+export function stepTier(projectTiers: readonly string[], ask: 'question' | 'review' | undefined, own?: string): string {
+  const named = own?.trim() ? projectTiers.find((t) => t.toLowerCase() === own.trim().toLowerCase()) : undefined;
+  if (named) return named;
+  const first = projectTiers[0] ?? DEFAULT_TIERS[0]!;
+  return ask === 'review' ? first : projectTiers[1] ?? first;
+}
+
+/**
+ * One view on a question: who gave it, the option it picks (none: no pick among the options) and why. `who` empty is the
+ * asker itself (the page names it): its pick as an older question gave it, as `recommended` or a "(recommended)" label (#509).
+ */
 export interface Opinion {
   who: string;
   pick?: string;
@@ -58,6 +80,15 @@ export interface ReviewEvidence {
   kind?: 'image' | 'text';
 }
 
+/** One decision of a request (issue #502): its own title, short issue, options (with outcomes at a run step) and opinions. */
+export interface Decision {
+  key: string;
+  title: string;
+  issue?: string;
+  options: QuestionOption[];
+  opinions?: Opinion[];
+}
+
 /** A review: a person's functional sign-off on a finished change, in fixed sections (docs/steps/pr-review.md). */
 export interface ReviewDetails {
   solving: string;
@@ -67,11 +98,48 @@ export interface ReviewDetails {
 }
 
 /**
- * A stored screenshot or evidence file as people read it: a container file's kept copy (issue #122) by its path in the
- * project; a file from a linked computer (issue #158) by its name, marked as from there.
+ * A stored screenshot or evidence file as people read it: a kept copy (a container's, issue #122, or any project's,
+ * issue #306) by its path in the project; a file from a linked computer (issue #158) by its name, marked as from there.
  */
 export function shownFile(file: string): string {
-  return file.replace(/^container:[0-9a-f]{32}\//, '').replace(/^linked:[0-9a-f]{16}\//, 'linked: ');
+  return file.replace(/^(?:container|kept):[0-9a-f]{32}\//, '').replace(/^linked:[0-9a-f]{16}\//, LINKED_MARK);
+}
+
+/**
+ * How a file from a linked computer is marked where it is shown, and the name its copy kept for a question has
+ * ("kept:<hash>/linked: shot.png"), so the mark stays (Martin, 2026-11-12 23:02, Ledung question #2148: "a — Keep the mark").
+ */
+export const LINKED_MARK = 'linked: ';
+
+/** Every kept copy a stored question names, by its hash, in the question's stored JSON (issues #122, #306). */
+export const COPY_REFS = /(?:container|kept):([0-9a-f]{32})\//g;
+
+/**
+ * Waiting for you history (issue #306; Martin, 2026-11-12, Ledung question #2145): per project at least the last
+ * 100 answered questions, and every question of the last 30 days if that is more.
+ */
+export const HISTORY_PER_PROJECT = 100;
+export const HISTORY_DAYS = 30;
+/** In a light question, each text cut to this many characters: what the history list shows, an excerpt of 180. */
+export const LIGHT_TEXT_CHARS = 300;
+
+/**
+ * A question as Waiting for you history lists it (issue #306): without what it refers to, and every text of it, the
+ * question's, the answer's and each of its fields', cut to LIGHT_TEXT_CHARS. Marked `light`: the page asks for it
+ * whole when it is opened.
+ */
+export function lightQuestion(q: QuestionInfo): QuestionInfo {
+  // A file's name (a screenshot's path, an evidence file) is never cut: the page shows the image by it.
+  const cut = (v: unknown): unknown => {
+    if (typeof v === 'string') return v.length > LIGHT_TEXT_CHARS ? `${v.slice(0, LIGHT_TEXT_CHARS)}…` : v;
+    if (Array.isArray(v)) return v.map(cut);
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, k === 'path' || k === 'file' ? x : cut(x)]));
+    return v;
+  };
+  return {
+    ...q, question: cut(q.question) as string, answer: cut(q.answer) as string | null, withdrawnReason: cut(q.withdrawnReason) as string | null,
+    details: cut(q.details) as QuestionDetails | null, shots: cut(q.shots) as QuestionInfo['shots'], original: null, earlier: null, sources: null, light: true,
+  };
 }
 
 /** At most this many evidence files per review. */
@@ -96,15 +164,22 @@ export function reviewAnswerProblem(answer: string): string | null {
   return `A review is answered "${ACCEPTED}", optionally with a note after it, or "${CHANGES_NEEDED}" followed by what needs changing.`;
 }
 
-/** The structured fields of a question; every one is optional. */
+/**
+ * The structured fields of a question; every one is optional. Stored, a question has one shape, its blocks (#509): the
+ * context (title, issue, evidence, refs; a review's sections), its decisions and a sign-off. An ordinary question is
+ * one decision with the key "" (the question's own: it has no key of its own); a request has keyed decisions.
+ * `options`, `recommended`, `why` and `reviewer`, and `opinions` outside a review or sign-off, are what ask_user takes:
+ * Ledung turns them into that decision when it stores the question (toBlocks, src/shared/blocks.ts). Only Ledung's own
+ * permission-carrying questions keep them as asked (keepsItsShape).
+ */
 export interface QuestionDetails {
   title?: string;
   issue?: string;
   evidence?: string;
   options?: QuestionOption[];
-  /** Any number of views, in the order the asker gives them (issue #96). */
+  /** Any number of views, in the order the asker gives them (issue #96). Stored beside a review or sign-off only. */
   opinions?: Opinion[];
-  /** The older fixed pair, still read from questions stored before #96 and from askers not yet moved to opinions. */
+  /** The older fixed pair, as askers may still give it; stored only in a permission-carrying question (#509). */
   recommended?: string;
   why?: string;
   reviewer?: { pick?: string; who?: string; why?: string };
@@ -115,6 +190,15 @@ export interface QuestionDetails {
   refs?: string[];
   /** A review instead of a question (docs/steps/pr-review.md): its sections, shown on a page of their own. */
   review?: ReviewDetails;
+  /**
+   * A request's decisions (issue #502, docs/steps/request-blocks.md): one or more questions on one page, each answered.
+   * With them the top-level options and opinions are not given: they belong inside a decision.
+   */
+  decisions?: Decision[];
+  /** A request asks for Accepted / Changes needed without a review's sections (issue #502); a review implies it. */
+  signOff?: boolean;
+  /** Asked with text and option labels only, no structured fields (#509): the page marks it "plain", as it always has. */
+  plain?: boolean;
   /** A person block of a run asked it (workflow part 3b): the answer moves the run; shown with the question. */
   run?: QuestionRun;
   /** A manager's proposed workflow change (part 3e), by its number: the review page shows it before and after. */
@@ -172,6 +256,20 @@ export interface RefusalDetails {
   always?: 'plain' | 'sensitive';
   /** With `sensitive`: the sensitive rule the command matched, as the question named it. */
   sensitiveRule?: string;
+  /**
+   * Not refused by the classifier but held by away mode (issue #262): a manager's own sensitive call, denied at once
+   * so its turn and inbox go on, and asked here instead of as a prompt. `reason` is then away mode's. Grants, Allow
+   * always and the passkey on the phone work as for a refusal. Absent: the classifier refused it.
+   * `prompt` (issue #308): a manager's own settings change or sensitive non-shell call, which would have been a
+   * permission prompt; `reason` is then the rule the prompt would have shown, and a settings change's retry is let
+   * through only while it still loosens exactly that.
+   */
+  held?: 'away' | 'prompt';
+  /**
+   * What the tool does, its own description's first sentence, when Ledung knew it (issue #399): a call to an MCP tool
+   * is otherwise only a name and its input. Shown to the person; never part of what makes it the same call.
+   */
+  description?: string;
 }
 
 /** The run and block a person block's question belongs to (workflow part 3b), with their titles as asked. */
@@ -230,7 +328,34 @@ export function splitOption(text: string): { label: string; detail: string } {
 
 /** The answer a structured option gives, and its button in the chat: "a — Merge as one PR". */
 export function optionAnswer(o: QuestionOption): string {
-  return `${o.key} — ${plain(splitOption(o.text).label)}`;
+  return o.answer ?? `${o.key} — ${plain(splitOption(o.text).label)}`;
+}
+
+/** A stored option as the desk shows it: a plain label whole (#509), else its bold start as the label. */
+export function deskOption(o: QuestionOption): DeskOption {
+  return o.answer !== undefined
+    ? { key: o.key, label: o.text, detail: '', cost: o.cost ?? '', answer: o.answer }
+    : { key: o.key, ...splitOption(o.text), cost: o.cost ?? '', answer: optionAnswer(o) };
+}
+
+/** Stored opinions as the desk shows them; an empty `who` is the asker (#509). */
+export function decisionOpinions(opinions: readonly Opinion[] | undefined): DeskOpinion[] {
+  return (opinions ?? []).map((o) => ({ who: o.who || null, pick: o.pick ?? null, why: o.why ?? '' }));
+}
+
+/**
+ * Ledung's own questions that carry permissions keep the shape they were asked in (#509, point 2): a permission question
+ * (about_request), a refused or held call, an order, an order command and a workflow proposal. They have their own
+ * pages, and their answers allow things, so they are never rewritten.
+ */
+export function keepsItsShape(q: { details: QuestionDetails | null; aboutRequest?: string | null }): boolean {
+  const d = q.details;
+  return !!q.aboutRequest || !!d?.refusal || !!d?.order || !!d?.orderCommand || d?.flowProposal !== undefined;
+}
+
+/** The question's own decision (key ""): an ordinary question's options and opinions (#509). */
+export function ownDecision(d: Pick<QuestionDetails, 'decisions'> | null | undefined): Decision | undefined {
+  return d?.decisions?.find((x) => x.key === '');
 }
 
 /** Checks the fields ask_user got; the message is what the asker reads. */
@@ -257,18 +382,35 @@ export function hasDetails(d: QuestionDetails): boolean {
 export function questionText(question: string | undefined, d: QuestionDetails): string {
   if (question?.trim()) return question;
   const parts: string[] = [];
+  // A request (issue #502): its decisions and sign-off follow the context, so the chat and the manager read every part.
+  const requestTail = () => {
+    for (const x of d.decisions ?? []) {
+      parts.push(`**Decision ${x.key}: ${x.title}**${x.issue ? `\n\n${x.issue}` : ''}`);
+      parts.push(x.options.map((o) => `- ${o.key}) ${o.text}${o.cost ? ` Cost: ${o.cost}` : ''}`).join('\n'));
+      for (const o of x.opinions ?? []) parts.push(`${o.who}: ${o.pick ?? 'no pick among the options'}${o.why ? `. ${o.why}` : ''}`);
+    }
+    if (!d.review && !d.signOff) return;
+    for (const o of d.opinions ?? []) parts.push(`${o.who}: ${o.why ?? ''}`);
+    parts.push(d.decisions?.length
+      ? `Answered on the request page: each decision, and "${ACCEPTED}" or "${CHANGES_NEEDED} …" as the sign-off.`
+      : `Answered "${ACCEPTED}" or "${CHANGES_NEEDED} …" on the review page.`);
+  };
   if (d.review) {
     const r = d.review;
     if (d.title) parts.push(`**Review: ${d.title}**`);
     parts.push(`**What we were solving**\n\n${r.solving}`, `**What was done**\n\n${r.done}`);
     if (r.notes) parts.push(`**Notes**\n\n${r.notes}`);
     if (r.evidence?.length) parts.push(`**Evidence**\n\n${r.evidence.map((e) => `- ${e.caption} (\`${shownFile(e.file).replace(/`/g, "'")}\`)`).join('\n')}`);
-    parts.push(`Answered "${ACCEPTED}" or "${CHANGES_NEEDED} …" on the review page.`);
+    requestTail();
     return parts.join('\n\n');
   }
   if (d.title) parts.push(`**${d.title}**`);
   if (d.issue) parts.push(d.issue);
   if (d.evidence) parts.push(`**Evidence**\n\n${d.evidence}`);
+  if (d.decisions?.length || d.signOff) {
+    requestTail();
+    return parts.join('\n\n');
+  }
   if (d.options?.length) parts.push(d.options.map((o) => `- ${o.key}) ${o.text}${o.cost ? ` Cost: ${o.cost}` : ''}`).join('\n'));
   if (d.recommended) parts.push(`Recommended: ${d.recommended}${d.why ? `. ${d.why}` : ''}`);
   if (d.reviewer) parts.push(`${d.reviewer.who || 'Reviewer'}: ${d.reviewer.pick ?? 'no pick among the options'}${d.reviewer.why ? `. ${d.reviewer.why}` : ''}`);
@@ -276,8 +418,35 @@ export function questionText(question: string | undefined, d: QuestionDetails): 
   return parts.join('\n\n');
 }
 
-/** A question as the desk shows it. A plain one degrades: its text is The issue, a "(recommended)" option the asker's pick. */
-export function deskQuestion(q: { question: string; options: string[] | null; details: QuestionDetails | null }): DeskQuestion {
+type Stored = { question: string; options: string[] | null; details: QuestionDetails | null; aboutRequest?: string | null };
+
+/**
+ * A question as the desk shows it, read from its blocks (#509): the context as stored, and the options and opinions of
+ * its own decision. Ledung's own permission-carrying questions keep their shape and are read as asked (legacyDesk).
+ */
+export function deskQuestion(q: Stored): DeskQuestion {
+  if (keepsItsShape(q)) return legacyDesk(q);
+  const d = q.details ?? {};
+  const own = ownDecision(d);
+  return {
+    structured: !d.plain,
+    title: d.title || titleFrom(d.review?.solving ?? q.question),
+    issue: d.review ? '' : d.issue ?? '',
+    evidence: d.evidence ?? '',
+    options: (own?.options ?? []).map(deskOption),
+    opinions: decisionOpinions(own?.opinions),
+    tier: d.tier ?? null,
+    rank: d.rank ?? null,
+    refs: d.refs ?? [],
+    review: d.review ?? null,
+  };
+}
+
+/**
+ * A question read from the fields as asked: what Ledung's own permission-carrying questions keep, and what toBlocks
+ * writes down as blocks (#509). A plain one degrades: its text is The issue, a "(recommended)" option the asker's pick.
+ */
+export function legacyDesk(q: Stored): DeskQuestion {
   const d = q.details;
   if (d?.review) {
     return {
@@ -291,9 +460,7 @@ export function deskQuestion(q: { question: string; options: string[] | null; de
       title: d.title || titleFrom(d.issue || q.question),
       issue: [d.issue, ownText(q.question, d)].filter(Boolean).join('\n\n') || (d.title ? '' : q.question),
       evidence: d.evidence ?? '',
-      options: d.options?.length
-        ? d.options.map((o) => ({ key: o.key, ...splitOption(o.text), cost: o.cost ?? '', answer: optionAnswer(o) }))
-        : plainOptions(q.options).options,
+      options: d.options?.length ? d.options.map(deskOption) : plainOptions(q.options).options,
       opinions: deskOpinions(d, d.options?.length ? null : plainOptions(q.options).recommended),
       tier: d.tier ?? null,
       rank: d.rank ?? null,
@@ -314,7 +481,7 @@ export function deskQuestion(q: { question: string; options: string[] | null; de
  * A title or an issue beside it must not hide it: the chat shows it, and the desk showed only the
  * title and buttons (issue #294).
  */
-function ownText(question: string, d: QuestionDetails): string {
+export function ownText(question: string, d: QuestionDetails): string {
   const q = question.trim();
   // An exact match, not a prefix: askers often open their own text with the bold title (review of PR #295).
   if (!q || q === d.issue?.trim() || q === d.title?.trim() || q === questionText(undefined, d).trim()) return '';
@@ -325,7 +492,7 @@ function ownText(question: string, d: QuestionDetails): string {
  * The opinions in the order the desk splits the border: the older pair first as it was shown (the
  * reviewer's on the left, the asker's on the right), then the list (issue #96).
  */
-function deskOpinions(d: QuestionDetails, plainPick: string | null): DeskOpinion[] {
+export function deskOpinions(d: Pick<QuestionDetails, 'reviewer' | 'recommended' | 'why' | 'opinions'>, plainPick: string | null): DeskOpinion[] {
   const out: DeskOpinion[] = [];
   if (d.reviewer) out.push({ who: d.reviewer.who || 'Reviewer', pick: d.reviewer.pick ?? null, why: d.reviewer.why ?? '' });
   const askerPick = d.recommended ?? plainPick;

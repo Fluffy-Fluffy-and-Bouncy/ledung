@@ -55,9 +55,11 @@ test('a choice made in a linked computer\'s tab is still there after the frame l
   assert.equal(readCompact(again.own), 2);
   assert.equal(readStatusDot(again.own), true);
 
-  // Back to a default removes it there too, so the next load does not bring the old choice back.
-  saveTheme(again.store, 'system');
-  assert.equal(readTheme(loadFrame().own), 'system');
+  // A later choice replaces it there too, so the next load does not bring the old choice back.
+  saveTheme(again.store, 'light');
+  assert.equal(readTheme(loadFrame().own), 'light');
+  saveTheme(loadFrame().store, 'dark');
+  assert.equal(readTheme(loadFrame().own), 'dark');
 });
 
 test('the choices that differ from the sidebar\'s defaults survive a frame load, and a default brings no old choice back', () => {

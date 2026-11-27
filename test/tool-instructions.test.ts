@@ -13,9 +13,9 @@ const LONG_GRANT = 'G'.repeat(1000);
 // Room for the paragraph a project's workflow adds after Ledung's own instructions (issue #21).
 const WORKFLOW_ROOM = 1000;
 // How far Ledung may raise the limit: it applies to the session's other tool servers too.
-// Raised from 8192 by the file-link sentence (#325), and from 8704 by the estimates rule and work_history (#254); the
-// worst case here is a 1000-character grant and a 40-character name.
-const RAISE_BUDGET = 9216;
+// Raised from 8192 by the file-link sentence (#325), from 8704 by the estimates rule and work_history (#254), and from
+// 9216 by waiting_for_you (#338); the worst case here is a 1000-character grant and a 40-character name.
+const RAISE_BUDGET = 9472;
 
 function handlers(role: 'manager' | 'session'): ToolHandlers {
   return {

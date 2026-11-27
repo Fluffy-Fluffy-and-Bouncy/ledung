@@ -52,14 +52,23 @@ export function ScreenshotView(props: {
   withdrawnIds: number[];
   /** What the question refers to (issue #368), under its title. */
   refersTo?: ReactNode;
+  /**
+   * The large view of a request's Evidence block (issue #502): the verdicts go into the request's draft, and the request
+   * page sends them with its other parts, so this view has no Send or Withdraw, only the way back to the request.
+   */
+  control?: { draft: Draft; onDraft: (d: Draft) => void };
+  /** The shot to open on, by its place in the question (a request's thumbnail); else the first without a verdict. */
+  startAt?: number;
 }) {
   const typing = usePlainTyping();
   const q = props.question;
   const open = q.status === 'open';
   // Leaving a question (Back, the queue, another question) and coming back keeps the verdicts given so far;
   // shots without one take those given on the same file in a withdrawn question of the project.
-  const fill = (d: Draft) => (open ? fillGaps(q.id, d, drafts, (id) => props.withdrawnIds.includes(id)) : d);
+  const control = props.control;
+  const fill = (d: Draft) => (open && !control ? fillGaps(q.id, d, drafts, (id) => props.withdrawnIds.includes(id)) : d);
   const [draft, setDraftState] = useState<Draft>(() => {
+    if (control) return control.draft;
     const d = fill(drafts.get(q.id) ?? emptyDraft(q.shots, props.session.project));
     drafts.set(q.id, d);
     return d;
@@ -78,6 +87,7 @@ export function ScreenshotView(props: {
   }, [q.shots, offFirst]);
   // Opens on the first shot without a verdict: on a judged one, the same verdict again would take it away (issue #138).
   const [cur, setCur] = useState(() => {
+    if (props.startAt !== undefined && order.includes(props.startAt)) return order.indexOf(props.startAt);
     const first = sendStep(order, (i) => draft.judged[i]?.verdict, null, 0);
     return 'to' in first ? first.to : 0;
   });
@@ -88,13 +98,15 @@ export function ScreenshotView(props: {
   const [missingShownAt, setMissingShownAt] = useState<number | null>(null);
 
   const setDraft = (d: Draft) => {
-    drafts.set(q.id, d);
+    if (control) control.onDraft(d);
+    else drafts.set(q.id, d);
     setDraftState(d);
     setMissingShownAt(null);
   };
   // A question withdrawn while this one is open: its verdicts fill this one's gaps now (#141 review, finding 2).
   const withdrawnKey = props.withdrawnIds.join(',');
   useEffect(() => {
+    if (control) return;
     const current = drafts.get(q.id) ?? draft;
     const next = fill(current);
     if (next !== current) setDraft(next);
@@ -176,7 +188,8 @@ export function ScreenshotView(props: {
       const inText = /^(TEXTAREA|INPUT|SELECT)$/.test((document.activeElement as HTMLElement | null)?.tagName ?? '');
       if (isSendKey(e) && open) {
         e.preventDefault();
-        if (sendsVerdicts(e)) send();
+        // In a request the page sends every part at once: its large view sends nothing itself.
+        if (sendsVerdicts(e) && !control) send();
         return;
       }
       if (e.key === 'Escape') {
@@ -293,7 +306,7 @@ export function ScreenshotView(props: {
       </div>
       <aside className="slip" aria-live="polite">
         <div className="meta">
-          <strong>Question #{q.id}</strong>
+          <strong>{control ? 'Request' : 'Question'} #{q.id}</strong>
           <span className="chip">{projectLabel(props.session.project)}</span>
           <span className="muted">{formatTime(q.askedAt)}</span>
           <button className="link slip-session" onClick={props.session.onOpen}>{props.session.title}</button>
@@ -345,7 +358,23 @@ export function ScreenshotView(props: {
             ))}
           </div>
         )}
-        {open ? (
+        {open && control ? (
+          <>
+            <div className="sblk slip-verdict">
+              <span className="lbl">Your verdict</span>
+              {verdicts}
+            </div>
+            <div className="sblk">
+              <label className="lbl" htmlFor="shot-note">Note on this shot</label>
+              <ShotNote key={`${q.id}:${index}`} value={mine?.note ?? ''} focus={noteFocus} onChange={setShotNote} />
+            </div>
+            <div className="send-blk">
+              <div className={missing ? 'shot-count missing' : 'muted'}>{judgedCount} of {q.shots.length} judged</div>
+              <div className="actions"><button className="allow" onClick={props.onClose}>Back to the request</button></div>
+              <span className="muted hint">The verdicts are sent with the request's other parts. <span className="kbd-hint"><kbd>Esc</kbd> back</span></span>
+            </div>
+          </>
+        ) : open ? (
           <>
             <div className="sblk slip-verdict">
               <span className="lbl">Your verdict</span>
@@ -415,7 +444,7 @@ export function ScreenshotView(props: {
           <span><kbd>O</kbd> order</span>
           {props.onGoToConversation && <span><kbd>C</kbd> conversation</span>}
           {props.onToggleSidebar && <span><kbd>S</kbd> sidebar</span>}
-          <span><kbd>Esc</kbd> queue</span>
+          <span><kbd>Esc</kbd> {control ? 'back to the request' : 'queue'}</span>
         </div>
       </aside>
     </div>

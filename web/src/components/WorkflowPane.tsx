@@ -16,8 +16,10 @@ import { OriginLine } from './OriginLine.tsx';
 import { usePaneWidth } from './PaneResizer.tsx';
 import { Diagram, flowsOf } from './WorkflowView.tsx';
 
-export function WorkflowPane({ session, liveRuns, connected, onClose }: {
+export function WorkflowPane({ session, liveRuns, connected, onClose, sessions }: {
   session: SessionInfo;
+  /** Every session the page knows, archived ones too: a chosen run links its sessions (#402). */
+  sessions?: readonly SessionInfo[];
   /** The project's runs as the live connection last sent them; none yet: those read on opening. */
   liveRuns?: FlowRun[];
   /** The live connection's hellos: a reconnect reads them again. */
@@ -92,7 +94,7 @@ export function WorkflowPane({ session, liveRuns, connected, onClose }: {
           </div>
         )}
         {view && (
-          <RunsPanel runs={runs} chosen={chosenRun} onChoose={choose} flowTitle={(n) => flowTitle(n) ?? n} error={runsError} follow={followLine(flow)}
+          <RunsPanel runs={runs} chosen={chosenRun} onChoose={choose} flowTitle={(n) => flowTitle(n) ?? n} error={runsError} follow={followLine(flow)} sessions={sessions}
             onStart={(id) => api.startRun(project, id).then(() => null, (e: Error) => e.message)}
             onStop={(id) => api.stopRun(project, id).then(() => null, (e: Error) => e.message)}
             blockTitle={(f, id) => flows.find((x) => x.name === f)?.flow?.blocks.find((b) => b.id === id)?.title ?? id} />

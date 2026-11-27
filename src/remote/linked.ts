@@ -21,8 +21,18 @@ import https from 'node:https';
 import path from 'node:path';
 import tls from 'node:tls';
 import { PUBLIC_NAME } from '../config.ts';
+import { writeFileSafely } from '../platform/safe-write.ts';
 
 export const LINKS_FILE = 'links.json';
+/** links.json's last save, kept next to it and loaded when links.json can't be (issue #460). */
+export const BACKUP_SUFFIX = '.bak';
+
+/** The links in a links.json; throws when it isn't one (not JSON, or no list of links). */
+function parseLinks(text: string): Saved[] {
+  const data = JSON.parse(text) as { links?: unknown } | null;
+  if (!data || typeof data !== 'object' || !Array.isArray(data.links)) throw new Error('it holds no list of links');
+  return (data.links as Saved[]).filter((l) => l && typeof l.sendKey === 'string' && typeof l.acceptSha256 === 'string');
+}
 export const LINK_CODE_MS = 10 * 60 * 1000;
 /** How long computer 2 waits for computer 1's callback after sending the code. */
 export const CONFIRM_MS = 60 * 1000;
@@ -50,6 +60,14 @@ export interface LinkedComputer {
   lastUsedAt: number | null;
   /** The port its Ledung listens on there, as it told this one (issue #273); left out: not told, 4317. */
   port?: number;
+  /**
+   * This computer trusts that computer's own screen (issue #313, docs/steps/trusted-computer.md): its frame here acts
+   * with that computer's vouch instead of a passkey. Since when, and where it was set; left out: not trusted.
+   */
+  trustedAt?: number;
+  trustedFrom?: 'here' | 'phone';
+  /** That computer trusts this one's own screen, as it told over the link (issue #313): the key on its tab here. */
+  trustsUs?: boolean;
 }
 
 interface Saved extends LinkedComputer {
@@ -255,10 +273,54 @@ export class LinkedComputers {
     this.opts.onChange?.();
   }
 
-  /** /link/hello from a linked computer: the port it told, kept when it changed; this one's own port back. */
-  hello(id: string, body: Record<string, unknown>): { port?: number } {
+  /**
+   * /link/hello from a linked computer: the port it told, kept when it changed, and whether it trusts this computer's
+   * screen (issue #313); this one's own port back, and whether this one trusts it.
+   */
+  hello(id: string, body: Record<string, unknown>): { port?: number; trusts?: true } {
     this.notePort(id, linkPort(body.port));
-    return this.ownPort();
+    // Said only when true, so a Ledung from before trust (which never says it) counts as not trusting.
+    this.noteTrustsUs(id, body.trusts === true);
+    return { ...this.ownPort(), ...(this.trusted(id) ? { trusts: true as const } : {}) };
+  }
+
+  /** Whether this computer trusts that linked computer's own screen (issue #313). */
+  trusted(id: string): boolean {
+    return typeof this.read().find((l) => l.id === id)?.trustedAt === 'number';
+  }
+
+  /**
+   * Trusts that linked computer's own screen, or stops (issue #313), and tells it, so its tab here shows the key; a
+   * failure to tell is only logged, and the next hello carries it. Returns the link, or null when there is none.
+   */
+  setTrust(id: string, on: boolean, from: 'here' | 'phone'): LinkedComputer | null {
+    const links = this.read();
+    const link = links.find((l) => l.id === id);
+    if (!link) return null;
+    if (on) {
+      link.trustedAt = this.now();
+      link.trustedFrom = from;
+    } else {
+      delete link.trustedAt;
+      delete link.trustedFrom;
+    }
+    this.write(links);
+    this.opts.onChange?.();
+    this.call(link.publicName, '/link/trust', { trusts: on }, link.sendKey).catch((e: Error) => {
+      console.log(`Linked computers: could not tell ${link.publicName} that this computer ${on ? 'trusts' : 'no longer trusts'} its screen (${e.message}).`);
+    });
+    return this.list().find((l) => l.id === id) ?? null;
+  }
+
+  /** /link/trust, or a hello: whether that computer trusts this one's own screen, for the key on its tab (issue #313). */
+  noteTrustsUs(id: string, trusts: boolean): void {
+    const links = this.read();
+    const link = links.find((l) => l.id === id);
+    if (!link || !!link.trustsUs === trusts) return;
+    if (trusts) link.trustsUs = true;
+    else delete link.trustsUs;
+    this.write(links);
+    this.opts.onChange?.();
   }
 
   /**
@@ -267,8 +329,11 @@ export class LinkedComputers {
    */
   helloAll(): void {
     for (const link of this.read()) {
-      this.call(link.publicName, '/link/hello', this.ownPort(), link.sendKey)
-        .then((answer) => this.notePort(link.id, linkPort(answer.port)))
+      this.call(link.publicName, '/link/hello', { ...this.ownPort(), ...(typeof link.trustedAt === 'number' ? { trusts: true } : {}) }, link.sendKey)
+        .then((answer) => {
+          this.notePort(link.id, linkPort(answer.port));
+          this.noteTrustsUs(link.id, answer.trusts === true);
+        })
         .catch((e: Error) => console.log(`Linked computers: no hello from ${link.publicName} (${e.message}).`));
     }
   }
@@ -371,19 +436,38 @@ export class LinkedComputers {
 
   private read(): Saved[] {
     try {
-      const data = JSON.parse(fs.readFileSync(this.file, 'utf8')) as { links?: Saved[] };
-      return Array.isArray(data.links) ? data.links.filter((l) => l && typeof l.sendKey === 'string' && typeof l.acceptSha256 === 'string') : [];
+      return parseLinks(fs.readFileSync(this.file, 'utf8'));
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') console.log(`Linked computers: ${this.file} can't be read: ${(e as Error).message}`);
-      return [];
+      // No file: no links, and no backup either (a file deleted by hand clears the list).
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      // Left as zeros by a crash, say, or unreadable (issue #460): the backup, written the same way just before, keeps
+      // the links.
+      const backup = `${this.file}${BACKUP_SUFFIX}`;
+      let links: Saved[];
+      try {
+        links = parseLinks(fs.readFileSync(backup, 'utf8'));
+      } catch (b) {
+        console.log(`Linked computers: ${this.file} can't be read: ${(e as Error).message}; nor can its backup: ${(b as Error).message}`);
+        return [];
+      }
+      console.log(`Linked computers: ${this.file} can't be read: ${(e as Error).message}; loaded ${links.length} link(s) from its backup ${backup}`);
+      try {
+        // Put back, so the next read finds it and the log says this once.
+        writeFileSafely(this.file, JSON.stringify({ links }, null, 2), { mode: 0o600, temp: `${this.file}.${process.pid}.new` });
+      } catch (w) {
+        console.log(`Linked computers: ${this.file} could not be put back from its backup: ${(w as Error).message}`);
+      }
+      return links;
     }
   }
 
+  /** The backup first, then the file, each written durably: a crash during either leaves the other whole (#460). */
   private write(links: Saved[]): void {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
-    const temp = `${this.file}.${process.pid}.new`;
-    fs.writeFileSync(temp, JSON.stringify({ links }, null, 2), { mode: 0o600 });
-    fs.renameSync(temp, this.file);
+    const text = JSON.stringify({ links }, null, 2);
+    const backup = `${this.file}${BACKUP_SUFFIX}`;
+    writeFileSafely(backup, text, { mode: 0o600, temp: `${backup}.${process.pid}.new` });
+    writeFileSafely(this.file, text, { mode: 0o600, temp: `${this.file}.${process.pid}.new` });
   }
 
   /** One POST to another Ledung's public name over TLS; the JSON answer, or an error with the reason. */

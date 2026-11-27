@@ -5,18 +5,22 @@
 // take the same path as the chat's question card.
 import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { CHATS, projectLabel, type ChatsInfo, type LinkPairingInfo, type NewComputerInfo, type PermissionInfo, type ProjectInfo, type QuestionInfo, type SessionInfo } from '../../../src/shared/protocol.ts';
-import { disagree, MAX_BORDER_PARTS, mergeTiers, type DeskOpinion } from '../../../src/shared/questions.ts';
+import { disagree, mergeTiers } from '../../../src/shared/questions.ts';
 import { findTickets } from '../../../src/shared/tickets.ts';
 import { api } from '../api.ts';
 import { conversationOf } from '../conversation.ts';
-import { readFilter, waitingLists, writeFilter, type Filter, type Item } from '../waitingLists.ts';
+import { opened, readFilter, waitingLists, writeFilter, type Filter, type Item } from '../waitingLists.ts';
+import { focusFilter, showAll, withManager, type Aside, type WaitingFocus } from '../waitingFocus.ts';
 import { nameTint, questionLabel, withChatsColour } from '../nameTint.ts';
 import { Markdown } from './Markdown.tsx';
 import { formatTime } from './MessageList.tsx';
 import { PermissionCard } from './PermissionCard.tsx';
 import { RefersTo } from './RefersTo.tsx';
 import { ReviewAnswer, ReviewEvidenceList, ReviewSections } from './ReviewView.tsx';
-import { ScreenshotView, shotCount } from './ScreenshotView.tsx';
+import { shotCount } from './ScreenshotView.tsx';
+import { OptionsDesk } from './OptionsDesk.tsx';
+import { RequestPage, toAnswerChip } from './RequestPage.tsx';
+import { isRequest } from '../../../src/shared/requests.ts';
 import { usePlainTyping } from '../usePlainTyping.ts';
 import { Withdraw } from './Withdraw.tsx';
 import { RunLine } from './FlowRuns.tsx';
@@ -58,12 +62,22 @@ export function WaitingView(props: {
   newComputers: NewComputerInfo[];
   /** Pairings linked computers asked for (issue #273). */
   linkPairings: LinkPairingInfo[];
+  /** The page came through the relay (issue #412): a new computer's card says where to approve it instead. */
+  throughPublicName?: boolean;
   /** Orders on record (issue #105): shown first, each with Cancel. */
   orders: OrderInfo[];
+  /** Reads Waiting for you history (issue #306), when the view opens. */
+  onLoadHistory?: () => Promise<void>;
   run: (action: () => Promise<unknown>) => Promise<void>;
+  /** A sidebar badge's project, shown for this visit without changing the kept filter (issue #322). */
+  focus?: WaitingFocus | null;
+  /** Leaves the badge's project: the filter controls, or Show all, were used. */
+  onClearFocus?: () => void;
 }) {
-  const [filter, setFilterState] = useState(() => readFilter(localStorage));
+  const [saved, setFilterState] = useState(() => readFilter(localStorage));
+  const filter = focusFilter(saved, props.focus ?? null);
   const setFilter = (f: Filter) => {
+    props.onClearFocus?.();
     setFilterState(f);
     writeFilter(localStorage, f);
   };
@@ -92,7 +106,11 @@ export function WaitingView(props: {
     items.filter((i) => i.q.status === 'open' && i.q.addressedTo === 'user' && i.project === name).length +
     props.permissions.filter((p) => p.status === 'pending' && p.addressedTo === 'user' && projectOf(p.sessionId) === name).length;
 
-  const current = props.questionId === null ? null : items.find((i) => i.q.id === props.questionId) ?? null;
+  // History is read when the view opens (issue #306); a light entry opened is read whole before it is shown.
+  useEffect(() => { props.onLoadHistory?.().catch(() => {}); }, []);
+  const found = props.questionId === null ? null : items.find((i) => i.q.id === props.questionId) ?? null;
+  const whole = useWholeQuestion(found?.q ?? null);
+  const current = found && opened(found, whole);
 
   const header = (sub: ReactNode, controls: ReactNode, conv?: QuestionInfo) => (
     <header className="desk-head">
@@ -117,11 +135,14 @@ export function WaitingView(props: {
   const ctx: DeskContext = { props, nameOf, titleOf, projectOf, tierColor, tintOf, settingsOf, header };
 
   if (props.questionId !== null) {
-    if (!current) {
+    // Not here, or a history entry still being read whole (issue #306).
+    if (!current || current.q.light) {
       return (
         <div className="waiting-view desk-view">
           {header('', <button onClick={() => props.onOpenQuestion(null)}>← Queue</button>)}
-          <div className="desk"><div className="desk-body"><div className="empty-box">Question #{props.questionId} is not here: it may be older than the recent ones Ledung keeps in view.</div></div></div>
+          <div className="desk"><div className="desk-body"><div className="empty-box">{current
+            ? `Loading question #${current.q.id}…`
+            : `Question #${props.questionId} is not here: it may be older than the recent ones Ledung keeps in view.`}</div></div></div>
         </div>
       );
     }
@@ -132,11 +153,15 @@ export function WaitingView(props: {
       const next = rest[Math.max(0, list.findIndex((i) => i.q.id === id))] ?? forYou.find((i) => i.q.id !== id);
       props.onOpenQuestion(next ? next.q.id : null);
     };
-    // A question with screenshots opens straight into the screenshot view (issue #60); sending leaves it for the
-    // view it was opened from, not the next question (Martin, issue #92).
-    if (current.v.review) return <ReviewPage key={current.q.id} ctx={ctx} item={current} list={list} onAnswered={after} />;
-    if (current.q.shots) return <ShotPage key={current.q.id} ctx={ctx} item={current} list={list} onAnswered={props.onLeaveShots} />;
-    return <QuestionPage key={current.q.id} ctx={ctx} item={current} list={list} onAnswered={after} />;
+    // One page for every question, review and request (issue #502, D2: Simon approved it on 2026-11-24 after trying
+    // the preview). Ledung's own questions carry permissions and keep their own cards (design section 1, "Still
+    // alone"): a permission question, an order, a refused call, and a proposed workflow change with its diagrams.
+    const d = current.q.details;
+    if (current.q.aboutRequest || d?.refusal || d?.order || d?.orderCommand) return <QuestionPage key={current.q.id} ctx={ctx} item={current} list={list} onAnswered={after} />;
+    if (d?.flowProposal !== undefined && !isRequest(current.q)) return <ReviewPage key={current.q.id} ctx={ctx} item={current} list={list} onAnswered={after} />;
+    // Sending a screenshot question leaves it for the view it was opened from, not the next question (Martin, issue #92).
+    const shotsOnly = !!current.q.shots && !isRequest(current.q);
+    return <RequestPage key={current.q.id} ctx={ctx} item={current} list={list} onAnswered={shotsOnly ? () => props.onLeaveShots() : after} />;
   }
 
   return (
@@ -150,11 +175,30 @@ export function WaitingView(props: {
       done={done}
       permsForYou={permsForYou}
       tiers={visibleTiers}
+      focus={props.focus ?? null}
+      withManager={props.focus ? withManager(props.focus, props.questions, props.permissions, projectOf) : []}
+      onShowAll={() => setFilter(showAll(saved))}
     />
   );
 }
 
-interface DeskContext {
+/**
+ * A light history entry (issue #306) read whole once it is opened; null while it comes and for a whole question. A
+ * failed read gives the light one back marked whole, so the page shows what it has rather than waiting.
+ */
+function useWholeQuestion(q: QuestionInfo | null): QuestionInfo | null {
+  const [whole, setWhole] = useState<QuestionInfo | null>(null);
+  const id = q?.light ? q.id : null;
+  useEffect(() => {
+    if (id === null) return;
+    let live = true;
+    api.question(id).then((full) => { if (live) setWhole(full); }, () => { if (live && q) setWhole({ ...q, light: false }); });
+    return () => { live = false; };
+  }, [id]);
+  return whole;
+}
+
+export interface DeskContext {
   props: Parameters<typeof WaitingView>[0];
   nameOf: (sessionId: string) => string;
   titleOf: (sessionId: string) => string;
@@ -197,6 +241,9 @@ function Queue(p: {
   done: Item[];
   permsForYou: PermissionInfo[];
   tiers: string[];
+  focus: WaitingFocus | null;
+  withManager: Aside[];
+  onShowAll: () => void;
 }) {
   const { props, nameOf, titleOf, projectOf, tierColor, tintOf, header } = p.ctx;
   const { filter, setFilter } = p;
@@ -223,6 +270,34 @@ function Queue(p: {
   });
 
   const waiting = p.forYou.length + p.permsForYou.length + props.newComputers.length + props.linkPairings.length;
+  // A session's badge (issue #322): its first item in the order shown is selected and takes the keyboard focus.
+  const firstOfFocus = (() => {
+    const mine = new Set(p.focus?.sessions ?? []);
+    if (!mine.size) return null;
+    const qs = (list: Item[]) => list.map((i) => ({ key: `q:${i.q.id}`, sessionId: i.q.sessionId }));
+    const special = (i: Item) => i.q.details?.refusal || i.q.details?.order;
+    const order = [
+      ...qs(p.forYou.filter((i) => i.q.details?.order && !i.q.details.order.confirm)),
+      ...qs(p.forYou.filter((i) => i.q.details?.order?.confirm)),
+      ...qs(p.forYou.filter((i) => i.q.details?.refusal)),
+      ...p.permsForYou.map((perm) => ({ key: `p:${perm.id}`, sessionId: perm.sessionId })),
+      ...[...p.tiers, null].flatMap((t) => qs(p.forYou.filter((i) => i.tier === t && !special(i)))),
+    ];
+    return order.find((o) => mine.has(o.sessionId))?.key ?? null;
+  })();
+  // The clicked row's own items, when the project has more, so the badge's count can be found in the view (Done looks like 7).
+  const fromRow = (() => {
+    const mine = new Set(p.focus?.sessions ?? []);
+    return p.forYou.filter((i) => mine.has(i.q.sessionId)).length + p.permsForYou.filter((x) => mine.has(x.sessionId)).length;
+  })();
+  const focusedFor = useRef<WaitingFocus | null>(null);
+  useEffect(() => {
+    if (!p.focus || focusedFor.current === p.focus || !firstOfFocus) return;
+    focusedFor.current = p.focus;
+    const el = document.querySelector<HTMLElement>('.desk-body .focus-first');
+    el?.focus({ preventScroll: true });
+    el?.scrollIntoView({ block: 'nearest' });
+  }, [p.focus, firstOfFocus]);
   const answered = p.done.filter((i) => i.q.status === 'answered').length;
   const row = (i: Item, place: number | null) => {
     const { q, v } = i;
@@ -231,7 +306,7 @@ function Queue(p: {
     const tint = tintOf(q.sessionId);
     return (
       <div key={q.id} className="qrow-wrap">
-        <button className={`qrow name-tinted${tint ? ' tinted' : ''}${isDone ? ' done' : ''}`} style={tint} onClick={() => props.onOpenQuestion(q.id)}>
+        <button className={`qrow name-tinted${tint ? ' tinted' : ''}${isDone ? ' done' : ''}${firstOfFocus === `q:${q.id}` && !isDone ? ' focus-first' : ''}`} style={tint} onClick={() => props.onOpenQuestion(q.id)}>
           <span className="border-label">{questionLabel(i.tier, i.project)}</span>
           <span className="place">{isDone ? (q.status === 'answered' ? '✓' : '–') : place ?? '·'}</span>
           <span className="t">{v.title}{disagree(v.opinions) && !isDone && <> <span className="split">They disagree</span></>}</span>
@@ -246,6 +321,7 @@ function Queue(p: {
             {!v.structured && <span className="chip">plain</span>}
             {v.review && <span className="chip review-chip">Review</span>}
             {q.shots && <span className="chip shot-chip">{shotCount(q)}</span>}
+            {toAnswerChip(q) && <span className="chip to-answer-chip">{toAnswerChip(q)}</span>}
           </span>
           {/* A review's excerpt is the first line of what we were solving (docs/steps/pr-review.md). */}
           <span className="excerpt">{isDone ? (q.status === 'answered' ? excerpt(q.answer ?? '') : q.withdrawnReason ?? '') : excerpt(v.review ? firstLine(v.review.solving) : v.issue)}</span>
@@ -257,7 +333,7 @@ function Queue(p: {
     );
   };
   const permission = (perm: PermissionInfo) => (
-    <div key={perm.id} className="waiting-permission">
+    <div key={perm.id} className={`waiting-permission${firstOfFocus === `p:${perm.id}` ? ' focus-first' : ''}`} tabIndex={firstOfFocus === `p:${perm.id}` ? -1 : undefined}>
       <div className="waiting-from">
         <button className="link" onClick={() => props.onOpenSession(perm.sessionId)}>{titleOf(perm.sessionId)}</button>
         <span className="muted"> ({projectLabel(projectOf(perm.sessionId))}) · {formatTime(perm.at)}</span>
@@ -298,7 +374,7 @@ function Queue(p: {
   const confirm = p.forYou.filter((i) => i.q.details?.order?.confirm);
   // The orders themselves, in the projects shown.
   const orders = props.orders.filter((o) => filter.mode === 'all' ? !filter.hidden.includes(o.project) : o.project === filter.one);
-  // Calls the auto mode classifier refused (issue #104), first in the list: a session waits on each now.
+  // Calls the auto mode classifier refused (issue #104), and a manager's calls away mode held (#262), first in the list.
   const refused = p.forYou.filter((i) => i.q.details?.refusal);
   let place = 0;
   return (
@@ -307,14 +383,30 @@ function Queue(p: {
       <div className="desk">
         <div className="desk-body">
           <p className="lede muted">Ordered by what each answer unblocks, and each answer takes you to the next.<span className="kbd-hint"> <kbd>Enter</kbd> opens the first question.</span></p>
-          {!waiting && <div className="empty-box">Nothing is waiting for you{filter.mode === 'one' && filter.one ? ` in ${filter.one}` : ''}. New questions appear here as they are asked.</div>}
+          {p.focus && (
+            // What a badge opened (issue #322): said plainly, with the way back to every project.
+            <div className="focus-line" role="status">
+              {p.forYou.length + p.permsForYou.length
+                ? <>Showing: <b>{projectLabel(p.focus.project)}</b></>
+                : <>Nothing waiting for <b>{projectLabel(p.focus.project)}</b></>}
+              {fromRow > 0 && fromRow < p.forYou.length + p.permsForYou.length && <span className="muted"> · {fromRow} of these from {p.focus.from}</span>}
+              {p.withManager.length > 0 && (
+                // Named by the session that asked, a link to its conversation, since the item itself is not here.
+                <span className="muted"> · {p.withManager.map((a, i) => (
+                  <Fragment key={a.sessionId}>{i ? ', ' : ''}{a.count} from <button className="link" onClick={() => props.onOpenSession(a.sessionId)}>{titleOf(a.sessionId)}</button></Fragment>
+                ))} {p.withManager.length === 1 && p.withManager[0]!.count === 1 ? 'is' : 'are'} with {p.withManager.length === 1 ? 'its manager' : 'their managers'}, not here</span>
+              )}
+              {' · '}<button className="link" onClick={p.onShowAll}>Show all</button>
+            </div>
+          )}
+          {!waiting && !p.focus && <div className="empty-box">Nothing is waiting for you{filter.mode === 'one' && filter.one ? ` in ${filter.one}` : ''}. New questions appear here as they are asked.</div>}
           {keep.length > 0 && <div className="group">{groupHead('Orders from your away time: keep them?', 'var(--danger)', keep.length)}{keep.map((i) => row(i, ++place))}</div>}
           {confirm.length > 0 && <div className="group">{groupHead('Orders to confirm', 'var(--danger)', confirm.length)}{confirm.map((i) => row(i, ++place))}</div>}
           {orders.length > 0 && <div className="group">{groupHead('Orders', 'var(--accent)', orders.length)}{orders.map((o) => (
             <OrderCard key={o.id} order={o} userName={props.userName} sessionTitle={titleOf} onOpenSession={props.onOpenSession} run={props.run} />
           ))}</div>}
-          {refused.length > 0 && <div className="group">{groupHead('Refused by auto mode', 'var(--danger)', refused.length)}{refused.map((i) => row(i, ++place))}</div>}
-          {props.newComputers.length > 0 && <>{groupHead('New computers', 'var(--warn-border)', props.newComputers.length)}{props.newComputers.map((c) => <NewComputerCard key={c.name} computer={c} run={props.run} />)}</>}
+          {refused.length > 0 && <div className="group">{groupHead('Calls refused or held for you', 'var(--danger)', refused.length)}{refused.map((i) => row(i, ++place))}</div>}
+          {props.newComputers.length > 0 && <>{groupHead('New computers', 'var(--warn-border)', props.newComputers.length)}{props.newComputers.map((c) => <NewComputerCard key={c.name} computer={c} run={props.run} throughPublicName={props.throughPublicName} />)}</>}
           {props.linkPairings.length > 0 && <>{groupHead('Paired through the link', 'var(--warn-border)', props.linkPairings.length)}{props.linkPairings.map((l) => <LinkPairingCard key={l.id} pairing={l} run={props.run} />)}</>}
           {p.permsForYou.length > 0 && <>{groupHead('Permission prompts', 'var(--warn-border)', p.permsForYou.length)}{p.permsForYou.map(permission)}</>}
           {[...p.tiers, null].map((t) => {
@@ -341,7 +433,8 @@ function Queue(p: {
 }
 
 /**
- * A review (docs/steps/pr-review.md): the desk's header, then its sections top to bottom, its evidence, and
+ * A proposed workflow change, as a review with its flows' diagrams (part 3e); every other review is on the request
+ * page (issue #502). A review (docs/steps/pr-review.md): the desk's header, then its sections top to bottom, its evidence, and
  * Accept or Changes needed. A screenshot open large takes the keys until it closes, back on the review.
  */
 function ReviewPage({ ctx, item, list, onAnswered }: { ctx: DeskContext; item: Item; list: Item[]; onAnswered: (id: number) => void }) {
@@ -450,64 +543,6 @@ function ReviewPage({ ctx, item, list, onAnswered }: { ctx: DeskContext; item: I
   );
 }
 
-/** A question with screenshots: the desk's header, then the screenshot view. */
-function ShotPage({ ctx, item, list, onAnswered }: { ctx: DeskContext; item: Item; list: Item[]; onAnswered: () => void }) {
-  const { props, nameOf, titleOf, header } = ctx;
-  const { q, v, project } = item;
-  const idx = list.findIndex((i) => i.q.id === q.id);
-  const step = (d: number) => { const t = list[idx + d]; if (idx >= 0 && t) props.onOpenQuestion(t.q.id); };
-  const posText = q.status === 'open'
-    ? q.addressedTo === 'user' ? `${idx + 1} of ${list.length} waiting` : `Manager "${titleOf(q.addressedTo)}" is handling it`
-    : q.status === 'answered' ? 'Answered' : 'Withdrawn';
-  return (
-    <div className="waiting-view desk-view">
-      {header(posText, (
-        <div className="qbar">
-          <button onClick={() => props.onOpenQuestion(null)}>← Queue</button>
-          <button disabled={idx <= 0} aria-label="Previous question" title="Previous question" onClick={() => step(-1)}>←</button>
-          <button disabled={idx < 0 || idx >= list.length - 1} aria-label="Next question" title="Next question" onClick={() => step(1)}>→</button>
-        </div>
-      ), q)}
-      <ScreenshotView
-        question={{ ...q, shots: q.shots! }}
-        title={v.title}
-        issue={v.issue}
-        evidence={v.evidence}
-        options={v.options}
-        opinions={v.opinions.map((o) => ({ ...o, who: o.who ?? nameOf(q.sessionId) }))}
-        userName={props.userName}
-        session={{ title: nameOf(q.sessionId), project, onOpen: () => props.onOpenSession(q.sessionId) }}
-        onClose={() => props.onOpenQuestion(null)}
-        onDone={onAnswered}
-        onToggleSidebar={props.onToggleSidebar}
-        onGoToConversation={() => props.onGoToConversation(q.id)}
-        withdrawnIds={props.questions.filter((o) => o.status === 'withdrawn').map((o) => o.id)}
-        refersTo={<RefersTo q={q} userName={props.userName} nameOf={nameOf} tintOf={ctx.tintOf} onOpenConversation={(s, id) => props.onGoToConversation(id, s)} onOpenMessage={props.onGoToMessage} onOpenQuestion={(id) => props.questions.some((x) => x.id === id) ? () => props.onOpenQuestion(id) : null} />}
-      />
-    </div>
-  );
-}
-
-/** What the pick marks on the options mean, for the opinions this question has. */
-function Legend({ opinions, whoOf }: { opinions: DeskOpinion[]; whoOf: (o: DeskOpinion) => string }) {
-  const n = opinions.length;
-  if (!n) return null;
-  if (n === 1) return <div className="legend"><span>Green border: {whoOf(opinions[0]!)}'s pick</span></div>;
-  if (n > MAX_BORDER_PARTS) return <div className="legend"><span>{n} opinions: each option says who picked it</span></div>;
-  return (
-    <div className="legend">
-      <span>Green border in {n} parts, one per opinion, left to right:</span>
-      {opinions.map((o, i) => <span key={i}><PartKey i={i} n={n} />{whoOf(o)}</span>)}
-      <span>Whole border: they all agree</span>
-    </div>
-  );
-}
-
-/** A small border split in `n`, part `i` lit: which part of an option's border is this opinion's. */
-const PartKey = ({ i, n }: { i: number; n: number }) => (
-  <span className="part-key" aria-hidden="true">{Array.from({ length: n }, (_, j) => <i key={j} className={j === i ? 'on' : ''} />)}</span>
-);
-
 function QuestionPage({ ctx, item, list, onAnswered }: { ctx: DeskContext; item: Item; list: Item[]; onAnswered: (id: number) => void }) {
   const typing = usePlainTyping();
   const { props, nameOf, titleOf, tintOf, settingsOf, header } = ctx;
@@ -518,21 +553,18 @@ function QuestionPage({ ctx, item, list, onAnswered }: { ctx: DeskContext; item:
   const [note, setNote] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
-  const otherRef = useRef<HTMLTextAreaElement>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
   const idx = list.findIndex((i) => i.q.id === q.id);
   const otherKey = v.options.length + 1;
   // A question about a permission request is decided by its exact answer, so no note goes with it (issue #51).
   const takesNote = !q.aboutRequest;
 
-  useEffect(() => { if (sel === 'other') otherRef.current?.focus(); }, [sel]);
-
   const step = (d: number) => { const t = list[idx + d]; if (idx >= 0 && t) props.onOpenQuestion(t.q.id); };
   const pick = (key: string) => { setSel(key); setErr(''); };
   const send = async () => {
     if (!open || busy) return;
     if (!sel) return setErr('Pick an option first.');
-    if (sel === 'other' && !other.trim()) { setErr('Write your answer in the box first.'); otherRef.current?.focus(); return; }
+    if (sel === 'other' && !other.trim()) { setErr('Write your answer in the box first.'); document.querySelector<HTMLElement>('.opts-block textarea')?.focus(); return; }
     const chosen = sel === 'other' ? other.trim() : v.options.find((o) => o.key === sel)!.answer;
     const answer = takesNote && note.trim() ? `${chosen}\n\nNote: ${note.trim()}` : chosen;
     setBusy(true);
@@ -594,11 +626,6 @@ function QuestionPage({ ctx, item, list, onAnswered }: { ctx: DeskContext; item:
     ? q.addressedTo === 'user' ? `${idx + 1} of ${list.length} waiting` : `Manager "${titleOf(q.addressedTo)}" is handling it`
     : q.status === 'answered' ? 'Answered' : 'Withdrawn';
   const mdText = (text: string) => <Markdown text={text} sessionId={q.sessionId} />;
-  const ops = v.opinions;
-  // Up to five opinions split each option's border, one part each; more are named in writing (issue #96).
-  const split = ops.length <= MAX_BORDER_PARTS;
-  const whoOf = (o: DeskOpinion) => o.who ?? asker;
-  const part = (i: number) => ({ '--i': i, '--n': ops.length }) as CSSProperties;
 
   return (
     <div className="waiting-view desk-view">
@@ -660,68 +687,22 @@ function QuestionPage({ ctx, item, list, onAnswered }: { ctx: DeskContext; item:
             <section className="block"><h4>Withdrawn</h4><div className="answered-box withdrawn"><div className="muted">Withdrawn{q.withdrawnReason ? `: ${q.withdrawnReason}` : ''}</div></div></section>
           )}
 
-          {(v.options.length > 0 || open) && (
-            <section className="block opts-block">
-              <h4>Options</h4>
-              {v.options.length > 0 && <Legend opinions={ops} whoOf={whoOf} />}
-              <div className="opts" role="radiogroup" aria-label="Options">
-                {v.options.map((o, i) => {
-                  const on = open ? sel === o.key : chosenKey === o.key;
-                  return (
-                    <button key={o.key} className={`opt${on ? ' on' : ''}`} role="radio" aria-checked={on} disabled={!open} onClick={() => pick(o.key)}>
-                      <span className="k">{i + 1}</span>
-                      <span className="lab">{v.structured && <span className="letter">{o.key}</span>}{o.label.replace(/\*\*/g, '')}</span>
-                      {o.detail && <span className="det prose">{mdText(o.detail)}</span>}
-                      {o.cost && <span className="cost muted"><b>Cost</b> · {o.cost}</span>}
-                      {split && ops.map((op, j) => op.pick === o.key && (
-                        <Fragment key={j}>
-                          <span className={`edge${j === 0 ? ' first' : ''}${j === ops.length - 1 ? ' last' : ''}`} style={part(j)} />
-                          <span className="tag who" style={part(j)} title={whoOf(op)}>{whoOf(op)}</span>
-                        </Fragment>
-                      ))}
-                      {/* The tags on the border cut long names short, the full name in a tooltip a phone can't open (#176). */}
-                      {ops.some((op) => op.pick === o.key) && (
-                        <span className={`picked-by${split ? ' touch-only' : ''}`}><b>Picked by</b> {ops.filter((op) => op.pick === o.key).map(whoOf).join(', ')}</span>
-                      )}
-                      {!open && on && <span className="tag answer">Answer</span>}
-                    </button>
-                  );
-                })}
-                {open && (
-                  <button className={`opt${sel === 'other' ? ' on' : ''}`} role="radio" aria-checked={sel === 'other'} onClick={() => pick('other')}>
-                    <span className="k">{otherKey}</span>
-                    <span className="lab">Other answer</span>
-                    <span className="det">{q.aboutRequest ? 'Deny it, saying why in your own words.' : 'Say it in your own words.'}</span>
-                  </button>
-                )}
-              </div>
-              {open && sel === 'other' && (
-                <textarea {...typing} ref={otherRef} className="box" placeholder="Your answer, in your own words" value={other} onChange={(e) => setOther(e.target.value)} />
-              )}
-            </section>
-          )}
-
-          {(v.structured || ops.length > 0) && (
-            <section className="block">
-              <h4>Opinions{disagree(ops) && <span className="split">They disagree</span>}</h4>
-              {ops.length ? (
-                <div className="recs">
-                  {ops.map((op, j) => (
-                    <div key={j}>
-                      <div className="rec-label muted">
-                        {split && ops.length > 1 && <PartKey i={j} n={ops.length} />}
-                        {whoOf(op)}{op.who === null && ' (asker)'}
-                      </div>
-                      <div className={`rec${op.pick ? '' : ' empty'}`}>
-                        <div className="pick">{op.pick ? pickLabel(op.pick) : 'No pick among the options'}</div>
-                        <div className="prose">{op.why ? mdText(op.why) : <span className="none">{v.structured ? 'No reason given.' : 'Marked "(recommended)"; a plain question gives no reason.'}</span>}</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : <div className="rec empty"><div className="none">No opinions given.</div></div>}
-            </section>
-          )}
+          <OptionsDesk
+            heading="Options"
+            options={v.options}
+            opinions={v.opinions}
+            structured={v.structured}
+            asker={asker}
+            open={open}
+            selected={sel}
+            chosen={chosenKey}
+            onPick={pick}
+            other={other}
+            onOther={setOther}
+            otherHint={q.aboutRequest ? 'Deny it, saying why in your own words.' : 'Say it in your own words.'}
+            opinionsWhenNone={v.structured}
+            md={mdText}
+          />
 
           {open && (
             <section className="block note-block">

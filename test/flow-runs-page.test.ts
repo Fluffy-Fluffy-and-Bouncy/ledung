@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import fs from 'node:fs';
-import { blockRuns, pinCounts, runPath } from '../web/src/flowRuns.ts';
+import { blockRuns, pinCounts, runPath, runSessions } from '../web/src/flowRuns.ts';
 import { parseFlow } from '../src/shared/flow-check.ts';
 import type { FlowRun } from '../src/shared/flow-run.ts';
 
@@ -13,7 +13,7 @@ const main = parseFlow(fs.readFileSync(path.join(import.meta.dirname, 'fixtures'
 
 const run = (r: Partial<FlowRun> & { id: string }): FlowRun => ({
   project: 'shop', title: 'Fix the cart', ref: null, flow: 'main', at: 'build', atSince: 0, counts: {}, sessions: {}, parent: null, history: [],
-  state: 'running', ending: null, coordinator: 'm', question: null, worktree: null, queue: null, startedAt: 0, updatedAt: 0, ...r,
+  state: 'running', ending: null, coordinator: 'm', question: null, worktree: null, queue: null, retired: [], startedAt: 0, updatedAt: 0, ...r,
 });
 
 test('part 3c: a marker on the block each open run is at, by its ref or its title; ended runs and other flows have none', () => {
@@ -51,4 +51,33 @@ test("part 3c: the chosen run's path: the blocks it went through, and where it i
     { block: 'code-review', word: 'Changes requested', n: 1, to: 'fix', by: 'm', at: 3 },
   ] });
   assert.deepEqual([...runPath(r)], [['issue', 'passed'], ['build', 'passed'], ['code-review', 'passed'], ['fix', 'here']]);
+});
+
+test('#193: a run in a fork has a marker at each branch\'s block, a branch at its join waiting, and its path is here at each', () => {
+  const forked = run({
+    id: 'run-5', ref: '#193', at: 'split',
+    fork: { block: 'split', branches: [{ word: 'Code', at: 'code-review', atSince: 0, joined: false }, { word: 'Tests', at: 'both', atSince: 0, joined: true, outcome: 'Tests hold' }] },
+    history: [{ block: 'split', word: 'Code', n: 1, to: 'code-review', by: 'Ledung', at: 0, branch: 'Code' }],
+  });
+  const at = blockRuns([forked, run({ id: 'run-6', at: 'build' })], 'main');
+  // Each branch's block, not the fork's own.
+  assert.deepEqual([...at.keys()].sort(), ['both', 'build', 'code-review']);
+  assert.deepEqual(at.get('code-review')!.map((m) => [m.id, m.waiting]), [['run-5', false]]);
+  assert.deepEqual(at.get('both')!.map((m) => [m.id, m.waiting]), [['run-5', true]]);
+  assert.match(at.get('both')![0]!.title, /the "Tests" branch, waiting for the others/);
+  const path = runPath(forked);
+  assert.equal(path.get('code-review'), 'here');
+  assert.equal(path.get('both'), 'here');
+  assert.equal(path.get('split'), 'passed');
+});
+
+test('#402: a chosen run lists every session that worked on it, earlier rounds\' archived ones too, the earliest first', () => {
+  const s = (id: string, createdAt: number, over: Record<string, unknown> = {}) => ({ id, project: 'shop', createdAt, runBlock: { run: 'run-1', block: 'review', runTitle: 'x', blockTitle: 'Review', flow: 'main' }, ...over });
+  const list = [
+    s('second-review', 30), s('first-review', 20, { archivedAt: 25 }), s('other-run', 10, { runBlock: { run: 'run-2', block: 'build', runTitle: 'y', blockTitle: 'Build', flow: 'main' } }),
+    s('elsewhere', 5, { project: 'other' }),
+    // A caller's session handed to the run has another run's block, but is one of its sessions.
+    s('caller', 1, { runBlock: null }),
+  ];
+  assert.deepEqual(runSessions(list, run({ id: 'run-1', sessions: { review: 'second-review', '@caller': 'caller' } })).map((x) => x.id), ['caller', 'first-review', 'second-review']);
 });

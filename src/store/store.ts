@@ -21,8 +21,11 @@ import type { IdleFacts } from '../sessions/idle.ts';
 import type { AwayRecord } from '../sessions/away.ts';
 import { isAskUser, quietTexts, type TurnEntry } from '../shared/quiet-reply.ts';
 import { elevates, raisesUac } from '../shared/elevation.ts';
-import type { QuestionDetails } from '../shared/questions.ts';
+import { COPY_REFS, lightQuestion, type QuestionDetails } from '../shared/questions.ts';
+import { toBlocks } from '../shared/blocks.ts';
+import type { AnswerParts } from '../shared/requests.ts';
 import type { OrderInfo, OrderStatus } from '../shared/orders.ts';
+import type { WaitingLine } from '../shared/waiting-line.ts';
 import { trimForStorage } from './trim.ts';
 import { exercisedLine } from '../platform/exercised.ts';
 
@@ -74,6 +77,8 @@ function toSession(r: Row): SessionInfo {
     statusSince: r.status_since == null ? null : Number(r.status_since),
     uac: raisesUac(r.runner, process.platform),
     runBlock: r.run_block ? JSON.parse(r.run_block) : null,
+    accountSwitch: r.account_switch ? JSON.parse(r.account_switch) : null,
+    accountChosen: !!r.account_chosen,
   };
 }
 
@@ -127,6 +132,7 @@ function toQuestion(r: Row): QuestionInfo {
     forwardedFrom: r.forwarded_from == null ? null : Number(r.forwarded_from),
     aboutRequest: r.about_request ?? null,
     details: r.details ? JSON.parse(r.details) : null,
+    ...(r.answer_parts ? { answerParts: JSON.parse(r.answer_parts) } : {}),
     shots: r.shots ? JSON.parse(r.shots) : null,
     original: null,
     earlier: r.earlier ? JSON.parse(r.earlier) : null,
@@ -211,7 +217,7 @@ export class Store {
     id: string,
     fields: Partial<Pick<SessionInfo,
       'status' | 'title' | 'permissionMode' | 'claudeSessionId' | 'model' | 'claudeVersion' | 'claudeProgram' | 'cwd' | 'endedAt' | 'endReason' | 'branch' | 'contextTokens' | 'contextWindow' | 'pr'
-      | 'priority' | 'priorityNote' | 'paused' | 'queuedAt' | 'account' | 'archivedAt' | 'clearDue' | 'clearedAt' | 'compacting' | 'runBlock' | 'requestedModel' | 'requestedEffort' | 'effort'>>,
+      | 'priority' | 'priorityNote' | 'paused' | 'queuedAt' | 'account' | 'archivedAt' | 'clearDue' | 'clearedAt' | 'compacting' | 'runBlock' | 'requestedModel' | 'requestedEffort' | 'effort' | 'accountSwitch' | 'accountChosen'>>,
   ): void {
     const columns: Record<string, string> = {
       pr: 'pr',
@@ -222,6 +228,8 @@ export class Store {
       clearedAt: 'cleared_at',
       compacting: 'compacting',
       runBlock: 'run_block',
+      accountSwitch: 'account_switch',
+      accountChosen: 'account_chosen',
       priorityNote: 'priority_note',
       paused: 'paused',
       queuedAt: 'queued_at',
@@ -247,7 +255,7 @@ export class Store {
     // A status that changes restarts its clock (issue #265); the same status set again keeps it.
     const since = fields.status !== undefined ? ', status_since = CASE WHEN status IS ? THEN status_since ELSE ? END' : '';
     const sql = `UPDATE sessions SET ${entries.map(([k]) => `${columns[k]} = ?`).join(', ')}${since} WHERE id = ?`;
-    const values = entries.map(([k, v]) => ((k === 'pr' || k === 'compacting' || k === 'claudeProgram' || k === 'runBlock') && v ? JSON.stringify(v) : typeof v === 'boolean' ? Number(v) : v ?? null) as string | number | null);
+    const values = entries.map(([k, v]) => ((k === 'pr' || k === 'compacting' || k === 'claudeProgram' || k === 'runBlock' || k === 'accountSwitch') && v ? JSON.stringify(v) : typeof v === 'boolean' ? Number(v) : v ?? null) as string | number | null);
     if (since) values.push(fields.status!, Date.now());
     this.db.prepare(sql).run(...values, id);
   }
@@ -373,6 +381,48 @@ export class Store {
     const r = this.db
       .prepare('INSERT INTO messages (session_id, at, kind, data) VALUES (?, ?, ?, ?) RETURNING *')
       .get(sessionId, at, kind, this.json(data));
+    return toMessage(r!);
+  }
+
+  /**
+   * A "Waiting for you" line (issue #350): added to `sessionId`'s chat unless the item already has one, in one write, so
+   * the same item never gets two (Done looks like 8). Null: it had one.
+   */
+  addWaitingLine(sessionId: string, line: WaitingLine, at = Date.now()): StoredMessage | null {
+    if (this.db.prepare('SELECT 1 FROM waiting_lines WHERE item = ? AND ref = ?').get(line.item, line.ref)) return null;
+    // A savepoint, not BEGIN: this runs from Ledung's publish, which may be inside another write's transaction.
+    this.db.exec('SAVEPOINT waiting_line');
+    try {
+      const m = this.addMessage(sessionId, 'waiting', line, at);
+      this.db.prepare('INSERT INTO waiting_lines (item, ref, message_id) VALUES (?, ?, ?)').run(line.item, line.ref, m.id);
+      this.db.exec('RELEASE waiting_line');
+      return m;
+    } catch (e) {
+      this.db.exec('ROLLBACK TO waiting_line');
+      this.db.exec('RELEASE waiting_line');
+      throw e;
+    }
+  }
+
+  /** An item's "Waiting for you" line, if it has one. */
+  waitingLineOf(item: WaitingLine['item'], ref: string): StoredMessage | null {
+    const r = this.db.prepare('SELECT m.* FROM waiting_lines w JOIN messages m ON m.id = w.message_id WHERE w.item = ? AND w.ref = ?').get(item, ref);
+    return r ? toMessage(r) : null;
+  }
+
+  /**
+   * A chat's "Waiting for you" lines from message `fromId` on, oldest first: a page that reconnects reads them again,
+   * since a line decided while it was away was changed in place and is older than what it catches up on (code review
+   * of #350, finding 1). At most the newest 500 (re-review: the newest are the likelier to be waiting).
+   */
+  waitingLinesIn(sessionId: string, fromId: number): StoredMessage[] {
+    return this.db.prepare('SELECT m.* FROM waiting_lines w JOIN messages m ON m.id = w.message_id WHERE m.session_id = ? AND m.id >= ? ORDER BY m.id DESC LIMIT 500')
+      .all(sessionId, fromId).map(toMessage).reverse();
+  }
+
+  /** A "Waiting for you" line says how its item ended: the same message, changed in place (Done looks like 3). */
+  updateWaitingLine(messageId: number, line: WaitingLine): StoredMessage {
+    const r = this.db.prepare(`UPDATE messages SET data = ? WHERE id = ? AND kind = 'waiting' RETURNING *`).get(this.json(line), messageId);
     return toMessage(r!);
   }
 
@@ -583,6 +633,59 @@ export class Store {
     this.db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value').run(key, value);
   }
 
+  /**
+   * The tools managers learn (issue #431): a small map of key → latest time, kept as JSON in meta (a few dozen keys
+   * at most), so it needs no table of its own. Each note keeps the latest time per key.
+   */
+  private timesIn(key: string): Map<string, number> {
+    try {
+      const j = JSON.parse(this.getMeta(key) ?? '{}');
+      return new Map(Object.entries(j && typeof j === 'object' ? j : {}).filter((e): e is [string, number] => typeof e[1] === 'number'));
+    } catch {
+      return new Map();
+    }
+  }
+
+  private noteTimes(key: string, keys: string[], at: number): void {
+    const times = this.timesIn(key);
+    let changed = false;
+    for (const k of keys) {
+      if ((times.get(k) ?? -Infinity) >= at) continue;
+      times.set(k, at);
+      changed = true;
+    }
+    if (changed) this.setMeta(key, JSON.stringify(Object.fromEntries(times)));
+  }
+
+  /** Manager tool uses, as "server:<key>" or "plugin:<name>" (issue #431). */
+  noteToolUses(keys: string[], at: number): void {
+    this.noteTimes('manager-tool-uses', keys, at);
+  }
+
+  toolUses(): Map<string, number> {
+    return this.timesIn('manager-tool-uses');
+  }
+
+  /** The user's own MCP servers sessions started with (issue #431). */
+  noteServersSeen(keys: string[], at: number): void {
+    this.noteTimes('mcp-servers-seen', keys, at);
+  }
+
+  serversSeen(): string[] {
+    return [...this.timesIn('mcp-servers-seen').keys()].sort();
+  }
+
+  /**
+   * A session's stored SDK lines from `since` on, for seeding the tools managers learn (issue #431): its assistant
+   * messages with a tool call, or its init messages. Through the session's index, so it reads that session's rows only.
+   */
+  sdkLines(sessionId: string, since: number, kind: 'calls' | 'init'): { at: number; data: string }[] {
+    const [start, has] = kind === 'calls' ? ['{"type":"assistant"%', '%"type":"tool_use"%'] : ['{"type":"system"%', '%"subtype":"init"%'];
+    return (this.db
+      .prepare(`SELECT at, data FROM messages WHERE session_id = ? AND kind = 'sdk' AND at >= ? AND data LIKE ? AND data LIKE ?`)
+      .all(sessionId, since, start, has) as { at: number; data: string }[]).map((r) => ({ at: Number(r.at), data: r.data }));
+  }
+
   /** Every stored message of a session, oldest first (for filling in usage from history). */
   allMessages(sessionId: string): StoredMessage[] {
     return this.db.prepare('SELECT * FROM messages WHERE session_id = ? ORDER BY id').all(sessionId).map(toMessage);
@@ -592,10 +695,12 @@ export class Store {
     sessionId: string; question: string; options: string[] | null; addressedTo: string; aboutQuestion?: number | null; aboutRequest?: string | null;
     details?: QuestionDetails | null; shots?: QuestionShot[] | null; earlier?: ConversationLine[] | null; sources?: AttachedSource[] | null;
   }): QuestionInfo {
+    // Stored in blocks, whatever fields it was asked with (#509): one shape for the page, the line, runs and tools.
+    const details = toBlocks({ question: q.question, options: q.options, details: q.details ?? null, aboutRequest: q.aboutRequest }) ?? q.details;
     const r = this.db
       .prepare('INSERT INTO questions (session_id, asked_at, question, options, addressed_to, status, about_question, about_request, details, shots, earlier, sources) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *')
       .get(q.sessionId, Date.now(), this.blank.text(q.question), q.options ? this.json(q.options) : null, q.addressedTo, 'open', q.aboutQuestion ?? null, q.aboutRequest ?? null,
-        q.details ? this.json(q.details) : null, q.shots?.length ? this.json(q.shots) : null, q.earlier ? this.json(q.earlier) : null,
+        details ? this.json(details) : null, q.shots?.length ? this.json(q.shots) : null, q.earlier ? this.json(q.earlier) : null,
         q.sources?.length ? this.json(q.sources) : null);
     return this.withOriginal(toQuestion(r!));
   }
@@ -681,6 +786,12 @@ export class Store {
       .all(sessionId, since).map((r) => toQuestion({ ...(r as Row), earlier: null, sources: null }));
   }
 
+  /** Every question answered since `since`, newest first, without its stored context: waiting_for_you's answered window (issue #338). */
+  answeredAfter(since: number): QuestionInfo[] {
+    return this.db.prepare(`SELECT * FROM questions WHERE status = 'answered' AND answered_at > ? ORDER BY answered_at DESC, id DESC`)
+      .all(since).map((r) => toQuestion({ ...(r as Row), earlier: null, sources: null }));
+  }
+
   /**
    * A session's questions about an auto mode classifier refusal (issue #104), open ones first (oldest first), then
    * the rest newest first, without their stored context: read when a refusal comes in (issue #232). The match on
@@ -692,12 +803,31 @@ export class Store {
       .all(sessionId).map((r) => toQuestion({ ...(r as Row), earlier: null, sources: null }));
   }
 
-  /** The hashes of the container file copies any question names (issue #122): its screenshots or review evidence. */
-  containerCopyRefs(): Set<string> {
-    const rows = this.db.prepare(`SELECT details, shots FROM questions WHERE details LIKE '%container:%' OR shots LIKE '%container:%'`).all() as { details: string | null; shots: string | null }[];
+  /**
+   * The hashes of the file copies any question names: its screenshots or review evidence, a container's (issue #122)
+   * or, since issue #306, any project's.
+   */
+  keptCopyRefs(): Set<string> {
+    const rows = this.db.prepare(`SELECT details, shots FROM questions WHERE details LIKE '%container:%' OR shots LIKE '%container:%' OR details LIKE '%kept:%' OR shots LIKE '%kept:%'`)
+      .all() as { details: string | null; shots: string | null }[];
     const refs = new Set<string>();
-    for (const r of rows) for (const m of `${r.details ?? ''} ${r.shots ?? ''}`.matchAll(/container:([0-9a-f]{32})\//g)) refs.add(m[1]!);
+    for (const r of rows) for (const m of `${r.details ?? ''} ${r.shots ?? ''}`.matchAll(COPY_REFS)) refs.add(m[1]!);
     return refs;
+  }
+
+  /**
+   * Waiting for you history (issue #306): per project, the `perProject` most recently answered questions and as many
+   * withdrawn ones, and every closed question since `since` besides, newest first. A question's project is its asking
+   * session's, as the page groups them. Light (lightQuestion): the page reads them when Waiting for you opens, not with
+   * every page load, and asks for one whole when it is opened (code review of PR #307: a busy Ledung closes about 95
+   * questions a day, so 30 days is some 2,800 questions).
+   */
+  questionHistory(perProject: number, since: number): QuestionInfo[] {
+    const rows = this.db.prepare(`SELECT * FROM (
+        SELECT q.*, ROW_NUMBER() OVER (PARTITION BY s.project, q.status = 'answered' ORDER BY COALESCE(q.answered_at, q.asked_at) DESC, q.id DESC) AS place
+        FROM questions q LEFT JOIN sessions s ON s.id = q.session_id WHERE q.status != 'open')
+      WHERE place <= ? OR COALESCE(answered_at, asked_at) >= ? ORDER BY COALESCE(answered_at, asked_at) DESC, id DESC`).all(perProject, since) as Row[];
+    return rows.map((r) => lightQuestion(toQuestion({ ...r, earlier: null, sources: null })));
   }
 
   /**
@@ -720,11 +850,41 @@ export class Store {
    * verbatim by a manager. `here`: the user answered on this computer, not through the public name (issue #263).
    * Returns false if the question was no longer open.
    */
-  answerQuestion(id: number, answer: string, by: string, forwardedFrom: number | null = null, here = false): boolean {
+  answerQuestion(id: number, answer: string, by: string, forwardedFrom: number | null = null, here = false, parts: AnswerParts | null = null): boolean {
     const r = this.db
-      .prepare(`UPDATE questions SET status = 'answered', answer = ?, answered_at = ?, answered_by = ?, forwarded_from = ?, answered_here = ? WHERE id = ? AND status = 'open'`)
-      .run(this.blank.text(answer), Date.now(), by, forwardedFrom, here ? 1 : 0, id);
+      .prepare(`UPDATE questions SET status = 'answered', answer = ?, answered_at = ?, answered_by = ?, forwarded_from = ?, answered_here = ?, answer_parts = ? WHERE id = ? AND status = 'open'`)
+      .run(this.blank.text(answer), Date.now(), by, forwardedFrom, here ? 1 : 0, parts ? this.json(parts) : null, id);
+    if (Number(r.changes) === 1) this.dropRequestDraft(id);
     return Number(r.changes) === 1;
+  }
+
+  // --- Request drafts (issue #502, D4) ------------------------------------------------------------------------
+
+  /** The person's draft of an open request, as the page left it; blanked like everything stored. Null: none. */
+  requestDraft(questionId: number): { data: unknown; at: number } | null {
+    const r = this.db.prepare('SELECT data, at FROM request_drafts WHERE question_id = ?').get(questionId) as { data: string; at: number } | undefined;
+    return r ? { data: JSON.parse(r.data), at: Number(r.at) } : null;
+  }
+
+  /**
+   * Keeps the draft of an open request and returns its new version (its time, always later than the one it replaces);
+   * false when the question is not open any more (nothing kept). With `base`, the version the page read (null: none
+   * yet), it is kept only over that version, else 'stale' and nothing changes: a page left open on one device must
+   * never save its old copy over what another device did since (acceptance round 2).
+   */
+  saveRequestDraft(questionId: number, data: unknown, base?: number | null, now = Date.now()): number | false | 'stale' {
+    const open = this.db.prepare(`SELECT 1 FROM questions WHERE id = ? AND status = 'open'`).get(questionId);
+    if (!open) return false;
+    const prev = this.db.prepare('SELECT at FROM request_drafts WHERE question_id = ?').get(questionId) as { at: number } | undefined;
+    if (base !== undefined && (prev ? Number(prev.at) : null) !== base) return 'stale';
+    const at = prev ? Math.max(now, Number(prev.at) + 1) : now;
+    this.db.prepare('INSERT INTO request_drafts (question_id, data, at) VALUES (?, ?, ?) ON CONFLICT(question_id) DO UPDATE SET data = excluded.data, at = excluded.at')
+      .run(questionId, this.json(data), at);
+    return at;
+  }
+
+  dropRequestDraft(questionId: number): void {
+    this.db.prepare('DELETE FROM request_drafts WHERE question_id = ?').run(questionId);
   }
 
   // --- Allow always (issue #225) -------------------------------------------------------------------------------
@@ -785,6 +945,7 @@ export class Store {
     const r = this.db
       .prepare(`UPDATE questions SET status = 'withdrawn', withdrawn_reason = ?, answered_at = ? WHERE id = ? AND status = 'open'`)
       .run(reason, Date.now(), id);
+    if (Number(r.changes) === 1) this.dropRequestDraft(id);
     return Number(r.changes) === 1;
   }
 

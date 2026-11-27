@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { openDatabase } from '../src/store/database.ts';
 import { Store } from '../src/store/store.ts';
 import { parseConfig } from '../src/config.ts';
-import type { Management } from '../src/sessions/management.ts';
+import { buildDelivery, FLOW_SOURCE, type Management } from '../src/sessions/management.ts';
 import { SessionManager } from '../src/sessions/manager.ts';
 import { Session } from '../src/sessions/session.ts';
 import { conversationBefore, EARLIER_LINE_CHARS, EARLIER_LINES, EARLIER_TOTAL_CHARS } from '../src/sessions/earlier.ts';
@@ -32,7 +32,7 @@ function setup() {
       gate: { mayStart: () => true, started: () => {}, ended: () => {} },
     }) as unknown as Asker;
   };
-  return { store, make };
+  return { store, make, manager };
 }
 
 const reply = (text: string, extra: Record<string, unknown> = {}) => ({ type: 'assistant', ...extra, message: { content: [{ type: 'text', text }] } });
@@ -61,7 +61,7 @@ test("a manager's question comes with the original it is about, even when that o
   assert.ok(!list.some((q) => q.id === original.id), 'the original is outside the recent window');
   const sent = list.find((q) => q.id === asked.id)!;
   assert.deepEqual(sent.original, {
-    id: original.id, sessionId: 'w', askedAt: original.askedAt, question: 'VAT per rate?', options: null, details, status: 'answered',
+    id: original.id, sessionId: 'w', askedAt: original.askedAt, question: 'VAT per rate?', options: null, details: original.details, status: 'answered',
   });
   assert.deepEqual(store.getQuestion(asked.id)!.original, sent.original, 'a single question as published carries it too');
   // Ledung's own reads on every manager Bash call leave it out (review of PR #373, finding 3): asserted on a question
@@ -146,4 +146,32 @@ test('events, permissions and tool calls are not part of it; an empty conversati
     msg(4, 'sdk', { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read', input: {} }] } }),
   ]);
   assert.deepEqual(lines, []);
+});
+
+test("#351: a workflow's hand-off to the manager, with its brief, is never quoted to the person in the question's earlier messages", () => {
+  const { store, make, manager } = setup();
+  const mgr = make('mgr', 'manager', null);
+  // What a run tells a coordinator goes in its inbox as Ledung's workflow text, not as an ordinary Ledung message.
+  (manager.flowRuns as unknown as { p: { tell(id: string, text: string): void } }).p.tell('mgr', `At "Look it over" (look), a person's step. For you, not for Simon: The brief: MARKER-77`);
+  const told = store.undeliveredInbox('mgr');
+  assert.deepEqual(told.map((i) => i.source), [FLOW_SOURCE]);
+  // Delivered in one turn with a worker's report: the session gets both; only the report may be quoted.
+  const report = 'DONE header-colour · PR #5: the header is blue now.';
+  const d = buildDelivery('Simon', [], [{ text: report, source: 'ledung' }, ...told], () => '');
+  assert.match(d.context, /MARKER-77/);
+  assert.equal(d.quotable, report);
+  // Alone, nothing of it is quotable; with no workflow text, the context is the whole of it.
+  assert.equal(buildDelivery('Simon', [], told, () => '').quotable, '');
+  assert.equal(buildDelivery('Simon', [], [{ text: report, source: 'ledung' }], () => '').quotable, undefined);
+
+  store.addMessage('mgr', 'user', { text: d.userText, from: 'ledung', context: d.context, quotable: d.quotable }, 1000);
+  store.addMessage('mgr', 'user', { text: CONTEXT_SENTENCE('Simon'), from: 'ledung', context: told[0]!.text, quotable: '' }, 2000);
+  store.addMessage('mgr', 'sdk', reply('The header work is done; asking Simon to look it over.'), 3000);
+  const asked = mgr.ask('Look over the header colour.', null, null, null, { tier: 'Blocks a finished PR' });
+  const earlier = store.getQuestion(asked.id)!.earlier!;
+  assert.deepEqual(earlier.map((l) => [l.kind, l.text]), [
+    ['delivered', report],
+    ['reply', 'The header work is done; asking Simon to look it over.'],
+  ]);
+  assert.doesNotMatch(JSON.stringify(earlier), /MARKER-77|For you, not for|person's step/);
 });

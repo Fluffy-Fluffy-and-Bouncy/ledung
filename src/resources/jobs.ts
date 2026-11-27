@@ -3,6 +3,7 @@
 // Windows GPU's id changes with each reboot, and a job's figure is about the work, not the card.
 import type { DatabaseSync } from 'node:sqlite';
 import { ALLOWANCE, isMemory, p90, type Amounts } from './limits.ts';
+import { isLightKind } from './commands.ts';
 
 export interface JobRun {
   project: string;
@@ -36,15 +37,24 @@ export interface HeavyCommand {
   runs: number;
   /** Typical peak (90th percentile), generic dims. */
   peak: Amounts;
-  never: boolean;
+  /** Where the figure comes from (R4): runs of reserved jobs and of unreserved stretches, and when the last ended. */
+  reserved: number;
+  unreserved: number;
+  lastAt: number;
+  /** How long its calls usually take (median of the latest), when Ledung has seen it finish. */
+  usualMs: number | null;
 }
 
 /** How many runs before a learned figure replaces the session's guess (open choice 8). */
 export const LEARN_AFTER = 3;
 /** How many of the latest runs a figure is learned from. */
 const LEARN_FROM = 20;
-/** Runs of a command over the allowance before it needs a reservation. */
+/** Runs of a command over the allowance before its figure is known (for estimates and the notice; never a refusal, #500). */
 export const HEAVY_AFTER = 2;
+/** Old records count for a kind only if its calls usually take longer than this (round 2, R4: the 10-second rule). */
+export const SHORT_MS = 10_000;
+/** How many of a kind's latest calls its usual duration is taken from (the median), and kept. */
+const CALLS_KEPT = 10;
 
 /** A job's kind as it is kept: trimmed, one space, lower case, at most 60 characters. */
 export function normaliseKind(what: string): string {
@@ -96,7 +106,7 @@ export class JobStore {
   }
 
   add(r: JobRun): void {
-    this.db.prepare('INSERT INTO job_runs (project, kind, commands, asked, peak, mean, duration_ms, over, undeclared, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+    this.db.prepare('INSERT INTO job_runs (project, kind, commands, asked, peak, mean, duration_ms, over, undeclared, ended_at, by_call) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)').run(
       r.project, r.kind, JSON.stringify(r.commands.slice(0, 40)), JSON.stringify(r.asked), JSON.stringify(r.peak), JSON.stringify(r.mean),
       Math.round(r.durationMs), r.over ? 1 : 0, r.undeclared ? 1 : 0, r.endedAt,
     );
@@ -147,21 +157,34 @@ export class JobStore {
     this.db.prepare('DELETE FROM job_runs WHERE project = ? AND kind = ?').run(project, kind);
   }
 
-  /** The person's mark: this command never needs a reservation (or does again). */
-  markNever(project: string, command: string, never: boolean): void {
-    if (never) this.db.prepare('INSERT INTO command_marks (project, command, never) VALUES (?, ?, 1) ON CONFLICT (project, command) DO UPDATE SET never = 1').run(project, command);
-    else this.db.prepare('DELETE FROM command_marks WHERE project = ? AND command = ?').run(project, command);
+  /** A finished shell call (R4): how long it took, per kind; only the latest CALLS_KEPT per kind stay. */
+  addCall(project: string, kind: string, durationMs: number, at: number): void {
+    this.db.prepare('INSERT INTO command_calls (project, kind, duration_ms, at) VALUES (?, ?, ?, ?)').run(project, kind, Math.max(0, Math.round(durationMs)), at);
+    this.db.prepare('DELETE FROM command_calls WHERE project = ? AND kind = ? AND id NOT IN (SELECT id FROM command_calls WHERE project = ? AND kind = ? ORDER BY at DESC, id DESC LIMIT ?)')
+      .run(project, kind, project, kind, CALLS_KEPT);
+  }
+
+  /** How long a kind's calls usually take: the median of its latest calls; null if none has been seen to finish. */
+  usualMs(project: string, kind: string): number | null {
+    const ms = (this.db.prepare('SELECT duration_ms FROM command_calls WHERE project = ? AND kind = ? ORDER BY at DESC, id DESC LIMIT ?').all(project, kind, CALLS_KEPT) as Record<string, unknown>[])
+      .map((r) => Number(r.duration_ms)).sort((a, b) => a - b);
+    if (!ms.length) return null;
+    const mid = ms.length >> 1;
+    return ms.length % 2 ? ms[mid]! : (ms[mid - 1]! + ms[mid]!) / 2;
   }
 
   /**
    * Commands known to be heavy: in at least HEAVY_AFTER recent runs (reserved or unreserved) that used more than the
-   * allowance. Those the person marked "never" are listed with `never`.
+   * allowance. A figure for the page and the over-share notice only: no command is refused by it (issue #500; the old
+   * "never needs a reservation" marks in command_marks are no longer read). Light commands are never heavy, and records
+   * from before R4 count only for a kind whose calls usually take over 10 s, applied here when read, so old wrong
+   * marks clear themselves.
    */
   heavyCommands(project?: string): HeavyCommand[] {
     const rows = (project === undefined
-      ? this.db.prepare("SELECT project, commands, peak FROM job_runs WHERE kind NOT LIKE 'session:%' ORDER BY ended_at DESC LIMIT 2000").all()
-      : this.db.prepare("SELECT project, commands, peak FROM job_runs WHERE project = ? AND kind NOT LIKE 'session:%' ORDER BY ended_at DESC LIMIT 500").all(project)) as Record<string, unknown>[];
-    const by = new Map<string, { project: string; command: string; peaks: Amounts[] }>();
+      ? this.db.prepare("SELECT project, commands, peak, undeclared, ended_at, by_call FROM job_runs WHERE kind NOT LIKE 'session:%' ORDER BY ended_at DESC LIMIT 2000").all()
+      : this.db.prepare("SELECT project, commands, peak, undeclared, ended_at, by_call FROM job_runs WHERE project = ? AND kind NOT LIKE 'session:%' ORDER BY ended_at DESC LIMIT 500").all(project)) as Record<string, unknown>[];
+    const by = new Map<string, { project: string; command: string; runs: { peak: Amounts; unreserved: boolean; at: number; byCall: boolean }[] }>();
     for (const r of rows) {
       const peak = parse(r.peak);
       if (!aboveAllowance(peak)) continue;
@@ -173,20 +196,30 @@ export class JobStore {
       }
       if (!Array.isArray(commands)) continue;
       for (const c of new Set(commands.filter((x): x is string => typeof x === 'string'))) {
+        if (isLightKind(c)) continue;
         const key = `${r.project}\u0000${c}`;
-        const e = by.get(key) ?? { project: String(r.project), command: c, peaks: [] };
-        e.peaks.push(peak);
+        const e = by.get(key) ?? { project: String(r.project), command: c, runs: [] };
+        e.runs.push({ peak, unreserved: Number(r.undeclared) === 1, at: Number(r.ended_at), byCall: Number(r.by_call) === 1 });
         by.set(key, e);
       }
     }
-    const marks = new Set((this.db.prepare('SELECT project, command FROM command_marks WHERE never = 1').all() as Record<string, unknown>[]).map((m) => `${m.project}\u0000${m.command}`));
     const out: HeavyCommand[] = [];
-    for (const [key, e] of by) {
-      if (e.peaks.length < HEAVY_AFTER) continue;
-      const dims = new Set(e.peaks.flatMap((p) => Object.keys(p)));
+    for (const e of by.values()) {
+      const usualMs = this.usualMs(e.project, e.command);
+      // Records from before R4 took every call made during a job: they count only once its calls are seen to be long
+      // (the 10-second rule). Records since R4 are a call's own busy processes, and stay evidence however quick its
+      // other calls were: one `python train.py &` that returns at once must not make a heavy command light (code
+      // review of PR #400, round 2).
+      const runs = usualMs !== null && usualMs > SHORT_MS ? e.runs : e.runs.filter((r) => r.byCall);
+      if (runs.length < HEAVY_AFTER) continue;
+      const dims = new Set(runs.flatMap((r) => Object.keys(r.peak)));
       const peak: Amounts = {};
-      for (const d of dims) peak[d] = p90(e.peaks.map((p) => p[d] ?? 0));
-      out.push({ project: e.project, command: e.command, runs: e.peaks.length, peak, never: marks.has(key) });
+      for (const d of dims) peak[d] = p90(runs.map((r) => r.peak[d] ?? 0));
+      const unreserved = runs.filter((r) => r.unreserved).length;
+      out.push({
+        project: e.project, command: e.command, runs: runs.length, peak,
+        reserved: runs.length - unreserved, unreserved, lastAt: Math.max(...runs.map((r) => r.at)), usualMs,
+      });
     }
     return out.sort((a, b) => b.runs - a.runs);
   }

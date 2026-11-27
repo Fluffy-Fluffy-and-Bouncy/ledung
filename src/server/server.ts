@@ -9,23 +9,26 @@ import path from 'node:path';
 import { type Duplex, duplexPair } from 'node:stream';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { appDir, appVersion, PACKAGED } from '../platform/paths.ts';
+import { appDir, PACKAGED, runningVersion } from '../platform/paths.ts';
+import { listenAddresses } from '../platform/port-claim.ts';
 import { readRepository, sourceOffer } from './source.ts';
 import type { SessionManager } from '../sessions/manager.ts';
 import { UserError } from '../sessions/manager.ts';
 import type { Store } from '../store/store.ts';
 import { AWAY_DEFAULT, AWAY_KINDS, EFFORT_LEVELS, HELPER, type AwayKind, type PermissionDecision, type PermissionMode, type RemoteStatus, type ServerEvent, parseWatch } from '../shared/protocol.ts';
 import { browserCookieHeader, deviceCookieHeader, Guard, readCookies, securityHeaders } from './security.ts';
-import { browserName, DEVICE_COOKIE, type Device, type DeviceKind, deviceName, Devices, deviceView, LEGACY_BROWSER_NAME } from './devices.ts';
-import { actionOf, DEVICE_LOCKED, PASSKEY_HEADER, PasskeyError, Passkeys } from './passkeys.ts';
+import { browserName, DEVICE_COOKIE, type Device, type DeviceKind, deviceName, Devices, deviceView, LEGACY_BROWSER_NAME, PAIR_CODE_MS, pairedLink, PASSKEY_WINDOW_MS } from './devices.ts';
+import { actionOf, DEVICE_LOCKED, ENROL_LINK_GONE, PASSKEY_HEADER, PASSKEY_NEEDED, PASSKEY_ONLY, PasskeyError, Passkeys, SIGN_LOG_ON, VOUCH_HEADER } from './passkeys.ts';
 import { linkedPushItem, Push, PushError, type LinkedPushItem } from './push.ts';
 import type { UsageQueries } from '../usage/queries.ts';
 import { readRunningRelease, type Updater } from '../update/updater.ts';
 import type { CheckIn } from '../update/checkin.ts';
+import type { TraySwitch } from '../platform/tray.ts';
 import { capTurnCores, typicalCosts } from '../resources/typical.ts';
 import { BoardError } from '../board/types.ts';
 import type { ProjectConfig } from '../config.ts';
-import type { Overview, Priority, UsageFilter, UsagePeriod } from '../shared/protocol.ts';
+import type { DesktopAppInfo, Overview, Priority, UsageFilter, UsagePeriod } from '../shared/protocol.ts';
+import { isRequest, type AnswerParts } from '../shared/requests.ts';
 import type { SecretLifetime } from '../shared/secrets.ts';
 import { levelProblem, NO_LOCKDOWN } from '../projects/lockdown.ts';
 import { CertificateFiles } from './tunnel-tls.ts';
@@ -37,7 +40,7 @@ import { exercisedLine } from '../platform/exercised.ts';
 import type { RelayAdmin } from '../remote/admin.ts';
 import type { UsagePublisher } from '../usage/publisher.ts';
 import type { Shortcuts } from '../platform/shortcuts.ts';
-import { LinkError, LinkedComputers } from '../remote/linked.ts';
+import { LinkError, LinkedComputers, type LinkedComputer } from '../remote/linked.ts';
 import { LinkedFileError } from '../remote/linked-files.ts';
 import type { StreamOffer } from '../remote/linked-outbox.ts';
 import { pipeline } from 'node:stream/promises';
@@ -46,7 +49,7 @@ import { MAX_IMAGE_BYTES } from '../board/attachments.ts';
 import { ManagementError, type SettingsPort } from '../sessions/management.ts';
 import { waitingCount } from '../shared/waiting.ts';
 import { helloSessions } from '../shared/hello-sessions.ts';
-import { compressible, IMMUTABLE, isHashedAsset, PackedFiles, pickEncoding } from './static-files.ts';
+import { compressible, IMMUTABLE, isHashedAsset, PACK_MIN_BYTES, PackedFiles, packAnswer, pickEncoding } from './static-files.ts';
 
 /** Calls a linked computer may make in a minute (#245). */
 const LINK_PER_MINUTE = 60;
@@ -83,6 +86,7 @@ let exercised463 = false;
 const LINKED_HERE = 'Computers are linked and unlinked';
 import type { CertificateStatus, LinkPairingInfo, NewComputerInfo, SourceOffer } from '../shared/protocol.ts';
 import { MAX_CHAT_IMAGE_BYTES } from '../sessions/chat-images.ts';
+import { DROP_TOO_LARGE, MAX_DROP_BYTES } from '../sessions/drops.ts';
 import { computerFrames, computerList, editComputer, knownComputers, readComputerEdits, withEdits, type ComputerInfo, type ComputerSetting } from '../shared/computers.ts';
 
 const MAX_BODY = 1024 * 1024;
@@ -90,17 +94,66 @@ const MAX_BODY = 1024 * 1024;
 const CHAT_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 /** A workflow's texts may have 4 MB together (src/sessions/flow-files.ts); JSON's escapes take some more (#311). */
 const FLOW_SAVE_MAX_BODY = 6 * 1024 * 1024;
+/**
+ * The head of Ledung's small pages (issue #481): the not-signed-in page and the pairing pages here, like sign.html
+ * and enrol.html, are always dark, in the main page's dark colours (web/public/small-page.css, served unsigned like
+ * pair.js). The color-scheme line keeps them dark even if the stylesheet doesn't load.
+ */
+const SMALL_PAGE_HEAD = '<meta name="viewport" content="width=device-width"><meta name="color-scheme" content="dark">'
+  + '<link rel="stylesheet" href="/small-page.css">';
 const NOT_PAIRED = 'This device is not paired with Ledung. Pair it from Settings → Phones in Ledung on the computer.';
 /**
  * On the not-paired page through the public name: the pairing code or link typed in. Inside a frame on another
  * computer's page (issue #241) there is no address bar to open the link in, and pairing there must happen in the frame.
  */
-const PAIR_CODE_FORM = '<form method="get" action="/pair"><p><label>Pairing code or link<br>'
-  + '<input name="code" autocomplete="off" autocapitalize="characters" spellcheck="false" style="font-size:1.1em;width:100%"></label></p>'
-  + '<p><button style="font-size:1.1em">Next</button></p></form>';
+const PAIR_CODE_FORM = '<form method="get" action="/pair"><p><label>Pairing code or link<br><span class="row">'
+  + '<input name="code" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="e.g. l5q4waqa24eqn3r0owsa">'
+  + '<button class="primary">Next</button></span></label></p></form>';
+/** The small pages' wording (issue #481), as Martin passed the mockups (Ledung question #751); minutes from the rules. */
+const PAGE_BRAND = (what = '') => `<p class="muted small">Ledung${what ? ` · ${what}` : ''}</p>`;
+const minutes = (ms: number) => Math.round(ms / 60_000);
+const NOT_PAIRED_PAGE = PAGE_BRAND() + '<h1>Pair this device first</h1><p>This phone or computer isn\'t paired with this Ledung yet.</p>'
+  + '<ol class="steps"><li>In Ledung on the computer, open <b>Settings → Phones</b> and make a pairing code.</li>'
+  + `<li>Type the code, or paste the link, here. It works once, for ${minutes(PAIR_CODE_MS)} minutes.</li></ol>`
+  + PAIR_CODE_FORM
+  + '<p class="muted small">Paired devices can look at once; to make changes they set up a passkey and log on.</p>';
+const NOT_SIGNED_IN_PAGE = PAGE_BRAND() + '<h1>Not signed in</h1><p>This browser has no sign-in for this Ledung.</p>'
+  + '<div class="facts"><h3>To get in</h3><ul><li>Open the link Ledung printed when it started: it carries the sign-in for this browser.</li>'
+  + '<li>Or use Ledung\'s desktop app, which signs itself in.</li></ul></div>';
+/** Under the Pair form: what pairing gives and what comes after. */
+const PAIR_AFTER = '<div class="facts"><h3>After pairing</h3><ul><li>This device can look at Ledung right away.</li>'
+  + `<li>To make changes, set up its passkey in Settings within ${minutes(PASSKEY_WINDOW_MS)} minutes, then log on.</li>`
+  + '<li>You can remove it any time in Settings → Phones on the computer.</li></ul></div>';
+/** After pairing (issue #466): what comes next, on the page that says this browser is paired. */
+const PAIRED_NEXT = '<p>Next, set up its passkey in Settings, so it can make changes and not only look.</p><p><a href="/#/settings">Go on to Settings</a></p>';
+
+/** Text for an HTML page: a device's name is typed by whoever pairs it. */
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+}
+
+/** How long before `now` something was, in words, for the pairing pages. */
+function minutesAgo(at: number, now: number): string {
+  const minutes = Math.floor((now - at) / 60_000);
+  return minutes < 1 ? 'a moment ago' : minutes === 1 ? 'a minute ago' : `${minutes} minutes ago`;
+}
+
+/**
+ * A pairing link pressed again after it was used (issue #466): when, for which device, and whether that pairing
+ * worked: in this browser (`here`), in a browser that came back with it (`elsewhere`), or in none (`never`).
+ */
+function pairUsedWords(used: { name: string; at: number }, now: number, outcome: 'here' | 'elsewhere' | 'never' | 'removed'): string {
+  const when = minutesAgo(used.at, now);
+  const first = `<p>This pairing link was already used, ${when}, to pair <b>${escapeHtml(used.name)}</b>.`;
+  if (outcome === 'here') return `<h2>Paired</h2>${first} That is this browser: it is paired.</p>`;
+  if (outcome === 'elsewhere') return `${first} That pairing worked, in the browser that used it; this one is not paired by it. To pair this one, make a new link in Settings → Phones in Ledung on the computer.</p>`;
+  if (outcome === 'removed') return `${first} That device has been removed since, so this link pairs nothing more. To pair this browser, make a new link in Settings → Phones in Ledung on the computer.</p>`;
+  return `${first} That pairing never reached a browser, so nothing is paired by it yet. Press the button to pair this browser instead.</p>`;
+}
+
 const NO_PASSKEY_LOCKED = 'This device has no passkey, so it can only look from here; make changes on the computer.';
 /** Through the public name, the only changes a locked device may send (requireUnlocked). */
-const OPEN_WHILE_LOCKED = new Set(['/api/device-unlock', '/api/passkey-challenge', '/api/passkey-options', '/api/passkey', '/api/device-logout', '/api/passkey-enrol-link']);
+const OPEN_WHILE_LOCKED = new Set(['/api/device-unlock', '/api/passkey-challenge', '/api/passkey-options', '/api/passkey', '/api/device-logout', '/api/passkey-enrol-link', '/api/passkey-sign-answer']);
 /**
  * API reads that only read what Ledung already holds: its store, its memory, and files on this computer, with no
  * process started and no network call. Every other GET under /api/ does work (GitHub, docker, claude, git, the relay)
@@ -108,11 +161,11 @@ const OPEN_WHILE_LOCKED = new Set(['/api/device-unlock', '/api/passkey-challenge
  * page check, so a new route is checked until it is added on purpose.
  */
 export const PLAIN_READS = new Set([
-  'GET state', 'GET devices', 'GET links', 'GET device', 'GET push', 'GET sessions/:id/messages', 'GET usage',
+  'GET state', 'GET devices', 'GET links', 'GET link-trust', 'GET device', 'GET push', 'GET sessions/:id/messages', 'GET usage',
   'GET sessions/:id/usage', 'GET overview', 'GET projects', 'GET accounts', 'GET browse', 'GET profiles',
   'GET workflow-check', 'GET projects-folder', 'GET projects/:id/proposals/:id', 'GET projects/:id/runs', 'GET board',
   'GET board-threads', 'GET board-thread', 'GET usage-publish', 'GET machine', 'GET sessions/:id/turns', 'GET typical-costs',
-  'GET sessions/:id/folders', 'GET questions/:id/evidence/:id', 'GET chats', 'GET sessions/:id/shell-check',
+  'GET sessions/:id/folders', 'GET questions/:id', 'GET question-history', 'GET questions/:id/evidence/:id', 'GET chats', 'GET sessions/:id/shell-check',
   'GET sessions/:id/secrets', 'GET update', 'GET checkin', 'GET remote-link', 'GET relay-admin',
   'GET sessions/:id/sent-images/:id', 'GET board-attachment',
 ]);
@@ -171,10 +224,18 @@ export interface ServerOptions {
   usage?: UsageQueries;
   /** Settings' Update Ledung (#100). */
   updater?: Updater;
+  /** The made desktop app against this Ledung (#408), read at each hello; left out: not the npm package. */
+  desktopApp?: () => DesktopAppInfo | null;
+  /** Whether there is a made desktop app to open (#409), read at each hello; left out: not the npm package. */
+  canOpenDesktopApp?: () => boolean;
+  /** Opens the made desktop app (#409): null when it opened, else why not; left out: not the npm package. */
+  openDesktopApp?: () => Promise<string | null>;
   /** The first-run question and Settings → Shortcuts: a Ledung icon that starts Ledung (issue #415). */
   shortcuts?: Shortcuts;
   /** The anonymous daily check-in: its notice and Settings switch (#220). */
   checkIn?: CheckIn;
+  /** Settings' switch for Ledung's icon in the notification area or menu bar (issue #347). */
+  tray?: TraySwitch;
   /** Settings → Relay: inviting computers to a relay this Ledung is admin of (issue #237). */
   relayAdmin?: RelayAdmin;
   /** Publishing usage to a shared repo, and reading every computer's file there (issue #363). */
@@ -253,6 +314,8 @@ export class LedungServer {
   private tunnelTls: { dir: string; required: boolean } | null = null;
   /** Requests through the public name whose passkey signature for themselves was checked (requireUnlocked). */
   private readonly signed = new WeakSet<IncomingMessage>();
+  /** Of those, the ones a trusted computer's screen vouched for instead of a passkey (issue #313): requirePasskeyPage refuses them. */
+  private readonly vouched = new WeakSet<IncomingMessage>();
   private headers: Record<string, string>;
   /** The same for responses through the public name, which the other computers' pages may frame (issue #241). */
   private publicHeaders: Record<string, string> = {};
@@ -335,6 +398,7 @@ export class LedungServer {
       invite: (owner, name) => this.relayAdmin().invite(owner, name),
       linkCode: () => this.requireLinked().newCode(),
       link: (code, name) => this.requireLinked().join(code, name),
+      unlink: (id) => this.unlinkComputer(id),
       links: () => ({ problem: this.linkProblem(), links: this.linksWithBytes() }),
       computers: () => this.computers(),
       // Publishing usage (issue #376): the page's switch; usage_publish asks the user before switching on.
@@ -434,6 +498,8 @@ export class LedungServer {
     this.frames = computerFrames(this.knownComputers(), this.publicName ?? undefined);
     this.passkeys?.setFramers(this.frames.ancestors);
     this.devices.closeCodeUnlessLinked(new Set((this.linked?.list() ?? []).map((l) => l.id)));
+    // A removed link takes its pairing cards with it (issue #412), on either side's unlinking.
+    this.pruneLinkPairings();
     this.setHeaders();
     this.broadcast({ type: 'computers', computers: this.computers() });
     // A new link's count at once, rather than at the next poll.
@@ -457,17 +523,16 @@ export class LedungServer {
       const device = this.guard.deviceOf(req)?.id ?? null;
       const browser = this.guard.browserOf(req)?.id ?? null;
       const viaPublic = this.guard.isPublic(req);
-      this.wss.handleUpgrade(req, socket, head, (ws) => this.onClient(ws, device, browser, viaPublic));
+      const here = !viaPublic && fromThisComputer(req);
+      this.wss.handleUpgrade(req, socket, head, (ws) => this.onClient(ws, device, browser, viaPublic, here));
     });
     return server;
   }
 
   /** Listens on 127.0.0.1, and on the local network address if Ledung is opened to it. */
   async listen(): Promise<void> {
-    const bind = this.opts.lanBind;
-    // 0.0.0.0 already includes 127.0.0.1; a single network address needs a second listener.
-    const addresses = bind === '0.0.0.0' ? ['0.0.0.0'] : bind ? ['127.0.0.1', bind] : ['127.0.0.1'];
-    for (const address of addresses) {
+    // The same addresses main.ts claims before the start (#503).
+    for (const address of listenAddresses(this.opts.lanBind)) {
       const server = this.createServer();
       await new Promise<void>((resolve, reject) => {
         server.once('error', reject);
@@ -484,6 +549,8 @@ export class LedungServer {
     this.linked?.helloAll();
     this.waitingPoll = setInterval(() => this.exchangeWaiting(), this.opts.waitingPollMs ?? WAITING_POLL_MS);
     this.waitingPoll.unref();
+    // A pairing card kept from before the start still goes when its code expires (issue #412).
+    this.schedulePairingExpiry(this.storedLinkPairings());
     this.exchangeWaiting();
   }
 
@@ -646,6 +713,7 @@ export class LedungServer {
     this.closed = true;
     if (this.waitingPoll) clearInterval(this.waitingPoll);
     if (this.waitingPush) clearTimeout(this.waitingPush);
+    if (this.pairingExpiry) clearTimeout(this.pairingExpiry);
     for (const ws of this.clients) ws.close(1001, 'Ledung is shutting down.');
     return Promise.all(this.servers.map((s) => new Promise<void>((resolve) => s.close(() => resolve())))).then(() => {});
   }
@@ -672,11 +740,19 @@ export class LedungServer {
     return watched === undefined || watched === sessionId;
   }
 
-  /** The relay admin's Approve cards changed (issue #237): to the pages open on this computer only, as in hello. */
+  /**
+   * The relay admin's Approve cards changed (issue #237): to every open page, as in hello, so the count and the list agree
+   * through the public name too (issue #412). Approve itself stays on this computer's own screen.
+   */
   sendNewComputers(computers: NewComputerInfo[]): void {
     this.waitingChanged();
-    const data = JSON.stringify({ type: 'newComputers', computers } satisfies ServerEvent);
-    for (const [ws, { device }] of this.pageKeys) if (device === null && ws.readyState === ws.OPEN) ws.send(data);
+    this.sendToPages({ type: 'newComputers', computers });
+  }
+
+  /** To every open page, without the push notice broadcast gives: these cards are no news to a phone (issue #412). */
+  private sendToPages(event: ServerEvent): void {
+    const data = JSON.stringify(event);
+    for (const ws of this.clients) if (ws.readyState === ws.OPEN) ws.send(data);
   }
 
   /** The tunnel's state changed: kept for the next hello and sent to open pages (issue #160). */
@@ -690,7 +766,7 @@ export class LedungServer {
     this.broadcast({ type: 'remote', remote: this.remote });
   }
 
-  private onClient(ws: WebSocket, device: string | null, browser: string | null, viaPublic: boolean): void {
+  private onClient(ws: WebSocket, device: string | null, browser: string | null, viaPublic: boolean, here: boolean): void {
     this.clients.add(ws);
     const key = crypto.randomBytes(32).toString('hex');
     this.pageKeys.set(ws, { key, device, browser });
@@ -711,7 +787,7 @@ export class LedungServer {
       ws.send(JSON.stringify({ type: 'watching', sessionId: watch.sessionId } satisfies ServerEvent));
     });
     // The key only ever goes out here, never in GET state.
-    ws.send(JSON.stringify({ ...this.hello(viaPublic), pageKey: key }));
+    ws.send(JSON.stringify({ ...this.hello(viaPublic, here), pageKey: key }));
   }
 
   private sourceCache: SourceOffer | null = null;
@@ -721,15 +797,18 @@ export class LedungServer {
     this.sourceCache ??= sourceOffer({
       repository: readRepository(appDir()),
       packaged: PACKAGED,
-      version: appVersion(),
+      version: runningVersion(),
       release: PACKAGED ? null : readRunningRelease(appDir()),
       build: path.basename(appDir()),
     });
     return this.sourceCache;
   }
 
-  /** viaPublic: the page came through the public name, so it draws the remote frame (issue #232). */
-  private hello(viaPublic: boolean): ServerEvent {
+  /**
+   * viaPublic: the page came through the public name, so it draws the remote frame (issue #232). here: the page is on
+   * this computer's own screen, not another computer's on the network, so it may offer the desktop app (#409).
+   */
+  private hello(viaPublic: boolean, here: boolean): ServerEvent {
     const { manager, store } = this.opts;
     const permissions = store.pendingPermissions();
     const questions = manager.questions();
@@ -745,7 +824,7 @@ export class LedungServer {
     return {
       type: 'hello',
       // A release is named by its folder; the npm package's folder never changes, so by its version (#105).
-      build: PACKAGED ? `ledung@${appVersion()}` : path.basename(appDir()),
+      build: PACKAGED ? `ledung@${runningVersion()}` : path.basename(appDir()),
       canRestart: !!this.opts.onRestart,
       source: this.source(),
       userName: manager.userName,
@@ -770,10 +849,16 @@ export class LedungServer {
       helper: manager.helperInfo(),
       computers: this.computers(),
       throughPublicName: viaPublic,
-      // The Approve cards are this computer's to act on: not sent through the public name (issue #237).
-      newComputers: viaPublic ? [] : this.opts.relayAdmin?.newComputers() ?? [],
-      // Like the devices they name, managed on this computer only.
-      linkPairings: viaPublic ? [] : this.linkPairings(),
+      // Every card Waiting for you counts, through the public name too, so the count and the list agree (issue #412,
+      // Martin, question #588). Approve stays on this computer's own screen (#237); the page says so.
+      newComputers: this.opts.relayAdmin?.newComputers() ?? [],
+      linkPairings: this.linkPairings(),
+      // After Update Ledung the app's page learns here that the app still runs the old code (#408); a stamp read. Not
+      // through the public name: the app is on this computer, and the browser-fallback line can name its folders
+      // (self-check finding 7).
+      desktopApp: viaPublic ? undefined : this.opts.desktopApp?.() ?? undefined,
+      // "Open in the Ledung app" only on this computer's own screen (#409): never through the public name or the network.
+      desktopAppHere: here && this.opts.canOpenDesktopApp?.() === true ? true : undefined,
     };
   }
 
@@ -781,10 +866,11 @@ export class LedungServer {
   private computers(): ComputerInfo[] {
     const linked = new Set((this.linked?.list() ?? []).map((l) => l.publicName));
     const ids = new Map((this.linked?.list() ?? []).map((l) => [l.publicName, l.id]));
+    const trustsUs = new Set((this.linked?.list() ?? []).filter((l) => l.trustsUs).map((l) => l.publicName));
     return withEdits(this.computerTabs(), readComputerEdits(this.opts.store.getMeta(COMPUTER_EDITS_KEY))).map((c) => {
       if (!linked.has(c.id)) return c;
       const waiting = this.waitingThere.get(ids.get(c.id)!);
-      return { ...c, linked: true, ...(waiting !== undefined ? { waiting } : {}) };
+      return { ...c, linked: true, ...(waiting !== undefined ? { waiting } : {}), ...(trustsUs.has(c.id) ? { trustsUs: true } : {}) };
     });
   }
 
@@ -821,10 +907,16 @@ export class LedungServer {
       this.publicResponses.add(res);
       // A computer device's cookie is renewed daily, so a copy stops working within a day (question 5 on #245).
       const device = this.guard.deviceOf(req);
+      // The last pairing's cookie came back: it reached its browser (issue #466).
+      if (device) this.devices.pairingSeen(device.id);
       const renewed = device ? this.devices.renewCookie(device) : null;
       if (device && renewed) {
         res.setHeader('Set-Cookie', deviceCookieHeader(renewed, device.partitioned));
-        console.log(`Devices: renewed the cookie of "${device.name}"${device.partitioned ? ' (paired in a frame)' : ''}.`);
+        // Its old cookie came back with the new one still unused: the answer that carried it looks lost (issue #468).
+        const framed = device.partitioned ? ' (paired in a frame)' : '';
+        console.log(device.renewalWaiting
+          ? `Devices: sent "${device.name}"${framed} its renewed cookie again: the answer that carried it looks lost.`
+          : `Devices: renewed the cookie of "${device.name}"${framed}.`);
       } else if (!device && req.method === 'GET' && req.headers['sec-fetch-dest'] === 'iframe') this.noteFrameUnpaired(req);
     } else {
       // A browser's cookie is renewed daily like a computer's, so a copy of it stops working within a day, and a copy
@@ -834,7 +926,9 @@ export class LedungServer {
         const renewed = this.devices.renewCookie(browser);
         if (renewed) {
           res.setHeader('Set-Cookie', browserCookieHeader(renewed));
-          console.log(`Browsers: renewed the cookie of "${browser.name}".`);
+          console.log(browser.renewalWaiting
+            ? `Browsers: sent "${browser.name}" its renewed cookie again: the answer that carried it looks lost.`
+            : `Browsers: renewed the cookie of "${browser.name}".`);
         }
         // Moved from #476's sign-ins with no name: named from what it is the first time it is used.
         if (browser.name === LEGACY_BROWSER_NAME && req.headers['user-agent']) this.devices.rename(browser.id, browserName(req.headers['user-agent']));
@@ -849,7 +943,7 @@ export class LedungServer {
       if (short && req.method !== 'GET') throw new HttpError(405, 'Method not allowed.');
       // The code, or the whole link pasted into the not-paired page's field: its last part.
       const given = short ? short[1]! : url.searchParams.get('code')?.trim().split('/').pop() ?? null;
-      await this.pair(req, given, res);
+      await this.pair(req, given, res, short ? null : url.searchParams.get('done'));
       return;
     }
 
@@ -864,14 +958,30 @@ export class LedungServer {
       const body = await readJson(req);
       const finish = url.pathname === '/enrol/finish';
       const device = passkeys.enrolDevice(body.code, finish);
-      if (!device) throw new HttpError(403, 'This passkey link is not valid any more. Make a new one from the device that asked for it.');
+      if (!device) throw new HttpError(403, ENROL_LINK_GONE);
       const result = finish
         ? await passkeyCall(async () => {
           await passkeys.register(device, body.response);
           return { name: device.name };
         })
         : await passkeyCall(() => passkeys.registrationOptions(device));
-      this.json(res, 200, result);
+      await this.json(res, 200, result);
+      return;
+    }
+
+    // The sign page's calls (#463, POST passkey-challenge with browser): as the enrol page's, no cookie, the one-time
+    // code is the proof, through the public name only and from its own page at the top level only. The browser signs
+    // one waiting request for the device that made the link; that device picks the answer up (passkey-sign-answer).
+    if (url.pathname === '/sign/options' || url.pathname === '/sign/finish') {
+      if (!remote || !this.passkeys) throw new HttpError(404, 'Not found.');
+      if (req.method !== 'POST') throw new HttpError(405, 'Method not allowed.');
+      if (!this.guard.originAllowed(req)) throw new HttpError(403, 'Requests must come from Ledung\'s own page.');
+      const passkeys = this.passkeys;
+      const body = await readJson(req);
+      const result = url.pathname === '/sign/finish'
+        ? await passkeyCall(async () => passkeys.signFinish(body.code, body.response))
+        : await passkeyCall(() => passkeys.signOptions(body.code));
+      await this.json(res, 200, result);
       return;
     }
 
@@ -894,7 +1004,7 @@ export class LedungServer {
       if (req.method !== 'GET') throw new HttpError(405, 'Method not allowed.');
       const nonce = url.searchParams.get('nonce') ?? '';
       if (!NONCE.test(nonce)) throw new HttpError(400, 'A nonce of 32 hex characters is needed.');
-      this.json(res, 200, { proof: this.guard.runningProof(nonce) });
+      await this.json(res, 200, { proof: this.guard.runningProof(nonce) });
       return;
     }
 
@@ -927,7 +1037,7 @@ export class LedungServer {
         return;
       }
       const result = await this.api(req.method ?? 'GET', url, req);
-      this.json(res, 200, result ?? { ok: true });
+      await this.json(res, 200, result ?? { ok: true });
       return;
     }
 
@@ -970,7 +1080,7 @@ export class LedungServer {
       return;
     }
     if (route === '/link/file') {
-      this.json(res, 200, await this.linkFile(req, url, from));
+      await this.json(res, 200, await this.linkFile(req, url, from));
       return;
     }
     // The header when there is one; the bytes read when the body comes chunked (review 254, Important 1).
@@ -988,8 +1098,33 @@ export class LedungServer {
         case '/link/hello':
           answer = { publicName: this.publicName, ...linked.hello(from().id, body) };
           break;
-        case '/link/unlink':
-          linked.dropped(from().id);
+        case '/link/unlink': {
+          const computer = from();
+          this.untrust(computer.id);
+          linked.dropped(computer.id);
+          answer = { ok: true };
+          break;
+        }
+        // That computer's own screen vouches for a challenge its frame here was given (issue #313, choice 3a): only
+        // when this computer trusts it, and only for a computer device paired through this very link.
+        case '/link/vouch': {
+          const computer = from();
+          this.linkRate(computer.id);
+          if (!linked.trusted(computer.id)) throw new HttpError(403, 'This computer does not trust that one\'s screen.');
+          if (!this.passkeys) throw new HttpError(403, 'Passkeys are not available.');
+          try {
+            this.passkeys.vouch(body.challenge, (device) => this.trustedLink(device) === computer.id);
+          } catch (e) {
+            if (e instanceof PasskeyError) throw new HttpError(403, e.message);
+            throw e;
+          }
+          answer = { ok: true };
+          break;
+        }
+        // That computer trusts this one's own screen, or stopped (issue #313): the key on its tab here.
+        case '/link/trust':
+          this.linkRate(from().id);
+          linked.noteTrustsUs(from().id, body.trusts === true);
           answer = { ok: true };
           break;
         // The Waiting-for-you counts (issue #273): the caller's for its tab here, this one's back. A number only.
@@ -1054,7 +1189,7 @@ export class LedungServer {
       if (e instanceof ManagementError) throw new HttpError(400, e.message);
       throw e;
     }
-    this.json(res, 200, answer);
+    await this.json(res, 200, answer);
   }
 
   /**
@@ -1186,6 +1321,16 @@ export class LedungServer {
     return (this.linked?.list() ?? []).map((l) => ({ ...l, files: this.opts.manager.linkBytes(l.id) }));
   }
 
+  /**
+   * Trust in a linked computer's screen ends (issue #313): its frames here, logged on by its vouch, are logged off at
+   * once, so the next change from them asks for the passkey (or only looks, with none).
+   */
+  private untrust(linkId: string): void {
+    const link = this.linked?.list().find((l) => l.id === linkId);
+    if (!link || typeof link.trustedAt !== 'number') return;
+    for (const device of this.devices.pairedThrough(link.id, this.linked!.list())) this.passkeys?.lock(device.id);
+  }
+
   /** Calls per linked computer in the last minute: past LINK_PER_MINUTE, 429 (manager-link.md, "Loops and floods"). */
   private readonly linkCalls = new Map<string, number[]>();
   private linkRate(id: string): void {
@@ -1216,7 +1361,7 @@ export class LedungServer {
     this.opts.store.setMeta(LINK_PAIR_TIMES_KEY, JSON.stringify({ ...times, [computer.id]: now }));
     const { code, expiresAt } = this.devices.newPairCode('computer', { link: computer.id, name: computer.name });
     console.log(`Linked computers: ${computer.name} asked for a pairing code for a browser through the link.`);
-    this.setLinkPairings([{ id: crypto.randomUUID(), computer: computer.name, at: now, device: null }, ...this.linkPairings()].slice(0, LINK_PAIRINGS_KEPT));
+    this.setLinkPairings([{ id: crypto.randomUUID(), computer: computer.name, link: computer.id, at: now, expiresAt, device: null }, ...this.linkPairings()].slice(0, LINK_PAIRINGS_KEPT));
     return { code, expiresAt };
   }
 
@@ -1246,7 +1391,8 @@ export class LedungServer {
 
   /** What waits for the user here, as this computer's page counts it (App: questions, prompts, cards). */
   private waitingNow(): number {
-    return waitingCount(this.opts.manager.questions(), this.opts.store.pendingPermissions())
+    // Only the open questions count; the closed ones are not read for it (code review of PR #307).
+    return waitingCount(this.opts.store.listQuestions(0, false), this.opts.store.pendingPermissions())
       + (this.opts.relayAdmin?.newComputers().length ?? 0) + this.linkPairings().length;
   }
 
@@ -1293,11 +1439,16 @@ export class LedungServer {
     const pairings = this.linkPairings();
     const open = pairings.find((p) => p.device === null && p.computer === device.pairedVia);
     if (open) open.device = { id: device.id, name: device.name };
-    else pairings.unshift({ id: crypto.randomUUID(), computer: device.pairedVia!, at: device.createdAt, device: { id: device.id, name: device.name } });
+    else pairings.unshift({ id: crypto.randomUUID(), computer: device.pairedVia!, ...(device.pairedViaLink !== null ? { link: device.pairedViaLink } : {}), at: device.createdAt, device: { id: device.id, name: device.name } });
     this.setLinkPairings(pairings.slice(0, LINK_PAIRINGS_KEPT));
   }
 
+  /** The pairing cards still worth showing: read so, a card that cleared itself is never counted or shown (issue #412). */
   private linkPairings(): LinkPairingInfo[] {
+    return this.storedLinkPairings().filter((p) => this.pairingLive(p));
+  }
+
+  private storedLinkPairings(): LinkPairingInfo[] {
     try {
       const parsed = JSON.parse(this.opts.store.getMeta(LINK_PAIRINGS_KEY) ?? '[]') as unknown;
       return Array.isArray(parsed) ? parsed as LinkPairingInfo[] : [];
@@ -1306,12 +1457,50 @@ export class LedungServer {
     }
   }
 
-  /** Kept, and sent to the pages open on this computer only, as the devices they name are managed only here. */
+  /**
+   * A pairing card clears itself (issue #412): its code expired unused, its device was removed, or its link was. A card
+   * kept before #412 has no link id or expiry: its link is matched by name and its code's 10 minutes counted from `at`.
+   * With linking off (no relay, or one without end-to-end TLS), nothing is said about links, so the cards wait; once the
+   * last link is removed, its cards go.
+   */
+  private pairingLive(p: LinkPairingInfo): boolean {
+    const now = this.opts.now?.() ?? Date.now();
+    if (p.device === null ? now >= (p.expiresAt ?? p.at + PAIR_CODE_MS) : !this.devices.get(p.device.id)) return false;
+    const links = this.linked?.list();
+    if (!links) return true;
+    return p.link !== undefined ? links.some((l) => l.id === p.link) : links.some((l) => l.name === p.computer);
+  }
+
+  /** Drops the cards that cleared themselves, and tells the pages and the linked computers, when there were any. */
+  private pruneLinkPairings(): void {
+    if (this.closed) return;
+    const stored = this.storedLinkPairings();
+    const live = stored.filter((p) => this.pairingLive(p));
+    if (live.length === stored.length) return;
+    this.setLinkPairings(live);
+  }
+
+  /** The next unused code's expiry, when its card goes on its own (issue #412); one timer for the soonest. */
+  private pairingExpiry: NodeJS.Timeout | null = null;
+  private schedulePairingExpiry(pairings: LinkPairingInfo[]): void {
+    if (this.pairingExpiry) clearTimeout(this.pairingExpiry);
+    this.pairingExpiry = null;
+    const ends = pairings.filter((p) => p.device === null).map((p) => p.expiresAt ?? p.at + PAIR_CODE_MS);
+    if (this.closed || !ends.length) return;
+    const wait = Math.max(0, Math.min(...ends) - (this.opts.now?.() ?? Date.now()));
+    this.pairingExpiry = setTimeout(() => {
+      this.pairingExpiry = null;
+      this.pruneLinkPairings();
+    }, wait + 1000);
+    this.pairingExpiry.unref();
+  }
+
+  /** Kept, and sent to every open page: through the public name too, as Waiting for you counts them (issue #412). */
   private setLinkPairings(pairings: LinkPairingInfo[]): void {
     this.opts.store.setMeta(LINK_PAIRINGS_KEY, JSON.stringify(pairings));
+    this.schedulePairingExpiry(pairings);
     this.waitingChanged();
-    const data = JSON.stringify({ type: 'linkPairings', pairings } satisfies ServerEvent);
-    for (const [ws, { device }] of this.pageKeys) if (device === null && ws.readyState === ws.OPEN) ws.send(data);
+    this.sendToPages({ type: 'linkPairings', pairings });
   }
 
   /** Why this Ledung can't link with others, or null when it can. */
@@ -1319,6 +1508,15 @@ export class LedungServer {
     if (!this.publicName) return 'Linking needs this Ledung on a relay: join one in Settings → Relay, or set "remote" in the config.';
     if (!this.tunnelTls?.required) return 'Linking needs end-to-end encryption through the relay ("tls": "required"), so the relay can never read what linked computers send each other.';
     return null;
+  }
+
+  /**
+   * Settings' Unlink, the button's route and a manager's unlink_computer alike (issue #346): its trust ends first, so its
+   * frames here log off, then the link goes and the other computer is told. Null: no such link.
+   */
+  private unlinkComputer(id: string): LinkedComputer | null {
+    this.untrust(id);
+    return this.requireLinked().remove(id);
   }
 
   private requireLinked(): LinkedComputers {
@@ -1331,39 +1529,93 @@ export class LedungServer {
    * POST to /pair uses the code up, sets the device cookie and goes to the page. The POST's Origin must be the
    * public page's.
    */
-  private async pair(req: IncomingMessage, code: string | null, res: ServerResponse): Promise<void> {
-    const page = (status: number, body: string) => {
+  private async pair(req: IncomingMessage, code: string | null, res: ServerResponse, check: string | null = null): Promise<void> {
+    const page = (status: number, body: string, head = '') => {
       // same-origin, not the usual no-referrer: under no-referrer a browser sends "Origin: null" on the form's
       // POST (a navigation), which the Origin check rightly refuses, and pairing would never work. Found taking
       // the round-2 screenshots of PR #164 in Chrome.
       res.writeHead(status, { ...this.headersFor(res), 'Content-Type': 'text/html; charset=utf-8', 'Referrer-Policy': 'same-origin' });
-      res.end(`<!doctype html><meta name="viewport" content="width=device-width"><title>Ledung</title><div style="font-family:sans-serif;max-width:30em;margin:2em auto">${body}</div>`);
+      res.end(`<!doctype html>${SMALL_PAGE_HEAD}${head}<title>Ledung</title><div style="max-width:30em;margin:2em auto">${body}</div>`);
     };
     const invalid = '<p>This pairing link is not valid any more. Make a new one in Settings → Phones in Ledung on the computer.</p>';
+    // The Pair form. pair.js (web/public) greys its button and says "Pairing…" once pressed (issue #466): through the
+    // relay the answer can take a while, and a second press then cut the first one's answer off, cookie and all.
+    const form = (formCode: string, name: string, button = 'Pair') => '<form method="post" action="/pair">'
+      + `<input type="hidden" name="code" value="${formCode}">`
+      + `<p><label>Name of this device<br><input name="name" value="${escapeHtml(name)}" maxlength="60" style="width:100%"></label></p>`
+      + `<p><button class="primary big">${button}</button></p><p id="pair-wait" hidden>Pairing… this can take a few seconds.</p></form>`
+      + '<script src="/pair.js"></script>';
+    const here = this.guard.deviceOf(req);
+    if (req.method === 'GET' && check !== null) return this.pairChecked(check, here, page, form);
     if (req.method === 'GET') {
       // codeValid matches the code Ledung made itself (letters and digits), so it is safe to put back in the form.
-      if (!this.devices.codeValid(code)) return page(403, invalid);
+      if (!this.devices.codeValid(code)) {
+        // A link used already (issue #466): say when, and whether that pairing reached its browser; looking changes nothing.
+        const used = this.devices.usedPairing(code);
+        if (!used) return page(403, invalid);
+        if (used.deviceId === here?.id) return page(200, pairUsedWords(used, this.opts.now?.() ?? Date.now(), 'here') + PAIRED_NEXT);
+        if (used.removed) return page(403, pairUsedWords(used, this.opts.now?.() ?? Date.now(), 'removed'));
+        if (used.seen) return page(403, pairUsedWords(used, this.opts.now?.() ?? Date.now(), 'elsewhere'));
+        return page(403, pairUsedWords(used, this.opts.now?.() ?? Date.now(), 'never') + form(code!, used.name, 'Pair this browser'));
+      }
       // A code a linked computer asked for (issue #273) pairs a browser on that computer: named after it at first.
       const via = this.devices.codeVia(code);
       const name = via ? `Browser on ${via}`.replace(/[^\p{L}\p{N} .'-]/gu, '').slice(0, 60) : 'Phone';
-      return page(200, '<h2>Pair this device with Ledung</h2><form method="post" action="/pair">'
-        + `<input type="hidden" name="code" value="${code}">`
-        + `<p><label>Name of this device<br><input name="name" value="${name}" maxlength="60" style="font-size:1.1em"></label></p>`
-        + '<p><button style="font-size:1.1em">Pair</button></p></form>');
+      return page(200, PAGE_BRAND('pairing') + '<h1>Pair this device with Ledung</h1><p>Give it a name you\'ll recognise in Settings → Phones.</p>'
+        + form(code!, name) + PAIR_AFTER);
     }
     if (req.method !== 'POST') throw new HttpError(405, 'Method not allowed.');
     if (!this.guard.originAllowed(req)) throw new HttpError(403, 'Requests must come from Ledung\'s own page.');
     if (!(req.headers['content-type'] ?? '').startsWith('application/x-www-form-urlencoded')) throw new HttpError(415, 'Send the form.');
-    const form = new URLSearchParams((await readBody(req)).toString('utf8'));
+    const posted = new URLSearchParams((await readBody(req)).toString('utf8'));
     // Paired inside a frame on another computer's page: a cookie the browser keeps for that frame (issue #241). Only
     // when some page may frame this one; the browser says where the form was posted from.
     const framed = req.headers['sec-fetch-dest'] === 'iframe' && this.frames.ancestors.length > 0;
-    const paired = this.devices.pair(form.get('code'), form.get('name'), framed);
-    if (!paired) return page(403, invalid);
+    let paired: { device: Device; cookie: string; check: string } | null = this.devices.pair(posted.get('code'), posted.get('name'), framed);
+    if (!paired) {
+      // A second press (issue #466). This browser holds the pairing already: say so. Its device came back elsewhere:
+      // say the link is used. Its device never came back (the first answer was cut off, or the cookie dropped): pair
+      // this browser in its place, which the code allowed anyway.
+      const used = this.devices.usedPairing(posted.get('code'));
+      if (!used) return page(403, invalid);
+      const now = this.opts.now?.() ?? Date.now();
+      if (used.deviceId === here?.id) return page(200, pairUsedWords(used, now, 'here') + PAIRED_NEXT);
+      paired = this.devices.pairAgain(posted.get('code'), posted.get('name'), framed);
+      if (!paired) return page(403, pairUsedWords(used, now, used.removed ? 'removed' : 'elsewhere'));
+      console.log(`Devices: "${used.name}" never came back with its pairing cookie; removed, and the same link paired "${paired.device.name}" in its place.`);
+    }
     if (paired.device.pairedVia !== null) this.linkPairingUsed(paired.device);
-    // Straight to Settings, where the passkey is set up in the minutes after pairing.
-    res.writeHead(303, { ...this.headersFor(res), 'Set-Cookie': deviceCookieHeader(paired.cookie, framed), Location: '/#/settings' });
+    // To the page that checks the cookie came back (issue #466): it says plainly whether this browser is paired, and
+    // goes on to Settings, where the passkey is set up in the minutes after pairing.
+    res.writeHead(303, { ...this.headersFor(res), 'Set-Cookie': deviceCookieHeader(paired.cookie, framed), Location: `/pair?done=${paired.check}` });
     res.end();
+  }
+
+  /**
+   * The page after pairing (issue #466), opened with the value only that answer carried. The device's cookie came back
+   * with it: paired, say so and go on to Settings. It didn't: the browser dropped the cookie (a frame whose browser
+   * keeps no cookies for it, say), so this browser is not paired; the device no browser holds is removed and the page
+   * offers to pair again, here or in a tab of its own.
+   */
+  private pairChecked(check: string, here: Device | null, page: (status: number, body: string, head?: string) => void, form: (code: string, name: string, button?: string) => string): void {
+    const done = this.devices.pairingChecked(check);
+    if (!done) return page(403, '<p>This page is not valid any more. If Ledung does not open, make a new pairing link in Settings → Phones in Ledung on the computer.</p>');
+    if (done.deviceId === here?.id) {
+      // A second press that paired in place of a first that never arrived says so (issue #466).
+      const before = done.replaced
+        ? `<p>This link had already paired <b>${escapeHtml(done.replaced.name)}</b> just before, but that pairing never reached a browser, so this browser was paired in its place.</p>`
+        : '';
+      return page(200, `<h2>Paired</h2><p>This browser is paired with Ledung as <b>${escapeHtml(done.name)}</b>.</p>${before}${PAIRED_NEXT}`, '<meta http-equiv="refresh" content="3;url=/#/settings">');
+    }
+    if (done.removed) return page(403, pairUsedWords(done, this.opts.now?.() ?? Date.now(), 'removed'));
+    if (done.seen) return page(403, `<p>This link paired <b>${escapeHtml(done.name)}</b>, but this browser did not send its pairing back just now. If Ledung does not open here, make a new pairing link in Settings → Phones in Ledung on the computer.</p>`);
+    this.devices.dropUnseen(check);
+    console.log(`Devices: "${done.name}" was paired${done.partitioned ? ' in a frame' : ''}, but its browser did not keep the cookie; removed.`);
+    const why = done.partitioned
+      ? 'This browser did not keep the pairing. Browsers can refuse cookies to a page shown inside another site\'s page (Safari does, and Chrome or Edge when third-party cookies are blocked). Allow cookies for this page, then press Pair again; or '
+        + `<a href="/p/${done.code}" target="_blank" rel="noopener">pair in a tab of its own</a> and use Ledung there.`
+      : 'This browser did not keep the pairing: check that it allows cookies for this page, then press Pair again.';
+    return page(403, `<h2>Not paired</h2><p>${why}</p>` + form(done.code, done.name, 'Pair again'));
   }
 
   /**
@@ -1386,7 +1638,7 @@ export class LedungServer {
    */
   private async requireSignedPage(req: IncomingMessage, url: URL): Promise<void> {
     const device = this.guard.isPublic(req) ? this.guard.deviceOf(req) : null;
-    if (device && this.passkeys?.unlockedUntil(device.id) === null) throw new HttpError(403, device.credentialId ? DEVICE_LOCKED : NO_PASSKEY_LOCKED);
+    if (device && this.passkeys?.unlockedUntil(device.id) === null) throw new HttpError(403, this.lockedWords(device));
     await this.requirePage(req, url);
   }
 
@@ -1414,16 +1666,59 @@ export class LedungServer {
     if (OPEN_WHILE_LOCKED.has(url.pathname)) return;
     const device = this.guard.deviceOf(req);
     if (!device || !this.passkeys) throw new HttpError(401, NOT_PAIRED);
-    if (req.headers[PASSKEY_HEADER] !== undefined) return this.verifySigned(req, url, device);
-    if (this.passkeys.unlockedUntil(device.id) === null) throw new HttpError(403, device.credentialId ? DEVICE_LOCKED : NO_PASSKEY_LOCKED);
+    if (req.headers[PASSKEY_HEADER] !== undefined || req.headers[VOUCH_HEADER] !== undefined) return this.verifySigned(req, url, device);
+    if (this.passkeys.unlockedUntil(device.id) === null) throw new HttpError(403, this.lockedWords(device));
   }
 
-  /** Checks the passkey signature this request carries for exactly itself, once; the request then counts as signed. */
+  /**
+   * Why a locked device is refused: one that can log on (its passkey, or a trusted computer's frame, issue #313) is
+   * told to, and the page logs on and sends again; one that can't is told it can only look.
+   */
+  private lockedWords(device: Device): string {
+    return device.credentialId || this.trustedLink(device) ? DEVICE_LOCKED : NO_PASSKEY_LOCKED;
+  }
+
+  /**
+   * The link whose computer this device is a frame of, when this computer trusts that computer's own screen (issue
+   * #313, docs/steps/trusted-computer.md); null otherwise. Only a computer device paired through that link: never a
+   * phone, never one paired here. A device whose link id is not kept, or names a link that is gone (a relink, #462),
+   * counts by the link's name, when only one link has it (pairedLink).
+   */
+  private trustedLink(device: Device): string | null {
+    if (!this.linked) return null;
+    const link = pairedLink(device, this.linked.list());
+    return link && typeof link.trustedAt === 'number' ? link.id : null;
+  }
+
+  /**
+   * Checks the passkey signature this request carries for exactly itself, once; the request then counts as signed. A
+   * trusted computer's frame may carry its own screen's vouch instead (issue #313, choice 3a), checked as strictly.
+   */
   private async verifySigned(req: IncomingMessage, url: URL, device: Device): Promise<void> {
     if (!this.passkeys) throw new HttpError(403, 'Passkeys are not available.');
     const action = actionOf(req.method ?? '', url.pathname, await readBody(req));
-    await passkeyCall(() => this.passkeys!.verify(device, action, req.headers[PASSKEY_HEADER]));
+    if (req.headers[VOUCH_HEADER] !== undefined) {
+      if (!this.trustedLink(device)) throw new HttpError(403, 'This computer does not trust that computer\'s screen; use the passkey.');
+      await passkeyCall(async () => this.passkeys!.verifyVouch(device, action, req.headers[VOUCH_HEADER]));
+      this.vouched.add(req);
+    } else {
+      // A trusted computer's frame sent no proof yet: "needs your passkey" is the refusal the page answers with a proof,
+      // here the vouch. Without this a frame with no passkey of its own was told it had none, and the page stopped
+      // there (browser check of PR #315, round 2).
+      if (req.headers[PASSKEY_HEADER] === undefined && this.trustedLink(device)) throw new HttpError(403, PASSKEY_NEEDED);
+      await passkeyCall(() => this.passkeys!.verify(device, action, req.headers[PASSKEY_HEADER]));
+    }
     this.signed.add(req);
+  }
+
+  /**
+   * requirePage for what a trusted computer's vouch doesn't cover (issue #313, choice 2a: Martin, 2026-11-13, question
+   * #890): opening a locked project up, loosening the sensitive gate and removing a locked project. Through the public name
+   * these still take the passkey, or this computer's own screen.
+   */
+  private async requirePasskeyPage(req: IncomingMessage, url: URL): Promise<void> {
+    if (this.vouched.has(req)) throw new HttpError(403, PASSKEY_ONLY);
+    await this.requirePage(req, url);
   }
 
   /**
@@ -1475,6 +1770,9 @@ export class LedungServer {
     this.passkeys?.lock(id);
     this.push?.unsubscribe(id);
     for (const [ws, { device, browser }] of this.pageKeys) if (device === id || browser === id) ws.close(1008, 'This device was removed from Ledung.');
+    // Its pairing card, if a linked computer paired it, goes with it (issue #412); also when Devices revoked it already
+    // (a reused cookie, onReuse), so the pages are told then too (self-check of PR #413, finding 1).
+    this.pruneLinkPairings();
     return revoked;
   }
 
@@ -1494,7 +1792,10 @@ export class LedungServer {
 
     switch (route) {
       case 'GET state':
-        return this.hello(this.guard.isPublic(req));
+        return this.hello(this.guard.isPublic(req), !this.guard.isPublic(req) && fromThisComputer(req));
+      // Waiting for you history (issue #306): read when it opens, not with every page load.
+      case 'GET question-history':
+        return manager.questionHistory();
       // Every archived session, for an Archived list: hello carries only the recent ones (issue #229).
       case 'GET archived-sessions':
         return manager.sessions().filter((s) => s.archivedAt);
@@ -1519,6 +1820,50 @@ export class LedungServer {
       case 'GET links':
         this.requireLocal(req, LINKED_HERE);
         return { publicName: this.publicName, problem: this.linkProblem(), links: this.linksWithBytes() };
+      // What a phone needs to trust a linked computer's screen from there (issue #313): each link's id, name and trust,
+      // nothing else of it. On this computer too; never to a computer's frame.
+      case 'GET link-trust': {
+        if (this.guard.isPublic(req) && this.guard.deviceOf(req)?.kind !== 'phone') throw new HttpError(403, 'Trust is set on this computer\'s own screen, or from a phone with its passkey.');
+        return { links: (this.linked?.list() ?? []).map(({ id, name, trustedAt, trustedFrom, trustsUs }) => ({ id, name, trustedAt, trustedFrom, trustsUs })) };
+      }
+      // Trust a linked computer's own screen, or stop (issue #313, choice 1a: Martin, 2026-11-13, question #890): on
+      // this computer's own page, or from a phone with its passkey for this very request, so a headless computer can
+      // be set from the phone. Never from a computer's frame, trusted or not, and never with a vouch.
+      case 'POST links/:id/trust': {
+        const device = this.guard.isPublic(req) ? this.guard.deviceOf(req) : null;
+        if (this.guard.isPublic(req) && device?.kind !== 'phone') throw new HttpError(403, 'Trust is set on this computer\'s own screen, or from a phone with its passkey.');
+        await this.requirePasskeyPage(req, url);
+        const body = await readJson(req);
+        const linkId = decodeURIComponent(id);
+        const on = body.on === true;
+        if (!on) this.untrust(linkId);
+        const link = this.requireLinked().setTrust(linkId, on, device ? 'phone' : 'here');
+        if (!link) throw new HttpError(400, 'No such linked computer.');
+        console.log(`Linked computers: ${on ? 'trusts' : 'no longer trusts'} ${link.name}'s own screen (set ${device ? `from ${device.name}` : 'here'}).`);
+        return link;
+      }
+      // This computer's own page vouches for a challenge its frame of a linked computer was given (issue #313, choice
+      // 3a): local and the open page only, so neither a phone, anything on this computer's public name, nor a script
+      // with the install token alone can; the link key never reaches a browser. That computer decides whether it counts.
+      case 'POST link-vouch': {
+        // This computer itself: not its public name, and not another computer on the local network with "lan" on, which
+        // would act on every computer that trusts this screen (self-check finding 2).
+        if (this.guard.isPublic(req) || !fromThisComputer(req)) throw new HttpError(403, 'Only this computer\'s own screen vouches for its frames.');
+        await this.requirePage(req, url);
+        const linked = this.requireLinked();
+        const body = await readJson(req);
+        const computer = linked.list().find((l) => l.publicName === body.id);
+        if (!computer) throw new HttpError(400, 'That computer is not linked with this one.');
+        if (typeof body.challenge !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(body.challenge)) throw new HttpError(400, 'Send the challenge.');
+        this.linkRate(`vouch:${computer.id}`);
+        try {
+          await linked.callLinked(computer.id, '/link/vouch', { challenge: body.challenge });
+        } catch (e) {
+          if (e instanceof LinkError) throw new HttpError(502, e.message);
+          throw e;
+        }
+        return { ok: true };
+      }
       case 'POST links-code':
         this.requireLocal(req, LINKED_HERE);
         await this.requirePage(req, url);
@@ -1556,13 +1901,25 @@ export class LedungServer {
         if (typeof answer.code !== 'string' || !/^[0-9a-z]{1,64}$/.test(answer.code)) throw new HttpError(502, `${computer.publicName} gave no usable pairing code.`);
         return { url: `https://${computer.publicName}/p/${answer.code}`, expiresAt: answer.expiresAt };
       }
+      // OK only takes the card away, so it works through the public name too, unlocked as every change there (issue #412).
       case 'POST link-pairings/:id/dismiss':
-        this.requireLocal(req);
         this.setLinkPairings(this.linkPairings().filter((p) => p.id !== decodeURIComponent(id)));
         return;
+      // The card's Remove device, through the public name too (Martin, 2026-11-19, question #589 "a"): only the device
+      // the card names, with the open page and, through the public name, this request signed: by the passkey, or by a
+      // trusted computer's own screen (#313), as every signed change. Removing any other
+      // device, and the device list, stay on this computer (devices/:id/revoke).
+      case 'POST link-pairings/:id/remove-device': {
+        await this.requirePage(req, url);
+        const card = this.linkPairings().find((p) => p.id === decodeURIComponent(id));
+        if (!card?.device) throw new HttpError(400, 'That card names no device.');
+        this.revokeDevice(card.device.id);
+        this.setLinkPairings(this.linkPairings().filter((p) => p.id !== card.id));
+        return;
+      }
       case 'POST links/:id/remove':
         this.requireLocal(req, LINKED_HERE);
-        if (!this.requireLinked().remove(decodeURIComponent(id))) throw new HttpError(400, 'No such linked computer.');
+        if (!this.unlinkComputer(decodeURIComponent(id))) throw new HttpError(400, 'No such linked computer.');
         return;
       case 'POST devices/:id/revoke':
         this.requireLocal(req);
@@ -1652,16 +2009,39 @@ export class LedungServer {
       // A challenge for one request the page is about to send: its method, path and exact body (requirePage).
       case 'POST passkey-challenge': {
         const { device, passkeys } = this.requireDevice(req);
-        const { method, path: target, body: payload } = await readJson(req);
+        const { method, path: target, body: payload, passkey, browser } = await readJson(req);
         if (typeof method !== 'string' || method.toUpperCase() === 'GET' || typeof target !== 'string' || !target.startsWith('/api/') || typeof payload !== 'string') {
           throw new HttpError(400, 'Send method, path (under /api/) and body (the exact text that will be sent).');
         }
-        return passkeyCall(() => passkeys.challenge(device, actionOf(method, new URL(target, 'http://127.0.0.1').pathname, payload)));
+        const pathname = new URL(target, 'http://127.0.0.1').pathname;
+        const action = actionOf(method, pathname, payload);
+        // Signed in the default browser instead (#463): the Mac app can't show Touch ID (#427). A one-time link for a
+        // challenge for exactly this request; the code goes in the fragment, so it reaches no log and no Referer.
+        if (browser === true) {
+          if (!this.pageKeyMatches(req, device.id)) throw new HttpError(403, 'Only Ledung\'s open page can do this.');
+          const what = pathname === '/api/device-unlock' ? SIGN_LOG_ON : `${method.toUpperCase()} ${pathname}`;
+          const { code, expiresAt } = await passkeyCall(async () => passkeys.signLink(device, action, what));
+          return { url: `https://${this.publicName}/sign.html#${code}`, code, expiresAt };
+        }
+        // A trusted computer's frame (issue #313): a challenge for its own screen to vouch for, unless the page asks for
+        // the passkey itself, as it does after a refusal for what a vouch doesn't cover (PASSKEY_ONLY).
+        if (passkey !== true && this.trustedLink(device)) return { vouch: passkeys.vouchChallenge(device, action) };
+        return passkeyCall(() => passkeys.challenge(device, action));
+      }
+      // The browser's answer to this device's sign link (#463), once it has signed; { answer: null } until then.
+      case 'POST passkey-sign-answer': {
+        const { device, passkeys } = this.requireDevice(req);
+        if (!this.pageKeyMatches(req, device.id)) throw new HttpError(403, 'Only Ledung\'s open page can do this.');
+        const { code } = await readJson(req);
+        const answer = await passkeyCall(async () => passkeys.signAnswer(device, code));
+        return { answer };
       }
       case 'GET sessions/:id/messages': {
         const before = Number(url.searchParams.get('before')) || undefined;
         const after = Number(url.searchParams.get('after')) || undefined;
         const limit = Number(url.searchParams.get('limit')) || undefined;
+        // The chat's Waiting for you lines as they are now, for a page that reconnects (#350).
+        if (url.searchParams.get('kind') === 'waiting') return store.waitingLinesIn(id, Number(url.searchParams.get('from')) || 0);
         return store.listMessages(id, { beforeId: before, afterId: after, limit });
       }
       case 'GET usage': {
@@ -1697,14 +2077,14 @@ export class LedungServer {
       case 'POST projects': {
         const body = await readJson(req);
         // A new project's grant, dev ship command or unasked tools let through what reached the user (issue #107).
-        if (manager.gateLoosens(null, body)) await this.requirePage(req, url);
+        if (manager.gateLoosens(null, body)) await this.requirePasskeyPage(req, url);
         return manager.addProject(projectFrom(body));
       }
       case 'POST projects/:id': {
         const body = await readJson(req);
         // Opening a locked project up is the user's alone, from the open page, like a sensitive call (issue #109).
         // So is loosening the sensitive gate: a pattern removed, a new grant, unasked tools (issue #107).
-        if (manager.lockdownOpensUp(decodeURIComponent(id), body) || manager.gateLoosens(decodeURIComponent(id), body)) await this.requirePage(req, url);
+        if (manager.lockdownOpensUp(decodeURIComponent(id), body) || manager.gateLoosens(decodeURIComponent(id), body)) await this.requirePasskeyPage(req, url);
         return manager.updateProject(decodeURIComponent(id), projectFrom(body));
       }
       case 'GET accounts':
@@ -1767,7 +2147,7 @@ export class LedungServer {
         const body = await readJson(req);
         // A task goes to the new project's manager as the user's words (requirePageForManager).
         // Settings that loosen the sensitive gate need the page and, through the public name, a signature (issue #107).
-        if (manager.gateLoosens(null, (body.settings ?? {}) as Record<string, unknown>)) await this.requirePage(req, url);
+        if (manager.gateLoosens(null, (body.settings ?? {}) as Record<string, unknown>)) await this.requirePasskeyPage(req, url);
         else if (typeof body.task === 'string' && body.task.trim()) this.requireOpenPage(req);
         return manager.createProject({
           parent: typeof body.parent === 'string' ? body.parent : undefined,
@@ -1841,8 +2221,13 @@ export class LedungServer {
       }
       // A new name (issue #116): the user's alone, from the open page; no manager tool renames a project.
       case 'POST projects/:id/rename': {
-        await this.requirePage(req, url);
         const body = await readJson(req);
+        // Settings sent with it that open a locked project up or loosen the gate are passkey-only, as on their own
+        // route (issue #313, self-check finding 1): a trusted computer's vouch is not enough for them.
+        const sent = (body.settings ?? null) as Record<string, unknown> | null;
+        const project = decodeURIComponent(id);
+        if (sent && (manager.lockdownOpensUp(project, sent) || manager.gateLoosens(project, sent))) await this.requirePasskeyPage(req, url);
+        else await this.requirePage(req, url);
         // The other settings come along, so a refused one leaves the name as it was (review-116 m1).
         return manager.renameProject(decodeURIComponent(id), body.name, body.settings ? projectFrom(body.settings as Record<string, unknown>) : undefined);
       }
@@ -1858,7 +2243,7 @@ export class LedungServer {
       }
       case 'POST projects/:id/remove':
         // Removing a locked project ends its lockdown too (issue #109).
-        if (manager.lockdownOpensUp(decodeURIComponent(id), null)) await this.requirePage(req, url);
+        if (manager.lockdownOpensUp(decodeURIComponent(id), null)) await this.requirePasskeyPage(req, url);
         return manager.removeProject(decodeURIComponent(id));
       case 'POST projects/:id/manager': {
         // Always to a manager, as the user's words (requirePageForManager).
@@ -1984,17 +2369,6 @@ export class LedungServer {
         manager.setResourceLimit(String(body.dim ?? ''), body.value);
         return;
       }
-      // Settings → Questions at a workflow step (#291).
-      case 'GET step-questions':
-        return manager.stepQuestionsView();
-      case 'POST step-questions':
-        await this.requirePage(req, url);
-        manager.setStepQuestions((await readJson(req)).choice);
-        return manager.stepQuestionsView();
-      // Skip in the first-run picker (#293): only from the open page, like the choice itself.
-      case 'POST step-questions-skip':
-        await this.requirePage(req, url);
-        return manager.skipStepQuestions();
       case 'POST resource-settings': {
         await this.requirePage(req, url);
         manager.setResourceSettings(await readJson(req));
@@ -2007,25 +2381,19 @@ export class LedungServer {
       case 'POST jobs/:id/pause': {
         await this.requireSignedPage(req, url);
         const body = await readJson(req);
-        await manager.pauseJob(id, body.paused !== false);
-        return;
+        return await manager.pauseJob(id, body.paused !== false);
       }
       case 'POST jobs/:id/stop':
         await this.requireSignedPage(req, url);
-        await manager.stopJob(id);
-        return;
+        return await manager.stopJob(id);
+      case 'GET jobs/:id/reach':
+        return await manager.jobReach(id);
       case 'GET job-kinds':
         return { kinds: manager.jobKinds(), commands: manager.heavyCommands() };
       case 'POST job-kinds-forget': {
         await this.requirePage(req, url);
         const body = await readJson(req);
         manager.forgetJobKind(String(body.project ?? ''), String(body.kind ?? ''));
-        return;
-      }
-      case 'POST heavy-commands-mark': {
-        await this.requirePage(req, url);
-        const body = await readJson(req);
-        manager.markCommand(String(body.project ?? ''), String(body.command ?? ''), body.never !== false);
         return;
       }
       case 'POST sessions/:id/priority': {
@@ -2049,6 +2417,12 @@ export class LedungServer {
       case 'POST sessions/:id/start-now':
         manager.startNow(id);
         return;
+      // Switch now, or Try again after a failed one (issue #395).
+      case 'POST sessions/:id/account-switch': {
+        const body = await readJson(req);
+        await manager.accountSwitchAction(id, body.action);
+        return;
+      }
       case 'GET sessions/:id/turns':
         return store.turnResources({ sessionId: id }).map((t) => capTurnCores(t, os.cpus().length));
       case 'GET typical-costs': {
@@ -2070,6 +2444,9 @@ export class LedungServer {
         const body = await readJson(req);
         return manager.sendLineComments(id, body);
       }
+      // One whole question (issue #306): older Waiting for you history comes light, and the page asks when it opens one.
+      case 'GET questions/:id':
+        return manager.question(Number(id));
       // A review's text file (docs/steps/pr-review.md): only one the review names, read-only.
       case 'GET questions/:id/evidence/:id':
         return manager.readEvidenceText(Number(id), /^\d+$/.test(parts[3] ?? '') ? Number(parts[3]) : -1);
@@ -2091,7 +2468,7 @@ export class LedungServer {
         return manager.chats();
       case 'POST chats': {
         const body = await readJson(req);
-        if (manager.chatsLoosen(body)) await this.requirePage(req, url);
+        if (manager.chatsLoosen(body)) await this.requirePasskeyPage(req, url);
         return manager.updateChats(body);
       }
       // Their name colour (issue #222), one for all chats: checked like a project's (#83), cookie and origin.
@@ -2158,6 +2535,26 @@ export class LedungServer {
         if (Number(req.headers['content-length'] ?? 0) > MAX_CHAT_IMAGE_BYTES) throw new HttpError(413, 'The image is too large.');
         return manager.uploadImage(id, await readBody(req, MAX_CHAT_IMAGE_BYTES));
       }
+      // A file dropped in the message box that isn't an image Ledung sends (issue #339): its bytes alone, its name in the
+      // query, saved in the session's folder under .ledung/drops by a name Ledung makes plain; the message names it.
+      // The image route's locks: the open page for a manager, and through the public name the unlocked device, never a
+      // signature (one would be checked over the first MB only and refused). Too large or a container project is
+      // refused before the bytes are read.
+      case 'POST sessions/:id/drops': {
+        this.requirePageForManager(req, id);
+        const type = String(req.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase();
+        if (type !== 'application/octet-stream') throw new HttpError(415, 'Send the file as application/octet-stream.');
+        if (Number(req.headers['content-length'] ?? 0) > MAX_DROP_BYTES) throw new HttpError(413, DROP_TOO_LARGE);
+        manager.dropCheck(id);
+        const name = url.searchParams.get('name') ?? '';
+        let bytes: Buffer;
+        try {
+          bytes = await readBody(req, MAX_DROP_BYTES);
+        } catch (e) {
+          throw e instanceof HttpError && e.status === 413 ? new HttpError(413, DROP_TOO_LARGE) : e;
+        }
+        return manager.saveDrop(id, name, bytes);
+      }
       // A "!" command from the message box (issue #212). People only: no tool reaches these routes.
       case 'GET sessions/:id/shell-check':
         return manager.shellCheck(id, url.searchParams.get('command') ?? '');
@@ -2166,7 +2563,7 @@ export class LedungServer {
         // unlocked device and a passkey signature for each command (decision 2 of #212, Martin 2026-10-18 18:09).
         // A signed request alone passes requireUnlocked, so the unlock is checked here as well.
         const device = this.guard.isPublic(req) ? this.guard.deviceOf(req) : null;
-        if (device && this.passkeys?.unlockedUntil(device.id) === null) throw new HttpError(403, device.credentialId ? DEVICE_LOCKED : NO_PASSKEY_LOCKED);
+        if (device && this.passkeys?.unlockedUntil(device.id) === null) throw new HttpError(403, this.lockedWords(device));
         await this.requirePage(req, url);
         const body = await readJson(req);
         await manager.runShell(id, String(body.command ?? ''), body.confirmed === true);
@@ -2245,7 +2642,32 @@ export class LedungServer {
         if ((about && store.getPermission(about)?.sensitive) || question?.details?.refusal || question?.details?.order || question?.details?.orderCommand) await this.requirePage(req, url);
         else this.requirePageForManager(req, question?.sessionId);
         const body = await readJson(req);
-        return manager.answerQuestion(Number(id), String(body.answer ?? ''), !this.guard.isPublic(req));
+        // A request page's answer comes as its parts (issue #502); Ledung writes the text from them.
+        const answerParts = body.parts && typeof body.parts === 'object' && !Array.isArray(body.parts) ? body.parts as AnswerParts : null;
+        return manager.answerQuestion(Number(id), String(body.answer ?? ''), !this.guard.isPublic(req), answerParts);
+      }
+      // A request's draft (issue #502, D4): kept in Ledung so it follows the person between devices, and only for a
+      // request, which never carries a permission (design section 8). Read like the questions it belongs to, with the
+      // sign-in cookie (the page sends its key only on changes: acceptance round 1 found the read refused); written under
+      // the same rules as answering.
+      case 'GET questions/:id/draft':
+      case 'POST questions/:id/draft': {
+        const question = store.getQuestion(Number(id));
+        if (!question || !isRequest(question)) throw new HttpError(404, 'No such request.');
+        if (method === 'GET') return store.requestDraft(question.id) ?? { data: null, at: null };
+        this.requirePageForManager(req, question.sessionId);
+        const body = await readJson(req);
+        const text = JSON.stringify(body.data ?? null);
+        if (text.length > 200_000) throw new HttpError(413, 'The draft is too large.');
+        // `base` is the version the page last read: a save over a newer one is refused with that one, which the page lays
+        // its own changes over, part by part (acceptance round 2). A page from an earlier release sends none.
+        const base = typeof body.base === 'number' || body.base === null ? body.base as number | null : undefined;
+        const at = store.saveRequestDraft(question.id, body.data ?? null, base);
+        if (at === false) throw new HttpError(409, 'This request is no longer open.');
+        if (at === 'stale') return { ok: false, stale: true, ...(store.requestDraft(question.id) ?? { data: null, at: null }) };
+        // Every open page of it reads the new version at once: only the number and time go out, never the draft.
+        this.broadcast({ type: 'requestDraft', questionId: question.id, at });
+        return { ok: true, at };
       }
       // Orders on record (issue #105): the person cancels one on the page. It only takes a permission away.
       case 'POST orders/:id/cancel':
@@ -2289,6 +2711,32 @@ export class LedungServer {
           // Answering the shortcuts question finishes the setup's step (ledung-helper.md).
           manager.noteSetupFacts();
           return view;
+        } catch (e) {
+          throw new HttpError(400, (e as Error).message);
+        }
+      }
+      // Ledung's tray icon (issue #347) shows on this computer's screen, so only its own page switches it.
+      case 'GET tray':
+        this.requireScreen(req);
+        return this.tray().view();
+      // "Open in the Ledung app" in a browser on this computer (#409): the app opens on this computer's screen, so only
+      // a page on that screen asks for it, never one from the network or through the public name.
+      case 'POST open-desktop-app': {
+        // Both checks: through the relay a request arrives from loopback too, so "this computer" alone lets a phone in.
+        if (this.guard.isPublic(req) || !fromThisComputer(req)) throw new HttpError(403, 'The desktop app is opened on the computer Ledung runs on.');
+        await this.requirePage(req, url);
+        if (!this.opts.openDesktopApp) throw new HttpError(404, 'The desktop app is not available.');
+        const failed = await this.opts.openDesktopApp();
+        if (failed !== null) throw new HttpError(409, failed);
+        return { ok: true };
+      }
+      case 'POST tray': {
+        this.requireScreen(req);
+        await this.requirePage(req, url);
+        const on = (await readJson(req)).on;
+        if (typeof on !== 'boolean') throw new HttpError(400, '"on" is true or false.');
+        try {
+          return this.tray().set(on);
         } catch (e) {
           throw new HttpError(400, (e as Error).message);
         }
@@ -2341,7 +2789,8 @@ export class LedungServer {
           throw new HttpError(400, (e as Error).message);
         }
       }
-      // Settings → Relay on the relay admin's Ledung (issue #237): local only, and every change from the open page.
+      // Settings → Relay on the relay admin's Ledung (issue #237): local only but I added it (#420), and every change from
+      // the open page.
       // The admin key and the Cloudflare token never leave the data folder: the view carries a hash and a yes/no.
       case 'GET relay-admin':
         this.requireLocal(req);
@@ -2383,8 +2832,10 @@ export class LedungServer {
         this.requireLocal(req);
         await this.requirePage(req, url);
         return adminCall(() => this.relayAdmin().approve(decodeURIComponent(id)));
+      // I added it through the public name too (issue #420; Martin, 2026-11-19, Ledung question #615 "a"): with the open
+      // page and, there, this request signed by the passkey or a trusted computer's own screen (#313), as the pairing
+      // card's Remove device (#412). It only tells the relay a record is in place; Approve, which writes one, stays here.
       case 'POST relay-computers/:id/added':
-        this.requireLocal(req);
         await this.requirePage(req, url);
         return adminCall(() => this.relayAdmin().markAdded(decodeURIComponent(id)));
       case 'POST remote-leave':
@@ -2436,6 +2887,17 @@ export class LedungServer {
     if (!fromThisComputer(req)) throw new HttpError(403, 'Shortcuts are made in Settings on the computer Ledung runs on.');
   }
 
+  private tray(): TraySwitch {
+    if (!this.opts.tray) throw new HttpError(404, 'The tray icon is not available.');
+    return this.opts.tray;
+  }
+
+  /** A page on this computer itself, for what shows on its screen (the tray icon). */
+  private requireScreen(req: IncomingMessage): void {
+    this.requireLocal(req, "Ledung's icon is switched");
+    if (!fromThisComputer(req)) throw new HttpError(403, "Ledung's icon is switched in Settings on the computer Ledung runs on.");
+  }
+
   private checkIn(): CheckIn {
     if (!this.opts.checkIn) throw new HttpError(404, 'The check-in is not available.');
     return this.opts.checkIn;
@@ -2454,7 +2916,7 @@ export class LedungServer {
       // The page itself is only served to a signed-in browser; its assets are not secret.
       if (!signedIn) {
         res.writeHead(401, { ...this.headersFor(res), 'Content-Type': 'text/html; charset=utf-8' });
-        res.end(`<!doctype html><title>Ledung</title><div style="font-family:sans-serif;max-width:30em;margin:2em auto"><p>${remote ? NOT_PAIRED : 'Not signed in. Open Ledung through the link it prints when it starts.'}</p>${remote ? PAIR_CODE_FORM : ''}</div>`);
+        res.end(`<!doctype html>${SMALL_PAGE_HEAD}<title>Ledung</title><div style="max-width:30em;margin:2em auto">${remote ? NOT_PAIRED_PAGE : NOT_SIGNED_IN_PAGE}</div>`);
         return;
       }
       file = path.join(root, 'index.html');
@@ -2486,9 +2948,26 @@ export class LedungServer {
     return this.publicResponses.has(res) ? this.publicHeaders : this.headers;
   }
 
-  private json(res: ServerResponse, status: number, body: unknown): void {
-    res.writeHead(status, { ...this.headersFor(res), 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(body));
+  /**
+   * A JSON answer. One above PACK_MIN_BYTES goes compressed when the request takes it (issue #330); the same JSON
+   * either way, and the headers are the same apart from the encoding. Never fails: if compressing does, it goes plain.
+   */
+  private async json(res: ServerResponse, status: number, body: unknown): Promise<void> {
+    const data = Buffer.from(JSON.stringify(body));
+    const headers = { ...this.headersFor(res), 'Content-Type': 'application/json', Vary: 'Accept-Encoding' };
+    const encoding = data.length >= PACK_MIN_BYTES ? pickEncoding(res.req.headers['accept-encoding']) : null;
+    if (encoding) {
+      const packed = await packAnswer(data, encoding).catch(() => null);
+      // The client may have gone while it was compressed.
+      if (res.destroyed) return;
+      if (packed) {
+        res.writeHead(status, { ...headers, 'Content-Encoding': encoding, 'Content-Length': packed.length });
+        res.end(packed);
+        return;
+      }
+    }
+    res.writeHead(status, headers);
+    res.end(data);
   }
 
   private fail(res: ServerResponse, e: unknown): void {
@@ -2498,7 +2977,7 @@ export class LedungServer {
       res.destroy();
       return;
     }
-    this.json(res, status, { error: e instanceof Error ? e.message : String(e) });
+    void this.json(res, status, { error: e instanceof Error ? e.message : String(e) });
   }
 }
 

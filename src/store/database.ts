@@ -3,6 +3,7 @@
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { userDataDir } from '../platform/paths.ts';
+import { toBlocks } from '../shared/blocks.ts';
 
 // Daily usage totals (migration 38, issue #362): what a call adds to its day's row, and takes away from it.
 const DAILY_COLUMNS = ['at', 'account', 'machine', 'model', 'project', 'role', 'trigger', 'input', 'cache_write', 'cache_read', 'output', 'thinking', 'cost', 'subagent'];
@@ -23,7 +24,35 @@ const dailyTake = (r: string) => `
   WHERE ${dailyKey(r)};
   DELETE FROM usage_daily WHERE ${dailyKey(r)} AND calls <= 0;`;
 
-const MIGRATIONS: string[] = [
+/**
+ * Every question stored before #509 rewritten in blocks (Simon, 2026-11-24, Ledung question #2340 "a"): its details only,
+ * by toBlocks, so its answer, its text and its option labels stay byte-for-byte as they were, and Ledung's own
+ * permission-carrying questions are left as they are. It runs inside the migration's transaction, so a start stopped
+ * half-way leaves nothing changed and the next start runs it again. A row whose details can't be read is left alone.
+ */
+function questionsInBlocks(db: DatabaseSync): void {
+  const read = db.prepare('SELECT id, question, options, details, about_request FROM questions WHERE id > ? ORDER BY id LIMIT 500');
+  const write = db.prepare('UPDATE questions SET details = ? WHERE id = ?');
+  for (let last = 0; ;) {
+    const rows = read.all(last) as { id: number; question: string; options: string | null; details: string | null; about_request: string | null }[];
+    if (!rows.length) return;
+    for (const r of rows) {
+      last = Number(r.id);
+      let details;
+      try {
+        details = toBlocks({ question: r.question, options: r.options ? JSON.parse(r.options) : null, details: r.details ? JSON.parse(r.details) : null, aboutRequest: r.about_request });
+      } catch {
+        continue;
+      }
+      if (details) write.run(JSON.stringify(details), last);
+    }
+  }
+}
+
+/** A migration: SQL, or a step that needs code (it runs in the same transaction). */
+type Migration = string | ((db: DatabaseSync) => void);
+
+const MIGRATIONS: Migration[] = [
   // 1: sessions, messages and permission requests.
   `
   CREATE TABLE sessions (
@@ -778,6 +807,80 @@ const MIGRATIONS: string[] = [
     UNIQUE (project, tool_name, command)
   );
   `,
+  // The link a device paired through the link came by (issue #313): its id in this computer's links, so a computer
+  // that trusts that link's own screen knows the device is its frame. Null: paired here, or before this column.
+  `
+  ALTER TABLE devices ADD COLUMN paired_via_link TEXT;
+  `,
+  // The fork a run is in (issue #193), as JSON RunFork (src/shared/flow-run.ts): a position per branch, each moving on
+  // its own until the join. Null: the run holds one position, at.
+  `
+  ALTER TABLE flow_runs ADD COLUMN fork TEXT;
+  `,
+  // A "Waiting for you" line in a manager's chat (issue #350): the one message per question or permission request, so
+  // a line is never added twice (Done looks like 8) and is found to update in place when it is decided.
+  `
+  CREATE TABLE waiting_lines (
+    item TEXT NOT NULL,
+    ref TEXT NOT NULL,
+    message_id INTEGER NOT NULL REFERENCES messages(id),
+    PRIMARY KEY (item, ref)
+  );
+  `,
+  // Accounts show no email or organisation any more (issue #378): Claude Code reported the computer's own login's for
+  // every account. Who sessions found themselves logged in as is forgotten, the default login's too; the columns stay.
+  `
+  UPDATE accounts SET email = NULL, organization = NULL, plan = NULL, seen_at = NULL;
+  DELETE FROM meta WHERE key = 'default-account-identity';
+  `,
+  // An account switch waiting for a quiet moment, or one that failed (issue #395): JSON { to, failed? }; null: none.
+  // On the session, so a pending switch outlives Restart Ledung and the page gets it with the session. account_chosen:
+  // a chat whose account was picked in New chat, which keeps it when Settings' account for chats changes.
+  `
+  ALTER TABLE sessions ADD COLUMN account_switch TEXT;
+  ALTER TABLE sessions ADD COLUMN account_chosen INTEGER NOT NULL DEFAULT 0;
+  `,
+  // A run's sessions archived when a new session took their block (issue #402), as a JSON array of ids: the run's end
+  // leaves them as they are, so one the coordinator has resumed since is not archived again. Null: none.
+  `
+  ALTER TABLE flow_runs ADD COLUMN retired TEXT;
+  `,
+  // A renewed device cookie whose answer may have been lost (issue #468): the new value, sealed with the cookie it
+  // replaced, until the new one is first used. Till then the old one still works and gets the same new value again,
+  // so a lost answer costs no pairing and a copy of the old one can't push the new one out. Null: none waiting.
+  `
+  ALTER TABLE devices ADD COLUMN new_cookie_sealed TEXT;
+  `,
+  // How long shell calls take, per project and command kind (resource limits round 2, R4): a kind whose calls usually
+  // finish within 10 s is never refused. Only the latest few per kind are kept (JobStore.addCall).
+  `
+  CREATE TABLE command_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    at INTEGER NOT NULL
+  );
+  CREATE INDEX command_calls_by_kind ON command_calls(project, kind, at);
+  `,
+  // Which job records learned their commands from the calls whose own processes were busy (R4; acceptance test round
+  // 1). Older records took every call made during the job, so `git status` or a 3-second script got a build's peak:
+  // those count only for a kind Ledung has since seen take longer than 10 s (JobStore.heavyCommands).
+  `
+  ALTER TABLE job_runs ADD COLUMN by_call INTEGER NOT NULL DEFAULT 0;
+  `,
+  // A request's answer as data (issue #502), beside the text the asker reads: what a run reads to move, part by part.
+  // And the person's draft of an open request (D4: kept in Ledung, so it follows them from the PC to the phone).
+  `
+  ALTER TABLE questions ADD COLUMN answer_parts TEXT;
+  CREATE TABLE request_drafts (
+    question_id INTEGER PRIMARY KEY REFERENCES questions(id) ON DELETE CASCADE,
+    data TEXT NOT NULL,
+    at INTEGER NOT NULL
+  );
+  `,
+  // Every stored question in one shape, its blocks (issue #509): see questionsInBlocks above.
+  questionsInBlocks,
 ];
 
 export function databaseFile(dir = userDataDir()): string {
@@ -790,7 +893,13 @@ export function openDatabase(file = databaseFile()): DatabaseSync {
   // needs no VACUUM. An older one is switched at a start (compactAtStart, src/store/trim.ts).
   if (db.prepare('SELECT 1 FROM sqlite_master LIMIT 1').get() === undefined) db.exec('PRAGMA auto_vacuum = INCREMENTAL;');
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
-  migrate(db);
+  try {
+    migrate(db);
+  } catch (e) {
+    // Rolled back (migrate): closed too, so the file isn't held open by a start that can't go on.
+    db.close();
+    throw e;
+  }
   return db;
 }
 
@@ -799,7 +908,9 @@ function migrate(db: DatabaseSync): void {
   for (let v = current; v < MIGRATIONS.length; v++) {
     db.exec('BEGIN');
     try {
-      db.exec(MIGRATIONS[v]!);
+      const m = MIGRATIONS[v]!;
+      if (typeof m === 'string') db.exec(m);
+      else m(db);
       db.exec(`PRAGMA user_version = ${v + 1}`);
       db.exec('COMMIT');
     } catch (e) {

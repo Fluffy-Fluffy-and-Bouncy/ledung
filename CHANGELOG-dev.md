@@ -1,0 +1,136 @@
+# Ledung changelog: dev builds
+
+Every dev build (a version X.Y), newest first: what Settings → About → Update channel → Dev updates to. Each
+build has one heading with its version and when it was published, then terse `- ` bullets, one per change, each
+ending with its issue `(#12)` or `(no issue)`. Public releases, which fold the dev builds since the last one
+together, are in [CHANGELOG.md](CHANGELOG.md). Online: https://projectledung.com/dev-changelog
+
+**Don't edit this file.** A pull request writes its bullets in `docs/changes/<issue>.md`
+([docs/changes/README.md](docs/changes/README.md)); `npm run publish:dev` and `npm run publish:public` fold them in
+here under the version they publish, and push the result to main.
+
+## v5.2 — 2026-11-27 13:52 CET
+- A project's old, ended managers that a newer manager replaced can now be archived, from the sidebar menu, the session header or by the project's manager with archive_session, whose list_sessions now names them; the current manager still can't be (#515)
+- A manager that never got going is archived by itself when a fresh one replaces it (#515)
+- Every question is now stored the same way as a request: questions asked before are converted once when Ledung starts after the update, and open, answer and move runs exactly as before; answers already given are not changed, and Ledung's own permission questions are left as they were (#509)
+- A question can hold several parts on one page: context, screenshots to judge, evidence files, several decisions and a sign-off, answered together and sent once (#502)
+- A review may now come with screenshots to judge and follow-up decisions, on the same page (#502)
+- Your answers on a request page are kept as you go, so you can start on the phone and finish at the PC; a request open on both shows the other device's answers as they are given (#502)
+- A request is one entry in Waiting for you with a "3 to answer" chip, one notification, and one line in the manager's chat (#502)
+- At a workflow's person step, a request moves the run by its sign-off or its one decision with outcomes; the rest goes to the coordinator (#502)
+- Every question, review and screenshot question in Waiting for you now opens on the same page, with Send answer and Withdraw on the right (at the bottom on a phone); a request's decisions look like a question's options, with who-picked-what borders, costs and opinions, stacked one under the other (#502)
+
+## v5.1 — 2026-11-23 14:53 CET
+- Managers on linked computers now wake each other on every message, as managers on one computer do: the cap of 6 wakes an hour is gone; messages within 5 s of each other still wake once (#506)
+- A restart that finds Ledung's port still in use waits up to 30 s for it, instead of failing at once (#503)
+- A start that can't get the port leaves every session running and says so; the next start reconnects them (#503)
+- The log says what stopped or restarted Ledung (Stop Ledung, Restart, the tray icon, an installed update, a signal) (#503)
+- Resource limits: no command is refused by its name any more (`git status`, scripts and known heavy commands alike, for subagents too); reserving before heavy work stays, and what actually runs is judged as before. (#500)
+- Resource limits: a session whose work goes over without a booking is told what it used, the commands that were busy and what they usually use: "reserve before it next time". (#500)
+- Usage page: the "Never needs a reservation" list and button are gone; heavy commands are listed for information. (#500)
+- Resource limits: read-only git (`git status`, `log`, `diff`, …), all of `gh` and text tools like `cut` or `jq` never need a reservation. (#356)
+- Resource limits: a command is learned as heavy only if its own processes were busy, not a short script after a build or a status loop beside it. (#356)
+- Resource limits: shell words like `for` and `while` are never taken for commands. (#356)
+- Resource limits: marks learned before this release no longer refuse anything on their own; they count again once a command is seen to take over 10 seconds. (#356)
+- Resource limits: a refusal says what it was learned from (how many jobs or unreserved stretches, and when) and that the command can be marked "never needs a reservation" on the usage page. (#356)
+- Resource limits: a reservation is now a pass for the session and its subagents, kept until `release` or until the session's work is over (no turn, nothing in the background, nothing of it running), instead of ending when its first processes end. (#356)
+- Resource limits: a job quiet for 2 minutes (and within the memory it booked) is parked and holds no room (a build's leftover daemon no longer blocks the line); when its work starts again it is checked against the limits, and a known heavy command that doesn't fit is told to wait with its old place in line. (#356)
+- Resource limits: a session waiting for its reservation is never stopped as idle, a go's 10 minutes count from when it reaches the session, and the manager is told when a session has waited 30 minutes and again when it may go. (#356)
+- Resource limits: commands that free resources (stopping processes, a lock script's `release`, `npm run stop`, `docker compose down`, `gradle --stop`) always run, even while a session is held; release builds (`--release`, `-c Release`) are not among them. (#356)
+- Resource limits: a heavy job started detached (`… &`, `nohup`) counts as its session's and is learned, and Pause and Stop on its card reach it; a process Ledung took as the job's only by when it started is paused or stopped only if its command line is the session's detaching command, so another program is never touched. Stop's confirm counts only what it will end and names what it leaves alone, the page says the same after Pause or Stop, and a stopped job's card goes away instead of staying for a program it left alone; until then it says "Stopped by you" and can't be stopped twice. When Ledung can't check those processes just now, Pause, Resume and Stop say "try again" and do nothing, and a process once proven the session's never needs that check again. (#356)
+- Resource limits: "Waiting for room" says who holds it (jobs with what they booked and use, WSL, other programs); sessions see other sessions' jobs only as counts and figures. (#356)
+- Machine panel: job cards show ready, busy, parked and "resumed above the limits"; parked jobs fold under the others; the memory bar's tooltip names WSL's share, with a one-time hint on making WSL give its cache back; "park after" and "tell the manager after" sit with the other limit settings. (#356)
+- Session header: "Waiting for its reservation" while a session's reservation is in line. (#356)
+- Usage page: "Never needs a reservation" lets you add your own commands to the light list. (#356)
+
+## v5 — 2026-11-23 00:31 CET
+The public release. Everything since v4: v4.1, v4.2, v4.3, v4.4, v4.5, v4.6, v4.7, v4.8, v4.9, v4.10, v4.11, v4.12, v4.13, v4.14.
+
+## v4.14 — 2026-11-21 23:49 CET
+- Desktop app on Windows and Linux: starting it again while its window is closed and Ledung is stopped now starts Ledung and shows its page, instead of a page with nothing behind it (#490)
+- Mac: a Dock click, Finder or `ledung` on the desktop app left running hidden after an update now restarts it into the new version instead of showing its update banner (#485)
+
+## v4.13 — 2026-11-21 23:30 CET
+- The browser tab, the desktop app's window and taskbar entry, the installed app and the empty view now say "Ledung" instead of "Project Ledung" (#428)
+
+## v4.12 — 2026-11-21 22:24 CET
+- The passkey sign and set-up pages, the "Not signed in" / not-paired page and the pairing page are now dark, in the main page's dark colours, even in a browser set to light (#481)
+- The passkey sign page in the browser says what you are signing and for how long: a Mac logs on until you log it out or 14 days unused, a phone unlocks for 30 minutes, one change is signed once; with one clear Touch ID button (#481)
+- The passkey set-up, "Not signed in", not-paired and pairing pages say what to do next and the time limits that apply (#481)
+
+## v4.11 — 2026-11-21 22:18 CET
+- The page tries to reach Ledung again every half second while it is away, and at once when its window or tab is shown again, so the update banner comes within about a second of Ledung being back instead of after up to 10 seconds (#488)
+
+## v4.10 — 2026-11-21 20:38 CET
+- On Windows and Linux, the desktop app left running with its window closed takes an update when it is started again, instead of showing its window with a restart banner to press (#479)
+
+## v4.9 — 2026-11-21 13:41 CET
+- The desktop app opened from the Start menu, Dock or Finder after an update now starts Ledung in the background when none runs, instead of opening a window with nothing behind it (#477)
+
+## v4.8 — 2026-11-21 12:04 CET
+- Desktop app: Copy Image now works on pictures in another computer's tab; it used to copy nothing there (#451)
+
+## v4.7 — 2026-11-21 11:53 CET
+- Pairing: pressing Pair now leads to a page that says plainly whether this browser is paired, and what to do next (#466)
+- Pairing: the Pair button greys and says "Pairing…" while it works, so a slow first press no longer looks like nothing happened (#466)
+- Pairing: when a browser in another computer's frame drops the pairing cookie, the page says so and why, removes the unusable device and offers to pair again or in a tab of its own (#466)
+- Pairing: pressing a used pairing link again says when it was used and whether that pairing worked, and pairs this browser if the first never arrived (#466)
+
+## v4.6 — 2026-11-20 16:10 CET
+- Pairing another computer's tab inside the Ledung app works with one press of Pair: the app no longer cancels the redirect back to that computer's page (#468, #466)
+- A tab or browser whose daily cookie renewal was cut off (a restart, a dropped connection) stays paired and gets the new cookie again, instead of being removed as a copy (#468)
+
+## v4.5 — 2026-11-20 15:44 CET
+- In Ledung's desktop app on a Mac, a change that needs your passkey now offers **Sign in the browser**: your browser opens a one-time link, shows what is signed and asks for Touch ID, and the app's change then goes through by itself (#463)
+
+## v4.4 — 2026-11-20 15:23 CET
+- After a linked computer is unlinked (or its link lost) and linked again, its tab here paired through the old link counts for the new link's trust, instead of still asking for a passkey (#462)
+
+## v4.3 — 2026-11-20 15:07 CET
+- Linked computers survive a crash right after a save: links.json is flushed to the disk and kept with a backup, which Ledung loads (and logs) when links.json can't be read (#460)
+- The config file, sign-ins, locked secrets, the relay link and its admin file, certificates, the usage key and session secret files are flushed to the disk before they replace the old file, so a crash can't leave them empty (#460)
+
+## v4.2 — 2026-11-20 14:31 CET
+- The desktop app runs the installed Ledung's code however it is opened (Start menu, taskbar, Dock, Launchpad, Finder, "Open in the Ledung app"): after an update it brings itself up to date at start, before its window opens (#455)
+- An app whose own `ledung` has the same version as the app no longer restarts over and over when another install of Ledung runs (#455)
+- In the desktop app, Reload (⌘R or Ctrl+R, View → Reload, Force Reload) after an update restarts the app into the installed version instead of reloading only the page (#455)
+
+## v4.1 — 2026-11-20 14:23 CET
+- Desktop app: New window in a linked computer's tab opens a new app window at your own start page, as in your own tab; needs this version on both computers (#454)
+- The desktop app on a Mac no longer waits forever for a Touch ID prompt that never comes: a passkey check there says in one line to make the change in your browser, and offers to open that page in it (#427)
+
+## v4 — 2026-11-20 01:20 CET
+The public release. Everything since v3: v3.10, v3.11, v3.12, v3.13, v3.14, v3.15, v3.16, v3.17. v3.1 to v3.9 came before the changelog per release: their changes are listed by date, under "Earlier, by date" in CHANGELOG.md.
+
+## v3.17 — 2026-11-20 00:11 CET
+- Desktop app: right-clicking gives a menu, as in a browser: Copy Image and Save Image As… on a picture (screenshots too), Copy Link Address on a link, Copy on selected text, and Cut, Copy, Paste and Select All in a text box (#447)
+- Desktop app: Ctrl+F (⌘F on the Mac) opens a find bar, as in a browser: it highlights the matches on the page and shows "n of m"; Enter and Shift+Enter go to the next and previous match, Esc closes it. Also Edit → Find… (#445)
+
+## v3.16 — 2026-11-19 23:07 CET
+- Update Ledung from npm no longer restarts into the old version without saying so: when npm finishes but Ledung's folder still holds the old version, the update stops and shows npm's output and where npm installs to (#435)
+- After an update's restart, Settings → Update & restart says when Ledung still runs the old version (#435)
+- An npm update's outcome, and why it stopped, now goes to ledung.log too (#435)
+- Settings → About names the version that runs, not one installed after Ledung started (#435)
+- Desktop app: when the tray icon's **Open Ledung** opens the browser instead of the app, it now says why, once in Ledung's log and once in a banner on the page that opens, for example that Electron's package is missing or the app could not be made. With `"desktopApp": false` it says so in the log only. (#434)
+
+## v3.15 — 2026-11-19 22:25 CET
+- What changed is now listed per release instead of per day: a changelog of the dev builds and one of the public releases, each heading with the version and when it was published. Settings → About links to both, online at projectledung.com/changelog and projectledung.com/dev-changelog, your own update channel's first. On an install from a clone, Check for updates still lists what is new on main. (#417)
+
+## v3.14 — 2026-11-19 22:05 CET
+- Managers can start with only the plugins and MCP servers managers on this computer actually used in the last week, when the workflow's profiles file turns it on with `"learnManagerTools": true`; the rest are left out, which saves tokens on every turn. context-mode is never kept. Ledung learns this from managers' calls, starting from the past week it has stored, and drops nothing before managers have run here for a week. Off when the workflow doesn't say. (#431)
+
+## v3.13 — 2026-11-19 21:49 CET
+- Desktop app as the way in on your computer: the tray icon's **Open Ledung** now opens the app, making it the first time as `ledung` does, and the Mac's Ledung icon in Applications opens it when Ledung is already running, as `ledung` and the Windows icons already did. A browser on the same computer now shows **Open in the Ledung app** at the top of the page and in Settings → Look & feel → App instead of offering to install the page. It is only a hint: the page keeps working in the browser, and **Not now** hides it there for good. Phones and other computers are unchanged, and with `"desktopApp": false` everything opens the browser as before. (#409)
+
+## v3.12 — 2026-11-19 20:48 CET
+- Desktop app: Update Ledung now updates the app too. When the app's windows are hidden it restarts by itself into the new version; with a window in front, the page says "Ledung was updated — restart the window to finish the update" with **Restart window**. Only the window restarts: Ledung and its sessions keep running, and a hidden window comes back hidden. An update that brings a new Electron downloads it at that restart; offline, the app keeps its Electron with the new Ledung when that is safe, otherwise the browser opens and the page says why. Restart Ledung alone never restarts the app. (#408)
+- Workflow runs: when a new session takes a step again (a second review or test round), the session it replaces is archived at once instead of staying in the sidebar until the run ends; nothing is deleted. One still working, or waiting on you with a question or prompt, is never archived. The coordinator's "ended" note says it was archived, a message to it resumes it as before, and one resumed that way is not archived again when the run ends. A run chosen on the workflow page now links all its sessions, archived ones marked, and `flow_status` names the earlier rounds' sessions. (#402)
+
+## v3.11 — 2026-11-19 15:36 CET
+- A second Ledung window: the new button beside ⚙ at the bottom of the sidebar opens one, and in the desktop app File → New Window, ⌘N on the Mac and Ctrl+N on Windows, does too. Each window has its own view; closing one leaves the others, and closing the last only hides it, as before. In a browser the button opens Ledung in a new tab or window. (#414)
+
+## v3.10 — 2026-11-19 15:26 CET
+- A "New computer" card in Waiting for you now goes by itself once that computer is in use, connected to the relay with its own certificate, on every page and in every count; a card for a computer already in use goes at the first start after the update. Through the relay (a phone, or another computer's tab) the card now offers **I added it**, which asks for the passkey or a trusted computer's own screen; Approve stays on the computer itself. (#420)
+
+## Earlier
+Before dev builds had a changelog of their own, every change was listed by date: see "Earlier, by date" in [CHANGELOG.md](CHANGELOG.md).

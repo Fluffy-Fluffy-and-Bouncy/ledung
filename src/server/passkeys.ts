@@ -14,7 +14,7 @@ import {
   generateAuthenticationOptions, generateRegistrationOptions, verifyAuthenticationResponse, verifyRegistrationResponse,
   type AuthenticationResponseJSON, type PublicKeyCredentialCreationOptionsJSON, type PublicKeyCredentialRequestOptionsJSON, type RegistrationResponseJSON,
 } from '@simplewebauthn/server';
-import type { Device, Devices } from './devices.ts';
+import { COMPUTER_IDLE_MS, type Device, type Devices } from './devices.ts';
 
 export const CHALLENGE_MS = 2 * 60 * 1000;
 /** How long an enrol code works (issue #241): long enough to open the window and use Touch ID, short for a copy. */
@@ -29,6 +29,32 @@ export const PASSKEY_NEEDED = 'This needs your passkey.';
 export const DEVICE_LOCKED = 'This device is locked: unlock it with its passkey to make changes from here.';
 /** The header a request through the public name carries its passkey assertion in (base64url of its JSON). */
 export const PASSKEY_HEADER = 'x-ledung-passkey';
+/**
+ * The header a trusted computer's frame carries a vouched challenge in instead (issue #313,
+ * docs/steps/trusted-computer.md choice 3a): the challenge itself, which that computer's own screen vouched for.
+ */
+export const VOUCH_HEADER = 'x-ledung-vouch';
+/** The refusal of a vouch for what still takes a passkey (choice 2a): the page then asks for the passkey itself. */
+export const PASSKEY_ONLY = 'This needs a passkey, or this computer\'s own screen: a trusted computer can\'t do it.';
+/**
+ * The set-up page's refusals that mean its link can set nothing up any more: the page (enrol.js, through
+ * enrolLinkDead in web/public/enrol-messages.js) then ends at once instead of offering a button (#481). Named so a
+ * test holds the page's match to these exact words.
+ */
+export const ENROL_LINK_GONE = 'This passkey link is not valid any more. Make a new one from the device that asked for it.';
+export const ALREADY_HAS_PASSKEY = 'This device already has its passkey.';
+export const PASSKEY_WINDOW_PASSED = 'A passkey can only be set up in the 10 minutes after pairing. Pair this device again from Settings on the computer.';
+/** What a sign link (#463) for logging the device on says it signs; the sign page words a log-on by it (#481). */
+export const SIGN_LOG_ON = 'Log this device on';
+/**
+ * What the sign page (#481) tells the person before they sign: whether it logs the device on, and for how long that
+ * lasts for its kind, from the rules themselves (a computer: until it logs out or goes unused; a phone: unlocked a while).
+ */
+export type SignTerms = { logOn: boolean; kind: Device['kind']; idleDays: number; unlockMinutes: number; linkMinutes: number };
+/** A sign link (#463) that is unknown, used or past its two minutes: what the browser and the app are told. */
+export const SIGN_LINK_GONE = 'This sign link is not valid any more: it was used, or its two minutes ran out. Make the change again in the app.';
+/** A sign link picked up by a device other than the one it was made for (#463). */
+export const SIGN_LINK_FOREIGN = 'This sign link is for another device.';
 /** ES256 and RS256: what phones and computers make; nothing weaker. */
 const ALGORITHMS = [-7, -257];
 /** Open challenges per device; more is a page (or someone) asking without answering. */
@@ -43,10 +69,12 @@ export function actionOf(method: string, pathname: string, body: Buffer | string
 
 interface Open {
   deviceId: string;
-  purpose: 'register' | 'assert';
-  /** For an assertion: the request it allows. */
+  purpose: 'register' | 'assert' | 'vouch';
+  /** For an assertion or a vouch: the request it allows. */
   action: string;
   expiresAt: number;
+  /** A vouch's challenge: true once the trusted computer's own screen vouched for it over the link (issue #313). */
+  vouched?: boolean;
 }
 
 export class Passkeys {
@@ -61,6 +89,13 @@ export class Passkeys {
    * another site (it can use one there), so a device paired in a frame sets its passkey up this way. In memory only.
    */
   private readonly enrolCodes = new Map<string, { deviceId: string; expiresAt: number }>();
+  /**
+   * Sign codes (#463): a one-time code that lets the default browser sign one waiting request for the device that asked
+   * for it, which can't show a passkey prompt itself (the desktop app on a Mac, #427). Bound to that device and that
+   * request's challenge, and gone with it after two minutes. The browser's answer waits here until the device picks it
+   * up and sends its request with it, where the passkey check runs in full (verify). In memory only.
+   */
+  private readonly signCodes = new Map<string, { deviceId: string; challenge: string; what: string; expiresAt: number; answer?: string; failed?: string }>();
   /** Each device's unlock, until when. In memory only: a restart locks every device again (fails closed). */
   private readonly unlocked = new Map<string, number>();
 
@@ -84,7 +119,7 @@ export class Passkeys {
   /** A new enrol code for this device, while it may still set up its passkey; any earlier one of it stops working. */
   enrolCode(device: Device): { code: string; expiresAt: number } {
     if (!this.devices.mayRegisterPasskey(device)) {
-      throw new PasskeyError(device.credentialId ? 'This device already has its passkey.' : 'A passkey can only be set up in the 10 minutes after pairing. Pair this device again from Settings on the computer.');
+      throw new PasskeyError(device.credentialId ? ALREADY_HAS_PASSKEY : PASSKEY_WINDOW_PASSED);
     }
     const at = this.now();
     for (const [c, e] of this.enrolCodes) if (e.deviceId === device.id || e.expiresAt <= at) this.enrolCodes.delete(c);
@@ -108,7 +143,7 @@ export class Passkeys {
 
   async registrationOptions(device: Device): Promise<PublicKeyCredentialCreationOptionsJSON> {
     if (!this.devices.mayRegisterPasskey(device)) {
-      throw new PasskeyError(device.credentialId ? 'This device already has its passkey.' : 'A passkey can only be set up in the 10 minutes after pairing. Pair this device again from Settings on the computer.');
+      throw new PasskeyError(device.credentialId ? ALREADY_HAS_PASSKEY : PASSKEY_WINDOW_PASSED);
     }
     const challenge = this.issue(device.id, 'register', '');
     return generateRegistrationOptions({
@@ -130,7 +165,7 @@ export class Passkeys {
     }).catch((e: Error) => { throw new PasskeyError(`The passkey was not accepted: ${e.message}`); });
     if (!verified.verified) throw new PasskeyError('The passkey was not accepted.');
     const { credential } = verified.registrationInfo;
-    if (!this.devices.setPasskey(device.id, credential.id, credential.publicKey, credential.counter)) throw new PasskeyError('This device already has its passkey.');
+    if (!this.devices.setPasskey(device.id, credential.id, credential.publicKey, credential.counter)) throw new PasskeyError(ALREADY_HAS_PASSKEY);
   }
 
   /** A challenge for one request by this device. */
@@ -141,6 +176,35 @@ export class Passkeys {
       rpID: this.rpID, challenge, timeout: CHALLENGE_MS, userVerification: 'required',
       allowCredentials: [{ id: device.credentialId }],
     });
+  }
+
+  /**
+   * A challenge for one request by a trusted computer's frame (issue #313): its own screen vouches for it over the link
+   * instead of a passkey signing it. Bound to the request and the device, used once, within two minutes, as a passkey's.
+   * The caller checks the device is that frame; it needs no passkey of its own.
+   */
+  vouchChallenge(device: Device, action: string): string {
+    return Buffer.from(this.issue(device.id, 'vouch', action)).toString('base64url');
+  }
+
+  /**
+   * The trusted computer's own screen vouches for an open challenge (/link/vouch): `accepts` says whether the device it
+   * was issued to is that computer's frame here. Throws when the challenge is unknown, used, expired or not a vouch's.
+   */
+  vouch(challenge: unknown, accepts: (device: Device) => boolean): void {
+    const o = typeof challenge === 'string' ? this.open.get(challenge) : undefined;
+    if (!o || o.purpose !== 'vouch' || o.vouched || o.expiresAt <= this.now()) throw new PasskeyError('That check expired or was already used; try again.');
+    const device = this.devices.get(o.deviceId);
+    if (!device || !accepts(device)) throw new PasskeyError('That check is not for a frame of this computer.');
+    o.vouched = true;
+  }
+
+  /** Throws unless `header` is a challenge issued to this device for exactly `action` and vouched for; uses it up. */
+  verifyVouch(device: Device, action: string, header: unknown): void {
+    if (typeof header !== 'string' || !header || header.length > 100) throw new PasskeyError(PASSKEY_NEEDED);
+    const vouched = this.open.get(header)?.vouched === true;
+    this.take(header, device.id, 'vouch', action);
+    if (!vouched) throw new PasskeyError('That check was not vouched for by the trusted computer.');
   }
 
   /** Throws unless `header` holds this device's passkey signing a challenge issued for exactly `action`. */
@@ -167,6 +231,84 @@ export class Passkeys {
     }).catch((e: Error) => { throw new PasskeyError(`The passkey was not accepted: ${e.message}`); });
     if (!verified.verified || !verified.authenticationInfo.userVerified) throw new PasskeyError('The passkey was not accepted.');
     this.devices.setCounter(device.id, verified.authenticationInfo.newCounter);
+  }
+
+  /**
+   * A sign code for one request by this device (#463): a fresh challenge for exactly `action`, which the default
+   * browser signs on the sign page. `what` is the request in words, shown there. Lives as long as its challenge.
+   */
+  signLink(device: Device, action: string, what: string): { code: string; expiresAt: number } {
+    if (!device.credentialId) throw new PasskeyError('This device has no passkey; it can only do this on the computer.');
+    const challenge = Buffer.from(this.issue(device.id, 'assert', action)).toString('base64url');
+    // A code whose challenge is gone (used, run out, or pushed out by MAX_OPEN) goes too: no more codes than challenges.
+    for (const [c, s] of this.signCodes) if (!this.open.has(s.challenge)) this.signCodes.delete(c);
+    const code = crypto.randomBytes(24).toString('base64url');
+    const expiresAt = this.open.get(challenge)!.expiresAt;
+    this.signCodes.set(code, { deviceId: device.id, challenge, what, expiresAt });
+    return { code, expiresAt };
+  }
+
+  /** The sign page's options (#463): the passkey check for the code's challenge, the device's name and what it signs. */
+  async signOptions(code: unknown): Promise<{ options: PublicKeyCredentialRequestOptionsJSON; name: string; what: string; terms: SignTerms }> {
+    const s = this.signEntry(code);
+    const device = this.devices.get(s.deviceId);
+    // Works once: after an answer, right or wrong, the link is done.
+    if (s.answer !== undefined || s.failed !== undefined || !device?.credentialId) throw new PasskeyError(SIGN_LINK_GONE);
+    const options = await generateAuthenticationOptions({
+      rpID: this.rpID, challenge: new Uint8Array(Buffer.from(s.challenge, 'base64url')), timeout: Math.max(0, s.expiresAt - this.now()),
+      userVerification: 'required', allowCredentials: [{ id: device.credentialId }],
+    });
+    const terms: SignTerms = {
+      logOn: s.what === SIGN_LOG_ON, kind: device.kind, idleDays: Math.round(COMPUTER_IDLE_MS / 86_400_000),
+      unlockMinutes: Math.round(UNLOCK_MS / 60_000), linkMinutes: Math.round(CHALLENGE_MS / 60_000),
+    };
+    return { options, name: device.name, what: s.what, terms };
+  }
+
+  /**
+   * The browser's answer for a sign code (#463), kept for the device to pick up. Only its challenge and credential are
+   * checked here; the signature, the origin and user verification are checked in full when the device sends its
+   * request with it (verify), which also uses the challenge up. One answer per code: a wrong one ends the link too.
+   */
+  signFinish(code: unknown, response: unknown): { name: string } {
+    const s = this.signEntry(code);
+    if (s.answer !== undefined || s.failed !== undefined) throw new PasskeyError(SIGN_LINK_GONE);
+    const device = this.devices.get(s.deviceId);
+    try {
+      const res = response as AuthenticationResponseJSON;
+      if (challengeIn(res) !== s.challenge) throw new PasskeyError('The passkey answer was for another check.');
+      if (!device?.credentialId || res.id !== device.credentialId) throw new PasskeyError("That is not this device's passkey.");
+      const answer = Buffer.from(JSON.stringify(res)).toString('base64url');
+      if (answer.length > 16 * 1024) throw new PasskeyError('The passkey answer could not be read.');
+      s.answer = answer;
+      return { name: device.name };
+    } catch (e) {
+      s.failed = e instanceof PasskeyError ? e.message : 'The passkey answer could not be read.';
+      throw e instanceof PasskeyError ? e : new PasskeyError(s.failed);
+    }
+  }
+
+  /**
+   * The browser's answer for this device's sign code (#463), once: the header its request then carries; null while the
+   * browser has not answered. Only the device the code was made for gets it.
+   */
+  signAnswer(device: Device, code: unknown): string | null {
+    const s = this.signEntry(code);
+    if (s.deviceId !== device.id) throw new PasskeyError(SIGN_LINK_FOREIGN);
+    if (s.answer === undefined && s.failed === undefined) return null;
+    this.signCodes.delete(code as string);
+    if (s.failed !== undefined) throw new PasskeyError(s.failed);
+    return s.answer!;
+  }
+
+  /** An open sign code: known, its challenge still open and fresh; otherwise it is dropped and SIGN_LINK_GONE thrown. */
+  private signEntry(code: unknown) {
+    const s = typeof code === 'string' ? this.signCodes.get(code) : undefined;
+    if (!s || s.expiresAt <= this.now() || !this.open.has(s.challenge)) {
+      if (typeof code === 'string') this.signCodes.delete(code);
+      throw new PasskeyError(SIGN_LINK_GONE);
+    }
+    return s;
   }
 
   /**

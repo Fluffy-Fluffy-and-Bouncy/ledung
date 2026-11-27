@@ -5,7 +5,19 @@
 import type { PageEvent, StoredMessage } from '../../src/shared/protocol.ts';
 import { fetchNewer, PAGE, withNewer } from './catchUp.ts';
 
-export type OpenSessionView = { messages: StoredMessage[]; hasEarlier: boolean };
+/** The messages shown and the session they belong to: for one render after a switch the page still has the old ones. */
+export type OpenSessionView = { sessionId: string | null; messages: StoredMessage[]; hasEarlier: boolean };
+
+const NONE: StoredMessage[] = [];
+
+/**
+ * The view as the session `sessionId` may show it: none of another session's messages (issue #328). A chat opened from
+ * another chat is drawn before its open runs; drawn with the previous chat's messages, it converted and laid them all out
+ * again (0.9-1.3 s at 4x CPU) only to clear them.
+ */
+export function viewFor(view: OpenSessionView, sessionId: string | null): OpenSessionView {
+  return view.sessionId === sessionId ? view : { sessionId, messages: NONE, hasEarlier: false };
+}
 
 export type OpenSessionDeps = {
   /** Sends a frame on the live connection. Called only between the connection's hello and its close. */
@@ -16,6 +28,8 @@ export type OpenSessionDeps = {
   messagesBefore(sessionId: string, beforeId: number): Promise<StoredMessage[]>;
   /** The messages after `afterId`, oldest first, a page at most. */
   messagesAfter(sessionId: string, afterId: number): Promise<StoredMessage[]>;
+  /** The session's "Waiting for you" lines from message `fromId` on, as stored now. */
+  waitingLines(sessionId: string, fromId: number): Promise<StoredMessage[]>;
   /** What the page shows changed. */
   changed(view: OpenSessionView): void;
 };
@@ -93,9 +107,16 @@ export class OpenSession {
     if (sessionId !== this.id || generation !== this.generation) return;
     if (this.upTo === null) await this.load(sessionId);
     else {
-      const newer = await fetchNewer(this.upTo, (after) => this.deps.messagesAfter(sessionId, after));
+      // A Waiting for you line decided while the page was away was changed in place (#350): older than what the
+      // catch-up reads, and not sent again, so the lines shown are read again too (code review of #350, finding 1).
+      const first = this.shown[0]?.id;
+      const [newer, lines] = await Promise.all([
+        fetchNewer(this.upTo, (after) => this.deps.messagesAfter(sessionId, after)),
+        first === undefined ? [] : this.deps.waitingLines(sessionId, first),
+      ]);
       if (this.id !== sessionId || generation !== this.generation) return;
       this.set(withNewer(this.shown, newer));
+      for (const line of lines) this.replace(line);
     }
     if (this.id !== sessionId || generation !== this.generation) return;
     // Everything up to here is now shown: what was stored before the answer is in a read, and what after it came live.
@@ -105,8 +126,21 @@ export class OpenSession {
 
   /** A message from the live connection; one of another session (sent before Ledung read a watch) is not shown. */
   message(m: StoredMessage): void {
-    if (m.sessionId !== this.id || this.shown.some((x) => x.id === m.id)) return;
-    this.set([...this.shown, m]);
+    if (m.sessionId !== this.id) return;
+    // A message sent again is one changed in place (a Waiting for you line once decided, issue #350): replaced.
+    if (!this.replace(m)) this.set([...this.shown, m]);
+  }
+
+  /** Puts `m` in place of the message shown with its id, if its data changed; false: none is shown with it. */
+  private replace(m: StoredMessage): boolean {
+    const at = this.shown.findIndex((x) => x.id === m.id);
+    if (at < 0) return false;
+    // A line only goes from waiting to decided: a reconnect's read that left the server before a decision arrived
+    // live must not put "waiting" back (re-review of #350).
+    const was = this.shown[at]!;
+    if (m.kind === 'waiting' && (m.data as { state?: string }).state === 'waiting' && (was.data as { state?: string }).state !== 'waiting') return true;
+    if (JSON.stringify(this.shown[at]!.data) !== JSON.stringify(m.data)) this.set(this.shown.map((x, i) => (i === at ? m : x)));
+    return true;
   }
 
   async loadEarlier(): Promise<void> {
@@ -141,6 +175,6 @@ export class OpenSession {
   }
 
   private emit(): void {
-    this.deps.changed({ messages: this.shown, hasEarlier: this.hasEarlier });
+    this.deps.changed({ sessionId: this.id, messages: this.shown, hasEarlier: this.hasEarlier });
   }
 }

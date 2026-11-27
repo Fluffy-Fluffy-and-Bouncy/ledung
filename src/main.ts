@@ -10,10 +10,16 @@ import path from 'node:path';
 import { boardConfig, configPath, createDefaultConfig, loadConfig } from './config.ts';
 import { ConfigWatcher } from './config-watch.ts';
 import { openBrowser } from './platform/open-browser.ts';
+import { Tray, trayIconFile, trayKind, TraySwitch } from './platform/tray.ts';
+import { waitingCount } from './shared/waiting.ts';
 import { exercisedLine } from './platform/exercised.ts';
 import { lanNames } from './platform/network.ts';
-import { iconFiles, launchTarget, Shortcuts } from './platform/shortcuts.ts';
-import { appDir, appVersion, chatImagesDir, envSetting, PACKAGED, remoteDir, userDataDir } from './platform/paths.ts';
+import { iconFiles, launchTarget, Shortcuts, startMenuFolder } from './platform/shortcuts.ts';
+import { appDir, appVersion, chatImagesDir, envSetting, PACKAGED, remoteDir, runningVersion, userDataDir } from './platform/paths.ts';
+import {
+  codeIntoKept, desktopAppState, desktopAvailability, ensureApp, offersApp, openApp, openMadeApp, progressPrinter, trayOpen,
+} from './platform/desktop-app.ts';
+import { madeConfigFor } from '../desktop/made.ts';
 import { ChatImages } from './sessions/chat-images.ts';
 import { loadOrCreateToken } from './server/security.ts';
 import { LedungServer } from './server/server.ts';
@@ -29,27 +35,43 @@ import { UsageQueries } from './usage/queries.ts';
 import { publisherProjects, UsagePublisher } from './usage/publisher.ts';
 import { usageMark, usageSlices } from './usage/publish-source.ts';
 import { ProjectRemotes } from './usage/project-remotes.ts';
-import { DEFAULT_ACCOUNT } from './accounts/store.ts';
 import { Updater } from './update/updater.ts';
 import { CheckIn } from './update/checkin.ts';
 import { RemoteLink, savedRemote } from './remote/link.ts';
-import { RelayAdmin } from './remote/admin.ts';
+import { connectPublic, RelayAdmin } from './remote/admin.ts';
 import { connectVia } from './remote/linked.ts';
 import { computerList } from './shared/computers.ts';
 import { remoteSecretText } from './remote/secret.ts';
 import { Secrets } from './secrets/secrets.ts';
 import { osGuard, Vault } from './secrets/vault.ts';
 import { localSecretsDir } from './secrets/runtime.ts';
+import { runtimeRefusal } from './platform/runtime.ts';
+import { claimPort, listenAddresses, RESTART_PORT_WAIT_MS } from './platform/port-claim.ts';
 
 /** Exit code that asks the launcher to start Ledung again (see scripts/release.ts, and src/cli.ts for the npm package). */
 const RESTART_CODE = 75;
 
+/** A start that could not have the port (#503): it touched no session, and says so. */
+function portInUse(port: number, waited: string): string {
+  return `Port ${port} is in use${waited}. Is Ledung already running? Otherwise set another "port" in ${configPath()}.\n`
+    + 'This Ledung did not start. No session was stopped: they keep running, and the Ledung that starts next reconnects them.';
+}
+
 async function main(): Promise<void> {
+  // Never on Electron's binary: its hosts would need ELECTRON_RUN_AS_NODE, which sessions must not inherit (#361).
+  // First of all, so it stops before the database or any host is touched.
+  const refusal = runtimeRefusal(process.versions);
+  if (refusal) {
+    console.error(refusal);
+    process.exit(1);
+  }
   // Before the config is read: a computer new to the relay may not have a remote block yet.
   if (process.argv[2] === 'remote-secret') {
     console.log(remoteSecretText());
     return;
   }
+  // The version this process runs, before anything can install another (#435).
+  runningVersion();
   // The npm package has no clone to copy the example in: its first start writes the defaults (#105).
   if (PACKAGED && createDefaultConfig()) console.log(`Wrote a default config to ${configPath()}.`);
   const config = loadConfig();
@@ -58,6 +80,19 @@ async function main(): Promise<void> {
   if (startPath) exercisedLine(`EXERCISED #464 started with the ${startPath === 'login' ? "login shell's" : 'fallback'} PATH`);
   // The relay this Ledung is on: the config's "remote" block, else what Join with a code saved (issue #237).
   const remote = config.remote ?? savedRemote(remoteDir());
+  // The port first (#503): a start that can't have it leaves the database and every session host as they are, so the
+  // sessions keep running and the Ledung that has the port, or the next start, keeps or reconnects them. A restart
+  // waits for the Ledung before it to let go of the port; a first start finds out at once.
+  const lanBind = config.lan === true ? '0.0.0.0' : config.lan || undefined;
+  const restarted = envSetting('RESTARTED') === '1';
+  const claim = await claimPort({
+    port: config.port, addresses: listenAddresses(lanBind), waitMs: restarted ? RESTART_PORT_WAIT_MS : 0,
+    log: (line) => console.log(line),
+  });
+  if (!claim) {
+    console.error(portInUse(config.port, restarted ? ` after waiting ${RESTART_PORT_WAIT_MS / 1000} s` : ''));
+    process.exit(1);
+  }
   // No database yet: the first start, for a release and the npm package alike (issue #332).
   if (!fs.existsSync(databaseFile())) console.log(ANTHROPIC_NOTICE);
   const db = openDatabase();
@@ -71,7 +106,12 @@ async function main(): Promise<void> {
   let server: LedungServer | null = null;
   let link: RemoteLink | null = null;
   let watcher: ConfigWatcher | null = null;
-  const manager = new SessionManager(config, store, (event) => server?.broadcast(event));
+  let tray: Tray | null = null;
+  const manager = new SessionManager(config, store, (event) => {
+    server?.broadcast(event);
+    // Its status line and waiting count follow sessions, questions and prompts (#347); sent only when they change.
+    tray?.changed();
+  });
   // The message boards between managers: each project names its repo (docs/steps/message-board.md, "Per project").
   const pollMs = boardConfig(config).pollSeconds * 1000;
   // Board attachments are kept in the data folder's board cache, never in a project folder.
@@ -87,6 +127,8 @@ async function main(): Promise<void> {
 
   // Reconnect to sessions whose hosts survived the restart, then mark the rest as ended.
   const attached = await manager.attachRunningHosts();
+  // Before the rest are marked ended: which managers were running when Ledung stopped, to resume below (#391).
+  const managersAtStop = manager.managersRunningAtStop(attached);
   const leftover = store.markUnfinishedSessionsEnded('Ledung stopped before this session ended. Resume to continue.', attached);
   // Those that were waiting for memory to start never ran: they say so, and their managers get the task back.
   manager.settleWaitersAfterRestart();
@@ -100,20 +142,23 @@ async function main(): Promise<void> {
   void manager.checkSignIns();
 
   let shuttingDown = false;
-  const shutdown = async (restart: boolean) => {
+  // why: what asked for it, in the log, so a stop can always be traced to its cause (#503).
+  const shutdown = async (restart: boolean, why: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    // The icon goes first: it would only offer what is now stopping (#347).
+    tray?.stop();
     manager.boards?.stop();
     usagePublisher.stop();
     checkIn.stop();
     watcher?.stop();
     if (restart) {
-      console.log('Restarting; sessions keep running and reconnect after the restart...');
+      console.log(`Restarting (${why}); sessions keep running and reconnect after the restart...`);
       // A running "!" command doesn't survive the restart (issue #212); its block says so.
       await manager.endShells();
       manager.detachAll();
     } else {
-      console.log('Stopping sessions...');
+      console.log(`Stopping sessions (${why})...`);
       await manager.shutdown();
     }
     link?.stop();
@@ -125,7 +170,46 @@ async function main(): Promise<void> {
   // Restarting needs the launcher, which starts Ledung again; without it, Ledung would just exit.
   const canRestart = envSetting('LAUNCHER') === '1';
   const lan = lanNames(config.lan);
-  const onRestart = canRestart ? () => void shutdown(true) : undefined;
+  const onRestart = canRestart ? () => void shutdown(true, 'Restart Ledung') : undefined;
+  const loginUrl = `http://127.0.0.1:${config.port}/login?token=${loadOrCreateToken()}`;
+  // The desktop app (#409), read at each ask: the config's switch, and whether the app is made here, change while this
+  // runs. The page's "Open in the Ledung app" opens a made one; the tray's Open makes it first when needed.
+  const desktopOff = () => manager.currentConfig.desktopApp === false;
+  const openDesktopApp = () => openMadeApp({ dataDir: userDataDir(), off: desktopOff() });
+  // The tray's fallback reasons logged in this run: each once (#434).
+  const trayTold = new Set<string>();
+  const openFromTray = () => trayOpen({
+    off: desktopOff(),
+    desktop: desktopAvailability(),
+    // Only the npm package's page reads the tray's line (desktopApp below); a clone leaves none in the shared folder.
+    dataDir: PACKAGED ? userDataDir() : null,
+    told: trayTold,
+    // As `ledung` makes it (cli.ts), so the stamp agrees and neither makes it again for the other.
+    make: async (desktop) => ({
+      dataDir: userDataDir(), electron: desktop.electron, source: desktop.source, ledungVersion: appVersion(),
+      config: madeConfigFor(process.execPath, path.join(appDir(), 'dist', 'cli.js'), process.env),
+      progress: progressPrinter((text) => process.stdout.write(text), false),
+      startMenu: process.platform === 'win32' ? await startMenuFolder() : undefined,
+    }),
+    steps: { ensure: ensureApp, keep: codeIntoKept, open: (paths) => openApp(paths), browser: () => openBrowser(loginUrl), print: (line) => console.log(line) },
+  });
+  // The tray icon (issue #347): owned by this server, so it goes however Ledung stops (choice B). The helper never
+  // gets the token: its Open asks the server, which opens the sign-in link as at start (choice D).
+  const kind = trayKind();
+  tray = kind && new Tray({
+    kind, address: `127.0.0.1:${config.port}`, iconFile: trayIconFile(kind, appDir()), canRestart,
+    counts: () => ({ working: manager.workingCount(), waiting: waitingCount(manager.questions(), store.pendingPermissions()) }),
+    // The app, made first when needed, as `ledung` opens it; the page in the browser without it (#409).
+    onOpen: () => void openFromTray(),
+    onRestart: () => void shutdown(true, 'Restart in the tray icon'),
+    // Exit is Stop Ledung (choice C); the tray asks first when sessions are working.
+    onExit: () => void shutdown(false, 'Exit in the tray icon'),
+    log: (line) => console.log(line),
+  });
+  const traySwitch = new TraySwitch({
+    tray, meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) },
+    configured: () => manager.currentConfig.trayIcon, ownDataDir: !!envSetting('DATA_DIR'),
+  });
   // Settings → Relay, for whoever runs a relay (issue #237); its settings and keys stay in the data folder.
   // Publishing usage to a shared repo (issue #363): off until switched on in Settings.
   const remotes = new ProjectRemotes((name) => {
@@ -141,7 +225,6 @@ async function main(): Promise<void> {
     computer: () => server?.computerName() ?? 'Ledung',
     projects: () => publisherProjects(manager.projectStore.list(), manager.projectStore.removed()),
     remotes: (names) => remotes.remotes(names),
-    emailOf: (account) => account === DEFAULT_ACCOUNT ? manager.accountsEvent().defaultIdentity?.email ?? null : manager.accounts.get(account)?.email ?? null,
     linkedKey: () => server?.linkedUsageKey() ?? Promise.resolve(null),
   });
   const relayAdmin = new RelayAdmin({
@@ -151,28 +234,39 @@ async function main(): Promise<void> {
       const remote = link?.settings();
       return remote ? { relay: remote.relay, name: remote.name } : null;
     },
+    // Its in-use check reaches public names as linked computers do (issue #420): through linkVia in a loopback.
+    connect: config.remote?.linkVia ? connectVia(config.remote.linkVia) : connectPublic,
   });
   const updater = new Updater({
-    appDir: appDir(), dataDir: userDataDir(), configPath: configPath(), onRestart, npmVersion: PACKAGED ? appVersion() : undefined,
+    // Its own reason in the log: an installed update restarts Ledung without anyone pressing Restart (#503).
+    appDir: appDir(), dataDir: userDataDir(), configPath: configPath(),
+    onRestart: canRestart ? () => void shutdown(true, 'update installed') : undefined,
+    npmVersion: PACKAGED ? runningVersion() : undefined,
     // The update channel (#461) is this computer's, like its shortcuts.
     meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) },
   });
   // The anonymous daily check-in (#220): on by default, announced on the page, only from the npm package.
   const checkIn = new CheckIn({
     meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) },
-    version: appVersion(), channel: () => updater.channel(), packaged: PACKAGED,
+    version: runningVersion(), channel: () => updater.channel(), packaged: PACKAGED,
   });
   server = new LedungServer({
     port: config.port, token: loadOrCreateToken(), store, manager,
     onRestart,
     // Stop Ledung in Settings and `ledung stop` (issue #456): the same stop as Ctrl+C in its window.
-    onStop: () => void shutdown(false),
+    onStop: () => void shutdown(false, 'Stop Ledung in the page, or ledung stop'),
     // Made only when asked, in the first-run question or Settings (issue #415).
     shortcuts: new Shortcuts({ launch: launchTarget(), iconDir: userDataDir(), icons: iconFiles(), meta: { get: (k) => store.getMeta(k), set: (k, v) => store.setMeta(k, v) } }),
     updater,
+    // The made desktop app (#407) against this Ledung, so the app's window restarts after Update Ledung (#408). Only
+    // the npm package makes one. The tray's browser-fallback line goes to the first page that asks, then is gone (#434).
+    desktopApp: PACKAGED ? () => desktopAppState({ dataDir: userDataDir(), ledungVersion: appVersion(), takeTrayNotice: true }) : undefined,
+    canOpenDesktopApp: PACKAGED ? () => offersApp({ dataDir: userDataDir(), off: desktopOff() }) : undefined,
+    openDesktopApp: PACKAGED ? openDesktopApp : undefined,
     checkIn,
+    tray: traySwitch,
     lanNames: lan,
-    lanBind: config.lan === true ? '0.0.0.0' : config.lan || undefined,
+    lanBind,
     lanOpen: !config.lanSignIn,
     usage: new UsageQueries(db),
     relayAdmin,
@@ -187,15 +281,21 @@ async function main(): Promise<void> {
   link = new RemoteLink({ server, dir: remoteDir(), configured: config.remote, joinAcme: config.relayJoin });
   server.attachRemote(link);
 
+  // The claim lets go only now, and the server listens straight after: another start would have to take the port in
+  // that moment. If one does, the sessions are let go, never stopped (#503).
+  await claim.release();
   try {
     await server.listen();
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'EADDRINUSE') {
       manager.detachAll();
-      throw new Error(`Port ${config.port} is in use. Is Ledung already running? Otherwise set another "port" in ${configPath()}.`);
+      throw new Error(portInUse(config.port, ''));
     }
     throw e;
   }
+  // The managers that were running when Ledung stopped come back by themselves (#391), once this Ledung is surely the
+  // one that runs (not a second start on a port in use), and in the background like a Resume from the page.
+  void manager.resumeManagersAtStart(managersAtStop).catch((e) => console.log(`Managers at start: ${(e as Error).message}`));
 
   manager.startMeasuring();
   checkIn.start();
@@ -207,6 +307,7 @@ async function main(): Promise<void> {
     file: configPath(), started: config, log: (line) => console.log(line),
     apply: (next, changed) => {
       manager.applyConfig(next, changed);
+      if (changed.includes('trayIcon')) traySwitch.apply();
       if (changed.includes('keepToolResultsDays')) void trimmer.run().catch((e) => console.log(`Shrinking old tool results failed: ${(e as Error).message}`));
     },
     onStatus: (status) => manager.setConfigStatus(status),
@@ -229,7 +330,7 @@ async function main(): Promise<void> {
   link.start();
   relayAdmin.start();
 
-  const loginUrl = `http://127.0.0.1:${config.port}/login?token=${loadOrCreateToken()}`;
+  traySwitch.apply();
   console.log(`Ledung is running at http://127.0.0.1:${config.port}`);
   console.log(`Config: ${configPath()}`);
   console.log(`Data:   ${userDataDir()}`);
@@ -249,7 +350,7 @@ async function main(): Promise<void> {
   if (!process.argv.includes('--no-open')) openBrowser(loginUrl);
 
   // Ctrl+C, and closing the console window (SIGHUP on Windows), close Ledung and stop its sessions.
-  for (const signal of ['SIGINT', 'SIGTERM', 'SIGBREAK', 'SIGHUP'] as const) process.on(signal, () => void shutdown(false));
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGBREAK', 'SIGHUP'] as const) process.on(signal, () => void shutdown(false, signal));
 }
 
 main().catch((e) => {

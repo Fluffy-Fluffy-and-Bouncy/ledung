@@ -48,6 +48,18 @@ export function nextVersion(channel: Channel, versions: string[]): string {
   return channel === 'dev' ? `${major}.${minor + 1}.0` : `${major + 1}.0.0`;
 }
 
+// The changelogs online (issue #417; Martin, 2026-11-19 14:18, Ledung question #606): one page per channel on
+// projectledung.com, each reading its Markdown file from the repository, so it is current without an upload per release.
+export const CHANGELOG_URL: Record<Channel, string> = {
+  public: 'https://projectledung.com/changelog',
+  dev: 'https://projectledung.com/dev-changelog',
+};
+
+/** Settings → About's changelog links: the running Ledung's own channel first, then the other. */
+export function changelogLinks(channel: Channel): { channel: Channel; url: string }[] {
+  return [channel, ...CHANNELS.filter((c) => c !== channel)].map((c) => ({ channel: c, url: CHANGELOG_URL[c] }));
+}
+
 /**
  * The version a channel offers, from npm's dist-tags: Public offers `latest`; Dev offers `dev` or `latest`, whichever
  * is newer, so a public release made after the last dev build reaches Dev too without moving the `dev` tag.

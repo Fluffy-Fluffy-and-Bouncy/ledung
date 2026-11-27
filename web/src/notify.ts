@@ -2,6 +2,8 @@
 // and which to close, kept free of the browser so they can be tested.
 import type { PermissionInfo, QuestionInfo, UsageStopInfo } from '../../src/shared/protocol.ts';
 import { permissionWaits, questionWaits } from '../../src/shared/waiting.ts';
+import { isRequest, requestKinds } from '../../src/shared/requests.ts';
+import { deskQuestion } from '../../src/shared/questions.ts';
 
 export interface WaitingItem {
   /** Also the notification's tag, so several open tabs don't stack duplicates. */
@@ -31,8 +33,9 @@ export function waitingItems(questions: QuestionInfo[], permissions: PermissionI
     ...questions.filter(questionWaits).map((q) => ({
       id: `q${q.id}`,
       sessionId: q.sessionId,
-      title: `Question from ${sessionTitle(q.sessionId)}`,
-      body: firstLine(q.question),
+      // A request (issue #502) is one notification too; it names its parts: "Review · 2 decisions".
+      title: `${isRequest(q) ? 'Request' : 'Question'} from ${sessionTitle(q.sessionId)}`,
+      body: isRequest(q) ? `${requestKinds(q).map((k, i) => (i ? k : k[0]!.toUpperCase() + k.slice(1))).join(' · ')}: ${firstLine(deskQuestion(q).title)}` : firstLine(q.question),
     })),
     ...permissions.filter(permissionWaits).map((p) => {
       const body = permissionBody(p);

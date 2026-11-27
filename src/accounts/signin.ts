@@ -60,7 +60,10 @@ export function readSignIn(result: CommandResult): SignIn {
   const found = readAuthStatus(result);
   if (found.state !== 'in') return found;
   const said = jsonOf(result.stdout) as { authMethod?: unknown; subscriptionType?: unknown };
-  return { ...found, kind: signInKind(said.authMethod, said.subscriptionType) };
+  // The plan comes from the account's own sign-in record (the field a token's record leaves null), not Claude Code's
+  // shared settings, so it is the account's own; its email there is the computer's login for every account (#378).
+  const plan = typeof said.subscriptionType === 'string' && said.subscriptionType ? said.subscriptionType : null;
+  return { ...found, kind: signInKind(said.authMethod, said.subscriptionType), plan };
 }
 
 /** Parsed JSON, or null for anything else (an older Claude Code without the command, an error text). */

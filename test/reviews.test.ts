@@ -3,6 +3,7 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -80,11 +81,14 @@ test("a review without its context is refused, as is a field that is not a revie
   assert.match((await call(without('solving'))).text, /^A review needs review\.solving, so it never arrives without its context\. Nothing was asked\.$/);
   assert.match((await call({ ...REVIEW, review: { ...REVIEW.review, solving: '  ', done: '\n' } })).text, /needs review\.solving and review\.done/);
   assert.match((await call({ ...REVIEW, title: undefined })).text, /needs title/);
-  for (const extra of [{ options: ['Yes', 'No'] }, { opinions: [{ who: 'R' }] }, { evidence: 'checked' }, { question: 'q' }, { issue: 'i' }, { screenshots: [{ file: 'a.png', look_for: 'x' }] }, { about_request: 'req-12345678' }]) {
+  // Since #502 a review may also carry screenshots and opinions without a pick (it becomes a request); the rest stays refused.
+  for (const extra of [{ options: ['Yes', 'No'] }, { evidence: 'checked' }, { question: 'q' }, { issue: 'i' }, { about_request: 'req-12345678' }]) {
     const r = await call({ ...REVIEW, ...extra });
     assert.equal(r.isError, true, JSON.stringify(extra));
-    assert.match(r.text, new RegExp(`^A review takes title, review, tier, rank and refs, not ${Object.keys(extra)[0]}: `));
+    assert.match(r.text, new RegExp(`^A review takes title, review, tier, rank and refs \\(and, as a request, screenshots, decisions and opinions without a pick\\), not ${Object.keys(extra)[0]}: `));
   }
+  const picked = await call({ ...REVIEW, opinions: [{ who: 'R', pick: 'a' }] });
+  assert.match(picked.text, /^Opinions beside a review are views on the whole request and pick no option/);
   assert.equal(schema.safeParse({ ...REVIEW, review: { ...REVIEW.review, evidence: Array.from({ length: 11 }, () => REVIEW.review.evidence[0]) } }).success, false, 'at most 10 files');
   assert.equal(schema.safeParse({ ...REVIEW, review: { ...REVIEW.review, evidence: [{ file: 'a.png' }] } }).success, false, 'each with a caption');
   assert.equal(asked.length, 0, 'nothing was asked');
@@ -155,10 +159,12 @@ test('through the real chain: evidence files are checked when asked, a bad one s
   assert.equal(good.isError, undefined, good.content[0]!.text);
   const [q] = store.listQuestions();
   assert.match(good.content[0]!.text, new RegExp(`^Review #${q!.id} with 2 evidence files is recorded`));
-  // Stored relative to the folder, captions on one line, each with its kind; no screenshots to judge.
-  assert.deepEqual(q!.details!.review!.evidence, [
-    { file: 'shots/empty-chat.png', caption: 'The empty chat area', kind: 'image' },
-    { file: 'test-output.log', caption: 'Test run', kind: 'text' },
+  // Stored as Ledung's own copies, by their path relative to the folder (issue #306), captions on one line, each with
+  // its kind; no screenshots to judge.
+  const evidence = q!.details!.review!.evidence!;
+  assert.deepEqual(evidence.map((e) => ({ ...e, file: e.file.replace(/^kept:[0-9a-f]{32}\//, 'kept:<hash>/') })), [
+    { file: 'kept:<hash>/shots/empty-chat.png', caption: 'The empty chat area', kind: 'image' },
+    { file: 'kept:<hash>/test-output.log', caption: 'Test run', kind: 'text' },
   ]);
   assert.equal(q!.shots, null);
   assert.ok(q!.question.includes('- Test run (`test-output.log`)'), 'the text names the files as stored');
@@ -192,15 +198,29 @@ test("the page reads a review's text files through the review only, checked agai
   const ask = await askTool(session);
   await ask.handler(REVIEW, {});
   const [q] = store.listQuestions();
-  assert.deepEqual(manager.readEvidenceText(q!.id, 1), { file: 'test-output.log', content: 'tests 412 passed\n' });
+  // Read from Ledung's copy (issue #306), named by the question as stored.
+  const kept = q!.details!.review!.evidence![1]!.file;
+  assert.match(kept, /^kept:[0-9a-f]{32}\/test-output\.log$/);
+  assert.deepEqual(manager.readEvidenceText(q!.id, 1), { file: kept, content: 'tests 412 passed\n' });
   assert.throws(() => manager.readEvidenceText(q!.id, 0), /no such text file/, 'an image goes through the image routes');
   assert.throws(() => manager.readEvidenceText(q!.id, 2), /no such text file/);
   assert.throws(() => manager.readEvidenceText(q!.id, 0.5), /no such text file/);
+  // The file in the folder changing afterwards changes nothing shown: the copy is what was asked with.
   fs.writeFileSync(path.join(root, 'test-output.log'), Buffer.from([0x41, 0, 0x42]));
   try {
-    assert.throws(() => manager.readEvidenceText(q!.id, 1), /can't be attached/);
+    assert.deepEqual(manager.readEvidenceText(q!.id, 1), { file: kept, content: 'tests 412 passed\n' });
   } finally {
     fs.writeFileSync(path.join(root, 'test-output.log'), 'tests 412 passed\n');
+  }
+  // The copy is checked again when shown: changed, it is refused.
+  const folder = crypto.createHash('sha256').update('p').digest('hex').slice(0, 16);
+  const copy = path.join(manager.containerCopiesDir(), folder, kept.slice('kept:'.length, 'kept:'.length + 32));
+  const before = fs.readFileSync(copy);
+  fs.writeFileSync(copy, 'tests 0 passed\n');
+  try {
+    assert.throws(() => manager.readEvidenceText(q!.id, 1), /has changed/);
+  } finally {
+    fs.writeFileSync(copy, before);
   }
 });
 

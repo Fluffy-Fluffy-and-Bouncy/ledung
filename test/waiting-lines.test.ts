@@ -1,0 +1,163 @@
+// "Waiting for you" lines in a manager's chat (issue #350): where they go, one per item, changed in place when decided.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { Store } from '../src/store/store.ts';
+import { openDatabase } from '../src/store/database.ts';
+import { WaitingLines } from '../src/sessions/waiting-lines.ts';
+import type { ServerEvent, StoredMessage } from '../src/shared/protocol.ts';
+import { lineHead, lineOutcome, permissionLine, questionLine, type WaitingLine } from '../src/shared/waiting-line.ts';
+
+function setup() {
+  const store = new Store(openDatabase(':memory:'));
+  const sent: ServerEvent[] = [];
+  const lines = new WaitingLines({ store, publish: (e) => sent.push(e), userName: () => 'Simon' });
+  const publish = (e: ServerEvent) => lines.seen(e);
+  store.createSession({ id: 'mgr', project: 'p', runner: 'local', title: 'Manager: p', parentId: null, permissionMode: 'auto', role: 'manager' });
+  store.createSession({ id: 'w1', project: 'p', runner: 'local', title: 'Build', parentId: 'mgr', permissionMode: 'auto' });
+  store.createSession({ id: 'other', project: 'q', runner: 'local', title: 'Manager: q', parentId: null, permissionMode: 'auto', role: 'manager' });
+  store.createSession({ id: 'stray', project: 'p', runner: 'local', title: 'Stray', parentId: 'other', permissionMode: 'auto' });
+  const lineMessages = (id: string) => store.listMessages(id).filter((m) => m.kind === 'waiting');
+  return { store, sent, publish, lineMessages };
+}
+
+const runTag = { run: 'run-1', block: 'review', runTitle: 'Cart', blockTitle: 'Review' };
+
+test('a run person step Ledung asked gets one line in its coordinator chat, updated in place when accepted', () => {
+  const t = setup();
+  const q = t.store.createQuestion({ sessionId: 'mgr', question: 'q', options: null, addressedTo: 'user', details: { title: 'Review: Cart', review: { solving: 's', done: 'd' }, run: runTag } });
+  t.publish({ type: 'question', question: q });
+  t.publish({ type: 'question', question: q }); // sent again: no second line (Done looks like 8)
+  const [m] = t.lineMessages('mgr');
+  assert.equal(t.lineMessages('mgr').length, 1);
+  const line = m!.data as WaitingLine;
+  assert.equal(line.state, 'waiting');
+  assert.equal(lineHead(line), `Review #${q.id} — Review: Cart`);
+  t.store.answerQuestion(q.id, 'Accepted. Looks right.', 'user');
+  t.publish({ type: 'question', question: t.store.getQuestion(q.id)! });
+  const after = t.lineMessages('mgr');
+  assert.equal(after.length, 1);
+  assert.equal(after[0]!.id, m!.id, 'the same message, changed in place');
+  assert.equal(lineOutcome(after[0]!.data), 'Accepted by Simon');
+  const sent = t.sent.filter((e): e is { type: 'message'; message: StoredMessage } => e.type === 'message');
+  assert.deepEqual(sent.map((e) => e.message.id), [m!.id, m!.id], 'sent when added and when changed, not when unchanged');
+});
+
+test("the coordinator's own write-up (ask_user) gets no line: its chat shows it already", () => {
+  const t = setup();
+  const q = t.store.createQuestion({ sessionId: 'mgr', question: 'q', options: null, addressedTo: 'user', details: { title: 'T', run: { ...runTag, writeUp: true } } });
+  t.publish({ type: 'question', question: q });
+  assert.equal(t.lineMessages('mgr').length, 0);
+});
+
+test("a worker's question to the person goes to its manager's chat; a manager's own question gets none", () => {
+  const t = setup();
+  const own = t.store.createQuestion({ sessionId: 'mgr', question: 'Mine?', options: null, addressedTo: 'user' });
+  t.publish({ type: 'question', question: own });
+  const q = t.store.createQuestion({ sessionId: 'w1', question: 'Which one?', options: ['Left', 'Right'], addressedTo: 'user' });
+  t.publish({ type: 'question', question: q });
+  const toManager = t.store.createQuestion({ sessionId: 'w1', question: 'For the manager', options: null, addressedTo: 'mgr' });
+  t.publish({ type: 'question', question: toManager });
+  assert.deepEqual(t.lineMessages('mgr').map((m) => (m.data as WaitingLine).ref), [String(q.id)]);
+  assert.equal(t.lineMessages('w1').length, 0, "not in the asker's own chat");
+  t.store.answerQuestion(q.id, 'Right', 'user');
+  t.publish({ type: 'question', question: t.store.getQuestion(q.id)! });
+  assert.equal(lineOutcome(t.lineMessages('mgr')[0]!.data), 'Answered by Simon: Right');
+});
+
+test('a question already decided when first seen gets no line, and one withdrawn says so', () => {
+  const t = setup();
+  const q = t.store.createQuestion({ sessionId: 'w1', question: 'Late?', options: null, addressedTo: 'user' });
+  t.store.answerQuestion(q.id, 'yes', 'user');
+  t.publish({ type: 'question', question: t.store.getQuestion(q.id)! });
+  assert.equal(t.lineMessages('mgr').length, 0);
+  const w = t.store.createQuestion({ sessionId: 'w1', question: 'Gone?', options: null, addressedTo: 'user' });
+  t.publish({ type: 'question', question: w });
+  t.store.withdrawQuestion(w.id, 'no longer needed');
+  t.publish({ type: 'question', question: t.store.getQuestion(w.id)! });
+  assert.equal(lineOutcome(t.lineMessages('mgr')[0]!.data), 'Withdrawn');
+});
+
+test("a worker's permission prompt for the person gets a line in its manager's chat, updated when denied", () => {
+  const t = setup();
+  const p = t.store.createPermission({ id: 'perm-1', sessionId: 'w1', toolName: 'Bash', input: { command: 'rm -rf build' }, title: null, reason: null });
+  t.publish({ type: 'permission', permission: p });
+  const [m] = t.lineMessages('mgr');
+  assert.equal(lineHead(m!.data), 'Permission prompt — Bash: rm -rf build');
+  t.store.decidePermission('perm-1', 'denied', 'user', 'no');
+  t.publish({ type: 'permission', permission: t.store.getPermission('perm-1')! });
+  assert.equal(lineOutcome(t.lineMessages('mgr')[0]!.data), 'Denied by Simon');
+});
+
+test("a prompt addressed to the session's own manager gets a line there (re-review, finding 2); none to another manager, nor across projects", () => {
+  const t = setup();
+  const p = t.store.createPermission({ id: 'perm-2', sessionId: 'w1', toolName: 'Bash', input: { command: 'ls' }, title: null, reason: null, addressedTo: 'mgr' });
+  t.publish({ type: 'permission', permission: p });
+  assert.equal(t.lineMessages('mgr').length, 1);
+  assert.equal((t.lineMessages('mgr')[0]!.data as WaitingLine).toManager, true);
+  const elsewhere = t.store.createPermission({ id: 'perm-4', sessionId: 'w1', toolName: 'Bash', input: { command: 'ls' }, title: null, reason: null, addressedTo: 'other' });
+  t.publish({ type: 'permission', permission: elsewhere });
+  assert.equal(t.lineMessages('mgr').length + t.lineMessages('other').length, 1, 'not for a manager that is not its own');
+  const s = t.store.createPermission({ id: 'perm-3', sessionId: 'stray', toolName: 'Bash', input: { command: 'ls' }, title: null, reason: null });
+  t.publish({ type: 'permission', permission: s });
+  const q = t.store.createQuestion({ sessionId: 'stray', question: 'x', options: null, addressedTo: 'user' });
+  t.publish({ type: 'question', question: q });
+  assert.equal(t.lineMessages('mgr').length + t.lineMessages('other').length, 1, "nothing from another project's session");
+});
+
+test('the line survives a new Ledung on the same database (Done looks like 7)', () => {
+  const db = openDatabase(':memory:');
+  const store = new Store(db);
+  store.createSession({ id: 'mgr', project: 'p', runner: 'local', title: 'M', parentId: null, permissionMode: 'auto', role: 'manager' });
+  store.createSession({ id: 'w1', project: 'p', runner: 'local', title: 'W', parentId: 'mgr', permissionMode: 'auto' });
+  const q = store.createQuestion({ sessionId: 'w1', question: 'x?', options: null, addressedTo: 'user' });
+  new WaitingLines({ store, publish: () => {}, userName: () => 'Simon' }).seen({ type: 'question', question: q });
+  const again = new Store(db);
+  const second = new WaitingLines({ store: again, publish: () => {}, userName: () => 'Simon' });
+  second.seen({ type: 'question', question: q });
+  assert.equal(again.listMessages('mgr').filter((m) => m.kind === 'waiting').length, 1);
+  assert.ok(again.waitingLineOf('question', String(q.id)));
+});
+
+test('a structured option is named by its label; a manager decision by its title', () => {
+  const store = new Store(openDatabase(':memory:'));
+  store.createSession({ id: 'mgr', project: 'p', runner: 'local', title: 'Manager: p', parentId: null, permissionMode: 'auto', role: 'manager' });
+  const q = store.createQuestion({ sessionId: 'mgr', question: 'q', options: null, addressedTo: 'user', details: { title: 'Pick', options: [{ key: 'a', text: '**Merge** as one' }, { key: 'b', text: '**Split**' }] } });
+  store.answerQuestion(q.id, 'b — Split', 'user');
+  assert.equal(lineOutcome(questionLine(store.getQuestion(q.id)!, 'Simon', () => undefined)), 'Answered by Simon: Split');
+  const p = store.createPermission({ id: 'x', sessionId: 'mgr', toolName: 'Edit', input: { file_path: 'a.ts' }, title: null, reason: null });
+  store.decidePermission('x', 'allowed', 'mgr', null, 'once');
+  assert.equal(lineOutcome(permissionLine(store.getPermission('x')!, 'Simon', (id) => store.getSession(id)?.title)), 'Allowed by Manager: p');
+});
+
+test('a locked secret in a question or prompt is blanked in its line (Done looks like 5)', () => {
+  const t = setup();
+  t.store.setBlanker({ text: (s) => s.replaceAll('hunter2', '••••'), deep: (d) => JSON.parse(JSON.stringify(d).replaceAll('hunter2', '••••')) });
+  const q = t.store.createQuestion({ sessionId: 'w1', question: 'Use hunter2?', options: null, addressedTo: 'user', details: { title: 'Log in with hunter2' } });
+  // Published as the asker had it, secret and all: the line is still stored and sent blanked.
+  t.publish({ type: 'question', question: { ...q, details: { title: 'Log in with hunter2' } } });
+  const p = t.store.createPermission({ id: 'perm-s', sessionId: 'w1', toolName: 'Bash', input: { command: 'login -p hunter2' }, title: null, reason: null });
+  t.publish({ type: 'permission', permission: { ...p, input: { command: 'login -p hunter2' } } });
+  const stored = t.lineMessages('mgr');
+  assert.equal(stored.length, 2);
+  assert.ok(stored.every((m) => !JSON.stringify(m.data).includes('hunter2')), JSON.stringify(stored.map((m) => m.data)));
+  assert.equal(lineHead(stored[0]!.data), `Question #${q.id} — Log in with ••••`);
+  assert.equal(lineHead(stored[1]!.data), 'Permission prompt — Bash: login -p ••••');
+  const sent = t.sent.filter((e) => e.type === 'message');
+  assert.ok(sent.length === 2 && !JSON.stringify(sent).includes('hunter2'), 'what is sent to the page is blanked too');
+});
+
+test("a chat's lines are read again by a reconnecting page, as stored now and from the message it gives on (code review finding 1)", () => {
+  const t = setup();
+  const early = t.store.createQuestion({ sessionId: 'w1', question: 'Early?', options: null, addressedTo: 'user' });
+  t.publish({ type: 'question', question: early });
+  t.store.addMessage('mgr', 'user', { text: 'between' });
+  const p = t.store.createPermission({ id: 'perm-r', sessionId: 'w1', toolName: 'Bash', input: { command: 'ls' }, title: null, reason: null });
+  t.publish({ type: 'permission', permission: p });
+  t.store.decidePermission('perm-r', 'denied', 'user', 'no');
+  t.publish({ type: 'permission', permission: t.store.getPermission('perm-r')! });
+  const [first, second] = t.lineMessages('mgr');
+  assert.deepEqual(t.store.waitingLinesIn('mgr', 0).map((m) => m.id), [first!.id, second!.id]);
+  assert.deepEqual(t.store.waitingLinesIn('mgr', first!.id + 1).map((m) => m.id), [second!.id], 'only from the message given');
+  assert.equal((t.store.waitingLinesIn('mgr', 0)[1]!.data as WaitingLine).state, 'denied', 'as stored now');
+  assert.deepEqual(t.store.waitingLinesIn('w1', 0), [], "none of another chat's");
+});

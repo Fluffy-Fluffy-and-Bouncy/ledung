@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import acme from 'acme-client';
 import type { CertificateStatus } from '../shared/protocol.ts';
+import { writeFileSafely } from '../platform/safe-write.ts';
 import { certificateProblem, TLS_CERT, TLS_KEY } from './tunnel-tls.ts';
 
 export const ACCOUNT_KEY = 'acme-account.key';
@@ -430,7 +431,6 @@ function defaultClient(directoryUrl: string, accountKey: Buffer): AcmeClient {
 
 /** Written whole and then renamed into place, private to this user (as remoteDir() is). */
 function writePrivate(file: string, data: Buffer): void {
-  const temp = `${file}.${process.pid}.new`;
-  fs.writeFileSync(temp, data, { mode: 0o600 });
-  fs.renameSync(temp, file);
+  // Flushed before and after the rename, so a crash can't leave it empty (issue #460).
+  writeFileSafely(file, data, { mode: 0o600, temp: `${file}.${process.pid}.new` });
 }

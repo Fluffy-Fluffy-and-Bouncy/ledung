@@ -211,12 +211,6 @@ export class AccountStore {
     this.db.prepare('DELETE FROM accounts WHERE name = ?').run(name);
   }
 
-  /** Who a session found itself logged in as (from Claude Code), shown so you can check. */
-  setIdentity(name: string, who: { email?: string; organization?: string; subscriptionType?: string }): void {
-    this.db.prepare('UPDATE accounts SET email = ?, organization = ?, plan = ?, seen_at = ? WHERE name = ?')
-      .run(who.email ?? null, who.organization ?? null, who.subscriptionType ?? null, Date.now(), name);
-  }
-
   /** The account's sign-in folder where its session runs: on this computer, or in a container ("~/" is the container user's home). */
   folderFor(account: AccountInfoView, place: AccountPlace): string {
     return place === 'local' ? account.configDir : account.containerDir ?? defaultContainerDir(account.name);
@@ -251,7 +245,6 @@ function makeFolder(folder: string): void {
 function toView(r: Record<string, any>): AccountInfoView {
   return {
     name: r.name, kind: 'folder', configDir: r.config_dir, containerDir: r.container_dir ?? null,
-    email: r.email ?? null, organization: r.organization ?? null, plan: r.plan ?? null,
-    seenAt: r.seen_at == null ? null : Number(r.seen_at), createdAt: Number(r.created_at),
+    createdAt: Number(r.created_at),
   };
 }

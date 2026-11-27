@@ -5,7 +5,18 @@ import assert from 'node:assert/strict';
 import { openDatabase } from '../src/store/database.ts';
 import { Store } from '../src/store/store.ts';
 import { askedQuestion, ledungToolServer, type ToolHandlers } from '../src/sessions/tools.ts';
-import { deskCompare, deskQuestion, disagree, mergeTiers, tierOf, titleFrom, type QuestionDetails } from '../src/shared/questions.ts';
+import { deskCompare, deskQuestion as readDesk, disagree, legacyDesk, mergeTiers, tierOf, titleFrom, type QuestionDetails } from '../src/shared/questions.ts';
+import { inBlocks, type StoredAsk } from '../src/shared/blocks.ts';
+
+/**
+ * The desk of a question as Ledung stores it, in blocks (#509): every test below asks with ask_user's fields and reads
+ * what the page shows, and that is also exactly what the page showed from those fields before they were converted.
+ */
+function deskQuestion(q: StoredAsk) {
+  const v = readDesk(inBlocks(q));
+  assert.deepEqual(v, legacyDesk(q), 'converted, it shows as it did');
+  return v;
+}
 
 // The example from the mockup Martin approved (2026-10-14).
 const MERGE = {
@@ -87,9 +98,21 @@ test('the fields are stored through the new migration and come back with the que
   const a = askedQuestion(MERGE);
   const structured = store.createQuestion({ sessionId: 's1', question: a.question, options: a.options, addressedTo: 'user', details: a.details });
   const plain = store.createQuestion({ sessionId: 's1', question: 'Release now?', options: ['Yes', 'No'], addressedTo: 'user' });
-  assert.deepEqual(store.getQuestion(structured.id)!.details, MERGE);
-  assert.equal(store.getQuestion(plain.id)!.details, null);
-  assert.deepEqual(store.listQuestions().map((q) => q.details === null), [false, true]);
+  // Stored in blocks (#509): the context as given, the options and opinions as the question's own decision (key "").
+  const { options, recommended, why, reviewer, ...context } = MERGE;
+  assert.deepEqual(store.getQuestion(structured.id)!.details, {
+    ...context,
+    decisions: [{
+      key: '', title: MERGE.title, options,
+      opinions: [{ who: reviewer.who, pick: reviewer.pick, why: reviewer.why }, { who: '', pick: recommended, why }],
+    }],
+  });
+  // A plain question too: its text as the issue, its labels as options answering exactly as offered, marked plain.
+  assert.deepEqual(store.getQuestion(plain.id)!.details, {
+    title: 'Release now?', issue: 'Release now?', plain: true,
+    decisions: [{ key: '', title: 'Release now?', options: [{ key: '1', text: 'Yes', answer: 'Yes' }, { key: '2', text: 'No', answer: 'No' }] }],
+  });
+  assert.deepEqual(store.getQuestion(plain.id)!.options, ['Yes', 'No'], 'the chat buttons as before');
 });
 
 test('the desk shows a structured question from its fields', () => {

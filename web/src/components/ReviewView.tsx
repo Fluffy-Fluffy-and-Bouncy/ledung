@@ -32,12 +32,13 @@ export function ReviewSections({ review, sessionId }: { review: ReviewDetails; s
  * folded blocks. `shown` is the screenshot open large, by its place among the images; the page owns it so
  * its keys can go to the large view first.
  */
-export function ReviewEvidenceList(props: { q: QuestionInfo; evidence: ReviewEvidence[]; shown: number | null; onShow: (i: number | null) => void }) {
+export function ReviewEvidenceList(props: { q: QuestionInfo; evidence: ReviewEvidence[]; shown: number | null; onShow: (i: number | null) => void; heading?: boolean }) {
   const { q, evidence } = props;
   const images = evidence.filter((e) => e.kind !== 'text');
   return (
     <section className="block">
-      <h4>Evidence</h4>
+      {/* In a request's Evidence block (issue #502) the block has the heading. */}
+      {props.heading !== false && <h4>Evidence</h4>}
       {images.length > 0 && (
         <div className="rev-thumbs">
           {images.map((e, i) => (
