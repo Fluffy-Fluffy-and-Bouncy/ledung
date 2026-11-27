@@ -1,8 +1,8 @@
 # A project signature — proposal
 
-Nov 26, 2026, revised Nov 27 (Ledung's line replaces Claude Code's; then Simon's changes: presets, a text per place, off is off, no PR summary) · Proposal for issue #513 (run-179). Not approved yet; nothing is built.
+Nov 26, 2026, revised Nov 27 (Ledung's line replaces Claude Code's; then Simon's changes: a text per place, off is off, no PR summary; then one preset, Ledung's, editable, with Restore default and a small Off) · Proposal for issue #513 (run-179). Not approved yet; nothing is built.
 
-**Done when:** the "Done looks like" points of #513 hold, minus the living PR summary: a signature per project, set by a preset or by hand, with a text per place; `gh` issue create, issue and PR comments and reviews get it from every body source on Windows and Mac, and PR descriptions and commits through Claude Code's own settings; every other `gh` call is unchanged; another server's write tool gets it after one question per tool and project; an Outbox lists what went out; and never a second signature, one on a read-only call, a private detail in one, or a broken `gh`.
+**Done when:** the "Done looks like" points of #513 hold, minus the living PR summary: a signature per project, Ledung's default or edited by hand, with a text per place and an Off; `gh` issue create, issue and PR comments and reviews get it from every body source on Windows and Mac, and PR descriptions and commits through Claude Code's own settings; every other `gh` call is unchanged; another server's write tool gets it after one question per tool and project; an Outbox lists what went out; and never a second signature, one on a read-only call, a private detail in one, or a broken `gh`.
 
 ## Why
 
@@ -15,10 +15,10 @@ The signature is a **courtesy line, not proof**. A session can always reach the 
 In conversation with the manager, relayed with his words; they go into `docs/decisions.md` when the design is approved.
 
 - **Ledung handles the signatures:** "I still want Ledung to handle the signatures though."
-- **Presets, and a text per place:** Claude Code standard · Ledung standard · None; editing any text makes it Custom. An empty text means nothing in that place.
+- **One preset, Ledung's, and a text per place:** "for the presets. Let's just have the Ledung preset, and it's editable to turn into custom. With some way to restore it to the default. With a small off somehow that disables the signature and erases the text in the box." (Later on Nov 27; this replaces the earlier Claude Code standard · Ledung standard · None · Custom.) An empty text means nothing in that place.
 - **Ledung's texts replace Claude Code's lines completely, and nothing is hardcoded:** "we're replacing it with a per project signature that the user can change." Both Claude Code lines come from the project's texts. "The co-authored by claude should work the same way, unless that steps on any of Anthropic's licence thingies. If the user wants to have it there, they can have it in the signature; otherwise they can change it." (Earlier, question #2434: "We should override Claude Code's signature.") What Anthropic's terms say is under "Anthropic's terms" below.
-- **Off is off:** "If switched off, it should be off." None means no line anywhere, Claude's included.
-- **Defaults:** "existing projects should remain as is, new projects use a Ledung standard." This replaces the earlier defaults by repo visibility.
+- **Off is off:** "If switched off, it should be off." Off means no line anywhere, Claude's included.
+- **Defaults:** "existing projects should remain as is, new projects use a Ledung standard." This replaces the earlier defaults by repo visibility. How an existing project looks with only one preset is open choice 6.
 - **No living PR summary:** "I don't think it's up to Ledung, but each project's workflow. If I want to comment every time we start a new phase of an issue, then I can have that in the workflow." A PR made in a run gets the PR-description text like any other PR.
 
 ## Anthropic's terms (checked 2026-11-27)
@@ -45,29 +45,34 @@ So removing or replacing the lines is a supported choice. The one thing left to 
 
 ### The signature, per project
 
-In the project's settings, a **Signature** section: a preset, and a text per place.
+In the project's settings, a **Signature** section: a text per place, filled from Ledung's default, a **Restore default** link, and a small **Off** switch.
 
 **The places:** PR descriptions · commits · new issues · issue comments · PR comments and reviews · other trackers. Each has its own text; an empty text means nothing is added there.
 
-**The presets:**
+**Ledung's default** (what it says is open choice 4):
 
-| Place | Claude Code standard | Ledung standard (open choice 4) | None |
-|---|---|---|---|
-| PR descriptions | `🤖 Generated with [Claude Code](https://claude.com/claude-code)` | `— via Ledung for {user}` | — |
-| Commits | `Co-Authored-By: {model} <noreply@anthropic.com>` | `Co-Authored-By: {model} <noreply@anthropic.com>` and `Ledung-Run: {run}` | — |
-| New issues | — | `— via Ledung for {user}` | — |
-| Issue comments | — | — | — |
-| PR comments and reviews | — | — | — |
-| Other trackers | — | — | — |
+| Place | Ledung's default |
+|---|---|
+| PR descriptions | `— via Ledung for {user}` |
+| Commits | `Co-Authored-By: {model} <noreply@anthropic.com>` and, on the next line, `Ledung-Run: {run}` |
+| New issues | `— via Ledung for {user}` |
+| Issue comments | — |
+| PR comments and reviews | — |
+| Other trackers | — |
 
-- **Claude Code standard** is Claude's own lines, exactly, and nothing on issues, comments or trackers. It is what every session gets today.
-- **Ledung standard** puts Ledung's line on PRs and new issues, keeps the co-author trailer on commits and adds the run. Comments, reviews and trackers stay quiet: they are mostly conversation and work tools.
-- **None** means nothing anywhere: no Ledung line, no Claude line, no marker.
-- **Custom:** editing any text, from any preset, switches the project to Custom with the texts as they stood, so "Claude Code standard plus a signed issue" is one edit. Picking a preset again replaces the texts, after a "Replace your texts?" confirmation.
+It puts Ledung's line on PRs and new issues, keeps the co-author trailer on commits and adds the run. Comments, reviews and trackers stay quiet: they are mostly conversation and work tools.
+
+**Three states, one preset:**
+
+- **Default:** the texts are exactly Ledung's default. The section says "Ledung's default".
+- **Edited:** any change to any text makes the section say "Edited" (Simon's "custom"). Nothing else changes; the texts are simply what is saved. **Restore default** puts Ledung's default back in every box, after a "Replace your texts with Ledung's default?" confirmation, and is only shown while the texts are edited.
+- **Off:** a small switch at the top of the section. Switching it off empties every box and greys them out, and saves that: **no line anywhere**, no Ledung line, no Claude line, no marker, no stand-in on `PATH`, no tracker question. The edited texts are not kept (Simon: "erases the text in the box"), so the switch says "Turning it off clears your texts." **Switching it on again** fills the boxes with Ledung's default (open choice 7).
+
+There is no Claude Code preset and no None preset: Off is the None, and Claude's own lines are just text a person can type into the boxes, or keep (open choice 6 for existing projects).
 
 **Fill-ins:** `{user}` (Ledung's user name), `{project}` (the project's name), `{run}` (`run-179`), `{workflow}` (the flow's name) and `{model}` (the session's model as Claude Code names it, `Claude Opus 5.5`). Outside a run, the run fill-ins are empty, and a line left empty by them is dropped (so `Ledung-Run:` never appears alone). Only these five exist: session titles, folder paths, account names and anything else private can't be put in a signature, because there is no fill-in for them. Every text is checked against the project's sensitive patterns on save, as board posts are. (`{steps}` went with the PR summary.)
 
-**Existing and new projects:** a project with no signature setting is Claude Code standard, so every existing project behaves exactly as today. A project made in Ledung after this ships (New project, or the Ledung Helper) is saved with Ledung standard. A project added to the config by hand has no setting, so it is Claude Code standard too.
+**Existing and new projects:** a project made in Ledung after this ships (New project, or the Ledung Helper) is saved with Ledung's default. A project with no signature setting (every project that exists today, and one added to the config by hand) keeps exactly what it gets today: Claude Code's own PR line and commit trailer, and nothing else. How the section shows that is open choice 6; the recommendation is that its boxes hold Claude Code's two lines as edited text, with Restore default one click away.
 
 **Where the settings live: the project's settings, not the workflow.** Whether and how a project signs is about the repo and who reads it, and it applies to work outside a run too. Saved like the other project settings, in the project's part of the config, so a work project's text can stay in `ledung.config.local.json`. A change reaches PR descriptions and commits for sessions started or resumed afterwards (Claude Code takes those at the start; part 1 checks whether a running session can be updated), and everything else on the next call.
 
@@ -77,11 +82,12 @@ Claude Code adds its lines from two settings: `attribution.pr` and `attribution.
 
 | The project's text for the place | What Ledung sets for the session |
 |---|---|
-| Claude Code standard, unedited | nothing: Claude Code's own defaults, exactly as today |
-| A text (Ledung standard or Custom) | `attribution.pr` / `attribution.commit` = that text, filled in |
-| Empty (None, or emptied by hand) | an empty string: no line at all (with None, `attribution: false`) |
+| No signature setting (an existing project, untouched) | nothing: Claude Code's own defaults, exactly as today |
+| A text (Ledung's default or edited) | `attribution.pr` / `attribution.commit` = that text, filled in |
+| Empty (emptied by hand) | an empty string: no line in that place |
+| Off | `attribution: false`: no line at all |
 
-Leaving an unedited Claude Code standard alone keeps "as is" literal: Claude's own trailer names the model making each commit, including a subagent's, and a person's own `attribution` settings still apply. Once a text is set, `{model}` is the session's model at the start, refilled if Ledung switches the model; a commit made by a subagent on another model then names the session's model. That is the one difference from Claude's own trailer, and it only arises in Custom or Ledung standard.
+Leaving an untouched existing project alone keeps "as is" literal: Claude's own trailer names the model making each commit, including a subagent's, and a person's own `attribution` settings still apply. Once a text is set, `{model}` is the session's model at the start, refilled if Ledung switches the model; a commit made by a subagent on another model then names the session's model. That is the one difference from Claude's own trailer, and it only arises once a project's texts are set.
 
 Because Claude Code adds the PR line itself, it is there in every shell and in container sessions too. A PR description gets its line only this way: the stand-in doesn't sign `gh pr create`, so there is never a second line on a PR. Commits get no marker; a trailer is plain to read. No git hooks are installed in anyone's repository.
 
@@ -126,17 +132,21 @@ Only when the project's other-trackers text isn't empty. Ledung's existing `PreT
 
 A list of what sessions posted outside, as the stand-in and the hook saw it, newest first: when, the kind (issue, comment, PR, review, a tracker's comment), a link to the post, the project, the run (a link to it), and the session (a link to it; session titles are shown only here, inside Ledung, never in a signature). It can be filtered by project and run, or "Not in a run". It is built from the journals and the hook's record, kept in the database (a new `MIGRATIONS` entry) for the evidence period, then trimmed. At 1280 px it is a table. At 390 px each entry is a card of two lines: the kind and the link, cut off with "…", then project · run · time · session. Where it lives is open choice 5. The board's held posts are also called an outbox in the code (PR #131), but the page never shows that word, so the name is free.
 
-It lists only what goes through the stand-in or the hook, so a project on Claude Code standard or None, which has neither, shows nothing there. Commits are not listed: they go out with a push, and the branch already shows them.
+It lists only what goes through the stand-in or the hook, so a project that is Off, or an existing project still on Claude Code's own lines, has neither and shows nothing there. Commits are not listed: they go out with a push, and the branch already shows them.
 
 ## What is shown
 
 Mock-ups, static, dark mode, made-up projects (`project-signature/settings-mock.html`, `project-signature/outbox-mock.html`):
 
-**Project settings → Signature:** the presets (Custom is reached by editing, not picked), a text per place with a note on what it replaces, the fill-ins, a preview filled in for a sample run, one line on disclosure, and the list of tracker tools with their chosen field (changeable, or "None").
+**Project settings → Signature:** the small Off switch, "Ledung's default" or "Edited" with Restore default, a text per place with a note on what it replaces, the fill-ins, a preview filled in for a sample run, one line on disclosure, and the list of tracker tools with their chosen field (changeable, or "None").
 
 ![Signature settings at 1280 px](project-signature/settings-1280.png)
 
 ![Signature settings at 390 px](project-signature/settings-390.png)
+
+The same section switched Off (`settings-mock.html?off`): every box empty and greyed, "No signature anywhere, Claude Code's lines included."
+
+![Signature switched off at 390 px](project-signature/settings-off-390.png)
 
 **A waiting badge** on the project when a tracker tool's field is still unchosen.
 
@@ -157,16 +167,16 @@ Mock-ups, static, dark mode, made-up projects (`project-signature/settings-mock.
 
 ## Parts
 
-Each part is its own PR, reviewed and approved on its own. Part 1 comes first: it adds the settings, the presets and the journal, and on its own already gives PRs and commits the project's lines. Parts 2 and 3 depend only on part 1 and can go in either order. Part 4 needs part 2 or 3 for something to list.
+Each part is its own PR, reviewed and approved on its own. Part 1 comes first: it adds the settings, Ledung's default and the journal, and on its own already gives PRs and commits the project's lines. Parts 2 and 3 depend only on part 1 and can go in either order. Part 4 needs part 2 or 3 for something to list.
 
 | # | Part | Done when | Session time | Plan use |
 |---|---|---|---|---|
-| 1 | **Settings, presets and Claude Code's lines:** the Signature section (presets, a text per place, Custom on edit, fill-ins with `{model}`, preview, sensitive check), Claude Code standard for projects without a setting and Ledung standard for new ones, `attribution` per session, the journal file. | First the two checks under "PR descriptions and commits". Then, in a throwaway Ledung with Haiku: an existing project's session makes a PR and a commit exactly as today; a new project's (Ledung standard) PR ends with `— via Ledung for …` and no Claude line, and its commit carries `Co-Authored-By: Claude Haiku …` and, in a run, `Ledung-Run`; with None, neither has any line; a Custom text shows up as typed. The person's own Claude Code settings file is unchanged. Settings work at 390 px. | 60–90 min | medium: one build session plus review |
+| 1 | **Settings, Ledung's default and Claude Code's lines:** the Signature section (a text per place, Default / Edited, Restore default, the Off switch that empties the boxes, fill-ins with `{model}`, preview, sensitive check), existing projects left on Claude Code's own lines (open choice 6) and Ledung's default for new ones, `attribution` per session, the journal file. | First the two checks under "PR descriptions and commits". Then, in a throwaway Ledung with Haiku: an existing project's session makes a PR and a commit exactly as today; a new project's (Ledung's default) PR ends with `— via Ledung for …` and no Claude line, and its commit carries `Co-Authored-By: Claude Haiku …` and, in a run, `Ledung-Run`; switched Off, neither has any line and the boxes are empty; an edited text shows up as typed; Restore default brings back the default texts. The person's own Claude Code settings file is unchanged. Settings work at 390 px. | 60–90 min | medium: one build session plus review |
 | 2 | **The stand-in `gh`** (local sessions): on `PATH` only when one of its places has a text, signing the four commands from all three body sources, the marker and its check, a silent fallback, journal lines (`pr create` included). | Tests cover each command and body source, pass-through (same output and exit code), `pr create` left unsigned, and the fallback. A throwaway Ledung on Windows signs a real issue and comment in a throwaway repo from Git Bash; a repeated post isn't signed twice. One run on a Mac. | ≈ 90 min | medium |
 | 3 | **Other trackers:** picking out write tools, the one-time field question, the hook step and how it fits the chain, the repeat check without a marker, the journal line. | The check-1 tracker server, under a throwaway Ledung, asks once and signs every later call. A read-only tool is never touched. A refused call stays refused. A repeated call isn't signed twice. With an empty trackers text, nothing is asked. | 60–90 min | medium |
 | 4 | **Outbox:** database entry, list, filters, the page at both widths. | It lists parts 2–3's posts with links, per project and run, and works at 1280 and 390 px (dark-mode screenshots beside this mock-up). | ≈ 60 min | medium (page and screenshots) |
 
-About 4½ to 5½ hours of session time in all, in four PRs (the earlier five parts were about 5 hours; the PR summary's hour is gone, the presets add some to part 1). Each part also waits for code review, CI and Simon's sign-off. No measured figures from Ledung exist for this kind of work yet, so plan use is only relative.
+About 4½ to 5½ hours of session time in all, in four PRs (the earlier five parts were about 5 hours; the PR summary's hour is gone, the settings section adds some to part 1). Each part also waits for code review, CI and Simon's sign-off. No measured figures from Ledung exist for this kind of work yet, so plan use is only relative.
 
 ## Open choices
 
@@ -179,10 +189,16 @@ About 4½ to 5½ hours of session time in all, in four PRs (the earlier five par
 3. **PowerShell.**
    - **(a) No `gh.ps1` for now (recommended):** PowerShell finds the real `gh.exe`, so issues and comments from PowerShell go unsigned but never break. Git Bash is Claude Code's shell on Windows.
    - (b) Write `gh.ps1` only when Ledung finds the execution policy allows scripts.
-4. **What Ledung standard says.**
+4. **What Ledung's default says.**
    - **(a) As in the table (recommended, the manager's suggestion):** PR descriptions and new issues `— via Ledung for {user}`; commits `Co-Authored-By: {model} <noreply@anthropic.com>` plus `Ledung-Run: {run}` in a run; comments, reviews and trackers empty. The co-author trailer stays because it says honestly, in a form GitHub reads, that Claude wrote the code; the PR line changes because "Generated with Claude Code" is the courtesy line Ledung's replaces.
    - (b) The same, but commits `Via: Ledung for {user}` plus `Ledung-Run: {run}`, without the co-author trailer: one Ledung line everywhere, but the commit no longer says Claude co-wrote it.
    - (c) The same as (a), plus issue comments and PR comments and reviews `— via Ledung`: more visible, more noise in conversations.
 5. **Where the Outbox lives.**
    - **(a) A sidebar entry next to runs, as in the mock-up (recommended):** one place across projects, with filters.
    - (b) A tab in each project's settings.
+6. **How an existing project shows in the Signature section.** It has no setting and must keep exactly today's lines.
+   - **(a) As edited text holding Claude Code's two lines (recommended):** the PR box shows `🤖 Generated with [Claude Code](https://claude.com/claude-code)`, the commit box `Co-Authored-By: {model} <noreply@anthropic.com>`, the rest empty, marked "Edited" with Restore default beside it. While those boxes are untouched, Ledung saves nothing and sets nothing, so Claude Code's own lines go out exactly as today (a subagent's model included). Once anything is changed, it is saved like any edited text. One preset, one way to read the section: the boxes show what goes out.
+   - (b) A separate note instead of boxes: "This project uses Claude Code's own lines, as before. Use Ledung's signature?" with a button. Plainer, but a fourth state beside Default, Edited and Off, which Simon's one-preset choice was meant to avoid.
+7. **Switching Off back on.** Off has already erased the texts.
+   - **(a) The boxes fill with Ledung's default (recommended):** on means signed, and "on with every box empty" would be a second Off. Editing from there is the same as always.
+   - (b) The boxes stay empty until the person types or presses Restore default: nothing appears that the person didn't put there, but until then on behaves like Off.

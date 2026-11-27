@@ -27,6 +27,18 @@ th, td { text-align:left; padding:.45rem .7rem; border-bottom:1px solid var(--bo
 th { color:var(--muted); font-weight:600; font-size:.8rem; background:var(--panel-2); }
 tr:last-child td { border-bottom:0; }
 .wait { background:var(--warn-bg); border:1px solid var(--warn-border); border-radius:4px; padding:.05rem .4rem; font-size:.8rem; }
+.top { display:flex; align-items:center; gap:.8rem; flex-wrap:wrap; margin-bottom:.4rem; }
+.state { border:1px solid var(--border); background:var(--panel-2); border-radius:999px; padding:.15rem .7rem; font-size:.85rem; }
+.restore { color:var(--accent); font-size:.85rem; }
+.switch { margin-left:auto; display:flex; align-items:center; gap:.4rem; color:var(--muted); font-size:.85rem; }
+.track { width:2.1rem; height:1.15rem; border-radius:999px; background:var(--accent); position:relative; display:inline-block; }
+.track::after { content:""; position:absolute; top:.15rem; left:1.1rem; width:.85rem; height:.85rem; border-radius:50%; background:var(--accent-text); }
+body.off .track { background:var(--border); }
+body.off .track::after { left:.15rem; background:var(--muted); }
+.offnote { display:none; }
+body.off .offnote { display:block; }
+body.off .state, body.off .restore, body.off .onlyon { display:none; }
+body.off .place { opacity:.5; }
 @media (max-width: 640px) {
   .wrap { padding:.8rem; }
   .place { grid-template-columns:1fr; }
@@ -38,8 +50,9 @@ tr:last-child td { border-bottom:0; }
 <h1>shop · Signature</h1>
 <p class="sub">A line added to what sessions post in your name, so readers can see it came through Ledung.</p>
 
-<div class="presets"><span class="preset">Claude Code standard</span><span class="preset">Ledung standard</span><span class="preset">None</span><span class="preset on">Custom</span></div>
-<p class="hint">Custom: Ledung standard with a text added for Other trackers. Picking a preset replaces your texts. An empty text adds nothing there.</p>
+<div class="top"><span class="state">Edited</span><a class="restore" href="#">Restore default</a><span class="switch"><span class="onoff">On</span><span class="track"></span></span></div>
+<p class="hint onlyon">Edited: Ledung's default with a text added for Other trackers. Restore default puts Ledung's texts back. An empty text adds nothing there. Turning it off clears your texts.</p>
+<p class="hint offnote">Off: no signature anywhere, Claude Code's lines included. Turning it on fills in Ledung's default.</p>
 
 <div class="place"><label>PR descriptions</label><textarea rows="1">— via Ledung for {user}</textarea><span class="why">Replaces Claude Code's line</span></div>
 <div class="place"><label>Commits</label><textarea rows="3">Co-Authored-By: {model} &lt;noreply@anthropic.com&gt;
@@ -50,7 +63,7 @@ Ledung-Run: {run}</textarea><span class="why">Replaces Claude Code's trailer</sp
 <div class="place"><label>Other trackers</label><textarea rows="1">— via Ledung</textarea></div>
 <p class="hint">Fill-ins: {user} {project} {run} {workflow} {model}. A line whose fill-ins are empty (outside a run) is left out.<br>If a repo or your employer asks for AI involvement to be stated, keep a line that says so.</p>
 
-<h2>Preview, in run-42</h2>
+<div class="onlyon"><h2>Preview, in run-42</h2>
 <div class="preview">PR description:
 <b>…the description
 — via Ledung for Simon</b>
@@ -65,4 +78,13 @@ Ledung-Run: run-42</b></div>
 <tr><td>Linear: create_issue</td><td>description</td></tr>
 </tbody></table>
 <p class="hint">Asked once per tool. With Other trackers empty, nothing is asked or signed.</p>
-</div></body></html>
+</div>
+</div>
+<script>
+// ?off shows the section switched off: every box emptied, as Simon asked.
+if (location.search.includes("off")) {
+  document.body.classList.add("off");
+  document.querySelector(".onoff").textContent = "Off";
+  for (const t of document.querySelectorAll("textarea")) { t.value = ""; t.placeholder = ""; t.disabled = true; }
+}
+</script></body></html>
