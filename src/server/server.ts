@@ -83,6 +83,8 @@ const WAITING_POLL_MS = 30_000;
 const WAITING_PUSH_MS = 1000;
 /** Logged once, the first time a late answer after close is let go (#463). */
 let exercised463 = false;
+/** Logged once, the first time a video goes out by Range (#520). */
+let exercised520 = false;
 
 /** Why linking refuses through the public name (#245 step 1: on the computer itself only). */
 const LINKED_HERE = 'Computers are linked and unlinked';
@@ -2973,6 +2975,10 @@ export class LedungServer {
     if (end < start) {
       res.end();
       return;
+    }
+    if (range !== 'whole' && !exercised520) {
+      exercised520 = true;
+      exercisedLine('EXERCISED #520 project video streamed by Range (206)');
     }
     // A failed read after the head went out can only cut the answer short; pipeline ends both sides either way.
     await pipeline(fs.createReadStream(video.real, { start, end, highWaterMark: 64 * 1024 }), res).catch(() => {});
