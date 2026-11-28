@@ -7,6 +7,7 @@ import type { ProjectFileView } from '../../../src/shared/protocol.ts';
 import { api } from '../api.ts';
 import { CopyButton, Markdown } from './Markdown.tsx';
 import { isImagePath, ProjectImage } from './ProjectImage.tsx';
+import { isVideoPath, ProjectVideo } from './ProjectVideo.tsx';
 import { SENT_IMAGE_PREFIX } from '../chatImages.ts';
 import { usePaneWidth } from './PaneResizer.tsx';
 
@@ -47,10 +48,13 @@ export function FileViewer(props: {
   const pane = usePaneWidth<HTMLElement>('chat-pane');
   const [full, setFull] = useState(false);
   const image = isImagePath(link);
+  // A video (issue #520) is streamed by the <video> itself, like an image by the <img>; neither is read as text.
+  const video = !image && isVideoPath(link);
+  const media = image || video;
 
   useEffect(() => {
     setFull(false);
-    if (image) return; // An image is loaded by the <img> itself.
+    if (media) return; // An image is loaded by the <img> itself, a video by the <video>.
     let current = true;
     setFile(null);
     setError(null);
@@ -61,24 +65,25 @@ export function FileViewer(props: {
     return () => {
       current = false;
     };
-  }, [props.sessionId, link, image, props.folder]);
+  }, [props.sessionId, link, media, props.folder]);
 
   return (
     <aside className="file-panel" aria-label="File" ref={pane.ref}>
       {pane.handle}
       <header className="file-head">
         {(props.stack.length > 1 || props.backToPane) && <button className="small" onClick={props.onBack}>{props.backToPane && props.stack.length === 1 ? '‹ Files' : 'Back'}</button>}
-        <span className="file-path" title={(!image && file?.path) || link}>{(!image && file?.path) || (link.startsWith(SENT_IMAGE_PREFIX) ? 'Image you sent' : link)}</span>
+        <span className="file-path" title={(!media && file?.path) || link}>{(!media && file?.path) || (link.startsWith(SENT_IMAGE_PREFIX) ? 'Image you sent' : link)}</span>
         {image && <button className="small" onClick={() => setFull(!full)}>{full ? 'Fit to panel' : 'Full size'}</button>}
-        {!image && file && <CopyButton text={file.content} label="Copy all" />}
+        {!media && file && <CopyButton text={file.content} label="Copy all" />}
         <button className="small" onClick={props.onClose} aria-label="Close">Close</button>
       </header>
       <div className="file-body">
-        {!image && error && <p className="error">{error}</p>}
+        {!media && error && <p className="error">{error}</p>}
         {image && <ProjectImage key={link} sessionId={props.sessionId} path={link} folder={props.folder} full={full} onClick={() => setFull(!full)} />}
-        {!image && !file && !error && <p className="muted">Loading…</p>}
-        {!image && file?.kind === 'markdown' && <Markdown text={file.content} baseDir={dirOf(file.path)} onOpenFile={props.onOpen} sessionId={props.sessionId} />}
-        {!image && file?.kind === 'text' && <NumberedText text={file.content} path={file.path} />}
+        {video && <ProjectVideo key={link} sessionId={props.sessionId} path={link} folder={props.folder} />}
+        {!media && !file && !error && <p className="muted">Loading…</p>}
+        {!media && file?.kind === 'markdown' && <Markdown text={file.content} baseDir={dirOf(file.path)} onOpenFile={props.onOpen} sessionId={props.sessionId} />}
+        {!media && file?.kind === 'text' && <NumberedText text={file.content} path={file.path} />}
       </div>
     </aside>
   );

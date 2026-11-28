@@ -50,6 +50,8 @@ import { ManagementError, type SettingsPort } from '../sessions/management.ts';
 import { waitingCount } from '../shared/waiting.ts';
 import { helloSessions } from '../shared/hello-sessions.ts';
 import { compressible, IMMUTABLE, isHashedAsset, PACK_MIN_BYTES, PackedFiles, packAnswer, pickEncoding } from './static-files.ts';
+import { byteRange } from './range.ts';
+import type { ProjectVideo } from '../sessions/files.ts';
 
 /** Calls a linked computer may make in a minute (#245). */
 const LINK_PER_MINUTE = 60;
@@ -81,6 +83,8 @@ const WAITING_POLL_MS = 30_000;
 const WAITING_PUSH_MS = 1000;
 /** Logged once, the first time a late answer after close is let go (#463). */
 let exercised463 = false;
+/** Logged once, the first time a video goes out by Range (#520). */
+let exercised520 = false;
 
 /** Why linking refuses through the public name (#245 step 1: on the computer itself only). */
 const LINKED_HERE = 'Computers are linked and unlinked';
@@ -1034,6 +1038,12 @@ export class LedungServer {
           : this.opts.manager.readBoardImage(url.searchParams.get('file') ?? '');
         res.writeHead(200, { ...this.headersFor(res), 'Content-Type': found.type, 'Content-Length': found.bytes.length });
         res.end(found.bytes);
+        return;
+      }
+      // A video for the page's player (issue #520): the file viewer's rules, then streamed in parts from disk, never held.
+      const video = req.method === 'GET' ? /^\/api\/sessions\/([^/]+)\/video$/.exec(url.pathname) : null;
+      if (video) {
+        await this.serveVideo(req, res, this.opts.manager.openVideo(decodeURIComponent(video[1]!), url.searchParams.get('path') ?? '', paneFolder(url)));
         return;
       }
       const result = await this.api(req.method ?? 'GET', url, req);
@@ -2941,6 +2951,37 @@ export class LedungServer {
     }
     res.writeHead(200, headers);
     fs.createReadStream(file).pipe(res);
+  }
+
+  /**
+   * A video's bytes, the whole file or the one range the player asked for (issue #520): a <video> starts with
+   * "bytes=0-" and asks again from wherever the person seeks, so a large file starts at once and a seek reads only
+   * from there. A request the player drops (it does on every seek) stops the read.
+   */
+  private async serveVideo(req: IncomingMessage, res: ServerResponse, video: ProjectVideo): Promise<void> {
+    const range = byteRange(req.headers.range, video.size);
+    const base = { ...this.headersFor(res), 'Content-Type': video.type, 'Accept-Ranges': 'bytes' };
+    if (range === 'unsatisfiable') {
+      res.writeHead(416, { ...base, 'Content-Range': `bytes */${video.size}`, 'Content-Length': '0' });
+      res.end();
+      return;
+    }
+    const { start, end } = range === 'whole' ? { start: 0, end: video.size - 1 } : range;
+    res.writeHead(range === 'whole' ? 200 : 206, {
+      ...base,
+      'Content-Length': String(end - start + 1),
+      ...(range === 'whole' ? {} : { 'Content-Range': `bytes ${start}-${end}/${video.size}` }),
+    });
+    if (end < start) {
+      res.end();
+      return;
+    }
+    if (range !== 'whole' && !exercised520) {
+      exercised520 = true;
+      exercisedLine('EXERCISED #520 project video streamed by Range (206)');
+    }
+    // A failed read after the head went out can only cut the answer short; pipeline ends both sides either way.
+    await pipeline(fs.createReadStream(video.real, { start, end, highWaterMark: 64 * 1024 }), res).catch(() => {});
   }
 
   /** The security headers for this response: through the public name, the other computers' pages may frame it. */

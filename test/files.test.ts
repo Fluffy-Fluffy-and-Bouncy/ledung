@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { hiddenProblem, readProjectBytes, readProjectFile, readProjectImage } from '../src/sessions/files.ts';
+import { hiddenProblem, openProjectVideo, readProjectBytes, readProjectFile, readProjectImage } from '../src/sessions/files.ts';
 import { readCachedImage, readEvidence } from '../src/board/attachments.ts';
 import { removeTemp } from './temp.ts';
 import { parseConfig } from '../src/config.ts';
@@ -955,4 +955,115 @@ test("Project-Ledung#474: a project's Files pane and viewer keep Ledung's data f
   // Ordinary files still list and open.
   assert.equal((await manager.readFile('s', 'notes/a.md', 'session')).content, '# a');
   assert.equal((await manager.readFile('s', 'notes/a.md')).content, '# a');
+});
+
+// Video for the page's player (issue #520). An MP4 starts with a box of type "ftyp" at bytes 4–8 (ISO/IEC 14496-12
+// §4.3): size, then "ftyp", then the brand, here "isom".
+const MP4_HEAD = Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from('ftypisom', 'latin1'), Buffer.alloc(12)]);
+
+test('an MP4 inside the project is opened for streaming: its real path and size, with no size limit', (t) => {
+  const dir = fs.mkdtempSync(path.join(base, 'video-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, 'clips'));
+  // Past the image limit (10 MB) and the text one: a video has none, since it is streamed.
+  const big = path.join(dir, 'clips', 'Demo.MP4');
+  fs.writeFileSync(big, MP4_HEAD);
+  fs.truncateSync(big, 12 * 1024 * 1024);
+  const v = openProjectVideo(dir, 'clips%2FDemo.MP4#t=3');
+  assert.equal(v.path, 'clips/Demo.MP4');
+  assert.equal(v.type, 'video/mp4');
+  assert.equal(v.size, 12 * 1024 * 1024);
+  assert.equal(v.real, fs.realpathSync(big));
+});
+
+// The kinds Chromium plays (Martin, question #1192), each by its own first bytes: Matroska's EBML header (RFC 8794
+// §8.1), an Ogg page's "OggS" (RFC 3533 §6), and a QuickTime file from before the MP4 family, starting with a "wide" or
+// "moov" atom instead of "ftyp".
+const WEBM_HEAD = Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81, 0x01]);
+const OGG_HEAD = Buffer.concat([Buffer.from('OggS', 'latin1'), Buffer.from([0, 2, 0, 0, 0, 0])]);
+const OLD_MOV_HEAD = Buffer.concat([Buffer.from([0, 0, 0, 8]), Buffer.from('wide', 'latin1'), Buffer.from([0, 0, 0, 8]), Buffer.from('mdat', 'latin1')]);
+
+test('video: .mp4, .m4v, .mov, .webm and .ogv files that really are that kind, each with its type, nothing else', (t) => {
+  const dir = fs.mkdtempSync(path.join(base, 'video-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const files: Record<string, Buffer | string> = {
+    'a.mp4': MP4_HEAD, 'b.M4V': MP4_HEAD, 'c.mov': MP4_HEAD, 'old.mov': OLD_MOV_HEAD, 'd.webm': WEBM_HEAD, 'e.ogv': OGG_HEAD,
+    'webm.mp4': WEBM_HEAD, 'mp4.webm': MP4_HEAD, 'mp4.ogv': MP4_HEAD, 'ogg.mov': OGG_HEAD, 'old.mp4': OLD_MOV_HEAD,
+    'clip.avi': MP4_HEAD, 'clip.mkv': WEBM_HEAD, 'clip.ogg': OGG_HEAD,
+  };
+  for (const [name, bytes] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), bytes);
+  const types = Object.fromEntries(['a.mp4', 'b.M4V', 'c.mov', 'old.mov', 'd.webm', 'e.ogv'].map((n) => [n, openProjectVideo(dir, n).type]));
+  assert.deepEqual(types, {
+    'a.mp4': 'video/mp4', 'b.M4V': 'video/mp4', 'c.mov': 'video/quicktime', 'old.mov': 'video/quicktime', 'd.webm': 'video/webm', 'e.ogv': 'video/ogg',
+  });
+  // Another kind's bytes behind an extension: refused by name of the kind the extension claims.
+  assert.throws(() => openProjectVideo(dir, 'webm.mp4'), /not really an MP4 video/);
+  assert.throws(() => openProjectVideo(dir, 'old.mp4'), /not really an MP4 video/, 'only QuickTime may start without ftyp');
+  assert.throws(() => openProjectVideo(dir, 'mp4.webm'), /not really a WebM video/);
+  assert.throws(() => openProjectVideo(dir, 'mp4.ogv'), /not really an Ogg video/);
+  assert.throws(() => openProjectVideo(dir, 'ogg.mov'), /not really a QuickTime video/);
+  for (const name of ['clip.avi', 'clip.mkv', 'clip.ogg']) assert.throws(() => openProjectVideo(dir, name), /not a video Ledung plays/, name);
+});
+
+test('video: only files that really are video, and never from outside the project folder', (t) => {
+  const dir = fs.mkdtempSync(path.join(base, 'video-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const project = path.join(dir, 'project');
+  fs.mkdirSync(project);
+  fs.writeFileSync(path.join(dir, 'outside.mp4'), MP4_HEAD);
+  fs.writeFileSync(path.join(dir, 'outside.webm'), WEBM_HEAD);
+  fs.writeFileSync(path.join(project, 'ok.mp4'), MP4_HEAD);
+  fs.writeFileSync(path.join(project, 'fake.mp4'), 'not a video at all, but long enough');
+  fs.writeFileSync(path.join(project, 'short.mp4'), MP4_HEAD.subarray(0, 7));
+  fs.writeFileSync(path.join(project, 'image.mp4'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0]));
+  // The premise: the same probe opens a real MP4 inside, so each refusal below is the rule and not a probe that finds nothing.
+  assert.equal(openProjectVideo(project, 'ok.mp4').path, 'ok.mp4');
+  for (const bad of ['../outside.mp4', '..%2Foutside.mp4', path.join(dir, 'outside.mp4'), 'sub/../../outside.mp4', '../outside.webm']) {
+    assert.throws(() => openProjectVideo(project, bad), /inside the project/, bad);
+  }
+  for (const name of ['fake.mp4', 'short.mp4', 'image.mp4']) assert.throws(() => openProjectVideo(project, name), /not really an MP4/, name);
+  assert.throws(() => openProjectVideo(project, 'missing.mp4'), /no file/);
+  fs.mkdirSync(path.join(project, 'folder.mp4'));
+  assert.throws(() => openProjectVideo(project, 'folder.mp4'), /folder/);
+  try {
+    fs.symlinkSync(path.join(dir, 'outside.mp4'), path.join(project, 'link.mp4'));
+  } catch {
+    t.diagnostic('this machine does not allow links; the link step did not run');
+    return;
+  }
+  assert.throws(() => openProjectVideo(project, 'link.mp4'), /inside the project/, 'a link inside that leads outside');
+});
+
+test("video through a session (issue #520): the viewer's rules on top, Ledung's data folder shut, a container project refused", (t) => {
+  const top = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-520-')));
+  const project = path.join(top, 'project');
+  const data = path.join(project, 'ledung-data');
+  fs.mkdirSync(data, { recursive: true });
+  fs.writeFileSync(path.join(project, 'demo.mp4'), MP4_HEAD);
+  fs.writeFileSync(path.join(data, 'kept.mp4'), MP4_HEAD);
+  fs.writeFileSync(path.join(top, 'outside.mp4'), MP4_HEAD);
+  const before = process.env.LEDUNG_DATA_DIR;
+  process.env.LEDUNG_DATA_DIR = data;
+  const manager = refuseRealSignInStores(new SessionManager(parseConfig({
+    projects: [
+      { name: 'p', runner: 'local', path: project },
+      { name: 'box', runner: 'docker', container: 'box', pathInContainer: '/work' },
+    ],
+  }), new Store(openDatabase(':memory:')), () => {}));
+  t.after(() => {
+    manager.detachAll();
+    if (before === undefined) delete process.env.LEDUNG_DATA_DIR;
+    else process.env.LEDUNG_DATA_DIR = before;
+    removeTemp(top);
+  });
+  const store = (manager as unknown as { store: Store }).store;
+  store.createSession({ id: 's', project: 'p', runner: 'local', title: 't', parentId: null, permissionMode: 'default', role: 'session' });
+  store.createSession({ id: 'd', project: 'box', runner: 'docker', title: 'd', parentId: null, permissionMode: 'default', role: 'session' });
+
+  // The premise: an MP4 in the project opens, from a chat link and from the Files pane.
+  assert.equal(manager.openVideo('s', 'demo.mp4').path, 'demo.mp4');
+  assert.equal(manager.openVideo('s', 'demo.mp4', 'session').size, MP4_HEAD.length);
+  assert.throws(() => manager.openVideo('s', 'ledung-data/kept.mp4'), /Ledung's data folder/);
+  assert.throws(() => manager.openVideo('s', '../outside.mp4'), /inside the project/);
+  assert.throws(() => manager.openVideo('d', 'demo.mp4'), /container project's files is not available yet/);
 });
