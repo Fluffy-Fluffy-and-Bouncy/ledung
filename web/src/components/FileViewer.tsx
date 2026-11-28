@@ -48,7 +48,7 @@ export function FileViewer(props: {
   const pane = usePaneWidth<HTMLElement>('chat-pane');
   const [full, setFull] = useState(false);
   const image = isImagePath(link);
-  // An MP4 (issue #520) is streamed by the <video> itself, like an image by the <img>; neither is read as text.
+  // A video (issue #520) is streamed by the <video> itself, like an image by the <img>; neither is read as text.
   const video = !image && isVideoPath(link);
   const media = image || video;
 
