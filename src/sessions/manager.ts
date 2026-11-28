@@ -4039,7 +4039,7 @@ ${firstMessage}`);
   }
 
   /**
-   * An MP4 from the session's folder for the page's player (issue #520): the file viewer's rules (readFrom), only
+   * A video (MP4, M4V, MOV, WebM or OGV) from the session's folder for the page's player (issue #520): the file viewer's rules (readFrom), only
    * opened here; the server streams it in parts. Not from a container project yet: its files are read in the container.
    */
   openVideo(sessionId: string, link: string, folder?: PaneFolderKey): ProjectVideo {

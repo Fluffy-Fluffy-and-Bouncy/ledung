@@ -1040,7 +1040,7 @@ export class LedungServer {
         res.end(found.bytes);
         return;
       }
-      // An MP4 for the page's player (issue #520): the file viewer's rules, then streamed in parts from disk, never held.
+      // A video for the page's player (issue #520): the file viewer's rules, then streamed in parts from disk, never held.
       const video = req.method === 'GET' ? /^\/api\/sessions\/([^/]+)\/video$/.exec(url.pathname) : null;
       if (video) {
         await this.serveVideo(req, res, this.opts.manager.openVideo(decodeURIComponent(video[1]!), url.searchParams.get('path') ?? '', paneFolder(url)));

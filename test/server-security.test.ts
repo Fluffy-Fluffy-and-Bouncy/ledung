@@ -111,6 +111,13 @@ before(async () => {
   fs.writeFileSync(path.join(projectRoot, 'clip.mp4'), MP4);
   fs.writeFileSync(path.join(projectRoot, 'fake.mp4'), 'not a video at all, but long enough');
   fs.writeFileSync(path.join(path.dirname(projectRoot), 'ledung-secret.mp4'), MP4);
+  // A WebM starts with Matroska's EBML header (RFC 8794 §8.1); a link inside the project to the MP4 beside it.
+  fs.writeFileSync(path.join(projectRoot, 'clip.webm'), Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81, 0x01]));
+  try {
+    fs.symlinkSync(path.join(path.dirname(projectRoot), 'ledung-secret.mp4'), path.join(projectRoot, 'out.mp4'));
+  } catch {
+    // A file link needs admin rights on Windows; the video test then says its link step did not run.
+  }
   const manager = refuseRealSignInStores(new SessionManager(parseConfig({ port: PORT, projects: [{ name: 'p', runner: 'local', path: projectRoot }], board: { repo: 'org/board' }, browseRoots: [os.homedir(), os.tmpdir()] }) /* the temp folder is outside the home on macOS and Linux (#233) */, store, () => {}));
   // Images sent with messages (issue #128), in a temp folder, never the real data folder.
   chatImagesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-chat-images-'));
@@ -433,7 +440,7 @@ test('project images need the sign-in and this host, and are served as PNG or JP
   assert.equal((await request({ path: '/api/sessions/nope/image?path=a.png', headers: { cookie: COOKIE } })).status, 400);
 });
 
-test('project video (issue #520): the sign-in, this host and the own page, then streamed whole or by Range, MP4 only', async () => {
+test('project video (issue #520): the sign-in, this host and the own page, then streamed whole or by Range, video files only', async (t) => {
   const url = '/api/sessions/s1/video?path=clip.mp4';
   const size = MP4.length;
   assert.equal((await request({ path: url })).status, 401, 'no cookie');
@@ -463,8 +470,16 @@ test('project video (issue #520): the sign-in, this host and the own page, then 
   // A Range still needs the sign-in.
   assert.equal((await request({ path: url, headers: { range: 'bytes=0-' } })).status, 401, 'a Range without the cookie');
 
-  // Outside the folder (beside it, climbed to, absolute), not an MP4, not really one, missing: refused with the reason, no bytes.
-  for (const bad of ['../ledung-secret.mp4', encodeURIComponent('../ledung-secret.mp4'), encodeURIComponent(path.join(path.dirname(projectRoot), 'ledung-secret.mp4')), 'a.png', 'fake.mp4', 'missing.mp4']) {
+  // Each kind with its own type (Martin, question #1192: every format Chromium plays).
+  const webm = await request({ path: '/api/sessions/s1/video?path=clip.webm', headers: { cookie: COOKIE, range: 'bytes=0-' } });
+  assert.equal(webm.status, 206);
+  assert.equal(webm.headers['content-type'], 'video/webm');
+
+  // Outside the folder (beside it, climbed to, absolute, through a link inside), not a video, not really one, missing:
+  // refused with the reason, no bytes.
+  const linked = fs.existsSync(path.join(projectRoot, 'out.mp4'));
+  if (!linked) t.diagnostic('this machine does not allow file links; the link step did not run');
+  for (const bad of ['../ledung-secret.mp4', encodeURIComponent('../ledung-secret.mp4'), encodeURIComponent(path.join(path.dirname(projectRoot), 'ledung-secret.mp4')), ...(linked ? ['out.mp4'] : []), 'a.png', 'fake.mp4', 'missing.mp4']) {
     const res = await request({ path: `/api/sessions/s1/video?path=${bad}`, headers: { cookie: COOKIE, range: 'bytes=0-' } });
     assert.equal(res.status, 400, bad);
     assert.match(res.headers['content-type'] ?? '', /json/, bad);
