@@ -152,6 +152,34 @@ export function openProjectFile(root: string, link: string, headBytes: number): 
   }
 }
 
+export interface ProjectVideo {
+  path: string;
+  /** The file's real path, streamed from in parts (Range) rather than read here. */
+  real: string;
+  size: number;
+  type: 'video/mp4';
+}
+
+/**
+ * An MP4 in the project folder for the page's player (issue #520), with readProjectFile's path rules. Only the first
+ * bytes are read: an MP4 starts with a box whose type, at bytes 4–8, is "ftyp", so another kind renamed .mp4 is never
+ * served as video. No size limit, since it is streamed in parts and never held.
+ */
+export function openProjectVideo(root: string, link: string): ProjectVideo {
+  const { real, inside } = resolveInside(root, link);
+  if (!/\.mp4$/i.test(inside)) throw new FileError(`${inside} is not an MP4 video.`);
+  const fd = fs.openSync(real, 'r');
+  try {
+    const size = fs.fstatSync(fd).size;
+    const head = Buffer.alloc(8);
+    const read = fs.readSync(fd, head, 0, 8, 0);
+    if (read < 8 || head.toString('latin1', 4, 8) !== 'ftyp') throw new FileError(`${inside} is not really an MP4 video.`);
+    return { path: inside, real, size, type: 'video/mp4' };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 /** A handoff must be fresh, so an old file can't stand in for one (clear_self, docs/steps/clear-and-compact.md). */
 export const HANDOFF_MAX_AGE_MS = 60 * 60 * 1000;
 

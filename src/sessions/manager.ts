@@ -73,7 +73,7 @@ import {
 import { resolveWorkFolder, WorkFolderError } from './work-folder.ts';
 import { saveIntoWorktree, type Saved } from './save-file.ts';
 import { saveDrop, type Dropped } from './drops.ts';
-import { FileError, handoffProblem, hiddenProblem, readProjectFile, readProjectImage, type ProjectFile, type ProjectImage } from './files.ts';
+import { FileError, handoffProblem, hiddenProblem, openProjectVideo, readProjectFile, readProjectImage, type ProjectFile, type ProjectImage, type ProjectVideo } from './files.ts';
 import { listTree, type TreeListing } from './tree.ts';
 import type { PaneFolderKey, PaneFolders } from '../shared/files-pane.ts';
 import { sessionChanges, type SessionChanges } from './changes.ts';
@@ -4036,6 +4036,16 @@ ${firstMessage}`);
 
   private readImageHere(sessionId: string, link: string, folder?: PaneFolderKey): ProjectImage {
     return this.readFrom(sessionId, link, readProjectImage, folder);
+  }
+
+  /**
+   * An MP4 from the session's folder for the page's player (issue #520): the file viewer's rules (readFrom), only
+   * opened here; the server streams it in parts. Not from a container project yet: its files are read in the container.
+   */
+  openVideo(sessionId: string, link: string, folder?: PaneFolderKey): ProjectVideo {
+    const { project } = this.paneRoot(sessionId, folder);
+    if (project.runner === 'docker') throw new UserError("Playing video from a container project's files is not available yet.");
+    return this.readFrom(sessionId, link, openProjectVideo, folder);
   }
 
   // --- A container project's files (issue #122) --------------------------------------------------------

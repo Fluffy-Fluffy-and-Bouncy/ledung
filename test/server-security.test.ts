@@ -43,6 +43,8 @@ const PORT = await freePort();
 const TOKEN = 'a'.repeat(64);
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 const COOKIE = `ledung_auth=${TOKEN}`;
+/** A project's video (issue #520): an MP4 is a box of type "ftyp" at bytes 4–8, then any bytes; ASCII here, so a body read as text compares exactly. */
+const MP4 = Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from(`ftypisom${'abcdefghijklmnopqrstuvwxyz'.repeat(4)}`, 'latin1')]);
 // The name a relay delivers requests for (issue #160, docs/steps/relay.md step 3); the cases above use 127.0.0.1.
 const PUBLIC = 'ledung.example.test';
 const PUBLIC_ORIGIN = `https://${PUBLIC}`;
@@ -105,6 +107,10 @@ before(async () => {
   fs.writeFileSync(path.join(projectRoot, 'a.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]));
   fs.writeFileSync(path.join(projectRoot, 'a.svg'), '<svg/>');
   fs.writeFileSync(path.join(path.dirname(projectRoot), 'ledung-secret.png'), 'x');
+  // Video (issue #520): an MP4 is a box of type "ftyp" at bytes 4–8, then any bytes; ASCII ones, so a body read as text compares exactly.
+  fs.writeFileSync(path.join(projectRoot, 'clip.mp4'), MP4);
+  fs.writeFileSync(path.join(projectRoot, 'fake.mp4'), 'not a video at all, but long enough');
+  fs.writeFileSync(path.join(path.dirname(projectRoot), 'ledung-secret.mp4'), MP4);
   const manager = refuseRealSignInStores(new SessionManager(parseConfig({ port: PORT, projects: [{ name: 'p', runner: 'local', path: projectRoot }], board: { repo: 'org/board' }, browseRoots: [os.homedir(), os.tmpdir()] }) /* the temp folder is outside the home on macOS and Linux (#233) */, store, () => {}));
   // Images sent with messages (issue #128), in a temp folder, never the real data folder.
   chatImagesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ledung-chat-images-'));
@@ -425,6 +431,48 @@ test('project images need the sign-in and this host, and are served as PNG or JP
     assert.match(res.headers['content-type'] ?? '', /json/);
   }
   assert.equal((await request({ path: '/api/sessions/nope/image?path=a.png', headers: { cookie: COOKIE } })).status, 400);
+});
+
+test('project video (issue #520): the sign-in, this host and the own page, then streamed whole or by Range, MP4 only', async () => {
+  const url = '/api/sessions/s1/video?path=clip.mp4';
+  const size = MP4.length;
+  assert.equal((await request({ path: url })).status, 401, 'no cookie');
+  assert.equal((await request({ path: url, headers: { host: 'evil.example:80', cookie: COOKIE } })).status, 403, 'another host');
+  assert.equal((await request({ path: url, headers: { cookie: COOKIE, 'sec-fetch-site': 'cross-site' } })).status, 403, 'from another site');
+
+  const whole = await request({ path: url, headers: { cookie: COOKIE, 'sec-fetch-site': 'same-origin' } });
+  assert.equal(whole.status, 200);
+  assert.equal(whole.headers['content-type'], 'video/mp4');
+  assert.equal(whole.headers['accept-ranges'], 'bytes');
+  assert.equal(whole.headers['content-length'], String(size));
+  assert.equal(whole.headers['x-content-type-options'], 'nosniff');
+  assert.equal(whole.body, MP4.toString('latin1'));
+
+  // A player's first ask, Safari's probe, a seek with an end, and the last bytes: each a 206 with just those bytes.
+  for (const [range, start, end] of [['bytes=0-', 0, size - 1], ['bytes=0-1', 0, 1], ['bytes=12-15', 12, 15], ['bytes=40-', 40, size - 1], ['bytes=-10', size - 10, size - 1]] as const) {
+    const part = await request({ path: url, headers: { cookie: COOKIE, range } });
+    assert.equal(part.status, 206, range);
+    assert.equal(part.headers['content-range'], `bytes ${start}-${end}/${size}`, range);
+    assert.equal(part.headers['content-length'], String(end - start + 1), range);
+    assert.equal(part.body, MP4.subarray(start, end + 1).toString('latin1'), range);
+  }
+  const past = await request({ path: url, headers: { cookie: COOKIE, range: `bytes=${size}-` } });
+  assert.equal(past.status, 416);
+  assert.equal(past.headers['content-range'], `bytes */${size}`);
+  assert.equal(past.body, '');
+  // A Range still needs the sign-in.
+  assert.equal((await request({ path: url, headers: { range: 'bytes=0-' } })).status, 401, 'a Range without the cookie');
+
+  // Outside the folder (beside it, climbed to, absolute), not an MP4, not really one, missing: refused with the reason, no bytes.
+  for (const bad of ['../ledung-secret.mp4', encodeURIComponent('../ledung-secret.mp4'), encodeURIComponent(path.join(path.dirname(projectRoot), 'ledung-secret.mp4')), 'a.png', 'fake.mp4', 'missing.mp4']) {
+    const res = await request({ path: `/api/sessions/s1/video?path=${bad}`, headers: { cookie: COOKIE, range: 'bytes=0-' } });
+    assert.equal(res.status, 400, bad);
+    assert.match(res.headers['content-type'] ?? '', /json/, bad);
+    assert.ok(!res.body.includes('ftyp'), bad);
+  }
+  assert.equal((await request({ path: '/api/sessions/nope/video?path=clip.mp4', headers: { cookie: COOKIE } })).status, 400, 'no such session');
+  // A session with its own folder: the project folder around it is outside.
+  assert.equal((await request({ path: '/api/sessions/s2/video?path=../clip.mp4', headers: { cookie: COOKIE } })).status, 400, "outside s2's folder");
 });
 
 test('images for a message (issue #128): uploaded with the sign-in and Ledung\'s own origin, PNG, JPEG, GIF or WebP only, within the size', async () => {
@@ -896,7 +944,7 @@ test('API reads that do work need Ledung\'s own page; plain reads are unchanged 
   // Every work route above is outside the plain reads, and the kinds named in the issue stay so.
   for (const route of ['GET board-owners', 'GET board-projects/:id/people', 'GET board-projects/:id/repos', 'GET usage-publish-repos', 'GET usage-shared',
     'GET containers', 'GET browse-container', 'GET skills', 'GET workflows', 'GET claude-code', 'GET sessions/:id/mcp', 'GET sessions/:id/changes',
-    'GET sessions/:id/tree', 'GET sessions/:id/file', 'GET sessions/:id/image', 'GET relay-computers', 'GET relay-owners', 'GET shortcuts', 'GET tray', 'GET projects/:id/flow']) {
+    'GET sessions/:id/tree', 'GET sessions/:id/file', 'GET sessions/:id/image', 'GET sessions/:id/video', 'GET relay-computers', 'GET relay-owners', 'GET shortcuts', 'GET tray', 'GET projects/:id/flow']) {
     assert.equal(PLAIN_READS.has(route), false, `${route} does work`);
   }
 });
