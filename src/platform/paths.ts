@@ -95,6 +95,11 @@ export function hostEntry(packaged = PACKAGED): string {
   return packaged ? path.join(appDir(), 'dist', 'host.js') : path.join(appDir(), 'src', 'host', 'host.ts');
 }
 
+/** The stand-in gh a local session runs (issue #513): the bundled one in the npm package, the source otherwise. */
+export function ghStandInEntry(packaged = PACKAGED): string {
+  return packaged ? path.join(appDir(), 'dist', 'gh-stand-in.js') : path.join(appDir(), 'src', 'gh', 'stand-in.ts');
+}
+
 /** The version in the package.json Ledung runs from. */
 export function appVersion(): string {
   try {

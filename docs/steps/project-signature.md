@@ -1,6 +1,6 @@
 # A project signature — proposal
 
-Nov 26, 2026, revised Nov 27 (Ledung's line replaces Claude Code's; then Simon's changes: a text per place, off is off, no PR summary; then one preset, Ledung's, editable, with Restore default and a small Off; an Outbox that records everything; no `Ledung-Run`; then existing projects on Ledung's default too, and a default text for other trackers) · Design for issue #513 (run-179). Approved by Simon on 2026-11-27 with every recommended choice ([decisions](../decisions.md)); part 1 built.
+Nov 26, 2026, revised Nov 27 (Ledung's line replaces Claude Code's; then Simon's changes: a text per place, off is off, no PR summary; then one preset, Ledung's, editable, with Restore default and a small Off; an Outbox that records everything; no `Ledung-Run`; then existing projects on Ledung's default too, and a default text for other trackers) · Design for issue #513 (run-179). Approved by Simon on 2026-11-27 with every recommended choice ([decisions](../decisions.md)); parts 1 and 2 built.
 
 **Done when:** the "Done looks like" points of #513 hold, minus the living PR summary: a signature per project, Ledung's default or edited by hand, with a text per place and an Off; `gh` issue create, issue and PR comments and reviews get it from every body source on Windows and Mac, and PR descriptions and commits through Claude Code's own settings; every other `gh` call is unchanged; another server's write tool gets it after one question per tool and project; an Outbox records every outside post, signed or not, for 30 days; and never a second signature, one on a read-only call, a private detail in one, or a broken `gh`.
 
@@ -108,7 +108,7 @@ For trackers whose Markdown keeps HTML comments, the marker is added as on GitHu
 
 ### GitHub: the stand-in `gh`
 
-Ledung writes a small stand-in into its data folder (`<data>/gh-stand-in/`, via `src/platform/paths.ts`): a `gh` shell script, and if chosen a `gh.ps1`, both calling one `gh.mjs` run by Ledung's own Node. Because the Outbox records every outside post, **the folder is first on `PATH` in every local session** (`sessionEnv`), whatever the signature says. It is left out only when a project has both recording switched off and no text for the stand-in's places. A per-session file next to it holds the real `gh`'s full path (found when the session starts), the three places' texts already filled in, whether to record, and the run. No `LEDUNG_*` variable is used, so the rule "sessions don't inherit LEDUNG_* settings" stays as it is.
+Ledung writes a small stand-in into a temp folder of its own (`<tmp>/ledung-gh-<tag>/`, `src/gh/install.ts`): a `gh` shell script per session calling one `gh.mjs` run by Ledung's own Node. *(Built in part 2: not the data folder, as first written here. The data folder is out of every session's reach (#104), and on macOS and Linux the sandbox's `denyRead` would stop the shell from reading the script at all, turning `gh` into an error; the locked secrets' files are in a temp folder for the same reason. The script hands everything but `gh issue`, `gh pr` and `gh api` straight to the real `gh` without starting Node.)* Because the Outbox records every outside post, **the folder is first on `PATH` in every local session** (`sessionEnv`), whatever the signature says. It is left out only when a project has both recording switched off and no text for the stand-in's places. A per-session file next to it holds the real `gh`'s full path (found when the session starts), the three places' texts already filled in, whether to record, and the run. No `LEDUNG_*` variable is used, so the rule "sessions don't inherit LEDUNG_* settings" stays as it is.
 
 `gh.mjs` reads its arguments, not a command line:
 
@@ -116,6 +116,7 @@ Ledung writes a small stand-in into its data folder (`<data>/gh-stand-in/`, via 
 - **It signs** only `issue create`, `issue comment`, `pr comment` and `pr review` (with `--comment`, `--approve` or `--request-changes` and a body), and only when that place has a text. Edits, `pr create` and `gh api` are never signed. A call whose place has no text goes to the real `gh` unchanged and is only recorded.
 - It takes a body to sign from `--body`/`-b`, `--body-file`/`-F` (a file, or `-` for stdin), and writes the signed body to a temporary file passed as `--body-file`. Stdin is read only when the call itself reads it and the stand-in signs it; a call that is only recorded keeps its stdin untouched.
 - A call with no body of its own (`--fill`, `--web`, `--editor`, interactive) is passed through unchanged, and recorded if it is one of the kinds above.
+- *(Part 2:)* `issue comment` and `pr comment` with `--edit-last` or `--delete-last` are edits: recorded, never signed. `gh issue close --comment` and `gh pr close --comment` are not in the list above, so they go out unsigned and unrecorded.
 - Every other call `exec`s the real `gh` with the same arguments, stdin, stdout and exit code.
 - After a recorded call it appends one line to the session's journal: kind, repo, the URL `gh` printed (for `gh api`, the method and path), whether it was signed (for `pr create`, whether the body holds the project's PR text, which Claude Code added), the time. No body is kept. That journal feeds the Outbox.
 
@@ -152,6 +153,12 @@ Ledung's existing hook gets one more step for `mcp__*` tools of servers that are
 **What is shown:** newest first: when, the kind (issue, comment, PR, review, edit, API write, a tracker's comment, board post), a link to the post (for an API write, the method and path), signed or not, the project, the run (a link to it), and the session (a link to it; session titles are shown only here, inside Ledung, never in a signature). It can be filtered by project and run, or "Not in a run". Under the title, one line says what it can't see: "Not recorded: `gh` from PowerShell or cmd, sessions in containers (for now), and posts made with curl or your own scripts." Commits are not listed: they go out with a push, and the branch already shows them.
 
 **Where it is kept:** locally, in Ledung's database (a new `MIGRATIONS` entry), filled from the journals, the hook's record and the board. It is **kept 30 days**, then trimmed, and sent nowhere. At 1280 px it is a table. At 390 px each entry is a card of two lines: the kind and the link, cut off with "…", then project · run · time · session · signed. Where it lives is open choice 5. The board's held posts are also called an outbox in the code (PR #131), but the page never shows that word, so the name is free.
+
+**For part 4, from the review of PR #519 (part 2):**
+
+- **Failed calls are in the journal.** The stand-in writes a line for every recorded call with gh's exit code, since a non-zero exit doesn't prove nothing went out. The Outbox leaves out lines with `exit` other than 0: a usage error or a refused review isn't a post.
+- **The journals are in the system temp folder** (`<tmp>/ledung-gh-<tag>/<session>/journal.jsonl`), and nothing prunes them yet. The system's own cleaners (macOS's `/var/folders` sweep, Windows Storage Sense) may delete one before it is read. Part 4 reads them into the database promptly (at least when a session ends and at Ledung's start), then removes the session's folder once its session has ended; the 30 days are counted in the database.
+- **A session can write to its own journal.** Its lines are untrusted: shown as plain text, and only `https://github.com/…` addresses are made links.
 
 ## What is shown
 

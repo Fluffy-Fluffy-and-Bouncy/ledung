@@ -149,6 +149,8 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     const env: Record<string, string> = {};
     for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith('LEDUNG_')) env[k] = v;
     Object.assign(env, { LEDUNG_DATA_DIR: dataDir, LEDUNG_CONFIG: configFile });
+    // The test run's folder for the stand-in gh's files (scripts/test.ts), so its session leaves none in the temp folder.
+    if (process.env.LEDUNG_GH_STAND_IN_DIR) env.LEDUNG_GH_STAND_IN_DIR = process.env.LEDUNG_GH_STAND_IN_DIR;
     const main = path.join(import.meta.dirname, '..', 'src', 'main.ts');
 
     // A first start: the port is busy, so it gives up at once and touches nothing.

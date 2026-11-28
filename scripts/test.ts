@@ -20,6 +20,8 @@ for (const [k, v] of Object.entries(process.env)) {
 }
 env.LEDUNG_DATA_DIR = path.join(base, 'data');
 env.LEDUNG_CONFIG = path.join(base, 'config.json');
+// The stand-in gh's files for the sessions tests start (issue #513), which otherwise stay in the system's temp folder.
+env.LEDUNG_GH_STAND_IN_DIR = path.join(base, 'gh');
 
 const child = spawn(process.execPath, ['--test', ...(files.length ? files : ['test/**/*.test.ts'])], { env, stdio: 'inherit' });
 // Ctrl+C reaches the test run too; this exits when it does.
