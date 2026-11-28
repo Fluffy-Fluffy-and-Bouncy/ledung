@@ -152,6 +152,54 @@ export function openProjectFile(root: string, link: string, headBytes: number): 
   }
 }
 
+export interface ProjectVideo {
+  path: string;
+  /** The file's real path, streamed from in parts (Range) rather than read here. */
+  real: string;
+  size: number;
+  type: VideoType;
+}
+
+type VideoType = 'video/mp4' | 'video/quicktime' | 'video/webm' | 'video/ogg';
+
+/** An MP4-family file's first box type, at bytes 4–8 (ISO/IEC 14496-12 §4.2). */
+const boxType = (head: Buffer): string => head.toString('latin1', 4, 8);
+/**
+ * The video kinds Chromium plays (Martin, 2026-11-28 08:13, question #1192: "b — Every format Chromium can play"), each
+ * with the first bytes its files start with. A QuickTime file from before the MP4 family may start with another atom
+ * than "ftyp" (QuickTime File Format, "Atoms"). A .mov whose codec the browser can't decode (HEVC, ProRes) is still
+ * served, and the page says it can't be played.
+ */
+const VIDEO_KINDS: { ext: RegExp; name: string; type: VideoType; starts: (head: Buffer) => boolean }[] = [
+  { ext: /\.(mp4|m4v)$/i, name: 'an MP4', type: 'video/mp4', starts: (h) => boxType(h) === 'ftyp' },
+  { ext: /\.mov$/i, name: 'a QuickTime', type: 'video/quicktime', starts: (h) => ['ftyp', 'moov', 'mdat', 'wide', 'free', 'skip', 'pnot'].includes(boxType(h)) },
+  // Matroska's EBML header (RFC 8794 §8.1).
+  { ext: /\.webm$/i, name: 'a WebM', type: 'video/webm', starts: (h) => h.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3])) },
+  // An Ogg page's capture pattern (RFC 3533 §6).
+  { ext: /\.ogv$/i, name: 'an Ogg', type: 'video/ogg', starts: (h) => h.toString('latin1', 0, 4) === 'OggS' },
+];
+
+/**
+ * A video in the project folder for the page's player (issue #520), with readProjectFile's path rules: .mp4, .m4v,
+ * .mov, .webm or .ogv. Only the first bytes are read, and they must be those of its extension's kind, so another kind
+ * of file renamed is never served as video. No size limit, since it is streamed in parts and never held.
+ */
+export function openProjectVideo(root: string, link: string): ProjectVideo {
+  const { real, inside } = resolveInside(root, link);
+  const kind = VIDEO_KINDS.find((k) => k.ext.test(inside));
+  if (!kind) throw new FileError(`${inside} is not a video Ledung plays (MP4, M4V, MOV, WebM or OGV).`);
+  const fd = fs.openSync(real, 'r');
+  try {
+    const size = fs.fstatSync(fd).size;
+    const head = Buffer.alloc(8);
+    const read = fs.readSync(fd, head, 0, 8, 0);
+    if (read < 8 || !kind.starts(head)) throw new FileError(`${inside} is not really ${kind.name} video.`);
+    return { path: inside, real, size, type: kind.type };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 /** A handoff must be fresh, so an old file can't stand in for one (clear_self, docs/steps/clear-and-compact.md). */
 export const HANDOFF_MAX_AGE_MS = 60 * 60 * 1000;
 

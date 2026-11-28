@@ -453,6 +453,8 @@ button.conv svg, .conv-row svg { width: 16px; height: 16px; }
 .project-image { max-width: 100%; height: auto; display: block; }
 .project-image.clickable { cursor: zoom-in; }
 .project-image.full { max-width: none; cursor: zoom-out; }
+/* The browser's own player (issue #520), fitted to the panel; full screen is its own button. */
+.project-video { display: block; width: 100%; max-height: 80vh; background: #000; }
 .image-note { color: var(--muted); font-style: italic; }
 a.file-link { text-decoration-style: dotted; }
 

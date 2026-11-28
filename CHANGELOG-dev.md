@@ -9,6 +9,13 @@ together, are in [CHANGELOG.md](CHANGELOG.md). Online: https://projectledung.com
 ([docs/changes/README.md](docs/changes/README.md)); `npm run publish:dev` and `npm run publish:public` fold them in
 here under the version they publish, and push the result to main.
 
+## v5.3 — 2026-11-28 09:54 CET
+- A linked video file (`.mp4`, `.m4v`, `.mov`, `.webm` or `.ogv`) in a chat or the Files pane now plays beside the chat, with play, pause, seek and full screen; it streams, so a large file starts at once (#520)
+- A video the browser can't play (such as HEVC or ProRes) says so instead of showing a blank player, and one with sound but no picture says that (#520)
+- Each project's settings have a Signature group: a text per place (PR descriptions, commits, new issues, comments, other trackers), Ledung's default to start with, editable, with Restore default and an Off that clears them (#513)
+- PR descriptions and commits made by a project's sessions now carry that project's lines instead of Claude Code's own: with Ledung's default, PRs end with "— via Ledung for <your name>" in place of "Generated with Claude Code", and commits keep the Co-Authored-By trailer; switch a project's signature Off, or edit its texts, if it shouldn't (#513)
+- A changed signature reaches the project's running sessions at once (#513)
+
 ## v5.2 — 2026-11-27 13:52 CET
 - A project's old, ended managers that a newer manager replaced can now be archived, from the sidebar menu, the session header or by the project's manager with archive_session, whose list_sessions now names them; the current manager still can't be (#515)
 - A manager that never got going is archived by itself when a fresh one replaces it (#515)
